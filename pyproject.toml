@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "mimir"
+version = "0.1.0"
+description = "toy project for reading lkml"
+authors = ["Eelco Wesemann <6771014+sgaduuw@users.noreply.github.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
