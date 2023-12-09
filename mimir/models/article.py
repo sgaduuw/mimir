@@ -6,5 +6,5 @@ class Article(db.Document):
     body = db.StringField()
     author = db.StringField()
     references = db.StringField()
-    message_id = db.StringField()
+    message_id = db.StringField(unique=True)
     date = db.DateTimeField(default=datetime.utcnow)
