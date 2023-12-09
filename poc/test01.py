@@ -1,6 +1,5 @@
 import nntplib
 from datetime import datetime
-
 from email import policy
 from email.parser import BytesParser
 
