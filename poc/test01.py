@@ -1,5 +1,9 @@
 import nntplib
 
+from email import message_from_string
+from email import policy
+from email.parser import BytesParser
+
 nntp_server = 'nntp.lore.kernel.org'
 nntp_group = 'org.kernel.vger.linux-kernel'
 
@@ -20,9 +24,24 @@ print('Group', name, 'has', count, 'articles, range', first, 'to', last)
 resp, overviews = s.over((first, first + 9))
 for art_id, over in overviews:
     print(art_id, nntplib.decode_header(over['subject']))
-    if art_id == 10:
-        resp, number, message_id = s.stat(art_id)
-        resp, info = s.article(message_id)
-        print(info)
+
+    resp, number, message_id = s.stat(art_id)
+    resp, article = s.article(message_id)
+
+    article_raw = b'\n'.join(article.lines)
+
+    parser = BytesParser(policy=policy.default)
+    article = parser.parsebytes(article_raw)
+
+    # Decode the article content based on the specified encoding
+    encoding = article.get_content_charset()
+    if encoding:
+        article_payload = article.get_payload(decode=True).decode(encoding)
+    else:
+        # Use a default encoding if not specified
+        article_payload = article.get_payload(decode=True).decode('utf-8', 'ignore')
+
+    print(article_payload)
+    print('============================================================')
 
 s.quit()
