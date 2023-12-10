@@ -18,7 +18,7 @@ s = nntplib.NNTP(nntp_server)
 @bp_main.route('/import/')
 def import_page() -> str:
     resp, count, first, last, name = s.group(nntp_group)
-    resp, overviews = s.over((first, first + 9))
+    resp, overviews = s.over((first, first + 50))
 
     for art_id, over in overviews:
         # print(art_id, nntplib.decode_header(over['subject']))
