@@ -44,7 +44,7 @@ def import_page() -> str:
             # Use a default encoding if not specified
             article_payload = article.get_payload(decode=True).decode('utf-8', 'ignore')
 
-        article = {
+        article_data = {
             'author': mail_from,
             'date': date,
             'message_id': message_id,
@@ -52,7 +52,13 @@ def import_page() -> str:
             'subject': subject,
             'body': article_payload
         }
-        Article(**article).save()
+        article = Article.objects(message_id=message_id).first()
+        if article is not None:
+            article.update(**article_data)
+        else:
+            article = Article(**article_data).save()
+
+        print(article.message_id)
 
     s.quit()
     return 'Hallo'
