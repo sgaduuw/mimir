@@ -21,6 +21,7 @@ def import_page() -> str:
     resp, overviews = s.over((first, first + 50))
 
     for art_id, over in overviews:
+        print(f"================= {art_id} ====================")
         try:
             print(art_id, nntplib.decode_header(over['subject']))
             mail_from = nntplib.decode_header(over['from'])
