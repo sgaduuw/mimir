@@ -2,8 +2,10 @@
     it will be moved to a celery task later
 """
 import nntplib
+import re
 from datetime import datetime
 from email import message_from_string
+from email.header import decode_header
 
 from mimir.models import Article, Attachment
 from mimir.routes.main import bp_main
@@ -20,8 +22,43 @@ def process_plain_text(msg, meta: dict):
     full_article['body'] = msg.get_payload(decode=True).decode()
     return full_article
 
-def process_mime_message(message_data):
-    return ()
+def get_attachment_filename(input: str):
+    if input:
+        # Using regular expression to extract filename
+        match = re.search(r'filename="([^"]+)"', input)
+        if match:
+            return match.group(1)
+
+    return None
+
+def process_mime_message(msg, meta: dict):
+    attachments = []
+    for part in msg.walk():
+        content_type = part.get_content_type()
+        content_disposition = str(part.get("Content-Disposition"))
+
+        print(f"MIME: {content_type} - {content_disposition}")
+        if content_type == 'multipart/mixed':
+            continue
+
+        if "attachment" not in content_disposition:
+            body = part.get_payload(decode=True).decode()
+            print(f"MIME BODY: {body}")
+
+        else:
+            attachment_data = part.get_payload(decode=True).decode()
+            attachment_header, _ = decode_header(content_disposition)[0]
+            filename = get_attachment_filename(attachment_header)
+
+            data = {
+                'filename': filename,
+                'data': attachment_data
+            }
+            attachments.append(data)
+
+    # print(f"MIME: {content} | {meta}")
+    article = body
+    return {'article': article, 'attachments': attachments}
 
 def save_article(n_article: dict):
     article = Article.objects(message_id=n_article['message_id']).first()
@@ -36,8 +73,14 @@ def save_article(n_article: dict):
 
 def save_attachments(attachments_data):
     attachments = []
-    for attachment_data in attachments_data:
-        attachment = Attachment(**attachment_data).save()
+
+    for data in attachments_data:
+        print(f"ATT DATA: {data}")
+        d_dict = {
+            'filename': None,
+            'content': None
+        }
+        attachment = Attachment(**d_dict).save()
         attachments.append(attachment)
     return attachments
 
@@ -47,7 +90,7 @@ def process_and_save_message(msg: str, meta: dict):
     # Determine message type and process accordingly
     if message.is_multipart():
         print("PROCESS: MULTIPART!")
-        article_data, attachment_data = process_mime_message(message)
+        article_data, attachment_data = process_mime_message(msg=message, meta=meta)
         attachments = save_attachments(attachment_data)
         article_data['attachment'] = attachments
 
@@ -82,8 +125,6 @@ def import_page() -> str:
             resp, article = s.article(message_id)
             article_bin = b'\n'.join(article.lines)
             article_dec = article_bin.decode()
-            if art_id == 36 or art_id == 37:
-                print(f"BIN: {article_dec}")
 
             article_meta = {
                 'author': mail_from,
