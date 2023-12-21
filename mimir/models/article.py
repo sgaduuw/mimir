@@ -1,5 +1,6 @@
 from datetime import datetime
 from mimir.extensions import db
+from mimir.models import Attachment
 
 class Article(db.Document):
     subject = db.StringField()
@@ -9,3 +10,4 @@ class Article(db.Document):
     message_id = db.StringField(unique=True)
     srv_id = db.IntField(unique=True)
     date = db.DateTimeField(default=datetime.utcnow)
+    attachments = db.ListField(db.ReferenceField(Attachment))
