@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}{{ att.filename or 'attachment' }} — preview — mimir{% endblock %}
+{% block title %}{{ att.filename or 'attachment' }} · preview · mimir{% endblock %}
 {% block content %}
 <article>
   <header>
     <h2>{{ att.filename or '(unnamed attachment)' }}</h2>
     <p>
       <small>
-        <code>{{ att.content_type }}</code> — {{ att.content|length }} bytes
+        <code>{{ att.content_type }}</code> &middot; {{ att.content|length }} bytes
         &middot; <a href="{{ article|msg_url }}/attachment/{{ n }}">download</a>
         &middot; <a href="{{ article|msg_url }}">back to message</a>
       </small>

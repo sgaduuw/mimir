@@ -4,15 +4,15 @@
 
 {% if active %}
 <section>
-  <h2>Most active threads <small><em>— last 7 days</em></small></h2>
+  <h2>Most active threads <small><em>(last 7 days)</em></small></h2>
   <ul>
     {% for t in active %}
     <li>
       <a href="{{ t|msg_url }}">{{ t.subject or '(no subject)' }}</a>
       <small>
-        — {{ t.recent_count }} message{{ '' if t.recent_count == 1 else 's' }}
+        &middot; {{ t.recent_count }} message{{ '' if t.recent_count == 1 else 's' }}
         {% if t.last_activity %}, last {{ t.last_activity.strftime('%Y-%m-%d %H:%M') }}{% endif %}
-        — {{ t.author|safe_from }}
+        &middot; {{ t.author|safe_from }}
       </small>
     </li>
     {% endfor %}
@@ -94,7 +94,7 @@
     {% include "_recent_items.html" %}
   </ul>
   {% else %}
-  <p><em>No articles yet — run <code>flask --app mimir ingest</code> first.</em></p>
+  <p><em>No articles yet. Run <code>flask --app mimir ingest</code> first.</em></p>
   {% endif %}
 </section>
 
