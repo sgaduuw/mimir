@@ -12,11 +12,18 @@
     <nav>
       <ul>
         <li><a href="{{ url_for('web.index') }}"><strong>mimir</strong></a></li>
-        <li><a href="/{{ list_name }}/today">today</a></li>
-        <li><a href="/{{ list_name }}/yesterday">yesterday</a></li>
+        {% if current_list %}
+        <li><a href="/{{ current_list }}/">{{ current_list }}</a></li>
+        <li><a href="/{{ current_list }}/today">today</a></li>
+        <li><a href="/{{ current_list }}/yesterday">yesterday</a></li>
+        {% endif %}
       </ul>
       <ul>
-        <li><small>{{ list_name }} archive</small></li>
+        {% if inboxes|length > 1 and not current_list %}
+        <li><small>{{ inboxes|length }} inboxes</small></li>
+        {% elif current_list %}
+        <li><small>archive</small></li>
+        {% endif %}
       </ul>
     </nav>
     {% block content %}{% endblock %}

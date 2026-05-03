@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}{{ list_name }} · mimir{% endblock %}
+{% block content %}
+<h1>{{ list_name }} <small><em>archive</em></small></h1>
+
+{% if active %}
+<section>
+  <h2>Most active threads <small><em>(last 7 days)</em></small></h2>
+  <ul>
+    {% for t in active %}
+    <li>
+      <a href="{{ t|msg_url }}">{{ t.subject or '(no subject)' }}</a>
+      <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
+        &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} in 7d
+        &middot; {{ t.author|safe_from }}</small>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<div class="grid">
+  {% if pulls %}
+  <section>
+    <h3>Latest pull requests</h3>
+    <ul>
+      {% for a in pulls %}
+      <li>
+        <a href="{{ a|msg_url }}">{{ a.subject or '(no subject)' }}</a>
+        <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}
+          &middot; {{ a.author|safe_from }}</small>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+  {% if stable %}
+  <section>
+    <h3>Stable / release announcements</h3>
+    <ul>
+      {% for a in stable %}
+      <li>
+        <a href="{{ a|msg_url }}">{{ a.subject or '(no subject)' }}</a>
+        <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}</small>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</div>
+
+{% if trackers %}
+<div class="grid">
+  {% for t in trackers %}
+  <section>
+    <h3>Latest from {{ t.label }}</h3>
+    {% if t.messages %}
+    <ul>
+      {% for a in t.messages %}
+      <li>
+        <a href="{{ a|msg_url }}">{{ a.subject or '(no subject)' }}</a>
+        <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}</small>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p><em>No recent messages.</em></p>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if history %}
+<section>
+  <h3>This day, 5 years ago</h3>
+  <ul>
+    {% for a in history %}
+    <li>
+      <a href="{{ a|msg_url }}">{{ a.subject or '(no subject)' }}</a>
+      <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}
+        &middot; {{ a.author|safe_from }}</small>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section>
+  <h2>Recent messages</h2>
+  {% if recent %}
+  <ul>
+    {% include "_recent_items.html" %}
+  </ul>
+  {% else %}
+  <p><em>No articles yet. Run <code>flask --app mimir ingest</code> first.</em></p>
+  {% endif %}
+</section>
+
+<footer>
+  <hr>
+  {% if spark and spark.days %}
+  <small>Last 30 days:</small>
+  <svg width="186" height="28" style="vertical-align: middle;"
+       aria-label="Daily message volume, last 30 days">
+    {% for day, count in spark.days %}
+      {% set h = (count / spark.max_count * 26) if spark.max_count > 0 else 0 %}
+      <rect x="{{ loop.index0 * 6 }}"
+            y="{{ 27 - h }}"
+            width="5"
+            height="{{ h if h > 0 else 1 }}"
+            fill="currentColor"
+            opacity="0.55">
+        <title>{{ day.strftime('%Y-%m-%d') }}: {{ count }} message{{ '' if count == 1 else 's' }}</title>
+      </rect>
+    {% endfor %}
+  </svg>
+  <br>
+  {% endif %}
+  {% if stats %}
+  <small>
+    {{ '{:,}'.format(stats.total) }} messages across {{ stats.epochs }} epoch{{ '' if stats.epochs == 1 else 's' }}{% if stats.first_date and stats.last_date %},
+    spanning {{ stats.first_date.strftime('%Y-%m-%d') }} to {{ stats.last_date.strftime('%Y-%m-%d') }}{% endif %}.
+  </small>
+  {% endif %}
+</footer>
+
+{% endblock %}

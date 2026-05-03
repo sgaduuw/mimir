@@ -1,7 +1,6 @@
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import click
 from flask import Flask
@@ -36,16 +35,17 @@ def init_db_command() -> None:
 
 @click.command("ingest")
 @click.option(
-    "--mirror",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    "--inbox",
+    "inbox_filter",
+    type=str,
     default=None,
-    help="Path to a public-inbox mirror dir containing N.git epochs.",
+    help="Restrict to one configured inbox by name. Default: all configured inboxes.",
 )
 @click.option(
     "--limit",
     type=int,
     default=None,
-    help="Stop after processing this many messages across all epochs (for testing).",
+    help="Stop after processing this many messages total (for testing).",
 )
 @click.option(
     "-v",
@@ -60,19 +60,32 @@ def init_db_command() -> None:
     show_default=True,
     help="Parallel parsers (process pool). Set to 1 for sequential.",
 )
-def ingest_command(mirror: Path | None, limit: int | None, verbose: int, workers: int) -> None:
-    """Walk a public-inbox mirror and import new messages."""
+def ingest_command(
+    inbox_filter: str | None,
+    limit: int | None,
+    verbose: int,
+    workers: int,
+) -> None:
+    """Walk every configured inbox's mirror and import new messages."""
     _configure_logging(verbose)
-    mirror_path = mirror or settings.lkml_mirror_path
-    results = ingest_all(mirror_path, limit=limit, workers=workers)
-    for r in results:
-        click.echo(
-            f"{r.epoch}: new={r.new} skipped={r.skipped} failed={r.failed} "
-            f"head={r.last_commit_sha}"
-        )
+    if inbox_filter is not None:
+        if inbox_filter not in settings.inboxes:
+            raise click.ClickException(f"unknown inbox: {inbox_filter!r}")
+        inboxes = {inbox_filter: settings.inboxes[inbox_filter]}
+    else:
+        inboxes = settings.inboxes
+
+    results_by_list = ingest_all(inboxes=inboxes, limit=limit, workers=workers)
+    for list_name, results in results_by_list.items():
+        for r in results:
+            click.echo(
+                f"{list_name}/{r.epoch}: new={r.new} skipped={r.skipped} "
+                f"failed={r.failed} head={r.last_commit_sha}"
+            )
 
 
 @click.command("reindex")
+@click.argument("inbox_name")
 @click.argument("epoch")
 @click.option(
     "--from-scratch",
@@ -94,8 +107,10 @@ def ingest_command(mirror: Path | None, limit: int | None, verbose: int, workers
     show_default=True,
     help="Parallel parsers (process pool). Set to 1 for sequential.",
 )
-def reindex_command(epoch: str, from_scratch: bool, verbose: int, workers: int) -> None:
-    """Re-walk a single epoch from the beginning.
+def reindex_command(
+    inbox_name: str, epoch: str, from_scratch: bool, verbose: int, workers: int,
+) -> None:
+    """Re-walk a single epoch in INBOX from the beginning.
 
     By default, picks up messages that previously failed to parse — the
     in-DB dedup skips already-saved Message-IDs so only the new/recovered
@@ -103,26 +118,32 @@ def reindex_command(epoch: str, from_scratch: bool, verbose: int, workers: int) 
     """
     _configure_logging(verbose)
 
-    epoch_path = settings.lkml_mirror_path / epoch
+    inbox = settings.inboxes.get(inbox_name)
+    if inbox is None:
+        raise click.ClickException(f"unknown inbox: {inbox_name!r}")
+    epoch_path = inbox.mirror_path / epoch
     if not epoch_path.exists():
         raise click.ClickException(f"epoch repo not found: {epoch_path}")
 
     with SessionLocal() as session:
         if from_scratch:
             deleted = session.execute(
-                delete(Article).where(Article.epoch == epoch)
+                delete(Article).where(
+                    Article.list_name == inbox_name,
+                    Article.epoch == epoch,
+                )
             ).rowcount
-            click.echo(f"deleted {deleted} existing articles for {epoch}")
+            click.echo(f"deleted {deleted} existing articles for {inbox_name}/{epoch}")
 
-        state = session.get(IngestState, epoch)
+        state = session.get(IngestState, (inbox_name, epoch))
         if state is not None:
             state.last_commit_sha = None
         session.commit()
 
-        result = ingest_epoch(session, epoch, epoch_path, workers=workers)
+        result = ingest_epoch(session, inbox_name, epoch, epoch_path, workers=workers)
 
     click.echo(
-        f"{result.epoch}: new={result.new} skipped={result.skipped} "
+        f"{inbox_name}/{result.epoch}: new={result.new} skipped={result.skipped} "
         f"failed={result.failed} head={result.last_commit_sha}"
     )
 
@@ -195,16 +216,11 @@ def show_command(message_id: str, body_chars: int, no_body: bool) -> None:
 
 @click.command("update")
 @click.option(
-    "--mirror",
-    type=click.Path(file_okay=False, path_type=Path),
-    default=None,
-    help="Mirror directory. Defaults to settings.lkml_mirror_path.",
-)
-@click.option(
-    "--upstream",
+    "--inbox",
+    "inbox_filter",
     type=str,
     default=None,
-    help="Upstream public-inbox root URL. Defaults to settings.upstream_url.",
+    help="Restrict to one configured inbox by name. Default: all configured inboxes.",
 )
 @click.option("--skip-clone", is_flag=True, help="Don't fetch the manifest or clone new epochs.")
 @click.option("--skip-fetch", is_flag=True, help="Don't `git fetch` existing local epochs.")
@@ -223,63 +239,76 @@ def show_command(message_id: str, body_chars: int, no_body: bool) -> None:
     help="-v: progress every 100 messages. -vv: per-message detail.",
 )
 def update_command(
-    mirror: Path | None,
-    upstream: str | None,
+    inbox_filter: str | None,
     skip_clone: bool,
     skip_fetch: bool,
     skip_ingest: bool,
     workers: int,
     verbose: int,
 ) -> None:
-    """Discover new upstream epochs, fetch updates, and ingest in one shot."""
+    """Discover new upstream epochs, fetch updates, and ingest in one shot.
+    Iterates over every configured inbox unless --inbox restricts to one."""
     _configure_logging(verbose)
-    mirror_path = mirror or settings.lkml_mirror_path
-    upstream_url = upstream or settings.upstream_url
+    if inbox_filter is not None:
+        if inbox_filter not in settings.inboxes:
+            raise click.ClickException(f"unknown inbox: {inbox_filter!r}")
+        inboxes = {inbox_filter: settings.inboxes[inbox_filter]}
+    else:
+        inboxes = settings.inboxes
 
-    sync_result = sync_epochs(
-        upstream_url,
-        mirror_path,
-        discover_new=not skip_clone,
-        fetch_existing=not skip_fetch,
-    )
-    click.echo(
-        f"sync: cloned={sync_result.cloned} fetched={sync_result.fetched} "
-        f"failed={sync_result.failed}"
-    )
+    for list_name, inbox in inboxes.items():
+        sync_result = sync_epochs(
+            inbox.upstream_url,
+            inbox.mirror_path,
+            discover_new=not skip_clone,
+            fetch_existing=not skip_fetch,
+        )
+        click.echo(
+            f"{list_name} sync: cloned={sync_result.cloned} "
+            f"fetched={sync_result.fetched} failed={sync_result.failed}"
+        )
 
     if skip_ingest:
         return
 
-    ingest_results = ingest_all(mirror_path, workers=workers)
-    for r in ingest_results:
-        click.echo(
-            f"{r.epoch}: new={r.new} skipped={r.skipped} failed={r.failed} "
-            f"head={r.last_commit_sha}"
-        )
+    results_by_list = ingest_all(inboxes=inboxes, workers=workers)
+    for list_name, results in results_by_list.items():
+        for r in results:
+            click.echo(
+                f"{list_name}/{r.epoch}: new={r.new} skipped={r.skipped} "
+                f"failed={r.failed} head={r.last_commit_sha}"
+            )
 
 
 @click.command("warm-cache")
 def warm_cache_command() -> None:
-    """Recompute and cache the slow dashboard queries.
+    """Recompute and cache the slow dashboard queries for every inbox.
 
     Designed to run from cron or a systemd timer. Refreshes the on-disk
     cache (`Settings.cache_path`) so the Flask server picks up
-    pre-computed results on the next request, avoiding the cold-start
-    latency on `/`.
+    pre-computed results on the next request, avoiding cold-start
+    latency. Iterates over every inbox in `Settings.inboxes`.
 
-    Example crontab (every 5 min for active threads, daily for stats):
+    Example crontab:
 
         */5 * * * * cd ~/Projects/python/mimir && poetry run flask --app mimir warm-cache
     """
     today = datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
-    targets = [
-        ("active_threads (7d, 10)", lambda s: active_threads(s, days=7, limit=10, force=True)),
-        ("threads_for_day (today)", lambda s: threads_for_day(s, today, force=True)),
-        ("threads_for_day (yesterday)", lambda s: threads_for_day(s, yesterday, force=True)),
-        ("daily_volume (30d)", lambda s: daily_volume(s, days=30, force=True)),
-        ("archive_stats", lambda s: archive_stats(s, force=True)),
-    ]
+    targets = []
+    for list_name in settings.inboxes:
+        targets.extend([
+            (f"{list_name} active_threads (7d, 10)",
+             lambda s, ln=list_name: active_threads(s, ln, days=7, limit=10, force=True)),
+            (f"{list_name} threads_for_day (today)",
+             lambda s, ln=list_name: threads_for_day(s, ln, today, force=True)),
+            (f"{list_name} threads_for_day (yesterday)",
+             lambda s, ln=list_name: threads_for_day(s, ln, yesterday, force=True)),
+            (f"{list_name} daily_volume (30d)",
+             lambda s, ln=list_name: daily_volume(s, ln, days=30, force=True)),
+            (f"{list_name} archive_stats",
+             lambda s, ln=list_name: archive_stats(s, ln, force=True)),
+        ])
     with SessionLocal() as session:
         for label, fn in targets:
             t0 = time.perf_counter()

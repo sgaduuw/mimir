@@ -1,10 +1,7 @@
-{# Partial used both for the initial render of /'s "Recent" list and as
-   the response body for /api/recent (HTMX load-more). Vars: `recent` (list),
-   `recent_has_more` (bool), `recent_next_offset` (int).
-
-   The "Load more" trigger is a <li class="recent-more-trigger"> wrapping the
-   button. HTMX swaps `outerHTML` on `closest li`, so the response replaces
-   that <li> with new items + a new trigger (or nothing, if exhausted). #}
+{# Partial used both for the initial render of the inbox dashboard's
+   "Recent" list and as the response body for /api/<list>/recent (HTMX
+   load-more). Vars: `list_name`, `recent` (list), `recent_has_more`
+   (bool), `recent_next_offset` (int). #}
 {% for a in recent %}
 <li>
   <a href="{{ a|msg_url }}">{{ a.subject or '(no subject)' }}</a>
@@ -15,7 +12,7 @@
 {% if recent_has_more %}
 <li class="recent-more-trigger">
   <button class="secondary outline"
-          hx-get="/api/recent?offset={{ recent_next_offset }}"
+          hx-get="/api/{{ list_name }}/recent?offset={{ recent_next_offset }}"
           hx-target="closest li"
           hx-swap="outerHTML">Load more</button>
 </li>

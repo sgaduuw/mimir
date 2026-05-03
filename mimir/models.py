@@ -11,6 +11,7 @@ class Article(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     message_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    list_name: Mapped[str] = mapped_column(String, index=True, server_default="lkml")
     epoch: Mapped[str] = mapped_column(String, index=True)
     commit_sha: Mapped[str] = mapped_column(String)
     subject: Mapped[str | None] = mapped_column(Text)
@@ -47,6 +48,7 @@ class Attachment(Base):
 class IngestState(Base):
     __tablename__ = "ingest_state"
 
+    list_name: Mapped[str] = mapped_column(String, primary_key=True, server_default="lkml")
     epoch: Mapped[str] = mapped_column(String, primary_key=True)
     last_commit_sha: Mapped[str | None] = mapped_column(String)
     last_ingested_at: Mapped[datetime | None]

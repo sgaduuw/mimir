@@ -90,6 +90,7 @@ def _parse_iter(
 
 def _to_article(
     parsed: ParsedArticle,
+    list_name: str,
     epoch: str,
     commit_sha: str,
     date: datetime,
@@ -103,6 +104,7 @@ def _to_article(
     )
     return Article(
         message_id=parsed.message_id,
+        list_name=list_name,
         epoch=epoch,
         commit_sha=commit_sha,
         subject=parsed.subject,
@@ -125,14 +127,15 @@ def _to_article(
 
 def ingest_epoch(
     session: Session,
+    list_name: str,
     epoch_name: str,
     repo_path: Path,
     limit: int | None = None,
     workers: int = DEFAULT_WORKERS,
 ) -> IngestResult:
-    state = session.get(IngestState, epoch_name)
+    state = session.get(IngestState, (list_name, epoch_name))
     if state is None:
-        state = IngestState(epoch=epoch_name)
+        state = IngestState(list_name=list_name, epoch=epoch_name)
         session.add(state)
     last_sha = state.last_commit_sha
 
@@ -142,8 +145,8 @@ def ingest_epoch(
     seen_in_batch: set[str] = set()
 
     logger.info(
-        "epoch %s: starting from %s (workers=%d)",
-        epoch_name, last_sha or "<beginning>", workers,
+        "%s/%s: starting from %s (workers=%d)",
+        list_name, epoch_name, last_sha or "<beginning>", workers,
     )
 
     def flush_batch() -> None:
@@ -181,7 +184,7 @@ def ingest_epoch(
             result.skipped += 1
             continue
 
-        session.add(_to_article(parsed, epoch=epoch_name, commit_sha=commit_sha, date=commit_time))
+        session.add(_to_article(parsed, list_name=list_name, epoch=epoch_name, commit_sha=commit_sha, date=commit_time))
         seen_in_batch.add(parsed.message_id)
         result.new += 1
         logger.debug("epoch %s commit %s: new %s", epoch_name, commit_sha[:12], parsed.message_id)
@@ -214,11 +217,13 @@ def discover_epochs(mirror_path: Path) -> list[Path]:
     return epochs
 
 
-def ingest_all(
+def ingest_inbox(
+    list_name: str,
     mirror_path: Path,
     limit: int | None = None,
     workers: int = DEFAULT_WORKERS,
 ) -> list[IngestResult]:
+    """Ingest every epoch under one inbox's mirror path."""
     results: list[IngestResult] = []
     remaining = limit
     with SessionLocal() as session:
@@ -226,10 +231,33 @@ def ingest_all(
             if remaining is not None and remaining <= 0:
                 break
             r = ingest_epoch(
-                session, epoch_path.name, epoch_path,
+                session, list_name, epoch_path.name, epoch_path,
                 limit=remaining, workers=workers,
             )
             results.append(r)
             if remaining is not None:
                 remaining -= r.new + r.skipped + r.failed
     return results
+
+
+def ingest_all(
+    inboxes: "dict[str, object] | None" = None,
+    limit: int | None = None,
+    workers: int = DEFAULT_WORKERS,
+) -> dict[str, list[IngestResult]]:
+    """Ingest every configured inbox. Returns {list_name: [IngestResult, ...]}."""
+    from mimir.config import settings
+    if inboxes is None:
+        inboxes = settings.inboxes
+
+    out: dict[str, list[IngestResult]] = {}
+    remaining = limit
+    for list_name, inbox in inboxes.items():
+        if remaining is not None and remaining <= 0:
+            break
+        rs = ingest_inbox(list_name, inbox.mirror_path, limit=remaining, workers=workers)
+        out[list_name] = rs
+        if remaining is not None:
+            for r in rs:
+                remaining -= r.new + r.skipped + r.failed
+    return out

@@ -252,11 +252,6 @@ emits HTML accordingly:
 
 Tracked here so we don't forget across sessions.
 
-- **Multiple inbox support** — URL is already namespaced
-  (`/<list>/...`) and `Settings.list_name` is in place. Real multi-list
-  needs an `Article.list` column, an alembic migration, the route's
-  hardcoded `list_name` check replaced by a SQL filter, and a
-  `Settings.inboxes` map.
 
 ## Cache warming
 

@@ -38,8 +38,8 @@ class ThreadNode:
 @dataclass
 class ActiveThread:
     """A thread that's seen activity inside the recent-window. `id`,
-    `message_id`, and `date` are the root article's, so `|msg_url` (which
-    expects an Article-shape) works on this directly.
+    `list_name`, `message_id`, and `date` are the root article's, so
+    `|msg_url` (which expects an Article-shape) works on this directly.
 
     `recent_count` counts every message in the window (including the root
     if it was sent during the window). `reply_count` is the same minus
@@ -47,6 +47,7 @@ class ActiveThread:
     shows reply_count=0, recent_count=1.
     """
     id: int
+    list_name: str
     message_id: str
     subject: str | None
     author: str | None
@@ -67,8 +68,9 @@ def _coerce_dt(value) -> datetime | None:
         return None
 
 
-def find_thread_root(session: Session, message_id: str) -> str | None:
+def find_thread_root(session: Session, list_name: str, message_id: str) -> str | None:
     """Return the message_id of the topmost ancestor present in our DB.
+    Walks only within `list_name` so threads don't span inboxes.
 
     If `message_id` isn't in the DB at all, returns None. A message with
     no in_reply_to (or whose in_reply_to points to a missing message) is
@@ -78,45 +80,45 @@ def find_thread_root(session: Session, message_id: str) -> str | None:
         """
         WITH RECURSIVE ancestors AS (
             SELECT message_id, thread_parent, 0 AS depth
-            FROM articles WHERE message_id = :mid
+            FROM articles WHERE list_name = :list AND message_id = :mid
             UNION ALL
             SELECT a.message_id, a.thread_parent, anc.depth + 1
             FROM articles a JOIN ancestors anc ON a.message_id = anc.thread_parent
-            WHERE anc.depth < :max_depth
+            WHERE a.list_name = :list AND anc.depth < :max_depth
         )
         SELECT message_id FROM ancestors ORDER BY depth DESC LIMIT 1
         """
     )
-    return session.execute(sql, {"mid": message_id, "max_depth": MAX_DEPTH}).scalar()
+    return session.execute(
+        sql, {"list": list_name, "mid": message_id, "max_depth": MAX_DEPTH}
+    ).scalar()
 
 
-def get_thread(session: Session, root_message_id: str) -> list[ThreadNode]:
+def get_thread(session: Session, list_name: str, root_message_id: str) -> list[ThreadNode]:
     """Return the full thread rooted at `root_message_id`, depth-first by date.
-
-    The CTE builds a `sort_path` of "<date>|<id>" segments joined by '/';
-    sorting by it gives a natural depth-first traversal with siblings
-    ordered by date.
-    """
+    Walk constrained to `list_name`."""
     sql = text(
         """
         WITH RECURSIVE thread AS (
             SELECT id, message_id, thread_parent, subject, author, date,
                    0 AS depth,
                    CAST(date AS TEXT) || '|' || printf('%020d', id) AS sort_path
-            FROM articles WHERE message_id = :root
+            FROM articles WHERE list_name = :list AND message_id = :root
             UNION ALL
             SELECT a.id, a.message_id, a.thread_parent, a.subject, a.author, a.date,
                    t.depth + 1,
                    t.sort_path || '/' || CAST(a.date AS TEXT) || '|' || printf('%020d', a.id)
             FROM articles a JOIN thread t ON a.thread_parent = t.message_id
-            WHERE t.depth < :max_depth
+            WHERE a.list_name = :list AND t.depth < :max_depth
         )
         SELECT id, message_id, thread_parent, subject, author, date, depth
         FROM thread
         ORDER BY sort_path
         """
     )
-    rows = session.execute(sql, {"root": root_message_id, "max_depth": MAX_DEPTH}).all()
+    rows = session.execute(
+        sql, {"list": list_name, "root": root_message_id, "max_depth": MAX_DEPTH}
+    ).all()
     return [
         ThreadNode(
             id=r.id,
@@ -143,6 +145,7 @@ _ORDER_CLAUSES = {
 
 def _active_threads_query(
     session: Session,
+    list_name: str,
     start: datetime,
     end: datetime,
     *,
@@ -163,12 +166,12 @@ def _active_threads_query(
             SELECT id AS recent_id, message_id AS curr, thread_parent,
                    date AS recent_date, 0 AS depth
             FROM articles
-            WHERE date >= :start AND date < :end
+            WHERE list_name = :list AND date >= :start AND date < :end
             UNION ALL
             SELECT c.recent_id, a.message_id, a.thread_parent,
                    c.recent_date, c.depth + 1
             FROM articles a JOIN chains c ON a.message_id = c.thread_parent
-            WHERE c.depth < :max_depth
+            WHERE a.list_name = :list AND c.depth < :max_depth
         ),
         max_depth AS (
             SELECT recent_id, MAX(depth) AS d FROM chains GROUP BY recent_id
@@ -192,6 +195,7 @@ def _active_threads_query(
     rows = session.execute(
         sql,
         {
+            "list": list_name,
             "start": start.strftime("%Y-%m-%d %H:%M:%S"),
             "end": end.strftime("%Y-%m-%d %H:%M:%S"),
             "max_depth": MAX_DEPTH,
@@ -200,6 +204,7 @@ def _active_threads_query(
     return [
         ActiveThread(
             id=r.id,
+            list_name=list_name,
             message_id=r.message_id,
             subject=r.subject,
             author=r.author,
@@ -214,14 +219,15 @@ def _active_threads_query(
 
 def active_threads(
     session: Session,
+    list_name: str,
     days: int = 7,
     limit: int = 10,
     force: bool = False,
 ) -> list[ActiveThread]:
-    """Most active threads in the last `days` days. Sliding window from now.
-    Cached on disk for ACTIVE_THREADS_CACHE_TTL_SEC (5 min) per (days,
-    limit) key. Pass force=True to bypass and recompute."""
-    cache_key = f"active_threads:{days}:{limit}"
+    """Most active threads in `list_name` in the last `days` days.
+    Cached on disk for ACTIVE_THREADS_CACHE_TTL_SEC (5 min) per
+    (list, days, limit) key. Pass force=True to bypass and recompute."""
+    cache_key = f"active_threads:{list_name}:{days}:{limit}"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -229,22 +235,22 @@ def active_threads(
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
-    result = _active_threads_query(session, start, end, order_by="score", limit=limit)
+    result = _active_threads_query(
+        session, list_name, start, end, order_by="score", limit=limit
+    )
     cache.set(cache_key, result, ttl=ACTIVE_THREADS_CACHE_TTL_SEC)
     return result
 
 
 def threads_for_day(
     session: Session,
+    list_name: str,
     day: date,
     force: bool = False,
 ) -> list[ActiveThread]:
-    """Every thread with at least one message on the given calendar day
-    (UTC), ordered by last activity desc. Unbounded — there's no decay
-    weighting because everything is in the same ~24h window, so plain
-    recency is the right ordering. Cache key includes the date so
-    today's and yesterday's don't clobber each other."""
-    cache_key = f"threads_for_day:{day.isoformat()}"
+    """Every thread in `list_name` with at least one message on `day`
+    (UTC), ordered by last activity desc."""
+    cache_key = f"threads_for_day:{list_name}:{day.isoformat()}"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -253,7 +259,7 @@ def threads_for_day(
     start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
     end = start + timedelta(days=1)
     result = _active_threads_query(
-        session, start, end, order_by="last_activity", limit=None
+        session, list_name, start, end, order_by="last_activity", limit=None
     )
     cache.set(cache_key, result, ttl=ACTIVE_THREADS_CACHE_TTL_SEC)
     return result
