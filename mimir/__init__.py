@@ -1,27 +1,17 @@
 from flask import Flask
 
-from mimir.config import Config
+from mimir.cli import register_cli
+from mimir.config import settings
+from mimir.web import bp_web
 
-from mimir.extensions import db
-from mimir.routes.main import bp_main
 
-def create_app():
+def create_app() -> Flask:
     app = Flask(__name__)
-    app.config.from_object(Config)
-    register_extensions(app)
-    register_blueprints(app)
+    app.config["SECRET_KEY"] = settings.secret_key
+    app.config["DEBUG"] = settings.flask_debug
+    app.register_blueprint(bp_web)
+    register_cli(app)
     return app
 
-def register_extensions(app):
-    """Register Flask extensions."""
-    db.init_app(app)
-    return None
 
-def register_blueprints(app):
-    """Register Flask blueprints."""
-    app.register_blueprint(bp_main)
-    return None
-
-if __name__ == 'main':
-    app = create_app()
-    app.run()
+app = create_app()
