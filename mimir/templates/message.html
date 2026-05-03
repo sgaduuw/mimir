@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ parsed.subject or '(no subject)' }} — mimir{% endblock %}
+{% block title %}{{ parsed.subject or '(no subject)' }} · mimir{% endblock %}
 {% block content %}
 <article>
   <header>
@@ -17,7 +17,7 @@
     {% if parent_off_list %}
     <li style="padding-left: 0; opacity: 0.6;">
       <em>&lt;{{ parent_off_list }}&gt;</em>
-      <small>— not in this archive</small>
+      <small>(not in this archive)</small>
     </li>
     {% endif %}
     {% set offset = 1 if parent_off_list else 0 %}
@@ -28,14 +28,14 @@
       {% else %}
         <a href="{{ thread_urls[n.message_id] }}">{{ n.subject or '(no subject)' }}</a>
       {% endif %}
-      <small>— {{ n.author|safe_from }} — {{ n.date.strftime('%Y-%m-%d') if n.date else '' }}</small>
+      <small>&middot; {{ n.author|safe_from }} &middot; {{ n.date.strftime('%Y-%m-%d') if n.date else '' }}</small>
     </li>
     {% endfor %}
   </ul>
   {% endif %}
 
   {% if related %}
-  <h4>Possibly related <small><em>— same subject, not in this thread</em></small></h4>
+  <h4>Possibly related <small><em>(same subject, not in this thread)</em></small></h4>
   <ul>
     {% for r in related %}
     <li>
