@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}{{ parsed.subject or '(no subject)' }} — mimir{% endblock %}
+{% block content %}
+<article>
+  <header>
+    <h2>{{ parsed.subject or '(no subject)' }}</h2>
+    <p>
+      <strong>From:</strong> {{ parsed.author|safe_from }}<br>
+      <strong>Date:</strong> {{ article.date.strftime('%Y-%m-%d %H:%M:%S %z') if article.date else '?' }}<br>
+      <strong>Message-ID:</strong> <code>{{ parsed.message_id }}</code>
+    </p>
+  </header>
+
+  {% if thread|length > 1 or parent_off_list %}
+  <h4>Thread ({{ thread|length }} message{{ '' if thread|length == 1 else 's' }})</h4>
+  <ul style="list-style: none; padding-left: 0; font-family: monospace; line-height: 1.4;">
+    {% if parent_off_list %}
+    <li style="padding-left: 0; opacity: 0.6;">
+      <em>&lt;{{ parent_off_list }}&gt;</em>
+      <small>— not in this archive</small>
+    </li>
+    {% endif %}
+    {% set offset = 1 if parent_off_list else 0 %}
+    {% for n in thread %}
+    <li style="padding-left: {{ (n.depth + offset) * 1.5 }}rem;">
+      {% if n.message_id == article.message_id %}
+        <strong>» {{ n.subject or '(no subject)' }}</strong>
+      {% else %}
+        <a href="{{ thread_urls[n.message_id] }}">{{ n.subject or '(no subject)' }}</a>
+      {% endif %}
+      <small>— {{ n.author|safe_from }} — {{ n.date.strftime('%Y-%m-%d') if n.date else '' }}</small>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if related %}
+  <h4>Possibly related <small><em>— same subject, not in this thread</em></small></h4>
+  <ul>
+    {% for r in related %}
+    <li>
+      <small>{{ r.date.strftime('%Y-%m-%d') if r.date else '?' }}</small>
+      &middot; <a href="{{ r|msg_url }}">{{ r.subject or '(no subject)' }}</a>
+      &middot; <small>{{ r.author|safe_from }}</small>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <div class="message-body">
+    {% if parsed.body %}{{ parsed.body|render_body(msgid_urls) }}{% else %}<em>(no body)</em>{% endif %}
+  </div>
+
+  {% if parsed.attachments %}
+  <h4>Attachments</h4>
+  <ul>
+    {% for att in parsed.attachments %}
+    <li>
+      <a href="{{ article|msg_url }}/attachment/{{ loop.index0 }}">{{ att.filename or '(unnamed)' }}</a>
+      <small>[{{ att.content_type }}] {{ att.content|length }} bytes
+        {% if att|is_previewable %}&middot;
+          <a href="{{ article|msg_url }}/attachment/{{ loop.index0 }}/preview">preview</a>
+        {% endif %}
+      </small>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</article>
+{% endblock %}

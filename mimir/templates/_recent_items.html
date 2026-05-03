@@ -1,0 +1,24 @@
+{# Partial used both for the initial render of /'s "Recent" list and as
+   the response body for /api/recent (HTMX load-more). Vars: `recent` (list),
+   `recent_has_more` (bool), `recent_next_offset` (int).
+
+   The "Load more" trigger is a <li class="recent-more-trigger"> wrapping the
+   button. HTMX swaps `outerHTML` on `closest li`, so the response replaces
+   that <li> with new items + a new trigger (or nothing, if exhausted). #}
+{% for a in recent %}
+<li>
+  <small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '????-??-??' }}</small>
+  &middot;
+  <a href="{{ a|msg_url }}">{{ a.subject or '(no subject)' }}</a>
+  &middot;
+  <small>{{ a.author|safe_from }}</small>
+</li>
+{% endfor %}
+{% if recent_has_more %}
+<li class="recent-more-trigger">
+  <button class="secondary outline"
+          hx-get="/api/recent?offset={{ recent_next_offset }}"
+          hx-target="closest li"
+          hx-swap="outerHTML">Load more</button>
+</li>
+{% endif %}
