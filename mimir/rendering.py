@@ -78,10 +78,12 @@ def parse_blocks(text: str) -> list[_Block]:
 def linkify(text: str, msgid_urls: dict[str, str] | None = None) -> str:
     """Escape `text` and replace URLs and `<Message-IDs>` with anchor tags.
 
-    `msgid_urls` is a precomputed map from Message-ID to canonical URL
-    (built by the view layer with a single bulk SELECT). Message-IDs not
-    in the map render as plain text — we don't have enough info to build
-    a working URL without their date.
+    Message-IDs are *not* rendered verbatim — they're email-shaped (often
+    with @host, sometimes with the literal local-part), and rendering
+    them in body text would re-leak the address info we already
+    de-leaked from URLs. Instead they collapse to a neutral placeholder:
+    `[ref]` (with link, when in archive) or `[off-list ref]` (when not).
+    The link still points at the canonical archive URL.
     """
     msgid_urls = msgid_urls or {}
     out: list[str] = []
@@ -100,11 +102,9 @@ def linkify(text: str, msgid_urls: dict[str, str] | None = None) -> str:
             mid = m.group("msgid")
             href = msgid_urls.get(mid)
             if href:
-                out.append(
-                    f'&lt;<a href="{html.escape(href)}">{html.escape(mid)}</a>&gt;'
-                )
+                out.append(f'<a href="{html.escape(href)}">[ref]</a>')
             else:
-                out.append(f"&lt;{html.escape(mid)}&gt;")
+                out.append("[off-list ref]")
             pos = m.end()
     out.append(html.escape(text[pos:]))
     return "".join(out)
