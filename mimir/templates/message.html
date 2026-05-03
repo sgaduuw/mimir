@@ -6,8 +6,7 @@
     <h2>{{ parsed.subject or '(no subject)' }}</h2>
     <p>
       <strong>From:</strong> {{ parsed.author|safe_from }}<br>
-      <strong>Date:</strong> {{ article.date.strftime('%Y-%m-%d %H:%M:%S %z') if article.date else '?' }}<br>
-      <strong>Message-ID:</strong> <code>{{ parsed.message_id }}</code>
+      <strong>Date:</strong> {{ article.date.strftime('%Y-%m-%d %H:%M:%S %z') if article.date else '?' }}
     </p>
   </header>
 
@@ -16,8 +15,7 @@
   <ul style="list-style: none; padding-left: 0; font-family: monospace; line-height: 1.4;">
     {% if parent_off_list %}
     <li style="padding-left: 0; opacity: 0.6;">
-      <em>&lt;{{ parent_off_list }}&gt;</em>
-      <small>(not in this archive)</small>
+      <em>(off-list ancestor, not in this archive)</em>
     </li>
     {% endif %}
     {% set offset = 1 if parent_off_list else 0 %}
