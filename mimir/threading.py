@@ -13,7 +13,7 @@ A 1000-deep depth limit guards against pathological cycles in the
 underlying data (real lkml threads rarely exceed ~50 deep).
 """
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -39,13 +39,20 @@ class ThreadNode:
 class ActiveThread:
     """A thread that's seen activity inside the recent-window. `id`,
     `message_id`, and `date` are the root article's, so `|msg_url` (which
-    expects an Article-shape) works on this directly."""
+    expects an Article-shape) works on this directly.
+
+    `recent_count` counts every message in the window (including the root
+    if it was sent during the window). `reply_count` is the same minus
+    the root — so a brand-new thread posted today with no responses yet
+    shows reply_count=0, recent_count=1.
+    """
     id: int
     message_id: str
     subject: str | None
     author: str | None
     date: datetime | None
     recent_count: int
+    reply_count: int
     last_activity: datetime | None
 
 
@@ -124,39 +131,39 @@ def get_thread(session: Session, root_message_id: str) -> list[ThreadNode]:
     ]
 
 
-def active_threads(
+_ORDER_CLAUSES = {
+    # Half-life-decayed activity score: fresh bursts outrank old steady
+    # chatter. Used for the 7-day "Most active threads" surface.
+    "score": "score DESC, last_activity DESC",
+    # Plain recency: most-recently-active thread first. Used for daily
+    # views where decay is irrelevant (everything is within ~24h).
+    "last_activity": "last_activity DESC, recent_count DESC",
+}
+
+
+def _active_threads_query(
     session: Session,
-    days: int = 7,
-    limit: int = 10,
-    force: bool = False,
+    start: datetime,
+    end: datetime,
+    *,
+    order_by: str = "score",
+    limit: int | None = None,
 ) -> list[ActiveThread]:
-    """Return the most active threads in the last `days` days, by reply count.
+    """Run the active-threads recursive CTE over a `[start, end)` window.
 
-    The recursive CTE walks up `thread_parent` from each recent message to
-    its topmost in-DB ancestor, then aggregates. ~700 ms over 6.2M rows on
-    a 12k-message window — too slow for hot paths, so results are cached
-    on disk for ACTIVE_THREADS_CACHE_TTL_SEC (5 min) per (days, limit) key.
-    Pass force=True to bypass the cache and recompute (used by the
-    `warm-cache` CLI).
+    `order_by`: 'score' (decay-weighted) or 'last_activity' (recency).
+    `limit`: None means unbounded (return every thread with at least one
+    message in the window).
     """
-    cache_key = f"active_threads:{days}:{limit}"
-    if not force:
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-    # Score = sum of pow(0.5, age_in_days) per recent message in the thread.
-    # Half-life is 1 day: a message from this hour counts as ~1.0; one from
-    # 24h ago as 0.5; one from 7d ago as ~0.008. The result is that fresh
-    # bursts of activity beat slow steady chatter when ranking. We still
-    # show the raw COUNT(*) ("N messages in 7d") in the UI for context.
+    order_sql = _ORDER_CLAUSES[order_by]
+    limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
     sql = text(
         f"""
         WITH RECURSIVE chains AS (
             SELECT id AS recent_id, message_id AS curr, thread_parent,
                    date AS recent_date, 0 AS depth
             FROM articles
-            WHERE date >= datetime('now', '-{int(days)} days')
+            WHERE date >= :start AND date < :end
             UNION ALL
             SELECT c.recent_id, a.message_id, a.thread_parent,
                    c.recent_date, c.depth + 1
@@ -173,16 +180,24 @@ def active_threads(
         )
         SELECT a.id, a.message_id, a.subject, a.author, a.date AS root_date,
                COUNT(*) AS recent_count,
+               SUM(CASE WHEN r.recent_id <> a.id THEN 1 ELSE 0 END) AS reply_count,
                MAX(r.recent_date) AS last_activity,
                SUM(pow(0.5, julianday('now') - julianday(r.recent_date))) AS score
         FROM roots r JOIN articles a ON a.message_id = r.root_id
         GROUP BY r.root_id
-        ORDER BY score DESC, last_activity DESC
-        LIMIT :limit
+        ORDER BY {order_sql}
+        {limit_sql}
         """
     )
-    rows = session.execute(sql, {"max_depth": MAX_DEPTH, "limit": limit}).all()
-    result = [
+    rows = session.execute(
+        sql,
+        {
+            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+            "max_depth": MAX_DEPTH,
+        },
+    ).all()
+    return [
         ActiveThread(
             id=r.id,
             message_id=r.message_id,
@@ -190,9 +205,55 @@ def active_threads(
             author=r.author,
             date=_coerce_dt(r.root_date),
             recent_count=r.recent_count,
+            reply_count=r.reply_count,
             last_activity=_coerce_dt(r.last_activity),
         )
         for r in rows
     ]
+
+
+def active_threads(
+    session: Session,
+    days: int = 7,
+    limit: int = 10,
+    force: bool = False,
+) -> list[ActiveThread]:
+    """Most active threads in the last `days` days. Sliding window from now.
+    Cached on disk for ACTIVE_THREADS_CACHE_TTL_SEC (5 min) per (days,
+    limit) key. Pass force=True to bypass and recompute."""
+    cache_key = f"active_threads:{days}:{limit}"
+    if not force:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    result = _active_threads_query(session, start, end, order_by="score", limit=limit)
+    cache.set(cache_key, result, ttl=ACTIVE_THREADS_CACHE_TTL_SEC)
+    return result
+
+
+def threads_for_day(
+    session: Session,
+    day: date,
+    force: bool = False,
+) -> list[ActiveThread]:
+    """Every thread with at least one message on the given calendar day
+    (UTC), ordered by last activity desc. Unbounded — there's no decay
+    weighting because everything is in the same ~24h window, so plain
+    recency is the right ordering. Cache key includes the date so
+    today's and yesterday's don't clobber each other."""
+    cache_key = f"threads_for_day:{day.isoformat()}"
+    if not force:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    result = _active_threads_query(
+        session, start, end, order_by="last_activity", limit=None
+    )
     cache.set(cache_key, result, ttl=ACTIVE_THREADS_CACHE_TTL_SEC)
     return result

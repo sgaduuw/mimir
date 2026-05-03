@@ -1,3 +1,4 @@
+from datetime import date as date_cls, datetime, timedelta, timezone
 from email.utils import parseaddr
 from urllib.parse import quote
 
@@ -7,7 +8,7 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_for_filename, guess_lexer
 from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from mimir.config import settings
 from mimir.dashboard import (
@@ -22,9 +23,15 @@ from mimir.extensions import SessionLocal
 from mimir.models import Article
 from mimir.rendering import URL_OR_MSGID_RE, render_body
 from mimir.store import MessageNotFound, read_message
-from mimir.threading import active_threads, find_thread_root, get_thread
+from mimir.threading import active_threads, find_thread_root, get_thread, threads_for_day
 
 bp_web = Blueprint("web", __name__)
+
+
+@bp_web.app_context_processor
+def _inject_list_name() -> dict:
+    """Make settings.list_name available to every template (used by nav)."""
+    return {"list_name": settings.list_name}
 
 
 def _msg_url(article: Article) -> str:
@@ -151,6 +158,41 @@ def index():
         stats=stats,
         spark=spark,
     )
+
+
+def _daily_view(list_name: str, day: date_cls, heading: str):
+    """Shared renderer for /<list>/today and /<list>/yesterday."""
+    if list_name != settings.list_name:
+        abort(404)
+    start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    with SessionLocal() as session:
+        threads = threads_for_day(session, day)
+        total = session.scalar(
+            select(func.count(Article.id)).where(
+                Article.date >= start.strftime("%Y-%m-%d %H:%M:%S"),
+                Article.date < end.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        )
+    return render_template(
+        "daily.html",
+        day=day,
+        heading=heading,
+        threads=threads,
+        total_messages=total or 0,
+    )
+
+
+@bp_web.route("/<list_name>/today")
+def daily_today(list_name: str):
+    today = datetime.now(timezone.utc).date()
+    return _daily_view(list_name, today, "Today")
+
+
+@bp_web.route("/<list_name>/yesterday")
+def daily_yesterday(list_name: str):
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+    return _daily_view(list_name, yesterday, "Yesterday")
 
 
 @bp_web.route("/api/recent")

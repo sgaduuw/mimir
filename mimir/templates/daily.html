@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ heading }} ({{ day.strftime('%Y-%m-%d') }}) · mimir{% endblock %}
+{% block content %}
+<section>
+  <h2>{{ heading }} <small><em>({{ day.strftime('%Y-%m-%d') }})</em></small></h2>
+
+  {% if total_messages == 0 %}
+    <p><em>No messages on this day.</em></p>
+  {% else %}
+    <p><small>{{ total_messages }} message{{ '' if total_messages == 1 else 's' }} across
+      {{ threads|length }} thread{{ '' if threads|length == 1 else 's' }}, ordered by last activity.</small></p>
+
+    <ul>
+      {% for t in threads %}
+      <li>
+        <a href="{{ t|msg_url }}">{{ t.subject or '(no subject)' }}</a>
+        <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
+          &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} {{ heading|lower }}
+          &middot; {{ t.author|safe_from }}</small>
+      </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+{% endblock %}
