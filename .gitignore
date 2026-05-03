@@ -162,4 +162,4 @@ cython_debug/
 # mimir
 mimir.db*
 mimir-cache.pickle*
-lkml/
+Inboxes/
