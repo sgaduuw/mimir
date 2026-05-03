@@ -29,9 +29,10 @@ bp_web = Blueprint("web", __name__)
 
 
 @bp_web.app_context_processor
-def _inject_list_name() -> dict:
-    """Make settings.list_name available to every template (used by nav)."""
-    return {"list_name": settings.list_name}
+def _inject_template_globals() -> dict:
+    """Inboxes are needed by base.html for the nav. `current_list` is set
+    per-view (None on the meta-index `/`)."""
+    return {"inboxes": list(settings.inboxes.keys())}
 
 
 # Cache-Control per endpoint. Lets edge caches (Cloudflare, an nginx in
@@ -41,7 +42,8 @@ def _inject_list_name() -> dict:
 # listings are cached briefly so new messages don't take more than ~1
 # minute to surface; pagination and 404s/redirects skip caching.
 _CACHE_CONTROL_BY_ENDPOINT = {
-    "web.index": "public, max-age=60",
+    "web.index": "public, max-age=300",
+    "web.inbox_dashboard": "public, max-age=60",
     "web.daily_today": "public, max-age=60",
     "web.daily_yesterday": "public, max-age=600",
     "web.message": "public, max-age=60",
@@ -62,12 +64,11 @@ def _add_cache_headers(response):
 
 def _msg_url(article: Article) -> str:
     """Build the canonical /<list>/YYYY/MM/<id> URL for an Article.
-    Uses the integer primary key, not the Message-ID — Message-IDs leak
-    email addresses (some encode the literal local-part) and we want
-    URLs to be safe to share, log, and bookmark."""
+    The list comes from the article itself so URLs survive multi-list
+    expansion. Integer id (not Message-ID) keeps the URL email-safe."""
     if article.date is not None:
-        return f"/{settings.list_name}/{article.date.year}/{article.date.month:02d}/{article.id}"
-    return f"/{settings.list_name}/0000/00/{article.id}"
+        return f"/{article.list_name}/{article.date.year}/{article.date.month:02d}/{article.id}"
+    return f"/{article.list_name}/0000/00/{article.id}"
 
 
 @bp_web.app_template_filter("msg_url")
@@ -145,10 +146,11 @@ def _safe_from_filter(author: str | None) -> str:
 RECENT_PAGE_SIZE = 10
 
 
-def _fetch_recent(session, offset: int, limit: int):
-    """Fetch limit+1 recent articles to detect has_more cheaply."""
+def _fetch_recent(session, list_name: str, offset: int, limit: int):
+    """Fetch limit+1 recent articles in `list_name` to detect has_more cheaply."""
     rows = session.execute(
         select(Article)
+        .where(Article.list_name == list_name)
         .order_by(Article.date.desc().nulls_last())
         .offset(offset)
         .limit(limit + 1)
@@ -159,20 +161,41 @@ def _fetch_recent(session, offset: int, limit: int):
 
 @bp_web.route("/")
 def index():
+    """Meta-index: list of configured inboxes with per-inbox stats."""
     with SessionLocal() as session:
-        active = active_threads(session, days=7, limit=10)
-        trackers = [
-            {"label": label, "messages": author_recent(session, substr, 5)}
-            for label, substr in settings.tracked_authors.items()
+        inbox_summaries = [
+            {"name": name, "stats": archive_stats(session, name)}
+            for name in settings.inboxes
         ]
-        pulls = latest_pull_requests(session, limit=5)
-        stable = latest_stable_releases(session, limit=5)
-        history = this_day_in_history(session, years_ago=5, limit=3)
-        recent, recent_has_more = _fetch_recent(session, 0, RECENT_PAGE_SIZE)
-        stats = archive_stats(session)
-        spark = daily_volume(session, days=30)
     return render_template(
         "index.html",
+        inbox_summaries=inbox_summaries,
+        current_list=None,
+    )
+
+
+@bp_web.route("/<list_name>/")
+def inbox_dashboard(list_name: str):
+    """Per-inbox dashboard: active threads, pulls, releases, trackers,
+    history, recent, sparkline, stats."""
+    if list_name not in settings.inboxes:
+        abort(404)
+    with SessionLocal() as session:
+        active = active_threads(session, list_name, days=7, limit=10)
+        trackers = [
+            {"label": label, "messages": author_recent(session, list_name, substr, 5)}
+            for label, substr in settings.tracked_authors.items()
+        ]
+        pulls = latest_pull_requests(session, list_name, limit=5)
+        stable = latest_stable_releases(session, list_name, limit=5)
+        history = this_day_in_history(session, list_name, years_ago=5, limit=3)
+        recent, recent_has_more = _fetch_recent(session, list_name, 0, RECENT_PAGE_SIZE)
+        stats = archive_stats(session, list_name)
+        spark = daily_volume(session, list_name, days=30)
+    return render_template(
+        "inbox.html",
+        list_name=list_name,
+        current_list=list_name,
         active=active,
         trackers=trackers,
         pulls=pulls,
@@ -188,20 +211,23 @@ def index():
 
 def _daily_view(list_name: str, day: date_cls, heading: str):
     """Shared renderer for /<list>/today and /<list>/yesterday."""
-    if list_name != settings.list_name:
+    if list_name not in settings.inboxes:
         abort(404)
     start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
     end = start + timedelta(days=1)
     with SessionLocal() as session:
-        threads = threads_for_day(session, day)
+        threads = threads_for_day(session, list_name, day)
         total = session.scalar(
             select(func.count(Article.id)).where(
+                Article.list_name == list_name,
                 Article.date >= start.strftime("%Y-%m-%d %H:%M:%S"),
                 Article.date < end.strftime("%Y-%m-%d %H:%M:%S"),
             )
         )
     return render_template(
         "daily.html",
+        list_name=list_name,
+        current_list=list_name,
         day=day,
         heading=heading,
         threads=threads,
@@ -221,16 +247,19 @@ def daily_yesterday(list_name: str):
     return _daily_view(list_name, yesterday, "Yesterday")
 
 
-@bp_web.route("/api/recent")
-def api_recent():
-    """HTMX load-more endpoint for the Recent messages list. Returns the
-    `_recent_items.html` partial: the next page of <li>s plus a fresh
-    'Load more' trigger (or nothing, if exhausted)."""
+@bp_web.route("/api/<list_name>/recent")
+def api_recent(list_name: str):
+    """HTMX load-more endpoint for the Recent messages list, scoped to
+    one inbox. Returns the `_recent_items.html` partial: the next page
+    of <li>s plus a fresh 'Load more' trigger (or nothing, if exhausted)."""
+    if list_name not in settings.inboxes:
+        abort(404)
     offset = max(0, request.args.get("offset", default=0, type=int))
     with SessionLocal() as session:
-        recent, recent_has_more = _fetch_recent(session, offset, RECENT_PAGE_SIZE)
+        recent, recent_has_more = _fetch_recent(session, list_name, offset, RECENT_PAGE_SIZE)
     return render_template(
         "_recent_items.html",
+        list_name=list_name,
         recent=recent,
         recent_has_more=recent_has_more,
         recent_next_offset=offset + RECENT_PAGE_SIZE,
@@ -240,10 +269,10 @@ def api_recent():
 def _fetch_article_for_attachment(session, list_name, year, month, article_id, n):
     """Validate URL parts + fetch the n-th attachment via read_message.
     Used by both download and preview routes; aborts 404 on any mismatch."""
-    if list_name != settings.list_name:
+    if list_name not in settings.inboxes:
         abort(404)
     article = session.get(Article, article_id)
-    if article is None:
+    if article is None or article.list_name != list_name:
         abort(404)
     if article.date is None or year != article.date.year or month != article.date.month:
         abort(404)
@@ -312,14 +341,12 @@ def attachment_preview(list_name: str, year: int, month: int, article_id: int, n
 
 @bp_web.route("/<list_name>/<int:year>/<int:month>/<int:article_id>")
 def message(list_name: str, year: int, month: int, article_id: int):
-    # Single-list world for now; reject anything else. When multi-list
-    # support arrives, this becomes a filter on Article.list instead.
-    if list_name != settings.list_name:
+    if list_name not in settings.inboxes:
         abort(404)
 
     with SessionLocal() as session:
         article = session.get(Article, article_id)
-        if article is None:
+        if article is None or article.list_name != list_name:
             abort(404)
 
         # The URL date is part of the message's identity; reject mismatches
@@ -333,8 +360,9 @@ def message(list_name: str, year: int, month: int, article_id: int):
             abort(404)
 
         # Full thread context (replaces the v1 parent + immediate-replies view).
-        root_msgid = find_thread_root(session, article.message_id) or article.message_id
-        thread = get_thread(session, root_msgid)
+        # Walk constrained to this article's list.
+        root_msgid = find_thread_root(session, list_name, article.message_id) or article.message_id
+        thread = get_thread(session, list_name, root_msgid)
 
         # If the thread root still has a thread_parent (i.e. our walk-up hit
         # the top of what we have, but the original chain continued through
@@ -344,15 +372,15 @@ def message(list_name: str, year: int, month: int, article_id: int):
         parent_off_list: str | None = None
         if thread and thread[0].thread_parent:
             in_db = session.execute(
-                select(Article.id).where(Article.message_id == thread[0].thread_parent)
+                select(Article.id).where(
+                    Article.list_name == list_name,
+                    Article.message_id == thread[0].thread_parent,
+                )
             ).scalar_one_or_none()
             if in_db is None:
                 parent_off_list = thread[0].thread_parent
 
-        # When the thread's root has an off-list parent, look for other
-        # archived articles with the same normalized subject — likely
-        # cross-archive replies to the same conversation that we can offer
-        # as "see also" navigation.
+        # Same-subject orphans within this inbox.
         related: list[Article] = []
         if parent_off_list and article.subject_normalized:
             in_thread = {n.message_id for n in thread}
@@ -360,6 +388,7 @@ def message(list_name: str, year: int, month: int, article_id: int):
                 session.execute(
                     select(Article)
                     .where(
+                        Article.list_name == list_name,
                         Article.subject_normalized == article.subject_normalized,
                         Article.message_id.not_in(in_thread),
                     )
@@ -369,16 +398,15 @@ def message(list_name: str, year: int, month: int, article_id: int):
             )
 
         # Build URLs for thread nodes (avoids per-node template logic).
-        # Uses the article's integer id — see _msg_url for the rationale.
         thread_urls = {
-            n.message_id: f"/{settings.list_name}/{n.date.year}/{n.date.month:02d}/{n.id}"
+            n.message_id: f"/{list_name}/{n.date.year}/{n.date.month:02d}/{n.id}"
             if n.date
-            else f"/{settings.list_name}/0000/00/{n.id}"
+            else f"/{list_name}/0000/00/{n.id}"
             for n in thread
         }
 
-        # Resolve in-body <Message-ID> references to canonical URLs. One
-        # bulk SELECT instead of N+1 lookups inside the renderer.
+        # Resolve in-body <Message-ID> references to canonical URLs.
+        # Restrict to this list — cross-list refs render as plain text.
         msgid_urls: dict[str, str] = {}
         if parsed.body:
             candidates = {
@@ -388,12 +416,17 @@ def message(list_name: str, year: int, month: int, article_id: int):
             }
             if candidates:
                 referenced = session.execute(
-                    select(Article).where(Article.message_id.in_(candidates))
+                    select(Article).where(
+                        Article.list_name == list_name,
+                        Article.message_id.in_(candidates),
+                    )
                 ).scalars().all()
                 msgid_urls = {a.message_id: _msg_url(a) for a in referenced}
 
     return render_template(
         "message.html",
+        list_name=list_name,
+        current_list=list_name,
         parsed=parsed,
         article=article,
         thread=thread,

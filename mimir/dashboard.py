@@ -27,52 +27,66 @@ STATS_MIN_PLAUSIBLE_DATE = "1995-01-01"
 
 
 def author_recent(
-    session: Session, email_substring: str, limit: int = 5
+    session: Session, list_name: str, email_substring: str, limit: int = 5
 ) -> Sequence[Article]:
-    """Last N messages whose From address contains the given substring."""
+    """Last N messages in `list_name` whose From contains the substring."""
     return session.execute(
         select(Article)
-        .where(Article.author.ilike(f"%{email_substring}%"))
+        .where(
+            Article.list_name == list_name,
+            Article.author.ilike(f"%{email_substring}%"),
+        )
         .order_by(Article.date.desc().nulls_last())
         .limit(limit)
     ).scalars().all()
 
 
-def latest_pull_requests(session: Session, limit: int = 5) -> Sequence[Article]:
-    """Recent `[GIT PULL] ...` originals (Re: replies excluded — those are
-    Linus's merge confirmations, not the actual pulls)."""
+def latest_pull_requests(
+    session: Session, list_name: str, limit: int = 5
+) -> Sequence[Article]:
+    """Recent `[GIT PULL] ...` originals in `list_name`."""
     return session.execute(
         select(Article)
-        .where(Article.subject.ilike("[GIT PULL]%"))
+        .where(
+            Article.list_name == list_name,
+            Article.subject.ilike("[GIT PULL]%"),
+        )
         .order_by(Article.date.desc().nulls_last())
         .limit(limit)
     ).scalars().all()
 
 
-def latest_stable_releases(session: Session, limit: int = 5) -> Sequence[Article]:
-    """Recent release announcements: subject starting with 'Linux <digit>...',
-    e.g. 'Linux 6.13-rc5' from Linus or 'Linux 6.12.4' from Greg."""
-    # GLOB is case-sensitive in SQLite; '[0-9]' is a character class.
+def latest_stable_releases(
+    session: Session, list_name: str, limit: int = 5
+) -> Sequence[Article]:
+    """Recent release announcements in `list_name`: subject starting with
+    'Linux <digit>...'. GLOB is case-sensitive in SQLite."""
     return session.execute(
         select(Article)
-        .where(text("subject GLOB 'Linux [0-9]*'"))
+        .where(
+            Article.list_name == list_name,
+            text("subject GLOB 'Linux [0-9]*'"),
+        )
         .order_by(Article.date.desc().nulls_last())
         .limit(limit)
     ).scalars().all()
 
 
 def this_day_in_history(
-    session: Session, years_ago: int = 5, limit: int = 5
+    session: Session, list_name: str, years_ago: int = 5, limit: int = 5
 ) -> Sequence[Article]:
-    """A few messages from the same calendar day N years ago (default 5).
-    Random sample within that day for variety on each page load."""
+    """A few messages from the same calendar day N years ago in `list_name`."""
     now = datetime.now(timezone.utc)
     target = now - timedelta(days=365 * years_ago)
     start = target.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
     return session.execute(
         select(Article)
-        .where(Article.date >= start, Article.date < end)
+        .where(
+            Article.list_name == list_name,
+            Article.date >= start,
+            Article.date < end,
+        )
         .order_by(text("RANDOM()"))
         .limit(limit)
     ).scalars().all()
@@ -96,13 +110,11 @@ class DailyVolume:
 
 
 def daily_volume(
-    session: Session, days: int = 30, force: bool = False
+    session: Session, list_name: str, days: int = 30, force: bool = False
 ) -> DailyVolume:
-    """Daily message counts for the last `days` days, zero-filled.
-    GROUP BY date(date) does the bucketing; the date index keeps the
-    underlying scan to the recent slice. ~100-200 ms uncached;
-    cached on disk for DAILY_VOLUME_CACHE_TTL_SEC (1h)."""
-    cache_key = f"daily_volume:{days}"
+    """Daily message counts in `list_name` for the last `days` days,
+    zero-filled. Cached per (list, days) key for 1 hour."""
+    cache_key = f"daily_volume:{list_name}:{days}"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -115,11 +127,11 @@ def daily_volume(
             """
             SELECT date(date) AS day, COUNT(*) AS n
             FROM articles
-            WHERE date >= :start
+            WHERE list_name = :list AND date >= :start
             GROUP BY day
             """
         ),
-        {"start": start.isoformat()},
+        {"list": list_name, "start": start.isoformat()},
     ).all()
     counts = {date.fromisoformat(r.day): r.n for r in rows if r.day}
     series = [
@@ -134,12 +146,13 @@ def daily_volume(
     return result
 
 
-def archive_stats(session: Session, force: bool = False) -> ArchiveStats:
-    """Total row count + date span + epoch count, cached on disk for 24h.
-    COUNT(*) is the slow piece (~6 s on 6.2M rows); MIN/MAX use the date
-    index, COUNT(DISTINCT epoch) hits the epoch index. Pass force=True
-    to bypass the cache (used by the `warm-cache` CLI)."""
-    cache_key = "archive_stats"
+def archive_stats(
+    session: Session, list_name: str, force: bool = False
+) -> ArchiveStats:
+    """Total row count + date span + epoch count for `list_name`. Cached
+    per-list for 24h. COUNT(*) over a single list still does a scan but
+    is cheaper than across all lists."""
+    cache_key = f"archive_stats:{list_name}"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -153,9 +166,10 @@ def archive_stats(session: Session, force: bool = False) -> ArchiveStats:
                    MAX(date) AS last_date,
                    COUNT(DISTINCT epoch) AS epochs
             FROM articles
+            WHERE list_name = :list
             """
         ),
-        {"min_date": STATS_MIN_PLAUSIBLE_DATE},
+        {"list": list_name, "min_date": STATS_MIN_PLAUSIBLE_DATE},
     ).one()
     stats = ArchiveStats(
         total=row.total,

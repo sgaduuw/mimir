@@ -1,7 +1,15 @@
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Inbox(BaseModel):
+    """A single public-inbox archive that mimir indexes. The label (the
+    `Settings.inboxes` dict key) is used as the URL segment and as the
+    `Article.list` value."""
+    mirror_path: Path
+    upstream_url: str
 
 
 class Settings(BaseSettings):
@@ -13,13 +21,16 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///mimir.db"
     cache_path: Path = Path("mimir-cache.pickle")
 
-    lkml_mirror_path: Path = Path("lkml/git")
-    upstream_url: str = "https://lore.kernel.org/lkml"
-
-    # Name used as the first URL segment, e.g. /lkml/2024/01/<msgid>.
-    # Single-list world for now; when a second list is added we add an
-    # Article.list column and drop the hardcoded match in the route.
-    list_name: str = "lkml"
+    # Indexed inboxes. Add another entry to start tracking a second
+    # mailing list; the schema and routes are list-aware. Override via
+    # JSON in the INBOXES env var, e.g.
+    #   INBOXES='{"lkml": {"mirror_path": "...", "upstream_url": "..."}, "linux-arm-kernel": {...}}'
+    inboxes: dict[str, Inbox] = {
+        "lkml": Inbox(
+            mirror_path=Path("lkml/git"),
+            upstream_url="https://lore.kernel.org/lkml",
+        ),
+    }
 
     # Senders whose email address is shown in full in the UI. Everyone
     # else's email gets hidden (display name kept). Substring match against
