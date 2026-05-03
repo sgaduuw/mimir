@@ -8,12 +8,10 @@
   <ul>
     {% for t in active %}
     <li>
-      <a href="{{ t|msg_url }}">{{ t.subject or '(no subject)' }}</a>
-      <small>
-        &middot; {{ t.recent_count }} message{{ '' if t.recent_count == 1 else 's' }}
-        {% if t.last_activity %}, last {{ t.last_activity.strftime('%Y-%m-%d %H:%M') }}{% endif %}
-        &middot; {{ t.author|safe_from }}
-      </small>
+      <small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}</small>
+      &middot; <a href="{{ t|msg_url }}">{{ t.subject or '(no subject)' }}</a>
+      &middot; <small>{{ t.recent_count }} repl{{ 'y' if t.recent_count == 1 else 'ies' }}</small>
+      &middot; <small>{{ t.author|safe_from }}</small>
     </li>
     {% endfor %}
   </ul>
@@ -27,9 +25,9 @@
     <ul>
       {% for a in pulls %}
       <li>
-        <small>{{ a.date.strftime('%Y-%m-%d') if a.date else '?' }}</small>
+        <small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}</small>
         &middot; <a href="{{ a|msg_url }}">{{ a.subject or '(no subject)' }}</a>
-        <br><small>&nbsp;&nbsp;&nbsp;&nbsp;{{ a.author|safe_from }}</small>
+        &middot; <small>{{ a.author|safe_from }}</small>
       </li>
       {% endfor %}
     </ul>
@@ -41,7 +39,7 @@
     <ul>
       {% for a in stable %}
       <li>
-        <small>{{ a.date.strftime('%Y-%m-%d') if a.date else '?' }}</small>
+        <small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}</small>
         &middot; <a href="{{ a|msg_url }}">{{ a.subject or '(no subject)' }}</a>
       </li>
       {% endfor %}
@@ -78,7 +76,7 @@
   <ul>
     {% for a in history %}
     <li>
-      <small>{{ a.date.strftime('%Y-%m-%d') if a.date else '?' }}</small>
+      <small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}</small>
       &middot; <a href="{{ a|msg_url }}">{{ a.subject or '(no subject)' }}</a>
       &middot; <small>{{ a.author|safe_from }}</small>
     </li>
@@ -88,7 +86,7 @@
 {% endif %}
 
 <section>
-  <h3>Recent messages</h3>
+  <h2>Recent messages</h2>
   {% if recent %}
   <ul>
     {% include "_recent_items.html" %}
@@ -116,7 +114,6 @@
       </rect>
     {% endfor %}
   </svg>
-  <small>(peak: {{ spark.max_count }})</small>
   <br>
   {% endif %}
   {% if stats %}
