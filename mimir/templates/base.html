@@ -12,9 +12,11 @@
     <nav>
       <ul>
         <li><a href="{{ url_for('web.index') }}"><strong>mimir</strong></a></li>
+        <li><a href="/{{ list_name }}/today">today</a></li>
+        <li><a href="/{{ list_name }}/yesterday">yesterday</a></li>
       </ul>
       <ul>
-        <li><small>lkml archive</small></li>
+        <li><small>{{ list_name }} archive</small></li>
       </ul>
     </nav>
     {% block content %}{% endblock %}

@@ -7,11 +7,9 @@
    that <li> with new items + a new trigger (or nothing, if exhausted). #}
 {% for a in recent %}
 <li>
-  <small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '????-??-??' }}</small>
-  &middot;
   <a href="{{ a|msg_url }}">{{ a.subject or '(no subject)' }}</a>
-  &middot;
-  <small>{{ a.author|safe_from }}</small>
+  <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '????-??-??' }}
+    &middot; {{ a.author|safe_from }}</small>
 </li>
 {% endfor %}
 {% if recent_has_more %}

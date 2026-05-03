@@ -1,5 +1,6 @@
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
@@ -13,7 +14,7 @@ from mimir.ingest import DEFAULT_WORKERS, ingest_all, ingest_epoch
 from mimir.models import Article, IngestState
 from mimir.store import MessageNotFound, read_message
 from mimir.sync import sync_epochs
-from mimir.threading import active_threads
+from mimir.threading import active_threads, threads_for_day
 
 
 def _configure_logging(verbose: int) -> None:
@@ -270,8 +271,12 @@ def warm_cache_command() -> None:
 
         */5 * * * * cd ~/Projects/python/mimir && poetry run flask --app mimir warm-cache
     """
+    today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
     targets = [
         ("active_threads (7d, 10)", lambda s: active_threads(s, days=7, limit=10, force=True)),
+        ("threads_for_day (today)", lambda s: threads_for_day(s, today, force=True)),
+        ("threads_for_day (yesterday)", lambda s: threads_for_day(s, yesterday, force=True)),
         ("daily_volume (30d)", lambda s: daily_volume(s, days=30, force=True)),
         ("archive_stats", lambda s: archive_stats(s, force=True)),
     ]

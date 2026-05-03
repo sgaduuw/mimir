@@ -230,6 +230,9 @@ Routes shipped so far:
   .py, etc.); falls back to a "binary, can't preview" page otherwise.
 - `GET /api/recent?offset=N` — HTMX partial: next page of "Recent
   messages" entries plus a fresh "Load more" trigger.
+- `GET /<list>/today` and `GET /<list>/yesterday` — daily views
+  showing the most active threads scoped to that calendar day (UTC),
+  plus the total message count for the day.
 
 The body rendering pipeline (`mimir/rendering.py`) walks the body line
 by line, segments it into runs of *text*, *quote*, and *diff*, and
@@ -249,9 +252,6 @@ emits HTML accordingly:
 
 Tracked here so we don't forget across sessions.
 
-- **Per-epoch listing** `GET /epoch/<epoch>` — paginated date-sorted
-  message list. The dashboard surfaces touch a few thousand messages,
-  but there's no full-archive browse view yet.
 - **Multiple inbox support** — URL is already namespaced
   (`/<list>/...`) and `Settings.list_name` is in place. Real multi-list
   needs an `Article.list` column, an alembic migration, the route's
