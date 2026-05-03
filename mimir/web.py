@@ -34,6 +34,32 @@ def _inject_list_name() -> dict:
     return {"list_name": settings.list_name}
 
 
+# Cache-Control per endpoint. Lets edge caches (Cloudflare, an nginx in
+# front, the browser) absorb scraper traffic on the high-volume endpoints
+# without pinning stale content for too long. Attachments are
+# byte-stable per (message_id, n), so they're cached aggressively;
+# listings are cached briefly so new messages don't take more than ~1
+# minute to surface; pagination and 404s/redirects skip caching.
+_CACHE_CONTROL_BY_ENDPOINT = {
+    "web.index": "public, max-age=60",
+    "web.daily_today": "public, max-age=60",
+    "web.daily_yesterday": "public, max-age=600",
+    "web.message": "public, max-age=60",
+    "web.attachment_download": "public, max-age=3600, immutable",
+    "web.attachment_preview": "public, max-age=3600, immutable",
+}
+
+
+@bp_web.after_request
+def _add_cache_headers(response):
+    if response.status_code != 200:
+        return response
+    rule = _CACHE_CONTROL_BY_ENDPOINT.get(request.endpoint)
+    if rule:
+        response.headers["Cache-Control"] = rule
+    return response
+
+
 def _msg_url(article: Article) -> str:
     """Build the canonical /<list>/YYYY/MM/<id> URL for an Article.
     Uses the integer primary key, not the Message-ID — Message-IDs leak
