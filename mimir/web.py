@@ -28,14 +28,13 @@ bp_web = Blueprint("web", __name__)
 
 
 def _msg_url(article: Article) -> str:
-    """Build the canonical /<list>/YYYY/MM/<msgid> URL for an Article.
-    Zero-padded month; URL-quotes Message-ID while preserving '/' and '@'."""
-    encoded = quote(article.message_id, safe="/@")
+    """Build the canonical /<list>/YYYY/MM/<id> URL for an Article.
+    Uses the integer primary key, not the Message-ID — Message-IDs leak
+    email addresses (some encode the literal local-part) and we want
+    URLs to be safe to share, log, and bookmark."""
     if article.date is not None:
-        return f"/{settings.list_name}/{article.date.year}/{article.date.month:02d}/{encoded}"
-    # Articles without a known date can't have a canonical dated URL; fall
-    # back to a degraded form so the link is at least addressable.
-    return f"/{settings.list_name}/0000/00/{encoded}"
+        return f"/{settings.list_name}/{article.date.year}/{article.date.month:02d}/{article.id}"
+    return f"/{settings.list_name}/0000/00/{article.id}"
 
 
 @bp_web.app_template_filter("msg_url")
@@ -170,20 +169,18 @@ def api_recent():
     )
 
 
-def _fetch_article_for_attachment(session, list_name, year, month, message_id, n):
+def _fetch_article_for_attachment(session, list_name, year, month, article_id, n):
     """Validate URL parts + fetch the n-th attachment via read_message.
     Used by both download and preview routes; aborts 404 on any mismatch."""
     if list_name != settings.list_name:
         abort(404)
-    article = session.execute(
-        select(Article).where(Article.message_id == message_id)
-    ).scalar_one_or_none()
+    article = session.get(Article, article_id)
     if article is None:
         abort(404)
     if article.date is None or year != article.date.year or month != article.date.month:
         abort(404)
     try:
-        parsed = read_message(session, message_id)
+        parsed = read_message(session, article.message_id)
     except MessageNotFound:
         abort(404)
     if n < 0 or n >= len(parsed.attachments):
@@ -201,11 +198,13 @@ def _content_disposition(filename: str | None) -> str:
     return f'attachment; filename="{safe_ascii}"; filename*=UTF-8\'\'{quoted}'
 
 
-@bp_web.route("/<list_name>/<int:year>/<int:month>/<path:message_id>/attachment/<int:n>")
-def attachment_download(list_name: str, year: int, month: int, message_id: str, n: int):
+@bp_web.route(
+    "/<list_name>/<int:year>/<int:month>/<int:article_id>/attachment/<int:n>"
+)
+def attachment_download(list_name: str, year: int, month: int, article_id: int, n: int):
     with SessionLocal() as session:
         _, att = _fetch_article_for_attachment(
-            session, list_name, year, month, message_id, n
+            session, list_name, year, month, article_id, n
         )
     return Response(
         att.content,
@@ -215,12 +214,12 @@ def attachment_download(list_name: str, year: int, month: int, message_id: str, 
 
 
 @bp_web.route(
-    "/<list_name>/<int:year>/<int:month>/<path:message_id>/attachment/<int:n>/preview"
+    "/<list_name>/<int:year>/<int:month>/<int:article_id>/attachment/<int:n>/preview"
 )
-def attachment_preview(list_name: str, year: int, month: int, message_id: str, n: int):
+def attachment_preview(list_name: str, year: int, month: int, article_id: int, n: int):
     with SessionLocal() as session:
         article, att = _fetch_article_for_attachment(
-            session, list_name, year, month, message_id, n
+            session, list_name, year, month, article_id, n
         )
     if not _is_previewable(att):
         return render_template(
@@ -243,17 +242,15 @@ def attachment_preview(list_name: str, year: int, month: int, message_id: str, n
     )
 
 
-@bp_web.route("/<list_name>/<int:year>/<int:month>/<path:message_id>")
-def message(list_name: str, message_id: str, year: int, month: int):
+@bp_web.route("/<list_name>/<int:year>/<int:month>/<int:article_id>")
+def message(list_name: str, year: int, month: int, article_id: int):
     # Single-list world for now; reject anything else. When multi-list
     # support arrives, this becomes a filter on Article.list instead.
     if list_name != settings.list_name:
         abort(404)
 
     with SessionLocal() as session:
-        article = session.execute(
-            select(Article).where(Article.message_id == message_id)
-        ).scalar_one_or_none()
+        article = session.get(Article, article_id)
         if article is None:
             abort(404)
 
@@ -263,12 +260,12 @@ def message(list_name: str, message_id: str, year: int, month: int):
             abort(404)
 
         try:
-            parsed = read_message(session, message_id)
+            parsed = read_message(session, article.message_id)
         except MessageNotFound:
             abort(404)
 
         # Full thread context (replaces the v1 parent + immediate-replies view).
-        root_msgid = find_thread_root(session, message_id) or message_id
+        root_msgid = find_thread_root(session, article.message_id) or article.message_id
         thread = get_thread(session, root_msgid)
 
         # If the thread root still has a thread_parent (i.e. our walk-up hit
@@ -304,11 +301,11 @@ def message(list_name: str, message_id: str, year: int, month: int):
             )
 
         # Build URLs for thread nodes (avoids per-node template logic).
+        # Uses the article's integer id — see _msg_url for the rationale.
         thread_urls = {
-            n.message_id: f"/{settings.list_name}/{n.date.year}/{n.date.month:02d}/"
-            f"{quote(n.message_id, safe='/@')}"
+            n.message_id: f"/{settings.list_name}/{n.date.year}/{n.date.month:02d}/{n.id}"
             if n.date
-            else f"/{settings.list_name}/0000/00/{quote(n.message_id, safe='/@')}"
+            else f"/{settings.list_name}/0000/00/{n.id}"
             for n in thread
         }
 
