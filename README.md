@@ -216,16 +216,16 @@ Routes shipped so far:
   driven by `Settings.tracked_authors` (defaults: Linus Torvalds, Greg
   KH); a "this day, 5 years ago" sample; the last 10 messages overall;
   a 30-day daily-volume sparkline + archive stats footer.
-- `GET /<list>/<YYYY>/<MM>/<path:message-id>` — single message: headers,
+- `GET /<list>/<YYYY>/<MM>/<article-id>` — single message: headers,
   full thread tree with the current message highlighted, body,
   attachment list. When the thread root has an off-list parent, also
   shows a "Possibly related" surface of other archived messages with the
   same normalized Subject (JWZ subject-based grouping). The list segment
   is `LIST_NAME` from settings (default `lkml`); the year/month must
   match the article's archived date. Mismatches return 404.
-- `GET /<list>/<YYYY>/<MM>/<msgid>/attachment/<n>` — binary download of
-  the n-th attachment, served from the dulwich-fetched blob.
-- `GET /<list>/<YYYY>/<MM>/<msgid>/attachment/<n>/preview` — Pygments-
+- `GET /<list>/<YYYY>/<MM>/<article-id>/attachment/<n>` — binary download
+  of the n-th attachment, served from the dulwich-fetched blob.
+- `GET /<list>/<YYYY>/<MM>/<article-id>/attachment/<n>/preview` — Pygments-
   highlighted inline preview for text-like attachments (patches, .c,
   .py, etc.); falls back to a "binary, can't preview" page otherwise.
 - `GET /api/recent?offset=N` — HTMX partial: next page of "Recent

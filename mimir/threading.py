@@ -37,9 +37,10 @@ class ThreadNode:
 
 @dataclass
 class ActiveThread:
-    """A thread that's seen activity inside the recent-window. `message_id`
-    and `date` are the root's, so `|msg_url` (which expects an Article-shape)
-    works on this directly."""
+    """A thread that's seen activity inside the recent-window. `id`,
+    `message_id`, and `date` are the root article's, so `|msg_url` (which
+    expects an Article-shape) works on this directly."""
+    id: int
     message_id: str
     subject: str | None
     author: str | None
@@ -170,7 +171,7 @@ def active_threads(
             FROM chains c
             JOIN max_depth m ON m.recent_id = c.recent_id AND m.d = c.depth
         )
-        SELECT a.message_id, a.subject, a.author, a.date AS root_date,
+        SELECT a.id, a.message_id, a.subject, a.author, a.date AS root_date,
                COUNT(*) AS recent_count,
                MAX(r.recent_date) AS last_activity,
                SUM(pow(0.5, julianday('now') - julianday(r.recent_date))) AS score
@@ -183,6 +184,7 @@ def active_threads(
     rows = session.execute(sql, {"max_depth": MAX_DEPTH, "limit": limit}).all()
     result = [
         ActiveThread(
+            id=r.id,
             message_id=r.message_id,
             subject=r.subject,
             author=r.author,
