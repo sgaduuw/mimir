@@ -5,7 +5,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Project root: <root>/mimir/config.py → parent → parent. Resolving
 # follows symlinks so a container running mimir from a bind-mounted
-# read-only volume still gets a sane absolute path.
+# read-only volume still gets a sane absolute path. NB: this assumes a
+# checked-out source tree — under `pip install .` mimir lives in
+# site-packages and PROJECT_ROOT becomes meaningless. Set DATABASE_URL
+# explicitly in any deployment that doesn't ship the tree as-is.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
