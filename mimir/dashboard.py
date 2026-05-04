@@ -123,37 +123,38 @@ def daily_volume(
 ) -> DailyVolume:
     """Daily message counts in `inbox` for the last `days` days,
     zero-filled. Cached per (inbox, days) key for 1 hour."""
-    cache_key = f"daily_volume:{inbox.name}:{days}"
-    if not force:
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
+    def compute() -> DailyVolume:
+        today = date.today()
+        start = today - timedelta(days=days - 1)
+        rows = session.execute(
+            text(
+                """
+                SELECT date(a.date) AS day, COUNT(*) AS n
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                WHERE al.inbox_id = :inbox_id AND a.date >= :start
+                GROUP BY day
+                """
+            ),
+            {"inbox_id": inbox.id, "start": start.isoformat()},
+        ).all()
+        counts = {date.fromisoformat(r.day): r.n for r in rows if r.day}
+        series = [
+            (start + timedelta(days=i), counts.get(start + timedelta(days=i), 0))
+            for i in range(days)
+        ]
+        return DailyVolume(
+            days=series,
+            max_count=max((c for _, c in series), default=1),
+        )
 
-    today = date.today()
-    start = today - timedelta(days=days - 1)
-    rows = session.execute(
-        text(
-            """
-            SELECT date(a.date) AS day, COUNT(*) AS n
-            FROM articles a
-            JOIN article_lists al ON al.article_id = a.id
-            WHERE al.inbox_id = :inbox_id AND a.date >= :start
-            GROUP BY day
-            """
-        ),
-        {"inbox_id": inbox.id, "start": start.isoformat()},
-    ).all()
-    counts = {date.fromisoformat(r.day): r.n for r in rows if r.day}
-    series = [
-        (start + timedelta(days=i), counts.get(start + timedelta(days=i), 0))
-        for i in range(days)
-    ]
-    result = DailyVolume(
-        days=series,
-        max_count=max((c for _, c in series), default=1),
+    return cache.get_or_compute(
+        session,
+        f"daily_volume:{inbox.name}:{days}",
+        DAILY_VOLUME_CACHE_TTL_SEC,
+        compute,
+        force=force,
     )
-    cache.set(cache_key, result, ttl=DAILY_VOLUME_CACHE_TTL_SEC)
-    return result
 
 
 def archive_stats(
@@ -162,31 +163,32 @@ def archive_stats(
     """Total row count + date span + epoch count for `inbox`. Cached
     per-inbox for 24h. COUNT(*) over a single inbox still does a scan but
     is cheaper than across all inboxes."""
-    cache_key = f"archive_stats:{inbox.name}"
-    if not force:
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
+    def compute() -> ArchiveStats:
+        row = session.execute(
+            text(
+                """
+                SELECT COUNT(*) AS total,
+                       MIN(a.date) FILTER (WHERE a.date >= :min_date) AS first_date,
+                       MAX(a.date) AS last_date,
+                       COUNT(DISTINCT al.epoch) AS epochs
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                WHERE al.inbox_id = :inbox_id
+                """
+            ),
+            {"inbox_id": inbox.id, "min_date": STATS_MIN_PLAUSIBLE_DATE},
+        ).one()
+        return ArchiveStats(
+            total=row.total,
+            epochs=row.epochs,
+            first_date=_coerce_dt(row.first_date),
+            last_date=_coerce_dt(row.last_date),
+        )
 
-    row = session.execute(
-        text(
-            """
-            SELECT COUNT(*) AS total,
-                   MIN(a.date) FILTER (WHERE a.date >= :min_date) AS first_date,
-                   MAX(a.date) AS last_date,
-                   COUNT(DISTINCT al.epoch) AS epochs
-            FROM articles a
-            JOIN article_lists al ON al.article_id = a.id
-            WHERE al.inbox_id = :inbox_id
-            """
-        ),
-        {"inbox_id": inbox.id, "min_date": STATS_MIN_PLAUSIBLE_DATE},
-    ).one()
-    stats = ArchiveStats(
-        total=row.total,
-        epochs=row.epochs,
-        first_date=_coerce_dt(row.first_date),
-        last_date=_coerce_dt(row.last_date),
+    return cache.get_or_compute(
+        session,
+        f"archive_stats:{inbox.name}",
+        STATS_CACHE_TTL_SEC,
+        compute,
+        force=force,
     )
-    cache.set(cache_key, stats, ttl=STATS_CACHE_TTL_SEC)
-    return stats

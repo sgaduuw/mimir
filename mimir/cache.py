@@ -12,10 +12,11 @@ the dependency stays one-way (cache knows nothing about its callers).
 import dataclasses
 import json
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import Session
 
 from mimir.extensions import SessionLocal
 from mimir.models import CacheEntry
@@ -107,6 +108,33 @@ def set(key: str, value: Any, ttl: int) -> None:
     with SessionLocal() as session:
         session.execute(stmt)
         session.commit()
+
+
+def get_or_compute(
+    session: Session,
+    key: str,
+    ttl: int,
+    fn: Callable[[], Any],
+    *,
+    force: bool = False,
+) -> Any:
+    """Cache-aside fetch riding on the caller's session for the read.
+
+    On hit (and not `force`), returns the decoded value without
+    opening a fresh connection. On miss, calls `fn()` and persists
+    the result via `set()` (which owns its own session, so the
+    caller's transaction stays untouched). Saves one connection per
+    hit and one per miss vs separate `get()` + `set()` calls.
+    """
+    if not force:
+        row = session.execute(
+            select(CacheEntry.value, CacheEntry.expires_at).where(CacheEntry.key == key)
+        ).one_or_none()
+        if row is not None and row.expires_at >= _now():
+            return _decode(json.loads(row.value))
+    value = fn()
+    set(key, value, ttl)
+    return value
 
 
 def keys() -> list[str]:
