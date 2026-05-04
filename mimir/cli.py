@@ -28,9 +28,9 @@ def _configure_logging(verbose: int) -> None:
     logging.basicConfig(level=level, format="%(levelname)s %(message)s")
 
 
-def _select_inboxes(session, only: str | None) -> dict[str, Inbox]:
+def _select_inboxes(only: str | None) -> dict[str, Inbox]:
     """Bootstrap from env, then narrow to one inbox name if provided."""
-    inboxes = bootstrap_inboxes(session)
+    inboxes = bootstrap_inboxes()
     if only is None:
         return inboxes
     if only not in inboxes:
@@ -80,9 +80,7 @@ def ingest_command(
 ) -> None:
     """Walk every configured inbox's mirror and import new messages."""
     _configure_logging(verbose)
-    with SessionLocal() as session:
-        inboxes = _select_inboxes(session, inbox_filter)
-
+    inboxes = _select_inboxes(inbox_filter)
     results_by_name = ingest_all(inboxes=inboxes, limit=limit, workers=workers)
     for name, results in results_by_name.items():
         for r in results:
@@ -126,12 +124,15 @@ def reindex_command(
     """
     _configure_logging(verbose)
 
+    inboxes = _select_inboxes(inbox_name)
+    inbox = inboxes[inbox_name]
+    epoch_path = Path(inbox.mirror_path) / epoch
+    if not epoch_path.exists():
+        raise click.ClickException(f"epoch repo not found: {epoch_path}")
+
     with SessionLocal() as session:
-        inboxes = _select_inboxes(session, inbox_name)
-        inbox = inboxes[inbox_name]
-        epoch_path = Path(inbox.mirror_path) / epoch
-        if not epoch_path.exists():
-            raise click.ClickException(f"epoch repo not found: {epoch_path}")
+        # Re-attach the detached Inbox bootstrap_inboxes returned.
+        inbox = session.merge(inbox)
 
         if from_scratch:
             # Drop the per-inbox link rows. Articles themselves stay (they
@@ -181,9 +182,8 @@ def show_command(
     and whether it's in the archive) alongside the freshly re-parsed blob
     (full headers, body, attachments). Designed for threading debug.
     """
+    bootstrap_inboxes()
     with SessionLocal() as session:
-        bootstrap_inboxes(session)
-
         article = session.execute(
             select(Article).where(Article.message_id == message_id)
         ).scalar_one_or_none()
@@ -288,8 +288,7 @@ def update_command(
     """Discover new upstream epochs, fetch updates, and ingest in one shot.
     Iterates over every configured inbox unless --inbox restricts to one."""
     _configure_logging(verbose)
-    with SessionLocal() as session:
-        inboxes = _select_inboxes(session, inbox_filter)
+    inboxes = _select_inboxes(inbox_filter)
 
     for name, inbox in inboxes.items():
         sync_result = sync_epochs(
@@ -329,8 +328,8 @@ def warm_cache_command() -> None:
     """
     today = datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
+    inboxes = bootstrap_inboxes()
     with SessionLocal() as session:
-        inboxes = bootstrap_inboxes(session)
         targets = []
         for inbox in inboxes.values():
             targets.extend([
