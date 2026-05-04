@@ -79,3 +79,13 @@ class IngestState(Base):
     last_commit_sha: Mapped[str | None] = mapped_column(String)
 
     inbox: Mapped[Inbox] = relationship(back_populates="ingest_states")
+
+
+class CacheEntry(Base):
+    """Cross-process cache for slow dashboard queries. JSON values
+    only — see `mimir.cache` for the encoder/decoder."""
+    __tablename__ = "cache"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[int] = mapped_column(index=True)

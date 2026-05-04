@@ -316,10 +316,9 @@ def update_command(
 def warm_cache_command() -> None:
     """Recompute and cache the slow dashboard queries for every inbox.
 
-    Designed to run from cron or a systemd timer. Refreshes the on-disk
-    cache (`Settings.cache_path`) so the Flask server picks up
-    pre-computed results on the next request, avoiding cold-start
-    latency.
+    Designed to run from cron or a systemd timer. Refreshes the
+    DB-backed `cache` table so the Flask server picks up pre-computed
+    results on the next request, avoiding cold-start latency.
 
     Example crontab:
 

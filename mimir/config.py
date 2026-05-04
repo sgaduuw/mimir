@@ -20,7 +20,6 @@ class Settings(BaseSettings):
     secret_key: str = Field(min_length=16)
 
     database_url: str = "sqlite:///mimir.db"
-    cache_path: Path = Path("mimir-cache.pickle")
 
     # Indexed inboxes. Add another entry to start tracking a second
     # mailing list; the schema and routes are list-aware. Override via
