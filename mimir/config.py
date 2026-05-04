@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     flask_debug: bool = False
     secret_key: str = Field(min_length=16)
 
+    # Brand shown in titles, the nav, and the index heading. The
+    # project name "mimir" stays as the page-generator credit
+    # regardless. Override with SITE_NAME=...
+    site_name: str = "mimir"
+
     # Default: <project_root>/mimir.db, so cwd doesn't matter (systemd,
     # container, anywhere). Override with DATABASE_URL=... — typically
     # `sqlite:////data/mimir.db` for a container with a persistent

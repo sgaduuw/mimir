@@ -45,8 +45,9 @@ def _get_inbox_or_404(session: Session, name: str) -> Inbox:
 def _inject_template_globals() -> dict:
     """Inboxes are needed by base.html for the nav. `current_inbox` is set
     per-view (None on the meta-index `/`). Names come from the cached
-    list populated at bootstrap — no per-request DB hit."""
-    return {"inboxes": inbox_names()}
+    list populated at bootstrap — no per-request DB hit. `site_name` is
+    the configurable brand; "mimir" stays as the page generator."""
+    return {"inboxes": inbox_names(), "site_name": settings.site_name}
 
 
 # Cache-Control per endpoint. Lets edge caches (Cloudflare, an nginx in
