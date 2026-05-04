@@ -13,7 +13,7 @@
     <ul>
       {% for t in threads %}
       <li>
-        <a href="{{ t|msg_url(list_name) }}">{{ t.subject or '(no subject)' }}</a>
+        <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject or '(no subject)' }}</a>
         <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
           &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} {{ heading|lower }}
           &middot; {{ t.author|safe_from }}</small>
