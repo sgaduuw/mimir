@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 from flask import Flask
 from sqlalchemy import delete, select
+from sqlalchemy.orm import selectinload
 
 from mimir.dashboard import archive_stats, daily_volume
 from mimir.extensions import Base, SessionLocal, engine
@@ -190,7 +191,9 @@ def show_command(
             raise click.ClickException(f"no article with message_id={message_id!r}")
 
         links = session.execute(
-            select(ArticleList).where(ArticleList.article_id == article.id)
+            select(ArticleList)
+            .where(ArticleList.article_id == article.id)
+            .options(selectinload(ArticleList.inbox))
         ).scalars().all()
         if not links:
             raise click.ClickException(f"article {message_id!r} has no inbox links")
