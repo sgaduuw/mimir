@@ -1,34 +1,38 @@
 # mimir
 
-A toy archiver that ingests the [Linux Kernel Mailing List][lkml] (or any
-[public-inbox][pi] v2 archive) from a local git mirror into SQLite. Built as a
-small Flask app so it can grow a web UI later, but for now it's just a CLI
-ingest pipeline.
+A toy archiver and read-only web UI for [public-inbox][pi] v2 mailing
+list archives. Out of the box it indexes the [Linux Kernel Mailing
+List][lkml] and [linux-fsdevel][fsd], but any list published by
+public-inbox works. The displayed site name is configurable; "mimir"
+appears only as the page generator.
 
 [lkml]: https://lore.kernel.org/lkml/
+[fsd]: https://lore.kernel.org/linux-fsdevel/
 [pi]: https://public-inbox.org/
 
 ## What it does
 
-- Walks one or more public-inbox v2 epoch repositories (`0.git`, `1.git`, …),
-  where each commit's tree contains a single `m` blob holding the raw RFC 5322
-  bytes of one message.
-- Parses each message with the stdlib email API under `policy.default` —
-  proper handling of MIME multiparts, RFC 2231 filenames, RFC 2047 encoded
-  headers, and the like.
-- **Treats the public-inbox mirror as the source of truth.** SQLite is a
-  thin index that records, per message, only what's needed to find and
-  display: `message_id`, the (`epoch`, `commit_sha`) pointer back to the
-  blob, and a few display fields (`subject`, `author`, `date`,
-  `in_reply_to`, `references`). Body, full headers, and attachment bytes
-  are *not* duplicated into SQLite — they're re-parsed from the git blob
-  on demand. Per-row size is ~500 bytes.
-- Re-runs are incremental: only new commits since the last recorded HEAD
-  SHA are visited.
+- Walks one or more public-inbox v2 epoch repositories (`0.git`,
+  `1.git`, …), where each commit's tree contains a single `m` blob
+  holding the raw RFC 5322 bytes of one message.
+- Parses each message with the stdlib email API under
+  `policy.default` — proper handling of MIME multiparts, RFC 2231
+  filenames, RFC 2047 encoded headers, and the like.
+- **Treats the public-inbox mirror as the source of truth.** SQLite
+  is a lean index that records, per message, only what's needed to
+  find and display it: `message_id` + threading hints + a few
+  display fields (`subject`, `author`, `date`). Body, full headers,
+  and attachment bytes are *not* duplicated into SQLite — they're
+  re-parsed from the git blob on demand.
+- **Cross-posted messages dedupe.** A message that appears in both
+  lkml and linux-fsdevel produces one `articles` row plus one
+  `article_lists` row per inbox.
+- Re-runs are incremental: only new commits since the last recorded
+  HEAD SHA per (inbox, epoch) are visited.
 
-The read path costs roughly 2 ms per message (SQL lookup + dulwich blob
-fetch + parse). The mirror must be present on disk at *read* time, not
-just at ingest time.
+The read path costs roughly 2 ms per message (SQL lookup + dulwich
+blob fetch + parse). The mirror must be present on disk at *read*
+time, not just at ingest time.
 
 ## Requirements
 
@@ -45,138 +49,166 @@ poetry run alembic upgrade head
 Then create a `.env` in the project root. Minimum:
 
 ```
-FLASK_DEBUG=true
 SECRET_KEY=<run: python -c "import secrets; print(secrets.token_hex(32))">
-DATABASE_URL=sqlite:///mimir.db
-LKML_MIRROR_PATH=lkml/git
 ```
 
-All settings live in `mimir/config.py` as a pydantic-settings `Settings`
-class — anything declared there can be overridden via env var or `.env`.
+Defaults baked into `mimir/config.py`:
+
+- `DATABASE_URL` — `sqlite:///<project_root>/mimir.db`. Override
+  per-deployment, e.g. `DATABASE_URL=sqlite:////data/mimir.db` for a
+  container with a persistent volume.
+- `SITE_NAME` — `mimir`. The displayed brand in titles, the nav, and
+  the `/` heading; set this to whatever you want the public site to
+  be called.
+- `INBOXES` — a JSON map of `{name: {mirror_path, upstream_url}}`.
+  Defaults cover lkml and linux-fsdevel under `Inboxes/<name>/git`.
+  See `mimir/config.py` for the exact shape; override via env, e.g.
+  `INBOXES='{"lkml": {"mirror_path": "...", "upstream_url": "..."}}'`.
+- `EMAIL_ALLOWLIST` — substrings whose email addresses display in
+  full; everyone else gets `<hidden>`.
+- `TRACKED_AUTHORS` — `{label: from_substring}` pairs; each gets a
+  tile on the per-inbox dashboard.
+
+`Settings.inboxes` (env) is the *bootstrap* source: each entry
+guarantees an `inboxes` row exists in the DB on first start, but env
+never overwrites existing rows on subsequent boots — admin edits to
+`mirror_path` / `upstream_url` survive restarts.
 
 ## Getting a public-inbox mirror
 
-Each lore.kernel.org list is published as one git repo per epoch. The
-easiest way is to let mimir do it for you:
+Each list on lore.kernel.org is published as one git repo per epoch.
+The easiest way to set things up is to let mimir do it for you:
 
 ```sh
-poetry run flask --app mimir update
+poetry run flask --app mimir update                   # all configured inboxes
+poetry run flask --app mimir update --inbox lkml      # one specific inbox
+poetry run flask --app mimir update --skip-clone      # only fetch updates on existing epochs
+poetry run flask --app mimir update --skip-fetch      # only discover/clone new epochs
+poetry run flask --app mimir update --skip-ingest     # download but don't index
 ```
 
-This fetches the upstream `manifest.js.gz`, `git clone --mirror`s any
-epochs you don't have locally, runs `git fetch --prune` on the ones you
-do, and then ingests new commits — all in one shot. Configurable via
-`UPSTREAM_URL` (default: `https://lore.kernel.org/lkml`) and
-`LKML_MIRROR_PATH` (default: `lkml/git`).
+For each inbox `update` fetches the upstream `manifest.js.gz`, runs
+`git clone --mirror -- <url>` on any epoch missing locally, runs
+`git fetch --prune` on the ones already present, and then ingests
+new commits — all in one shot.
 
-Each epoch is roughly 1 GB and holds several hundred thousand messages,
-so a fresh clone of the full lkml archive (currently 19 epochs, ~5M
-messages) takes a while and needs ~20 GB of disk for the mirrors. Use
-`--skip-clone` if you only want to fetch updates on what's already there,
-`--skip-fetch` to skip the per-epoch `git fetch`, or `--skip-ingest`
-to download repos without indexing.
+Each epoch is roughly 1 GB and holds several hundred thousand
+messages, so a fresh clone of all of lkml (currently 19 epochs, ~6M
+messages) takes a while and needs ~20 GB of disk. linux-fsdevel is
+about an order of magnitude smaller.
 
 If you'd rather drive it manually:
 
 ```sh
-mkdir -p lkml/git && cd lkml/git
-git clone --mirror https://lore.kernel.org/lkml/git/0.git 0.git
-git clone --mirror https://lore.kernel.org/lkml/git/1.git 1.git
+mkdir -p Inboxes/lkml/git && cd Inboxes/lkml/git
+git clone --mirror -- https://lore.kernel.org/lkml/git/0.git 0.git
+git clone --mirror -- https://lore.kernel.org/lkml/git/1.git 1.git
 # … and so on
 ```
 
 ## Ingesting
 
 ```sh
-poetry run flask --app mimir ingest                   # walk every epoch (parallel by default)
+poetry run flask --app mimir ingest                   # walk every configured inbox (parallel by default)
+poetry run flask --app mimir ingest --inbox lkml      # only one inbox
 poetry run flask --app mimir ingest --limit 500       # cap for testing
-poetry run flask --app mimir ingest --mirror /tmp/foo  # alternate mirror dir
 poetry run flask --app mimir ingest --workers 1       # force sequential (debug)
 poetry run flask --app mimir ingest -v                # progress every 100 msgs
 poetry run flask --app mimir ingest -vv               # one log line per message
 ```
 
-Parsing runs in a `ProcessPoolExecutor` (defaults to `os.cpu_count()`),
-with the main process collecting results in commit order and doing the
-SQL writes. The walker, dedup, batched commits, and `IngestState`
-checkpoints are unchanged — parallelism is confined to the
-CPU-bound `parse_message` stage.
+Parsing runs in a `ProcessPoolExecutor` (defaults to
+`os.cpu_count()`), with the main process collecting results in
+commit order and doing the SQL writes. The walker, dedup, batched
+commits, and per-(inbox, epoch) `IngestState` checkpoints are
+unaffected — parallelism is confined to the CPU-bound
+`parse_message` stage.
 
 To inspect a single message (smoke test for the git-backed read path):
 
 ```sh
 poetry run flask --app mimir show '<message-id-without-angle-brackets>'
-poetry run flask --app mimir show '...' --body-chars -1   # full body, no truncation
+poetry run flask --app mimir show '...' --inbox lkml         # read the blob from this inbox's mirror
+poetry run flask --app mimir show '...' --body-chars -1      # full body, no truncation
 ```
 
-By default the ingest is quiet apart from the per-epoch summary line. Parse
-failures are surfaced as warnings at any verbosity level.
+By default the ingest is quiet apart from the per-epoch summary
+line. Parse failures are surfaced as warnings at any verbosity level.
 
-To re-walk a single epoch — e.g. to backfill messages that failed under
-an older parser version:
+To re-walk a single epoch — e.g. to backfill messages that failed
+under an older parser version:
 
 ```sh
-poetry run flask --app mimir reindex 0.git           # rewind state, re-walk; dedup skips existing
-poetry run flask --app mimir reindex 0.git --from-scratch  # also DELETE existing rows for this epoch first
+poetry run flask --app mimir reindex lkml 0.git                    # rewind state, re-walk; dedup skips existing
+poetry run flask --app mimir reindex lkml 0.git --from-scratch     # also DELETE this inbox's links to that epoch first
 ```
-
-The default form is non-destructive: existing rows are left alone and only
-previously-failed (or genuinely new) messages get inserted. Use
-`--from-scratch` for a true rebuild.
 
 Output is one line per epoch, e.g.:
 
 ```
-0.git: new=500 skipped=0 failed=0 head=8f282234b668f51b884f3140adf1947d95e32ce7
+lkml/0.git: new=500 skipped=0 failed=0 head=8f282234b668f51b884f3140adf1947d95e32ce7
 ```
 
-- `--limit` is a *total* cap across epochs and a deliberate testing knob.
-  It records progress, so `--limit 500` followed by `--limit 1000` ingests
-  500 then *another* 1000 (1500 total). Wipe `mimir.db` to start over.
-- Re-running with no arguments after a successful run is a no-op:
-  the per-epoch HEAD SHA is recorded in the `ingest_state` table and the git
-  walker prunes everything up to and including it.
+The default form is non-destructive: existing rows are left alone
+and only previously-failed (or genuinely new) messages get inserted.
+`--from-scratch` deletes the per-inbox `article_lists` rows
+pointing at this epoch first; the `articles` themselves stay (a
+cross-post may still be linked from another inbox).
 
 ### Behaviour on re-runs
 
-| Situation                                | What happens                          |
-| ---------------------------------------- | ------------------------------------- |
-| Same Message-ID seen across epochs       | Second copy skipped (DB-level check)  |
-| Same Message-ID twice within one walk    | Second copy skipped (in-batch set)    |
-| Existing article with the same Message-ID| Left untouched — no updates, ever     |
-| `parse_message` raises                   | Counted in `failed`; SHA still advances|
+| Situation                                    | What happens                                      |
+| -------------------------------------------- | ------------------------------------------------- |
+| Same Message-ID seen across epochs           | Second copy skipped (DB-level check)              |
+| Same Message-ID twice within one walk        | Second copy skipped (in-batch set)                |
+| Cross-post: Message-ID seen in another inbox | Article reused; one new `article_lists` row added |
+| Existing article with the same Message-ID    | Left untouched — no updates, ever                 |
+| `parse_message` raises                       | Counted in `failed`; SHA still advances           |
 
-The "no updates, ever" stance assumes the underlying archive is immutable
-(public-inbox commits are append-only). If you want to retry a previously
-failed parse — for example after fixing a parser bug — wipe or rewind
-`ingest_state.last_commit_sha` for that epoch.
+The "no updates, ever" stance assumes the underlying archive is
+immutable (public-inbox commits are append-only). If you want to
+retry a previously failed parse — for example after fixing a parser
+bug — wipe or rewind `ingest_state.last_commit_sha` for that
+(inbox, epoch).
 
 ## Schema
 
 ```
+inboxes
+  id, name (UNIQUE),                  -- name is the URL slug
+  mirror_path, upstream_url
+
 articles
   id, message_id (UNIQUE),
-  epoch, commit_sha,             -- pointer back to the public-inbox blob
-  subject, author, date,         -- for listings; date indexed
-  in_reply_to,                   -- indexed, for threading
-  references (JSON list[str])
+  subject, author, date,              -- for listings; date indexed
+  thread_parent,                      -- best-guess parent (in_reply_to OR refs[-1]); indexed
+  subject_normalized                  -- prefixes stripped, lowercased; indexed for JWZ subject grouping
 
-attachments
-  id, article_id (FK → articles.id, ON DELETE CASCADE),
-  filename, content_type, size_bytes
-  -- contents are NOT stored; re-derived from the git blob on demand
+article_lists                         -- per-inbox presence; cross-posts get N rows
+  article_id (FK → articles.id, ON DELETE CASCADE),
+  inbox_id   (FK → inboxes.id,  ON DELETE CASCADE),
+  epoch, commit_sha,                  -- pointer back to the public-inbox blob in *this* inbox's mirror
+  PRIMARY KEY (article_id, inbox_id)
 
 ingest_state
-  epoch (PK), last_commit_sha, last_ingested_at
+  inbox_id (FK → inboxes.id, ON DELETE CASCADE),
+  epoch,
+  last_commit_sha,
+  PRIMARY KEY (inbox_id, epoch)
+
+cache                                 -- DB-backed cache for slow dashboard queries
+  key (PK), value (JSON), expires_at (indexed)
 ```
 
-`mimir.store.read_message(session, message_id)` is the canonical read
-path: looks up `(epoch, commit_sha)` in SQL, opens the dulwich repo,
-fetches the blob, runs `parse_message` to return a `ParsedArticle`
-with body, full headers, and attachment bytes.
+`mimir.store.read_message(session, inbox, message_id)` is the
+canonical read path: looks up `(epoch, commit_sha)` for the message
+in the given inbox, opens the dulwich repo, fetches the blob, runs
+`parse_message` to return a `ParsedArticle` with body, full headers,
+and attachment bytes.
 
-SQLite runs in WAL mode with `synchronous=NORMAL` and `foreign_keys=ON`,
-set on every connection from `mimir/extensions.py`.
+SQLite runs in WAL mode with `synchronous=NORMAL` and
+`foreign_keys=ON`, set on every connection from
+`mimir/extensions.py`.
 
 Models are defined as SQLAlchemy 2.0 typed `Mapped[]` classes in
 `mimir/models.py`. Migrations live under `alembic/versions/`.
@@ -185,81 +217,106 @@ Models are defined as SQLAlchemy 2.0 typed `Mapped[]` classes in
 
 ```
 mimir/
-  __init__.py    Flask app factory; wires up CLI commands
-  cli.py         Click commands: init-db, ingest, show
-  config.py      pydantic-settings Settings class
+  __init__.py    Flask app factory; bootstraps inboxes from env
+  cli.py         Click commands: init-db, ingest, update, reindex, show, warm-cache
+  config.py      pydantic-settings Settings class + PROJECT_ROOT
   extensions.py  SQLAlchemy engine + WAL pragmas, sessionmaker, Base
-  ingest.py      dulwich walker + per-epoch upsert loop, batched commits
-  models.py      Article (lean index), Attachment (metadata only), IngestState
+  inboxes.py     bootstrap_inboxes() + nav-name cache
+  ingest.py      dulwich walker + per-epoch upsert loop, cross-post linking
+  models.py      Inbox, Article, ArticleList, IngestState, CacheEntry
   parser.py      pydantic DTOs + BytesParser-based MIME extraction
+  rendering.py   body→HTML pipeline (text/quote/diff blocks)
   store.py       read_message(): SQL lookup + dulwich fetch + parse
+  sync.py        public-inbox manifest discovery + git clone/fetch
+  threading.py   recursive CTEs for thread reconstruction + active threads
+  dashboard.py   landing-page aggregations (trackers, pulls, stats, sparkline)
+  cache.py       DB-backed cache with JSON encode/decode + a type registry
+  web.py         Flask blueprint, view functions, template filters
+  templates/     Jinja2 (base, index, inbox, daily, message, attachment_preview, _recent_items)
 alembic/         migrations
-lkml/git/        default mirror location (must be present at read time too)
+tests/           pytest
+Inboxes/         default mirror root (per-inbox subdirs; gitignored)
 ```
 
 ## Web UI
 
-A read-only browser for the archive. Lightweight stack: Flask + Jinja2,
-[Pico CSS](https://picocss.com/) and [HTMX](https://htmx.org/) from CDN
-(no build step), and [Pygments](https://pygments.org/) for server-side
-syntax highlighting.
+A read-only browser for the archive. Lightweight stack: Flask +
+Jinja2, [Pico CSS](https://picocss.com/) and
+[HTMX](https://htmx.org/) from CDN with SRI pins (no build step),
+and [Pygments](https://pygments.org/) for server-side syntax
+highlighting.
 
 ```sh
 poetry run flask --app mimir run        # http://127.0.0.1:5000/
 ```
 
-Routes shipped so far:
+Routes:
 
-- `GET /` — landing page with: most active threads (last 7 days, top 10
-  by reply count); side-by-side latest `[GIT PULL]` requests and
-  `Linux N.N.N` release announcements; side-by-side per-author trackers
-  driven by `Settings.tracked_authors` (defaults: Linus Torvalds, Greg
-  KH); a "this day, 5 years ago" sample; the last 10 messages overall;
-  a 30-day daily-volume sparkline + archive stats footer.
-- `GET /<list>/<YYYY>/<MM>/<article-id>` — single message: headers,
-  full thread tree with the current message highlighted, body,
-  attachment list. When the thread root has an off-list parent, also
-  shows a "Possibly related" surface of other archived messages with the
-  same normalized Subject (JWZ subject-based grouping). The list segment
-  is `LIST_NAME` from settings (default `lkml`); the year/month must
-  match the article's archived date. Mismatches return 404.
-- `GET /<list>/<YYYY>/<MM>/<article-id>/attachment/<n>` — binary download
-  of the n-th attachment, served from the dulwich-fetched blob.
-- `GET /<list>/<YYYY>/<MM>/<article-id>/attachment/<n>/preview` — Pygments-
-  highlighted inline preview for text-like attachments (patches, .c,
-  .py, etc.); falls back to a "binary, can't preview" page otherwise.
-- `GET /api/recent?offset=N` — HTMX partial: next page of "Recent
-  messages" entries plus a fresh "Load more" trigger.
-- `GET /<list>/today` and `GET /<list>/yesterday` — daily views
-  showing the most active threads scoped to that calendar day (UTC),
-  plus the total message count for the day.
+- `GET /` — meta-index: list of configured inboxes with
+  per-inbox row counts, epoch counts, and date spans.
+- `GET /<inbox>/` — per-inbox dashboard: most active threads (last
+  7 days, top 10 by decay-weighted score); side-by-side latest
+  `[GIT PULL]` requests and `Linux N.N.N` release announcements;
+  side-by-side per-author trackers driven by
+  `Settings.tracked_authors` (defaults: Linus Torvalds, Greg KH); a
+  "this day, 5 years ago" sample; the last 10 messages in the
+  inbox; a 30-day daily-volume sparkline + archive stats footer.
+- `GET /<inbox>/today` and `GET /<inbox>/yesterday` — daily views
+  showing every thread with at least one message on that calendar
+  day (UTC), plus the day's total message count.
+- `GET /<inbox>/<YYYY>/<MM>/<article-id>` — single message:
+  headers, full thread tree with the current message highlighted,
+  body, attachment list. When the thread root has an off-list
+  parent, also shows a "Possibly related" surface of other archived
+  messages with the same normalized subject (JWZ subject-based
+  grouping). The year/month must match the article's archived date;
+  mismatches return 404.
+- `GET /<inbox>/<YYYY>/<MM>/<article-id>/attachment/<n>` — binary
+  download of the n-th attachment, served from the dulwich-fetched
+  blob.
+- `GET /<inbox>/<YYYY>/<MM>/<article-id>/attachment/<n>/preview` —
+  Pygments-highlighted inline preview for text-like attachments
+  (patches, .c, .py, etc.); falls back to a "binary, can't preview"
+  page otherwise.
+- `GET /api/<inbox>/recent?offset=N` — HTMX partial: next page of
+  "Recent messages" entries plus a fresh "Load more" trigger.
 
-The body rendering pipeline (`mimir/rendering.py`) walks the body line
-by line, segments it into runs of *text*, *quote*, and *diff*, and
-emits HTML accordingly:
+The body rendering pipeline (`mimir/rendering.py`) walks the body
+line by line, segments it into runs of *text*, *quote*, and *diff*,
+and emits HTML accordingly:
 
-- Quoted blocks (`>`-prefixed lines) become `<blockquote>` and recurse
-  for nested levels — `>>>>` ends up four `<blockquote>` deep.
-- Inline unified diffs (recognized by `diff --git`, `--- `, `+++ `, `@@`
-  starts) are run through Pygments' `DiffLexer` with inline styles
-  (`noclasses=True`), giving the standard green/red/cyan rendering.
-- Plain text runs are escaped, preserve newlines via `<pre>`, and have
-  URLs and `<Message-ID>`s linkified — clicking a referenced
+- Quoted blocks (`>`-prefixed lines) become `<blockquote>` and
+  recurse for nested levels — `>>>>` ends up four `<blockquote>`
+  deep. Levels at or beyond depth 2 collapse into `<details>` so
+  the reader can expand on demand.
+- Inline unified diffs (recognized by `diff --git`, `--- `, `+++ `,
+  `@@` starts) are run through Pygments' `DiffLexer` with inline
+  styles, giving the standard green/red/cyan rendering.
+- Plain text runs are escaped, preserve newlines via `<pre>`, and
+  have URLs and `<Message-ID>`s linkified — clicking a referenced
   Message-ID inside one message takes you to that message's
-  `/msg/...` view, even across epochs.
-
-## Roadmap
-
-Tracked here so we don't forget across sessions.
-
+  per-inbox URL when it's in the archive (and renders as a neutral
+  `[ref]` placeholder so the address part isn't re-leaked); refs
+  not in the archive render as `[off-list ref]`.
 
 ## Cache warming
 
-Several landing-page queries are slow on the first run after a cache
-expires (the archive `COUNT(*)` is ~6 s on 6.2M rows; the active-threads
-recursive CTE is ~700 ms). Results are cached to a single pickle file at
-`Settings.cache_path` (default `mimir-cache.pickle`) so they're shared
-across processes. To eliminate user-facing cold-start latency, run:
+The dashboard helpers run through a DB-backed cache (the `cache`
+table; values JSON-encoded with a small dataclass registry in
+`mimir/cache.py`). TTLs are sized to the cost of recomputation:
+
+| Helper                    | TTL    |
+| ------------------------- | ------ |
+| `archive_stats`           | 24 h   |
+| `daily_volume`            | 1 h    |
+| `active_threads`          | 5 min  |
+| `threads_for_day`         | 5 min  |
+| `author_recent` (each)    | 5 min  |
+| `latest_pull_requests`    | 5 min  |
+| `latest_stable_releases`  | 5 min  |
+| `this_day_in_history`     | 5 min  |
+
+To eliminate user-facing cold-start latency, run:
 
 ```sh
 poetry run flask --app mimir warm-cache
@@ -268,17 +325,23 @@ poetry run flask --app mimir warm-cache
 from cron or a systemd timer. Sample `crontab`:
 
 ```cron
-*/5 * * * * cd ~/Projects/python/mimir && poetry run flask --app mimir warm-cache >/dev/null
+* * * * * cd ~/Projects/python/mimir && poetry run flask --app mimir warm-cache >/dev/null
 ```
 
-After a warm `warm-cache` run, page loads of `/` drop from ~7.5 s to
-~50 ms.
+A warm-cache run refreshes every cached helper for every configured
+inbox. With this in place, dashboard loads come back in
+single-digit-millisecond range regardless of how big the archive
+gets.
 
-## Linting
+## Linting and tests
 
 ```sh
 poetry run ruff check mimir/
+poetry run pytest
 ```
+
+Tests focus on the cache encoder/decoder round-trip — that's where
+silent corruption would be most expensive.
 
 ## License
 
