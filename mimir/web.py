@@ -284,7 +284,14 @@ def api_recent(list_name: str):
     )
 
 
-def _fetch_article_for_attachment(session, inbox, year, month, article_id, n):
+def _fetch_article_for_attachment(
+    session: Session,
+    inbox: Inbox,
+    year: int,
+    month: int,
+    article_id: int,
+    n: int,
+):
     """Validate URL parts + fetch the n-th attachment via read_message.
     Used by both download and preview routes; aborts 404 on any mismatch."""
     article = session.get(Article, article_id)
