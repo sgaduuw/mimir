@@ -44,13 +44,9 @@ class Article(Base):
     subject_normalized: Mapped[str] = mapped_column(String, default="", index=True)
 
     # Cross-posted messages share one Article + multiple ArticleList
-    # rows (one per inbox they appeared in). `inboxes` is a read-only
-    # secondary join for templates and admin views.
+    # rows (one per inbox they appeared in).
     lists: Mapped[list["ArticleList"]] = relationship(
         back_populates="article", cascade="all, delete-orphan"
-    )
-    inboxes: Mapped[list[Inbox]] = relationship(
-        secondary="article_lists", viewonly=True
     )
 
 
