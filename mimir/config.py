@@ -3,6 +3,11 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Project root: <root>/mimir/config.py → parent → parent. Resolving
+# follows symlinks so a container running mimir from a bind-mounted
+# read-only volume still gets a sane absolute path.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 class InboxConfig(BaseModel):
     """Env-side description of an inbox. The matching ORM model is
@@ -14,12 +19,19 @@ class InboxConfig(BaseModel):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=str(PROJECT_ROOT / ".env"),
+        extra="ignore",
+    )
 
     flask_debug: bool = False
     secret_key: str = Field(min_length=16)
 
-    database_url: str = "sqlite:///mimir.db"
+    # Default: <project_root>/mimir.db, so cwd doesn't matter (systemd,
+    # container, anywhere). Override with DATABASE_URL=... — typically
+    # `sqlite:////data/mimir.db` for a container with a persistent
+    # volume mount.
+    database_url: str = f"sqlite:///{PROJECT_ROOT / 'mimir.db'}"
 
     # Indexed inboxes. Add another entry to start tracking a second
     # mailing list; the schema and routes are list-aware. Override via
