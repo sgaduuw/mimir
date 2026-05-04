@@ -74,8 +74,23 @@ def upgrade() -> None:
         batch.drop_column('references')
 
     # ingest_state: PK changes, last_ingested_at goes away. recreate=
-    # always since SQLite can't ALTER PRIMARY KEY in place.
-    with op.batch_alter_table('ingest_state', recreate='always') as batch:
+    # always since SQLite can't ALTER PRIMARY KEY in place. We pass an
+    # explicit `copy_from` Table without a PrimaryKeyConstraint so the
+    # source columns don't carry a column-level `primary_key=True`
+    # flag, which would otherwise fight with the new composite PK and
+    # raise an SAWarning ("future release may become exception").
+    existing_ingest_state = sa.Table(
+        'ingest_state',
+        sa.MetaData(),
+        sa.Column('epoch', sa.String(), nullable=False),
+        sa.Column('last_commit_sha', sa.String(), nullable=True),
+        sa.Column('last_ingested_at', sa.DateTime(), nullable=True),
+    )
+    with op.batch_alter_table(
+        'ingest_state',
+        copy_from=existing_ingest_state,
+        recreate='always',
+    ) as batch:
         batch.drop_column('last_ingested_at')
         batch.add_column(sa.Column('inbox_id', sa.Integer(), nullable=False))
         batch.create_foreign_key(
