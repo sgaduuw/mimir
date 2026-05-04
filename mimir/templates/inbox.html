@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ inbox_name }} · mimir{% endblock %}
+{% block title %}{{ inbox_name }} · {{ site_name }}{% endblock %}
 {% block content %}
 <h1>{{ inbox_name }} <small><em>archive</em></small></h1>
 
@@ -97,8 +97,9 @@
   {% endif %}
 </section>
 
-<footer>
-  <hr>
+{% endblock %}
+
+{% block footer_extra %}
   {% if spark and spark.days %}
   <small>Last 30 days:</small>
   <svg width="186" height="28" style="vertical-align: middle;"
@@ -122,7 +123,6 @@
     {{ '{:,}'.format(stats.total) }} messages across {{ stats.epochs }} epoch{{ '' if stats.epochs == 1 else 's' }}{% if stats.first_date and stats.last_date %},
     spanning {{ stats.first_date.strftime('%Y-%m-%d') }} to {{ stats.last_date.strftime('%Y-%m-%d') }}{% endif %}.
   </small>
+  <br>
   {% endif %}
-</footer>
-
 {% endblock %}
