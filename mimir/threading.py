@@ -239,19 +239,20 @@ def active_threads(
     """Most active threads in `inbox` in the last `days` days.
     Cached on disk for ACTIVE_THREADS_CACHE_TTL_SEC (5 min) per
     (inbox, days, limit) key. Pass force=True to bypass and recompute."""
-    cache_key = f"active_threads:{inbox.name}:{days}:{limit}"
-    if not force:
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
+    def compute() -> list[ActiveThread]:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        return _active_threads_query(
+            session, inbox, start, end, order_by="score", limit=limit
+        )
 
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days)
-    result = _active_threads_query(
-        session, inbox, start, end, order_by="score", limit=limit
+    return cache.get_or_compute(
+        session,
+        f"active_threads:{inbox.name}:{days}:{limit}",
+        ACTIVE_THREADS_CACHE_TTL_SEC,
+        compute,
+        force=force,
     )
-    cache.set(cache_key, result, ttl=ACTIVE_THREADS_CACHE_TTL_SEC)
-    return result
 
 
 def threads_for_day(
@@ -262,16 +263,17 @@ def threads_for_day(
 ) -> list[ActiveThread]:
     """Every thread in `inbox` with at least one message on `day`
     (UTC), ordered by last activity desc."""
-    cache_key = f"threads_for_day:{inbox.name}:{day.isoformat()}"
-    if not force:
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
+    def compute() -> list[ActiveThread]:
+        start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+        return _active_threads_query(
+            session, inbox, start, end, order_by="last_activity", limit=None
+        )
 
-    start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
-    end = start + timedelta(days=1)
-    result = _active_threads_query(
-        session, inbox, start, end, order_by="last_activity", limit=None
+    return cache.get_or_compute(
+        session,
+        f"threads_for_day:{inbox.name}:{day.isoformat()}",
+        ACTIVE_THREADS_CACHE_TTL_SEC,
+        compute,
+        force=force,
     )
-    cache.set(cache_key, result, ttl=ACTIVE_THREADS_CACHE_TTL_SEC)
-    return result
