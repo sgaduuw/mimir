@@ -4,6 +4,11 @@ Helpers used by the `/` view to assemble its various surfaces.
 Anything thread-shaped lives in `mimir.threading`; this module is for
 the queries that aren't about thread reconstruction (trackers,
 content-type filters, anniversaries, archive stats).
+
+Every helper is cache-backed via `mimir.cache.get_or_compute`. The
+underlying SQL involves LIKE / GLOB scans and is order-of-seconds on
+a multi-million-row inbox; warming the cache (see `flask --app mimir
+warm-cache`) keeps dashboard load times under cache-hit latency.
 """
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -18,6 +23,7 @@ from mimir.threading import _coerce_dt
 
 STATS_CACHE_TTL_SEC = 86400  # 1 day
 DAILY_VOLUME_CACHE_TTL_SEC = 3600  # 1 hour
+LISTING_CACHE_TTL_SEC = 300  # 5 minutes — trackers, pulls, stable, history
 
 # Floor for the "first message" stat. Filters out the rare backdated repost
 # (e.g. Linus's 1991 "hello minix" anniversary repost, which would otherwise
@@ -26,75 +32,16 @@ DAILY_VOLUME_CACHE_TTL_SEC = 3600  # 1 hour
 STATS_MIN_PLAUSIBLE_DATE = "1995-01-01"
 
 
-def _inbox_scoped(stmt, inbox: Inbox):
-    """Add the article_lists join + inbox filter to a select(Article)."""
-    return stmt.join(ArticleList, ArticleList.article_id == Article.id).where(
-        ArticleList.inbox_id == inbox.id
-    )
-
-
-def author_recent(
-    session: Session, inbox: Inbox, email_substring: str, limit: int = 5
-) -> Sequence[Article]:
-    """Last N messages in `inbox` whose From contains the substring."""
-    return session.execute(
-        _inbox_scoped(
-            select(Article).where(Article.author.ilike(f"%{email_substring}%")),
-            inbox,
-        )
-        .order_by(Article.date.desc().nulls_last())
-        .limit(limit)
-    ).scalars().all()
-
-
-def latest_pull_requests(
-    session: Session, inbox: Inbox, limit: int = 5
-) -> Sequence[Article]:
-    """Recent `[GIT PULL] ...` originals in `inbox`."""
-    return session.execute(
-        _inbox_scoped(
-            select(Article).where(Article.subject.ilike("[GIT PULL]%")),
-            inbox,
-        )
-        .order_by(Article.date.desc().nulls_last())
-        .limit(limit)
-    ).scalars().all()
-
-
-def latest_stable_releases(
-    session: Session, inbox: Inbox, limit: int = 5
-) -> Sequence[Article]:
-    """Recent release announcements in `inbox`: subject starting with
-    'Linux <digit>...'. GLOB is case-sensitive in SQLite."""
-    return session.execute(
-        _inbox_scoped(
-            select(Article).where(text("subject GLOB 'Linux [0-9]*'")),
-            inbox,
-        )
-        .order_by(Article.date.desc().nulls_last())
-        .limit(limit)
-    ).scalars().all()
-
-
-def this_day_in_history(
-    session: Session, inbox: Inbox, years_ago: int = 5, limit: int = 5
-) -> Sequence[Article]:
-    """A few messages from the same calendar day N years ago in `inbox`."""
-    now = datetime.now(timezone.utc)
-    target = now - timedelta(days=365 * years_ago)
-    start = target.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=1)
-    return session.execute(
-        _inbox_scoped(
-            select(Article).where(
-                Article.date >= start,
-                Article.date < end,
-            ),
-            inbox,
-        )
-        .order_by(text("RANDOM()"))
-        .limit(limit)
-    ).scalars().all()
+@dataclass
+class ArticleSummary:
+    """Compact view of an Article for cached listings (trackers, pull
+    requests, stable releases, history). Carries just the fields
+    templates and `_msg_url` need, so it round-trips through the
+    cache without dragging the ORM along."""
+    id: int
+    subject: str | None
+    author: str | None
+    date: datetime | None
 
 
 @dataclass
@@ -114,8 +61,152 @@ class DailyVolume:
     max_count: int
 
 
+cache.register("ArticleSummary", ArticleSummary)
 cache.register("ArchiveStats", ArchiveStats)
 cache.register("DailyVolume", DailyVolume)
+
+
+def _inbox_scoped(stmt, inbox: Inbox):
+    """Restrict `stmt` to articles linked to `inbox`, via an EXISTS
+    subquery rather than a JOIN.
+
+    SQLite's planner mis-prices the parameterized `JOIN article_lists
+    ON ... WHERE inbox_id = ?` shape and picks a scan-and-sort over
+    the entire `article_lists` table — order-of-seconds on a multi-
+    million-row inbox. The EXISTS form makes "walk articles in the
+    relevant order, probe `article_lists` via composite PK" the
+    natural plan, matching what literal binds would have produced.
+    """
+    return stmt.where(
+        select(ArticleList.article_id)
+        .where(
+            ArticleList.article_id == Article.id,
+            ArticleList.inbox_id == inbox.id,
+        )
+        .exists()
+    )
+
+
+def _summarize(articles: Sequence[Article]) -> list[ArticleSummary]:
+    return [
+        ArticleSummary(id=a.id, subject=a.subject, author=a.author, date=a.date)
+        for a in articles
+    ]
+
+
+def author_recent(
+    session: Session,
+    inbox: Inbox,
+    email_substring: str,
+    limit: int = 5,
+    force: bool = False,
+) -> list[ArticleSummary]:
+    """Last N messages in `inbox` whose From contains the substring."""
+    def compute() -> list[ArticleSummary]:
+        rows = session.execute(
+            _inbox_scoped(
+                select(Article).where(Article.author.ilike(f"%{email_substring}%")),
+                inbox,
+            )
+            .order_by(Article.date.desc().nulls_last())
+            .limit(limit)
+        ).scalars().all()
+        return _summarize(rows)
+
+    return cache.get_or_compute(
+        session,
+        f"author_recent:{inbox.name}:{email_substring}:{limit}",
+        LISTING_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
+def latest_pull_requests(
+    session: Session, inbox: Inbox, limit: int = 5, force: bool = False
+) -> list[ArticleSummary]:
+    """Recent `[GIT PULL] ...` originals in `inbox`."""
+    def compute() -> list[ArticleSummary]:
+        rows = session.execute(
+            _inbox_scoped(
+                select(Article).where(Article.subject.ilike("[GIT PULL]%")),
+                inbox,
+            )
+            .order_by(Article.date.desc().nulls_last())
+            .limit(limit)
+        ).scalars().all()
+        return _summarize(rows)
+
+    return cache.get_or_compute(
+        session,
+        f"latest_pull_requests:{inbox.name}:{limit}",
+        LISTING_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
+def latest_stable_releases(
+    session: Session, inbox: Inbox, limit: int = 5, force: bool = False
+) -> list[ArticleSummary]:
+    """Recent release announcements in `inbox`: subject starting with
+    'Linux <digit>...'. GLOB is case-sensitive in SQLite."""
+    def compute() -> list[ArticleSummary]:
+        rows = session.execute(
+            _inbox_scoped(
+                select(Article).where(text("subject GLOB 'Linux [0-9]*'")),
+                inbox,
+            )
+            .order_by(Article.date.desc().nulls_last())
+            .limit(limit)
+        ).scalars().all()
+        return _summarize(rows)
+
+    return cache.get_or_compute(
+        session,
+        f"latest_stable_releases:{inbox.name}:{limit}",
+        LISTING_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
+def this_day_in_history(
+    session: Session,
+    inbox: Inbox,
+    years_ago: int = 5,
+    limit: int = 5,
+    force: bool = False,
+) -> list[ArticleSummary]:
+    """A few messages from the same calendar day N years ago in `inbox`,
+    most recent on that day first. (Was previously `ORDER BY RANDOM()`,
+    which forced a full materialize of the day's rows.)"""
+    today = date.today()
+
+    def compute() -> list[ArticleSummary]:
+        target = datetime.now(timezone.utc) - timedelta(days=365 * years_ago)
+        start = target.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        rows = session.execute(
+            _inbox_scoped(
+                select(Article).where(
+                    Article.date >= start,
+                    Article.date < end,
+                ),
+                inbox,
+            )
+            .order_by(Article.date.desc().nulls_last())
+            .limit(limit)
+        ).scalars().all()
+        return _summarize(rows)
+
+    return cache.get_or_compute(
+        session,
+        f"this_day_in_history:{inbox.name}:{years_ago}:{today.isoformat()}:{limit}",
+        LISTING_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
 
 
 def daily_volume(

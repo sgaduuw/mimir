@@ -11,7 +11,7 @@ from datetime import date, datetime, timezone
 import pytest
 
 from mimir.cache import _TAGS, _TYPES, _decode, _encode
-from mimir.dashboard import ArchiveStats, DailyVolume
+from mimir.dashboard import ArchiveStats, ArticleSummary, DailyVolume
 from mimir.threading import ActiveThread
 
 
@@ -21,10 +21,23 @@ def _roundtrip(value):
 
 
 def test_registry_has_expected_tags():
-    assert set(_TYPES.keys()) == {"ActiveThread", "ArchiveStats", "DailyVolume"}
+    assert set(_TYPES.keys()) == {
+        "ActiveThread", "ArchiveStats", "ArticleSummary", "DailyVolume",
+    }
     assert _TAGS[ActiveThread] == "ActiveThread"
     assert _TAGS[ArchiveStats] == "ArchiveStats"
+    assert _TAGS[ArticleSummary] == "ArticleSummary"
     assert _TAGS[DailyVolume] == "DailyVolume"
+
+
+def test_article_summary_roundtrip():
+    from datetime import datetime, timezone
+
+    s = ArticleSummary(
+        id=42, subject="patch", author="Foo <foo@bar>",
+        date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    )
+    assert _roundtrip(s) == s
 
 
 @pytest.mark.parametrize("value", [None, True, False, 0, 1, -1, 1.5, "", "hello"])
