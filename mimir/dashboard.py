@@ -13,7 +13,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
-from mimir.models import Article
+from mimir.models import Article, ArticleList, Inbox
 from mimir.threading import _coerce_dt
 
 STATS_CACHE_TTL_SEC = 86400  # 1 day
@@ -26,15 +26,21 @@ DAILY_VOLUME_CACHE_TTL_SEC = 3600  # 1 hour
 STATS_MIN_PLAUSIBLE_DATE = "1995-01-01"
 
 
+def _inbox_scoped(stmt, inbox: Inbox):
+    """Add the article_lists join + inbox filter to a select(Article)."""
+    return stmt.join(ArticleList, ArticleList.article_id == Article.id).where(
+        ArticleList.inbox_id == inbox.id
+    )
+
+
 def author_recent(
-    session: Session, list_name: str, email_substring: str, limit: int = 5
+    session: Session, inbox: Inbox, email_substring: str, limit: int = 5
 ) -> Sequence[Article]:
-    """Last N messages in `list_name` whose From contains the substring."""
+    """Last N messages in `inbox` whose From contains the substring."""
     return session.execute(
-        select(Article)
-        .where(
-            Article.list_name == list_name,
-            Article.author.ilike(f"%{email_substring}%"),
+        _inbox_scoped(
+            select(Article).where(Article.author.ilike(f"%{email_substring}%")),
+            inbox,
         )
         .order_by(Article.date.desc().nulls_last())
         .limit(limit)
@@ -42,14 +48,13 @@ def author_recent(
 
 
 def latest_pull_requests(
-    session: Session, list_name: str, limit: int = 5
+    session: Session, inbox: Inbox, limit: int = 5
 ) -> Sequence[Article]:
-    """Recent `[GIT PULL] ...` originals in `list_name`."""
+    """Recent `[GIT PULL] ...` originals in `inbox`."""
     return session.execute(
-        select(Article)
-        .where(
-            Article.list_name == list_name,
-            Article.subject.ilike("[GIT PULL]%"),
+        _inbox_scoped(
+            select(Article).where(Article.subject.ilike("[GIT PULL]%")),
+            inbox,
         )
         .order_by(Article.date.desc().nulls_last())
         .limit(limit)
@@ -57,15 +62,14 @@ def latest_pull_requests(
 
 
 def latest_stable_releases(
-    session: Session, list_name: str, limit: int = 5
+    session: Session, inbox: Inbox, limit: int = 5
 ) -> Sequence[Article]:
-    """Recent release announcements in `list_name`: subject starting with
+    """Recent release announcements in `inbox`: subject starting with
     'Linux <digit>...'. GLOB is case-sensitive in SQLite."""
     return session.execute(
-        select(Article)
-        .where(
-            Article.list_name == list_name,
-            text("subject GLOB 'Linux [0-9]*'"),
+        _inbox_scoped(
+            select(Article).where(text("subject GLOB 'Linux [0-9]*'")),
+            inbox,
         )
         .order_by(Article.date.desc().nulls_last())
         .limit(limit)
@@ -73,19 +77,20 @@ def latest_stable_releases(
 
 
 def this_day_in_history(
-    session: Session, list_name: str, years_ago: int = 5, limit: int = 5
+    session: Session, inbox: Inbox, years_ago: int = 5, limit: int = 5
 ) -> Sequence[Article]:
-    """A few messages from the same calendar day N years ago in `list_name`."""
+    """A few messages from the same calendar day N years ago in `inbox`."""
     now = datetime.now(timezone.utc)
     target = now - timedelta(days=365 * years_ago)
     start = target.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
     return session.execute(
-        select(Article)
-        .where(
-            Article.list_name == list_name,
-            Article.date >= start,
-            Article.date < end,
+        _inbox_scoped(
+            select(Article).where(
+                Article.date >= start,
+                Article.date < end,
+            ),
+            inbox,
         )
         .order_by(text("RANDOM()"))
         .limit(limit)
@@ -110,11 +115,11 @@ class DailyVolume:
 
 
 def daily_volume(
-    session: Session, list_name: str, days: int = 30, force: bool = False
+    session: Session, inbox: Inbox, days: int = 30, force: bool = False
 ) -> DailyVolume:
-    """Daily message counts in `list_name` for the last `days` days,
-    zero-filled. Cached per (list, days) key for 1 hour."""
-    cache_key = f"daily_volume:{list_name}:{days}"
+    """Daily message counts in `inbox` for the last `days` days,
+    zero-filled. Cached per (inbox, days) key for 1 hour."""
+    cache_key = f"daily_volume:{inbox.name}:{days}"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -125,13 +130,14 @@ def daily_volume(
     rows = session.execute(
         text(
             """
-            SELECT date(date) AS day, COUNT(*) AS n
-            FROM articles
-            WHERE list_name = :list AND date >= :start
+            SELECT date(a.date) AS day, COUNT(*) AS n
+            FROM articles a
+            JOIN article_lists al ON al.article_id = a.id
+            WHERE al.inbox_id = :inbox_id AND a.date >= :start
             GROUP BY day
             """
         ),
-        {"list": list_name, "start": start.isoformat()},
+        {"inbox_id": inbox.id, "start": start.isoformat()},
     ).all()
     counts = {date.fromisoformat(r.day): r.n for r in rows if r.day}
     series = [
@@ -147,12 +153,12 @@ def daily_volume(
 
 
 def archive_stats(
-    session: Session, list_name: str, force: bool = False
+    session: Session, inbox: Inbox, force: bool = False
 ) -> ArchiveStats:
-    """Total row count + date span + epoch count for `list_name`. Cached
-    per-list for 24h. COUNT(*) over a single list still does a scan but
-    is cheaper than across all lists."""
-    cache_key = f"archive_stats:{list_name}"
+    """Total row count + date span + epoch count for `inbox`. Cached
+    per-inbox for 24h. COUNT(*) over a single inbox still does a scan but
+    is cheaper than across all inboxes."""
+    cache_key = f"archive_stats:{inbox.name}"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -162,14 +168,15 @@ def archive_stats(
         text(
             """
             SELECT COUNT(*) AS total,
-                   MIN(date) FILTER (WHERE date >= :min_date) AS first_date,
-                   MAX(date) AS last_date,
-                   COUNT(DISTINCT epoch) AS epochs
-            FROM articles
-            WHERE list_name = :list
+                   MIN(a.date) FILTER (WHERE a.date >= :min_date) AS first_date,
+                   MAX(a.date) AS last_date,
+                   COUNT(DISTINCT al.epoch) AS epochs
+            FROM articles a
+            JOIN article_lists al ON al.article_id = a.id
+            WHERE al.inbox_id = :inbox_id
             """
         ),
-        {"list": list_name, "min_date": STATS_MIN_PLAUSIBLE_DATE},
+        {"inbox_id": inbox.id, "min_date": STATS_MIN_PLAUSIBLE_DATE},
     ).one()
     stats = ArchiveStats(
         total=row.total,

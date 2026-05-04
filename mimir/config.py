@@ -4,10 +4,11 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Inbox(BaseModel):
-    """A single public-inbox archive that mimir indexes. The label (the
-    `Settings.inboxes` dict key) is used as the URL segment and as the
-    `Article.list` value."""
+class InboxConfig(BaseModel):
+    """Env-side description of an inbox. The matching ORM model is
+    `mimir.models.Inbox`, which is bootstrapped from these entries on
+    app startup. The `Settings.inboxes` dict key becomes `Inbox.name`
+    (URL slug)."""
     mirror_path: Path
     upstream_url: str
 
@@ -25,11 +26,16 @@ class Settings(BaseSettings):
     # mailing list; the schema and routes are list-aware. Override via
     # JSON in the INBOXES env var, e.g.
     #   INBOXES='{"lkml": {"mirror_path": "...", "upstream_url": "..."}, "linux-arm-kernel": {...}}'
-    inboxes: dict[str, Inbox] = {
-        "lkml": Inbox(
-            mirror_path=Path("lkml/git"),
+    inboxes: dict[str, InboxConfig] = {
+        "lkml": InboxConfig(
+            mirror_path=Path("Inboxes/lkml/git"),
             upstream_url="https://lore.kernel.org/lkml",
         ),
+        "linux-fsdevel": InboxConfig(
+            mirror_path=Path("Inboxes/linux-fsdevel/git"),
+            upstream_url="https://lore.kernel.org/linux-fsdevel",
+        ),
+
     }
 
     # Senders whose email address is shown in full in the UI. Everyone

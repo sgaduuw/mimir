@@ -1,16 +1,17 @@
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import click
 from flask import Flask
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
-from mimir.config import settings
 from mimir.dashboard import archive_stats, daily_volume
 from mimir.extensions import Base, SessionLocal, engine
+from mimir.inboxes import bootstrap_inboxes
 from mimir.ingest import DEFAULT_WORKERS, ingest_all, ingest_epoch
-from mimir.models import Article, IngestState
+from mimir.models import Article, ArticleList, Inbox, IngestState
 from mimir.store import MessageNotFound, read_message
 from mimir.sync import sync_epochs
 from mimir.threading import active_threads, threads_for_day
@@ -24,6 +25,16 @@ def _configure_logging(verbose: int) -> None:
     else:
         level = logging.WARNING
     logging.basicConfig(level=level, format="%(levelname)s %(message)s")
+
+
+def _select_inboxes(session, only: str | None) -> dict[str, Inbox]:
+    """Bootstrap from env, then narrow to one inbox name if provided."""
+    inboxes = bootstrap_inboxes(session)
+    if only is None:
+        return inboxes
+    if only not in inboxes:
+        raise click.ClickException(f"unknown inbox: {only!r}")
+    return {only: inboxes[only]}
 
 
 @click.command("init-db")
@@ -68,18 +79,14 @@ def ingest_command(
 ) -> None:
     """Walk every configured inbox's mirror and import new messages."""
     _configure_logging(verbose)
-    if inbox_filter is not None:
-        if inbox_filter not in settings.inboxes:
-            raise click.ClickException(f"unknown inbox: {inbox_filter!r}")
-        inboxes = {inbox_filter: settings.inboxes[inbox_filter]}
-    else:
-        inboxes = settings.inboxes
+    with SessionLocal() as session:
+        inboxes = _select_inboxes(session, inbox_filter)
 
-    results_by_list = ingest_all(inboxes=inboxes, limit=limit, workers=workers)
-    for list_name, results in results_by_list.items():
+    results_by_name = ingest_all(inboxes=inboxes, limit=limit, workers=workers)
+    for name, results in results_by_name.items():
         for r in results:
             click.echo(
-                f"{list_name}/{r.epoch}: new={r.new} skipped={r.skipped} "
+                f"{name}/{r.epoch}: new={r.new} skipped={r.skipped} "
                 f"failed={r.failed} head={r.last_commit_sha}"
             )
 
@@ -118,29 +125,31 @@ def reindex_command(
     """
     _configure_logging(verbose)
 
-    inbox = settings.inboxes.get(inbox_name)
-    if inbox is None:
-        raise click.ClickException(f"unknown inbox: {inbox_name!r}")
-    epoch_path = inbox.mirror_path / epoch
-    if not epoch_path.exists():
-        raise click.ClickException(f"epoch repo not found: {epoch_path}")
-
     with SessionLocal() as session:
+        inboxes = _select_inboxes(session, inbox_name)
+        inbox = inboxes[inbox_name]
+        epoch_path = Path(inbox.mirror_path) / epoch
+        if not epoch_path.exists():
+            raise click.ClickException(f"epoch repo not found: {epoch_path}")
+
         if from_scratch:
+            # Drop the per-inbox link rows. Articles themselves stay (they
+            # may also be linked from other inboxes via cross-posts); the
+            # re-walk will re-add ArticleList rows.
             deleted = session.execute(
-                delete(Article).where(
-                    Article.list_name == inbox_name,
-                    Article.epoch == epoch,
+                delete(ArticleList).where(
+                    ArticleList.inbox_id == inbox.id,
+                    ArticleList.epoch == epoch,
                 )
             ).rowcount
-            click.echo(f"deleted {deleted} existing articles for {inbox_name}/{epoch}")
+            click.echo(f"deleted {deleted} existing inbox-links for {inbox_name}/{epoch}")
 
-        state = session.get(IngestState, (inbox_name, epoch))
+        state = session.get(IngestState, (inbox.id, epoch))
         if state is not None:
             state.last_commit_sha = None
         session.commit()
 
-        result = ingest_epoch(session, inbox_name, epoch, epoch_path, workers=workers)
+        result = ingest_epoch(session, inbox, epoch, epoch_path, workers=workers)
 
     click.echo(
         f"{inbox_name}/{result.epoch}: new={result.new} skipped={result.skipped} "
@@ -150,27 +159,56 @@ def reindex_command(
 
 @click.command("show")
 @click.argument("message_id")
+@click.option(
+    "--inbox",
+    "inbox_filter",
+    type=str,
+    default=None,
+    help="Read the blob from this inbox's mirror. Default: first linked inbox.",
+)
 @click.option("--body-chars", type=int, default=2000, help="Truncate body output (-1 for full).")
 @click.option("--no-body", is_flag=True, help="Skip the body; useful for inspecting threading state alone.")
-def show_command(message_id: str, body_chars: int, no_body: bool) -> None:
+def show_command(
+    message_id: str,
+    inbox_filter: str | None,
+    body_chars: int,
+    no_body: bool,
+) -> None:
     """Fetch and pretty-print one article by Message-ID.
 
-    Shows DB-side fields (epoch, commit_sha, indexed date, thread_parent
+    Shows DB-side fields (inboxes it's linked to, indexed date, thread_parent
     and whether it's in the archive) alongside the freshly re-parsed blob
     (full headers, body, attachments). Designed for threading debug.
     """
-    from sqlalchemy import select
-    from mimir.models import Article
-
     with SessionLocal() as session:
+        bootstrap_inboxes(session)
+
         article = session.execute(
             select(Article).where(Article.message_id == message_id)
         ).scalar_one_or_none()
         if article is None:
             raise click.ClickException(f"no article with message_id={message_id!r}")
 
+        links = session.execute(
+            select(ArticleList).where(ArticleList.article_id == article.id)
+        ).scalars().all()
+        if not links:
+            raise click.ClickException(f"article {message_id!r} has no inbox links")
+
+        if inbox_filter is not None:
+            chosen = next(
+                (link for link in links if link.inbox.name == inbox_filter), None
+            )
+            if chosen is None:
+                raise click.ClickException(
+                    f"article not linked to inbox {inbox_filter!r}; "
+                    f"linked to: {[link.inbox.name for link in links]}"
+                )
+        else:
+            chosen = links[0]
+
         try:
-            parsed = read_message(session, message_id)
+            parsed = read_message(session, chosen.inbox, message_id)
         except MessageNotFound as exc:
             raise click.ClickException(str(exc))
 
@@ -183,15 +221,13 @@ def show_command(message_id: str, body_chars: int, no_body: bool) -> None:
 
     click.echo("--- DB row ---")
     click.echo(f"id:            {article.id}")
-    click.echo(f"epoch:         {article.epoch}")
-    click.echo(f"commit_sha:    {article.commit_sha}")
-    click.echo(f"date:          {article.date.isoformat() if article.date else ''}")
-    click.echo(f"in_reply_to:   {article.in_reply_to or '(none)'}")
-    click.echo(f"references:    {article.references or '(none)'}")
     click.echo(
-        f"thread_parent: {article.thread_parent or '(none)'}"
-        + (f"  [in DB: {parent_present}]" if article.thread_parent else "")
+        f"linked inboxes:{', '.join(f'{link.inbox.name}/{link.epoch}@{link.commit_sha[:10]}' for link in links)}"
     )
+    click.echo(f"reading from:  {chosen.inbox.name}")
+    click.echo(f"date:          {article.date.isoformat() if article.date else ''}")
+    click.echo(f"thread_parent: {article.thread_parent or '(none)'}"
+               + (f"  [in DB: {parent_present}]" if article.thread_parent else ""))
     click.echo()
     click.echo("--- parsed blob ---")
     click.echo(f"Message-ID: {parsed.message_id}")
@@ -249,33 +285,29 @@ def update_command(
     """Discover new upstream epochs, fetch updates, and ingest in one shot.
     Iterates over every configured inbox unless --inbox restricts to one."""
     _configure_logging(verbose)
-    if inbox_filter is not None:
-        if inbox_filter not in settings.inboxes:
-            raise click.ClickException(f"unknown inbox: {inbox_filter!r}")
-        inboxes = {inbox_filter: settings.inboxes[inbox_filter]}
-    else:
-        inboxes = settings.inboxes
+    with SessionLocal() as session:
+        inboxes = _select_inboxes(session, inbox_filter)
 
-    for list_name, inbox in inboxes.items():
+    for name, inbox in inboxes.items():
         sync_result = sync_epochs(
             inbox.upstream_url,
-            inbox.mirror_path,
+            Path(inbox.mirror_path),
             discover_new=not skip_clone,
             fetch_existing=not skip_fetch,
         )
         click.echo(
-            f"{list_name} sync: cloned={sync_result.cloned} "
+            f"{name} sync: cloned={sync_result.cloned} "
             f"fetched={sync_result.fetched} failed={sync_result.failed}"
         )
 
     if skip_ingest:
         return
 
-    results_by_list = ingest_all(inboxes=inboxes, workers=workers)
-    for list_name, results in results_by_list.items():
+    results_by_name = ingest_all(inboxes=inboxes, workers=workers)
+    for name, results in results_by_name.items():
         for r in results:
             click.echo(
-                f"{list_name}/{r.epoch}: new={r.new} skipped={r.skipped} "
+                f"{name}/{r.epoch}: new={r.new} skipped={r.skipped} "
                 f"failed={r.failed} head={r.last_commit_sha}"
             )
 
@@ -287,7 +319,7 @@ def warm_cache_command() -> None:
     Designed to run from cron or a systemd timer. Refreshes the on-disk
     cache (`Settings.cache_path`) so the Flask server picks up
     pre-computed results on the next request, avoiding cold-start
-    latency. Iterates over every inbox in `Settings.inboxes`.
+    latency.
 
     Example crontab:
 
@@ -295,21 +327,22 @@ def warm_cache_command() -> None:
     """
     today = datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
-    targets = []
-    for list_name in settings.inboxes:
-        targets.extend([
-            (f"{list_name} active_threads (7d, 10)",
-             lambda s, ln=list_name: active_threads(s, ln, days=7, limit=10, force=True)),
-            (f"{list_name} threads_for_day (today)",
-             lambda s, ln=list_name: threads_for_day(s, ln, today, force=True)),
-            (f"{list_name} threads_for_day (yesterday)",
-             lambda s, ln=list_name: threads_for_day(s, ln, yesterday, force=True)),
-            (f"{list_name} daily_volume (30d)",
-             lambda s, ln=list_name: daily_volume(s, ln, days=30, force=True)),
-            (f"{list_name} archive_stats",
-             lambda s, ln=list_name: archive_stats(s, ln, force=True)),
-        ])
     with SessionLocal() as session:
+        inboxes = bootstrap_inboxes(session)
+        targets = []
+        for inbox in inboxes.values():
+            targets.extend([
+                (f"{inbox.name} active_threads (7d, 10)",
+                 lambda s, ib=inbox: active_threads(s, ib, days=7, limit=10, force=True)),
+                (f"{inbox.name} threads_for_day (today)",
+                 lambda s, ib=inbox: threads_for_day(s, ib, today, force=True)),
+                (f"{inbox.name} threads_for_day (yesterday)",
+                 lambda s, ib=inbox: threads_for_day(s, ib, yesterday, force=True)),
+                (f"{inbox.name} daily_volume (30d)",
+                 lambda s, ib=inbox: daily_volume(s, ib, days=30, force=True)),
+                (f"{inbox.name} archive_stats",
+                 lambda s, ib=inbox: archive_stats(s, ib, force=True)),
+            ])
         for label, fn in targets:
             t0 = time.perf_counter()
             fn(session)

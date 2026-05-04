@@ -38,7 +38,7 @@
     {% for r in related %}
     <li>
       <small>{{ r.date.strftime('%Y-%m-%d') if r.date else '?' }}</small>
-      &middot; <a href="{{ r|msg_url }}">{{ r.subject or '(no subject)' }}</a>
+      &middot; <a href="{{ r|msg_url(list_name) }}">{{ r.subject or '(no subject)' }}</a>
       &middot; <small>{{ r.author|safe_from }}</small>
     </li>
     {% endfor %}
@@ -54,10 +54,10 @@
   <ul>
     {% for att in parsed.attachments %}
     <li>
-      <a href="{{ article|msg_url }}/attachment/{{ loop.index0 }}">{{ att.filename or '(unnamed)' }}</a>
+      <a href="{{ article|msg_url(list_name) }}/attachment/{{ loop.index0 }}">{{ att.filename or '(unnamed)' }}</a>
       <small>[{{ att.content_type }}] {{ att.content|length }} bytes
         {% if att|is_previewable %}&middot;
-          <a href="{{ article|msg_url }}/attachment/{{ loop.index0 }}/preview">preview</a>
+          <a href="{{ article|msg_url(list_name) }}/attachment/{{ loop.index0 }}/preview">preview</a>
         {% endif %}
       </small>
     </li>

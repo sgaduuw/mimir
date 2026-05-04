@@ -9,6 +9,7 @@ from pygments.lexers import get_lexer_for_filename, guess_lexer
 from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from mimir.config import settings
 from mimir.dashboard import (
@@ -20,7 +21,7 @@ from mimir.dashboard import (
     this_day_in_history,
 )
 from mimir.extensions import SessionLocal
-from mimir.models import Article
+from mimir.models import Article, ArticleList, Inbox
 from mimir.rendering import URL_OR_MSGID_RE, render_body
 from mimir.store import MessageNotFound, read_message
 from mimir.threading import active_threads, find_thread_root, get_thread, threads_for_day
@@ -28,11 +29,26 @@ from mimir.threading import active_threads, find_thread_root, get_thread, thread
 bp_web = Blueprint("web", __name__)
 
 
+def _get_inbox_or_404(session: Session, name: str) -> Inbox:
+    """Resolve URL slug → Inbox row. Single source of truth for whether
+    a `/<list_name>/...` URL is valid."""
+    inbox = session.execute(
+        select(Inbox).where(Inbox.name == name)
+    ).scalar_one_or_none()
+    if inbox is None:
+        abort(404)
+    return inbox
+
+
 @bp_web.app_context_processor
 def _inject_template_globals() -> dict:
     """Inboxes are needed by base.html for the nav. `current_list` is set
     per-view (None on the meta-index `/`)."""
-    return {"inboxes": list(settings.inboxes.keys())}
+    with SessionLocal() as session:
+        names = [
+            n for n, in session.execute(select(Inbox.name).order_by(Inbox.name))
+        ]
+    return {"inboxes": names}
 
 
 # Cache-Control per endpoint. Lets edge caches (Cloudflare, an nginx in
@@ -62,18 +78,19 @@ def _add_cache_headers(response):
     return response
 
 
-def _msg_url(article: Article) -> str:
-    """Build the canonical /<list>/YYYY/MM/<id> URL for an Article.
-    The list comes from the article itself so URLs survive multi-list
-    expansion. Integer id (not Message-ID) keeps the URL email-safe."""
+def _msg_url(article: Article, inbox_name: str) -> str:
+    """Build the canonical /<list>/YYYY/MM/<id> URL for an Article in
+    `inbox_name`. With cross-posts, the same article can render at
+    multiple URLs (one per inbox it's linked to); the caller picks
+    based on context (the URL's inbox)."""
     if article.date is not None:
-        return f"/{article.list_name}/{article.date.year}/{article.date.month:02d}/{article.id}"
-    return f"/{article.list_name}/0000/00/{article.id}"
+        return f"/{inbox_name}/{article.date.year}/{article.date.month:02d}/{article.id}"
+    return f"/{inbox_name}/0000/00/{article.id}"
 
 
 @bp_web.app_template_filter("msg_url")
-def _msg_url_filter(article: Article) -> str:
-    return _msg_url(article)
+def _msg_url_filter(article: Article, inbox_name: str) -> str:
+    return _msg_url(article, inbox_name)
 
 
 @bp_web.app_template_filter("render_body")
@@ -146,11 +163,12 @@ def _safe_from_filter(author: str | None) -> str:
 RECENT_PAGE_SIZE = 10
 
 
-def _fetch_recent(session, list_name: str, offset: int, limit: int):
-    """Fetch limit+1 recent articles in `list_name` to detect has_more cheaply."""
+def _fetch_recent(session: Session, inbox: Inbox, offset: int, limit: int):
+    """Fetch limit+1 recent articles in `inbox` to detect has_more cheaply."""
     rows = session.execute(
         select(Article)
-        .where(Article.list_name == list_name)
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .where(ArticleList.inbox_id == inbox.id)
         .order_by(Article.date.desc().nulls_last())
         .offset(offset)
         .limit(limit + 1)
@@ -163,9 +181,10 @@ def _fetch_recent(session, list_name: str, offset: int, limit: int):
 def index():
     """Meta-index: list of configured inboxes with per-inbox stats."""
     with SessionLocal() as session:
+        inboxes = session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
         inbox_summaries = [
-            {"name": name, "stats": archive_stats(session, name)}
-            for name in settings.inboxes
+            {"name": inbox.name, "stats": archive_stats(session, inbox)}
+            for inbox in inboxes
         ]
     return render_template(
         "index.html",
@@ -178,24 +197,23 @@ def index():
 def inbox_dashboard(list_name: str):
     """Per-inbox dashboard: active threads, pulls, releases, trackers,
     history, recent, sparkline, stats."""
-    if list_name not in settings.inboxes:
-        abort(404)
     with SessionLocal() as session:
-        active = active_threads(session, list_name, days=7, limit=10)
+        inbox = _get_inbox_or_404(session, list_name)
+        active = active_threads(session, inbox, days=7, limit=10)
         trackers = [
-            {"label": label, "messages": author_recent(session, list_name, substr, 5)}
+            {"label": label, "messages": author_recent(session, inbox, substr, 5)}
             for label, substr in settings.tracked_authors.items()
         ]
-        pulls = latest_pull_requests(session, list_name, limit=5)
-        stable = latest_stable_releases(session, list_name, limit=5)
-        history = this_day_in_history(session, list_name, years_ago=5, limit=3)
-        recent, recent_has_more = _fetch_recent(session, list_name, 0, RECENT_PAGE_SIZE)
-        stats = archive_stats(session, list_name)
-        spark = daily_volume(session, list_name, days=30)
+        pulls = latest_pull_requests(session, inbox, limit=5)
+        stable = latest_stable_releases(session, inbox, limit=5)
+        history = this_day_in_history(session, inbox, years_ago=5, limit=3)
+        recent, recent_has_more = _fetch_recent(session, inbox, 0, RECENT_PAGE_SIZE)
+        stats = archive_stats(session, inbox)
+        spark = daily_volume(session, inbox, days=30)
     return render_template(
         "inbox.html",
-        list_name=list_name,
-        current_list=list_name,
+        list_name=inbox.name,
+        current_list=inbox.name,
         active=active,
         trackers=trackers,
         pulls=pulls,
@@ -211,23 +229,24 @@ def inbox_dashboard(list_name: str):
 
 def _daily_view(list_name: str, day: date_cls, heading: str):
     """Shared renderer for /<list>/today and /<list>/yesterday."""
-    if list_name not in settings.inboxes:
-        abort(404)
     start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
     end = start + timedelta(days=1)
     with SessionLocal() as session:
-        threads = threads_for_day(session, list_name, day)
+        inbox = _get_inbox_or_404(session, list_name)
+        threads = threads_for_day(session, inbox, day)
         total = session.scalar(
-            select(func.count(Article.id)).where(
-                Article.list_name == list_name,
+            select(func.count(Article.id))
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
                 Article.date >= start.strftime("%Y-%m-%d %H:%M:%S"),
                 Article.date < end.strftime("%Y-%m-%d %H:%M:%S"),
             )
         )
     return render_template(
         "daily.html",
-        list_name=list_name,
-        current_list=list_name,
+        list_name=inbox.name,
+        current_list=inbox.name,
         day=day,
         heading=heading,
         threads=threads,
@@ -252,32 +271,38 @@ def api_recent(list_name: str):
     """HTMX load-more endpoint for the Recent messages list, scoped to
     one inbox. Returns the `_recent_items.html` partial: the next page
     of <li>s plus a fresh 'Load more' trigger (or nothing, if exhausted)."""
-    if list_name not in settings.inboxes:
-        abort(404)
     offset = max(0, request.args.get("offset", default=0, type=int))
     with SessionLocal() as session:
-        recent, recent_has_more = _fetch_recent(session, list_name, offset, RECENT_PAGE_SIZE)
+        inbox = _get_inbox_or_404(session, list_name)
+        recent, recent_has_more = _fetch_recent(session, inbox, offset, RECENT_PAGE_SIZE)
     return render_template(
         "_recent_items.html",
-        list_name=list_name,
+        list_name=inbox.name,
         recent=recent,
         recent_has_more=recent_has_more,
         recent_next_offset=offset + RECENT_PAGE_SIZE,
     )
 
 
-def _fetch_article_for_attachment(session, list_name, year, month, article_id, n):
+def _fetch_article_for_attachment(session, inbox, year, month, article_id, n):
     """Validate URL parts + fetch the n-th attachment via read_message.
     Used by both download and preview routes; aborts 404 on any mismatch."""
-    if list_name not in settings.inboxes:
-        abort(404)
     article = session.get(Article, article_id)
-    if article is None or article.list_name != list_name:
+    if article is None:
+        abort(404)
+    # Article must be linked to the URL's inbox (cross-posts have one row per inbox).
+    linked = session.execute(
+        select(ArticleList.article_id).where(
+            ArticleList.article_id == article_id,
+            ArticleList.inbox_id == inbox.id,
+        )
+    ).scalar_one_or_none()
+    if linked is None:
         abort(404)
     if article.date is None or year != article.date.year or month != article.date.month:
         abort(404)
     try:
-        parsed = read_message(session, article.message_id)
+        parsed = read_message(session, inbox, article.message_id)
     except MessageNotFound:
         abort(404)
     if n < 0 or n >= len(parsed.attachments):
@@ -300,8 +325,9 @@ def _content_disposition(filename: str | None) -> str:
 )
 def attachment_download(list_name: str, year: int, month: int, article_id: int, n: int):
     with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, list_name)
         _, att = _fetch_article_for_attachment(
-            session, list_name, year, month, article_id, n
+            session, inbox, year, month, article_id, n
         )
     return Response(
         att.content,
@@ -315,12 +341,14 @@ def attachment_download(list_name: str, year: int, month: int, article_id: int, 
 )
 def attachment_preview(list_name: str, year: int, month: int, article_id: int, n: int):
     with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, list_name)
         article, att = _fetch_article_for_attachment(
-            session, list_name, year, month, article_id, n
+            session, inbox, year, month, article_id, n
         )
     if not _is_previewable(att):
         return render_template(
             "attachment_preview.html",
+            list_name=inbox.name, current_list=inbox.name,
             article=article, att=att, n=n,
             previewable=False,
         )
@@ -332,6 +360,7 @@ def attachment_preview(list_name: str, year: int, month: int, article_id: int, n
     highlighted = highlight(text_content, lexer, formatter)
     return render_template(
         "attachment_preview.html",
+        list_name=inbox.name, current_list=inbox.name,
         article=article, att=att, n=n,
         previewable=True,
         highlighted=highlighted,
@@ -341,12 +370,19 @@ def attachment_preview(list_name: str, year: int, month: int, article_id: int, n
 
 @bp_web.route("/<list_name>/<int:year>/<int:month>/<int:article_id>")
 def message(list_name: str, year: int, month: int, article_id: int):
-    if list_name not in settings.inboxes:
-        abort(404)
-
     with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, list_name)
         article = session.get(Article, article_id)
-        if article is None or article.list_name != list_name:
+        if article is None:
+            abort(404)
+        # Article must be linked to this inbox (cross-posts get one row per inbox).
+        linked = session.execute(
+            select(ArticleList.article_id).where(
+                ArticleList.article_id == article_id,
+                ArticleList.inbox_id == inbox.id,
+            )
+        ).scalar_one_or_none()
+        if linked is None:
             abort(404)
 
         # The URL date is part of the message's identity; reject mismatches
@@ -355,14 +391,14 @@ def message(list_name: str, year: int, month: int, article_id: int):
             abort(404)
 
         try:
-            parsed = read_message(session, article.message_id)
+            parsed = read_message(session, inbox, article.message_id)
         except MessageNotFound:
             abort(404)
 
         # Full thread context (replaces the v1 parent + immediate-replies view).
-        # Walk constrained to this article's list.
-        root_msgid = find_thread_root(session, list_name, article.message_id) or article.message_id
-        thread = get_thread(session, list_name, root_msgid)
+        # Walk constrained to this article's inbox.
+        root_msgid = find_thread_root(session, inbox, article.message_id) or article.message_id
+        thread = get_thread(session, inbox, root_msgid)
 
         # If the thread root still has a thread_parent (i.e. our walk-up hit
         # the top of what we have, but the original chain continued through
@@ -372,8 +408,10 @@ def message(list_name: str, year: int, month: int, article_id: int):
         parent_off_list: str | None = None
         if thread and thread[0].thread_parent:
             in_db = session.execute(
-                select(Article.id).where(
-                    Article.list_name == list_name,
+                select(Article.id)
+                .join(ArticleList, ArticleList.article_id == Article.id)
+                .where(
+                    ArticleList.inbox_id == inbox.id,
                     Article.message_id == thread[0].thread_parent,
                 )
             ).scalar_one_or_none()
@@ -387,8 +425,9 @@ def message(list_name: str, year: int, month: int, article_id: int):
             related = list(
                 session.execute(
                     select(Article)
+                    .join(ArticleList, ArticleList.article_id == Article.id)
                     .where(
-                        Article.list_name == list_name,
+                        ArticleList.inbox_id == inbox.id,
                         Article.subject_normalized == article.subject_normalized,
                         Article.message_id.not_in(in_thread),
                     )
@@ -399,14 +438,14 @@ def message(list_name: str, year: int, month: int, article_id: int):
 
         # Build URLs for thread nodes (avoids per-node template logic).
         thread_urls = {
-            n.message_id: f"/{list_name}/{n.date.year}/{n.date.month:02d}/{n.id}"
+            n.message_id: f"/{inbox.name}/{n.date.year}/{n.date.month:02d}/{n.id}"
             if n.date
-            else f"/{list_name}/0000/00/{n.id}"
+            else f"/{inbox.name}/0000/00/{n.id}"
             for n in thread
         }
 
         # Resolve in-body <Message-ID> references to canonical URLs.
-        # Restrict to this list — cross-list refs render as plain text.
+        # Restrict to this inbox — cross-list refs render as plain text.
         msgid_urls: dict[str, str] = {}
         if parsed.body:
             candidates = {
@@ -416,17 +455,19 @@ def message(list_name: str, year: int, month: int, article_id: int):
             }
             if candidates:
                 referenced = session.execute(
-                    select(Article).where(
-                        Article.list_name == list_name,
+                    select(Article)
+                    .join(ArticleList, ArticleList.article_id == Article.id)
+                    .where(
+                        ArticleList.inbox_id == inbox.id,
                         Article.message_id.in_(candidates),
                     )
                 ).scalars().all()
-                msgid_urls = {a.message_id: _msg_url(a) for a in referenced}
+                msgid_urls = {a.message_id: _msg_url(a, inbox.name) for a in referenced}
 
     return render_template(
         "message.html",
-        list_name=list_name,
-        current_list=list_name,
+        list_name=inbox.name,
+        current_list=inbox.name,
         parsed=parsed,
         article=article,
         thread=thread,
