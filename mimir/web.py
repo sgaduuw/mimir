@@ -21,6 +21,7 @@ from mimir.dashboard import (
     this_day_in_history,
 )
 from mimir.extensions import SessionLocal
+from mimir.inboxes import inbox_names
 from mimir.models import Article, ArticleList, Inbox
 from mimir.rendering import URL_OR_MSGID_RE, render_body
 from mimir.store import MessageNotFound, read_message
@@ -43,12 +44,9 @@ def _get_inbox_or_404(session: Session, name: str) -> Inbox:
 @bp_web.app_context_processor
 def _inject_template_globals() -> dict:
     """Inboxes are needed by base.html for the nav. `current_inbox` is set
-    per-view (None on the meta-index `/`)."""
-    with SessionLocal() as session:
-        names = [
-            n for n, in session.execute(select(Inbox.name).order_by(Inbox.name))
-        ]
-    return {"inboxes": names}
+    per-view (None on the meta-index `/`). Names come from the cached
+    list populated at bootstrap — no per-request DB hit."""
+    return {"inboxes": inbox_names()}
 
 
 # Cache-Control per endpoint. Lets edge caches (Cloudflare, an nginx in

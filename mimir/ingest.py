@@ -266,8 +266,7 @@ def ingest_all(
     """Ingest every supplied inbox. Returns {inbox_name: [IngestResult, ...]}."""
     if inboxes is None:
         from mimir.inboxes import bootstrap_inboxes
-        with SessionLocal() as session:
-            inboxes = bootstrap_inboxes(session)
+        inboxes = bootstrap_inboxes()
 
     out: dict[str, list[IngestResult]] = {}
     remaining = limit
