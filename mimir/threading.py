@@ -58,6 +58,9 @@ class ActiveThread:
     last_activity: datetime | None
 
 
+cache.register("ActiveThread", ActiveThread)
+
+
 def _coerce_dt(value) -> datetime | None:
     """text() raw SQL bypasses SQLAlchemy type coercion, so DateTime columns
     come back as ISO strings. Coerce back to datetime."""

@@ -114,6 +114,10 @@ class DailyVolume:
     max_count: int
 
 
+cache.register("ArchiveStats", ArchiveStats)
+cache.register("DailyVolume", DailyVolume)
+
+
 def daily_volume(
     session: Session, inbox: Inbox, days: int = 30, force: bool = False
 ) -> DailyVolume:
