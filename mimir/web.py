@@ -163,11 +163,26 @@ RECENT_PAGE_SIZE = 10
 
 
 def _fetch_recent(session: Session, inbox: Inbox, offset: int, limit: int):
-    """Fetch limit+1 recent articles in `inbox` to detect has_more cheaply."""
+    """Fetch limit+1 recent articles in `inbox` to detect has_more cheaply.
+
+    Filtered via EXISTS rather than JOIN: with parameterized
+    `inbox_id=?`, SQLite's planner mis-prices the JOIN form and picks
+    a full scan-and-sort over `article_lists`, taking seconds. The
+    EXISTS form makes "walk articles by date desc, probe article_lists
+    via composite PK" the obvious plan, matching what literal binds
+    would have done.
+    """
+    in_inbox = (
+        select(ArticleList.article_id)
+        .where(
+            ArticleList.article_id == Article.id,
+            ArticleList.inbox_id == inbox.id,
+        )
+        .exists()
+    )
     rows = session.execute(
         select(Article)
-        .join(ArticleList, ArticleList.article_id == Article.id)
-        .where(ArticleList.inbox_id == inbox.id)
+        .where(in_inbox)
         .order_by(Article.date.desc().nulls_last())
         .offset(offset)
         .limit(limit + 1)

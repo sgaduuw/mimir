@@ -8,7 +8,15 @@ from flask import Flask
 from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 
-from mimir.dashboard import archive_stats, daily_volume
+from mimir.config import settings
+from mimir.dashboard import (
+    archive_stats,
+    author_recent,
+    daily_volume,
+    latest_pull_requests,
+    latest_stable_releases,
+    this_day_in_history,
+)
 from mimir.extensions import Base, SessionLocal, engine
 from mimir.inboxes import bootstrap_inboxes
 from mimir.ingest import DEFAULT_WORKERS, ingest_all, ingest_epoch
@@ -343,7 +351,18 @@ def warm_cache_command() -> None:
                  lambda s, ib=inbox: daily_volume(s, ib, days=30, force=True)),
                 (f"{inbox.name} archive_stats",
                  lambda s, ib=inbox: archive_stats(s, ib, force=True)),
+                (f"{inbox.name} latest_pull_requests",
+                 lambda s, ib=inbox: latest_pull_requests(s, ib, limit=5, force=True)),
+                (f"{inbox.name} latest_stable_releases",
+                 lambda s, ib=inbox: latest_stable_releases(s, ib, limit=5, force=True)),
+                (f"{inbox.name} this_day_in_history",
+                 lambda s, ib=inbox: this_day_in_history(s, ib, years_ago=5, limit=3, force=True)),
             ])
+            for label, substr in settings.tracked_authors.items():
+                targets.append((
+                    f"{inbox.name} tracker:{label}",
+                    lambda s, ib=inbox, sub=substr: author_recent(s, ib, sub, 5, force=True),
+                ))
         for label, fn in targets:
             t0 = time.perf_counter()
             fn(session)
