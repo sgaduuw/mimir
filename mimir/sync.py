@@ -96,8 +96,11 @@ def clone_epoch(name: str, clone_url: str, mirror_path: Path) -> Path:
     target = mirror_path / f"{name}.git"
     mirror_path.mkdir(parents=True, exist_ok=True)
     logger.info("cloning epoch %s from %s -> %s", name, clone_url, target)
+    # `--` separates options from positional args; without it, a
+    # hostile manifest could smuggle an option-shaped clone_url like
+    # `--upload-pack=...` into git's argv.
     subprocess.run(
-        ["git", "clone", "--mirror", clone_url, str(target)],
+        ["git", "clone", "--mirror", "--", clone_url, str(target)],
         check=True,
     )
     return target
