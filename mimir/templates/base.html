@@ -17,16 +17,16 @@
     <nav>
       <ul>
         <li><a href="{{ url_for('web.index') }}"><strong>mimir</strong></a></li>
-        {% if current_list %}
-        <li><a href="/{{ current_list }}/">{{ current_list }}</a></li>
-        <li><a href="/{{ current_list }}/today">today</a></li>
-        <li><a href="/{{ current_list }}/yesterday">yesterday</a></li>
+        {% if current_inbox %}
+        <li><a href="/{{ current_inbox }}/">{{ current_inbox }}</a></li>
+        <li><a href="/{{ current_inbox }}/today">today</a></li>
+        <li><a href="/{{ current_inbox }}/yesterday">yesterday</a></li>
         {% endif %}
       </ul>
       <ul>
-        {% if inboxes|length > 1 and not current_list %}
+        {% if inboxes|length > 1 and not current_inbox %}
         <li><small>{{ inboxes|length }} inboxes</small></li>
-        {% elif current_list %}
+        {% elif current_inbox %}
         <li><small>archive</small></li>
         {% endif %}
       </ul>

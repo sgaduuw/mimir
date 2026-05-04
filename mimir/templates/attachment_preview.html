@@ -7,8 +7,8 @@
     <p>
       <small>
         <code>{{ att.content_type }}</code> &middot; {{ att.content|length }} bytes
-        &middot; <a href="{{ article|msg_url(list_name) }}/attachment/{{ n }}">download</a>
-        &middot; <a href="{{ article|msg_url(list_name) }}">back to message</a>
+        &middot; <a href="{{ article|msg_url(inbox_name) }}/attachment/{{ n }}">download</a>
+        &middot; <a href="{{ article|msg_url(inbox_name) }}">back to message</a>
       </small>
     </p>
   </header>

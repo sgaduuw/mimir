@@ -31,7 +31,7 @@ bp_web = Blueprint("web", __name__)
 
 def _get_inbox_or_404(session: Session, name: str) -> Inbox:
     """Resolve URL slug → Inbox row. Single source of truth for whether
-    a `/<list_name>/...` URL is valid."""
+    a `/<inbox_name>/...` URL is valid."""
     inbox = session.execute(
         select(Inbox).where(Inbox.name == name)
     ).scalar_one_or_none()
@@ -42,7 +42,7 @@ def _get_inbox_or_404(session: Session, name: str) -> Inbox:
 
 @bp_web.app_context_processor
 def _inject_template_globals() -> dict:
-    """Inboxes are needed by base.html for the nav. `current_list` is set
+    """Inboxes are needed by base.html for the nav. `current_inbox` is set
     per-view (None on the meta-index `/`)."""
     with SessionLocal() as session:
         names = [
@@ -189,16 +189,16 @@ def index():
     return render_template(
         "index.html",
         inbox_summaries=inbox_summaries,
-        current_list=None,
+        current_inbox=None,
     )
 
 
-@bp_web.route("/<list_name>/")
-def inbox_dashboard(list_name: str):
+@bp_web.route("/<inbox_name>/")
+def inbox_dashboard(inbox_name: str):
     """Per-inbox dashboard: active threads, pulls, releases, trackers,
     history, recent, sparkline, stats."""
     with SessionLocal() as session:
-        inbox = _get_inbox_or_404(session, list_name)
+        inbox = _get_inbox_or_404(session, inbox_name)
         active = active_threads(session, inbox, days=7, limit=10)
         trackers = [
             {"label": label, "messages": author_recent(session, inbox, substr, 5)}
@@ -212,8 +212,8 @@ def inbox_dashboard(list_name: str):
         spark = daily_volume(session, inbox, days=30)
     return render_template(
         "inbox.html",
-        list_name=inbox.name,
-        current_list=inbox.name,
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
         active=active,
         trackers=trackers,
         pulls=pulls,
@@ -227,12 +227,12 @@ def inbox_dashboard(list_name: str):
     )
 
 
-def _daily_view(list_name: str, day: date_cls, heading: str):
+def _daily_view(inbox_name: str, day: date_cls, heading: str):
     """Shared renderer for /<list>/today and /<list>/yesterday."""
     start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
     end = start + timedelta(days=1)
     with SessionLocal() as session:
-        inbox = _get_inbox_or_404(session, list_name)
+        inbox = _get_inbox_or_404(session, inbox_name)
         threads = threads_for_day(session, inbox, day)
         total = session.scalar(
             select(func.count(Article.id))
@@ -245,8 +245,8 @@ def _daily_view(list_name: str, day: date_cls, heading: str):
         )
     return render_template(
         "daily.html",
-        list_name=inbox.name,
-        current_list=inbox.name,
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
         day=day,
         heading=heading,
         threads=threads,
@@ -254,30 +254,30 @@ def _daily_view(list_name: str, day: date_cls, heading: str):
     )
 
 
-@bp_web.route("/<list_name>/today")
-def daily_today(list_name: str):
+@bp_web.route("/<inbox_name>/today")
+def daily_today(inbox_name: str):
     today = datetime.now(timezone.utc).date()
-    return _daily_view(list_name, today, "Today")
+    return _daily_view(inbox_name, today, "Today")
 
 
-@bp_web.route("/<list_name>/yesterday")
-def daily_yesterday(list_name: str):
+@bp_web.route("/<inbox_name>/yesterday")
+def daily_yesterday(inbox_name: str):
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
-    return _daily_view(list_name, yesterday, "Yesterday")
+    return _daily_view(inbox_name, yesterday, "Yesterday")
 
 
-@bp_web.route("/api/<list_name>/recent")
-def api_recent(list_name: str):
+@bp_web.route("/api/<inbox_name>/recent")
+def api_recent(inbox_name: str):
     """HTMX load-more endpoint for the Recent messages list, scoped to
     one inbox. Returns the `_recent_items.html` partial: the next page
     of <li>s plus a fresh 'Load more' trigger (or nothing, if exhausted)."""
     offset = max(0, request.args.get("offset", default=0, type=int))
     with SessionLocal() as session:
-        inbox = _get_inbox_or_404(session, list_name)
+        inbox = _get_inbox_or_404(session, inbox_name)
         recent, recent_has_more = _fetch_recent(session, inbox, offset, RECENT_PAGE_SIZE)
     return render_template(
         "_recent_items.html",
-        list_name=inbox.name,
+        inbox_name=inbox.name,
         recent=recent,
         recent_has_more=recent_has_more,
         recent_next_offset=offset + RECENT_PAGE_SIZE,
@@ -328,11 +328,11 @@ def _content_disposition(filename: str | None) -> str:
 
 
 @bp_web.route(
-    "/<list_name>/<int:year>/<int:month>/<int:article_id>/attachment/<int:n>"
+    "/<inbox_name>/<int:year>/<int:month>/<int:article_id>/attachment/<int:n>"
 )
-def attachment_download(list_name: str, year: int, month: int, article_id: int, n: int):
+def attachment_download(inbox_name: str, year: int, month: int, article_id: int, n: int):
     with SessionLocal() as session:
-        inbox = _get_inbox_or_404(session, list_name)
+        inbox = _get_inbox_or_404(session, inbox_name)
         _, att = _fetch_article_for_attachment(
             session, inbox, year, month, article_id, n
         )
@@ -344,18 +344,18 @@ def attachment_download(list_name: str, year: int, month: int, article_id: int, 
 
 
 @bp_web.route(
-    "/<list_name>/<int:year>/<int:month>/<int:article_id>/attachment/<int:n>/preview"
+    "/<inbox_name>/<int:year>/<int:month>/<int:article_id>/attachment/<int:n>/preview"
 )
-def attachment_preview(list_name: str, year: int, month: int, article_id: int, n: int):
+def attachment_preview(inbox_name: str, year: int, month: int, article_id: int, n: int):
     with SessionLocal() as session:
-        inbox = _get_inbox_or_404(session, list_name)
+        inbox = _get_inbox_or_404(session, inbox_name)
         article, att = _fetch_article_for_attachment(
             session, inbox, year, month, article_id, n
         )
     if not _is_previewable(att):
         return render_template(
             "attachment_preview.html",
-            list_name=inbox.name, current_list=inbox.name,
+            inbox_name=inbox.name, current_inbox=inbox.name,
             article=article, att=att, n=n,
             previewable=False,
         )
@@ -367,7 +367,7 @@ def attachment_preview(list_name: str, year: int, month: int, article_id: int, n
     highlighted = highlight(text_content, lexer, formatter)
     return render_template(
         "attachment_preview.html",
-        list_name=inbox.name, current_list=inbox.name,
+        inbox_name=inbox.name, current_inbox=inbox.name,
         article=article, att=att, n=n,
         previewable=True,
         highlighted=highlighted,
@@ -375,10 +375,10 @@ def attachment_preview(list_name: str, year: int, month: int, article_id: int, n
     )
 
 
-@bp_web.route("/<list_name>/<int:year>/<int:month>/<int:article_id>")
-def message(list_name: str, year: int, month: int, article_id: int):
+@bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>")
+def message(inbox_name: str, year: int, month: int, article_id: int):
     with SessionLocal() as session:
-        inbox = _get_inbox_or_404(session, list_name)
+        inbox = _get_inbox_or_404(session, inbox_name)
         article = session.get(Article, article_id)
         if article is None:
             abort(404)
@@ -473,8 +473,8 @@ def message(list_name: str, year: int, month: int, article_id: int):
 
     return render_template(
         "message.html",
-        list_name=inbox.name,
-        current_list=inbox.name,
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
         parsed=parsed,
         article=article,
         thread=thread,
