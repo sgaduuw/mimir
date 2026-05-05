@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ inbox_name }} {{ month_label }} · {{ site_name }}{% endblock %}
+{% block content %}
+<h2>{{ inbox_name }} <small><em>archive · {{ month_label }}</em></small></h2>
+
+<nav>
+  <ul>
+    {% if prev_url %}
+    <li><a href="{{ prev_url }}">← prev</a></li>
+    {% endif %}
+    <li><a href="/{{ inbox_name }}/{{ year }}/">↑ {{ year }}</a></li>
+  </ul>
+  <ul>
+    {% if next_url %}
+    <li><a href="{{ next_url }}">next →</a></li>
+    {% endif %}
+  </ul>
+</nav>
+
+{% if total_messages == 0 %}
+<p><em>No messages on file for this month.</em></p>
+{% else %}
+<p><small>
+  {{ '{:,}'.format(total_messages) }} message{{ '' if total_messages == 1 else 's' }}
+  {% if threads|length >= thread_cap %}
+    · showing the {{ thread_cap }} most-recently-active threads
+  {% else %}
+    across {{ threads|length }} thread{{ '' if threads|length == 1 else 's' }}, ordered by last activity
+  {% endif %}.
+</small></p>
+
+<ul>
+  {% for t in threads %}
+  <li>
+    <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject or '(no subject)' }}</a>
+    <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
+      &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} this month
+      &middot; {{ t.author|safe_from }}</small>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

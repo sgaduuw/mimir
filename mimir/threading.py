@@ -277,3 +277,39 @@ def threads_for_day(
         compute,
         force=force,
     )
+
+
+def threads_for_month(
+    session: Session,
+    inbox: Inbox,
+    year: int,
+    month: int,
+    limit: int = 100,
+    force: bool = False,
+) -> list[ActiveThread]:
+    """Top-`limit` threads in `inbox` with at least one message in
+    `(year, month)` (UTC), ordered by last activity desc. Caller is
+    responsible for validating year/month bounds.
+
+    A busy month on lkml has thousands of threads; rendering them all
+    blows the response up past 1 MB. The view pairs this list with a
+    `monthly_volume` count so the operator can see the total even when
+    the rendered list is capped.
+    """
+    def compute() -> list[ActiveThread]:
+        start = datetime(year, month, 1, tzinfo=timezone.utc)
+        if month == 12:
+            end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        else:
+            end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
+        return _active_threads_query(
+            session, inbox, start, end, order_by="last_activity", limit=limit
+        )
+
+    return cache.get_or_compute(
+        session,
+        f"threads_for_month:{inbox.name}:{year:04d}-{month:02d}:{limit}",
+        ACTIVE_THREADS_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )

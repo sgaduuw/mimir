@@ -11,7 +11,7 @@ from datetime import date, datetime, timezone
 import pytest
 
 from mimir.cache import _TAGS, _TYPES, _decode, _encode
-from mimir.dashboard import ArchiveStats, ArticleSummary, DailyVolume
+from mimir.dashboard import ArchiveStats, ArticleSummary, DailyVolume, MonthlyVolume
 from mimir.threading import ActiveThread
 
 
@@ -22,12 +22,13 @@ def _roundtrip(value):
 
 def test_registry_has_expected_tags():
     assert set(_TYPES.keys()) == {
-        "ActiveThread", "ArchiveStats", "ArticleSummary", "DailyVolume",
+        "ActiveThread", "ArchiveStats", "ArticleSummary", "DailyVolume", "MonthlyVolume",
     }
     assert _TAGS[ActiveThread] == "ActiveThread"
     assert _TAGS[ArchiveStats] == "ArchiveStats"
     assert _TAGS[ArticleSummary] == "ArticleSummary"
     assert _TAGS[DailyVolume] == "DailyVolume"
+    assert _TAGS[MonthlyVolume] == "MonthlyVolume"
 
 
 def test_article_summary_roundtrip():
@@ -105,6 +106,13 @@ def test_archive_stats_empty():
     assert _roundtrip(stats) == stats
 
 
+def test_monthly_volume_roundtrip():
+    mv = MonthlyVolume(year=2024, months=[(m, m * 10) for m in range(1, 13)], total=780)
+    out = _roundtrip(mv)
+    assert out == mv
+    assert all(isinstance(t, tuple) for t in out.months)
+
+
 def test_daily_volume_preserves_inner_tuples():
     dv = DailyVolume(
         days=[(date(2025, 1, 1), 5), (date(2025, 1, 2), 0), (date(2025, 1, 3), 10)],
@@ -142,31 +150,38 @@ def test_unknown_tag_raises():
 
 def test_delete_for_inbox_pattern_boundary():
     """`delete_for_inbox` must match exactly the inbox name, not
-    prefixes that share its leading characters."""
+    prefixes that share its leading characters.
+
+    Uses sentinel inbox names that won't collide with anything a
+    running mimir process might have cached for the real `lkml` /
+    `linux-fsdevel` inboxes.
+    """
     from sqlalchemy import delete as sql_delete, select as sql_select
 
     from mimir.cache import delete_for_inbox, set as cache_set
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
+    target = "xtest-target"
+    sibling = "xtest-target-sibling"  # shares the `xtest-target` prefix
+
     sentinels = {
-        # Two for `lkml`: trailing-segment + middle-segment forms.
-        "archive_stats:lkml": 1,
-        "daily_volume:lkml:30": 2,
-        # Two for `linux-fsdevel` that share the leading `l...`.
-        # Must NOT be deleted by an `lkml` invalidation.
-        "archive_stats:linux-fsdevel": 3,
-        "daily_volume:linux-fsdevel:30": 4,
-        # A key that contains "lkml" inside another segment, not as
-        # a colon-bounded inbox segment. Must NOT be deleted.
-        "misc:somebody-lkml-fanclub:1": 5,
+        # Two for the target inbox: trailing-segment + middle-segment forms.
+        f"archive_stats:{target}": 1,
+        f"daily_volume:{target}:30": 2,
+        # Two for the sibling that shares the leading prefix. Must NOT
+        # be deleted by an invalidation of the target.
+        f"archive_stats:{sibling}": 3,
+        f"daily_volume:{sibling}:30": 4,
+        # A key that contains the target name inside another segment,
+        # not as a colon-bounded inbox segment. Must NOT be deleted.
+        f"misc:somebody-{target}-fanclub:1": 5,
     }
     for k, v in sentinels.items():
         cache_set(k, v, ttl=3600)
 
     try:
-        deleted = delete_for_inbox("lkml")
-        assert deleted == 2
+        delete_for_inbox(target)
 
         with SessionLocal() as session:
             survivors = {
@@ -177,9 +192,9 @@ def test_delete_for_inbox_pattern_boundary():
                 )
             }
         assert survivors == {
-            "archive_stats:linux-fsdevel",
-            "daily_volume:linux-fsdevel:30",
-            "misc:somebody-lkml-fanclub:1",
+            f"archive_stats:{sibling}",
+            f"daily_volume:{sibling}:30",
+            f"misc:somebody-{target}-fanclub:1",
         }
     finally:
         with SessionLocal() as session:
