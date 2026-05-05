@@ -3,6 +3,10 @@
 {% block content %}
 <h1>{{ inbox_name }} <small><em>archive</em></small></h1>
 
+<form method="get" action="/{{ inbox_name }}/search" role="search">
+  <input type="search" name="q" placeholder="search subject / from …" maxlength="80">
+</form>
+
 {% if active %}
 <section>
   <h2>Most active threads <small><em>(last 7 days)</em></small></h2>

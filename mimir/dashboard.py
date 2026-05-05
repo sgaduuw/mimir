@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Sequence
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
@@ -254,6 +254,55 @@ def daily_volume(
         session,
         f"daily_volume:{inbox.name}:{days}",
         DAILY_VOLUME_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
+def _like_escape(s: str) -> str:
+    """Escape SQL-LIKE wildcards in a user-supplied substring so a
+    query like `100%` doesn't quietly match every row. Pair with
+    `escape="\\"` on the LIKE call."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def search_articles(
+    session: Session,
+    inbox: Inbox,
+    query: str,
+    limit: int = 100,
+    force: bool = False,
+) -> list[ArticleSummary]:
+    """Substring search over `subject` and `author` in `inbox`,
+    case-insensitive, ordered by date desc, capped at `limit`.
+
+    Implementation is a straight LIKE scan with the date index
+    short-circuiting; cached per (inbox, query, limit) at the
+    listing TTL. The caller is responsible for length-bounding
+    `query` (it appears verbatim in the cache key) and for asking
+    only when the user typed something meaningful (≥2 chars).
+    """
+    def compute() -> list[ArticleSummary]:
+        pattern = f"%{_like_escape(query)}%"
+        rows = session.execute(
+            _inbox_scoped(
+                select(Article).where(
+                    or_(
+                        Article.subject.ilike(pattern, escape="\\"),
+                        Article.author.ilike(pattern, escape="\\"),
+                    )
+                ),
+                inbox,
+            )
+            .order_by(Article.date.desc().nulls_last())
+            .limit(limit)
+        ).scalars().all()
+        return _summarize(rows)
+
+    return cache.get_or_compute(
+        session,
+        f"search:{inbox.name}:{query}:{limit}",
+        LISTING_CACHE_TTL_SEC,
         compute,
         force=force,
     )
