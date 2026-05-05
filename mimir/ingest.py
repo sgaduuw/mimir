@@ -25,10 +25,19 @@ PARSE_CHUNKSIZE = 50
 
 
 class IngestResult(BaseModel):
+    """Per-epoch outcome counters. Every walked commit lands in
+    exactly one of: new, linked, dup_batch, dup_db, failed."""
     epoch: str
     new: int = 0
-    linked: int = 0  # article existed (e.g. cross-post from another inbox); only added the link
-    skipped: int = 0
+    # Article existed in another inbox (cross-post): added a new
+    # ArticleList row pointing at this inbox.
+    linked: int = 0
+    # Same Message-ID seen earlier in the current uncommitted batch.
+    dup_batch: int = 0
+    # Article already in DB and already linked to this inbox — usually
+    # a re-walk (rewound IngestState, reindex without --from-scratch),
+    # or a public-inbox archive that committed the same `m` blob twice.
+    dup_db: int = 0
     failed: int = 0
     last_commit_sha: str | None = None
 
@@ -163,7 +172,7 @@ def ingest_epoch(
 
         if parsed.message_id in seen_in_batch:
             logger.debug("epoch %s commit %s: skip (in-batch dup) %s", epoch_name, commit_sha[:12], parsed.message_id)
-            result.skipped += 1
+            result.dup_batch += 1
             continue
 
         existing_article_id = session.execute(
@@ -182,7 +191,7 @@ def ingest_epoch(
             if already_linked is not None:
                 logger.debug("%s/%s commit %s: skip (already linked) %s",
                              inbox_name, epoch_name, commit_sha[:12], parsed.message_id)
-                result.skipped += 1
+                result.dup_db += 1
             else:
                 session.add(ArticleList(
                     article_id=existing_article_id,
@@ -206,9 +215,9 @@ def ingest_epoch(
 
         if processed % PROGRESS_EVERY == 0:
             logger.info(
-                "%s/%s: processed=%d new=%d linked=%d skipped=%d failed=%d",
+                "%s/%s: processed=%d new=%d linked=%d dup_batch=%d dup_db=%d failed=%d",
                 inbox_name, epoch_name, processed,
-                result.new, result.linked, result.skipped, result.failed,
+                result.new, result.linked, result.dup_batch, result.dup_db, result.failed,
             )
 
         if processed % COMMIT_EVERY == 0:
@@ -254,7 +263,7 @@ def ingest_inbox(
             )
             results.append(r)
             if remaining is not None:
-                remaining -= r.new + r.skipped + r.failed
+                remaining -= r.new + r.linked + r.dup_batch + r.dup_db + r.failed
     return results
 
 
@@ -277,5 +286,5 @@ def ingest_all(
         out[name] = rs
         if remaining is not None:
             for r in rs:
-                remaining -= r.new + r.skipped + r.failed
+                remaining -= r.new + r.linked + r.dup_batch + r.dup_db + r.failed
     return out
