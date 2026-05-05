@@ -380,6 +380,14 @@ def warm_cache_command() -> None:
             fn(session)
             click.echo(f"{label}: {(time.perf_counter() - t0) * 1000:.0f} ms")
 
+    # Drop expired rows so the cache table doesn't grow monotonically
+    # as search keys, dated `threads_for_day:...:YYYY-MM-DD` keys, and
+    # `monthly_volume:<inbox>:<year>` keys for past years accumulate.
+    from mimir import cache as _cache
+    purged = _cache.purge_expired()
+    if purged:
+        click.echo(f"purged {purged} expired cache row{'' if purged == 1 else 's'}")
+
 
 def _fmt_bytes(n: int) -> str:
     """Human-readable byte size for the vacuum / status output."""
