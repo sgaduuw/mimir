@@ -47,6 +47,13 @@ RUN poetry install --only-root
 
 FROM python:3.14-slim AS runtime
 
+# git: `mimir update` shells out to `git clone --mirror` / `git fetch`
+# to sync upstream public-inbox epochs. ca-certificates: HTTPS verify
+# against lore.kernel.org and other upstream hosts.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 # Non-root user. UID/GID stable for predictable bind-mount perms.
 RUN groupadd --system --gid 1001 mimir \
  && useradd --system --uid 1001 --gid mimir --create-home --shell /usr/sbin/nologin mimir
