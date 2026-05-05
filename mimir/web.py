@@ -1,6 +1,7 @@
 from datetime import date as date_cls, datetime, timedelta, timezone
 from email.utils import parseaddr
 from urllib.parse import quote
+from xml.etree.ElementTree import Element, SubElement, tostring
 
 from flask import Blueprint, Response, abort, render_template, request
 from pygments import highlight
@@ -13,12 +14,14 @@ from sqlalchemy.orm import Session
 
 from mimir.config import settings
 from mimir.dashboard import (
+    ArticleSummary,
     archive_stats,
     author_recent,
     daily_volume,
     latest_pull_requests,
     latest_stable_releases,
     monthly_volume,
+    recent_articles,
     search_articles,
     this_day_in_history,
 )
@@ -72,6 +75,8 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.year_archive": "public, max-age=600",
     "web.month_archive": "public, max-age=600",
     "web.search": "public, max-age=300",
+    "web.inbox_feed": "public, max-age=300",
+    "web.author_feed": "public, max-age=300",
     "web.message": "public, max-age=60",
     "web.attachment_download": "public, max-age=3600, immutable",
     "web.attachment_preview": "public, max-age=3600, immutable",
@@ -410,6 +415,113 @@ def search(inbox_name: str):
         too_short=too_short,
         min_len=SEARCH_QUERY_MIN_LEN,
         max_len=SEARCH_QUERY_MAX_LEN,
+    )
+
+
+FEED_ENTRY_LIMIT = 50
+
+# Tag-URI host portion (RFC 4151). Constant rather than the request
+# host so feed entry IDs stay stable across re-deployments and aren't
+# tied to whatever proxy the request came in through.
+_TAG_URI_AUTHORITY = "mimir"
+
+
+def _atom_response(
+    *,
+    feed_id: str,
+    feed_title: str,
+    self_url: str,
+    alternate_url: str,
+    entries: list[ArticleSummary],
+    inbox_name: str,
+    base_url: str,
+) -> Response:
+    """Render an Atom 1.0 feed from a list of `ArticleSummary`. Uses
+    stdlib ElementTree — no extra dep. Emits redacted authors via the
+    same `safe_from` rule the HTML side uses, so private email
+    addresses don't leak via feed readers either."""
+    feed_updated = (
+        max((e.date for e in entries if e.date), default=None)
+        or datetime.now(timezone.utc)
+    )
+
+    feed = Element("feed", xmlns="http://www.w3.org/2005/Atom")
+    SubElement(feed, "id").text = feed_id
+    SubElement(feed, "title").text = feed_title
+    SubElement(feed, "updated").text = feed_updated.strftime("%Y-%m-%dT%H:%M:%SZ")
+    SubElement(feed, "link", rel="self", type="application/atom+xml", href=self_url)
+    SubElement(feed, "link", rel="alternate", type="text/html", href=alternate_url)
+    SubElement(feed, "generator").text = "mimir"
+
+    msg_base = base_url.rstrip("/")
+    for a in entries:
+        entry = SubElement(feed, "entry")
+        # RFC 4151 tag URI; the "date" portion is the message's date
+        # (stable for the lifetime of the entry, unique per message).
+        date_str = a.date.strftime("%Y-%m-%d") if a.date else "1970-01-01"
+        SubElement(entry, "id").text = (
+            f"tag:{_TAG_URI_AUTHORITY},{date_str}:{inbox_name}/{a.id}"
+        )
+        SubElement(entry, "title").text = a.subject or "(no subject)"
+        if a.date is not None:
+            SubElement(entry, "updated").text = a.date.strftime("%Y-%m-%dT%H:%M:%SZ")
+        SubElement(
+            entry, "link",
+            rel="alternate", type="text/html",
+            href=msg_base + _msg_url(a, inbox_name),
+        )
+        if a.author:
+            author_el = SubElement(entry, "author")
+            SubElement(author_el, "name").text = _safe_from_filter(a.author)
+
+    body = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        + tostring(feed, encoding="unicode")
+    )
+    return Response(body, mimetype="application/atom+xml; charset=utf-8")
+
+
+@bp_web.route("/<inbox_name>/feed.atom")
+def inbox_feed(inbox_name: str):
+    """Atom feed of the most-recent messages in an inbox."""
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        entries = recent_articles(session, inbox, limit=FEED_ENTRY_LIMIT)
+
+    base = request.url_root
+    return _atom_response(
+        feed_id=f"{base}{inbox.name}/feed.atom",
+        feed_title=f"{inbox.name} · {settings.site_name}",
+        self_url=f"{base}{inbox.name}/feed.atom",
+        alternate_url=f"{base}{inbox.name}/",
+        entries=entries,
+        inbox_name=inbox.name,
+        base_url=base,
+    )
+
+
+@bp_web.route("/<inbox_name>/author/<sub>/feed.atom")
+def author_feed(inbox_name: str, sub: str):
+    """Atom feed of recent messages from one author. `sub` is a
+    substring of From — same shape the dashboard tracker uses, scoped
+    to one inbox."""
+    sub = sub.strip()[:SEARCH_QUERY_MAX_LEN]
+    if len(sub) < SEARCH_QUERY_MIN_LEN:
+        abort(404)
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        entries = author_recent(session, inbox, sub, limit=FEED_ENTRY_LIMIT)
+
+    base = request.url_root
+    sub_quoted = quote(sub, safe="")
+    return _atom_response(
+        feed_id=f"{base}{inbox.name}/author/{sub_quoted}/feed.atom",
+        feed_title=f"{sub} on {inbox.name} · {settings.site_name}",
+        self_url=f"{base}{inbox.name}/author/{sub_quoted}/feed.atom",
+        alternate_url=f"{base}{inbox.name}/",
+        entries=entries,
+        inbox_name=inbox.name,
+        base_url=base,
     )
 
 

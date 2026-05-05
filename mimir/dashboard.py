@@ -266,6 +266,37 @@ def _like_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def recent_articles(
+    session: Session,
+    inbox: Inbox,
+    limit: int = 50,
+    force: bool = False,
+) -> list[ArticleSummary]:
+    """Most-recent `limit` articles in `inbox`, ordered by date desc.
+    Cached at the listing TTL — feeds polling on 30 min+ intervals
+    always pay zero compute, since warm-cache keeps it hot.
+
+    No offset — pagination lives in `web._fetch_recent` which serves
+    the dashboard's "Load more" pattern; this helper is the
+    feed/Atom data source.
+    """
+    def compute() -> list[ArticleSummary]:
+        rows = session.execute(
+            _inbox_scoped(select(Article), inbox)
+            .order_by(Article.date.desc().nulls_last())
+            .limit(limit)
+        ).scalars().all()
+        return _summarize(rows)
+
+    return cache.get_or_compute(
+        session,
+        f"recent_articles:{inbox.name}:{limit}",
+        LISTING_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
 def search_articles(
     session: Session,
     inbox: Inbox,
