@@ -1,9 +1,13 @@
+import json
+import logging
+import secrets
+import time
 from datetime import date as date_cls, datetime, timedelta, timezone
 from email.utils import parseaddr
 from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from flask import Blueprint, Response, abort, render_template, request
+from flask import Blueprint, Response, abort, g, render_template, request
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_for_filename, guess_lexer
@@ -112,6 +116,28 @@ _SECURITY_HEADERS = {
 }
 
 
+# One JSON object per request to stdout. Doesn't propagate to root,
+# so it doesn't double-log via app.logger if anyone reconfigures it.
+_request_logger = logging.getLogger("mimir.request")
+_request_logger.propagate = False
+if not _request_logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(message)s"))
+    _request_logger.addHandler(_h)
+    _request_logger.setLevel(logging.INFO)
+
+
+@bp_web.before_request
+def _start_request_timer():
+    g._request_t0 = time.perf_counter()
+    # Honor an upstream-supplied request id (typical reverse-proxy
+    # pattern) so multi-hop traces stay correlatable; otherwise mint
+    # a fresh short id.
+    g._request_id = (
+        request.headers.get("X-Request-Id") or secrets.token_hex(8)
+    )
+
+
 @bp_web.after_request
 def _add_cache_headers(response):
     if response.status_code == 200:
@@ -129,6 +155,28 @@ def _add_cache_headers(response):
             "Strict-Transport-Security",
             "max-age=31536000; includeSubDomains",
         )
+    response.headers.setdefault("X-Request-Id", getattr(g, "_request_id", "-"))
+    return response
+
+
+@bp_web.after_request
+def _log_request(response):
+    """Emit one JSON-line access record per request. Runs after the
+    cache + security headers are set so duration covers the full
+    response-build path."""
+    t0 = getattr(g, "_request_t0", None)
+    duration_ms = round((time.perf_counter() - t0) * 1000, 1) if t0 else None
+    _request_logger.info(json.dumps({
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "request_id": getattr(g, "_request_id", None),
+        "method": request.method,
+        "path": request.path,
+        "status": response.status_code,
+        "duration_ms": duration_ms,
+        "remote": request.remote_addr,
+        "ua": request.user_agent.string if request.user_agent else None,
+        "referrer": request.referrer,
+    }))
     return response
 
 
