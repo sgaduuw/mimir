@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}{{ inbox_name }} {{ year }} · {{ site_name }}{% endblock %}
+{% block content %}
+{% set month_names = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+] %}
+<h2>{{ inbox_name }} <small><em>archive · {{ year }}</em></small></h2>
+
+<nav>
+  <ul>
+    {% if prev_year %}
+    <li><a href="/{{ inbox_name }}/{{ prev_year }}/">← {{ prev_year }}</a></li>
+    {% endif %}
+  </ul>
+  <ul>
+    <li><small>{{ '{:,}'.format(volume.total) }} message{{ '' if volume.total == 1 else 's' }} this year</small></li>
+  </ul>
+  <ul>
+    {% if next_year %}
+    <li><a href="/{{ inbox_name }}/{{ next_year }}/">{{ next_year }} →</a></li>
+    {% endif %}
+  </ul>
+</nav>
+
+{% if volume.total == 0 %}
+<p><em>No messages indexed for this year.</em></p>
+{% else %}
+<div class="grid">
+  {% for month_num, count in volume.months %}
+    {% if count > 0 %}
+    <article style="text-align: center;">
+      <h4 style="margin-bottom: 0.25rem;">
+        <a href="/{{ inbox_name }}/{{ year }}/{{ '%02d' % month_num }}/">{{ month_names[month_num - 1] }}</a>
+      </h4>
+      <small>{{ '{:,}'.format(count) }} message{{ '' if count == 1 else 's' }}</small>
+    </article>
+    {% else %}
+    <article style="text-align: center; opacity: 0.5;">
+      <h4 style="margin-bottom: 0.25rem;">{{ month_names[month_num - 1] }}</h4>
+      <small><em>no messages</em></small>
+    </article>
+    {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

@@ -124,5 +124,13 @@
     spanning {{ stats.first_date.strftime('%Y-%m-%d') }} to {{ stats.last_date.strftime('%Y-%m-%d') }}{% endif %}.
   </small>
   <br>
+  {% if stats.first_date and stats.last_date %}
+  <small>Browse by year:
+    {% for y in range(stats.last_date.year, stats.first_date.year - 1, -1) %}
+      <a href="/{{ inbox_name }}/{{ y }}/">{{ y }}</a>{% if not loop.last %} ·{% endif %}
+    {% endfor %}
+  </small>
+  <br>
+  {% endif %}
   {% endif %}
 {% endblock %}

@@ -2,7 +2,9 @@
 {% block title %}{{ heading }} ({{ day.strftime('%Y-%m-%d') }}) · {{ site_name }}{% endblock %}
 {% block content %}
 <section>
-  <h2>{{ heading }} <small><em>({{ day.strftime('%Y-%m-%d') }})</em></small></h2>
+  <h2>{{ heading }}
+    <small><em>(<a href="/{{ inbox_name }}/{{ '%04d' % day.year }}/{{ '%02d' % day.month }}/">{{ day.strftime('%Y-%m-%d') }}</a>)</em></small>
+  </h2>
 
   {% if total_messages == 0 %}
     <p><em>No messages on this day.</em></p>

@@ -61,9 +61,20 @@ class DailyVolume:
     max_count: int
 
 
+@dataclass
+class MonthlyVolume:
+    """Per-month message counts for the year archive view. `months`
+    is zero-filled for every month in the year so the year grid
+    always renders 12 cells."""
+    year: int
+    months: list[tuple[int, int]]  # (month_num 1..12, count)
+    total: int
+
+
 cache.register("ArticleSummary", ArticleSummary)
 cache.register("ArchiveStats", ArchiveStats)
 cache.register("DailyVolume", DailyVolume)
+cache.register("MonthlyVolume", MonthlyVolume)
 
 
 def _inbox_scoped(stmt, inbox: Inbox):
@@ -242,6 +253,56 @@ def daily_volume(
     return cache.get_or_compute(
         session,
         f"daily_volume:{inbox.name}:{days}",
+        DAILY_VOLUME_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
+def monthly_volume(
+    session: Session, inbox: Inbox, year: int, force: bool = False
+) -> MonthlyVolume:
+    """Per-month counts for `year` in `inbox`, zero-filled. Cached
+    per (inbox, year) for 1 hour — current-year counts evolve, past
+    years are immutable.
+
+    Past years could in principle be cached forever, but the constant
+    1-hour TTL keeps the helper composable: warming and invalidating
+    are uniform across years.
+    """
+    def compute() -> MonthlyVolume:
+        rows = session.execute(
+            text(
+                """
+                SELECT CAST(strftime('%m', a.date) AS INTEGER) AS month,
+                       COUNT(*) AS n
+                FROM articles a
+                WHERE EXISTS (
+                    SELECT 1 FROM article_lists al
+                    WHERE al.article_id = a.id AND al.inbox_id = :inbox_id
+                )
+                  AND a.date >= :year_start
+                  AND a.date <  :year_end
+                GROUP BY month
+                """
+            ),
+            {
+                "inbox_id": inbox.id,
+                "year_start": f"{year:04d}-01-01 00:00:00",
+                "year_end":   f"{year + 1:04d}-01-01 00:00:00",
+            },
+        ).all()
+        counts = {r.month: r.n for r in rows if r.month is not None}
+        months = [(m, counts.get(m, 0)) for m in range(1, 13)]
+        return MonthlyVolume(
+            year=year,
+            months=months,
+            total=sum(c for _, c in months),
+        )
+
+    return cache.get_or_compute(
+        session,
+        f"monthly_volume:{inbox.name}:{year}",
         DAILY_VOLUME_CACHE_TTL_SEC,
         compute,
         force=force,
