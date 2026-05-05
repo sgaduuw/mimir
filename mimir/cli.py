@@ -5,7 +5,7 @@ from pathlib import Path
 
 import click
 from flask import Flask
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import selectinload
 
 from mimir.config import settings
@@ -18,7 +18,16 @@ from mimir.dashboard import (
     this_day_in_history,
 )
 from mimir.extensions import Base, SessionLocal, engine
-from mimir.inboxes import bootstrap_inboxes
+from mimir.inboxes import (
+    InboxNotFound,
+    InboxValidationError,
+    bootstrap_inboxes,
+    create_inbox,
+    delete_inbox,
+    get_inbox,
+    list_inboxes,
+    update_inbox,
+)
 from mimir.ingest import DEFAULT_WORKERS, ingest_all, ingest_epoch
 from mimir.models import Article, ArticleList, Inbox, IngestState
 from mimir.store import MessageNotFound, read_message
@@ -372,6 +381,184 @@ def warm_cache_command() -> None:
             click.echo(f"{label}: {(time.perf_counter() - t0) * 1000:.0f} ms")
 
 
+@click.group("admin")
+def admin_group() -> None:
+    """Administrative operations on the underlying data."""
+
+
+@admin_group.group("inbox")
+def admin_inbox_group() -> None:
+    """CRUD on the `inboxes` table.
+
+    These commands are the CLI front-end to the same service-layer
+    functions the future Flask admin UI will call. Validation,
+    cascade-delete semantics, and the nav-name cache refresh all live
+    in `mimir.inboxes`.
+    """
+
+
+@admin_inbox_group.command("list")
+def admin_inbox_list_command() -> None:
+    """List every configured inbox with its mirror path and upstream URL."""
+    inboxes = list_inboxes()
+    if not inboxes:
+        click.echo("(no inboxes)")
+        return
+    name_w = max(len(ix.name) for ix in inboxes)
+    path_w = max(len(ix.mirror_path) for ix in inboxes)
+    for ix in inboxes:
+        click.echo(
+            f"{ix.id:>4}  {ix.name:<{name_w}}  "
+            f"{ix.mirror_path:<{path_w}}  {ix.upstream_url}"
+        )
+
+
+@admin_inbox_group.command("show")
+@click.argument("name")
+def admin_inbox_show_command(name: str) -> None:
+    """Detail view for one inbox: config + per-epoch ingest cursors."""
+    try:
+        inbox = get_inbox(name)
+    except InboxNotFound as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(f"id:           {inbox.id}")
+    click.echo(f"name:         {inbox.name}")
+    click.echo(f"mirror_path:  {inbox.mirror_path}")
+    click.echo(f"upstream_url: {inbox.upstream_url}")
+
+    with SessionLocal() as session:
+        states = session.execute(
+            select(IngestState).where(IngestState.inbox_id == inbox.id)
+            .order_by(IngestState.epoch)
+        ).scalars().all()
+        article_count = session.execute(
+            select(func.count()).select_from(ArticleList)
+            .where(ArticleList.inbox_id == inbox.id)
+        ).scalar_one()
+    click.echo(f"linked articles: {article_count}")
+    if states:
+        click.echo("ingest cursors:")
+        for s in states:
+            head = s.last_commit_sha or "<beginning>"
+            click.echo(f"  {s.epoch}: {head}")
+    else:
+        click.echo("ingest cursors: (none — never ingested)")
+
+
+@admin_inbox_group.command("add")
+@click.argument("name")
+@click.option("--mirror-path", required=True, help="Filesystem path to the public-inbox mirror root.")
+@click.option("--upstream-url", required=True, help="Upstream public-inbox URL (https://...).")
+def admin_inbox_add_command(name: str, mirror_path: str, upstream_url: str) -> None:
+    """Insert a new inbox. Run `flask --app mimir update --inbox <name>`
+    afterwards to clone the upstream mirror and ingest."""
+    try:
+        inbox = create_inbox(name, mirror_path=mirror_path, upstream_url=upstream_url)
+    except InboxValidationError as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"created inbox {inbox.name!r} (id={inbox.id})")
+    click.echo(
+        f"next: poetry run flask --app mimir update --inbox {inbox.name}"
+    )
+
+
+@admin_inbox_group.command("update")
+@click.argument("name")
+@click.option("--mirror-path", default=None, help="New filesystem path.")
+@click.option("--upstream-url", default=None, help="New upstream URL.")
+@click.option("--rename", "new_name", default=None,
+              help="Rename to NEW_NAME (changes URL slug + cache keys).")
+def admin_inbox_update_command(
+    name: str,
+    mirror_path: str | None,
+    upstream_url: str | None,
+    new_name: str | None,
+) -> None:
+    """Modify an existing inbox. Only the supplied fields are touched."""
+    if mirror_path is None and upstream_url is None and new_name is None:
+        raise click.ClickException(
+            "nothing to update — pass at least one of "
+            "--mirror-path / --upstream-url / --rename"
+        )
+    try:
+        inbox = update_inbox(
+            name,
+            new_name=new_name,
+            mirror_path=mirror_path,
+            upstream_url=upstream_url,
+        )
+    except InboxNotFound as exc:
+        raise click.ClickException(str(exc))
+    except InboxValidationError as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"updated inbox {inbox.name!r}")
+    click.echo(f"  mirror_path:  {inbox.mirror_path}")
+    click.echo(f"  upstream_url: {inbox.upstream_url}")
+
+
+@admin_inbox_group.command("remove")
+@click.argument("name")
+@click.option(
+    "--keep-orphan-articles",
+    is_flag=True,
+    help="Keep articles that lose their last inbox link. Default is to "
+         "delete them (other inboxes' cross-posts are unaffected).",
+)
+@click.option(
+    "--remove-inbox-data",
+    is_flag=True,
+    help="Also delete the on-disk public-inbox mirror at <mirror_path>. "
+         "Permanent — re-cloning takes hours and ~20 GB for lkml. Prompts "
+         "for confirmation.",
+)
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def admin_inbox_remove_command(
+    name: str,
+    keep_orphan_articles: bool,
+    remove_inbox_data: bool,
+    yes: bool,
+) -> None:
+    """Delete an inbox and its dependent rows.
+
+    Cascades: removes article_lists + ingest_state rows for this inbox.
+    By default also deletes any articles left without remaining links.
+    Cross-posts to other inboxes are unaffected.
+    """
+    try:
+        inbox = get_inbox(name)
+    except InboxNotFound as exc:
+        raise click.ClickException(str(exc))
+
+    if remove_inbox_data:
+        path = Path(inbox.mirror_path)
+        target = path.parent if path.name == "git" else path
+        click.echo(f"--remove-inbox-data set: will rm -rf {target}")
+        if target.exists() and not yes:
+            click.confirm(
+                f"DELETE the on-disk mirror at {target}?",
+                abort=True,
+            )
+
+    if not yes:
+        click.confirm(
+            f"Remove inbox {name!r} from the database?", abort=True,
+        )
+
+    report = delete_inbox(
+        name,
+        keep_orphan_articles=keep_orphan_articles,
+        remove_inbox_data=remove_inbox_data,
+    )
+    click.echo(f"removed inbox {report.name!r}")
+    click.echo(f"  article_lists rows deleted: {report.article_lists_deleted}")
+    click.echo(f"  ingest_state rows deleted:  {report.ingest_state_deleted}")
+    if not keep_orphan_articles:
+        click.echo(f"  orphan articles deleted:    {report.orphan_articles_deleted}")
+    if report.mirror_path_deleted:
+        click.echo(f"  removed on-disk mirror:     {report.mirror_path_deleted}")
+
+
 def register_cli(app: Flask) -> None:
     app.cli.add_command(init_db_command)
     app.cli.add_command(ingest_command)
@@ -379,3 +566,4 @@ def register_cli(app: Flask) -> None:
     app.cli.add_command(show_command)
     app.cli.add_command(update_command)
     app.cli.add_command(warm_cache_command)
+    app.cli.add_command(admin_group)
