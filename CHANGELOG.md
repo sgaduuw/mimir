@@ -13,6 +13,17 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Added
 
+- Persist parse failures: every commit whose `m` blob can't be parsed
+  during ingest lands in a new `parse_failures` table keyed by
+  `(inbox, epoch, commit_sha)` with `error_class`, `error_message`,
+  `first_seen`, `last_attempt`, `attempts`. Cleared automatically when
+  a re-walk parses the commit cleanly.
+- `flask --app mimir admin failures list` — enumerate persisted failures,
+  filter by `--inbox` / `--epoch` / `--error-class`.
+- `flask --app mimir admin failures replay <inbox>` — re-fetch each
+  failure's blob, re-run the parser, insert the article (or cross-post
+  link) on success, bump `attempts` on continued failure. Use after a
+  parser fix.
 - CI publishes the Docker image to `ghcr.io/sgaduuw/mimir` on every
   push to `main` (`:main`, `:sha-<short>`) and on `v*` tags
   (`:<version>`, `:<major>.<minor>`, `:latest`). PRs still build

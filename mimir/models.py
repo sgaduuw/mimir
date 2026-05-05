@@ -89,3 +89,27 @@ class CacheEntry(Base):
     key: Mapped[str] = mapped_column(String, primary_key=True)
     value: Mapped[str] = mapped_column(Text)
     expires_at: Mapped[int] = mapped_column(index=True)
+
+
+class ParseFailure(Base):
+    """One row per (inbox, epoch, commit_sha) whose `m` blob couldn't
+    be parsed. Persisted so the operator can enumerate them and replay
+    after a parser fix instead of scanning ingest logs.
+
+    Cleared automatically when the same commit later parses cleanly
+    (via `flask --app mimir admin failures replay` or a re-walk).
+    """
+    __tablename__ = "parse_failures"
+
+    inbox_id: Mapped[int] = mapped_column(
+        ForeignKey("inboxes.id", ondelete="CASCADE"), primary_key=True
+    )
+    epoch: Mapped[str] = mapped_column(String, primary_key=True)
+    commit_sha: Mapped[str] = mapped_column(String, primary_key=True)
+    # Exception type name (e.g. "MessageTooLarge", "ValueError"). Indexed
+    # so `failures list --error-class X` is cheap even at 10k+ rows.
+    error_class: Mapped[str] = mapped_column(String, index=True)
+    error_message: Mapped[str] = mapped_column(Text)
+    first_seen: Mapped[datetime] = mapped_column()
+    last_attempt: Mapped[datetime] = mapped_column()
+    attempts: Mapped[int] = mapped_column(default=1)

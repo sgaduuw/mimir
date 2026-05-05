@@ -11,10 +11,10 @@ from pathlib import Path
 
 from dulwich.objects import Blob, Commit, Tree
 from dulwich.repo import Repo
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from mimir.ingest import ingest_epoch
-from mimir.models import Article, ArticleList, Inbox, IngestState
+from mimir.ingest import ingest_epoch, replay_failures
+from mimir.models import Article, ArticleList, Inbox, IngestState, ParseFailure
 
 
 def _rfc5322(msgid: str, body: bytes = b"hello") -> bytes:
@@ -264,3 +264,250 @@ def test_ingest_resume_skips_already_walked_commits(seeded_db, tmp_path):
     assert second.dup_batch == 0
     assert second.dup_db == 0
     assert second.failed == 0
+
+
+# Persisted parse failures
+
+
+def test_failed_parse_persists_parse_failures_row(seeded_db, tmp_path):
+    """A commit whose blob can't be parsed gets a row in
+    parse_failures keyed by (inbox, epoch, commit_sha)."""
+    alpha = _alpha(seeded_db)
+    bad = b"From: a@b.example\r\nSubject: no msgid\r\n\r\nbody"
+    _build_pubinbox_repo(tmp_path / "0.git", [bad])
+
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+
+    head = Repo(str(tmp_path / "0.git")).head().decode()
+    with seeded_db() as s:
+        rows = list(s.execute(
+            select(ParseFailure).where(ParseFailure.inbox_id == alpha.id)
+        ).scalars())
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.commit_sha == head
+    assert row.epoch == "0.git"
+    assert row.attempts == 1
+    assert row.error_class  # whatever parser raises — class name pinned
+    assert row.first_seen == row.last_attempt
+
+
+def test_failed_parse_re_walked_increments_attempts(seeded_db, tmp_path):
+    """A second walk over the same bad commit bumps `attempts` and
+    `last_attempt`, leaves `first_seen` alone."""
+    alpha = _alpha(seeded_db)
+    bad = b"From: a@b.example\r\nSubject: no msgid\r\n\r\nbody"
+    repo_path = tmp_path / "0.git"
+    _build_pubinbox_repo(repo_path, [bad])
+
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", repo_path, workers=1)
+
+    with seeded_db() as s:
+        first = s.execute(
+            select(ParseFailure).where(ParseFailure.inbox_id == alpha.id)
+        ).scalar_one()
+        first_seen = first.first_seen
+        first_last = first.last_attempt
+
+        # Rewind so the walker re-emits the same commit.
+        state = s.execute(
+            select(IngestState).where(IngestState.inbox_id == alpha.id)
+        ).scalar_one()
+        state.last_commit_sha = None
+        s.commit()
+
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", repo_path, workers=1)
+
+    with seeded_db() as s:
+        row = s.execute(
+            select(ParseFailure).where(ParseFailure.inbox_id == alpha.id)
+        ).scalar_one()
+    assert row.attempts == 2
+    assert row.first_seen == first_seen
+    assert row.last_attempt >= first_last
+
+
+def test_failed_then_succeeds_clears_parse_failures_row(seeded_db, tmp_path, monkeypatch):
+    """A commit that failed under an old (artificially-tightened)
+    parser parses cleanly after the constraint is relaxed: the
+    parse_failures row is deleted on the next walk."""
+    import mimir.parser
+
+    alpha = _alpha(seeded_db)
+    repo_path = tmp_path / "0.git"
+    _build_pubinbox_repo(repo_path, [_rfc5322("recover@example.com", body=b"x" * 500)])
+
+    # First walk: tiny size cap → fail.
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 200)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", repo_path, workers=1)
+    with seeded_db() as s:
+        assert s.execute(
+            select(func.count()).select_from(ParseFailure)
+            .where(ParseFailure.inbox_id == alpha.id)
+        ).scalar_one() == 1
+
+    # Lift the cap, rewind, re-walk: row gets cleared.
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 50_000_000)
+    with seeded_db() as s:
+        state = s.execute(
+            select(IngestState).where(IngestState.inbox_id == alpha.id)
+        ).scalar_one()
+        state.last_commit_sha = None
+        s.commit()
+    with seeded_db() as s:
+        result = ingest_epoch(s, alpha, "0.git", repo_path, workers=1)
+    assert result.new == 1
+
+    with seeded_db() as s:
+        assert s.execute(
+            select(func.count()).select_from(ParseFailure)
+            .where(ParseFailure.inbox_id == alpha.id)
+        ).scalar_one() == 0
+
+
+# replay_failures
+
+
+def test_replay_failures_recovers_on_parser_fix(seeded_db, tmp_path, monkeypatch):
+    """Ingest with a tight cap -> failure rows. Lift the cap, point
+    the inbox's mirror_path at the test repo, replay -> rows cleared
+    and articles inserted."""
+    import mimir.parser
+
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "alpha-mirror"
+    mirror_root.mkdir()
+    _build_pubinbox_repo(mirror_root / "0.git", [
+        _rfc5322("a@example.com", body=b"x" * 500),
+        _rfc5322("b@example.com", body=b"x" * 500),
+    ])
+
+    # Update the seeded inbox row so replay_failures can find the repo.
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        s.commit()
+
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 200)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", mirror_root / "0.git", workers=1)
+
+    with seeded_db() as s:
+        assert s.execute(
+            select(func.count()).select_from(ParseFailure)
+            .where(ParseFailure.inbox_id == alpha.id)
+        ).scalar_one() == 2
+
+    # Parser fix: lift the cap, replay.
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 50_000_000)
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    result = replay_failures(ix)
+
+    assert result.attempted == 2
+    assert result.recovered == 2
+    assert result.still_failed == 0
+    assert result.skipped == 0
+
+    with seeded_db() as s:
+        assert s.execute(
+            select(func.count()).select_from(ParseFailure)
+            .where(ParseFailure.inbox_id == alpha.id)
+        ).scalar_one() == 0
+        # Articles are now inserted + linked.
+        for mid in ("a@example.com", "b@example.com"):
+            art = s.execute(
+                select(Article).where(Article.message_id == mid)
+            ).scalar_one()
+            s.execute(
+                select(ArticleList).where(
+                    ArticleList.article_id == art.id,
+                    ArticleList.inbox_id == alpha.id,
+                )
+            ).scalar_one()
+
+
+def test_replay_failures_still_fails_bumps_attempts(seeded_db, tmp_path, monkeypatch):
+    """Replay against an unfixed parser: the row's attempts/last_attempt
+    advance but the row stays."""
+    import mimir.parser
+
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "alpha-mirror"
+    mirror_root.mkdir()
+    _build_pubinbox_repo(mirror_root / "0.git", [
+        _rfc5322("c@example.com", body=b"x" * 500),
+    ])
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        s.commit()
+
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 200)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", mirror_root / "0.git", workers=1)
+
+    with seeded_db() as s:
+        before = s.execute(
+            select(ParseFailure).where(ParseFailure.inbox_id == alpha.id)
+        ).scalar_one()
+        before_last = before.last_attempt
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+
+    # Replay still hits the same too-tight cap.
+    result = replay_failures(ix)
+    assert result.recovered == 0
+    assert result.still_failed == 1
+
+    with seeded_db() as s:
+        after = s.execute(
+            select(ParseFailure).where(ParseFailure.inbox_id == alpha.id)
+        ).scalar_one()
+    assert after.attempts == 2
+    assert after.last_attempt >= before_last
+
+
+def test_replay_failures_skips_when_mirror_missing(seeded_db, tmp_path, monkeypatch):
+    """If the mirror has been wiped (or the row predates the current
+    mirror layout), replay reports `skipped` and leaves the row."""
+    import mimir.parser
+
+    alpha = _alpha(seeded_db)
+    # Set up + seed a failure row, then point mirror_path elsewhere.
+    mirror_root = tmp_path / "alpha-mirror"
+    mirror_root.mkdir()
+    _build_pubinbox_repo(mirror_root / "0.git", [
+        _rfc5322("d@example.com", body=b"x" * 500),
+    ])
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        s.commit()
+
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 200)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", mirror_root / "0.git", workers=1)
+
+    # Now repoint the inbox at a non-existent mirror.
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(tmp_path / "does-not-exist")
+        s.commit()
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 50_000_000)
+    result = replay_failures(ix)
+    assert result.attempted == 1
+    assert result.skipped == 1
+    assert result.recovered == 0
+    assert result.still_failed == 0
+
+    with seeded_db() as s:
+        assert s.execute(
+            select(func.count()).select_from(ParseFailure)
+            .where(ParseFailure.inbox_id == alpha.id)
+        ).scalar_one() == 1

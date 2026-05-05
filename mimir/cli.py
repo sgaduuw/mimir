@@ -28,8 +28,8 @@ from mimir.inboxes import (
     list_inboxes,
     update_inbox,
 )
-from mimir.ingest import DEFAULT_WORKERS, ingest_all, ingest_epoch
-from mimir.models import Article, ArticleList, Inbox, IngestState
+from mimir.ingest import DEFAULT_WORKERS, ingest_all, ingest_epoch, replay_failures
+from mimir.models import Article, ArticleList, Inbox, IngestState, ParseFailure
 from mimir.store import MessageNotFound, read_message
 from mimir.sync import sync_epochs
 from mimir.threading import active_threads, threads_for_day
@@ -667,6 +667,112 @@ def admin_inbox_remove_command(
         click.echo(f"  orphan articles deleted:    {report.orphan_articles_deleted}")
     if report.mirror_path_deleted:
         click.echo(f"  removed on-disk mirror:     {report.mirror_path_deleted}")
+
+
+@admin_group.group("failures")
+def admin_failures_group() -> None:
+    """List and replay persisted parse failures.
+
+    Every commit whose `m` blob couldn't be parsed during ingest lands
+    in `parse_failures` keyed by (inbox, epoch, commit_sha). Once the
+    parser is fixed, `replay` re-fetches the blob, re-runs the parser,
+    and on success inserts the article + deletes the row. Failed
+    replays bump `attempts` and `last_attempt`.
+    """
+
+
+@admin_failures_group.command("list")
+@click.option("--inbox", "inbox_filter", type=str, default=None,
+              help="Restrict to one inbox by name.")
+@click.option("--epoch", "epoch_filter", type=str, default=None,
+              help="Restrict to one epoch (e.g. 0.git). Implies --inbox.")
+@click.option("--error-class", "error_class", type=str, default=None,
+              help="Restrict to one exception class (e.g. MessageTooLarge).")
+@click.option("--limit", type=int, default=50, show_default=True,
+              help="Cap the number of rows shown. Use 0 for no cap.")
+def admin_failures_list_command(
+    inbox_filter: str | None,
+    epoch_filter: str | None,
+    error_class: str | None,
+    limit: int,
+) -> None:
+    """Print persisted parse failures, newest-attempt first."""
+    if epoch_filter is not None and inbox_filter is None:
+        raise click.ClickException("--epoch requires --inbox")
+
+    with SessionLocal() as session:
+        q = select(ParseFailure, Inbox.name).join(
+            Inbox, Inbox.id == ParseFailure.inbox_id
+        )
+        if inbox_filter is not None:
+            q = q.where(Inbox.name == inbox_filter)
+        if epoch_filter is not None:
+            q = q.where(ParseFailure.epoch == epoch_filter)
+        if error_class is not None:
+            q = q.where(ParseFailure.error_class == error_class)
+        q = q.order_by(ParseFailure.last_attempt.desc())
+        if limit > 0:
+            q = q.limit(limit)
+        rows = list(session.execute(q).all())
+
+        # Aggregate counters even when --limit truncates output.
+        total_q = select(func.count()).select_from(ParseFailure).join(
+            Inbox, Inbox.id == ParseFailure.inbox_id
+        )
+        if inbox_filter is not None:
+            total_q = total_q.where(Inbox.name == inbox_filter)
+        if epoch_filter is not None:
+            total_q = total_q.where(ParseFailure.epoch == epoch_filter)
+        if error_class is not None:
+            total_q = total_q.where(ParseFailure.error_class == error_class)
+        total = session.execute(total_q).scalar_one()
+
+    if not rows:
+        click.echo("(no parse failures)")
+        return
+
+    for row, inbox_name in rows:
+        click.echo(
+            f"{inbox_name}/{row.epoch}@{row.commit_sha[:12]}  "
+            f"{row.error_class}: {row.error_message[:80]}  "
+            f"(attempts={row.attempts}, last={row.last_attempt.isoformat(timespec='seconds')})"
+        )
+    if limit > 0 and total > len(rows):
+        click.echo(f"... {total - len(rows)} more (use --limit 0 to show all)")
+    click.echo(f"total: {total}")
+
+
+@admin_failures_group.command("replay")
+@click.argument("inbox_name")
+@click.option("--epoch", "epoch_filter", type=str, default=None,
+              help="Restrict to one epoch (e.g. 0.git).")
+@click.option("--limit", type=int, default=None,
+              help="Cap on rows replayed. Default: all.")
+def admin_failures_replay_command(
+    inbox_name: str,
+    epoch_filter: str | None,
+    limit: int | None,
+) -> None:
+    """Re-parse persisted parse failures for INBOX_NAME.
+
+    Successful parses insert the article and delete the failure row.
+    Failed parses bump `attempts` + `last_attempt`. Use after a parser
+    fix:
+
+        flask --app mimir admin failures replay lkml
+        flask --app mimir admin failures replay lkml --epoch 0.git
+    """
+    try:
+        inbox = get_inbox(inbox_name)
+    except InboxNotFound as exc:
+        raise click.ClickException(str(exc))
+
+    result = replay_failures(inbox, epoch_filter=epoch_filter, limit=limit)
+    click.echo(
+        f"{inbox_name}: attempted={result.attempted} "
+        f"recovered={result.recovered} still_failed={result.still_failed} "
+        f"skipped={result.skipped}"
+    )
 
 
 def register_cli(app: Flask) -> None:
