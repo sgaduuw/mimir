@@ -1,0 +1,11 @@
+[Unit]
+Description=mimir warm-cache every minute
+
+[Timer]
+OnCalendar=*:0/1
+Persistent=false
+AccuracySec=15s
+Unit=mimir-warm-cache.service
+
+[Install]
+WantedBy=timers.target

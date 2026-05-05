@@ -501,6 +501,28 @@ Example crontab (4:30am, just after the daily vacuum):
 
 On lkml-scale ANALYZE takes ~5–15 s.
 
+## Deployment
+
+For real-host deployment (everything above runs as `flask run` for
+dev), see `deploy/README.md`. Three shapes are covered:
+
+- **Container** — `Dockerfile` and `compose.yaml` at the repo root.
+  Multi-stage build, non-root runtime, gunicorn behind a `${WORKERS}`
+  knob, auto-`alembic upgrade head` on start, `/healthz` container
+  healthcheck, `/data` and `/app/Inboxes` as the canonical bind
+  mounts. `docker compose up --build` once `SECRET_KEY` is set.
+- **systemd** — `deploy/systemd/` carries the web-server unit plus
+  three timer/oneshot pairs replacing the cron lines for warm-cache
+  (every minute), analyze (daily), and vacuum (weekly). For the
+  weekly vacuum, the WAL truncate only lands fully when no other
+  process holds the DB; do `systemctl stop mimir.service` before
+  triggering it manually if that matters, or let the timer fire and
+  accept best-effort.
+- **Reverse proxy** — `deploy/caddy/Caddyfile.example` (5 lines,
+  automatic HTTPS) and `deploy/nginx/mimir.conf.example` (full
+  TLS site block with the `X-Forwarded-Proto` and `X-Request-Id`
+  headers mimir reads).
+
 ## Linting and tests
 
 ```sh

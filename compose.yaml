@@ -1,0 +1,35 @@
+# `docker compose up` brings mimir up with the canonical bind-mount
+# layout. Adjust paths / env to taste.
+#
+# SECRET_KEY is read from your shell or a sibling `.env` file:
+#   echo "SECRET_KEY=$(python -c 'import secrets; print(secrets.token_hex(32))')" > .env
+
+services:
+  mimir:
+    build: .
+    image: mimir:latest
+    ports:
+      - "5000:5000"
+    volumes:
+      # Public-inbox mirrors. Default INBOXES config in mimir/config.py
+      # points at Inboxes/<name>/git, so this Just Works without an
+      # INBOXES env override.
+      - ./Inboxes:/app/Inboxes
+      # SQLite DB + WAL files. DATABASE_URL is set in the image to
+      # match this mount; change both together if you move it.
+      - ./data:/data
+    environment:
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY required}
+      DATABASE_URL: sqlite:////data/mimir.db
+      WORKERS: "2"
+      # Optional:
+      # SITE_NAME: lkml-mirror
+      # SECURITY_CONTACT: mailto:security@example.com
+      # SECURITY_POLICY_URL: https://example.com/security
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:5000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

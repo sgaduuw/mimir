@@ -1,0 +1,17 @@
+[Unit]
+Description=mimir warm-cache (refresh dashboard helpers + purge expired)
+After=mimir.service
+Wants=mimir.service
+
+[Service]
+Type=oneshot
+User=mimir
+Group=mimir
+WorkingDirectory=/opt/mimir
+EnvironmentFile=/opt/mimir/.env
+ExecStart=/opt/mimir/.venv/bin/flask --app mimir warm-cache
+
+# Keep maintenance jobs from saturating the box.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

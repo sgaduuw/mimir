@@ -1,0 +1,11 @@
+[Unit]
+Description=mimir VACUUM weekly (Sunday 04:00)
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+AccuracySec=10min
+Unit=mimir-vacuum.service
+
+[Install]
+WantedBy=timers.target

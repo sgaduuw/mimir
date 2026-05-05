@@ -1,0 +1,11 @@
+[Unit]
+Description=mimir ANALYZE daily at 04:30
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+AccuracySec=5min
+Unit=mimir-analyze.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,46 @@
+[Unit]
+Description=mimir public-inbox archive
+Documentation=https://github.com/sgaduuw/mimir
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mimir
+Group=mimir
+WorkingDirectory=/opt/mimir
+EnvironmentFile=/opt/mimir/.env
+
+# Bring schema up to head before serving. Idempotent on a current DB.
+ExecStartPre=/opt/mimir/.venv/bin/alembic upgrade head
+
+# Two workers is plenty for a single-host SQLite archive; raise via
+# the environment file if you actually saturate them.
+ExecStart=/opt/mimir/.venv/bin/gunicorn 'mimir:create_app()' \
+    --bind 127.0.0.1:5000 \
+    --workers 2 \
+    --access-logfile - \
+    --error-logfile -
+
+Restart=on-failure
+RestartSec=5s
+
+# Hardening — mimir reads from public-inbox mirrors and writes to a
+# single SQLite file; everything else is off-limits.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+ReadWritePaths=/opt/mimir
+
+[Install]
+WantedBy=multi-user.target

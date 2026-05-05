@@ -1,0 +1,15 @@
+[Unit]
+Description=mimir ANALYZE (refresh SQLite query-planner stats)
+After=mimir.service
+
+[Service]
+Type=oneshot
+User=mimir
+Group=mimir
+WorkingDirectory=/opt/mimir
+EnvironmentFile=/opt/mimir/.env
+ExecStart=/opt/mimir/.venv/bin/flask --app mimir analyze
+
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
