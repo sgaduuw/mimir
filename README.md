@@ -10,6 +10,30 @@ appears only as the page generator.
 [fsd]: https://lore.kernel.org/linux-fsdevel/
 [pi]: https://public-inbox.org/
 
+## Scope and assumptions
+
+mimir targets a personal or small-team archive deployment. The
+defaults assume:
+
+- **Single host, single SQLite file.** The web side scales fine
+  behind a CDN / reverse proxy; writes (ingest) need to be
+  serialized to one process at a time. No Postgres path; SQLite
+  handles the lkml-scale corpus comfortably.
+- **Multi-million-message scale.** Tested on the full lkml corpus
+  (~6 M articles, ~3.6 GB DB on disk). Comfortable on a laptop;
+  growing past ~50 M would warrant revisiting SQLite.
+- **Single-user ingest at a time.** `flask --app mimir update` /
+  `ingest` are not safe to run concurrently against the same DB.
+  Multiple readers (web server + warm-cache cron) are fine — WAL
+  mode handles that.
+- **Append-only upstreams.** public-inbox v2 commits are append-
+  only by design; mimir's "no updates ever" rule for existing rows
+  assumes that. If an upstream rewrites history, you'll need to
+  wipe and re-ingest.
+- **Mirrors stay on disk.** The git mirror is the source of truth;
+  re-ingesting is cheap, re-cloning isn't (~20 GB and hours for
+  the full lkml archive).
+
 ## What it does
 
 - Walks one or more public-inbox v2 epoch repositories (`0.git`,
@@ -162,7 +186,7 @@ and only previously-failed (or genuinely new) messages get inserted.
 pointing at this epoch first; the `articles` themselves stay (a
 cross-post may still be linked from another inbox).
 
-### Behaviour on re-runs
+### Ingest contract
 
 | Situation                                    | What happens                                      |
 | -------------------------------------------- | ------------------------------------------------- |
