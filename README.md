@@ -1,5 +1,7 @@
 # mimir
 
+[![ci](https://github.com/sgaduuw/mimir/actions/workflows/ci.yml/badge.svg)](https://github.com/sgaduuw/mimir/actions/workflows/ci.yml)
+
 A toy archiver and read-only web UI for [public-inbox][pi] v2 mailing
 list archives. Out of the box it indexes the [Linux Kernel Mailing
 List][lkml] and [linux-fsdevel][fsd], but any list published by
