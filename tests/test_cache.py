@@ -183,24 +183,24 @@ def test_delete_for_inbox_pattern_boundary():
     try:
         delete_for_inbox(target)
 
-        with SessionLocal() as session:
-            survivors = {
-                k for k, in session.execute(
-                    sql_select(CacheEntry.key).where(
-                        CacheEntry.key.in_(sentinels.keys())
-                    )
-                )
-            }
+        # `cache.keys()` strips the internal namespace prefix so we
+        # can compare against the keys we passed to `cache.set()`.
+        from mimir.cache import keys as cache_keys
+
+        survivors = set(cache_keys()) & set(sentinels.keys())
         assert survivors == {
             f"archive_stats:{sibling}",
             f"daily_volume:{sibling}:30",
             f"misc:somebody-{target}-fanclub:1",
         }
     finally:
+        # Sentinels are stored under the namespace prefix; drop the
+        # namespaced form from the underlying table.
+        from mimir.cache import _ns
         with SessionLocal() as session:
             session.execute(
                 sql_delete(CacheEntry).where(
-                    CacheEntry.key.in_(sentinels.keys())
+                    CacheEntry.key.in_([_ns(k) for k in sentinels.keys()])
                 )
             )
             session.commit()
