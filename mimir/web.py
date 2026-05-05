@@ -794,6 +794,21 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 ).scalars().all()
                 msgid_urls = {a.message_id: _msg_url(a, inbox.name) for a in referenced}
 
+        # If the message was cross-posted, surface the other inbox
+        # links so readers can see the same thread from a different
+        # vantage. List excludes the current inbox.
+        cross_post_inboxes = [
+            n for n, in session.execute(
+                select(Inbox.name)
+                .join(ArticleList, ArticleList.inbox_id == Inbox.id)
+                .where(
+                    ArticleList.article_id == article.id,
+                    Inbox.id != inbox.id,
+                )
+                .order_by(Inbox.name)
+            )
+        ]
+
     return render_template(
         "message.html",
         inbox_name=inbox.name,
@@ -805,4 +820,5 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         msgid_urls=msgid_urls,
         parent_off_list=parent_off_list,
         related=related,
+        cross_post_inboxes=cross_post_inboxes,
     )
