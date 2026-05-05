@@ -539,8 +539,9 @@ dev), see `deploy/README.md`. Three shapes are covered:
 - **Container** — `Dockerfile` and `compose.yaml` at the repo root.
   Multi-stage build, non-root runtime, gunicorn behind a `${WORKERS}`
   knob, auto-`alembic upgrade head` on start, `/healthz` container
-  healthcheck, `/data` and `/app/Inboxes` as the canonical bind
-  mounts. `docker compose up --build` once `SECRET_KEY` is set.
+  healthcheck, `/data` (with `/data/db/` and `/data/Inboxes/`
+  subpaths) as the single bind mount. `docker compose up --build`
+  once `SECRET_KEY` is set.
 - **systemd** — `deploy/systemd/` carries the web-server unit plus
   three timer/oneshot pairs replacing the cron lines for warm-cache
   (every minute), analyze (daily), and vacuum (weekly). For the

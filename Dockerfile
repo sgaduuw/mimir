@@ -6,10 +6,15 @@
 # - `runtime`: clean python:3.14-slim with the venv + source, runs
 #   gunicorn as a non-root user.
 #
-# Default volumes:
-#   /app/Inboxes  — public-inbox mirrors (matches the default
-#                   `INBOXES` config so a bind mount Just Works)
-#   /data         — SQLite DB. Override DATABASE_URL accordingly.
+# Default volume:
+#   /data — single state directory. Holds:
+#     /data/db       — SQLite DB (DATABASE_URL=sqlite:////data/db/mimir.db)
+#     /data/Inboxes  — public-inbox mirrors. /app/Inboxes is a
+#                      symlink to this so the default relative
+#                      `INBOXES` config still resolves cleanly.
+#
+# Operator must `chown -R 1001:1001 <host-data-dir>` before bringing
+# the container up (rootful podman / docker — no UID remapping).
 
 FROM python:3.14-slim AS builder
 
@@ -57,13 +62,17 @@ COPY --from=builder /app/alembic /app/alembic
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    DATABASE_URL=sqlite:////data/mimir.db \
+    DATABASE_URL=sqlite:////data/db/mimir.db \
     WORKERS=2
 
-# Default mount points. Owned by the runtime user so a fresh bind
-# mount inherits writable perms.
-RUN mkdir -p /data /app/Inboxes \
- && chown -R mimir:mimir /data /app/Inboxes /app
+# /data is the only stateful path. Subdirs are created at build time
+# so a bind-mounted /data with the right owner just works on first
+# run. /app/Inboxes is a symlink so the default relative INBOXES
+# config (Inboxes/<name>/git, resolved from cwd /app) still finds
+# the mirrors.
+RUN mkdir -p /data/db /data/Inboxes \
+ && ln -s /data/Inboxes /app/Inboxes \
+ && chown -R mimir:mimir /data /app
 
 USER mimir
 

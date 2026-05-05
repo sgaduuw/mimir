@@ -11,6 +11,17 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- **Container layout**: consolidated to a single `/data` bind mount
+  with `/data/db/mimir.db` (SQLite) and `/data/Inboxes/<name>/git/`
+  (mirrors) underneath. `/app/Inboxes` is now a symlink to
+  `/data/Inboxes` so the default relative `INBOXES` config still
+  resolves cleanly. Default `DATABASE_URL` updated to
+  `sqlite:////data/db/mimir.db`. Existing deployments must move the
+  `mimir.db*` files into `data/db/` and re-mount as `./data:/data`
+  (single volume) before pulling the new image.
+
 ### Added
 
 - Persist parse failures: every commit whose `m` blob can't be parsed

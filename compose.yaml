@@ -11,16 +11,14 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      # Public-inbox mirrors. Default INBOXES config in mimir/config.py
-      # points at Inboxes/<name>/git, so this Just Works without an
-      # INBOXES env override.
-      - ./Inboxes:/app/Inboxes
-      # SQLite DB + WAL files. DATABASE_URL is set in the image to
-      # match this mount; change both together if you move it.
+      # Single state volume. Layout (created at build time):
+      #   ./data/db/        — SQLite DB + WAL files
+      #   ./data/Inboxes/   — per-inbox public-inbox git mirrors
+      # Pre-flight: `mkdir -p data/db data/Inboxes && chown -R 1001:1001 data`.
       - ./data:/data
     environment:
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY required}
-      DATABASE_URL: sqlite:////data/mimir.db
+      DATABASE_URL: sqlite:////data/db/mimir.db
       WORKERS: "2"
       # Optional:
       # SITE_NAME: lkml-mirror
