@@ -456,6 +456,27 @@ Sample `crontab` (daily at 04:00, only if no ingest is running):
 On lkml-scale (~6 M articles, ~3.6 GB DB) a full VACUUM takes ~80–
 120 s.
 
+## Refreshing query-planner stats (ANALYZE)
+
+SQLite's planner reads `sqlite_stat1` to pick query plans. The
+migration runs `ANALYZE` once on an empty schema, which doesn't
+help; as ingest fills the tables the stats stay zero and the
+planner can flip to bad plans (e.g. scanning all of `article_lists`
+instead of walking the date index). Run periodically — daily or
+after big ingest deltas:
+
+```sh
+poetry run flask --app mimir analyze
+```
+
+Example crontab (4:30am, just after the daily vacuum):
+
+```cron
+30 4 * * * cd ~/Projects/python/mimir && poetry run flask --app mimir analyze
+```
+
+On lkml-scale ANALYZE takes ~5–15 s.
+
 ## Linting and tests
 
 ```sh
