@@ -2,30 +2,10 @@
 
 Catches the routine "did I break the URL routing or break a template
 unrelated to my actual change" regression with one cheap test per
-endpoint. Hits the running DB — assumes at least one configured
-inbox exists. Doesn't validate response bodies beyond a token check
-where it pins something a refactor would silently break (404 on
-unknown inbox, 404 on date mismatch on the message URL, etc.).
+endpoint. Runs against the seeded test DB (alpha + beta inboxes
+with a few articles) set up by tests/conftest.py.
 """
 import pytest
-
-from mimir import create_app
-
-
-@pytest.fixture(scope="module")
-def client():
-    return create_app().test_client()
-
-
-@pytest.fixture(scope="module")
-def inbox_name():
-    """Pick the first configured inbox in alphabetical order. The
-    suite needs *some* inbox to hit; if none is bootstrapped, skip."""
-    from mimir.inboxes import inbox_names
-    names = inbox_names()
-    if not names:
-        pytest.skip("no inboxes bootstrapped; ingest-test path can't run")
-    return names[0]
 
 
 # Endpoints that don't depend on a configured inbox.
