@@ -83,13 +83,51 @@ _CACHE_CONTROL_BY_ENDPOINT = {
 }
 
 
+# Defense-in-depth response headers. Applied to every response so 404s
+# and error pages also get them.
+#
+# CSP: HTML escaping is correct, but a CSP narrows the blast radius of
+#   any future bug. `default-src 'self'` plus the two CDNs we SRI-pin;
+#   inline styles allowed because Pico CSS uses them and Pygments
+#   emits inline `style=` for highlighted code.
+# Referrer-Policy: don't leak full URLs (which include Message-IDs and
+#   inbox names) to outbound links.
+# X-Content-Type-Options: forces browsers to honor the Content-Type we
+#   send rather than sniffing.
+# X-Frame-Options: trivial anti-clickjacking. mimir has no embed use
+#   case.
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "script-src 'self' https://unpkg.com; "
+        "img-src 'self' data:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'"
+    ),
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+}
+
+
 @bp_web.after_request
 def _add_cache_headers(response):
-    if response.status_code != 200:
-        return response
-    rule = _CACHE_CONTROL_BY_ENDPOINT.get(request.endpoint)
-    if rule:
-        response.headers["Cache-Control"] = rule
+    if response.status_code == 200:
+        rule = _CACHE_CONTROL_BY_ENDPOINT.get(request.endpoint)
+        if rule:
+            response.headers["Cache-Control"] = rule
+    for k, v in _SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+    # HSTS only when we know the request came in over HTTPS — set
+    # behind a reverse proxy that forwards X-Forwarded-Proto. Otherwise
+    # an http://localhost dev session would tell the browser "force
+    # https on this host forever," which would break the dev workflow.
+    if request.headers.get("X-Forwarded-Proto") == "https":
+        response.headers.setdefault(
+            "Strict-Transport-Security",
+            "max-age=31536000; includeSubDomains",
+        )
     return response
 
 
