@@ -13,7 +13,7 @@ The conftest seed already gives us:
 
 Tests that need richer shapes add extra Articles inline.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 

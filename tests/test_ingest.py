@@ -9,7 +9,6 @@ with workers=1 (deterministic, stays in-process).
 """
 from pathlib import Path
 
-import pytest
 from dulwich.objects import Blob, Commit, Tree
 from dulwich.repo import Repo
 from sqlalchemy import select
