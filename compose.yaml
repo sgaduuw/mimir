@@ -31,3 +31,25 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # Scheduled-tasks sidecar: warm-cache, update (sync + ingest),
+  # analyze, vacuum. Replaces cron / systemd timers. Shares the same
+  # /data volume; no port exposure. See deploy/scheduler.sh for the
+  # loop body and the env-overridable cadence knobs (WARM_CACHE_EVERY,
+  # UPDATE_EVERY, ANALYZE_EVERY, VACUUM_EVERY — all in seconds).
+  mimir-tasks:
+    build: .
+    image: mimir:latest
+    command: ["/app/scheduler.sh"]
+    volumes:
+      - ./data:/data
+    environment:
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY required}
+      DATABASE_URL: sqlite:////data/db/mimir.db
+      # Match the web container's INBOXES / SITE_NAME / etc. so the
+      # CLI commands see the same Settings.
+      # SITE_NAME: lkml-mirror
+      # INBOXES: '{"linux-fsdevel": {...}}'
+    restart: unless-stopped
+    depends_on:
+      - mimir

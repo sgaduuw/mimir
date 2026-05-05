@@ -58,6 +58,8 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/mimir /app/mimir
 COPY --from=builder /app/alembic.ini /app/alembic.ini
 COPY --from=builder /app/alembic /app/alembic
+# Scheduler script for the sidecar tasks container.
+COPY deploy/scheduler.sh /app/scheduler.sh
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \

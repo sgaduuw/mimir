@@ -31,6 +31,28 @@ Bumping worker count: set `WORKERS` in the env / compose file.
 Going much past 4 isn't useful for this workload — the SQLite
 write lock serializes anyway.
 
+### Scheduled-tasks sidecar
+
+`compose.yaml` ships a second service, `mimir-tasks`, that runs
+`/app/scheduler.sh` in a loop and replaces cron / systemd timers
+for container deployments. It shares the `/data` volume with the
+web container, exposes no ports, and runs the same image with a
+different `command:`.
+
+| Env var            | Default         | What it controls                      |
+| ------------------ | --------------- | ------------------------------------- |
+| `WARM_CACHE_EVERY` | `60` (s)        | Refresh dashboard helpers             |
+| `UPDATE_EVERY`     | `300` (s)       | Sync upstream + ingest new commits    |
+| `ANALYZE_EVERY`    | `86400` (s)     | Refresh `sqlite_stat1`                |
+| `VACUUM_EVERY`     | `604800` (s)    | Compact DB + collapse WAL             |
+
+Timing is relative to container start, not wall-clock. A task that
+overruns its slot is logged but the loop continues; cadences use
+absolute timestamps so they don't drift.
+
+The sidecar runs `alembic upgrade head` on start (idempotent), so
+it can come up independently of the web container.
+
 ## systemd
 
 `deploy/systemd/` carries unit files for `/opt/mimir`:

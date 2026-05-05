@@ -11,6 +11,16 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- Scheduled-tasks sidecar: `deploy/scheduler.sh` shipped in the image
+  at `/app/scheduler.sh`. Runs `warm-cache`, `update`, `analyze`,
+  `vacuum` on env-tunable cadences (`WARM_CACHE_EVERY`,
+  `UPDATE_EVERY`, `ANALYZE_EVERY`, `VACUUM_EVERY` — seconds).
+  `compose.yaml` adds a `mimir-tasks` service for container
+  deployments, replacing the cron / systemd-timer trio for that
+  shape.
+
 ### Changed
 
 - **Container layout**: consolidated to a single `/data` bind mount
