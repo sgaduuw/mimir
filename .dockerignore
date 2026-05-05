@@ -1,0 +1,31 @@
+# Keep the build context small. Anything we'd ingest at runtime
+# stays out of the image.
+.git
+.gitignore
+.venv
+.env
+.env.*
+.pytest_cache
+.ruff_cache
+
+# Mirrors and DB are bind-mounted at runtime, never baked in.
+Inboxes/
+mimir.db*
+mimir-cache.pickle*
+
+# Tests + agent docs aren't part of the runtime image.
+tests/
+CLAUDE.md
+CONTEXT.md
+MEMORY.md
+
+# Python artifacts.
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Editor / OS noise.
+.vscode
+.idea
+.DS_Store

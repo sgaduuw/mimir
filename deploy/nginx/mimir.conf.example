@@ -1,0 +1,55 @@
+# Example nginx config for mimir behind nginx as a reverse proxy.
+# Adjust hostnames + cert paths; leave the proxy_set_header lines
+# alone — mimir reads X-Forwarded-Proto (gates HSTS) and
+# X-Request-Id (correlates with the structured access log).
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name mimir.example.com;
+
+    # Redirect everything to HTTPS. Comment out if you're terminating
+    # TLS somewhere upstream.
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name mimir.example.com;
+
+    # TLS — replace with real paths.
+    ssl_certificate     /etc/letsencrypt/live/mimir.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/mimir.example.com/privkey.pem;
+
+    # gunicorn on 127.0.0.1:5000 by default (see deploy/systemd/mimir.service
+    # or compose.yaml's host port).
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Mint a request id if the client didn't supply one; mimir
+        # echoes it back in the response.
+        proxy_set_header X-Request-Id      $request_id;
+
+        proxy_read_timeout 30s;
+    }
+
+    # Compress text content. Atom and sitemap are XML; the search
+    # results page can also get large.
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        application/xml
+        application/atom+xml
+        application/json
+        image/svg+xml;
+}

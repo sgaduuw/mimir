@@ -1,0 +1,28 @@
+[Unit]
+Description=mimir VACUUM (compact SQLite, collapse WAL)
+# VACUUM needs an exclusive lock for the post-VACUUM
+# wal_checkpoint(TRUNCATE) to actually collapse the WAL. Other open
+# DB handles (the running web server, warm-cache) prevent that. The
+# operator-friendly recipe:
+#
+#     systemctl stop mimir.service
+#     systemctl start mimir-vacuum.service
+#     systemctl start mimir.service
+#
+# Or run as-is and accept that the WAL truncate is best-effort while
+# the web is up — the VACUUM rebuild itself still succeeds, you just
+# may not reclaim every byte. (We'd express the stop/start in this
+# unit via BindsTo/Conflicts, but systemd refuses transactions that
+# both stop and start the same unit, so the orchestration has to
+# happen above.)
+
+[Service]
+Type=oneshot
+User=mimir
+Group=mimir
+WorkingDirectory=/opt/mimir
+EnvironmentFile=/opt/mimir/.env
+ExecStart=/opt/mimir/.venv/bin/flask --app mimir vacuum
+
+Nice=15
+IOSchedulingClass=idle

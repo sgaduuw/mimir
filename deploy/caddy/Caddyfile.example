@@ -1,0 +1,13 @@
+# Drop-in Caddy site for mimir. Adjust the hostname; HTTPS certs
+# are managed automatically.
+#
+# `reverse_proxy` already forwards Host, X-Forwarded-For, and
+# X-Forwarded-Proto by default — the latter is what gates mimir's
+# HSTS header.
+
+mimir.example.com {
+    reverse_proxy 127.0.0.1:5000
+
+    # Compress text content (Atom feeds, sitemap, search results).
+    encode gzip zstd
+}
