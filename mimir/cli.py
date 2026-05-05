@@ -93,7 +93,8 @@ def ingest_command(
     for name, results in results_by_name.items():
         for r in results:
             click.echo(
-                f"{name}/{r.epoch}: new={r.new} skipped={r.skipped} "
+                f"{name}/{r.epoch}: new={r.new} linked={r.linked} "
+                f"dup_batch={r.dup_batch} dup_db={r.dup_db} "
                 f"failed={r.failed} head={r.last_commit_sha}"
             )
 
@@ -162,7 +163,8 @@ def reindex_command(
         result = ingest_epoch(session, inbox, epoch, epoch_path, workers=workers)
 
     click.echo(
-        f"{inbox_name}/{result.epoch}: new={result.new} skipped={result.skipped} "
+        f"{inbox_name}/{result.epoch}: new={result.new} linked={result.linked} "
+        f"dup_batch={result.dup_batch} dup_db={result.dup_db} "
         f"failed={result.failed} head={result.last_commit_sha}"
     )
 
@@ -317,7 +319,8 @@ def update_command(
     for name, results in results_by_name.items():
         for r in results:
             click.echo(
-                f"{name}/{r.epoch}: new={r.new} skipped={r.skipped} "
+                f"{name}/{r.epoch}: new={r.new} linked={r.linked} "
+                f"dup_batch={r.dup_batch} dup_db={r.dup_db} "
                 f"failed={r.failed} head={r.last_commit_sha}"
             )
 
