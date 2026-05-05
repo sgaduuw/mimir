@@ -4,6 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="generator" content="mimir">
+  {% if current_inbox %}
+  <link rel="alternate" type="application/atom+xml"
+        title="{{ current_inbox }} feed"
+        href="/{{ current_inbox }}/feed.atom">
+  {% endif %}
   <title>{% block title %}{{ site_name }}{% endblock %}</title>
   <link rel="stylesheet"
         href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.amber.min.css"
