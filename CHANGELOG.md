@@ -11,6 +11,13 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- CI publishes the Docker image to `ghcr.io/sgaduuw/mimir` on every
+  push to `main` (`:main`, `:sha-<short>`) and on `v*` tags
+  (`:<version>`, `:<major>.<minor>`, `:latest`). PRs still build
+  for verification only.
+
 ## [0.1.0]
 
 First tracked release. Summary of what shipped in the public-inbox
