@@ -11,6 +11,13 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Container image now includes `git` and `ca-certificates`, so
+  `mimir update` (which shells out to `git clone --mirror` /
+  `git fetch`) actually works in the container. The `python:3.14-slim`
+  base ships neither.
+
 ### Added
 
 - Scheduled-tasks sidecar: `deploy/scheduler.sh` shipped in the image
