@@ -7,6 +7,12 @@
     <p>
       <strong>From:</strong> {{ parsed.author|safe_from }}<br>
       <strong>Date:</strong> {{ article.date.strftime('%Y-%m-%d %H:%M:%S %z') if article.date else '?' }}
+      {% if cross_post_inboxes %}
+      <br><strong>Also in:</strong>
+        {% for other in cross_post_inboxes %}
+          <a href="{{ article|msg_url(other) }}">{{ other }}</a>{% if not loop.last %}, {% endif %}
+        {% endfor %}
+      {% endif %}
     </p>
   </header>
 
