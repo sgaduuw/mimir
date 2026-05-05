@@ -11,33 +11,10 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
-### Fixed
+## [1.0.0] – 2026-05-06
 
-- Container image now includes `git` and `ca-certificates`, so
-  `mimir update` (which shells out to `git clone --mirror` /
-  `git fetch`) actually works in the container. The `python:3.14-slim`
-  base ships neither.
-
-### Added
-
-- Scheduled-tasks sidecar: `deploy/scheduler.sh` shipped in the image
-  at `/app/scheduler.sh`. Runs `warm-cache`, `update`, `analyze`,
-  `vacuum` on env-tunable cadences (`WARM_CACHE_EVERY`,
-  `UPDATE_EVERY`, `ANALYZE_EVERY`, `VACUUM_EVERY` — seconds).
-  `compose.yaml` adds a `mimir-tasks` service for container
-  deployments, replacing the cron / systemd-timer trio for that
-  shape.
-
-### Changed
-
-- **Container layout**: consolidated to a single `/data` bind mount
-  with `/data/db/mimir.db` (SQLite) and `/data/Inboxes/<name>/git/`
-  (mirrors) underneath. `/app/Inboxes` is now a symlink to
-  `/data/Inboxes` so the default relative `INBOXES` config still
-  resolves cleanly. Default `DATABASE_URL` updated to
-  `sqlite:////data/db/mimir.db`. Existing deployments must move the
-  `mimir.db*` files into `data/db/` and re-mount as `./data:/data`
-  (single volume) before pulling the new image.
+First production release. Live at <https://ratatoskr.run> serving
+linux-fsdevel and lkml.
 
 ### Added
 
@@ -52,10 +29,33 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   failure's blob, re-run the parser, insert the article (or cross-post
   link) on success, bump `attempts` on continued failure. Use after a
   parser fix.
+- Scheduled-tasks sidecar: `deploy/scheduler.sh` shipped in the image
+  at `/app/scheduler.sh`. Runs `warm-cache`, `update`, `analyze`,
+  `vacuum` on env-tunable cadences (`WARM_CACHE_EVERY`,
+  `UPDATE_EVERY`, `ANALYZE_EVERY`, `VACUUM_EVERY` — seconds).
+  `compose.yaml` adds a `mimir-tasks` service for container
+  deployments, replacing the cron / systemd-timer trio for that
+  shape.
 - CI publishes the Docker image to `ghcr.io/sgaduuw/mimir` on every
   push to `main` (`:main`, `:sha-<short>`) and on `v*` tags
   (`:<version>`, `:<major>.<minor>`, `:latest`). PRs still build
   for verification only.
+
+### Changed
+
+- **Container layout**: consolidated to a single `/data` bind mount
+  with `/data/db/mimir.db` (SQLite) and `/data/Inboxes/<name>/git/`
+  (mirrors) underneath. `/app/Inboxes` is now a symlink to
+  `/data/Inboxes` so the default relative `INBOXES` config still
+  resolves cleanly. Default `DATABASE_URL` updated to
+  `sqlite:////data/db/mimir.db`.
+
+### Fixed
+
+- Container image now includes `git` and `ca-certificates`, so
+  `mimir update` (which shells out to `git clone --mirror` /
+  `git fetch`) actually works in the container. The `python:3.14-slim`
+  base ships neither.
 
 ## [0.1.0]
 
@@ -109,5 +109,5 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/sgaduuw/mimir/releases/tag/v0.1.0
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.0.0
