@@ -138,3 +138,54 @@ def test_unknown_type_raises():
 def test_unknown_tag_raises():
     with pytest.raises(ValueError, match="unknown tag"):
         _decode({"__t": "DoesNotExist", "v": {}})
+
+
+def test_delete_for_inbox_pattern_boundary():
+    """`delete_for_inbox` must match exactly the inbox name, not
+    prefixes that share its leading characters."""
+    from sqlalchemy import delete as sql_delete, select as sql_select
+
+    from mimir.cache import delete_for_inbox, set as cache_set
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    sentinels = {
+        # Two for `lkml`: trailing-segment + middle-segment forms.
+        "archive_stats:lkml": 1,
+        "daily_volume:lkml:30": 2,
+        # Two for `linux-fsdevel` that share the leading `l...`.
+        # Must NOT be deleted by an `lkml` invalidation.
+        "archive_stats:linux-fsdevel": 3,
+        "daily_volume:linux-fsdevel:30": 4,
+        # A key that contains "lkml" inside another segment, not as
+        # a colon-bounded inbox segment. Must NOT be deleted.
+        "misc:somebody-lkml-fanclub:1": 5,
+    }
+    for k, v in sentinels.items():
+        cache_set(k, v, ttl=3600)
+
+    try:
+        deleted = delete_for_inbox("lkml")
+        assert deleted == 2
+
+        with SessionLocal() as session:
+            survivors = {
+                k for k, in session.execute(
+                    sql_select(CacheEntry.key).where(
+                        CacheEntry.key.in_(sentinels.keys())
+                    )
+                )
+            }
+        assert survivors == {
+            "archive_stats:linux-fsdevel",
+            "daily_volume:linux-fsdevel:30",
+            "misc:somebody-lkml-fanclub:1",
+        }
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                sql_delete(CacheEntry).where(
+                    CacheEntry.key.in_(sentinels.keys())
+                )
+            )
+            session.commit()

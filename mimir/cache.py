@@ -14,7 +14,7 @@ import json
 from datetime import date, datetime, timezone
 from typing import Any, Callable
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -154,5 +154,33 @@ def purge_expired() -> int:
     now = _now()
     with SessionLocal() as session:
         result = session.execute(delete(CacheEntry).where(CacheEntry.expires_at < now))
+        session.commit()
+        return result.rowcount or 0
+
+
+def delete_for_inbox(inbox_name: str) -> int:
+    """Drop every cache entry whose key references `inbox_name`.
+
+    Cache keys follow the convention `<helper>:<inbox_name>[:<rest>]`,
+    so an entry references an inbox if its key ends with `:{name}` or
+    contains `:{name}:`. Called by the admin CRUD layer after a
+    rename or delete so reads don't return rows pointing at a now-
+    stale (or vanished) name. Returns rows deleted.
+
+    Inbox names are slug-validated (alphanumeric + hyphen) so they
+    contain no LIKE-pattern metacharacters; the literal `%` and `_`
+    cases that would need escaping can't occur.
+    """
+    suffix_pat = f"%:{inbox_name}"
+    middle_pat = f"%:{inbox_name}:%"
+    with SessionLocal() as session:
+        result = session.execute(
+            delete(CacheEntry).where(
+                or_(
+                    CacheEntry.key.like(suffix_pat),
+                    CacheEntry.key.like(middle_pat),
+                )
+            )
+        )
         session.commit()
         return result.rowcount or 0
