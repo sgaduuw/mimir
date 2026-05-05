@@ -158,7 +158,25 @@ def _attachment_bytes(part) -> bytes:
     return content
 
 
+class MessageTooLarge(ValueError):
+    """Raised when `parse_message` is handed a blob bigger than
+    `MAX_RAW_MESSAGE_BYTES`. Caught by the ingest worker and
+    counted as `failed` so the offending commit is recorded but
+    doesn't take the parser pool down."""
+
+
+# Hard ceiling on the input bytes `parse_message` will accept. lkml
+# attachments occasionally cross 10 MB (full vmlinux, dmesg dumps);
+# 50 MB is comfortably above the 99.99th-percentile message size and
+# bounds worker memory at ~workers × 50 MB even in the worst case.
+MAX_RAW_MESSAGE_BYTES = 50 * 1024 * 1024
+
+
 def parse_message(raw: bytes) -> ParsedArticle:
+    if len(raw) > MAX_RAW_MESSAGE_BYTES:
+        raise MessageTooLarge(
+            f"raw message is {len(raw)} bytes; cap is {MAX_RAW_MESSAGE_BYTES}"
+        )
     msg: EmailMessage = BytesParser(policy=policy.default).parsebytes(raw)
 
     message_id = _normalize_msgid(_raw_header(msg, "Message-ID"))
