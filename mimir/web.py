@@ -7,7 +7,7 @@ from email.utils import parseaddr
 from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from flask import Blueprint, Response, abort, g, render_template, request
+from flask import Blueprint, Response, abort, g, redirect, render_template, request
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_for_filename, guess_lexer
@@ -86,6 +86,8 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.robots": "public, max-age=86400",
     "web.security_txt": "public, max-age=3600",
     "web.sitemap": "public, max-age=300",
+    "web.message_id_lookup": "public, max-age=3600",
+    "web.message_id_lookup_inbox": "public, max-age=3600",
     "web.message": "public, max-age=60",
     "web.attachment_download": "public, max-age=3600, immutable",
     "web.attachment_preview": "public, max-age=3600, immutable",
@@ -144,7 +146,10 @@ def _start_request_timer():
 
 @bp_web.after_request
 def _add_cache_headers(response):
-    if response.status_code == 200:
+    # 302 redirects (Message-ID lookup) are equally cacheable; honor
+    # their dict entry too. 4xx/5xx skip — error responses shouldn't
+    # be pinned in upstream caches.
+    if response.status_code in (200, 302):
         rule = _CACHE_CONTROL_BY_ENDPOINT.get(request.endpoint)
         if rule:
             response.headers["Cache-Control"] = rule
@@ -383,6 +388,57 @@ def sitemap():
             return _build_sitemap_xml(urls)
         body = cache.get_or_compute(session, "sitemap:root", SITEMAP_TTL_SEC, compute)
     return Response(body, mimetype="application/xml; charset=utf-8")
+
+
+# Message-ID lookup. People share Message-IDs in commit trailers,
+# bug reports, lore links, IRC; the canonical /<inbox>/<YYYY>/<MM>/
+# <article-id> URL requires knowing the date. These two routes
+# resolve a bare Message-ID to the canonical URL via 302 with a
+# 1-hour cache. 302 (not 301) so a future URL-scheme change isn't
+# pinned forever in browser caches.
+
+
+@bp_web.route("/m/<path:message_id>")
+def message_id_lookup(message_id: str):
+    """Resolve a bare Message-ID to its canonical URL.
+
+    For cross-posts, redirects to the alphabetically-first inbox
+    that carries the message; the message page's "Also in:" line
+    surfaces the other inboxes from there.
+    """
+    with SessionLocal() as session:
+        row = session.execute(
+            select(Article, Inbox.name)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .join(Inbox, Inbox.id == ArticleList.inbox_id)
+            .where(Article.message_id == message_id)
+            .order_by(Inbox.name)
+            .limit(1)
+        ).first()
+        if row is None:
+            abort(404)
+        article, inbox_name = row
+    return redirect(_msg_url(article, inbox_name), code=302)
+
+
+@bp_web.route("/<inbox_name>/m/<path:message_id>")
+def message_id_lookup_inbox(inbox_name: str, message_id: str):
+    """Inbox-scoped Message-ID lookup. 404 if the message exists but
+    isn't linked to this inbox; the unscoped /m/<id> form will find
+    it in another inbox if one carries it."""
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        article = session.execute(
+            select(Article)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                Article.message_id == message_id,
+                ArticleList.inbox_id == inbox.id,
+            )
+        ).scalar_one_or_none()
+        if article is None:
+            abort(404)
+    return redirect(_msg_url(article, inbox.name), code=302)
 
 
 @bp_web.route("/")

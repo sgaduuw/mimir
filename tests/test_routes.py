@@ -180,6 +180,50 @@ def test_security_txt_optional_fields_emitted_when_set(client, monkeypatch):
     assert "Encryption: https://example.com/pgp.asc" in body
 
 
+def _any_article_in(inbox_name):
+    """Helper: return one (Article, inbox_name) pair from the running
+    DB so the redirect tests have a real Message-ID to point at."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    with SessionLocal() as s:
+        return s.execute(
+            select(Article)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .join(Inbox, Inbox.id == ArticleList.inbox_id)
+            .where(Inbox.name == inbox_name)
+            .limit(1)
+        ).scalar_one_or_none()
+
+
+def test_global_message_id_lookup_redirect(client, inbox_name):
+    art = _any_article_in(inbox_name)
+    if art is None:
+        pytest.skip("no articles in DB")
+    r = client.get(f"/m/{art.message_id}", follow_redirects=False)
+    assert r.status_code == 302
+    loc = r.headers.get("Location", "")
+    # Should redirect to a /<inbox>/<YYYY>/<MM>/<id> URL.
+    assert loc.endswith(f"/{art.id}")
+    assert r.headers.get("Cache-Control", "").startswith("public")
+
+
+def test_message_id_404_unknown(client):
+    assert client.get("/m/no-such-message-id-12345").status_code == 404
+
+
+def test_inbox_scoped_message_id_redirect(client, inbox_name):
+    art = _any_article_in(inbox_name)
+    if art is None:
+        pytest.skip("no articles in DB")
+    r = client.get(f"/{inbox_name}/m/{art.message_id}", follow_redirects=False)
+    assert r.status_code == 302
+    loc = r.headers.get("Location", "")
+    assert loc.startswith(f"/{inbox_name}/")
+    assert loc.endswith(f"/{art.id}")
+
+
 def test_sitemap_xml(client):
     import xml.etree.ElementTree as ET
 
