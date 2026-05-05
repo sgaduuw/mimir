@@ -146,8 +146,15 @@ poetry run flask --app mimir reindex lkml 0.git --from-scratch     # also DELETE
 Output is one line per epoch, e.g.:
 
 ```
-lkml/0.git: new=500 skipped=0 failed=0 head=8f282234b668f51b884f3140adf1947d95e32ce7
+lkml/0.git: new=500 linked=0 dup_batch=0 dup_db=0 failed=0 head=8f282234b668f51b884f3140adf1947d95e32ce7
 ```
+
+Every commit lands in exactly one bucket: `new` (Article inserted),
+`linked` (Article already existed in another inbox — added a new
+`article_lists` row, i.e. a cross-post), `dup_batch` (same Message-ID
+seen earlier in the current uncommitted batch), `dup_db` (Article
+already in DB and already linked to this inbox — re-walks land
+here), or `failed` (`parse_message` raised).
 
 The default form is non-destructive: existing rows are left alone
 and only previously-failed (or genuinely new) messages get inserted.
@@ -159,9 +166,9 @@ cross-post may still be linked from another inbox).
 
 | Situation                                    | What happens                                      |
 | -------------------------------------------- | ------------------------------------------------- |
-| Same Message-ID seen across epochs           | Second copy skipped (DB-level check)              |
-| Same Message-ID twice within one walk        | Second copy skipped (in-batch set)                |
-| Cross-post: Message-ID seen in another inbox | Article reused; one new `article_lists` row added |
+| Same Message-ID seen across epochs           | Counted in `dup_db` (DB-level check)              |
+| Same Message-ID twice within one walk        | Counted in `dup_batch` (in-batch set)             |
+| Cross-post: Message-ID seen in another inbox | Article reused; one new `article_lists` row added (counts as `linked`) |
 | Existing article with the same Message-ID    | Left untouched — no updates, ever                 |
 | `parse_message` raises                       | Counted in `failed`; SHA still advances           |
 
@@ -170,6 +177,58 @@ immutable (public-inbox commits are append-only). If you want to
 retry a previously failed parse — for example after fixing a parser
 bug — wipe or rewind `ingest_state.last_commit_sha` for that
 (inbox, epoch).
+
+## Managing inboxes
+
+`Settings.inboxes` (env) seeds the `inboxes` table on first
+startup, but you can also create / modify / delete inboxes
+directly. The CLI is the front-end to a service layer in
+`mimir.inboxes` — the future Flask admin UI will call the same
+functions.
+
+```sh
+flask --app mimir admin inbox list
+flask --app mimir admin inbox show <name>
+flask --app mimir admin inbox add <name> --mirror-path PATH --upstream-url URL
+flask --app mimir admin inbox update <name> [--mirror-path P] [--upstream-url U] [--rename NEW]
+flask --app mimir admin inbox remove <name> [--keep-orphan-articles] [--remove-inbox-data] [--yes]
+```
+
+Validation is enforced at the service layer:
+
+- `<name>` must match `^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`. The
+  name flows into URL paths and cache-key fragments, so it has to
+  be lowercase alphanumeric with hyphens, no leading/trailing
+  hyphens, ≤64 chars.
+- `<upstream_url>` must be `https://` with a non-empty host.
+- `<mirror_path>` must be a non-empty string. The directory is
+  allowed to not exist yet — `flask --app mimir update --inbox
+  <name>` will create it on first clone.
+
+`add` only inserts the row. To actually populate the inbox:
+
+```sh
+flask --app mimir admin inbox add my-list \
+    --mirror-path Inboxes/my-list/git \
+    --upstream-url https://lore.kernel.org/my-list
+flask --app mimir update --inbox my-list   # clone the mirror + ingest
+```
+
+`remove` cascade-deletes via FK `ON DELETE CASCADE`: the inbox's
+`article_lists` and `ingest_state` rows go with it. By default it
+also drops `articles` left without remaining links — cross-posts to
+other inboxes survive untouched. `--keep-orphan-articles` opts out.
+
+`--remove-inbox-data` additionally `rm -rf`'s the on-disk
+public-inbox mirror at `<mirror_path>`. Permanent — re-cloning all
+of lkml takes hours and ~20 GB. The command prompts for explicit
+confirmation; use `--yes` to skip both the DB-removal prompt and
+the on-disk-removal prompt in a script.
+
+`update --rename` and `remove` invalidate the cache rows that
+reference the affected name (`mimir.cache.delete_for_inbox`) so
+subsequent reads don't return stale entries pointing at a now-
+defunct inbox.
 
 ## Schema
 
