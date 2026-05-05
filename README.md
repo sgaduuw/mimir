@@ -369,6 +369,13 @@ Routes:
   Caveats: queries with no matches can take seconds to scan on a
   cold cache; the date-index short-circuit only helps when *some*
   rows match. See `mimir.dashboard.search_articles`.
+- `GET /m/<message-id>` — Message-ID lookup. 302-redirects to the
+  canonical `/<inbox>/<YYYY>/<MM>/<article-id>` URL. For cross-posts,
+  redirects to the alphabetically-first inbox; the message page's
+  "Also in:" line surfaces the others. Useful for linking from
+  outside the archive (commit trailers, IRC, lore.kernel.org refs).
+  An inbox-scoped variant `GET /<inbox>/m/<message-id>` 404s when
+  the message exists but isn't in the named inbox.
 - `GET /<inbox>/<YYYY>/<MM>/<article-id>` — single message:
   headers, full thread tree with the current message highlighted,
   body, attachment list. When the thread root has an off-list
