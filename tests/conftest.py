@@ -78,6 +78,7 @@ def _reset_db():
         CacheEntry,
         IngestState,
         Inbox,
+        ParseFailure,
     )
 
     with SessionLocal() as s:
@@ -88,6 +89,7 @@ def _reset_db():
         s.execute(delete(IngestState))
         s.execute(delete(ArticleList))
         s.execute(delete(Article))
+        s.execute(delete(ParseFailure))
         s.execute(delete(Inbox))
         s.execute(delete(CacheEntry))
         s.commit()

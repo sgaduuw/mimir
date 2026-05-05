@@ -204,13 +204,34 @@ cross-post may still be linked from another inbox).
 | Same Message-ID twice within one walk        | Counted in `dup_batch` (in-batch set)             |
 | Cross-post: Message-ID seen in another inbox | Article reused; one new `article_lists` row added (counts as `linked`) |
 | Existing article with the same Message-ID    | Left untouched — no updates, ever                 |
-| `parse_message` raises                       | Counted in `failed`; SHA still advances           |
+| `parse_message` raises                       | Counted in `failed`; row recorded in `parse_failures`; SHA still advances |
 
 The "no updates, ever" stance assumes the underlying archive is
 immutable (public-inbox commits are append-only). If you want to
 retry a previously failed parse — for example after fixing a parser
-bug — wipe or rewind `ingest_state.last_commit_sha` for that
-(inbox, epoch).
+bug — see "Replaying parse failures" below, or wipe / rewind
+`ingest_state.last_commit_sha` for that (inbox, epoch).
+
+### Replaying parse failures
+
+Every commit whose `m` blob raises in `parse_message` is recorded in
+`parse_failures` keyed by `(inbox, epoch, commit_sha)` with the
+exception class, message, attempt count, and timestamps. A re-walk
+that parses the same commit cleanly clears the row automatically.
+
+To enumerate or replay without re-walking the whole epoch:
+
+```sh
+flask --app mimir admin failures list                                 # all
+flask --app mimir admin failures list --inbox lkml --error-class ValueError
+flask --app mimir admin failures replay lkml                          # re-parse all of lkml's failures
+flask --app mimir admin failures replay lkml --epoch 0.git --limit 100
+```
+
+`replay` re-fetches each failure's blob from the mirror, re-runs the
+parser, and either inserts the article (success → row deleted) or
+bumps `attempts` + `last_attempt` (still failing → row kept). Skipped
+rows mean the commit or `m` blob is no longer in the mirror.
 
 ## Managing inboxes
 
@@ -291,6 +312,13 @@ ingest_state
 
 cache                                 -- DB-backed cache for slow dashboard queries
   key (PK), value (JSON), expires_at (indexed)
+
+parse_failures                        -- one row per (inbox, epoch, commit_sha) whose blob couldn't be parsed
+  inbox_id (FK → inboxes.id, ON DELETE CASCADE),
+  epoch, commit_sha,
+  error_class (indexed), error_message,
+  first_seen, last_attempt, attempts,
+  PRIMARY KEY (inbox_id, epoch, commit_sha)
 ```
 
 `mimir.store.read_message(session, inbox, message_id)` is the
