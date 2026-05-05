@@ -406,6 +406,32 @@ inbox. With this in place, dashboard loads come back in
 single-digit-millisecond range regardless of how big the archive
 gets.
 
+## Reclaiming space (VACUUM)
+
+SQLite never reclaims freed pages on its own; the `.db` file grows
+past its actual content over time, and the WAL grows during long
+ingests until something checkpoints it. To compact both:
+
+```sh
+poetry run flask --app mimir vacuum
+```
+
+Reports before/after sizes for `mimir.db`, `mimir.db-wal`, and
+`mimir.db-shm`. VACUUM holds an exclusive lock for the duration and
+needs ~2× the on-disk size of free space (the rebuild lives in the
+WAL until checkpoint). Other processes with the DB open (web
+server, warm-cache cron) prevent the post-VACUUM WAL truncate, so
+run it during a quiet window.
+
+Sample `crontab` (daily at 04:00, only if no ingest is running):
+
+```cron
+0 4 * * * cd ~/Projects/python/mimir && poetry run flask --app mimir vacuum >/dev/null
+```
+
+On lkml-scale (~6 M articles, ~3.6 GB DB) a full VACUUM takes ~80–
+120 s.
+
 ## Linting and tests
 
 ```sh
