@@ -5,7 +5,7 @@ from pathlib import Path
 
 import click
 from flask import Flask
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import selectinload
 
 from mimir.config import settings
@@ -399,6 +399,26 @@ def _fmt_bytes(n: int) -> str:
     return f"{size:.1f} TB"
 
 
+@click.command("analyze")
+def analyze_command() -> None:
+    """Run ANALYZE to refresh the SQLite query planner statistics.
+
+    Stale `sqlite_stat1` makes the planner pick bad plans (we hit
+    this once when the migration's ANALYZE ran on empty tables and
+    later ingest left the stats wrong by orders of magnitude). Run
+    after a big ingest delta — daily or weekly via cron is plenty.
+
+    Example crontab (4:30am, after the daily VACUUM):
+
+        30 4 * * * cd ~/Projects/python/mimir && poetry run flask --app mimir analyze
+    """
+    t0 = time.perf_counter()
+    with engine.begin() as conn:
+        conn.execute(text("ANALYZE"))
+    elapsed = time.perf_counter() - t0
+    click.echo(f"ANALYZE complete in {elapsed:.1f} s")
+
+
 @click.command("vacuum")
 def vacuum_command() -> None:
     """Reclaim space: VACUUM + WAL checkpoint.
@@ -657,4 +677,5 @@ def register_cli(app: Flask) -> None:
     app.cli.add_command(update_command)
     app.cli.add_command(warm_cache_command)
     app.cli.add_command(vacuum_command)
+    app.cli.add_command(analyze_command)
     app.cli.add_command(admin_group)
