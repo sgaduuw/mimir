@@ -129,3 +129,68 @@ def test_atom_feed_well_formed(client, inbox_name):
     assert root.find("a:id", ns) is not None
     assert root.find("a:title", ns) is not None
     assert root.find("a:updated", ns) is not None
+
+
+# robots.txt / security.txt / sitemap.xml
+
+
+def test_robots_txt(client):
+    r = client.get("/robots.txt")
+    assert r.status_code == 200
+    assert r.mimetype == "text/plain"
+    body = r.get_data(as_text=True)
+    assert "User-agent: *" in body
+    assert "Sitemap:" in body
+    assert "/sitemap.xml" in body
+
+
+def test_security_txt_404_when_unconfigured(client, monkeypatch):
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "security_contact", None)
+    assert client.get("/security.txt").status_code == 404
+    assert client.get("/.well-known/security.txt").status_code == 404
+
+
+def test_security_txt_when_configured(client, monkeypatch):
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "security_contact", "mailto:test@example.com")
+    monkeypatch.setattr(settings, "security_policy_url", None)
+    monkeypatch.setattr(settings, "security_encryption_url", None)
+    for url in ("/security.txt", "/.well-known/security.txt"):
+        r = client.get(url)
+        assert r.status_code == 200
+        assert r.mimetype == "text/plain"
+        body = r.get_data(as_text=True)
+        assert "Contact: mailto:test@example.com" in body
+        # Expires is dynamic; just confirm the field is present.
+        assert "Expires:" in body
+        assert "Preferred-Languages: en" in body
+
+
+def test_security_txt_optional_fields_emitted_when_set(client, monkeypatch):
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "security_contact", "mailto:test@example.com")
+    monkeypatch.setattr(settings, "security_policy_url", "https://example.com/policy")
+    monkeypatch.setattr(settings, "security_encryption_url", "https://example.com/pgp.asc")
+    body = client.get("/security.txt").get_data(as_text=True)
+    assert "Policy: https://example.com/policy" in body
+    assert "Encryption: https://example.com/pgp.asc" in body
+
+
+def test_sitemap_xml(client):
+    import xml.etree.ElementTree as ET
+
+    r = client.get("/sitemap.xml")
+    assert r.status_code == 200
+    assert r.mimetype == "application/xml"
+    root = ET.fromstring(r.get_data())
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    urls = root.findall("s:url", ns)
+    # Always at least the meta-index plus per-inbox dashboards.
+    assert len(urls) > 0
+    locs = {u.find("s:loc", ns).text for u in urls}
+    # Meta-index is always present.
+    assert any(loc.endswith("/") and loc.count("/") <= 3 for loc in locs)

@@ -92,6 +92,14 @@ Defaults baked into `mimir/config.py`:
   full; everyone else gets `<hidden>`.
 - `TRACKED_AUTHORS` — `{label: from_substring}` pairs; each gets a
   tile on the per-inbox dashboard.
+- `SECURITY_CONTACT` — enables `/security.txt` and
+  `/.well-known/security.txt` (RFC 9116). Typical value:
+  `mailto:security@example.com`. Without it, both routes 404 — better
+  than serving a contact-less file. Optional companions:
+  `SECURITY_POLICY_URL`, `SECURITY_ENCRYPTION_URL`,
+  `SECURITY_PREFERRED_LANGUAGES` (default `en`). The `Expires:` field
+  is computed at request time as `now + 1 year`, so there's no
+  annual rotation chore.
 
 `Settings.inboxes` (env) is the *bootstrap* source: each entry
 guarantees an `inboxes` row exists in the DB on first start, but env
@@ -377,6 +385,15 @@ Routes:
   page otherwise.
 - `GET /api/<inbox>/recent?offset=N` — HTMX partial: next page of
   "Recent messages" entries plus a fresh "Load more" trigger.
+- `GET /healthz` and `GET /readyz` — cheap probes for orchestrators.
+  `/healthz` does no DB work; `/readyz` runs a `SELECT 1`. Both
+  bypass the route cache via `Cache-Control: no-store`.
+- `GET /robots.txt` — disallows `/*/attachment/*` and points at the
+  sitemap.
+- `GET /sitemap.xml` — meta-index + per-inbox dashboards + recent
+  100 message URLs per inbox. Cached for 5 min.
+- `GET /security.txt` and `GET /.well-known/security.txt` —
+  RFC 9116 contact info. 404 unless `SECURITY_CONTACT` is set.
 
 The body rendering pipeline (`mimir/rendering.py`) walks the body
 line by line, segments it into runs of *text*, *quote*, and *diff*,

@@ -156,7 +156,7 @@ def test_delete_for_inbox_pattern_boundary():
     running mimir process might have cached for the real `lkml` /
     `linux-fsdevel` inboxes.
     """
-    from sqlalchemy import delete as sql_delete, select as sql_select
+    from sqlalchemy import delete as sql_delete
 
     from mimir.cache import delete_for_inbox, set as cache_set
     from mimir.extensions import SessionLocal
