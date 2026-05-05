@@ -16,12 +16,14 @@ The image:
 - Multi-stage build; final ~slim runtime, runs as `mimir:1001`.
 - `CMD` runs `alembic upgrade head` then `gunicorn` with
   `${WORKERS:-2}` workers.
-- Volume mounts:
-  - `/app/Inboxes` — public-inbox mirrors. Default `INBOXES`
-    config in `mimir/config.py` looks here, so a bind mount Just
-    Works.
-  - `/data` — SQLite DB. `DATABASE_URL=sqlite:////data/mimir.db`
-    is baked in.
+- Volume mount: `/data` is the single stateful path.
+  - `/data/db/mimir.db` — SQLite DB + WAL files
+    (`DATABASE_URL=sqlite:////data/db/mimir.db` baked in).
+  - `/data/Inboxes/<name>/git/` — public-inbox mirrors.
+    `/app/Inboxes` is a symlink to this so the default
+    relative `INBOXES` config resolves correctly.
+  - Pre-flight on the host:
+    `mkdir -p data/db data/Inboxes && chown -R 1001:1001 data`.
 - `EXPOSE 5000` — proxy from your reverse proxy of choice.
 - Container healthcheck pings `/healthz`.
 
