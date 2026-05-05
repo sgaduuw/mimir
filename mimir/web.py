@@ -19,6 +19,7 @@ from mimir.dashboard import (
     latest_pull_requests,
     latest_stable_releases,
     monthly_volume,
+    search_articles,
     this_day_in_history,
 )
 from mimir.extensions import SessionLocal
@@ -70,6 +71,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.daily_yesterday": "public, max-age=600",
     "web.year_archive": "public, max-age=600",
     "web.month_archive": "public, max-age=600",
+    "web.search": "public, max-age=300",
     "web.message": "public, max-age=60",
     "web.attachment_download": "public, max-age=3600, immutable",
     "web.attachment_preview": "public, max-age=3600, immutable",
@@ -300,6 +302,14 @@ _MIN_ARCHIVE_YEAR = 1995
 # from `monthly_volume` so context isn't lost.
 MONTH_THREAD_CAP = 100
 
+# Search input bounds. The query string flows into a cache key, so a
+# soft length cap keeps the cache bounded and makes DoS-via-arbitrary-
+# queries less interesting. Min length avoids matching the entire
+# corpus on a single character.
+SEARCH_QUERY_MIN_LEN = 2
+SEARCH_QUERY_MAX_LEN = 80
+SEARCH_RESULT_CAP = 100
+
 
 def _max_archive_year() -> int:
     return datetime.now(timezone.utc).year + 1
@@ -369,6 +379,37 @@ def month_archive(inbox_name: str, year: int, month: int):
             f"/{inbox.name}/{next_year:04d}/{next_month:02d}/"
             if next_year <= _max_archive_year() else None
         ),
+    )
+
+
+@bp_web.route("/<inbox_name>/search")
+def search(inbox_name: str):
+    """Substring search over subject and author within one inbox.
+    GET ?q=<query>; renders the search form even on no-result so the
+    user always lands on a page with the input."""
+    raw_q = request.args.get("q", "").strip()
+    q = raw_q[:SEARCH_QUERY_MAX_LEN]
+
+    too_short = 0 < len(q) < SEARCH_QUERY_MIN_LEN
+    results: list = []
+    truncated = False
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        if len(q) >= SEARCH_QUERY_MIN_LEN:
+            results = search_articles(session, inbox, q, limit=SEARCH_RESULT_CAP)
+            truncated = len(results) >= SEARCH_RESULT_CAP
+
+    return render_template(
+        "search.html",
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
+        query=q,
+        results=results,
+        truncated=truncated,
+        result_cap=SEARCH_RESULT_CAP,
+        too_short=too_short,
+        min_len=SEARCH_QUERY_MIN_LEN,
+        max_len=SEARCH_QUERY_MAX_LEN,
     )
 
 

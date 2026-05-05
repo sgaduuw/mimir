@@ -323,6 +323,20 @@ Routes:
 - `GET /<inbox>/today` and `GET /<inbox>/yesterday` — daily views
   showing every thread with at least one message on that calendar
   day (UTC), plus the day's total message count.
+- `GET /<inbox>/<YYYY>/` — year archive: 12-month grid with per-month
+  message counts; cells link to the month view, missing months
+  dimmed. Prev/next year nav bounded by the plausible-archive range
+  (1995..now+1).
+- `GET /<inbox>/<YYYY>/<MM>/` — month archive: every thread with at
+  least one message that month, ordered by last activity desc, capped
+  at 100 with a count notice when truncated. Prev/next month nav
+  with year wraparound; breadcrumb up to the year view.
+- `GET /<inbox>/search?q=<query>` — substring search over `subject`
+  and `author` (case-insensitive, OR-combined). 100-result cap,
+  cached per (inbox, query). Form lives on the inbox dashboard.
+  Caveats: queries with no matches can take seconds to scan on a
+  cold cache; the date-index short-circuit only helps when *some*
+  rows match. See `mimir.dashboard.search_articles`.
 - `GET /<inbox>/<YYYY>/<MM>/<article-id>` — single message:
   headers, full thread tree with the current message highlighted,
   body, attachment list. When the thread root has an off-list

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Search · {{ inbox_name }} · {{ site_name }}{% endblock %}
+{% block content %}
+<h2>Search <small><em>· {{ inbox_name }}</em></small></h2>
+
+<form method="get" action="/{{ inbox_name }}/search">
+  <input type="search"
+         name="q"
+         value="{{ query }}"
+         placeholder="subject or author …"
+         minlength="{{ min_len }}"
+         maxlength="{{ max_len }}"
+         autofocus>
+  <small><em>Substring match against subject and From; case-insensitive.</em></small>
+</form>
+
+{% if too_short %}
+<p><em>Type at least {{ min_len }} characters.</em></p>
+{% elif query %}
+  {% if results %}
+  <p><small>
+    {{ results|length }} result{{ '' if results|length == 1 else 's' }}
+    {% if truncated %} · capped at {{ result_cap }}; refine the query for more{% endif %}.
+  </small></p>
+  <ul>
+    {% for a in results %}
+    <li>
+      <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject or '(no subject)' }}</a>
+      <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '????-??-??' }}
+        &middot; {{ a.author|safe_from }}</small>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p><em>No matches for {{ query }}.</em></p>
+  {% endif %}
+{% endif %}
+{% endblock %}
