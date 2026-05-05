@@ -1,0 +1,6 @@
+Contact: {{ contact }}
+Expires: {{ expires }}
+Preferred-Languages: {{ preferred_languages }}
+{% if policy_url %}Policy: {{ policy_url }}
+{% endif %}{% if encryption_url %}Encryption: {{ encryption_url }}
+{% endif %}

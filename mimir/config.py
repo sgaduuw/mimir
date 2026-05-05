@@ -78,5 +78,14 @@ class Settings(BaseSettings):
         "Greg KH": "gregkh@",
     }
 
+    # security.txt (RFC 9116). Setting `security_contact` enables
+    # /security.txt and /.well-known/security.txt; the routes 404 when
+    # it's empty. The `Expires:` field is computed at request time as
+    # `now + 1 year`, so there's no annual rotation chore.
+    security_contact: str | None = None  # e.g. "mailto:security@example.com"
+    security_policy_url: str | None = None
+    security_encryption_url: str | None = None
+    security_preferred_languages: str = "en"
+
 
 settings = Settings()

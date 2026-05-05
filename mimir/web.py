@@ -16,6 +16,7 @@ from pygments.util import ClassNotFound
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from mimir import cache
 from mimir.config import settings
 from mimir.dashboard import (
     ArticleSummary,
@@ -82,6 +83,9 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.author_view": "public, max-age=300",
     "web.inbox_feed": "public, max-age=300",
     "web.author_feed": "public, max-age=300",
+    "web.robots": "public, max-age=86400",
+    "web.security_txt": "public, max-age=3600",
+    "web.sitemap": "public, max-age=300",
     "web.message": "public, max-age=60",
     "web.attachment_download": "public, max-age=3600, immutable",
     "web.attachment_preview": "public, max-age=3600, immutable",
@@ -318,6 +322,67 @@ def readyz():
             headers={"Cache-Control": "no-store"},
         )
     return Response("ok\n", mimetype="text/plain", headers={"Cache-Control": "no-store"})
+
+
+@bp_web.route("/robots.txt")
+def robots():
+    """Static robots.txt — disallows attachment downloads (saves bot
+    bandwidth on binaries) and points crawlers at the sitemap."""
+    sitemap_url = request.url_root.rstrip("/") + "/sitemap.xml"
+    body = render_template("robots.txt", sitemap_url=sitemap_url)
+    return Response(body, mimetype="text/plain; charset=utf-8")
+
+
+@bp_web.route("/security.txt")
+@bp_web.route("/.well-known/security.txt")
+def security_txt():
+    """RFC 9116 security.txt. 404 unless `SECURITY_CONTACT` is set —
+    don't ship a contact-less file. The Expires field is computed at
+    request time as `now + 1 year` so it never falls into the past."""
+    if not settings.security_contact:
+        abort(404)
+    expires = (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(timespec="seconds")
+    body = render_template(
+        "security.txt",
+        contact=settings.security_contact,
+        expires=expires,
+        preferred_languages=settings.security_preferred_languages,
+        policy_url=settings.security_policy_url,
+        encryption_url=settings.security_encryption_url,
+    )
+    return Response(body, mimetype="text/plain; charset=utf-8")
+
+
+SITEMAP_RECENT_PER_INBOX = 100
+SITEMAP_TTL_SEC = 3600
+
+
+def _build_sitemap_xml(urls: list[str]) -> str:
+    """Render an XML sitemap (<urlset> with one <url><loc> per entry)
+    via stdlib ElementTree, matching `_atom_response`'s idiom."""
+    root = Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+    for u in urls:
+        url_el = SubElement(root, "url")
+        SubElement(url_el, "loc").text = u
+    return '<?xml version="1.0" encoding="utf-8"?>\n' + tostring(root, encoding="unicode")
+
+
+@bp_web.route("/sitemap.xml")
+def sitemap():
+    """Sitemap with the meta-index, each inbox dashboard, and each
+    inbox's most-recent N message URLs. Cached for SITEMAP_TTL_SEC."""
+    base = request.url_root.rstrip("/")
+    with SessionLocal() as session:
+        def compute() -> str:
+            urls: list[str] = [base + "/"]
+            inboxes = session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
+            for inbox in inboxes:
+                urls.append(f"{base}/{inbox.name}/")
+                for art in recent_articles(session, inbox, limit=SITEMAP_RECENT_PER_INBOX):
+                    urls.append(base + _msg_url(art, inbox.name))
+            return _build_sitemap_xml(urls)
+        body = cache.get_or_compute(session, "sitemap:root", SITEMAP_TTL_SEC, compute)
+    return Response(body, mimetype="application/xml; charset=utf-8")
 
 
 @bp_web.route("/")
