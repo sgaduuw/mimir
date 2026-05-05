@@ -8,6 +8,11 @@ any extra coordination.
 Only types registered via `register(tag, cls)` round-trip cleanly.
 Each module owning a cached dataclass calls `register` at import time;
 the dependency stays one-way (cache knows nothing about its callers).
+
+Every key is silently prefixed with `v{NAMESPACE_VERSION}:` so a code
+change that alters cached value shapes (a query rewrite, a renamed
+dataclass field) is bumped centrally — old rows simply never match
+and age out via `purge_expired`. Callers don't see the prefix.
 """
 import dataclasses
 import json
@@ -20,6 +25,17 @@ from sqlalchemy.orm import Session
 
 from mimir.extensions import SessionLocal
 from mimir.models import CacheEntry
+
+# Bump when cached value shapes change (query rewrites, dataclass
+# field renames, encoder changes). Old rows fall through to a miss
+# and get cleaned up by `purge_expired`.
+NAMESPACE_VERSION = 1
+
+
+def _ns(key: str) -> str:
+    """Apply the cache namespace prefix to a caller-supplied key."""
+    return f"v{NAMESPACE_VERSION}:{key}"
+
 
 # Tag picked explicitly (not `cls.__name__`) so a rename in the source
 # can't silently invalidate previously-cached rows or, worse, decode
@@ -84,10 +100,11 @@ def _now() -> int:
 
 
 def get(key: str) -> Any:
+    nskey = _ns(key)
     now = _now()
     with SessionLocal() as session:
         row = session.execute(
-            select(CacheEntry.value, CacheEntry.expires_at).where(CacheEntry.key == key)
+            select(CacheEntry.value, CacheEntry.expires_at).where(CacheEntry.key == nskey)
         ).one_or_none()
     if row is None or row.expires_at < now:
         return None
@@ -95,11 +112,12 @@ def get(key: str) -> Any:
 
 
 def set(key: str, value: Any, ttl: int) -> None:
+    nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
     expires_at = _now() + ttl
     stmt = (
         sqlite_insert(CacheEntry)
-        .values(key=key, value=payload, expires_at=expires_at)
+        .values(key=nskey, value=payload, expires_at=expires_at)
         .on_conflict_do_update(
             index_elements=["key"],
             set_={"value": payload, "expires_at": expires_at},
@@ -126,9 +144,10 @@ def get_or_compute(
     caller's transaction stays untouched). Saves one connection per
     hit and one per miss vs separate `get()` + `set()` calls.
     """
+    nskey = _ns(key)
     if not force:
         row = session.execute(
-            select(CacheEntry.value, CacheEntry.expires_at).where(CacheEntry.key == key)
+            select(CacheEntry.value, CacheEntry.expires_at).where(CacheEntry.key == nskey)
         ).one_or_none()
         if row is not None and row.expires_at >= _now():
             return _decode(json.loads(row.value))
@@ -138,11 +157,14 @@ def get_or_compute(
 
 
 def keys() -> list[str]:
-    """Non-expired keys. Useful for `warm-cache` reporting."""
+    """Non-expired keys, with the namespace prefix stripped so callers
+    see the original key they passed in."""
     now = _now()
+    prefix = f"v{NAMESPACE_VERSION}:"
     with SessionLocal() as session:
         return [
-            k for k, in session.execute(
+            (k[len(prefix):] if k.startswith(prefix) else k)
+            for k, in session.execute(
                 select(CacheEntry.key).where(CacheEntry.expires_at >= now)
             )
         ]
