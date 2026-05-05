@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ sub }} on {{ inbox_name }} · {{ site_name }}{% endblock %}
+{% block content %}
+<h2>Messages from <code>{{ sub }}</code> <small><em>· {{ inbox_name }}</em></small></h2>
+
+<p><small>
+  Substring match against From; case-insensitive.
+  &middot; <a href="/{{ inbox_name }}/author/{{ sub|urlencode }}/feed.atom">Atom feed</a>
+</small></p>
+
+{% if results %}
+<p><small>
+  {{ results|length }} message{{ '' if results|length == 1 else 's' }}
+  {% if truncated %} · capped at {{ result_cap }} most-recent{% endif %}.
+</small></p>
+<ul>
+  {% for a in results %}
+  <li>
+    <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject or '(no subject)' }}</a>
+    <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '????-??-??' }}
+      &middot; {{ a.author|safe_from }}</small>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p><em>No matches for {{ sub }}.</em></p>
+{% endif %}
+{% endblock %}

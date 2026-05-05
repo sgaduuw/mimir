@@ -67,6 +67,7 @@
       </li>
       {% endfor %}
     </ul>
+    <small><a href="/{{ inbox_name }}/author/{{ t.substr|urlencode }}">all →</a></small>
     {% else %}
     <p><em>No recent messages.</em></p>
     {% endif %}

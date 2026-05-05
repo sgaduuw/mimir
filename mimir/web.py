@@ -75,6 +75,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.year_archive": "public, max-age=600",
     "web.month_archive": "public, max-age=600",
     "web.search": "public, max-age=300",
+    "web.author_view": "public, max-age=300",
     "web.inbox_feed": "public, max-age=300",
     "web.author_feed": "public, max-age=300",
     "web.message": "public, max-age=60",
@@ -295,7 +296,7 @@ def inbox_dashboard(inbox_name: str):
         inbox = _get_inbox_or_404(session, inbox_name)
         active = active_threads(session, inbox, days=7, limit=10)
         trackers = [
-            {"label": label, "messages": author_recent(session, inbox, substr, 5)}
+            {"label": label, "substr": substr, "messages": author_recent(session, inbox, substr, 5)}
             for label, substr in settings.tracked_authors.items()
         ]
         pulls = latest_pull_requests(session, inbox, limit=5)
@@ -543,6 +544,31 @@ def _atom_response(
         + tostring(feed, encoding="unicode")
     )
     return Response(body, mimetype="application/atom+xml; charset=utf-8")
+
+
+AUTHOR_VIEW_LIMIT = 100
+
+
+@bp_web.route("/<inbox_name>/author/<sub>")
+def author_view(inbox_name: str, sub: str):
+    """Chronological view of recent messages from one author within an
+    inbox. Reuses `author_recent` (cached); shows up to
+    AUTHOR_VIEW_LIMIT most-recent matches."""
+    sub = sub.strip()[:SEARCH_QUERY_MAX_LEN]
+    if len(sub) < SEARCH_QUERY_MIN_LEN:
+        abort(404)
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        results = author_recent(session, inbox, sub, limit=AUTHOR_VIEW_LIMIT)
+    return render_template(
+        "author.html",
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
+        sub=sub,
+        results=results,
+        truncated=len(results) >= AUTHOR_VIEW_LIMIT,
+        result_cap=AUTHOR_VIEW_LIMIT,
+    )
 
 
 @bp_web.route("/<inbox_name>/feed.atom")
