@@ -78,6 +78,13 @@ class Settings(BaseSettings):
         "Greg KH": "gregkh@",
     }
 
+    # Inboxes that should appear first on the meta-index `/`, in this
+    # order, regardless of alphabetical order. The rest follow
+    # alphabetically. Override via PINNED_INBOXES (comma-separated).
+    # Default pins lkml since this archive treats it as the focal list;
+    # set to empty to fall back to pure alphabetical.
+    pinned_inboxes: list[str] = ["lkml"]
+
     # Number of trusted reverse-proxy hops in front of the app. When
     # > 0, Werkzeug's ProxyFix is wired up so the last N entries of
     # X-Forwarded-{For,Proto,Host} are honoured — request.remote_addr

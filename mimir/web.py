@@ -449,9 +449,13 @@ def message_id_lookup_inbox(inbox_name: str, message_id: str):
 
 @bp_web.route("/")
 def index():
-    """Meta-index: list of configured inboxes with per-inbox stats."""
+    """Meta-index: list of configured inboxes with per-inbox stats.
+    Pinned inboxes (settings.pinned_inboxes) surface first in config
+    order; the rest follow alphabetically."""
+    pin_rank = {name: i for i, name in enumerate(settings.pinned_inboxes)}
     with SessionLocal() as session:
-        inboxes = session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
+        inboxes = session.execute(select(Inbox)).scalars().all()
+        inboxes.sort(key=lambda ix: (pin_rank.get(ix.name, len(pin_rank)), ix.name))
         inbox_summaries = [
             {"name": inbox.name, "stats": archive_stats(session, inbox)}
             for inbox in inboxes

@@ -13,6 +13,20 @@ def test_meta_index(client):
     assert client.get("/").status_code == 200
 
 
+def test_meta_index_pins_inbox_first(client, monkeypatch):
+    """Seeded fixtures have alpha + beta. Without a pin, alpha shows
+    first (alphabetical). Pinning beta surfaces it ahead of alpha."""
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "pinned_inboxes", [])
+    body = client.get("/").data.decode()
+    assert body.find("/alpha/") < body.find("/beta/")
+
+    monkeypatch.setattr(settings, "pinned_inboxes", ["beta"])
+    body = client.get("/").data.decode()
+    assert body.find("/beta/") < body.find("/alpha/")
+
+
 def test_healthz(client):
     r = client.get("/healthz")
     assert r.status_code == 200
