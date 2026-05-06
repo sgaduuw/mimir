@@ -13,6 +13,16 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Added
 
+- **SEO Phase 2: backfill CLI** for resolving canonical_inbox_id on
+  pre-existing articles. `flask --app mimir admin canonicals backfill`
+  walks articles newest-first, reads each one's RFC 5322 blob via the
+  existing read path, accumulates per-inbox address observations, and
+  resolves canonicals against the (auto-promoted) list_address map.
+  Idempotent + resumable: by default skips already-set canonicals;
+  `--reprocess` re-examines them. `--inbox NAME` restricts the walk;
+  `--limit N` caps a session. Mid-walk auto-promotion every 200
+  articles ensures list_addresses settle early so the bulk of the
+  pass resolves canonicals correctly.
 - **SEO Phase 1: ingest-time canonical-inbox resolution.** New
   `articles.canonical_inbox_id` (FK → inboxes, ON DELETE SET NULL)
   records the author's intended primary list, derived from the first
