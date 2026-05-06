@@ -11,6 +11,14 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- `compose.yaml` sets `FORWARDED_ALLOW_IPS=*` so gunicorn honours the
+  reverse proxy's `X-Forwarded-For` and the access log records real
+  client IPs. Previously the log showed the proxy's container-network
+  address. systemd deployments are unaffected — they bind gunicorn to
+  `127.0.0.1`, which is already in gunicorn's default trust list.
+
 ## [1.1.0] – 2026-05-06
 
 ### Added
