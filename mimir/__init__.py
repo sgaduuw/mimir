@@ -1,10 +1,21 @@
-from flask import Flask
-from werkzeug.middleware.proxy_fix import ProxyFix
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
-from mimir.cli import register_cli
-from mimir.config import settings
-from mimir.inboxes import bootstrap_inboxes
-from mimir.web import bp_web
+# Runtime version, read from the installed package metadata (poetry /
+# pip install). The sentinel covers a source-tree-only checkout where
+# `mimir` isn't installed; in that mode the footer just shows
+# "0.0.0+unknown" instead of crashing.
+try:
+    __version__ = _pkg_version("mimir")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
+
+from flask import Flask  # noqa: E402
+from werkzeug.middleware.proxy_fix import ProxyFix  # noqa: E402
+
+from mimir.cli import register_cli  # noqa: E402
+from mimir.config import settings  # noqa: E402
+from mimir.inboxes import bootstrap_inboxes  # noqa: E402
+from mimir.web import bp_web  # noqa: E402
 
 
 def create_app() -> Flask:
