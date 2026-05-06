@@ -63,7 +63,12 @@ def _inject_template_globals() -> dict:
     per-view (None on the meta-index `/`). Names come from the cached
     list populated at bootstrap — no per-request DB hit. `site_name` is
     the configurable brand; "mimir" stays as the page generator."""
-    return {"inboxes": inbox_names(), "site_name": settings.site_name}
+    from mimir import __version__ as mimir_version
+    return {
+        "inboxes": inbox_names(),
+        "site_name": settings.site_name,
+        "mimir_version": mimir_version,
+    }
 
 
 # Cache-Control per endpoint. Lets edge caches (Cloudflare, an nginx in
