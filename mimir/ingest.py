@@ -9,12 +9,21 @@ from typing import Iterable, Iterator
 from dulwich.errors import NotGitRepository
 from dulwich.repo import Repo
 from pydantic import BaseModel
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from mimir.canonical import extract_list_addresses, pick_canonical_inbox_id
 from mimir.config import settings
 from mimir.extensions import SessionLocal, engine
-from mimir.models import Article, ArticleList, Inbox, IngestState, ParseFailure
+from mimir.models import (
+    Article,
+    ArticleList,
+    Inbox,
+    InboxAddressObservation,
+    IngestState,
+    ParseFailure,
+)
 from mimir.parser import ParsedArticle, normalize_subject, parse_message
 
 logger = logging.getLogger(__name__)
@@ -23,6 +32,15 @@ PROGRESS_EVERY = 100
 COMMIT_EVERY = 500
 DEFAULT_WORKERS = os.cpu_count() or 1
 PARSE_CHUNKSIZE = 50
+
+# Auto-promotion of `Inbox.list_address`: an inbox needs at least
+# MIN_PROMOTE_OBSERVATIONS messages observed before the modal address
+# can be trusted, AND the modal address must account for at least
+# PROMOTE_DOMINANCE of the top-two combined to count as a clear winner.
+# Tuned conservative — false promotion would silently misroute canonical
+# resolution for every cross-posted article involving this inbox.
+MIN_PROMOTE_OBSERVATIONS = 50
+PROMOTE_DOMINANCE = 0.7
 
 
 class IngestResult(BaseModel):
@@ -141,6 +159,7 @@ def _to_article(
     epoch: str,
     commit_sha: str,
     date: datetime,
+    canonical_inbox_id: int | None = None,
 ) -> Article:
     """Construct a brand-new Article (with one ArticleList row) for a
     message we haven't seen before. For cross-posts (already-known
@@ -155,8 +174,73 @@ def _to_article(
         date=date,
         thread_parent=thread_parent,
         subject_normalized=normalize_subject(parsed.subject),
+        canonical_inbox_id=canonical_inbox_id,
         lists=[ArticleList(inbox_id=inbox_id, epoch=epoch, commit_sha=commit_sha)],
     )
+
+
+def _flush_observations(
+    session: Session,
+    inbox_id: int,
+    pending: dict[str, tuple[int, datetime]],
+) -> None:
+    """Upsert pending in-memory observations for one inbox. Counts are
+    additive (existing + delta); last_seen is the max of existing and
+    incoming so a stale tail doesn't roll back a fresher timestamp."""
+    if not pending:
+        return
+    rows = [
+        {"inbox_id": inbox_id, "address": addr, "count": count, "last_seen": last_seen}
+        for addr, (count, last_seen) in pending.items()
+    ]
+    stmt = sqlite_insert(InboxAddressObservation).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["inbox_id", "address"],
+        set_={
+            "count": InboxAddressObservation.count + stmt.excluded.count,
+            # SQLite's scalar max(a, b) — keeps the freshest timestamp
+            # when a stale tail-end batch lands after a newer one.
+            "last_seen": func.max(
+                InboxAddressObservation.last_seen, stmt.excluded.last_seen
+            ),
+        },
+    )
+    session.execute(stmt)
+
+
+def _maybe_promote_list_address(session: Session, inbox_id: int) -> str | None:
+    """If this inbox has no `list_address` yet AND the observed-address
+    tally has a clear modal winner, promote it. Returns the promoted
+    address, or None if nothing happened (already set, not enough
+    samples, or no clear winner). Idempotent: caller can run on every
+    ingest tick; only the first qualifying call writes."""
+    inbox = session.get(Inbox, inbox_id)
+    if inbox is None or inbox.list_address is not None:
+        return None
+    rows = session.execute(
+        select(
+            InboxAddressObservation.address,
+            InboxAddressObservation.count,
+        )
+        .where(InboxAddressObservation.inbox_id == inbox_id)
+        .order_by(InboxAddressObservation.count.desc())
+        .limit(2)
+    ).all()
+    if not rows:
+        return None
+    top_addr, top_count = rows[0]
+    if top_count < MIN_PROMOTE_OBSERVATIONS:
+        return None
+    second_count = rows[1][1] if len(rows) > 1 else 0
+    if top_count / max(top_count + second_count, 1) < PROMOTE_DOMINANCE:
+        return None
+    inbox.list_address = top_addr
+    logger.info(
+        "auto-promoted list_address: %s -> %s (n=%d, dominance=%.0f%%)",
+        inbox.name, top_addr, top_count,
+        100 * top_count / max(top_count + second_count, 1),
+    )
+    return top_addr
 
 
 def ingest_epoch(
@@ -193,12 +277,28 @@ def ingest_epoch(
         )
     ).scalars())
 
+    # Snapshot of {list_address: inbox_id} for canonical resolution.
+    # Refreshed at start; promotion that happens later in this run
+    # affects future runs, not in-flight messages — acceptable lag for
+    # bootstrap, and Phase 2's backfill CLI sweeps the gap.
+    address_to_inbox_id: dict[str, int] = dict(session.execute(
+        select(Inbox.list_address, Inbox.id).where(Inbox.list_address.isnot(None))
+    ).all())
+
+    # Per-address observation deltas accumulated this batch; flushed to
+    # `inbox_address_observations` on each commit so we don't issue a
+    # write per message.
+    pending_obs: dict[str, tuple[int, datetime]] = {}
+
     logger.info(
         "%s/%s: starting from %s (workers=%d)",
         inbox_name, epoch_name, last_sha or "<beginning>", workers,
     )
 
     def flush_batch() -> None:
+        if pending_obs:
+            _flush_observations(session, inbox_id, pending_obs)
+            pending_obs.clear()
         state.last_commit_sha = last_seen
         session.commit()
         seen_in_batch.clear()
@@ -232,6 +332,22 @@ def ingest_epoch(
                 ParseFailure.commit_sha == commit_sha,
             ))
             failed_shas.discard(commit_sha)
+
+        # Record list-shaped To/Cc addresses for this inbox. Done once
+        # per parse so cross-posts contribute to *this* inbox's tally
+        # (each linked inbox sees the same message and counts the same
+        # addresses, which is what we want — the modal address per
+        # inbox surfaces correctly).
+        list_addrs = extract_list_addresses(parsed.headers)
+        if list_addrs:
+            obs_time = parsed.date or commit_time
+            for addr in list_addrs:
+                prev = pending_obs.get(addr)
+                if prev is None:
+                    pending_obs[addr] = (1, obs_time)
+                else:
+                    cnt, ts = prev
+                    pending_obs[addr] = (cnt + 1, max(ts, obs_time))
 
         if parsed.message_id in seen_in_batch:
             logger.debug("epoch %s commit %s: skip (in-batch dup) %s", epoch_name, commit_sha[:12], parsed.message_id)
@@ -268,9 +384,11 @@ def ingest_epoch(
                              inbox_name, epoch_name, commit_sha[:12], parsed.message_id)
             continue
 
+        canonical_inbox_id = pick_canonical_inbox_id(list_addrs, address_to_inbox_id)
         session.add(_to_article(
             parsed, inbox_id=inbox_id, epoch=epoch_name,
             commit_sha=commit_sha, date=commit_time,
+            canonical_inbox_id=canonical_inbox_id,
         ))
         seen_in_batch.add(parsed.message_id)
         result.new += 1
@@ -426,6 +544,12 @@ def ingest_inbox(
             results.append(r)
             if remaining is not None:
                 remaining -= r.new + r.linked + r.dup_batch + r.dup_db + r.failed
+
+    # Promote `Inbox.list_address` if we now have enough observations.
+    # Cheap: at most two rows queried, one update if it fires.
+    with SessionLocal() as session:
+        _maybe_promote_list_address(session, inbox.id)
+        session.commit()
 
     # Refresh planner stats when we've moved enough rows that prior
     # `sqlite_stat1` can no longer be trusted — most importantly the
