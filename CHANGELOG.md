@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.4.1] – 2026-05-07
+
 ### Fixed
 
 - Ingest no longer crashes mid-batch when a message's RFC 5322 `Date`
@@ -248,7 +250,8 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/sgaduuw/mimir/releases/tag/v1.4.1
 [1.4.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.4.0
 [1.3.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.3.0
 [1.2.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.2.0
