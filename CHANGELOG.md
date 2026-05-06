@@ -11,6 +11,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- CI now triggers on `v*` tag pushes, not just `main` pushes, so
+  released versions actually publish images. Previously `:1.0.0`,
+  `:1.1.0`, `:1.1.1`, and `:1.2.0` never reached
+  `ghcr.io/sgaduuw/mimir`, and `:latest` (gated on tag pushes) never
+  moved — the registry only carried `:main` and `:sha-*` from main
+  pushes.
+
 ## [1.2.0] – 2026-05-06
 
 ### Added
