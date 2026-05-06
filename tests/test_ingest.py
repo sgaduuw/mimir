@@ -7,26 +7,48 @@ This file pins each bucket via a tiny ephemeral public-inbox-shaped
 git repo built with dulwich, then drives `ingest_epoch` against it
 with workers=1 (deterministic, stays in-process).
 """
+from datetime import datetime
 from pathlib import Path
 
 from dulwich.objects import Blob, Commit, Tree
 from dulwich.repo import Repo
 from sqlalchemy import func, select
 
-from mimir.ingest import ingest_epoch, ingest_inbox, replay_failures
-from mimir.models import Article, ArticleList, Inbox, IngestState, ParseFailure
+from mimir.ingest import (
+    MIN_PROMOTE_OBSERVATIONS,
+    _maybe_promote_list_address,
+    ingest_epoch,
+    ingest_inbox,
+    replay_failures,
+)
+from mimir.models import (
+    Article,
+    ArticleList,
+    Inbox,
+    InboxAddressObservation,
+    IngestState,
+    ParseFailure,
+)
 
 
-def _rfc5322(msgid: str, body: bytes = b"hello") -> bytes:
-    """Minimal valid RFC 5322 message."""
-    return (
-        b"Message-ID: <" + msgid.encode() + b">\r\n"
-        b"From: a@b.example\r\n"
-        b"Subject: t\r\n"
-        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
-        b"\r\n"
-        + body
-    )
+def _rfc5322(msgid: str, body: bytes = b"hello", to: str | None = None, cc: str | None = None) -> bytes:
+    """Minimal valid RFC 5322 message. Optional To/Cc let canonical-
+    inbox tests inject list addresses."""
+    parts = [
+        b"Message-ID: <" + msgid.encode() + b">\r\n",
+        b"From: a@b.example\r\n",
+    ]
+    if to is not None:
+        parts.append(b"To: " + to.encode() + b"\r\n")
+    if cc is not None:
+        parts.append(b"Cc: " + cc.encode() + b"\r\n")
+    parts.extend([
+        b"Subject: t\r\n",
+        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n",
+        b"\r\n",
+        body,
+    ])
+    return b"".join(parts)
 
 
 def _build_pubinbox_repo(repo_path: Path, messages: list[bytes]) -> Path:
@@ -576,3 +598,185 @@ def test_ingest_inbox_skips_analyze_when_disabled(seeded_db, tmp_path, monkeypat
     ingest_inbox(alpha, workers=1)
 
     assert "ANALYZE" not in seen
+
+
+# Canonical inbox + list-address observation
+
+
+def test_ingest_records_list_address_observations(seeded_db, tmp_path):
+    """Each list-shaped To/Cc address surfaces as a row in
+    inbox_address_observations, scoped to the ingesting inbox."""
+    alpha = _alpha(seeded_db)
+    raw = _rfc5322(
+        "obs1@example.com",
+        to="linux-fsdevel@vger.kernel.org",
+        cc="linux-kernel@vger.kernel.org, alice@example.com",
+    )
+    _build_pubinbox_repo(tmp_path / "0.git", [raw])
+
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+
+    with seeded_db() as s:
+        rows = s.execute(
+            select(InboxAddressObservation.address, InboxAddressObservation.count)
+            .where(InboxAddressObservation.inbox_id == alpha.id)
+        ).all()
+    addresses = {addr: cnt for addr, cnt in rows}
+    # alice@example.com is filtered out (not list-shaped); the two
+    # list addresses are recorded with count=1 each.
+    assert addresses == {
+        "linux-fsdevel@vger.kernel.org": 1,
+        "linux-kernel@vger.kernel.org": 1,
+    }
+
+
+def test_ingest_observations_accumulate_across_messages(seeded_db, tmp_path):
+    alpha = _alpha(seeded_db)
+    msgs = [
+        _rfc5322(f"acc{i}@example.com", to="linux-fsdevel@vger.kernel.org")
+        for i in range(5)
+    ]
+    _build_pubinbox_repo(tmp_path / "0.git", msgs)
+
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+
+    with seeded_db() as s:
+        cnt = s.execute(
+            select(InboxAddressObservation.count)
+            .where(InboxAddressObservation.inbox_id == alpha.id)
+            .where(InboxAddressObservation.address == "linux-fsdevel@vger.kernel.org")
+        ).scalar_one()
+    assert cnt == 5
+
+
+def test_ingest_sets_canonical_when_to_address_matches_known_inbox(seeded_db, tmp_path):
+    """alpha already has list_address set; ingesting a message into
+    beta whose To: points at alpha sets canonical_inbox_id=alpha.id."""
+    with seeded_db() as s:
+        a = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        a.list_address = "linux-fsdevel@vger.kernel.org"
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+
+    raw = _rfc5322(
+        "canon1@example.com",
+        to="linux-fsdevel@vger.kernel.org",
+        cc="linux-kernel@vger.kernel.org",
+    )
+    _build_pubinbox_repo(tmp_path / "0.git", [raw])
+
+    with seeded_db() as s:
+        ingest_epoch(s, beta, "0.git", tmp_path / "0.git", workers=1)
+
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == "canon1@example.com")
+        ).scalar_one()
+        assert art.canonical_inbox_id == alpha.id
+
+
+def test_ingest_canonical_null_when_no_known_address_matches(seeded_db, tmp_path):
+    alpha = _alpha(seeded_db)
+    raw = _rfc5322(
+        "canon-null@example.com",
+        to="linux-mm@kvack.org",  # list-shaped but no inbox has this list_address
+    )
+    _build_pubinbox_repo(tmp_path / "0.git", [raw])
+
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == "canon-null@example.com")
+        ).scalar_one()
+        assert art.canonical_inbox_id is None
+
+
+def test_promote_list_address_below_threshold_skips(seeded_db):
+    """Below MIN_PROMOTE_OBSERVATIONS samples, promotion stays its
+    hand — even with a clear modal address."""
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s:
+        s.add(InboxAddressObservation(
+            inbox_id=alpha.id,
+            address="linux-fsdevel@vger.kernel.org",
+            count=MIN_PROMOTE_OBSERVATIONS - 1,
+            last_seen=datetime(2024, 1, 1),
+        ))
+        s.commit()
+        result = _maybe_promote_list_address(s, alpha.id)
+        s.commit()
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        assert result is None
+        assert ix.list_address is None
+
+
+def test_promote_list_address_clear_modal_promotes(seeded_db):
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s:
+        s.add(InboxAddressObservation(
+            inbox_id=alpha.id,
+            address="linux-fsdevel@vger.kernel.org",
+            count=200,
+            last_seen=datetime(2024, 1, 1),
+        ))
+        s.add(InboxAddressObservation(
+            inbox_id=alpha.id,
+            address="linux-kernel@vger.kernel.org",
+            count=20,  # 200/(200+20) = 0.91 dominance, easily above 0.7
+            last_seen=datetime(2024, 1, 1),
+        ))
+        s.commit()
+        result = _maybe_promote_list_address(s, alpha.id)
+        s.commit()
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        assert result == "linux-fsdevel@vger.kernel.org"
+        assert ix.list_address == "linux-fsdevel@vger.kernel.org"
+
+
+def test_promote_list_address_split_decision_skips(seeded_db):
+    """Two roughly-tied addresses: dominance < 0.7 keeps promotion off
+    so we don't lock in the wrong canonical."""
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s:
+        s.add(InboxAddressObservation(
+            inbox_id=alpha.id,
+            address="linux-fsdevel@vger.kernel.org",
+            count=100,
+            last_seen=datetime(2024, 1, 1),
+        ))
+        s.add(InboxAddressObservation(
+            inbox_id=alpha.id,
+            address="linux-kernel@vger.kernel.org",
+            count=80,  # 100/180 = 0.55, below 0.7 dominance
+            last_seen=datetime(2024, 1, 1),
+        ))
+        s.commit()
+        result = _maybe_promote_list_address(s, alpha.id)
+        s.commit()
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        assert result is None
+        assert ix.list_address is None
+
+
+def test_promote_list_address_already_set_no_overwrite(seeded_db):
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.list_address = "operator-override@example.com"
+        s.add(InboxAddressObservation(
+            inbox_id=alpha.id,
+            address="linux-fsdevel@vger.kernel.org",
+            count=10000,
+            last_seen=datetime(2024, 1, 1),
+        ))
+        s.commit()
+        result = _maybe_promote_list_address(s, alpha.id)
+        s.commit()
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        assert result is None
+        assert ix.list_address == "operator-override@example.com"

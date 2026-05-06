@@ -18,6 +18,15 @@ class Inbox(Base):
     mirror_path: Mapped[str] = mapped_column(String)
     upstream_url: Mapped[str] = mapped_column(String)
 
+    # The list address as it appears in To/Cc on this inbox's messages
+    # (e.g. "linux-fsdevel@vger.kernel.org"). Used to resolve canonical
+    # inbox for cross-posted articles. Auto-detected from observed
+    # message headers once an inbox crosses the promotion threshold;
+    # operator can override via the admin CLI for non-standard lists.
+    list_address: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True,
+    )
+
     # IngestState rows are tiny (one per epoch, ≤50 total per inbox);
     # safe to lazy-load. ArticleList rows are millions per inbox — no
     # reverse collection on purpose; admin queries should COUNT(*) by
@@ -42,6 +51,19 @@ class Article(Base):
     # Subject with reply/forward prefixes stripped (lowercased,
     # whitespace collapsed) for JWZ-style grouping of orphan threads.
     subject_normalized: Mapped[str] = mapped_column(String, default="", index=True)
+
+    # Author's intended primary list, derived from the first list-shaped
+    # address in `To:` (then `Cc:`) at ingest time. NULL when no
+    # list-shaped address matched a known inbox — render-time falls back
+    # to the alphabetically-first inbox among `lists`. SET NULL on inbox
+    # delete so removing an inbox doesn't strand or drop articles.
+    canonical_inbox_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inboxes.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    canonical_inbox: Mapped["Inbox | None"] = relationship(
+        foreign_keys=[canonical_inbox_id],
+    )
 
     # Cross-posted messages share one Article + multiple ArticleList
     # rows (one per inbox they appeared in).
@@ -89,6 +111,26 @@ class CacheEntry(Base):
     key: Mapped[str] = mapped_column(String, primary_key=True)
     value: Mapped[str] = mapped_column(Text)
     expires_at: Mapped[int] = mapped_column(index=True)
+
+
+class InboxAddressObservation(Base):
+    """Per-(inbox, address) tally of list-shaped addresses observed in
+    To/Cc of messages archived in this inbox. Used to auto-promote
+    `Inbox.list_address` once an inbox accumulates a clear modal
+    address — bootstraps canonical resolution without hardcoding
+    name→address mappings.
+
+    Conservative filter (`canonical.is_list_address`) keeps personal
+    addresses, vendor auto-replies, and bot accounts out of the tally.
+    """
+    __tablename__ = "inbox_address_observations"
+
+    inbox_id: Mapped[int] = mapped_column(
+        ForeignKey("inboxes.id", ondelete="CASCADE"), primary_key=True
+    )
+    address: Mapped[str] = mapped_column(String, primary_key=True)
+    count: Mapped[int] = mapped_column(default=0)
+    last_seen: Mapped[datetime] = mapped_column()
 
 
 class ParseFailure(Base):

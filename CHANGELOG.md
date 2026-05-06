@@ -11,6 +11,26 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- **SEO Phase 1: ingest-time canonical-inbox resolution.** New
+  `articles.canonical_inbox_id` (FK → inboxes, ON DELETE SET NULL)
+  records the author's intended primary list, derived from the first
+  list-shaped address in `To:` then `Cc:` at ingest time. Render-time
+  use of this field comes in Phase 3.
+- New `inboxes.list_address` column + `inbox_address_observations`
+  table (composite PK on `(inbox_id, address)`). On every parse,
+  list-shaped addresses from To/Cc are tallied per inbox; once an
+  inbox has ≥50 observations and a clear modal address (≥70%
+  dominance over the runner-up), `Inbox.list_address` is auto-promoted
+  so subsequent ingests resolve canonical correctly. No operator
+  configuration needed for kernel-relevant lists.
+- `mimir.canonical` module with the conservative list-shape filter
+  (suffix-match against a baseline of known list hosts: vger.kernel.org,
+  kvack.org, lists.{infradead,freedesktop,ozlabs,linux-foundation,
+  linaro,linux.it,debian}.org, lists.linux.dev, alsa-project.org,
+  nongnu.org, ffmpeg.org, redhat.com, kernel.org).
+
 ## [1.3.0] – 2026-05-06
 
 ### Added

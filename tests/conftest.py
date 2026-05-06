@@ -76,8 +76,9 @@ def _reset_db():
         Article,
         ArticleList,
         CacheEntry,
-        IngestState,
         Inbox,
+        InboxAddressObservation,
+        IngestState,
         ParseFailure,
     )
 
@@ -90,6 +91,7 @@ def _reset_db():
         s.execute(delete(ArticleList))
         s.execute(delete(Article))
         s.execute(delete(ParseFailure))
+        s.execute(delete(InboxAddressObservation))
         s.execute(delete(Inbox))
         s.execute(delete(CacheEntry))
         s.commit()
