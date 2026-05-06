@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.1.1] – 2026-05-06
+
 ### Added
 
 - `TRUSTED_PROXY_HOPS` setting (default `0`). When `> 0`, mimir wraps
@@ -24,6 +26,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   which only handled scheme detection — gunicorn doesn't rewrite
   `REMOTE_ADDR` on its own). systemd deployments are unaffected; set
   the env var if you stack a reverse proxy in front.
+
+### Fixed
+
+- Structured access log now records the actual `User-Agent` header.
+  Previously every request logged `"ua": null` because the code
+  guarded on `request.user_agent`, whose `__bool__` depends on
+  Werkzeug's UA parser recognising a known browser — non-browser
+  values like `curl/8.20.0` (and, in this Werkzeug, even Firefox)
+  evaluated falsy. Now reads the raw header directly.
 
 ## [1.1.0] – 2026-05-06
 
@@ -134,6 +145,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/sgaduuw/mimir/releases/tag/v1.1.1
 [1.1.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.1.0
 [1.0.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.0.0

@@ -183,7 +183,13 @@ def _log_request(response):
         "status": response.status_code,
         "duration_ms": duration_ms,
         "remote": request.remote_addr,
-        "ua": request.user_agent.string if request.user_agent else None,
+        # Read the header directly: Werkzeug's request.user_agent is a
+        # UserAgent wrapper whose __bool__ depends on the bundled UA
+        # parser detecting a known browser, which makes legitimate
+        # values like "curl/8.20.0" — and, with this Werkzeug, plain
+        # Firefox — evaluate falsy and silently turn into null. The
+        # raw header is what we actually want to log.
+        "ua": request.headers.get("User-Agent"),
         "referrer": request.referrer,
     }))
     return response
