@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.2.0] – 2026-05-06
+
 ### Added
 
 - `PINNED_INBOXES` setting (default `["lkml"]`). Inboxes listed here
@@ -152,7 +154,8 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.2.0
 [1.1.1]: https://github.com/sgaduuw/mimir/releases/tag/v1.1.1
 [1.1.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.1.0
 [1.0.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.0.0
