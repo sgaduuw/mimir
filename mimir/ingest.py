@@ -34,6 +34,18 @@ COMMIT_EVERY = 500
 DEFAULT_WORKERS = os.cpu_count() or 1
 PARSE_CHUNKSIZE = 50
 
+def _aware_utc(dt: datetime) -> datetime:
+    """Return `dt` as a tz-aware UTC datetime. RFC 5322 dates with
+    `-0000` come back from `email.utils.parsedate_to_datetime` as
+    naive — mixing those into a max() with tz-aware dates raises
+    TypeError, which would crash an entire ingest batch the moment
+    one such message landed. Cheap normalisation at every entry
+    keeps the tally rows uniformly comparable."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 # Auto-promotion of `Inbox.list_address`: an inbox needs at least
 # MIN_PROMOTE_OBSERVATIONS messages observed before the modal address
 # can be trusted, AND the modal address must account for at least
@@ -341,7 +353,7 @@ def ingest_epoch(
         # inbox surfaces correctly).
         list_addrs = extract_list_addresses(parsed.headers)
         if list_addrs:
-            obs_time = parsed.date or commit_time
+            obs_time = _aware_utc(parsed.date or commit_time)
             for addr in list_addrs:
                 prev = pending_obs.get(addr)
                 if prev is None:
@@ -636,7 +648,9 @@ def backfill_canonicals(
 
             list_addrs = extract_list_addresses(parsed.headers)
             if list_addrs:
-                obs_time = parsed.date or article.date or datetime.now(timezone.utc)
+                obs_time = _aware_utc(
+                    parsed.date or article.date or datetime.now(timezone.utc)
+                )
                 for inbox_id in links:
                     bucket = pending_obs.setdefault(inbox_id, {})
                     for addr in list_addrs:

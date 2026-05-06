@@ -979,3 +979,55 @@ def test_backfill_records_observations(seeded_db, tmp_path):
             .where(InboxAddressObservation.address == "linux-fsdevel@vger.kernel.org")
         ).scalar_one()
     assert cnt == 3
+
+
+# Regression: RFC 5322 dates with `-0000` come back tz-naive from
+# email.utils.parsedate_to_datetime. Mixing those into max() with
+# tz-aware dates raised TypeError mid-ingest and rolled back the
+# whole batch — production lkml ingest crashed after walking 6M
+# commits with only 26 articles persisting.
+
+
+def _rfc5322_with_date(msgid: str, date_header: str, to: str) -> bytes:
+    return (
+        b"Message-ID: <" + msgid.encode() + b">\r\n"
+        b"From: a@b.example\r\n"
+        b"To: " + to.encode() + b"\r\n"
+        b"Subject: t\r\n"
+        b"Date: " + date_header.encode() + b"\r\n"
+        b"\r\n"
+        b"hi"
+    )
+
+
+def test_ingest_handles_minus_0000_naive_date_in_observations(seeded_db, tmp_path):
+    """Two messages with the same To address: one with +0000 (aware),
+    one with -0000 (naive). Pre-fix, the second update of the
+    pending_obs entry crashed on `max(aware, naive)`."""
+    alpha = _alpha(seeded_db)
+    msgs = [
+        _rfc5322_with_date(
+            "tz-aware@example.com", "Mon, 1 Jan 2024 00:00:00 +0000",
+            to="linux-fsdevel@vger.kernel.org",
+        ),
+        _rfc5322_with_date(
+            "tz-naive@example.com", "Mon, 1 Jan 2024 00:00:00 -0000",
+            to="linux-fsdevel@vger.kernel.org",
+        ),
+    ]
+    _build_pubinbox_repo(tmp_path / "0.git", msgs)
+
+    with seeded_db() as s:
+        result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+
+    # Both messages should land cleanly (new bucket).
+    assert result.new == 2
+    assert result.failed == 0
+    # And the observation row should reflect both messages.
+    with seeded_db() as s:
+        cnt = s.execute(
+            select(InboxAddressObservation.count)
+            .where(InboxAddressObservation.inbox_id == alpha.id)
+            .where(InboxAddressObservation.address == "linux-fsdevel@vger.kernel.org")
+        ).scalar_one()
+    assert cnt == 2

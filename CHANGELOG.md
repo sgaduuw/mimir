@@ -11,6 +11,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Ingest no longer crashes mid-batch when a message's RFC 5322 `Date`
+  header carries `-0000` (which `email.utils.parsedate_to_datetime`
+  returns as a tz-naive datetime). The Phase 1 observation tally
+  used `max(prev_ts, parsed.date)` and raised `TypeError: can't
+  compare offset-naive and offset-aware datetimes` the moment a
+  `-0000` message landed in the same batch as a tz-aware one,
+  rolling back the entire batch — which is why a fresh lkml ingest
+  walked all 20 epochs but persisted only 26 articles. Now
+  normalised to aware UTC at the entry point, in both `ingest_epoch`
+  and `backfill_canonicals`.
+
 ## [1.4.0] – 2026-05-06
 
 ### Changed
