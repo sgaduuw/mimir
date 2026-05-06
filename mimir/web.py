@@ -14,7 +14,7 @@ from pygments.lexers import get_lexer_for_filename, guess_lexer
 from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
 from mimir.config import settings
@@ -210,6 +210,41 @@ def _msg_url(article: Article, inbox_name: str) -> str:
     return f"/{inbox_name}/0000/00/{article.id}"
 
 
+def _canonical_inbox_name(
+    article: Article,
+    links: list[tuple[int, str]],
+) -> str | None:
+    """Pick the canonical inbox name for `article` from the list of
+    `(inbox_id, inbox_name)` tuples it's linked to. Uses
+    `article.canonical_inbox_id` when set; falls back to the
+    alphabetically-first link — stable across renders so the SEO
+    signal doesn't flicker between equivalent cross-posts. Returns
+    None only when `links` is empty (a corrupt row; should never
+    happen given FK cascades)."""
+    canonical_id = article.canonical_inbox_id
+    if canonical_id is not None:
+        for ix_id, name in links:
+            if ix_id == canonical_id:
+                return name
+    if not links:
+        return None
+    return min(name for _, name in links)
+
+
+def _canonical_url_for(
+    article: Article,
+    links: list[tuple[int, str]],
+    base: str = "",
+) -> str | None:
+    """Compose the full canonical URL for `article` using `links`
+    (list of `(inbox_id, inbox_name)`). Returns None when no inbox
+    can be resolved."""
+    inbox_name = _canonical_inbox_name(article, links)
+    if inbox_name is None:
+        return None
+    return base + _msg_url(article, inbox_name)
+
+
 @bp_web.app_template_filter("msg_url")
 def _msg_url_filter(article: Article, inbox_name: str) -> str:
     return _msg_url(article, inbox_name)
@@ -369,7 +404,7 @@ def security_txt():
     return Response(body, mimetype="text/plain; charset=utf-8")
 
 
-SITEMAP_RECENT_PER_INBOX = 100
+SITEMAP_RECENT_GLOBAL = 1000
 SITEMAP_TTL_SEC = 3600
 
 
@@ -385,8 +420,13 @@ def _build_sitemap_xml(urls: list[str]) -> str:
 
 @bp_web.route("/sitemap.xml")
 def sitemap():
-    """Sitemap with the meta-index, each inbox dashboard, and each
-    inbox's most-recent N message URLs. Cached for SITEMAP_TTL_SEC."""
+    """Sitemap: meta-index, per-inbox dashboards, and the global
+    most-recent N articles, each at exactly one URL — the canonical
+    inbox's URL for the article, falling back to the alphabetically-
+    first linked inbox when canonical_inbox_id is NULL. One URL per
+    article means crawlers don't see the same content under multiple
+    URLs (the duplicate-content trap that justified Phases 1–3).
+    Cached for SITEMAP_TTL_SEC."""
     base = request.url_root.rstrip("/")
     with SessionLocal() as session:
         def compute() -> str:
@@ -394,8 +434,33 @@ def sitemap():
             inboxes = session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
             for inbox in inboxes:
                 urls.append(f"{base}/{inbox.name}/")
-                for art in recent_articles(session, inbox, limit=SITEMAP_RECENT_PER_INBOX):
-                    urls.append(base + _msg_url(art, inbox.name))
+
+            # COALESCE(canonical_inbox.name, alphabetical-first-linked-name).
+            # The fallback subquery handles articles whose To/Cc didn't
+            # name a known list — keeps the sitemap deterministic
+            # without introducing a NULL-canonical bucket.
+            canonical_alias = aliased(Inbox)
+            fallback_name = (
+                select(func.min(Inbox.name))
+                .join(ArticleList, ArticleList.inbox_id == Inbox.id)
+                .where(ArticleList.article_id == Article.id)
+                .correlate(Article)
+                .scalar_subquery()
+            )
+            inbox_name_expr = func.coalesce(canonical_alias.name, fallback_name)
+            recent = session.execute(
+                select(Article.id, Article.date, inbox_name_expr.label("inbox_name"))
+                .outerjoin(canonical_alias, Article.canonical_inbox_id == canonical_alias.id)
+                .where(Article.date.is_not(None))
+                .order_by(Article.date.desc())
+                .limit(SITEMAP_RECENT_GLOBAL)
+            ).all()
+            for art_id, date, inbox_name in recent:
+                if inbox_name is None:
+                    continue  # corrupt row with no links; skip rather than crash
+                urls.append(
+                    f"{base}/{inbox_name}/{date.year}/{date.month:02d}/{art_id}"
+                )
             return _build_sitemap_xml(urls)
         body = cache.get_or_compute(session, "sitemap:root", SITEMAP_TTL_SEC, compute)
     return Response(body, mimetype="application/xml; charset=utf-8")
@@ -684,15 +749,23 @@ def _atom_response(
     entries: list[ArticleSummary],
     inbox_name: str,
     base_url: str,
+    canonical_inbox_by_article: dict[int, str] | None = None,
 ) -> Response:
     """Render an Atom 1.0 feed from a list of `ArticleSummary`. Uses
     stdlib ElementTree — no extra dep. Emits redacted authors via the
     same `safe_from` rule the HTML side uses, so private email
-    addresses don't leak via feed readers either."""
+    addresses don't leak via feed readers either.
+
+    `canonical_inbox_by_article` maps article.id → canonical inbox name.
+    Cross-posts get their `<id>` and `<link>` set to the canonical URL
+    so feed readers that key on `<id>` deduplicate across feeds (the
+    same article appearing in lkml's and linux-fsdevel's feeds renders
+    as one entry, not two)."""
     feed_updated = (
         max((e.date for e in entries if e.date), default=None)
         or datetime.now(timezone.utc)
     )
+    canonical_map = canonical_inbox_by_article or {}
 
     feed = Element("feed", xmlns="http://www.w3.org/2005/Atom")
     SubElement(feed, "id").text = feed_id
@@ -705,11 +778,13 @@ def _atom_response(
     msg_base = base_url.rstrip("/")
     for a in entries:
         entry = SubElement(feed, "entry")
-        # RFC 4151 tag URI; the "date" portion is the message's date
-        # (stable for the lifetime of the entry, unique per message).
+        # RFC 4151 tag URI. Use the canonical inbox name in the tag so
+        # cross-posted entries collapse to a single id across feeds —
+        # readers that key on <id> won't show duplicates.
         date_str = a.date.strftime("%Y-%m-%d") if a.date else "1970-01-01"
+        canonical_inbox_name = canonical_map.get(a.id, inbox_name)
         SubElement(entry, "id").text = (
-            f"tag:{_TAG_URI_AUTHORITY},{date_str}:{inbox_name}/{a.id}"
+            f"tag:{_TAG_URI_AUTHORITY},{date_str}:{canonical_inbox_name}/{a.id}"
         )
         SubElement(entry, "title").text = a.subject or "(no subject)"
         if a.date is not None:
@@ -717,7 +792,7 @@ def _atom_response(
         SubElement(
             entry, "link",
             rel="alternate", type="text/html",
-            href=msg_base + _msg_url(a, inbox_name),
+            href=msg_base + _msg_url(a, canonical_inbox_name),
         )
         if a.author:
             author_el = SubElement(entry, "author")
@@ -755,12 +830,44 @@ def author_view(inbox_name: str, sub: str):
     )
 
 
+def _canonical_inbox_names_for(
+    session: Session, article_ids: list[int],
+) -> dict[int, str]:
+    """Resolve article_id → canonical inbox name for a batch (typically
+    a feed's worth, ≤50). Falls back to the alphabetically-first linked
+    inbox when canonical_inbox_id is NULL. One query for the canonical
+    side, one for the fallback set; total ≤2 queries regardless of
+    batch size."""
+    if not article_ids:
+        return {}
+    out: dict[int, str] = {}
+    rows = session.execute(
+        select(Article.id, Inbox.name)
+        .join(Inbox, Article.canonical_inbox_id == Inbox.id)
+        .where(Article.id.in_(article_ids))
+    ).all()
+    for art_id, inbox_name in rows:
+        out[art_id] = inbox_name
+    missing = [aid for aid in article_ids if aid not in out]
+    if missing:
+        fallback = session.execute(
+            select(ArticleList.article_id, func.min(Inbox.name))
+            .join(Inbox, Inbox.id == ArticleList.inbox_id)
+            .where(ArticleList.article_id.in_(missing))
+            .group_by(ArticleList.article_id)
+        ).all()
+        for art_id, inbox_name in fallback:
+            out[art_id] = inbox_name
+    return out
+
+
 @bp_web.route("/<inbox_name>/feed.atom")
 def inbox_feed(inbox_name: str):
     """Atom feed of the most-recent messages in an inbox."""
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         entries = recent_articles(session, inbox, limit=FEED_ENTRY_LIMIT)
+        canonical_map = _canonical_inbox_names_for(session, [e.id for e in entries])
 
     base = request.url_root
     return _atom_response(
@@ -771,6 +878,7 @@ def inbox_feed(inbox_name: str):
         entries=entries,
         inbox_name=inbox.name,
         base_url=base,
+        canonical_inbox_by_article=canonical_map,
     )
 
 
@@ -785,6 +893,7 @@ def author_feed(inbox_name: str, sub: str):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         entries = author_recent(session, inbox, sub, limit=FEED_ENTRY_LIMIT)
+        canonical_map = _canonical_inbox_names_for(session, [e.id for e in entries])
 
     base = request.url_root
     sub_quoted = quote(sub, safe="")
@@ -796,6 +905,7 @@ def author_feed(inbox_name: str, sub: str):
         entries=entries,
         inbox_name=inbox.name,
         base_url=base,
+        canonical_inbox_by_article=canonical_map,
     )
 
 
@@ -1004,20 +1114,19 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 ).scalars().all()
                 msgid_urls = {a.message_id: _msg_url(a, inbox.name) for a in referenced}
 
-        # If the message was cross-posted, surface the other inbox
-        # links so readers can see the same thread from a different
-        # vantage. List excludes the current inbox.
-        cross_post_inboxes = [
-            n for n, in session.execute(
-                select(Inbox.name)
-                .join(ArticleList, ArticleList.inbox_id == Inbox.id)
-                .where(
-                    ArticleList.article_id == article.id,
-                    Inbox.id != inbox.id,
-                )
-                .order_by(Inbox.name)
-            )
-        ]
+        # All inboxes this article is linked to. Used for both the
+        # cross-post hint (which excludes the current inbox) and the
+        # canonical URL (which picks one across the full set).
+        all_links: list[tuple[int, str]] = list(session.execute(
+            select(Inbox.id, Inbox.name)
+            .join(ArticleList, ArticleList.inbox_id == Inbox.id)
+            .where(ArticleList.article_id == article.id)
+            .order_by(Inbox.name)
+        ).all())
+        cross_post_inboxes = [n for ix_id, n in all_links if ix_id != inbox.id]
+        canonical_url = _canonical_url_for(
+            article, all_links, base=request.url_root.rstrip("/"),
+        )
 
     return render_template(
         "message.html",
@@ -1031,4 +1140,5 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         parent_off_list=parent_off_list,
         related=related,
         cross_post_inboxes=cross_post_inboxes,
+        canonical_url=canonical_url,
     )

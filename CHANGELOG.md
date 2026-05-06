@@ -13,6 +13,22 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Added
 
+- **SEO Phase 3: render-side canonical surface.** Each cross-posted
+  article is now served at one URL as far as search engines and feed
+  readers are concerned:
+  - Message pages emit `<link rel="canonical" href="...">` pointing
+    at the canonical inbox's URL (`/<canonical-inbox>/YYYY/MM/<id>`).
+    Falls back to the alphabetically-first linked inbox when
+    `canonical_inbox_id` is NULL — stable across renders so the SEO
+    signal doesn't flicker.
+  - `/sitemap.xml` now emits one `<url>` per article (the canonical
+    URL) instead of per-inbox-recent-N. Walk is global, ordered by
+    date desc, capped at `SITEMAP_RECENT_GLOBAL` (1000). Eliminates
+    the duplicate-content signal from cross-posts.
+  - Atom feed entries' `<id>` and `<link>` use the canonical inbox
+    name regardless of which feed served the entry. Feed readers
+    that key on `<id>` collapse cross-posts to a single entry across
+    feeds.
 - **SEO Phase 2: backfill CLI** for resolving canonical_inbox_id on
   pre-existing articles. `flask --app mimir admin canonicals backfill`
   walks articles newest-first, reads each one's RFC 5322 blob via the
