@@ -14,8 +14,10 @@ docker compose up --build
 
 The image:
 - Multi-stage build; final ~slim runtime, runs as `mimir:1001`.
-- `CMD` runs `alembic upgrade head` then `gunicorn` with
-  `${WORKERS:-2}` workers.
+- `CMD` is just `gunicorn` with `${WORKERS:-2}` workers — schema
+  migration is the sidecar's job (see below). Order the sidecar
+  ahead of the web service in `compose.yaml` so the first run
+  doesn't serve requests against an unmigrated DB.
 - Volume mount: `/data` is the single stateful path.
   - `/data/db/mimir.db` — SQLite DB + WAL files
     (`DATABASE_URL=sqlite:////data/db/mimir.db` baked in).
@@ -50,8 +52,11 @@ Timing is relative to container start, not wall-clock. A task that
 overruns its slot is logged but the loop continues; cadences use
 absolute timestamps so they don't drift.
 
-The sidecar runs `alembic upgrade head` on start (idempotent), so
-it can come up independently of the web container.
+The sidecar owns schema: `alembic upgrade head` runs once on start
+(before the loop) and is the single place that touches DDL. The
+web container has no migration step, so its `compose.yaml` entry
+should `depends_on` the sidecar (with a healthcheck-gated wait if
+you want serving to block on first-time bootstrap).
 
 ## systemd
 

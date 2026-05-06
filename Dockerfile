@@ -87,8 +87,10 @@ USER mimir
 
 EXPOSE 5000
 
-# Auto-migrate on start so a fresh /data volume comes up usable.
-# Acceptable for the single-user-archive deployment shape; managed
-# DB shops should set DATABASE_URL elsewhere and run alembic
-# explicitly.
-CMD ["sh", "-c", "alembic upgrade head && exec gunicorn 'mimir:create_app()' --bind 0.0.0.0:5000 --workers ${WORKERS} --access-logfile - --error-logfile -"]
+# Web is migration-free at startup — alembic lives in the scheduler
+# sidecar (`deploy/scheduler.sh`) so there's a single place that
+# touches schema. Operator's compose must order the sidecar before
+# the web service (depends_on with a healthcheck-gated sidecar, or
+# bring the sidecar up first by hand) so gunicorn doesn't serve
+# requests against an unmigrated DB on a fresh /data volume.
+CMD ["sh", "-c", "exec gunicorn 'mimir:create_app()' --bind 0.0.0.0:5000 --workers ${WORKERS} --access-logfile - --error-logfile -"]
