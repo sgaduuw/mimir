@@ -290,3 +290,40 @@ def test_proxy_fix_off_keeps_connection_remote_addr(monkeypatch):
         headers={"X-Forwarded-For": "203.0.113.7"},
     )
     assert captured["remote"] == "10.30.30.2"
+
+
+# Access-log shape
+
+
+def test_access_log_records_user_agent(client):
+    """Regression: the structured access log captured `ua: null` for
+    every request because the falsy check on `request.user_agent`
+    depends on Werkzeug's UA parser recognising a browser, which
+    misfires on non-browser UAs (curl, wget) and even some browsers
+    in newer Werkzeug. Read the raw header instead."""
+    import json
+    import logging
+
+    captured: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record.getMessage())
+
+    request_logger = logging.getLogger("mimir.request")
+    prior = (request_logger.level, request_logger.disabled)
+    # pytest's logging plugin marks unmanaged loggers as disabled
+    # between tests; flip it back so emit() reaches our handler.
+    request_logger.disabled = False
+    request_logger.setLevel(logging.INFO)
+    handler = _Capture()
+    request_logger.addHandler(handler)
+    try:
+        client.get("/healthz", headers={"User-Agent": "probe-agent/1.0"})
+    finally:
+        request_logger.removeHandler(handler)
+        request_logger.level, request_logger.disabled = prior
+
+    assert captured, "no log line was emitted"
+    payload = json.loads(captured[-1])
+    assert payload["ua"] == "probe-agent/1.0"
