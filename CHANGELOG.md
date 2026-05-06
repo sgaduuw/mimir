@@ -11,6 +11,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- **Schema migration ownership moves entirely to the scheduler
+  sidecar.** The web container's `CMD` no longer runs
+  `alembic upgrade head` — only `mimir-tasks` does, on its first
+  tick. Single source of DDL truth, no race between two parallel
+  `alembic upgrade head` invocations on cold start. **Operator
+  action**: in `compose.yaml`, `mimir-web` should `depends_on:
+  mimir-tasks` (the inverse of the previous arrangement) so the
+  first-time bootstrap migrates the DB before gunicorn starts
+  serving. systemd deployments are unaffected — `mimir.service`
+  still has its own `ExecStartPre=alembic upgrade head`.
+
 ### Added
 
 - **SEO Phase 3: render-side canonical surface.** Each cross-posted
