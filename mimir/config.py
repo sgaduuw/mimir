@@ -78,6 +78,16 @@ class Settings(BaseSettings):
         "Greg KH": "gregkh@",
     }
 
+    # Auto-ANALYZE threshold. After `ingest_inbox` finishes a run, if
+    # `new + linked` across that run's epochs reaches this many rows,
+    # we issue ANALYZE so the SQLite planner doesn't keep stale stats
+    # from when the tables were small (or empty, post-migration). The
+    # canonical trigger is the first ingest of a freshly-added inbox,
+    # which lands the entire archive in one go and would otherwise leave
+    # the planner blind until the next scheduled ANALYZE. Set to 0 to
+    # disable.
+    analyze_after_ingest_rows: int = 10000
+
     # security.txt (RFC 9116). Setting `security_contact` enables
     # /security.txt and /.well-known/security.txt; the routes 404 when
     # it's empty. The `Expires:` field is computed at request time as

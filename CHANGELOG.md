@@ -11,6 +11,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- Auto-ANALYZE at the tail of `ingest_inbox`: when a run lands at least
+  `ANALYZE_AFTER_INGEST_ROWS` (default `10000`) new + cross-post-linked
+  messages, refresh the SQLite query-planner stats. Catches the
+  freshly-added-inbox bootstrap case where the planner stats from the
+  post-migration empty-table ANALYZE go stale once millions of rows
+  land. Set to `0` to disable.
+
 ## [1.0.0] – 2026-05-06
 
 First production release. Live at <https://ratatoskr.run> serving

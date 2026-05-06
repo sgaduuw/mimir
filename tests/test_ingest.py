@@ -13,7 +13,7 @@ from dulwich.objects import Blob, Commit, Tree
 from dulwich.repo import Repo
 from sqlalchemy import func, select
 
-from mimir.ingest import ingest_epoch, replay_failures
+from mimir.ingest import ingest_epoch, ingest_inbox, replay_failures
 from mimir.models import Article, ArticleList, Inbox, IngestState, ParseFailure
 
 
@@ -511,3 +511,68 @@ def test_replay_failures_skips_when_mirror_missing(seeded_db, tmp_path, monkeypa
             select(func.count()).select_from(ParseFailure)
             .where(ParseFailure.inbox_id == alpha.id)
         ).scalar_one() == 1
+
+
+# Auto-ANALYZE on threshold-crossing ingest
+
+
+def _setup_alpha_with_messages(seeded_db, tmp_path, n: int) -> Inbox:
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    _build_pubinbox_repo(
+        mirror / "0.git",
+        [_rfc5322(f"auto{i}@example.com") for i in range(n)],
+    )
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.mirror_path = str(mirror)
+        s.commit()
+        return s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+
+def _spy_text(monkeypatch) -> list[str]:
+    from mimir import ingest as ingest_mod
+    seen: list[str] = []
+    real_text = ingest_mod.text
+    def _spy(stmt):
+        seen.append(stmt)
+        return real_text(stmt)
+    monkeypatch.setattr(ingest_mod, "text", _spy)
+    return seen
+
+
+def test_ingest_inbox_runs_analyze_when_threshold_reached(seeded_db, tmp_path, monkeypatch):
+    from mimir.config import settings
+
+    alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
+    seen = _spy_text(monkeypatch)
+    monkeypatch.setattr(settings, "analyze_after_ingest_rows", 2)
+
+    results = ingest_inbox(alpha, workers=1)
+
+    assert sum(r.new + r.linked for r in results) >= 2
+    assert "ANALYZE" in seen
+
+
+def test_ingest_inbox_skips_analyze_below_threshold(seeded_db, tmp_path, monkeypatch):
+    from mimir.config import settings
+
+    alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
+    seen = _spy_text(monkeypatch)
+    monkeypatch.setattr(settings, "analyze_after_ingest_rows", 100)
+
+    ingest_inbox(alpha, workers=1)
+
+    assert "ANALYZE" not in seen
+
+
+def test_ingest_inbox_skips_analyze_when_disabled(seeded_db, tmp_path, monkeypatch):
+    from mimir.config import settings
+
+    alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
+    seen = _spy_text(monkeypatch)
+    monkeypatch.setattr(settings, "analyze_after_ingest_rows", 0)
+
+    ingest_inbox(alpha, workers=1)
+
+    assert "ANALYZE" not in seen
