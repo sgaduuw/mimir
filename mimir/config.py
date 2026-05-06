@@ -78,6 +78,15 @@ class Settings(BaseSettings):
         "Greg KH": "gregkh@",
     }
 
+    # Number of trusted reverse-proxy hops in front of the app. When
+    # > 0, Werkzeug's ProxyFix is wired up so the last N entries of
+    # X-Forwarded-{For,Proto,Host} are honoured — request.remote_addr
+    # then reflects the real client IP instead of the proxy's address,
+    # request.scheme is correct under HTTPS-terminating proxies, etc.
+    # Leave at 0 if the app is reachable directly, otherwise anyone
+    # could spoof those values via a forged XFF header.
+    trusted_proxy_hops: int = 0
+
     # Auto-ANALYZE threshold. After `ingest_inbox` finishes a run, if
     # `new + linked` across that run's epochs reaches this many rows,
     # we issue ANALYZE so the SQLite planner doesn't keep stale stats

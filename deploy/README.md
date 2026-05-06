@@ -112,16 +112,14 @@ itself still succeeds.
 
 ## Reverse proxy
 
-In container deployments, the reverse proxy reaches gunicorn from a
-non-loopback container-network address, so gunicorn won't trust
-`X-Forwarded-For` by default and the access log records the proxy's
-IP instead of the real client. `compose.yaml` ships
-`FORWARDED_ALLOW_IPS=*` to fix this — safe because the canonical
-deployment doesn't expose port 5000 outside the proxy. If you publish
-the port directly, tighten this to the proxy's CIDR.
-
-The systemd shape isn't affected: `mimir.service` binds gunicorn to
-`127.0.0.1:5000`, which falls inside gunicorn's default trust list.
+When the app sits behind a reverse proxy, set `TRUSTED_PROXY_HOPS` to
+the number of trusted proxies in front. mimir then wraps its WSGI app
+in Werkzeug's `ProxyFix` so `request.remote_addr` (and `.scheme` /
+`.host`) reflect the real client instead of the proxy's address. The
+canonical `compose.yaml` ships `TRUSTED_PROXY_HOPS=1` for the typical
+"Caddy → mimir" shape. Leave at `0` if mimir is reachable directly —
+otherwise anyone could spoof those values via a forged
+`X-Forwarded-For`.
 
 ### Caddy (preferred — automatic HTTPS)
 

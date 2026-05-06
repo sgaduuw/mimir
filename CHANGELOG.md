@@ -11,13 +11,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
-### Changed
+### Added
 
-- `compose.yaml` sets `FORWARDED_ALLOW_IPS=*` so gunicorn honours the
-  reverse proxy's `X-Forwarded-For` and the access log records real
-  client IPs. Previously the log showed the proxy's container-network
-  address. systemd deployments are unaffected — they bind gunicorn to
-  `127.0.0.1`, which is already in gunicorn's default trust list.
+- `TRUSTED_PROXY_HOPS` setting (default `0`). When `> 0`, mimir wraps
+  its WSGI app in Werkzeug's `ProxyFix` so `request.remote_addr`,
+  `.scheme`, and `.host` reflect the real client through that many
+  trusted reverse-proxy hops — fixing the access log showing the
+  proxy's address instead of the client's. Off by default because
+  enabling it on a directly-exposed app would let anyone spoof those
+  values via a forged `X-Forwarded-For`. `compose.yaml` ships
+  `TRUSTED_PROXY_HOPS=1` (replacing the earlier `FORWARDED_ALLOW_IPS`,
+  which only handled scheme detection — gunicorn doesn't rewrite
+  `REMOTE_ADDR` on its own). systemd deployments are unaffected; set
+  the env var if you stack a reverse proxy in front.
 
 ## [1.1.0] – 2026-05-06
 
