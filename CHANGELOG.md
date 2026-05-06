@@ -11,18 +11,21 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.4.0] – 2026-05-06
+
 ### Changed
 
 - **Schema migration ownership moves entirely to the scheduler
   sidecar.** The web container's `CMD` no longer runs
-  `alembic upgrade head` — only `mimir-tasks` does, on its first
-  tick. Single source of DDL truth, no race between two parallel
-  `alembic upgrade head` invocations on cold start. **Operator
-  action**: in `compose.yaml`, `mimir-web` should `depends_on:
-  mimir-tasks` (the inverse of the previous arrangement) so the
-  first-time bootstrap migrates the DB before gunicorn starts
-  serving. systemd deployments are unaffected — `mimir.service`
-  still has its own `ExecStartPre=alembic upgrade head`.
+  `alembic upgrade head` — only `mimir-tasks` does, before its
+  loop starts. Single source of DDL truth, no race between two
+  parallel `alembic upgrade head` invocations on cold start. The
+  example `compose.yaml` now flips `depends_on` so `mimir-web`
+  waits on `mimir-tasks` with `condition: service_healthy`; the
+  sidecar reports healthy after touching `/data/.migrated`, so a
+  fresh volume bootstraps cleanly without gunicorn ever serving
+  against an unmigrated DB. systemd deployments are unaffected —
+  `mimir.service` still has its own `ExecStartPre=alembic`.
 
 ### Added
 
@@ -232,7 +235,8 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.4.0
 [1.3.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.3.0
 [1.2.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.2.0
 [1.1.1]: https://github.com/sgaduuw/mimir/releases/tag/v1.1.1
