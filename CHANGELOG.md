@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.1.0] – 2026-05-06
+
 ### Added
 
 - Auto-ANALYZE at the tail of `ingest_inbox`: when a run lands at least
@@ -118,5 +120,6 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.1.0
 [1.0.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.0.0
