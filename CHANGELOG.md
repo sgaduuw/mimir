@@ -11,6 +11,13 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- `PINNED_INBOXES` setting (default `["lkml"]`). Inboxes listed here
+  surface at the top of the meta-index `/` in config order, with the
+  rest following alphabetically. Comma-separated as an env var. Set
+  to empty for pure alphabetical.
+
 ## [1.1.1] – 2026-05-06
 
 ### Added
