@@ -15,8 +15,10 @@
 # the warm-cache cadence so the loop is responsive after a task that
 # took longer than its slot.
 #
-# alembic upgrade head runs once at start so this container is
-# independent of the web container's migration step. Idempotent.
+# alembic upgrade head runs once at start. This container is the
+# single owner of DDL — the web container has no migration step
+# and waits on this sidecar's healthcheck (which fires once the
+# sentinel `/data/.migrated` is touched, below). Idempotent.
 
 set -u
 
@@ -38,7 +40,17 @@ run() {
     fi
 }
 
-run "alembic" alembic upgrade head
+log "alembic: start"
+if alembic upgrade head; then
+    log "alembic: ok"
+    # Healthcheck sentinel: the web container's depends_on uses
+    # condition: service_healthy and a `test -f /data/.migrated` test,
+    # so gunicorn waits for this file before it starts serving.
+    touch /data/.migrated
+else
+    log "alembic: failed (rc=$?) — refusing to start sidecar loop"
+    exit 1
+fi
 
 # Initial update so a fresh deployment has data to render before the
 # first UPDATE_EVERY tick.

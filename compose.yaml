@@ -38,12 +38,25 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    # The sidecar owns schema migration; gate web start on its
+    # healthcheck so gunicorn doesn't serve requests against an
+    # unmigrated DB on a fresh /data volume. Default `service_started`
+    # would only wait for the sidecar's container to launch (faster but
+    # racy). Switch to that if you migrate manually before bringing
+    # the stack up.
+    depends_on:
+      mimir-tasks:
+        condition: service_healthy
 
   # Scheduled-tasks sidecar: warm-cache, update (sync + ingest),
   # analyze, vacuum. Replaces cron / systemd timers. Shares the same
   # /data volume; no port exposure. See deploy/scheduler.sh for the
   # loop body and the env-overridable cadence knobs (WARM_CACHE_EVERY,
   # UPDATE_EVERY, ANALYZE_EVERY, VACUUM_EVERY — all in seconds).
+  #
+  # Owns `alembic upgrade head` (single source of DDL truth). The
+  # healthcheck reports healthy once the sentinel `/data/.migrated`
+  # appears, which scheduler.sh touches after a successful migration.
   mimir-tasks:
     build: .
     image: mimir:latest
@@ -58,5 +71,9 @@ services:
       # SITE_NAME: lkml-mirror
       # INBOXES: '{"linux-fsdevel": {...}}'
     restart: unless-stopped
-    depends_on:
-      - mimir
+    healthcheck:
+      test: ["CMD", "test", "-f", "/data/.migrated"]
+      interval: 5s
+      timeout: 2s
+      retries: 60
+      start_period: 0s

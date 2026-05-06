@@ -53,10 +53,13 @@ overruns its slot is logged but the loop continues; cadences use
 absolute timestamps so they don't drift.
 
 The sidecar owns schema: `alembic upgrade head` runs once on start
-(before the loop) and is the single place that touches DDL. The
-web container has no migration step, so its `compose.yaml` entry
-should `depends_on` the sidecar (with a healthcheck-gated wait if
-you want serving to block on first-time bootstrap).
+(before the loop) and is the single place that touches DDL. After
+a successful migration, scheduler.sh touches `/data/.migrated`,
+which the sidecar's healthcheck looks for. The web container's
+`depends_on: { mimir-tasks: { condition: service_healthy } }` then
+gates gunicorn on that sentinel, so a fresh `/data` volume migrates
+before serving any requests. systemd deployments are unaffected —
+`mimir.service` runs its own `ExecStartPre=alembic upgrade head`.
 
 ## systemd
 
