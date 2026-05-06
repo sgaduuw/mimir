@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 # Cancel in-flight runs on the same branch / PR when a new push lands.
