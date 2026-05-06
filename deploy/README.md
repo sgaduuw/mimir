@@ -112,6 +112,17 @@ itself still succeeds.
 
 ## Reverse proxy
 
+In container deployments, the reverse proxy reaches gunicorn from a
+non-loopback container-network address, so gunicorn won't trust
+`X-Forwarded-For` by default and the access log records the proxy's
+IP instead of the real client. `compose.yaml` ships
+`FORWARDED_ALLOW_IPS=*` to fix this — safe because the canonical
+deployment doesn't expose port 5000 outside the proxy. If you publish
+the port directly, tighten this to the proxy's CIDR.
+
+The systemd shape isn't affected: `mimir.service` binds gunicorn to
+`127.0.0.1:5000`, which falls inside gunicorn's default trust list.
+
 ### Caddy (preferred — automatic HTTPS)
 
 ```caddy

@@ -20,6 +20,13 @@ services:
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY required}
       DATABASE_URL: sqlite:////data/db/mimir.db
       WORKERS: "2"
+      # Trust X-Forwarded-For from any source so gunicorn's access log
+      # records the real client IP instead of the reverse-proxy's
+      # container-network address. Safe as a wildcard here because the
+      # web container is only reachable via the reverse proxy in the
+      # canonical deployment; tighten to the proxy's CIDR if you expose
+      # port 5000 directly.
+      FORWARDED_ALLOW_IPS: "*"
       # Optional:
       # SITE_NAME: lkml-mirror
       # SECURITY_CONTACT: mailto:security@example.com
