@@ -9,10 +9,11 @@ from typing import Iterable, Iterator
 from dulwich.errors import NotGitRepository
 from dulwich.repo import Repo
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
-from mimir.extensions import SessionLocal
+from mimir.config import settings
+from mimir.extensions import SessionLocal, engine
 from mimir.models import Article, ArticleList, Inbox, IngestState, ParseFailure
 from mimir.parser import ParsedArticle, normalize_subject, parse_message
 
@@ -425,6 +426,20 @@ def ingest_inbox(
             results.append(r)
             if remaining is not None:
                 remaining -= r.new + r.linked + r.dup_batch + r.dup_db + r.failed
+
+    # Refresh planner stats when we've moved enough rows that prior
+    # `sqlite_stat1` can no longer be trusted — most importantly the
+    # first ingest of a freshly-added inbox, which lands a whole archive
+    # in one go and would otherwise leave the planner blind until the
+    # next scheduled ANALYZE.
+    threshold = settings.analyze_after_ingest_rows
+    if threshold > 0:
+        moved = sum(r.new + r.linked for r in results)
+        if moved >= threshold:
+            logger.info("auto-ANALYZE after %s/%d rows ingested", inbox.name, moved)
+            with engine.begin() as conn:
+                conn.execute(text("ANALYZE"))
+
     return results
 
 
