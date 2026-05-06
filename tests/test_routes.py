@@ -347,3 +347,165 @@ def test_access_log_records_user_agent(client):
     assert captured, "no log line was emitted"
     payload = json.loads(captured[-1])
     assert payload["ua"] == "probe-agent/1.0"
+
+
+# Phase 3: render-side canonical surface
+
+
+def test_canonical_inbox_name_uses_canonical_id():
+    from unittest.mock import MagicMock
+    from mimir.web import _canonical_inbox_name
+
+    art = MagicMock()
+    art.canonical_inbox_id = 7
+    # links: linux-fsdevel is canonical; alphabetical-first would be lkml.
+    links = [(1, "lkml"), (7, "linux-fsdevel")]
+    assert _canonical_inbox_name(art, links) == "linux-fsdevel"
+
+
+def test_canonical_inbox_name_falls_back_alphabetical_when_null():
+    from unittest.mock import MagicMock
+    from mimir.web import _canonical_inbox_name
+
+    art = MagicMock()
+    art.canonical_inbox_id = None
+    links = [(7, "linux-fsdevel"), (1, "lkml")]
+    assert _canonical_inbox_name(art, links) == "linux-fsdevel"
+
+
+def test_canonical_inbox_name_returns_none_for_orphan_article():
+    from unittest.mock import MagicMock
+    from mimir.web import _canonical_inbox_name
+
+    art = MagicMock()
+    art.canonical_inbox_id = None
+    assert _canonical_inbox_name(art, []) is None
+
+
+def test_canonical_url_for_combines_base_and_msg_url():
+    from unittest.mock import MagicMock
+    from datetime import datetime
+    from mimir.web import _canonical_url_for
+
+    art = MagicMock()
+    art.id = 99
+    art.canonical_inbox_id = 7
+    art.date = datetime(2024, 5, 1)
+    links = [(7, "linux-fsdevel")]
+    assert (
+        _canonical_url_for(art, links, base="https://ex.com")
+        == "https://ex.com/linux-fsdevel/2024/05/99"
+    )
+
+
+def test_sitemap_emits_no_duplicate_urls(client):
+    """The seeded cross-post art3 (alpha+beta) must surface as exactly
+    one URL in the sitemap, not one per linked inbox."""
+    import xml.etree.ElementTree as ET
+
+    r = client.get("/sitemap.xml")
+    assert r.status_code == 200
+    root = ET.fromstring(r.get_data())
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    locs = [u.find("s:loc", ns).text for u in root.findall("s:url", ns)]
+    # Article-level URLs end in /<id>; meta-index and dashboards don't.
+    article_locs = [loc for loc in locs if loc.rstrip("/").rsplit("/", 1)[-1].isdigit()]
+    assert len(article_locs) == len(set(article_locs))
+
+
+def test_sitemap_cross_post_uses_canonical_inbox(client):
+    """art3 is cross-posted alpha+beta. With canonical_inbox_id=NULL,
+    fallback is alphabetical-first ('alpha'). The sitemap entry for
+    art3 must be the alpha URL, not beta."""
+    import xml.etree.ElementTree as ET
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as s:
+        art3 = s.execute(
+            select(Article).where(Article.message_id == "art3@example.com")
+        ).scalar_one()
+        art_id = art3.id
+
+    r = client.get("/sitemap.xml")
+    root = ET.fromstring(r.get_data())
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    locs = [u.find("s:loc", ns).text for u in root.findall("s:url", ns)]
+    art3_locs = [loc for loc in locs if loc.endswith(f"/{art_id}")]
+    assert len(art3_locs) == 1
+    assert "/alpha/" in art3_locs[0]
+    assert "/beta/" not in art3_locs[0]
+
+
+def test_sitemap_cross_post_respects_canonical_inbox_id(client):
+    """Setting canonical_inbox_id=beta.id flips art3's sitemap URL to
+    /beta/. Confirms the canonical column is read, not just the
+    alphabetical fallback."""
+    import xml.etree.ElementTree as ET
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, Inbox
+
+    # Bust the sitemap cache so the change is visible immediately.
+    from mimir import cache
+    cache.purge_expired()
+    from mimir.models import CacheEntry
+    from sqlalchemy import delete
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        art3 = s.execute(
+            select(Article).where(Article.message_id == "art3@example.com")
+        ).scalar_one()
+        art3.canonical_inbox_id = beta.id
+        art_id = art3.id
+        s.commit()
+
+    r = client.get("/sitemap.xml")
+    root = ET.fromstring(r.get_data())
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    locs = [u.find("s:loc", ns).text for u in root.findall("s:url", ns)]
+    art3_locs = [loc for loc in locs if loc.endswith(f"/{art_id}")]
+    assert len(art3_locs) == 1
+    assert "/beta/" in art3_locs[0]
+
+
+def test_atom_feed_cross_post_id_is_canonical_in_either_feed(client):
+    """The same cross-posted article surfaces in both /alpha/feed.atom
+    and /beta/feed.atom. With canonical resolution, both feeds' entries
+    for art3 must carry the SAME <id> — the canonical URL — so feed
+    readers that key on <id> deduplicate across feeds."""
+    import xml.etree.ElementTree as ET
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as s:
+        art3 = s.execute(
+            select(Article).where(Article.message_id == "art3@example.com")
+        ).scalar_one()
+        art_id = art3.id
+
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+
+    def find_id_for(feed_xml: bytes, art_id: int) -> str | None:
+        root = ET.fromstring(feed_xml)
+        for entry in root.findall("a:entry", ns):
+            link = entry.find("a:link[@rel='alternate']", ns)
+            if link is not None and link.get("href", "").endswith(f"/{art_id}"):
+                id_el = entry.find("a:id", ns)
+                return id_el.text if id_el is not None else None
+        return None
+
+    alpha_feed = client.get("/alpha/feed.atom")
+    beta_feed = client.get("/beta/feed.atom")
+    assert alpha_feed.status_code == 200
+    assert beta_feed.status_code == 200
+
+    alpha_id = find_id_for(alpha_feed.get_data(), art_id)
+    beta_id = find_id_for(beta_feed.get_data(), art_id)
+    assert alpha_id is not None and beta_id is not None
+    assert alpha_id == beta_id
+    # Fallback is alphabetical-first → alpha.
+    assert "alpha" in alpha_id

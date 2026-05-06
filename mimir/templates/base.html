@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="generator" content="mimir">
+  {% if canonical_url %}
+  <link rel="canonical" href="{{ canonical_url }}">
+  {% endif %}
   {% if current_inbox %}
   <link rel="alternate" type="application/atom+xml"
         title="{{ current_inbox }} feed"
