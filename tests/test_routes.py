@@ -218,3 +218,75 @@ def test_sitemap_xml(client):
     locs = {u.find("s:loc", ns).text for u in urls}
     # Meta-index is always present.
     assert any(loc.endswith("/") and loc.count("/") <= 3 for loc in locs)
+
+
+# ProxyFix: trusted_proxy_hops controls X-Forwarded-* honouring
+
+
+def _build_app_with_hops(monkeypatch, hops: int):
+    """Re-create the Flask app with `trusted_proxy_hops` patched.
+    `create_app()` decides ProxyFix wiring at construction time."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "trusted_proxy_hops", hops)
+    from mimir import create_app
+    return create_app()
+
+
+def test_proxy_fix_off_when_hops_zero(monkeypatch):
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app = _build_app_with_hops(monkeypatch, 0)
+    assert not isinstance(app.wsgi_app, ProxyFix)
+
+
+def test_proxy_fix_wrapped_when_hops_positive(monkeypatch):
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app = _build_app_with_hops(monkeypatch, 1)
+    assert isinstance(app.wsgi_app, ProxyFix)
+
+
+def test_proxy_fix_unwraps_remote_addr_from_xff(monkeypatch):
+    """End-to-end: with trusted_proxy_hops=1, request.remote_addr
+    reflects X-Forwarded-For instead of the connection IP."""
+    from flask import request
+    app = _build_app_with_hops(monkeypatch, 1)
+    captured: dict[str, str | None] = {}
+
+    @app.route("/__probe_remote")
+    def _probe():
+        captured["remote"] = request.remote_addr
+        captured["scheme"] = request.scheme
+        return ""
+
+    client = app.test_client()
+    client.get(
+        "/__probe_remote",
+        environ_base={"REMOTE_ADDR": "10.30.30.2"},
+        headers={
+            "X-Forwarded-For": "203.0.113.7",
+            "X-Forwarded-Proto": "https",
+        },
+    )
+    assert captured["remote"] == "203.0.113.7"
+    assert captured["scheme"] == "https"
+
+
+def test_proxy_fix_off_keeps_connection_remote_addr(monkeypatch):
+    """With hops=0, XFF is NOT honoured — request.remote_addr stays
+    the connection IP. Guards against accidentally enabling ProxyFix
+    on a directly-exposed app, where attackers could spoof XFF."""
+    from flask import request
+    app = _build_app_with_hops(monkeypatch, 0)
+    captured: dict[str, str | None] = {}
+
+    @app.route("/__probe_remote")
+    def _probe():
+        captured["remote"] = request.remote_addr
+        return ""
+
+    client = app.test_client()
+    client.get(
+        "/__probe_remote",
+        environ_base={"REMOTE_ADDR": "10.30.30.2"},
+        headers={"X-Forwarded-For": "203.0.113.7"},
+    )
+    assert captured["remote"] == "10.30.30.2"
