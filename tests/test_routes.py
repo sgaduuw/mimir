@@ -520,6 +520,63 @@ def _title_of(html: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _ingest_one_article(
+    tmp_path,
+    inbox_name: str,
+    message_id: str,
+    subject: str = "test",
+) -> tuple[int, str]:
+    """Build a tiny pubinbox-shaped bare repo with one message and
+    ingest it into `inbox_name`. Repoints the inbox's mirror_path at
+    `tmp_path` so `read_message` can fetch the blob; returns
+    `(article_id, /<inbox>/YYYY/MM/<id>)` for routing tests."""
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.ingest import ingest_epoch
+    from mimir.models import Article, Inbox
+
+    raw = (
+        b"Message-ID: <" + message_id.encode() + b">\r\n"
+        b"From: a@b.example\r\n"
+        b"Subject: " + subject.encode() + b"\r\n"
+        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+        b"\r\n"
+        b"body"
+    )
+    repo_dir = tmp_path / "0.git"
+    repo = Repo.init_bare(str(repo_dir), mkdir=True)
+    blob = Blob.from_string(raw)
+    repo.object_store.add_object(blob)
+    tree = Tree()
+    tree.add(b"m", 0o100644, blob.id)
+    repo.object_store.add_object(tree)
+    commit = Commit()
+    commit.tree = tree.id
+    commit.parents = []
+    commit.author = commit.committer = b"test <t@x>"
+    commit.commit_time = commit.author_time = 1700000000
+    commit.commit_timezone = commit.author_timezone = 0
+    commit.encoding = b"UTF-8"
+    commit.message = b"add"
+    repo.object_store.add_object(commit)
+    repo.refs[b"HEAD"] = commit.id
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        ix.mirror_path = str(tmp_path)
+        s.commit()
+        ingest_epoch(s, ix, "0.git", repo_dir, workers=1)
+        art = s.execute(
+            select(Article).where(Article.message_id == message_id)
+        ).scalar_one()
+        url = (
+            f"/{inbox_name}/{art.date.year}/{art.date.month:02d}/{art.id}"
+        )
+        return art.id, url
+
+
 def test_meta_index_title_is_just_site_name(client):
     title = _title_of(client.get("/").data.decode())
     assert title == "mimir"
@@ -561,88 +618,63 @@ def test_daily_today_title(client, inbox_name):
     assert title.endswith(f" | {inbox_name} | mimir")
 
 
-def test_message_subject_truncated_to_80(client, inbox_name):
-    """Long subjects in patch-series messages get cropped at 80 chars
-    before the suffix so <title> stays sane in SERPs."""
-    from sqlalchemy import select
-    from mimir.extensions import SessionLocal
-    from mimir.models import Article, ArticleList, Inbox
+def test_message_subject_truncated_to_80(client, tmp_path):
+    """Long subjects (patch series with v17 RFC 23/47 etc.) get
+    truncated at 80 chars in <title> so SERPs don't overflow.
+    Drives the real route end-to-end with a freshly-ingested article
+    rather than testing Jinja's filter in isolation."""
     long_subject = "x" * 200
-
-    with SessionLocal() as s:
-        inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
-        # Reuse an existing article and overwrite its subject for the
-        # duration of this test. seeded_db's autouse fixture restores
-        # the DB on the next test.
-        art = s.execute(
-            select(Article)
-            .join(ArticleList, ArticleList.article_id == Article.id)
-            .where(ArticleList.inbox_id == inbox.id)
-            .limit(1)
-        ).scalar_one()
-        art.subject = long_subject
-        s.commit()
-        url = (
-            f"/{inbox_name}/{art.date.year}/{art.date.month:02d}/{art.id}"
-            if art.date else None
-        )
-
-    if url is None:
-        import pytest
-        pytest.skip("no dated article available")
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "trunc@example.com", subject=long_subject,
+    )
     r = client.get(url)
-    if r.status_code != 200:
-        # Real blob isn't available for seeded articles; the route
-        # 404s on read_message failure. Just test that title would
-        # truncate via Jinja directly.
-        from jinja2 import Environment
-        env = Environment(autoescape=True)
-        rendered = env.from_string("{{ subject | truncate(80) }}").render(
-            subject=long_subject,
-        )
-        # Jinja's truncate keeps roughly 80 chars (default uses 81 incl ellipsis).
-        assert len(rendered) <= 84
-        return
+    assert r.status_code == 200
     title = _title_of(r.data.decode())
-    # Truncated subject won't contain all 200 x's.
-    assert "x" * 200 not in title
-    assert title.endswith(f" | {inbox_name} | mimir")
+    assert title.endswith(" | alpha | mimir")
+    # The subject portion shouldn't be the full 200-char input.
+    subject_part = title.rsplit(" | alpha | mimir", 1)[0]
+    assert len(subject_part) <= 84  # Jinja truncate(80) keeps ~81 incl ellipsis
+    assert subject_part != long_subject
 
 
-def test_sitemap_meta_index_has_lastmod(client):
+def test_sitemap_meta_index_lastmod_is_global_max(client):
+    """Seeded articles range 2024-01-01 to 2024-03-01 (art3 cross-post).
+    The meta-index <lastmod> is the global max → 2024-03-01."""
     import xml.etree.ElementTree as ET
     r = client.get("/sitemap.xml")
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    # The first <url> entry is the meta-index.
     first = root.findall("s:url", ns)[0]
     assert first.find("s:loc", ns).text.endswith("/")
-    # lastmod present (there are seeded articles with dates).
-    lastmod = first.find("s:lastmod", ns)
-    assert lastmod is not None
-    assert lastmod.text  # non-empty
-    # date-only format YYYY-MM-DD
-    import re
-    assert re.match(r"^\d{4}-\d{2}-\d{2}$", lastmod.text)
+    assert first.find("s:lastmod", ns).text == "2024-03-01"
 
 
-def test_sitemap_inbox_dashboard_has_lastmod(client):
+def test_sitemap_alpha_dashboard_lastmod_is_alpha_max(client):
+    """alpha is linked to art1 (2024-01-01), art3 (2024-03-01), art4
+    (2024-01-02) — max is 2024-03-01 (art3 cross-post)."""
     import xml.etree.ElementTree as ET
     r = client.get("/sitemap.xml")
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    locs_with_lastmod = {}
     for u in root.findall("s:url", ns):
-        loc = u.find("s:loc", ns).text
-        lm = u.find("s:lastmod", ns)
-        locs_with_lastmod[loc] = lm.text if lm is not None else None
-    # Dashboard URL ends in /<inbox>/.
-    alpha_dash = next(
-        (loc for loc in locs_with_lastmod if loc.endswith("/alpha/")),
-        None,
-    )
-    assert alpha_dash is not None
-    assert locs_with_lastmod[alpha_dash]
+        if u.find("s:loc", ns).text.endswith("/alpha/"):
+            assert u.find("s:lastmod", ns).text == "2024-03-01"
+            return
+    raise AssertionError("alpha dashboard not in sitemap")
+
+
+def test_sitemap_beta_dashboard_lastmod_is_beta_max(client):
+    """beta is linked to art2 (2024-02-01) and art3 (2024-03-01) —
+    max is 2024-03-01."""
+    import xml.etree.ElementTree as ET
+    r = client.get("/sitemap.xml")
+    root = ET.fromstring(r.get_data())
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    for u in root.findall("s:url", ns):
+        if u.find("s:loc", ns).text.endswith("/beta/"):
+            assert u.find("s:lastmod", ns).text == "2024-03-01"
+            return
+    raise AssertionError("beta dashboard not in sitemap")
 
 
 def test_sitemap_article_lastmod_matches_article_date(client):
@@ -728,59 +760,80 @@ def _meta_value(html: str, name_or_property: str) -> str | None:
 def test_meta_index_emits_default_description(client):
     html = client.get("/").data.decode()
     desc = _meta_value(html, "description")
-    assert desc and "mailing-list" in desc
+    assert desc == (
+        "Indexed mailing-list archives, served from local "
+        "public-inbox v2 mirrors."
+    )
 
 
-def test_inbox_dashboard_meta_description(client, inbox_name):
+def test_inbox_dashboard_meta_description_starts_with_inbox_archive(client, inbox_name):
+    """Either rich or fallback form: both lead with '<inbox> archive'."""
     html = client.get(f"/{inbox_name}/").data.decode()
     desc = _meta_value(html, "description")
     assert desc is not None
-    assert inbox_name in desc
+    assert desc.startswith(f"{inbox_name} archive")
 
 
-def test_search_meta_description_includes_query(client, inbox_name):
+def test_search_meta_description_with_query(client, inbox_name):
     html = client.get(f"/{inbox_name}/search?q=Linux").data.decode()
     desc = _meta_value(html, "description")
-    assert desc is not None
-    assert "Linux" in desc
-    assert inbox_name in desc
+    assert desc == f"Search results for 'Linux' in {inbox_name}."
 
 
-def test_og_tags_present_on_index(client):
+def test_search_meta_description_when_no_query(client, inbox_name):
+    html = client.get(f"/{inbox_name}/search").data.decode()
+    desc = _meta_value(html, "description")
+    assert desc == f"Search the {inbox_name} archive by subject or author."
+
+
+def test_og_tags_on_index_match_expected_values(client):
     html = client.get("/").data.decode()
+    expected_desc = (
+        "Indexed mailing-list archives, served from local "
+        "public-inbox v2 mirrors."
+    )
     assert _meta_value(html, "og:title") == "mimir"
     assert _meta_value(html, "og:type") == "website"
     assert _meta_value(html, "og:site_name") == "mimir"
-    assert _meta_value(html, "og:url") is not None
-    assert _meta_value(html, "og:description") is not None
+    assert _meta_value(html, "og:url") == "http://localhost/"
+    assert _meta_value(html, "og:description") == expected_desc
 
 
-def test_og_type_article_on_message_page_template():
-    """The og_type block is overridden in message.html. Render the
-    template directly — the live message route requires a real blob."""
-    from jinja2 import Environment, PackageLoader, select_autoescape
-    env = Environment(
-        loader=PackageLoader("mimir", "templates"),
-        autoescape=select_autoescape(),
+def test_og_type_article_on_message_page(client, tmp_path):
+    """Message pages override og:type to 'article' (the rest of the
+    site stays on the 'website' default). End-to-end via a real
+    ingested article so we exercise the rendered tag, not the
+    template source."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "ogtype@example.com",
     )
-    # Source-grep is cheaper than full render here — the block exists
-    # at the top of the template and its value is what we care about.
-    src = env.loader.get_source(env, "message.html")[0]
-    assert "{% block og_type %}article{% endblock %}" in src
+    r = client.get(url)
+    assert r.status_code == 200
+    assert _meta_value(r.data.decode(), "og:type") == "article"
 
 
-def test_twitter_card_tags_present(client, inbox_name):
+def test_twitter_card_tags_match_og_pair(client, inbox_name):
+    """twitter:title/description should mirror og:title/description so
+    Twitter's preview matches whatever Slack/etc. show via OG."""
     html = client.get(f"/{inbox_name}/").data.decode()
     assert _meta_value(html, "twitter:card") == "summary"
-    assert _meta_value(html, "twitter:title") is not None
-    assert _meta_value(html, "twitter:description") is not None
+    assert _meta_value(html, "twitter:title") == _meta_value(html, "og:title")
+    assert (
+        _meta_value(html, "twitter:description")
+        == _meta_value(html, "og:description")
+    )
+    assert _meta_value(html, "twitter:title") == f"{inbox_name} | mimir"
 
 
-def test_meta_description_inbox_includes_message_count_when_available(client):
-    """Seeded inboxes have articles → stats.total > 0 → description
-    pivots to the rich form with counts and date range."""
+def test_meta_description_inbox_uses_rich_form_when_stats_present(client):
+    """Seeded alpha has 3 linked articles → stats.total>0 → description
+    is the rich form: '<inbox> archive: N message(s) from <first> to
+    <last>, indexed and searchable.' (NOT the bare fallback '<inbox>
+    archive on <site>.')"""
     html = client.get("/alpha/").data.decode()
     desc = _meta_value(html, "description")
-    assert desc and "alpha" in desc
-    # Either rich form (with "messages") or fallback ("archive on …").
-    assert "message" in desc or "archive" in desc
+    assert desc is not None
+    # Markers exclusive to the rich form.
+    assert desc.startswith("alpha archive: ")
+    assert "message" in desc
+    assert "indexed and searchable" in desc
