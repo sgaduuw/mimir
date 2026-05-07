@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ month_label }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block meta_description %}Threads on {{ inbox_name }} for {{ month_label }}.{% endblock %}
 {% block content %}
 <h2>{{ inbox_name }} <small><em>archive · {{ month_label }}</em></small></h2>
 

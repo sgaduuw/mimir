@@ -1,5 +1,11 @@
 {% extends "base.html" %}
 {% block title %}{{ (parsed.subject or '(no subject)') | truncate(80) }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block og_type %}article{% endblock %}
+{% block meta_description %}
+{%- set _from = parsed.author|safe_from if parsed.author else 'unknown sender' -%}
+{%- set _date = article.date.strftime('%Y-%m-%d') if article.date else 'unknown date' -%}
+Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject or '(no subject)') | truncate(120) }}
+{%- endblock %}
 {% block content %}
 <article>
   <header>

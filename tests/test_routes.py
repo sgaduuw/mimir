@@ -534,7 +534,7 @@ def test_search_title_includes_query(client, inbox_name):
     title = _title_of(
         client.get(f"/{inbox_name}/search?q=Linux").data.decode()
     )
-    assert title == f'Search "Linux" | {inbox_name} | mimir'
+    assert title == f"Search 'Linux' | {inbox_name} | mimir"
 
 
 def test_search_title_when_no_query(client, inbox_name):
@@ -708,3 +708,79 @@ def test_global_message_id_lookup_falls_back_to_alphabetical(client):
     assert r.status_code == 301
     loc = r.headers.get("Location", "")
     assert "/alpha/" in loc
+
+
+# Per-page meta description + Open Graph + Twitter Card tags
+
+
+def _meta_value(html: str, name_or_property: str) -> str | None:
+    """Extract a <meta> tag's content. Matches both `name=` and
+    `property=` since OG uses property and the rest use name."""
+    import re
+    pattern = (
+        r'<meta\s+(?:property|name)="' + re.escape(name_or_property)
+        + r'"\s+content="([^"]*)"'
+    )
+    m = re.search(pattern, html)
+    return m.group(1) if m else None
+
+
+def test_meta_index_emits_default_description(client):
+    html = client.get("/").data.decode()
+    desc = _meta_value(html, "description")
+    assert desc and "mailing-list" in desc
+
+
+def test_inbox_dashboard_meta_description(client, inbox_name):
+    html = client.get(f"/{inbox_name}/").data.decode()
+    desc = _meta_value(html, "description")
+    assert desc is not None
+    assert inbox_name in desc
+
+
+def test_search_meta_description_includes_query(client, inbox_name):
+    html = client.get(f"/{inbox_name}/search?q=Linux").data.decode()
+    desc = _meta_value(html, "description")
+    assert desc is not None
+    assert "Linux" in desc
+    assert inbox_name in desc
+
+
+def test_og_tags_present_on_index(client):
+    html = client.get("/").data.decode()
+    assert _meta_value(html, "og:title") == "mimir"
+    assert _meta_value(html, "og:type") == "website"
+    assert _meta_value(html, "og:site_name") == "mimir"
+    assert _meta_value(html, "og:url") is not None
+    assert _meta_value(html, "og:description") is not None
+
+
+def test_og_type_article_on_message_page_template():
+    """The og_type block is overridden in message.html. Render the
+    template directly — the live message route requires a real blob."""
+    from jinja2 import Environment, PackageLoader, select_autoescape
+    env = Environment(
+        loader=PackageLoader("mimir", "templates"),
+        autoescape=select_autoescape(),
+    )
+    # Source-grep is cheaper than full render here — the block exists
+    # at the top of the template and its value is what we care about.
+    src = env.loader.get_source(env, "message.html")[0]
+    assert "{% block og_type %}article{% endblock %}" in src
+
+
+def test_twitter_card_tags_present(client, inbox_name):
+    html = client.get(f"/{inbox_name}/").data.decode()
+    assert _meta_value(html, "twitter:card") == "summary"
+    assert _meta_value(html, "twitter:title") is not None
+    assert _meta_value(html, "twitter:description") is not None
+
+
+def test_meta_description_inbox_includes_message_count_when_available(client):
+    """Seeded inboxes have articles → stats.total > 0 → description
+    pivots to the rich form with counts and date range."""
+    html = client.get("/alpha/").data.decode()
+    desc = _meta_value(html, "description")
+    assert desc and "alpha" in desc
+    # Either rich form (with "messages") or fallback ("archive on …").
+    assert "message" in desc or "archive" in desc

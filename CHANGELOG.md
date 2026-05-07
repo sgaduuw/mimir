@@ -11,6 +11,22 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- Per-page `<meta name="description">` summarising the page —
+  inbox dashboards report message count + date range, message
+  pages synthesise "Message from <author> on <date> in <inbox>:
+  <subject>", search results carry the query, archive/author
+  views describe their scope. Replaces Google's auto-generated
+  snippets in SERPs and feeds social-preview cards.
+- Open Graph + Twitter Card tags on every page: `og:title`,
+  `og:description`, `og:url`, `og:site_name`, `og:type` (article
+  on message pages, website everywhere else), and the matching
+  `twitter:card`/`title`/`description`. URL previews now render
+  with title + description when ratatoskr.run links are pasted in
+  Slack, Discord, Mastodon, etc. Will gain `og:image` once a
+  favicon (#50) lands.
+
 ### Changed
 
 - Message-ID lookup redirects (`/m/<id>` and `/<inbox>/m/<id>`) are

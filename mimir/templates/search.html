@@ -1,5 +1,12 @@
 {% extends "base.html" %}
-{% block title %}{% if query %}Search "{{ query }}"{% else %}Search{% endif %} | {{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block title %}{% if query %}Search '{{ query }}'{% else %}Search{% endif %} | {{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block meta_description %}
+{%- if query -%}
+Search results for '{{ query }}' in {{ inbox_name }}.
+{%- else -%}
+Search the {{ inbox_name }} archive by subject or author.
+{%- endif -%}
+{% endblock %}
 {% block content %}
 <h2>Search <small><em>· {{ inbox_name }}</em></small></h2>
 
