@@ -26,6 +26,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   with title + description when ratatoskr.run links are pasted in
   Slack, Discord, Mastodon, etc. Will gain `og:image` once a
   favicon (#50) lands.
+- schema.org JSON-LD on the meta-index (`WebSite`) and message
+  pages (`@graph` of `DiscussionForumPosting` + `BreadcrumbList`,
+  rendered against the canonical inbox so cross-posts collapse
+  correctly). Makes message pages eligible for Google's
+  "Discussions and forums" rich-results section and gives search
+  engines a clean Site → Inbox → Subject breadcrumb. Author goes
+  through the same redaction filter as the rendered page;
+  `datePublished` prefers the message's RFC 5322 Date header over
+  the public-inbox commit time.
 
 ### Changed
 

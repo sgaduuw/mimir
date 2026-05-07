@@ -837,3 +837,137 @@ def test_meta_description_inbox_uses_rich_form_when_stats_present(client):
     assert desc.startswith("alpha archive: ")
     assert "message" in desc
     assert "indexed and searchable" in desc
+
+
+# JSON-LD structured data
+
+
+def _json_ld_blocks(html: str) -> list[dict]:
+    """Extract every <script type=application/ld+json> JSON payload."""
+    import json
+    import re
+    out: list[dict] = []
+    for m in re.finditer(
+        r'<script type="application/ld\+json">(.*?)</script>',
+        html, re.DOTALL,
+    ):
+        out.append(json.loads(m.group(1)))
+    return out
+
+
+def test_index_emits_website_json_ld(client):
+    """`/` carries a WebSite schema with name, url, and description."""
+    blocks = _json_ld_blocks(client.get("/").data.decode())
+    assert len(blocks) == 1
+    obj = blocks[0]
+    assert obj["@context"] == "https://schema.org"
+    assert obj["@type"] == "WebSite"
+    assert obj["name"] == "mimir"
+    assert obj["url"] == "http://localhost/"
+    assert obj["description"] == (
+        "Indexed mailing-list archives, served from local "
+        "public-inbox v2 mirrors."
+    )
+
+
+def test_message_page_emits_discussion_forum_posting(client, tmp_path):
+    """Message page graph contains DiscussionForumPosting with all
+    required-for-rich-results fields populated."""
+    art_id, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-fp@example.com", subject="hello world",
+    )
+    blocks = _json_ld_blocks(client.get(url).data.decode())
+    assert len(blocks) == 1
+    graph = blocks[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    assert posting["headline"] == "hello world"
+    assert posting["@id"].endswith(f"/{art_id}")
+    assert posting["url"] == posting["@id"]
+    assert posting["mainEntityOfPage"] == posting["@id"]
+    assert posting["isPartOf"]["@type"] == "WebSite"
+    assert posting["isPartOf"]["name"] == "alpha"
+    assert posting["isPartOf"]["url"].endswith("/alpha/")
+    # Default Date in _ingest_one_article is "Mon, 1 Jan 2024 00:00:00 +0000".
+    assert posting["datePublished"].startswith("2024-01-01T00:00:00")
+    assert posting["dateModified"] == posting["datePublished"]
+
+
+def test_message_page_emits_breadcrumb_list(client, tmp_path):
+    """The same @graph also carries a BreadcrumbList with the
+    Site → Inbox → Subject chain."""
+    art_id, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-bc@example.com", subject="brief subject",
+    )
+    blocks = _json_ld_blocks(client.get(url).data.decode())
+    graph = blocks[0]["@graph"]
+    bc = next(g for g in graph if g["@type"] == "BreadcrumbList")
+    items = bc["itemListElement"]
+    assert len(items) == 3
+    assert items[0]["position"] == 1
+    assert items[0]["name"] == "mimir"
+    assert items[0]["item"].endswith("/")
+    assert items[1]["position"] == 2
+    assert items[1]["name"] == "alpha"
+    assert items[1]["item"].endswith("/alpha/")
+    assert items[2]["position"] == 3
+    assert items[2]["name"] == "brief subject"
+    assert items[2]["item"].endswith(f"/{art_id}")
+
+
+def test_message_breadcrumb_subject_truncated_to_80(client, tmp_path):
+    """Breadcrumb item names mirror the <title> truncation budget so
+    SERP breadcrumb display doesn't blow out either."""
+    long_subject = "y" * 200
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-bclong@example.com", subject=long_subject,
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    bc = next(g for g in graph if g["@type"] == "BreadcrumbList")
+    last = bc["itemListElement"][-1]
+    assert len(last["name"]) <= 80
+    assert last["name"] != long_subject
+
+
+def test_message_json_ld_author_uses_safe_from_redaction(client, tmp_path, monkeypatch):
+    """Authors outside the email allowlist render as `<hidden>` in
+    the HTML body — same redaction must apply to JSON-LD's
+    author.name, otherwise the schema leaks what the page hides."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "email_allowlist", [])  # nothing allowlisted
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-redact@example.com",
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    # _ingest_one_article uses From: a@b.example — no name part, no
+    # allowlist match → safe_from returns "<hidden>".
+    assert posting["author"]["name"] == "<hidden>"
+
+
+def test_message_json_ld_author_full_when_allowlisted(client, tmp_path, monkeypatch):
+    """And the inverse: allowlisted senders flow through unredacted."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "email_allowlist", ["@b.example"])
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-allow@example.com",
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    assert "a@b.example" in posting["author"]["name"]
+
+
+def test_search_page_does_not_emit_json_ld(client, inbox_name):
+    """Routes without JSON-LD plumbing should not emit a stray empty
+    block. Search is a representative example."""
+    blocks = _json_ld_blocks(
+        client.get(f"/{inbox_name}/search?q=Linux").data.decode()
+    )
+    assert blocks == []
+
+
+def test_inbox_dashboard_does_not_emit_json_ld(client, inbox_name):
+    """Same — only `/` and message pages have JSON-LD in this phase."""
+    blocks = _json_ld_blocks(
+        client.get(f"/{inbox_name}/").data.decode()
+    )
+    assert blocks == []
