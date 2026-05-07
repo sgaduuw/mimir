@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.5.0] – 2026-05-07
+
 ### Added
 
 - Per-page `<meta name="description">` summarising the page —
@@ -300,7 +302,8 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.5.0
 [1.4.1]: https://github.com/sgaduuw/mimir/releases/tag/v1.4.1
 [1.4.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.4.0
 [1.3.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.3.0
