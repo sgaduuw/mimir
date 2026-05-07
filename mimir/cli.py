@@ -8,7 +8,6 @@ from flask import Flask
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import selectinload
 
-from mimir.config import settings
 from mimir.dashboard import (
     archive_stats,
     author_recent,
@@ -21,11 +20,15 @@ from mimir.extensions import Base, SessionLocal, engine
 from mimir.inboxes import (
     InboxNotFound,
     InboxValidationError,
+    add_tracked_author,
     bootstrap_inboxes,
+    clear_tracked_authors,
     create_inbox,
     delete_inbox,
     get_inbox,
     list_inboxes,
+    remove_tracked_author,
+    set_tracked_authors,
     update_inbox,
 )
 from mimir.ingest import (
@@ -376,7 +379,7 @@ def warm_cache_command() -> None:
                 (f"{inbox.name} this_day_in_history",
                  lambda s, ib=inbox: this_day_in_history(s, ib, years_ago=5, limit=3, force=True)),
             ])
-            for label, substr in settings.tracked_authors.items():
+            for label, substr in (inbox.tracked_authors or {}).items():
                 targets.append((
                     f"{inbox.name} tracker:{label}",
                     lambda s, ib=inbox, sub=substr: author_recent(s, ib, sub, 5, force=True),
@@ -523,9 +526,11 @@ def admin_inbox_list_command() -> None:
     name_w = max(len(ix.name) for ix in inboxes)
     path_w = max(len(ix.mirror_path) for ix in inboxes)
     for ix in inboxes:
+        n = len(ix.tracked_authors or {})
+        trackers = f"trackers={n}" if n else "trackers=none"
         click.echo(
             f"{ix.id:>4}  {ix.name:<{name_w}}  "
-            f"{ix.mirror_path:<{path_w}}  {ix.upstream_url}"
+            f"{ix.mirror_path:<{path_w}}  {ix.upstream_url}  {trackers}"
         )
 
 
@@ -673,6 +678,108 @@ def admin_inbox_remove_command(
         click.echo(f"  orphan articles deleted:    {report.orphan_articles_deleted}")
     if report.mirror_path_deleted:
         click.echo(f"  removed on-disk mirror:     {report.mirror_path_deleted}")
+
+
+@admin_inbox_group.group("trackers")
+def admin_inbox_trackers_group() -> None:
+    """Per-inbox author trackers shown on the inbox dashboard.
+
+    Each tracker is a (label, email-substring) pair; the dashboard
+    renders one tile per tracker showing that author's most recent
+    messages in this inbox. With no trackers configured, the section
+    is hidden entirely.
+    """
+
+
+@admin_inbox_trackers_group.command("show")
+@click.argument("name")
+def admin_inbox_trackers_show_command(name: str) -> None:
+    """Print the tracker dict for one inbox."""
+    try:
+        inbox = get_inbox(name)
+    except InboxNotFound as exc:
+        raise click.ClickException(str(exc))
+    authors = inbox.tracked_authors or {}
+    if not authors:
+        click.echo(f"{inbox.name}: no trackers configured")
+        return
+    label_w = max(len(label) for label in authors)
+    click.echo(f"{inbox.name}: {len(authors)} tracker(s)")
+    for label, substring in authors.items():
+        click.echo(f"  {label:<{label_w}}  {substring}")
+
+
+def _parse_pair(pair: str) -> tuple[str, str]:
+    if "=" not in pair:
+        raise click.ClickException(
+            f"expected LABEL=SUBSTRING, got {pair!r}"
+        )
+    label, substring = pair.split("=", 1)
+    return label, substring
+
+
+@admin_inbox_trackers_group.command("set")
+@click.argument("name")
+@click.argument("pairs", nargs=-1, required=True)
+def admin_inbox_trackers_set_command(name: str, pairs: tuple[str, ...]) -> None:
+    """Replace the tracker dict in one shot. Each PAIR is LABEL=SUBSTRING."""
+    authors: dict[str, str] = {}
+    for pair in pairs:
+        label, substring = _parse_pair(pair)
+        authors[label] = substring
+    try:
+        inbox = set_tracked_authors(name, authors)
+    except InboxNotFound as exc:
+        raise click.ClickException(str(exc))
+    except InboxValidationError as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"{inbox.name}: set {len(inbox.tracked_authors or {})} tracker(s)")
+
+
+@admin_inbox_trackers_group.command("add")
+@click.argument("name")
+@click.argument("label")
+@click.argument("substring")
+def admin_inbox_trackers_add_command(
+    name: str, label: str, substring: str,
+) -> None:
+    """Add (or replace) one tracker entry."""
+    try:
+        inbox = add_tracked_author(name, label, substring)
+    except InboxNotFound as exc:
+        raise click.ClickException(str(exc))
+    except InboxValidationError as exc:
+        raise click.ClickException(str(exc))
+    click.echo(
+        f"{inbox.name}: added tracker {label!r} → {substring!r} "
+        f"({len(inbox.tracked_authors or {})} total)"
+    )
+
+
+@admin_inbox_trackers_group.command("remove")
+@click.argument("name")
+@click.argument("label")
+def admin_inbox_trackers_remove_command(name: str, label: str) -> None:
+    """Remove one tracker entry by label."""
+    try:
+        inbox = remove_tracked_author(name, label)
+    except InboxNotFound as exc:
+        raise click.ClickException(str(exc))
+    except InboxValidationError as exc:
+        raise click.ClickException(str(exc))
+    n = len(inbox.tracked_authors or {})
+    click.echo(f"{inbox.name}: removed tracker {label!r} ({n} remaining)")
+
+
+@admin_inbox_trackers_group.command("clear")
+@click.argument("name")
+def admin_inbox_trackers_clear_command(name: str) -> None:
+    """Drop all tracker entries (writes NULL)."""
+    try:
+        inbox = clear_tracked_authors(name)
+    except InboxNotFound as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"{inbox.name}: cleared all trackers")
 
 
 @admin_group.group("failures")

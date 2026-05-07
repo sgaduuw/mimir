@@ -12,6 +12,7 @@ from mimir.inboxes import (
     InboxValidationError,
     validate_mirror_path,
     validate_name,
+    validate_tracked_authors,
     validate_upstream_url,
 )
 
@@ -291,3 +292,149 @@ def test_update_inbox_no_rename_keeps_cache(seeded_db):
     update_inbox("alpha", mirror_path="/tmp/alpha-v2")
 
     assert "archive_stats:alpha" in set(cache.keys())
+
+
+# Tracked authors — validators, mutators, NULL/dict round-trip.
+
+
+def test_validate_tracked_authors_accepts_dict():
+    out = validate_tracked_authors({"Linus": "torvalds@", "Greg KH": "gregkh@"})
+    assert out == {"Linus": "torvalds@", "Greg KH": "gregkh@"}
+
+
+def test_validate_tracked_authors_strips_whitespace():
+    out = validate_tracked_authors({"  Linus  ": "  torvalds@  "})
+    assert out == {"Linus": "torvalds@"}
+
+
+def test_validate_tracked_authors_normalizes_empty_to_none():
+    assert validate_tracked_authors({}) is None
+    assert validate_tracked_authors(None) is None
+
+
+@pytest.mark.parametrize("authors", [
+    "not a dict",
+    ["Linus", "torvalds@"],
+    {"": "torvalds@"},                 # empty label
+    {"Linus": ""},                     # empty substring
+    {"   ": "torvalds@"},              # whitespace-only label
+    {"Linus": "   "},                  # whitespace-only substring
+    {"Linus": 42},                     # non-string value
+    {42: "torvalds@"},                 # non-string key
+    {"L" * 65: "torvalds@"},           # label over cap
+    {"Linus": "x" * 257},              # substring over cap
+])
+def test_validate_tracked_authors_rejects(authors):
+    with pytest.raises(InboxValidationError):
+        validate_tracked_authors(authors)
+
+
+def test_set_tracked_authors_round_trip(seeded_db):
+    from mimir.inboxes import get_inbox, set_tracked_authors
+    set_tracked_authors("alpha", {"Linus": "torvalds@", "Greg": "gregkh@"})
+    ix = get_inbox("alpha")
+    assert ix.tracked_authors == {"Linus": "torvalds@", "Greg": "gregkh@"}
+
+
+def test_set_tracked_authors_none_writes_null(seeded_db):
+    from mimir.inboxes import get_inbox, set_tracked_authors
+    set_tracked_authors("alpha", {"Linus": "torvalds@"})
+    set_tracked_authors("alpha", None)
+    ix = get_inbox("alpha")
+    assert ix.tracked_authors is None
+
+
+def test_set_tracked_authors_empty_dict_writes_null(seeded_db):
+    """Empty dict and NULL collapse — both mean "no tracker tiles"."""
+    from mimir.inboxes import get_inbox, set_tracked_authors
+    set_tracked_authors("alpha", {"Linus": "torvalds@"})
+    set_tracked_authors("alpha", {})
+    ix = get_inbox("alpha")
+    assert ix.tracked_authors is None
+
+
+def test_set_tracked_authors_unknown_raises(seeded_db):
+    from mimir.inboxes import set_tracked_authors
+    with pytest.raises(InboxNotFound):
+        set_tracked_authors("nonexistent", {"Linus": "torvalds@"})
+
+
+def test_set_tracked_authors_validates(seeded_db):
+    from mimir.inboxes import set_tracked_authors
+    with pytest.raises(InboxValidationError):
+        set_tracked_authors("alpha", {"": "torvalds@"})
+
+
+def test_add_tracked_author_initializes_null_inbox(seeded_db):
+    from mimir.inboxes import add_tracked_author, get_inbox
+    add_tracked_author("alpha", "Linus", "torvalds@")
+    assert get_inbox("alpha").tracked_authors == {"Linus": "torvalds@"}
+
+
+def test_add_tracked_author_appends(seeded_db):
+    from mimir.inboxes import add_tracked_author, get_inbox
+    add_tracked_author("alpha", "Linus", "torvalds@")
+    add_tracked_author("alpha", "Greg", "gregkh@")
+    assert get_inbox("alpha").tracked_authors == {
+        "Linus": "torvalds@", "Greg": "gregkh@",
+    }
+
+
+def test_add_tracked_author_replaces_label(seeded_db):
+    from mimir.inboxes import add_tracked_author, get_inbox
+    add_tracked_author("alpha", "Linus", "torvalds@")
+    add_tracked_author("alpha", "Linus", "linus@kernel.org")
+    assert get_inbox("alpha").tracked_authors == {"Linus": "linus@kernel.org"}
+
+
+def test_remove_tracked_author_drops_label(seeded_db):
+    from mimir.inboxes import (
+        get_inbox,
+        remove_tracked_author,
+        set_tracked_authors,
+    )
+    set_tracked_authors("alpha", {"Linus": "torvalds@", "Greg": "gregkh@"})
+    remove_tracked_author("alpha", "Greg")
+    assert get_inbox("alpha").tracked_authors == {"Linus": "torvalds@"}
+
+
+def test_remove_tracked_author_last_entry_writes_null(seeded_db):
+    from mimir.inboxes import (
+        get_inbox,
+        remove_tracked_author,
+        set_tracked_authors,
+    )
+    set_tracked_authors("alpha", {"Linus": "torvalds@"})
+    remove_tracked_author("alpha", "Linus")
+    assert get_inbox("alpha").tracked_authors is None
+
+
+def test_remove_tracked_author_missing_label_raises(seeded_db):
+    from mimir.inboxes import remove_tracked_author, set_tracked_authors
+    set_tracked_authors("alpha", {"Linus": "torvalds@"})
+    with pytest.raises(InboxValidationError, match="no tracker labelled"):
+        remove_tracked_author("alpha", "Greg")
+
+
+def test_remove_tracked_author_on_null_raises(seeded_db):
+    """Removing from an inbox that has no trackers configured at all."""
+    from mimir.inboxes import remove_tracked_author
+    with pytest.raises(InboxValidationError, match="no tracker labelled"):
+        remove_tracked_author("alpha", "Linus")
+
+
+def test_clear_tracked_authors_writes_null(seeded_db):
+    from mimir.inboxes import (
+        clear_tracked_authors,
+        get_inbox,
+        set_tracked_authors,
+    )
+    set_tracked_authors("alpha", {"Linus": "torvalds@"})
+    clear_tracked_authors("alpha")
+    assert get_inbox("alpha").tracked_authors is None
+
+
+def test_clear_tracked_authors_unknown_raises(seeded_db):
+    from mimir.inboxes import clear_tracked_authors
+    with pytest.raises(InboxNotFound):
+        clear_tracked_authors("nonexistent")

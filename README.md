@@ -378,8 +378,9 @@ Routes:
 - `GET /<inbox>/` — per-inbox dashboard: most active threads (last
   7 days, top 10 by decay-weighted score); side-by-side latest
   `[GIT PULL]` requests and `Linux N.N.N` release announcements;
-  side-by-side per-author trackers driven by
-  `Settings.tracked_authors` (defaults: Linus Torvalds, Greg KH); a
+  side-by-side per-author trackers driven by `Inbox.tracked_authors`
+  (manage via `flask --app mimir admin inbox trackers …`; the
+  section is hidden when the inbox has no trackers configured); a
   "this day, 5 years ago" sample; the last 10 messages in the
   inbox; a 30-day daily-volume sparkline + archive stats footer.
 - `GET /<inbox>/today` and `GET /<inbox>/yesterday` — daily views

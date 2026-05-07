@@ -971,3 +971,19 @@ def test_inbox_dashboard_does_not_emit_json_ld(client, inbox_name):
         client.get(f"/{inbox_name}/").data.decode()
     )
     assert blocks == []
+
+
+def test_inbox_dashboard_no_trackers_hides_section(client, inbox_name):
+    """alpha has tracked_authors=NULL by default — the tracker grid
+    should not render at all."""
+    body = client.get(f"/{inbox_name}/").data.decode()
+    assert "Latest from " not in body
+
+
+def test_inbox_dashboard_with_trackers_renders_tile(client, inbox_name):
+    """Configure a tracker via the service layer; the tile should
+    render with the configured label."""
+    from mimir.inboxes import set_tracked_authors
+    set_tracked_authors(inbox_name, {"Carol Tracked": "carol@kernel.org"})
+    body = client.get(f"/{inbox_name}/").data.decode()
+    assert "Latest from Carol Tracked" in body

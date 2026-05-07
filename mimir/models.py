@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import JSON, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mimir.extensions import Base
@@ -25,6 +25,13 @@ class Inbox(Base):
     # operator can override via the admin CLI for non-standard lists.
     list_address: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True,
+    )
+
+    # Per-inbox tracker tiles on the dashboard. NULL = no tracker
+    # section rendered; a dict of {label: email_substring} drives one
+    # tile per entry. Managed via `admin inbox trackers`.
+    tracked_authors: Mapped[dict[str, str] | None] = mapped_column(
+        JSON, nullable=True,
     )
 
     # IngestState rows are tiny (one per epoch, ≤50 total per inbox);
