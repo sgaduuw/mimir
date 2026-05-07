@@ -23,8 +23,47 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject 
   </header>
 
   {% if thread|length > 1 or parent_off_list %}
-  <h4>Thread ({{ thread|length }} message{{ '' if thread|length == 1 else 's' }})</h4>
-  <ul style="list-style: none; padding-left: 0; font-family: monospace; line-height: 1.4;">
+  {# Pure-CSS expand/collapse: hidden checkbox flips max-height on
+     the box and swaps the label text. Toggle only appears when the
+     thread is long enough that scrolling is meaningful. #}
+  <style>
+    .thread-wrap > input[type=checkbox] { display: none; }
+    .thread-box {
+      max-height: min(50vh, 24rem);
+      overflow-y: auto;
+      border: 1px solid var(--pico-muted-border-color);
+      border-radius: var(--pico-border-radius);
+      padding: 0.5rem 1rem;
+    }
+    .thread-wrap > input:checked ~ .thread-box {
+      max-height: none;
+      overflow-y: visible;
+    }
+    .thread-toggle {
+      cursor: pointer;
+      user-select: none;
+      margin-left: 0.5rem;
+      font-weight: normal;
+      color: var(--pico-secondary);
+    }
+    .thread-toggle:hover { text-decoration: underline; }
+    .thread-toggle [data-expanded] { display: none; }
+    .thread-wrap > input:checked ~ h4 .thread-toggle [data-collapsed] { display: none; }
+    .thread-wrap > input:checked ~ h4 .thread-toggle [data-expanded] { display: inline; }
+  </style>
+  <div class="thread-wrap">
+  <input type="checkbox" id="thread-expand">
+  <h4>Thread ({{ thread|length }} message{{ '' if thread|length == 1 else 's' }})
+    {% if thread|length > 12 %}
+    <label for="thread-expand" class="thread-toggle">
+      <small data-collapsed>▾ expand</small>
+      <small data-expanded>▴ collapse</small>
+    </label>
+    {% endif %}
+  </h4>
+  <div class="thread-box">
+  <ul style="list-style: none; padding-left: 0; margin-bottom: 0;
+             font-family: monospace; line-height: 1.4;">
     {% if parent_off_list %}
     <li style="padding-left: 0; opacity: 0.6;">
       <em>(off-list ancestor, not in this archive)</em>
@@ -42,6 +81,8 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject 
     </li>
     {% endfor %}
   </ul>
+  </div>
+  </div>
   {% endif %}
 
   {% if related %}
