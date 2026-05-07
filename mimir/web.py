@@ -33,6 +33,7 @@ from mimir.dashboard import (
 from mimir.extensions import SessionLocal
 from mimir.inboxes import inbox_names
 from mimir.models import Article, ArticleList, Inbox
+from mimir.parser import ParsedArticle
 from mimir.rendering import URL_OR_MSGID_RE, render_body
 from mimir.store import MessageNotFound, read_message
 from mimir.threading import (
@@ -404,6 +405,109 @@ def security_txt():
     return Response(body, mimetype="text/plain; charset=utf-8")
 
 
+# Site-wide tagline. Mirrored verbatim by base.html's default
+# meta_description block so the WebSite JSON-LD and the meta tag
+# can't drift. If you change one, change the other.
+DEFAULT_SITE_DESCRIPTION = (
+    "Indexed mailing-list archives, served from local "
+    "public-inbox v2 mirrors."
+)
+
+
+def _json_ld_index(base: str) -> dict:
+    """schema.org WebSite for the meta-index `/`. Lets Google attach
+    a name + description to the site as a whole; sitelinks-search-box
+    is intentionally omitted (mimir's search is per-inbox, not
+    site-wide)."""
+    return {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": settings.site_name,
+        "url": base + "/",
+        "description": DEFAULT_SITE_DESCRIPTION,
+    }
+
+
+def _json_ld_message(
+    article: Article,
+    parsed: ParsedArticle,
+    canonical_url: str,
+    inbox_name: str,
+    base: str,
+) -> dict:
+    """schema.org @graph carrying both DiscussionForumPosting (the
+    primary signal — eligible for Google's "Discussions and forums"
+    rich-result section) and BreadcrumbList (surfaces the
+    Site → Inbox → Subject chain in SERPs).
+
+    Author goes through `_safe_from_filter`, so redacted senders show
+    `<hidden>` in JSON-LD too. `dateModified` mirrors `datePublished`
+    because mimir doesn't track edits.
+
+    Prefers `parsed.date` (the original RFC 5322 Date header) over
+    `article.date` (the public-inbox commit time) — the message's
+    actual send date is more meaningful to search engines."""
+    raw_date = parsed.date or article.date
+    if raw_date is not None and raw_date.tzinfo is None:
+        # `-0000` Date headers come back tz-naive from
+        # parsedate_to_datetime; emit aware UTC so consumers don't
+        # see schema-invalid bare datetimes.
+        raw_date = raw_date.replace(tzinfo=timezone.utc)
+    iso_date = (
+        raw_date.strftime("%Y-%m-%dT%H:%M:%S%z") if raw_date else None
+    )
+    subject = parsed.subject or "(no subject)"
+    breadcrumb_subject = subject if len(subject) <= 80 else subject[:77] + "..."
+    forum_post: dict = {
+        "@type": "DiscussionForumPosting",
+        "@id": canonical_url,
+        "url": canonical_url,
+        "mainEntityOfPage": canonical_url,
+        "headline": subject,
+        "author": {
+            "@type": "Person",
+            "name": _safe_from_filter(parsed.author) or "unknown",
+        },
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": inbox_name,
+            "url": f"{base}/{inbox_name}/",
+        },
+    }
+    if iso_date:
+        forum_post["datePublished"] = iso_date
+        forum_post["dateModified"] = iso_date
+    return {
+        "@context": "https://schema.org",
+        "@graph": [
+            forum_post,
+            {
+                "@type": "BreadcrumbList",
+                "itemListElement": [
+                    {
+                        "@type": "ListItem",
+                        "position": 1,
+                        "name": settings.site_name,
+                        "item": base + "/",
+                    },
+                    {
+                        "@type": "ListItem",
+                        "position": 2,
+                        "name": inbox_name,
+                        "item": f"{base}/{inbox_name}/",
+                    },
+                    {
+                        "@type": "ListItem",
+                        "position": 3,
+                        "name": breadcrumb_subject,
+                        "item": canonical_url,
+                    },
+                ],
+            },
+        ],
+    }
+
+
 SITEMAP_RECENT_GLOBAL = 1000
 SITEMAP_TTL_SEC = 3600
 
@@ -571,6 +675,7 @@ def index():
         "index.html",
         inbox_summaries=inbox_summaries,
         current_inbox=None,
+        page_json_ld=_json_ld_index(request.url_root.rstrip("/")),
     )
 
 
@@ -1161,9 +1266,16 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             .order_by(Inbox.name)
         ).all())
         cross_post_inboxes = [n for ix_id, n in all_links if ix_id != inbox.id]
-        canonical_url = _canonical_url_for(
-            article, all_links, base=request.url_root.rstrip("/"),
+        base = request.url_root.rstrip("/")
+        canonical_url = _canonical_url_for(article, all_links, base=base)
+        # Canonical inbox is what JSON-LD's isPartOf and the breadcrumb
+        # should reflect — not necessarily the current URL's inbox.
+        canonical_inbox_name = (
+            _canonical_inbox_name(article, all_links) or inbox.name
         )
+        page_json_ld = _json_ld_message(
+            article, parsed, canonical_url or "", canonical_inbox_name, base,
+        ) if canonical_url else None
 
     return render_template(
         "message.html",
@@ -1178,4 +1290,5 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         related=related,
         cross_post_inboxes=cross_post_inboxes,
         canonical_url=canonical_url,
+        page_json_ld=page_json_ld,
     )

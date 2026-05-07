@@ -39,6 +39,13 @@
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="{{ page_title }}">
   <meta name="twitter:description" content="{{ page_desc }}">
+
+  {# schema.org structured data: WebSite on /, DiscussionForumPosting +
+     BreadcrumbList on message pages. Other routes leave page_json_ld
+     unset, so the tag is omitted. tojson is HTML-safe (escapes `</`).#}
+  {% if page_json_ld %}
+  <script type="application/ld+json">{{ page_json_ld | tojson }}</script>
+  {% endif %}
   <link rel="stylesheet"
         href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.amber.min.css"
         integrity="sha384-BiacLKDCyG54e35iUPYB3xZg4mZ2my6tLgF44LKpomzgxexC+sAL7aL7f2mxTh7J"
