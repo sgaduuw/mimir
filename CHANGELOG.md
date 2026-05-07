@@ -11,6 +11,28 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.6.0] – 2026-05-07
+
+### Added
+
+- Per-inbox author trackers. The tracker tiles on `/<inbox>/` are
+  now driven by `Inbox.tracked_authors` (a JSON column) instead of
+  a global env var. Manage via
+  `flask --app mimir admin inbox trackers {show,set,add,remove,clear}`.
+  An inbox with no trackers configured renders no tracker section
+  at all. `admin inbox list` gained a `trackers=N` / `trackers=none`
+  marker per row.
+
+### Removed
+
+- `TRACKED_AUTHORS` env var (and the `Settings.tracked_authors`
+  defaults `Linus Torvalds` / `Greg KH`). Tracker config now lives
+  in the database, edited via the new admin CLI. **Post-deploy
+  step:** existing operators must re-add desired trackers via
+  `admin inbox trackers set <inbox> Linus=torvalds@ Greg=gregkh@`
+  (or whatever substrings they previously had); the env var is
+  silently ignored after this release.
+
 ## [1.5.1] – 2026-05-07
 
 ### Changed

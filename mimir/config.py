@@ -68,16 +68,6 @@ class Settings(BaseSettings):
         "@kernel.org",
     ]
 
-    # Authors whose recent messages get a dedicated tile on the landing
-    # page. Maps a display label to a substring of the From-address; the
-    # query is an indexed-date reverse scan with a LIKE filter, so any
-    # number of trackers is cheap as long as each person posts often
-    # enough to terminate the scan quickly.
-    tracked_authors: dict[str, str] = {
-        "Linus Torvalds": "torvalds@",
-        "Greg KH": "gregkh@",
-    }
-
     # Inboxes that should appear first on the meta-index `/`, in this
     # order, regardless of alphabetical order. The rest follow
     # alphabetically. Override via PINNED_INBOXES (comma-separated).

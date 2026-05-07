@@ -688,7 +688,7 @@ def inbox_dashboard(inbox_name: str):
         active = active_threads(session, inbox, days=7, limit=10)
         trackers = [
             {"label": label, "substr": substr, "messages": author_recent(session, inbox, substr, 5)}
-            for label, substr in settings.tracked_authors.items()
+            for label, substr in (inbox.tracked_authors or {}).items()
         ]
         pulls = latest_pull_requests(session, inbox, limit=5)
         stable = latest_stable_releases(session, inbox, limit=5)

@@ -15,8 +15,10 @@ on every startup; CRUD ops in this module call `_publish_names()` so
 the cache is consistent with the DB after every change.
 
 The CRUD service functions (`create_inbox`, `update_inbox`,
-`delete_inbox`) are shared between the CLI admin commands and the
-future Flask admin UI — keeps validation in one place.
+`delete_inbox`) and the per-inbox tracker mutators (`set_tracked_authors`,
+`add_tracked_author`, `remove_tracked_author`, `clear_tracked_authors`)
+are shared between the CLI admin commands and the future Flask admin
+UI — keeps validation in one place.
 """
 import re
 import shutil
@@ -79,6 +81,48 @@ def validate_upstream_url(url: str) -> str:
     if not parsed.netloc:
         raise InboxValidationError("upstream_url must include a host")
     return url
+
+
+_TRACKER_LABEL_MAX = 64
+_TRACKER_SUBSTRING_MAX = 256
+
+
+def validate_tracked_authors(
+    authors: dict[str, str] | None,
+) -> dict[str, str] | None:
+    """Validate a tracked-authors dict. Returns the (stripped) dict, or
+    None if input was None or empty (the two states collapse — both
+    mean "no tracker tiles for this inbox"). Raises
+    InboxValidationError on bad input."""
+    if authors is None:
+        return None
+    if not isinstance(authors, dict):
+        raise InboxValidationError("tracked_authors must be a dict")
+    cleaned: dict[str, str] = {}
+    for label, substring in authors.items():
+        if not isinstance(label, str) or not isinstance(substring, str):
+            raise InboxValidationError(
+                "tracked_authors keys and values must be strings"
+            )
+        label = label.strip()
+        substring = substring.strip()
+        if not label:
+            raise InboxValidationError("tracker label must not be empty")
+        if not substring:
+            raise InboxValidationError(
+                f"tracker substring for {label!r} must not be empty"
+            )
+        if len(label) > _TRACKER_LABEL_MAX:
+            raise InboxValidationError(
+                f"tracker label {label!r} exceeds {_TRACKER_LABEL_MAX} chars"
+            )
+        if len(substring) > _TRACKER_SUBSTRING_MAX:
+            raise InboxValidationError(
+                f"tracker substring for {label!r} exceeds "
+                f"{_TRACKER_SUBSTRING_MAX} chars"
+            )
+        cleaned[label] = substring
+    return cleaned or None
 
 
 def validate_mirror_path(mirror_path: str) -> str:
@@ -321,3 +365,57 @@ def delete_inbox(
             report.mirror_path_deleted = str(target)
 
     return report
+
+
+def set_tracked_authors(
+    name: str, authors: dict[str, str] | None,
+) -> Inbox:
+    """Replace an inbox's tracked-authors dict. `authors=None` (or an
+    empty dict) writes NULL — the dashboard renders no tracker tiles
+    for that inbox. Raises InboxNotFound / InboxValidationError as
+    appropriate.
+
+    No cache invalidation: `author_recent` cache keys embed the email
+    substring, not the label, so adding/removing a tracker doesn't
+    invalidate any existing key — orphan rows age out via TTL.
+    """
+    cleaned = validate_tracked_authors(authors)
+    with SessionLocal() as session:
+        inbox = session.execute(
+            select(Inbox).where(Inbox.name == name)
+        ).scalar_one_or_none()
+        if inbox is None:
+            raise InboxNotFound(f"no inbox named {name!r}")
+        inbox.tracked_authors = cleaned
+        session.commit()
+        session.refresh(inbox)
+        session.expunge(inbox)
+    return inbox
+
+
+def add_tracked_author(name: str, label: str, substring: str) -> Inbox:
+    """Add or replace one tracker entry. If the inbox has no trackers
+    yet, this initializes the dict with the single entry."""
+    inbox = get_inbox(name)
+    current = dict(inbox.tracked_authors or {})
+    current[label] = substring
+    return set_tracked_authors(name, current)
+
+
+def remove_tracked_author(name: str, label: str) -> Inbox:
+    """Remove one tracker entry by label. Raises InboxValidationError
+    if the label isn't present. Removing the last entry leaves the
+    column NULL (no tracker tiles)."""
+    inbox = get_inbox(name)
+    current = dict(inbox.tracked_authors or {})
+    if label not in current:
+        raise InboxValidationError(
+            f"inbox {name!r} has no tracker labelled {label!r}"
+        )
+    del current[label]
+    return set_tracked_authors(name, current or None)
+
+
+def clear_tracked_authors(name: str) -> Inbox:
+    """Drop all tracker entries on an inbox (writes NULL)."""
+    return set_tracked_authors(name, None)
