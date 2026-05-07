@@ -13,6 +13,14 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Changed
 
+- Message-ID lookup redirects (`/m/<id>` and `/<inbox>/m/<id>`) are
+  now `301 Moved Permanently` instead of `302 Found`, and the
+  unscoped `/m/<id>` redirects directly to the *canonical* inbox's
+  URL (using `articles.canonical_inbox_id`, falling back to
+  alphabetically-first when canonical is unset). Saves crawlers a
+  hop and consolidates link equity on the canonical destination.
+  301 + 302 redirects now also pick up `Cache-Control` from the
+  per-endpoint rule (was 200/302 only).
 - Per-page `<title>` tags now follow the pattern
   `<page-specific> | <inbox> | <site_name>`, replacing the prior
   `· `-separated style and adding the inbox + scope tokens that

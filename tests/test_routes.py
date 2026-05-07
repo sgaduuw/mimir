@@ -202,7 +202,7 @@ def test_global_message_id_lookup_redirect(client, inbox_name):
     if art is None:
         pytest.skip("no articles in DB")
     r = client.get(f"/m/{art.message_id}", follow_redirects=False)
-    assert r.status_code == 302
+    assert r.status_code == 301
     loc = r.headers.get("Location", "")
     # Should redirect to a /<inbox>/<YYYY>/<MM>/<id> URL.
     assert loc.endswith(f"/{art.id}")
@@ -218,7 +218,7 @@ def test_inbox_scoped_message_id_redirect(client, inbox_name):
     if art is None:
         pytest.skip("no articles in DB")
     r = client.get(f"/{inbox_name}/m/{art.message_id}", follow_redirects=False)
-    assert r.status_code == 302
+    assert r.status_code == 301
     loc = r.headers.get("Location", "")
     assert loc.startswith(f"/{inbox_name}/")
     assert loc.endswith(f"/{art.id}")
@@ -676,3 +676,35 @@ def test_sitemap_article_lastmod_matches_article_date(client):
             art1_lastmod = lm.text if lm is not None else None
             break
     assert art1_lastmod == art1_date.strftime("%Y-%m-%d")
+
+
+def test_global_message_id_lookup_uses_canonical_inbox(client):
+    """art3 is cross-posted alpha+beta. Setting canonical_inbox_id to
+    beta makes /m/<id> redirect to /beta/.../<id>, not /alpha/.../<id>
+    (which would be the alphabetical-first fallback)."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, Inbox
+
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        art = s.execute(
+            select(Article).where(Article.message_id == "art3@example.com")
+        ).scalar_one()
+        art.canonical_inbox_id = beta.id
+        s.commit()
+
+    r = client.get("/m/art3@example.com", follow_redirects=False)
+    assert r.status_code == 301
+    loc = r.headers.get("Location", "")
+    assert "/beta/" in loc
+    assert "/alpha/" not in loc
+
+
+def test_global_message_id_lookup_falls_back_to_alphabetical(client):
+    """With canonical_inbox_id NULL (default for seeded art3), the
+    redirect goes to alphabetical-first — alpha."""
+    r = client.get("/m/art3@example.com", follow_redirects=False)
+    assert r.status_code == 301
+    loc = r.headers.get("Location", "")
+    assert "/alpha/" in loc

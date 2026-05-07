@@ -151,10 +151,10 @@ def _start_request_timer():
 
 @bp_web.after_request
 def _add_cache_headers(response):
-    # 302 redirects (Message-ID lookup) are equally cacheable; honor
-    # their dict entry too. 4xx/5xx skip — error responses shouldn't
-    # be pinned in upstream caches.
-    if response.status_code in (200, 302):
+    # 200 OK and 301/302 redirects (Message-ID lookup) are cacheable;
+    # honor their dict entries. 4xx/5xx skip — error responses
+    # shouldn't be pinned in upstream caches.
+    if response.status_code in (200, 301, 302):
         rule = _CACHE_CONTROL_BY_ENDPOINT.get(request.endpoint)
         if rule:
             response.headers["Cache-Control"] = rule
@@ -506,30 +506,39 @@ def sitemap():
 def message_id_lookup(message_id: str):
     """Resolve a bare Message-ID to its canonical URL.
 
-    For cross-posts, redirects to the alphabetically-first inbox
-    that carries the message; the message page's "Also in:" line
-    surfaces the other inboxes from there.
+    For cross-posts, redirects directly to the canonical inbox's URL
+    (article.canonical_inbox_id; alphabetically-first linked inbox
+    when canonical is unset). The message page's "Also in:" line
+    surfaces the other inboxes from there. 301 because the target
+    is stable for the article's lifetime — transfers link equity
+    to the canonical destination.
     """
     with SessionLocal() as session:
-        row = session.execute(
-            select(Article, Inbox.name)
-            .join(ArticleList, ArticleList.article_id == Article.id)
-            .join(Inbox, Inbox.id == ArticleList.inbox_id)
-            .where(Article.message_id == message_id)
-            .order_by(Inbox.name)
-            .limit(1)
-        ).first()
-        if row is None:
+        article = session.execute(
+            select(Article).where(Article.message_id == message_id)
+        ).scalar_one_or_none()
+        if article is None:
             abort(404)
-        article, inbox_name = row
-    return redirect(_msg_url(article, inbox_name), code=302)
+        links = list(session.execute(
+            select(Inbox.id, Inbox.name)
+            .join(ArticleList, ArticleList.inbox_id == Inbox.id)
+            .where(ArticleList.article_id == article.id)
+        ).all())
+        if not links:
+            abort(404)
+    inbox_name = _canonical_inbox_name(article, links)
+    return redirect(_msg_url(article, inbox_name), code=301)
 
 
 @bp_web.route("/<inbox_name>/m/<path:message_id>")
 def message_id_lookup_inbox(inbox_name: str, message_id: str):
     """Inbox-scoped Message-ID lookup. 404 if the message exists but
     isn't linked to this inbox; the unscoped /m/<id> form will find
-    it in another inbox if one carries it."""
+    it in another inbox if one carries it. Redirects to the
+    inbox-scoped article URL (NOT the canonical), preserving the
+    user's explicit choice of inbox; the destination page's
+    `<link rel="canonical">` still points at the canonical for
+    search engines. 301 because the target is stable."""
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         article = session.execute(
@@ -542,7 +551,7 @@ def message_id_lookup_inbox(inbox_name: str, message_id: str):
         ).scalar_one_or_none()
         if article is None:
             abort(404)
-    return redirect(_msg_url(article, inbox.name), code=302)
+    return redirect(_msg_url(article, inbox.name), code=301)
 
 
 @bp_web.route("/")
