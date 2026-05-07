@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Search · {{ inbox_name }} · {{ site_name }}{% endblock %}
+{% block title %}{% if query %}Search "{{ query }}"{% else %}Search{% endif %} | {{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block content %}
 <h2>Search <small><em>· {{ inbox_name }}</em></small></h2>
 
