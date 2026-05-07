@@ -11,6 +11,18 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.5.1] – 2026-05-07
+
+### Changed
+
+- Thread list on the message page is now scroll-contained
+  (max-height clamped to the smaller of 50vh and 24rem, with a
+  border + padding so it reads as a widget). Long threads no
+  longer push the message body off-screen; the `»` marker still
+  points to the active message inside the scrollable box. Threads
+  with more than 12 messages get a pure-CSS expand/collapse
+  toggle in the heading to drop the height cap when needed.
+
 ## [1.5.0] – 2026-05-07
 
 ### Added
@@ -302,7 +314,8 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/sgaduuw/mimir/releases/tag/v1.5.1
 [1.5.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.5.0
 [1.4.1]: https://github.com/sgaduuw/mimir/releases/tag/v1.4.1
 [1.4.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.4.0
