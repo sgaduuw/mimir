@@ -11,6 +11,23 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- Per-page `<title>` tags now follow the pattern
+  `<page-specific> | <inbox> | <site_name>`, replacing the prior
+  `· `-separated style and adding the inbox + scope tokens that
+  were missing on a few pages (message, search, daily). Search
+  results' title now includes the query string. Long subjects on
+  patch-series messages truncate at 80 chars so the `<title>` stays
+  readable in SERPs. Atom feed `<title>` strings switched to the
+  same `|` separator for consistency.
+- `/sitemap.xml` entries now carry `<lastmod>` (date-only,
+  `YYYY-MM-DD`): per-article entries use the article's own date;
+  per-inbox dashboards use the latest article date in that inbox;
+  the meta-index uses the global latest. Helps crawlers prioritise
+  recheck schedules without affecting cached output (existing 1h
+  TTL still applies).
+
 ## [1.4.1] – 2026-05-07
 
 ### Fixed

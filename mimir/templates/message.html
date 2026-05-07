@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ parsed.subject or '(no subject)' }} · {{ site_name }}{% endblock %}
+{% block title %}{{ (parsed.subject or '(no subject)') | truncate(80) }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block content %}
 <article>
   <header>

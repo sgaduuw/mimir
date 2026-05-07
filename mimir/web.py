@@ -408,13 +408,17 @@ SITEMAP_RECENT_GLOBAL = 1000
 SITEMAP_TTL_SEC = 3600
 
 
-def _build_sitemap_xml(urls: list[str]) -> str:
-    """Render an XML sitemap (<urlset> with one <url><loc> per entry)
-    via stdlib ElementTree, matching `_atom_response`'s idiom."""
+def _build_sitemap_xml(entries: list[tuple[str, str | None]]) -> str:
+    """Render an XML sitemap. Each entry is `(loc, lastmod | None)`;
+    when `lastmod` is None the element is omitted. Caller formats the
+    timestamp — date-only `YYYY-MM-DD` is what Google's docs recommend
+    for crawl-scheduling and is what mimir emits."""
     root = Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
-    for u in urls:
+    for loc, lastmod in entries:
         url_el = SubElement(root, "url")
-        SubElement(url_el, "loc").text = u
+        SubElement(url_el, "loc").text = loc
+        if lastmod:
+            SubElement(url_el, "lastmod").text = lastmod
     return '<?xml version="1.0" encoding="utf-8"?>\n' + tostring(root, encoding="unicode")
 
 
@@ -430,10 +434,33 @@ def sitemap():
     base = request.url_root.rstrip("/")
     with SessionLocal() as session:
         def compute() -> str:
-            urls: list[str] = [base + "/"]
+            entries: list[tuple[str, str | None]] = []
+
+            # Per-inbox most-recent article date. One round-trip;
+            # feeds both the per-inbox dashboard <lastmod> and the
+            # meta-index <lastmod> (max across inboxes).
+            per_inbox_latest: dict[str, str | None] = {}
+            inbox_dates = session.execute(
+                select(Inbox.name, func.max(Article.date))
+                .join(ArticleList, ArticleList.inbox_id == Inbox.id)
+                .join(Article, Article.id == ArticleList.article_id)
+                .where(Article.date.is_not(None))
+                .group_by(Inbox.id)
+            ).all()
+            for name, dt in inbox_dates:
+                per_inbox_latest[name] = dt.strftime("%Y-%m-%d") if dt else None
+
+            global_latest = (
+                max((d for d in per_inbox_latest.values() if d), default=None)
+            )
+            entries.append((base + "/", global_latest))
+
             inboxes = session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
             for inbox in inboxes:
-                urls.append(f"{base}/{inbox.name}/")
+                entries.append((
+                    f"{base}/{inbox.name}/",
+                    per_inbox_latest.get(inbox.name),
+                ))
 
             # COALESCE(canonical_inbox.name, alphabetical-first-linked-name).
             # The fallback subquery handles articles whose To/Cc didn't
@@ -458,10 +485,11 @@ def sitemap():
             for art_id, date, inbox_name in recent:
                 if inbox_name is None:
                     continue  # corrupt row with no links; skip rather than crash
-                urls.append(
-                    f"{base}/{inbox_name}/{date.year}/{date.month:02d}/{art_id}"
-                )
-            return _build_sitemap_xml(urls)
+                entries.append((
+                    f"{base}/{inbox_name}/{date.year}/{date.month:02d}/{art_id}",
+                    date.strftime("%Y-%m-%d"),
+                ))
+            return _build_sitemap_xml(entries)
         body = cache.get_or_compute(session, "sitemap:root", SITEMAP_TTL_SEC, compute)
     return Response(body, mimetype="application/xml; charset=utf-8")
 
@@ -872,7 +900,7 @@ def inbox_feed(inbox_name: str):
     base = request.url_root
     return _atom_response(
         feed_id=f"{base}{inbox.name}/feed.atom",
-        feed_title=f"{inbox.name} · {settings.site_name}",
+        feed_title=f"{inbox.name} | {settings.site_name}",
         self_url=f"{base}{inbox.name}/feed.atom",
         alternate_url=f"{base}{inbox.name}/",
         entries=entries,
@@ -899,7 +927,7 @@ def author_feed(inbox_name: str, sub: str):
     sub_quoted = quote(sub, safe="")
     return _atom_response(
         feed_id=f"{base}{inbox.name}/author/{sub_quoted}/feed.atom",
-        feed_title=f"{sub} on {inbox.name} · {settings.site_name}",
+        feed_title=f"{sub} on {inbox.name} | {settings.site_name}",
         self_url=f"{base}{inbox.name}/author/{sub_quoted}/feed.atom",
         alternate_url=f"{base}{inbox.name}/",
         entries=entries,
