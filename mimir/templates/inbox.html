@@ -1,5 +1,12 @@
 {% extends "base.html" %}
 {% block title %}{{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block meta_description %}
+{%- if stats and stats.total -%}
+{{ inbox_name }} archive: {{ '{:,}'.format(stats.total) }} message{{ '' if stats.total == 1 else 's' }}{% if stats.first_date and stats.last_date %} from {{ stats.first_date.strftime('%Y-%m-%d') }} to {{ stats.last_date.strftime('%Y-%m-%d') }}{% endif %}, indexed and searchable.
+{%- else -%}
+{{ inbox_name }} archive on {{ site_name }}.
+{%- endif -%}
+{% endblock %}
 {% block content %}
 <h1>{{ inbox_name }} <small><em>archive</em></small></h1>
 

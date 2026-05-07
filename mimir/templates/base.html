@@ -12,7 +12,33 @@
         title="{{ current_inbox }} feed"
         href="/{{ current_inbox }}/feed.atom">
   {% endif %}
-  <title>{% block title %}{{ site_name }}{% endblock %}</title>
+
+  {#
+    Title and meta-description are defined ONCE (each as a captured
+    block) and reused across <title>, <meta description>, OG, and
+    Twitter Cards. Child templates override the `title` and
+    `meta_description` blocks; the captured strings flow through to
+    every consumer below.
+  #}
+  {% set page_title %}{% block title %}{{ site_name }}{% endblock %}{% endset %}
+  {% set page_desc %}{% block meta_description %}Indexed mailing-list archives, served from local public-inbox v2 mirrors.{% endblock %}{% endset %}
+  {% set page_title = page_title|trim %}
+  {% set page_desc = page_desc|trim %}
+
+  <title>{{ page_title }}</title>
+  <meta name="description" content="{{ page_desc }}">
+
+  {# Open Graph + Twitter Card: link previews when a ratatoskr URL is
+     pasted in Slack / Discord / Mastodon / Twitter / etc. og:type
+     defaults to "website"; message pages override to "article". #}
+  <meta property="og:title" content="{{ page_title }}">
+  <meta property="og:description" content="{{ page_desc }}">
+  <meta property="og:url" content="{{ canonical_url or request.url }}">
+  <meta property="og:site_name" content="{{ site_name }}">
+  <meta property="og:type" content="{% block og_type %}website{% endblock %}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{ page_title }}">
+  <meta name="twitter:description" content="{{ page_desc }}">
   <link rel="stylesheet"
         href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.amber.min.css"
         integrity="sha384-BiacLKDCyG54e35iUPYB3xZg4mZ2my6tLgF44LKpomzgxexC+sAL7aL7f2mxTh7J"
