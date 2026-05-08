@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
+from mimir.canonical import extract_list_addresses
 from mimir.config import settings
 from mimir.dashboard import (
     ArticleSummary,
@@ -1210,6 +1211,25 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             if in_db is None:
                 parent_off_list = thread[0].thread_parent
 
+        # When the parent is off-list, surface To/Cc list-shaped addresses
+        # that don't map to any configured inbox as a "hint" — those are
+        # candidate mailing lists the operator might want to add to mimir
+        # to recover the missing parent. Strictly a hint: the parent could
+        # also simply predate the indexed window. Capped at 3 to avoid a
+        # wall of addresses on heavily cross-posted threads.
+        parent_off_list_hints: list[str] = []
+        if parent_off_list:
+            candidates = extract_list_addresses(parsed.headers)
+            if candidates:
+                known = {
+                    addr.lower()
+                    for (addr,) in session.execute(
+                        select(Inbox.list_address).where(Inbox.list_address.is_not(None))
+                    ).all()
+                    if addr
+                }
+                parent_off_list_hints = [a for a in candidates if a not in known][:3]
+
         # Same-subject orphans within this inbox.
         related: list[Article] = []
         if parent_off_list and article.subject_normalized:
@@ -1287,6 +1307,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         thread_urls=thread_urls,
         msgid_urls=msgid_urls,
         parent_off_list=parent_off_list,
+        parent_off_list_hints=parent_off_list_hints,
         related=related,
         cross_post_inboxes=cross_post_inboxes,
         canonical_url=canonical_url,

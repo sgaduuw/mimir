@@ -66,7 +66,11 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject 
              font-family: monospace; line-height: 1.4;">
     {% if parent_off_list %}
     <li style="padding-left: 0; opacity: 0.6;">
+      {% if parent_off_list_hints %}
+      <em data-tooltip="hint: {{ parent_off_list_hints|join(', ') }}">(off-list ancestor, not in this archive)</em>
+      {% else %}
       <em>(off-list ancestor, not in this archive)</em>
+      {% endif %}
     </li>
     {% endif %}
     {% set offset = 1 if parent_off_list else 0 %}
