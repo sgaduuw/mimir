@@ -18,4 +18,5 @@ def _sqlite_pragmas(dbapi_conn, _conn_record) -> None:
     cur.execute("PRAGMA journal_mode=WAL")
     cur.execute("PRAGMA synchronous=NORMAL")
     cur.execute("PRAGMA foreign_keys=ON")
+    cur.execute(f"PRAGMA busy_timeout={settings.sqlite_busy_timeout_ms}")
     cur.close()

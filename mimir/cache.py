@@ -16,15 +16,19 @@ and age out via `purge_expired`. Callers don't see the prefix.
 """
 import dataclasses
 import json
+import logging
 from datetime import date, datetime, timezone
 from typing import Any, Callable
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from mimir.extensions import SessionLocal
 from mimir.models import CacheEntry
+
+logger = logging.getLogger(__name__)
 
 # Bump when cached value shapes change (query rewrites, dataclass
 # field renames, encoder changes). Old rows fall through to a miss
@@ -112,6 +116,15 @@ def get(key: str) -> Any:
 
 
 def set(key: str, value: Any, ttl: int) -> None:
+    """Best-effort cache write.
+
+    SQLite write contention (scheduler ingest / vacuum overlapping a
+    request) raises `OperationalError("database is locked")` once the
+    `busy_timeout` window elapses. The page already rendered before
+    we got here, so a failed cache write must not propagate — it'd
+    500 a successful response. Log and move on; the next request
+    recomputes.
+    """
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
     expires_at = _now() + ttl
@@ -123,9 +136,12 @@ def set(key: str, value: Any, ttl: int) -> None:
             set_={"value": payload, "expires_at": expires_at},
         )
     )
-    with SessionLocal() as session:
-        session.execute(stmt)
-        session.commit()
+    try:
+        with SessionLocal() as session:
+            session.execute(stmt)
+            session.commit()
+    except OperationalError as exc:
+        logger.warning("cache write failed for %s: %s", nskey, exc)
 
 
 def get_or_compute(

@@ -6,10 +6,13 @@ from alembic import context
 # access to the values within the .ini file in use.
 config = context.config
 
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
+# Interpret the config file for Python logging. `disable_existing_loggers=False`
+# is critical: the default flips `.disabled = True` on every logger that already
+# exists at fileConfig time, which silently muted `mimir.*` loggers whenever
+# alembic ran in-process (the test suite via the autouse `_migrate_db` fixture,
+# and any future caller that imports `mimir` before invoking alembic).
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 from mimir.config import settings
 from mimir.extensions import Base, engine

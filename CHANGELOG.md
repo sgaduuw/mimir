@@ -11,6 +11,24 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- `SQLITE_BUSY_TIMEOUT_MS` env var (default 5000) sets SQLite's
+  per-connection `busy_timeout` so writers wait through transient
+  contention instead of failing instantly.
+
+### Fixed
+
+- Web tier no longer 500s on "database is locked" when a cache
+  upsert collides with a scheduler write. Cache writes are now
+  best-effort: the contention is logged at warning and the request
+  returns successfully; the next request recomputes.
+- Alembic no longer silently disables `mimir.*` loggers when it
+  runs in-process. `alembic/env.py` now passes
+  `disable_existing_loggers=False` to `fileConfig`, so warnings
+  emitted by code paths that ran before alembic (typically: any
+  caller that imported `mimir` first) actually surface.
+
 ## [1.6.0] – 2026-05-07
 
 ### Added
