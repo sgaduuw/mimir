@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.7.2] – 2026-05-08
+
 ### Fixed
 
 - `cve@kernel.org`, `gregkh@kernel.org`, and other bare-`kernel.org`
