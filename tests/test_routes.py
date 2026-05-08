@@ -1014,6 +1014,9 @@ def test_off_list_parent_hint_surfaces_unindexed_list(client, tmp_path):
     assert (
         'data-tooltip="hint: linux-arm-kernel@lists.infradead.org"' in body
     )
+    # Placed below the trigger to escape the .thread-box overflow clip
+    # that hides the default top-positioned tooltip on the first row.
+    assert 'data-placement="bottom"' in body
 
 
 def test_off_list_parent_hint_skips_already_configured_lists(client, tmp_path):

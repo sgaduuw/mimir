@@ -11,6 +11,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.7.1] – 2026-05-08
+
+### Fixed
+
+- Off-list-parent hint tooltip now renders below the trigger
+  (`data-placement="bottom"`) so it escapes the `.thread-box`
+  overflow clip. Default top placement was clipped by the box's
+  top edge on the first-row trigger, making the hint unreadable.
+
 ## [1.7.0] – 2026-05-08
 
 ### Added
