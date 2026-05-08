@@ -84,6 +84,16 @@ class Settings(BaseSettings):
     # could spoof those values via a forged XFF header.
     trusted_proxy_hops: int = 0
 
+    # SQLite per-connection `busy_timeout` (milliseconds). When a
+    # writer hits a locked DB, SQLite waits up to this long before
+    # raising `SQLITE_BUSY`. Default 0 turns transient contention
+    # (scheduler ingest / analyze / vacuum overlapping a web cache
+    # write) into hard 500s; 5s rides out normal contention windows.
+    # VACUUM on the full archive can outlast this — that's intentional,
+    # we'd rather surface a true VACUUM-vs-write conflict than mask
+    # it with a multi-minute hang. Override via SQLITE_BUSY_TIMEOUT_MS.
+    sqlite_busy_timeout_ms: int = 5000
+
     # Auto-ANALYZE threshold. After `ingest_inbox` finishes a run, if
     # `new + linked` across that run's epochs reaches this many rows,
     # we issue ANALYZE so the SQLite planner doesn't keep stale stats

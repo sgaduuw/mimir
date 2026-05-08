@@ -6,10 +6,13 @@ unknown tags raise, unknown types raise. This test pins the contract
 so future drift gets caught the moment someone runs the suite.
 """
 import json
+import logging
 from datetime import date, datetime, timezone
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
+from mimir import cache
 from mimir.cache import _TAGS, _TYPES, _decode, _encode
 from mimir.dashboard import ArchiveStats, ArticleSummary, DailyVolume, MonthlyVolume
 from mimir.threading import ActiveThread
@@ -146,6 +149,41 @@ def test_unknown_type_raises():
 def test_unknown_tag_raises():
     with pytest.raises(ValueError, match="unknown tag"):
         _decode({"__t": "DoesNotExist", "v": {}})
+
+
+def test_set_swallows_operational_error_on_lock(monkeypatch):
+    """A locked DB during a cache write must not propagate — the
+    request has already rendered. `set()` logs at warning and returns.
+    """
+    class _LockedSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def execute(self, _stmt):
+            return None
+        def commit(self):
+            raise OperationalError("INSERT", None, Exception("database is locked"))
+
+    monkeypatch.setattr(cache, "SessionLocal", lambda: _LockedSession())
+
+    captured: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record)
+
+    handler = _Capture(level=logging.WARNING)
+    logger = logging.getLogger("mimir.cache")
+    logger.addHandler(handler)
+    try:
+        cache.set("xtest-locked-key", "value", ttl=60)  # must not raise
+    finally:
+        logger.removeHandler(handler)
+
+    assert any("cache write failed" in r.getMessage() for r in captured), (
+        f"expected a 'cache write failed' warning, got {[r.getMessage() for r in captured]}"
+    )
 
 
 def test_delete_for_inbox_pattern_boundary():
