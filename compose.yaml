@@ -70,6 +70,13 @@ services:
       # CLI commands see the same Settings.
       # SITE_NAME: lkml-mirror
       # INBOXES: '{"linux-fsdevel": {...}}'
+      #
+      # Default sidecar output is terse: warm-cache emits one summary
+      # line per tick, update stays silent on no-op ticks. Uncomment
+      # to dial the loop verbose; "-vv" adds per-message ingest detail.
+      # For an ad-hoc verbose run without restarting:
+      #   podman exec mimir-tasks flask --app mimir warm-cache -v
+      # SCHEDULER_VERBOSE: "-v"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "test", "-f", "/data/.migrated"]

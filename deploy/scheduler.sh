@@ -27,6 +27,14 @@ UPDATE_EVERY=${UPDATE_EVERY:-300}
 ANALYZE_EVERY=${ANALYZE_EVERY:-86400}
 VACUUM_EVERY=${VACUUM_EVERY:-604800}
 
+# Verbosity flag passed through to the underlying flask invocations.
+# Default empty: warm-cache emits one summary line per tick, update
+# stays silent on no-op ticks. Set to "-v" (or "-vv" for ingest
+# detail) in compose env when troubleshooting; restart the sidecar
+# to apply. For ad-hoc inspection without restarting:
+#   podman exec mimir-tasks flask --app mimir warm-cache -v
+SCHEDULER_VERBOSE=${SCHEDULER_VERBOSE:-}
+
 log() { echo "[scheduler $(date -Iseconds)] $*"; }
 
 run() {
@@ -54,7 +62,8 @@ fi
 
 # Initial update so a fresh deployment has data to render before the
 # first UPDATE_EVERY tick.
-run "update (initial)" flask --app mimir update
+# shellcheck disable=SC2086  # SCHEDULER_VERBOSE is a flag string, intentionally unquoted to splat empty -> nothing.
+run "update (initial)" flask --app mimir update $SCHEDULER_VERBOSE
 
 now=$(date +%s)
 last_warm=$now
@@ -64,18 +73,21 @@ last_vacuum=$now
 
 # Ran initial update above; reset its counter so the next "update"
 # tick fires UPDATE_EVERY from now, not from cold start.
-run "warm-cache (initial)" flask --app mimir warm-cache
+# shellcheck disable=SC2086
+run "warm-cache (initial)" flask --app mimir warm-cache $SCHEDULER_VERBOSE
 
 while true; do
     now=$(date +%s)
 
     if [ $((now - last_warm)) -ge "$WARM_CACHE_EVERY" ]; then
-        run "warm-cache" flask --app mimir warm-cache
+        # shellcheck disable=SC2086
+        run "warm-cache" flask --app mimir warm-cache $SCHEDULER_VERBOSE
         last_warm=$(date +%s)
     fi
 
     if [ $((now - last_update)) -ge "$UPDATE_EVERY" ]; then
-        run "update" flask --app mimir update
+        # shellcheck disable=SC2086
+        run "update" flask --app mimir update $SCHEDULER_VERBOSE
         last_update=$(date +%s)
     fi
 

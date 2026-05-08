@@ -11,6 +11,21 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- `update` and `warm-cache` are now terse by default. `update`
+  suppresses per-inbox / per-epoch lines on no-op ticks (only
+  prints when something was cloned, fetched, ingested, or
+  failed); `warm-cache` collapses per-key timings into a single
+  `warm-cache: N inboxes, K keys, T ms total` summary line. Pass
+  `-v` to either to recover the previous detail.
+- `deploy/scheduler.sh` now reads `SCHEDULER_VERBOSE` from env
+  (default empty) and splats it into both invocations, so the
+  sidecar log is quiet by default and verbose on demand. See the
+  commented `SCHEDULER_VERBOSE: "-v"` example in `compose.yaml`,
+  or run `podman exec mimir-tasks flask --app mimir warm-cache
+  -v` for a one-shot without restarting.
+
 ## [1.7.2] – 2026-05-08
 
 ### Fixed

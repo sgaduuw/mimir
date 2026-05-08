@@ -13,6 +13,8 @@ from mimir.cli import (
     admin_inbox_trackers_remove_command,
     admin_inbox_trackers_set_command,
     admin_inbox_trackers_show_command,
+    update_command,
+    warm_cache_command,
 )
 from mimir.inboxes import get_inbox, set_tracked_authors
 
@@ -127,3 +129,84 @@ def test_admin_inbox_list_shows_tracker_count(seeded_db):
     beta_line = next(line for line in lines if " beta " in line)
     assert "trackers=2" in alpha_line
     assert "trackers=none" in beta_line
+
+
+def test_warm_cache_default_emits_only_summary(seeded_db):
+    """Default verbosity collapses per-key timings into one summary
+    line so the scheduler log doesn't scale with inbox count."""
+    result = CliRunner().invoke(warm_cache_command, [])
+    assert result.exit_code == 0
+    lines = result.output.strip().splitlines()
+    assert any(line.startswith("warm-cache:") and "ms total" in line for line in lines), result.output
+    # No per-key timing lines (those end with "<n> ms" without "total").
+    per_key = [
+        line for line in lines
+        if line.endswith(" ms") and "ms total" not in line
+    ]
+    assert per_key == [], f"unexpected per-key lines at default verbosity: {per_key}"
+
+
+def test_warm_cache_verbose_keeps_per_key_timings(seeded_db):
+    """-v restores the per-key timings on top of the summary line."""
+    result = CliRunner().invoke(warm_cache_command, ["-v"])
+    assert result.exit_code == 0
+    # Each seeded inbox (alpha, beta) gets at least one per-key line
+    # under -v. Pick a label that's stable across builds. The DB also
+    # has bootstrap-time `Settings.inboxes` entries (lkml etc.) at this
+    # point — fine, we don't assert on the inbox count.
+    assert "alpha archive_stats" in result.output
+    assert "beta archive_stats" in result.output
+    # Summary line is still there.
+    assert "warm-cache:" in result.output and "ms total" in result.output
+
+
+def test_update_default_silent_on_no_op(seeded_db, monkeypatch):
+    """No-op ticks (no upstream changes, no new commits to ingest)
+    must not emit per-inbox / per-epoch lines at default verbosity —
+    that's what makes the scheduler log readable as inbox count grows."""
+    from mimir import cli, sync as sync_mod
+    from mimir.ingest import IngestResult
+
+    def _fake_sync(*_a, **_kw):
+        return sync_mod.SyncResult(cloned=[], fetched=[], failed=[])
+    def _fake_ingest_all(inboxes, workers):
+        return {
+            name: [IngestResult(
+                epoch="0.git", new=0, linked=0, dup_batch=3,
+                dup_db=2, failed=0, last_commit_sha="aa" * 20,
+            )]
+            for name in inboxes
+        }
+    monkeypatch.setattr(cli, "sync_epochs", _fake_sync)
+    monkeypatch.setattr(cli, "ingest_all", _fake_ingest_all)
+
+    result = CliRunner().invoke(update_command, [])
+    assert result.exit_code == 0
+    assert "sync:" not in result.output, result.output
+    assert "/0.git:" not in result.output, result.output
+
+
+def test_update_verbose_prints_no_op_lines(seeded_db, monkeypatch):
+    """-v restores per-inbox / per-epoch lines even when nothing changed."""
+    from mimir import cli, sync as sync_mod
+    from mimir.ingest import IngestResult
+
+    monkeypatch.setattr(
+        cli, "sync_epochs",
+        lambda *_a, **_kw: sync_mod.SyncResult(cloned=[], fetched=[], failed=[]),
+    )
+    monkeypatch.setattr(
+        cli, "ingest_all",
+        lambda inboxes, workers: {
+            name: [IngestResult(
+                epoch="0.git", new=0, linked=0, dup_batch=1,
+                dup_db=1, failed=0, last_commit_sha="bb" * 20,
+            )]
+            for name in inboxes
+        },
+    )
+
+    result = CliRunner().invoke(update_command, ["-v"])
+    assert result.exit_code == 0
+    assert "sync: cloned=[] fetched=[] failed=[]" in result.output
+    assert "/0.git: new=0 linked=0" in result.output
