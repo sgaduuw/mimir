@@ -318,6 +318,11 @@ def update_command(
     _configure_logging(verbose)
     inboxes = _select_inboxes(inbox_filter)
 
+    # Default verbosity prints only lines that signal a state change.
+    # Steady-state ticks on a settled archive (sync: 0/0/0 across the
+    # board, ingest: dup_batch/dup_db only) become silent — anything
+    # in the log then means something actually happened. -v restores
+    # the per-inbox / per-epoch lines unconditionally.
     for name, inbox in inboxes.items():
         sync_result = sync_epochs(
             inbox.upstream_url,
@@ -325,10 +330,11 @@ def update_command(
             discover_new=not skip_clone,
             fetch_existing=not skip_fetch,
         )
-        click.echo(
-            f"{name} sync: cloned={sync_result.cloned} "
-            f"fetched={sync_result.fetched} failed={sync_result.failed}"
-        )
+        if verbose or sync_result.cloned or sync_result.fetched or sync_result.failed:
+            click.echo(
+                f"{name} sync: cloned={sync_result.cloned} "
+                f"fetched={sync_result.fetched} failed={sync_result.failed}"
+            )
 
     if skip_ingest:
         return
@@ -336,20 +342,30 @@ def update_command(
     results_by_name = ingest_all(inboxes=inboxes, workers=workers)
     for name, results in results_by_name.items():
         for r in results:
-            click.echo(
-                f"{name}/{r.epoch}: new={r.new} linked={r.linked} "
-                f"dup_batch={r.dup_batch} dup_db={r.dup_db} "
-                f"failed={r.failed} head={r.last_commit_sha}"
-            )
+            if verbose or r.new or r.linked or r.failed:
+                click.echo(
+                    f"{name}/{r.epoch}: new={r.new} linked={r.linked} "
+                    f"dup_batch={r.dup_batch} dup_db={r.dup_db} "
+                    f"failed={r.failed} head={r.last_commit_sha}"
+                )
 
 
 @click.command("warm-cache")
-def warm_cache_command() -> None:
+@click.option(
+    "-v",
+    "--verbose",
+    count=True,
+    help="-v: print per-key timings in addition to the summary line.",
+)
+def warm_cache_command(verbose: int) -> None:
     """Recompute and cache the slow dashboard queries for every inbox.
 
     Designed to run from cron or a systemd timer. Refreshes the
     DB-backed `cache` table so the Flask server picks up pre-computed
     results on the next request, avoiding cold-start latency.
+
+    Default output is one summary line per run; pass `-v` for the
+    per-key timings.
 
     Example crontab:
 
@@ -358,6 +374,7 @@ def warm_cache_command() -> None:
     today = datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
     inboxes = bootstrap_inboxes()
+    total_start = time.perf_counter()
     with SessionLocal() as session:
         targets = []
         for inbox in inboxes.values():
@@ -387,7 +404,14 @@ def warm_cache_command() -> None:
         for label, fn in targets:
             t0 = time.perf_counter()
             fn(session)
-            click.echo(f"{label}: {(time.perf_counter() - t0) * 1000:.0f} ms")
+            if verbose:
+                click.echo(f"{label}: {(time.perf_counter() - t0) * 1000:.0f} ms")
+
+    total_ms = (time.perf_counter() - total_start) * 1000
+    click.echo(
+        f"warm-cache: {len(inboxes)} inbox{'' if len(inboxes) == 1 else 'es'}, "
+        f"{len(targets)} keys, {total_ms:.0f} ms total"
+    )
 
     # Drop expired rows so the cache table doesn't grow monotonically
     # as search keys, dated `threads_for_day:...:YYYY-MM-DD` keys, and
