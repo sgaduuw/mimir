@@ -27,6 +27,15 @@ def test_is_list_address_personal_address_rejected():
     assert is_list_address("alice@example.com") is False
 
 
+def test_is_list_address_bare_kernel_org_rejected():
+    # `kernel.org` is a personal-address domain (cve@, gregkh@,
+    # torvalds@). List traffic lives on the subdomains (vger,
+    # subspace, lists.linux.dev). Reported as a false-positive
+    # in the off-list-parent hint UI, hence the explicit pin.
+    assert is_list_address("cve@kernel.org") is False
+    assert is_list_address("gregkh@kernel.org") is False
+
+
 def test_is_list_address_subdomain_match_accepted():
     # foo.vger.kernel.org should still count (defensive — covers
     # whatever future relay shenanigans the kernel infra invents).

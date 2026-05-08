@@ -30,7 +30,10 @@ LIST_HOST_SUFFIXES: frozenset[str] = frozenset({
     # kernel.org-hosted (covers most lkml/* via vger relay)
     "vger.kernel.org",
     "lists.linux.dev",
-    "kernel.org",
+    # NB: bare `kernel.org` is intentionally NOT here — it's primarily
+    # a personal-address domain (gregkh@, torvalds@, cve@, etc.), so
+    # including it produces false positives. List subdomains (vger,
+    # subspace, lists.linux.dev) carry the actual list traffic.
     # graphics
     "lists.freedesktop.org",
     # arm, nvme, mtd, rdma, …

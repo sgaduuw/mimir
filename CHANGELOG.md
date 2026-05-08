@@ -11,6 +11,16 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- `cve@kernel.org`, `gregkh@kernel.org`, and other bare-`kernel.org`
+  personal addresses no longer match the "list-shaped address"
+  filter. Bare `kernel.org` was in `LIST_HOST_SUFFIXES`, which
+  surfaced personal addresses as off-list-parent hints and skewed
+  per-inbox address-observation tallies. List traffic lives on the
+  subdomains (`vger.kernel.org`, `lists.linux.dev`); those entries
+  are unchanged.
+
 ## [1.7.1] – 2026-05-08
 
 ### Fixed
