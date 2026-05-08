@@ -11,6 +11,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- Off-list-parent rows in the thread tree now expose a hover
+  tooltip listing list-shaped To/Cc addresses on the message that
+  don't match any configured inbox. Quick cue for which mailing
+  list the operator might want to add to recover the missing
+  parent; the line stays compact, the address only appears on
+  hover/focus.
+
 ## [1.6.1] – 2026-05-08
 
 ### Added

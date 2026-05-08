@@ -525,6 +525,8 @@ def _ingest_one_article(
     inbox_name: str,
     message_id: str,
     subject: str = "test",
+    in_reply_to: str | None = None,
+    to: str | None = None,
 ) -> tuple[int, str]:
     """Build a tiny pubinbox-shaped bare repo with one message and
     ingest it into `inbox_name`. Repoints the inbox's mirror_path at
@@ -537,11 +539,17 @@ def _ingest_one_article(
     from mimir.ingest import ingest_epoch
     from mimir.models import Article, Inbox
 
+    extra = b""
+    if in_reply_to is not None:
+        extra += b"In-Reply-To: <" + in_reply_to.encode() + b">\r\n"
+    if to is not None:
+        extra += b"To: " + to.encode() + b"\r\n"
     raw = (
         b"Message-ID: <" + message_id.encode() + b">\r\n"
         b"From: a@b.example\r\n"
         b"Subject: " + subject.encode() + b"\r\n"
         b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+        + extra +
         b"\r\n"
         b"body"
     )
@@ -987,3 +995,45 @@ def test_inbox_dashboard_with_trackers_renders_tile(client, inbox_name):
     set_tracked_authors(inbox_name, {"Carol Tracked": "carol@kernel.org"})
     body = client.get(f"/{inbox_name}/").data.decode()
     assert "Latest from Carol Tracked" in body
+
+
+def test_off_list_parent_hint_surfaces_unindexed_list(client, tmp_path):
+    """When the thread root has an off-list parent and the article's
+    To: header points at a list-shaped address that doesn't match any
+    configured inbox, the rendered thread tree should surface that
+    address as a hover-only hint so the operator knows which list to
+    add. The address rides in `data-tooltip=` rather than visible
+    text so the line stays compact."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "hint-shown@example.com",
+        in_reply_to="missing-parent@example.com",
+        to="linux-arm-kernel@lists.infradead.org",
+    )
+    body = client.get(url).data.decode()
+    assert "off-list ancestor" in body
+    assert (
+        'data-tooltip="hint: linux-arm-kernel@lists.infradead.org"' in body
+    )
+
+
+def test_off_list_parent_hint_skips_already_configured_lists(client, tmp_path):
+    """If the To: address matches a configured inbox's list_address,
+    the hint must be suppressed — there's nothing to add, that list
+    is already indexed."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.list_address = "linux-arm-kernel@lists.infradead.org"
+        s.commit()
+
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "hint-suppressed@example.com",
+        in_reply_to="missing-parent-2@example.com",
+        to="linux-arm-kernel@lists.infradead.org",
+    )
+    body = client.get(url).data.decode()
+    assert "off-list ancestor" in body
+    assert "linux-arm-kernel@lists.infradead.org" not in body
