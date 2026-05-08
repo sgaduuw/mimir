@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.7.0] – 2026-05-08
+
 ### Added
 
 - Off-list-parent rows in the thread tree now expose a hover
