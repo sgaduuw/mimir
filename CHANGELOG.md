@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.6.1] – 2026-05-08
+
 ### Added
 
 - `SQLITE_BUSY_TIMEOUT_MS` env var (default 5000) sets SQLite's
