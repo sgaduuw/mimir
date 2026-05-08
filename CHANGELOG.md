@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.8.0] – 2026-05-08
+
 ### Changed
 
 - `update` and `warm-cache` are now terse by default. `update`
