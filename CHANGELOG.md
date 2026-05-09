@@ -11,6 +11,17 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.8.1] – 2026-05-09
+
+### Changed
+
+- Dependency refresh. Notable: dulwich `0.21` → `1.x` major bump
+  (our API surface is `Repo`, indexing, `commit.tree`,
+  `commit.commit_time`, `repo.head`, `repo.get_walker`, all
+  unchanged across the boundary); ruff `0.1` → `0.15`. Within-
+  constraint patch/minor updates: markupsafe `2`→`3`, click,
+  jinja2, pydantic{,-core,-settings}, urllib3, python-dotenv.
+
 ## [1.8.0] – 2026-05-08
 
 ### Changed
