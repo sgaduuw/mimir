@@ -11,6 +11,77 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.9.0] – 2026-05-11
+
+### Added
+
+- Year-browse list on the inbox dashboard now groups by decade
+  (`2020s · 2026 2025 ... · 2010s · 2019 ... · 2000s · ...`) instead
+  of a flat row of ~30 inline years that read as a wall on narrow
+  viewports. Each decade gets its own line; no bullets, compact
+  small-text styling, no JS.
+- `SITE_BASE_URL` setting (optional). When set, used verbatim for
+  every emitted absolute URL (`<link rel="canonical">`, `og:url`,
+  JSON-LD `url`, sitemap, atom feed `id`). Force-corrects the scheme
+  on deployments where the proxy chain (Tailscale Funnel + Caddy on
+  ratatoskr.run) doesn't reliably set `X-Forwarded-Proto`. Empty
+  default falls through to `request.url_root` for local dev.
+- `<link rel="canonical">` on the homepage and the per-inbox
+  dashboard (previously only message pages carried one). All routes
+  now emit one via a fallback computed in a context processor.
+- `<link rel="icon" type="image/svg+xml">` pointing at a new
+  `/favicon.svg` route — squirrel-adjacent placeholder until a
+  proper logo lands. Stops browsers from 404'ing on every page load.
+- `<meta name="theme-color">` matching Pico's amber accent
+  (`#ffc107`) so mobile browser chrome picks up the brand colour.
+- `og:image` + `twitter:image` pointing at a new `/og-image.svg`
+  route (1200x630 SVG wordmark). `twitter:card` bumped to
+  `summary_large_image` to match. SVG is templated against
+  `SITE_NAME` so a forked deploy gets a matching preview without
+  per-fork art assets.
+- `ItemList` JSON-LD on `/` (configured inboxes as list items) and
+  `DiscussionForum` + `ItemList` JSON-LD on `/<inbox>/` (most-
+  active threads as list items). Tells search engines these are
+  topical hubs rather than flat link lists.
+- `display_name` Jinja filter — display-name-only From line, no
+  `<hidden>` placeholder. Used in `<meta name="description">`
+  on message pages so search snippets and link cards don't carry
+  the redaction placeholder as literal text.
+- `clean_subject` Jinja filter — collapses RFC 5322 header-folding
+  whitespace (`\n  ` continuation lines) into a single space.
+  Applied at every subject render site; raw value stays untouched
+  in the DB.
+
+### Changed
+
+- Jinja's `trim_blocks` + `lstrip_blocks` are now enabled in the app
+  factory. Cosmetic, but the rendered HTML no longer carries the run
+  of empty lines that un-rendered `{% if %}` / `{% for %}` blocks
+  used to leave behind.
+- Nav slot `N inboxes` (when on `/`) is now an anchor link to the
+  inbox list (`#inboxes`) instead of bare text. The inbox-list
+  heading carries a matching `id="inboxes"`.
+
+### Fixed
+
+- Patch view: a full `git format-patch` payload now renders as one
+  highlighted block. The `index ...` metadata line, follow-up
+  `diff --git` blocks (multi-file patches), and the trailing
+  `-- \n<version>` signature were being chopped into separate
+  `<pre>` blocks, which broke copy-paste-to-patch and looked
+  visually fragmented.
+- Patch view: diff colours use Pygments class-based output instead
+  of inline `style=` attributes, so add/remove tones adapt to
+  Pico's light/dark theme via `light-dark()`.
+- Patch view: DCO trailers (`Signed-off-by:`, `Reviewed-by:`,
+  `Tested-by:`, `Acked-by:`, `Co-developed-by:`, `Reported-by:`,
+  `Suggested-by:`, `Cc:`, `To:`, `From:`) no longer route through
+  the message-ID linkifier, which had been smearing redacted email
+  addresses on these lines as `[off-list ref]` — confusingly close
+  to broken metadata for DCO chain verification. Allowlisted
+  senders surface verbatim; everyone else is replaced with the
+  explicit `<redacted>` placeholder.
+
 ## [1.8.1] – 2026-05-09
 
 ### Changed

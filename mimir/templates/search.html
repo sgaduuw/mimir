@@ -32,7 +32,7 @@ Search the {{ inbox_name }} archive by subject or author.
   <ul>
     {% for a in results %}
     <li>
-      <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject or '(no subject)' }}</a>
+      <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
       <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '????-??-??' }}
         &middot; {{ a.author|safe_from }}</small>
     </li>

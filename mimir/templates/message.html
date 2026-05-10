@@ -1,15 +1,15 @@
 {% extends "base.html" %}
-{% block title %}{{ (parsed.subject or '(no subject)') | truncate(80) }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block title %}{{ (parsed.subject|clean_subject or '(no subject)') | truncate(80) }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block og_type %}article{% endblock %}
 {% block meta_description %}
-{%- set _from = parsed.author|safe_from if parsed.author else 'unknown sender' -%}
+{%- set _from = parsed.author|display_name -%}
 {%- set _date = article.date.strftime('%Y-%m-%d') if article.date else 'unknown date' -%}
-Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject or '(no subject)') | truncate(120) }}
+Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|clean_subject or '(no subject)') | truncate(120) }}
 {%- endblock %}
 {% block content %}
 <article>
   <header>
-    <h2>{{ parsed.subject or '(no subject)' }}</h2>
+    <h2>{{ parsed.subject|clean_subject or '(no subject)' }}</h2>
     <p>
       <strong>From:</strong> {{ parsed.author|safe_from }}<br>
       <strong>Date:</strong> {{ article.date.strftime('%Y-%m-%d %H:%M:%S %z') if article.date else '?' }}
@@ -77,9 +77,9 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject 
     {% for n in thread %}
     <li style="padding-left: {{ (n.depth + offset) * 1.5 }}rem;">
       {% if n.message_id == article.message_id %}
-        <strong>» {{ n.subject or '(no subject)' }}</strong>
+        <strong>» {{ n.subject|clean_subject or '(no subject)' }}</strong>
       {% else %}
-        <a href="{{ thread_urls[n.message_id] }}">{{ n.subject or '(no subject)' }}</a>
+        <a href="{{ thread_urls[n.message_id] }}">{{ n.subject|clean_subject or '(no subject)' }}</a>
       {% endif %}
       <small>&middot; {{ n.author|safe_from }} &middot; {{ n.date.strftime('%Y-%m-%d') if n.date else '' }}</small>
     </li>
@@ -95,7 +95,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject 
     {% for r in related %}
     <li>
       <small>{{ r.date.strftime('%Y-%m-%d') if r.date else '?' }}</small>
-      &middot; <a href="{{ r|msg_url(inbox_name) }}">{{ r.subject or '(no subject)' }}</a>
+      &middot; <a href="{{ r|msg_url(inbox_name) }}">{{ r.subject|clean_subject or '(no subject)' }}</a>
       &middot; <small>{{ r.author|safe_from }}</small>
     </li>
     {% endfor %}

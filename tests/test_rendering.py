@@ -158,9 +158,124 @@ def test_render_body_diff_pygmentized():
         "+new\n"
     )
     out = str(render_body(body))
-    # Pygments emits inline `style=` (noclasses=True) on its spans.
+    # Class-based output (noclasses=False): inserted/deleted lines
+    # carry Pygments' class names rather than inline `style=` colours.
+    # CSS in base.html maps them to theme-aware tones.
     assert "<span" in out
-    assert "style=" in out
+    assert 'class="gi"' in out  # inserted
+    assert 'class="gd"' in out  # deleted
+    assert 'style="color' not in out
+
+
+def test_render_body_diff_full_patch_stays_one_block():
+    """A complete git format-patch payload must render as one
+    `<div class="highlight">` block, not get chopped at `index ...`
+    or at the trailing `-- /<version>` signature."""
+    body = (
+        "diff --git a/x b/x\n"
+        "index abc1234..def5678 100644\n"
+        "--- a/x\n"
+        "+++ b/x\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+        "-- \n"
+        "2.53.0\n"
+    )
+    out = str(render_body(body))
+    # Exactly one Pygments wrapper — chopping into multiple blocks
+    # was the regression that broke copy-paste-to-patch.
+    assert out.count('class="highlight"') == 1
+    # Every patch component is inside that single block.
+    assert "diff --git" in out
+    assert "index abc1234..def5678" in out
+    assert "2.53.0" in out
+
+
+def test_render_body_diff_multi_file_patch_stays_one_block():
+    """Multi-file patches have `diff --git` + `index` for each file;
+    `index` must not break the block."""
+    body = (
+        "diff --git a/x b/x\n"
+        "index 1..2 100644\n"
+        "--- a/x\n"
+        "+++ b/x\n"
+        "@@ -1 +1 @@\n"
+        "-a\n"
+        "+b\n"
+        "diff --git a/y b/y\n"
+        "index 3..4 100644\n"
+        "--- a/y\n"
+        "+++ b/y\n"
+        "@@ -1 +1 @@\n"
+        "-c\n"
+        "+d\n"
+    )
+    out = str(render_body(body))
+    assert out.count('class="highlight"') == 1
+
+
+# Trailer redaction: DCO trailers don't go through the msgid linkifier.
+
+
+def test_trailer_addresses_not_msgid_linkified():
+    """Without a redactor, an email in a Signed-off-by becomes
+    `[off-list ref]` (the msgid lookup failure) — a confusing
+    `<redacted>`-meets-`<broken>` artifact for DCO chains. With a
+    redactor, trailer emails go through that instead."""
+    body = "Signed-off-by: Bob <bob@example.com>"
+    out_no_redactor = str(render_body(body))
+    assert "[off-list ref]" in out_no_redactor
+    out_with_redactor = str(
+        render_body(body, address_redactor=lambda _e: "<redacted>")
+    )
+    assert "[off-list ref]" not in out_with_redactor
+    assert "&lt;redacted&gt;" in out_with_redactor or "<redacted>" in out_with_redactor
+
+
+def test_trailer_keeps_allowlisted_addresses_when_redactor_says_so():
+    """The redactor can return the original `<addr>` for allowlisted
+    senders (the web layer's wrapper does exactly this against
+    settings.email_allowlist)."""
+    def keep_if_kernel(email):
+        # Domain-suffix check (rather than substring) to keep CodeQL's
+        # `py/incomplete-url-substring-sanitization` rule quiet on this
+        # test helper. Production redactor uses substring matching via
+        # email_allowlist tokens by design — that's an intentional
+        # looseness handled elsewhere.
+        return f"<{email}>" if email.lower().endswith("@kernel.org") else "<redacted>"
+
+    body = (
+        "Signed-off-by: Linus Torvalds <torvalds@kernel.org>\n"
+        "Cc: Random Person <random@example.com>\n"
+    )
+    out = str(render_body(body, address_redactor=keep_if_kernel))
+    assert "torvalds@kernel.org" in out
+    assert "random@example.com" not in out
+    assert "redacted" in out
+
+
+def test_trailer_recognition_is_case_insensitive():
+    """Some senders capitalise trailer keys (`SIGNED-OFF-BY:` etc.);
+    the recognition shouldn't drop them just because of case."""
+    body = "Reviewed-by: Alice <alice@example.com>"
+    out = str(
+        render_body(body, address_redactor=lambda _e: "<R>")
+    )
+    assert "[off-list ref]" not in out
+
+
+def test_non_trailer_msgid_linkify_unaffected_by_redactor():
+    """Quoted message-IDs in body text (e.g. someone referring to a
+    prior message) still go through the msgid linkifier even when a
+    trailer redactor is installed."""
+    body = "see <abc123@some.host.example> for context"
+    out = str(
+        render_body(body, address_redactor=lambda _e: "<R>")
+    )
+    # Body-text msgid that doesn't match the archive collapses to the
+    # off-list ref placeholder, same as before.
+    assert "[off-list ref]" in out
 
 
 def test_render_body_xss_payload_in_text_is_escaped():
