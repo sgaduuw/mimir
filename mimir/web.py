@@ -265,6 +265,23 @@ def _canonical_inbox_name(
     return min(name for _, name in links)
 
 
+def _year_decade_groups(first_year: int, last_year: int) -> list[tuple[int, list[int]]]:
+    """Group `[first_year, last_year]` into decade buckets, newest first.
+
+    Returns a list like `[(2020, [2026, 2025, 2024, ...]), (2010, [2019,
+    ..., 2010]), ...]`. Each inner list is descending. Drives the year-
+    browse footer on the inbox dashboard; reads better than a flat 30-
+    item row on narrow viewports.
+    """
+    if last_year < first_year:
+        return []
+    groups: dict[int, list[int]] = {}
+    for year in range(last_year, first_year - 1, -1):
+        decade = (year // 10) * 10
+        groups.setdefault(decade, []).append(year)
+    return sorted(groups.items(), key=lambda kv: kv[0], reverse=True)
+
+
 def _canonical_url_for(
     article: Article,
     links: list[tuple[int, str]],
@@ -871,6 +888,11 @@ def inbox_dashboard(inbox_name: str):
         stats = archive_stats(session, inbox)
         spark = daily_volume(session, inbox, days=30)
     base = _site_base()
+    year_decades: list[tuple[int, list[int]]] = []
+    if stats and stats.first_date and stats.last_date:
+        year_decades = _year_decade_groups(
+            stats.first_date.year, stats.last_date.year
+        )
     return render_template(
         "inbox.html",
         inbox_name=inbox.name,
@@ -885,6 +907,7 @@ def inbox_dashboard(inbox_name: str):
         recent_next_offset=RECENT_PAGE_SIZE,
         stats=stats,
         spark=spark,
+        year_decades=year_decades,
         canonical_url=f"{base}/{inbox.name}/",
         page_json_ld=_json_ld_inbox(base, inbox, active),
     )

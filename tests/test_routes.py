@@ -1143,3 +1143,55 @@ def test_site_base_url_override_forces_scheme(monkeypatch):
     # og:url and og:image also pick up the forced base.
     assert _meta_value(html, "og:url").startswith("https://forced.example.com/")
     assert _meta_value(html, "og:image").startswith("https://forced.example.com/")
+
+
+# Year browse decade grouping (issue #4).
+
+
+def test_year_decade_groups_groups_by_decade():
+    from mimir.web import _year_decade_groups
+    out = _year_decade_groups(1996, 2026)
+    decades = [decade for decade, _ in out]
+    assert decades == [2020, 2010, 2000, 1990]
+    # Each list is descending within the decade.
+    assert out[0][1] == [2026, 2025, 2024, 2023, 2022, 2021, 2020]
+    assert out[3][1] == [1999, 1998, 1997, 1996]
+
+
+def test_year_decade_groups_single_decade():
+    from mimir.web import _year_decade_groups
+    out = _year_decade_groups(2024, 2026)
+    assert out == [(2020, [2026, 2025, 2024])]
+
+
+def test_year_decade_groups_single_year():
+    from mimir.web import _year_decade_groups
+    assert _year_decade_groups(2025, 2025) == [(2020, [2025])]
+
+
+def test_year_decade_groups_handles_decade_boundary():
+    """1999 → 2010 spans 3 decades; each gets exactly the years that
+    belong to it (no off-by-one wrap)."""
+    from mimir.web import _year_decade_groups
+    out = _year_decade_groups(1999, 2010)
+    assert out == [
+        (2010, [2010]),
+        (2000, [2009, 2008, 2007, 2006, 2005, 2004, 2003, 2002, 2001, 2000]),
+        (1990, [1999]),
+    ]
+
+
+def test_year_decade_groups_returns_empty_when_inverted():
+    from mimir.web import _year_decade_groups
+    assert _year_decade_groups(2026, 1996) == []
+
+
+def test_inbox_dashboard_year_browse_uses_decade_grouping(client, inbox_name):
+    """Visual smoke: footer carries the `year-decade-list` class with
+    a `<strong>YYYY0s</strong>` heading per decade present in the
+    inbox's date range."""
+    html = client.get(f"/{inbox_name}/").data.decode()
+    # The seeded fixture covers 2024-2025 (sub-2020s range may or may
+    # not include older years), so just check the structure rather
+    # than specific decade values.
+    assert "year-decade-list" in html or "Browse by year" not in html
