@@ -238,7 +238,12 @@ def test_trailer_keeps_allowlisted_addresses_when_redactor_says_so():
     senders (the web layer's wrapper does exactly this against
     settings.email_allowlist)."""
     def keep_if_kernel(email):
-        return f"<{email}>" if "kernel.org" in email else "<redacted>"
+        # Domain-suffix check (rather than substring) to keep CodeQL's
+        # `py/incomplete-url-substring-sanitization` rule quiet on this
+        # test helper. Production redactor uses substring matching via
+        # email_allowlist tokens by design — that's an intentional
+        # looseness handled elsewhere.
+        return f"<{email}>" if email.lower().endswith("@kernel.org") else "<redacted>"
 
     body = (
         "Signed-off-by: Linus Torvalds <torvalds@kernel.org>\n"
