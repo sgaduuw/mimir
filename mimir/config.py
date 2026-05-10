@@ -35,6 +35,18 @@ class Settings(BaseSettings):
     # regardless. Override with SITE_NAME=...
     site_name: str = "mimir"
 
+    # Canonical absolute base URL of the deployed site, no trailing
+    # slash. When set, used verbatim for every emitted absolute URL
+    # (canonical link, og:url, JSON-LD `url`, sitemap). When empty,
+    # `request.url_root` is used, which depends on ProxyFix being
+    # wired correctly — typically right in production but a footgun
+    # when the proxy chain is wrong. The 2026-05-11 external review
+    # saw `http://` leaking into og:url + JSON-LD on a production
+    # page; set `SITE_BASE_URL=https://ratatoskr.run` to force-
+    # correct the scheme regardless of proxy config. Leave empty for
+    # local dev so URLs match the test host.
+    site_base_url: str = ""
+
     # Default: <project_root>/mimir.db, so cwd doesn't matter (systemd,
     # container, anywhere). Override with DATABASE_URL=... — typically
     # `sqlite:////data/mimir.db` for a container with a persistent
