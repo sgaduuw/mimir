@@ -254,7 +254,11 @@ def _msg_url_filter(article: Article, inbox_name: str) -> str:
 
 @bp_web.app_template_filter("render_body")
 def _render_body_filter(body, msgid_urls=None):
-    return render_body(body, msgid_urls=msgid_urls)
+    return render_body(
+        body,
+        msgid_urls=msgid_urls,
+        address_redactor=_redact_trailer_address,
+    )
 
 
 _TEXT_LIKE_EXTENSIONS = {
@@ -317,6 +321,20 @@ def _safe_from_filter(author: str | None) -> str:
     if name:
         return f"{name} <hidden>"
     return "<hidden>"
+
+
+def _redact_trailer_address(email: str) -> str:
+    """Return the angle-bracketed replacement for an email on a DCO
+    trailer line. Allowlisted addresses survive verbatim so the DCO
+    chain stays verifiable for known maintainers; everyone else gets
+    `<redacted>` — a placeholder that obviously isn't broken metadata
+    (unlike the prior `[off-list ref]` smear from the msgid linkifier
+    when it tried to look these up as message-IDs and found nothing).
+    """
+    addr_lower = email.lower()
+    if any(token.lower() in addr_lower for token in settings.email_allowlist):
+        return f"<{email}>"
+    return "<redacted>"
 
 
 RECENT_PAGE_SIZE = 10
