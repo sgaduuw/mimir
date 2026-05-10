@@ -2,9 +2,10 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [develop, main, "release/*", "hotfix/*"]
     tags: ['v*']
   pull_request:
+    branches: [develop, main, "release/*", "hotfix/*"]
 
 # Cancel in-flight runs on the same branch / PR when a new push lands.
 concurrency:
