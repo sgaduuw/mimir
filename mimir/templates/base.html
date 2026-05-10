@@ -63,6 +63,13 @@
                                                               /* file headers */
     .highlight .gu { color: light-dark(#000080, #93b9ff); }   /* hunk headers */
     .highlight .gs { font-weight: 600; }                      /* strong */
+    /* Footer year-browse: one row per decade, plain text grouping —
+       no bullets, no oversize spacing. Pico's default <ul> would
+       indent and bullet each line; <li> with display:block + zero
+       padding keeps things compact in the small-text footer. */
+    ul.year-decade-list { list-style: none; padding: 0; margin: 0.25rem 0; font-size: 0.875rem; }
+    ul.year-decade-list li { padding: 0.05rem 0; }
+    ul.year-decade-list strong { display: inline-block; min-width: 4em; }
   </style>
   <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"
           integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2"
