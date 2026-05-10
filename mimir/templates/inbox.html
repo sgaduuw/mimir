@@ -136,13 +136,18 @@
     spanning {{ stats.first_date.strftime('%Y-%m-%d') }} to {{ stats.last_date.strftime('%Y-%m-%d') }}{% endif %}.
   </small>
   <br>
-  {% if stats.first_date and stats.last_date %}
-  <small>Browse by year:
-    {% for y in range(stats.last_date.year, stats.first_date.year - 1, -1) %}
-      <a href="/{{ inbox_name }}/{{ y }}/">{{ y }}</a>{% if not loop.last %} ·{% endif %}
+  {% if year_decades %}
+  <small>Browse by year:</small>
+  <ul class="year-decade-list">
+    {% for decade, years in year_decades %}
+    <li>
+      <strong>{{ decade }}s</strong>
+      {% for y in years %}
+        <a href="/{{ inbox_name }}/{{ y }}/">{{ y }}</a>{% if not loop.last %} ·{% endif %}
+      {% endfor %}
+    </li>
     {% endfor %}
-  </small>
-  <br>
+  </ul>
   {% endif %}
   <small><a href="/{{ inbox_name }}/feed.atom">Atom feed</a></small>
   {% endif %}
