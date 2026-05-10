@@ -22,6 +22,12 @@ def create_app() -> Flask:
     app = Flask(__name__)
     app.config["SECRET_KEY"] = settings.secret_key
     app.config["DEBUG"] = settings.flask_debug
+    # Strip the whitespace that un-rendered `{% if %}` / `{% for %}`
+    # blocks leave behind. Visual difference is cosmetic, but per the
+    # 2026-05-11 review the raw HTML showed long runs of blank lines
+    # that read as sloppy in view-source.
+    app.jinja_env.trim_blocks = True
+    app.jinja_env.lstrip_blocks = True
 
     # Honour X-Forwarded-* headers when running behind a known number of
     # trusted reverse-proxy hops, so request.remote_addr / .scheme /

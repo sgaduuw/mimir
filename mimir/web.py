@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import secrets
 import time
 from datetime import date as date_cls, datetime, timedelta, timezone
@@ -64,12 +65,27 @@ def _inject_template_globals() -> dict:
     """Inboxes are needed by base.html for the nav. `current_inbox` is set
     per-view (None on the meta-index `/`). Names come from the cached
     list populated at bootstrap — no per-request DB hit. `site_name` is
-    the configurable brand; "mimir" stays as the page generator."""
+    the configurable brand; "mimir" stays as the page generator.
+
+    `default_canonical_url` is the https-safe fallback for og:url on
+    routes that don't pin their own canonical (search, daily, year,
+    month, author …). Built from `_site_base()` so SITE_BASE_URL
+    forces correctness even when ProxyFix isn't in scope.
+    """
+    from flask import has_request_context
+
     from mimir import __version__ as mimir_version
+    site_base = ""
+    default_canonical = ""
+    if has_request_context():
+        site_base = _site_base()
+        default_canonical = site_base + request.path
     return {
         "inboxes": inbox_names(),
         "site_name": settings.site_name,
         "mimir_version": mimir_version,
+        "site_base": site_base,
+        "default_canonical_url": default_canonical,
     }
 
 
@@ -92,6 +108,8 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.author_feed": "public, max-age=300",
     "web.robots": "public, max-age=86400",
     "web.security_txt": "public, max-age=3600",
+    "web.favicon_svg": "public, max-age=604800",
+    "web.og_image_svg": "public, max-age=604800",
     "web.sitemap": "public, max-age=300",
     "web.message_id_lookup": "public, max-age=3600",
     "web.message_id_lookup_inbox": "public, max-age=3600",
@@ -200,6 +218,20 @@ def _log_request(response):
         "referrer": request.referrer,
     }))
     return response
+
+
+def _site_base() -> str:
+    """Return the absolute base URL for emitted links, no trailing slash.
+
+    Prefers the explicit `SITE_BASE_URL` setting when set — that's the
+    deterministic override for production where ProxyFix may or may
+    not be wired correctly across the Tailscale Funnel + Caddy chain.
+    Falls back to `request.url_root` for local-dev and any deployment
+    that doesn't supply the override.
+    """
+    if settings.site_base_url:
+        return settings.site_base_url.rstrip("/")
+    return request.url_root.rstrip("/")
 
 
 def _msg_url(article: Article, inbox_name: str) -> str:
@@ -323,6 +355,37 @@ def _safe_from_filter(author: str | None) -> str:
     return "<hidden>"
 
 
+_SUBJECT_WS_RE = re.compile(r"\s+")
+
+
+@bp_web.app_template_filter("clean_subject")
+def _clean_subject_filter(subject: str | None) -> str:
+    """Collapse RFC 5322 header-folding whitespace into a single space
+    for display. Mail headers can carry `\\n + leading spaces` as
+    continuation lines; the raw value renders fine but copy-paste and
+    link-card previews carry the break verbatim. The parser preserves
+    raw fidelity in the DB; display normalises."""
+    if not subject:
+        return ""
+    return _SUBJECT_WS_RE.sub(" ", subject).strip()
+
+
+@bp_web.app_template_filter("display_name")
+def _display_name_filter(author: str | None) -> str:
+    """Display name only, for contexts (meta-description, link cards)
+    where the `<hidden>` placeholder reads as broken metadata in search
+    snippets. Allowlisted senders also surface just their display name —
+    consistency over leaking addresses into descriptions. Falls back to
+    'unknown sender' so the snippet doesn't render with an awkward
+    trailing punctuation hole."""
+    if not author:
+        return "unknown sender"
+    name, _ = parseaddr(author)
+    if name:
+        return name
+    return "unknown sender"
+
+
 def _redact_trailer_address(email: str) -> str:
     """Return the angle-bracketed replacement for an email on a DCO
     trailer line. Allowlisted addresses survive verbatim so the DCO
@@ -399,9 +462,51 @@ def readyz():
 def robots():
     """Static robots.txt — disallows attachment downloads (saves bot
     bandwidth on binaries) and points crawlers at the sitemap."""
-    sitemap_url = request.url_root.rstrip("/") + "/sitemap.xml"
+    sitemap_url = _site_base() + "/sitemap.xml"
     body = render_template("robots.txt", sitemap_url=sitemap_url)
     return Response(body, mimetype="text/plain; charset=utf-8")
+
+
+# Placeholder squirrel-adjacent emoji until a proper logo lands
+# (tracked in CONTEXT.md "Roadmap — Favicon / logo"). Inline SVG keeps
+# the file at a couple of hundred bytes and avoids a static-folder
+# dependency. Browsers cache the response aggressively per the
+# `_CACHE_CONTROL_BY_ENDPOINT` map.
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+    '<text x="0" y="14" font-size="14">🐿️</text></svg>'
+)
+# OG image is a 1200x630 wordmark — the size most link-card renderers
+# expect. Amber accent (#ffc107) matches Pico's primary so previews
+# stay visually consistent with the site. site_name is templated in
+# so a forked deploy with `SITE_NAME=…` automatically gets a matching
+# image without per-fork art assets.
+_OG_IMAGE_TEMPLATE = (
+    '<svg xmlns="http://www.w3.org/2000/svg" '
+    'viewBox="0 0 1200 630" width="1200" height="630">'
+    '<rect width="1200" height="630" fill="#1c1917"/>'
+    '<text x="600" y="330" text-anchor="middle" '
+    'font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" '
+    'font-size="160" font-weight="700" fill="#ffc107">{name}</text>'
+    '<text x="600" y="420" text-anchor="middle" '
+    'font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" '
+    'font-size="36" fill="#a8a29e">mailing-list archives</text>'
+    '</svg>'
+)
+
+
+@bp_web.route("/favicon.svg")
+def favicon_svg():
+    return Response(_FAVICON_SVG, mimetype="image/svg+xml")
+
+
+@bp_web.route("/og-image.svg")
+def og_image_svg():
+    name = settings.site_name.replace("<", "&lt;").replace(">", "&gt;")
+    return Response(
+        _OG_IMAGE_TEMPLATE.format(name=name),
+        mimetype="image/svg+xml",
+    )
 
 
 @bp_web.route("/security.txt")
@@ -433,18 +538,66 @@ DEFAULT_SITE_DESCRIPTION = (
 )
 
 
-def _json_ld_index(base: str) -> dict:
-    """schema.org WebSite for the meta-index `/`. Lets Google attach
-    a name + description to the site as a whole; sitelinks-search-box
-    is intentionally omitted (mimir's search is per-inbox, not
-    site-wide)."""
-    return {
+def _json_ld_index(base: str, inboxes=()) -> dict:
+    """schema.org WebSite for the meta-index `/`, paired with an
+    `ItemList` of configured inboxes so search engines can treat the
+    page as a topical hub rather than a flat link list. Sitelinks-
+    search-box is intentionally omitted (mimir's search is per-inbox,
+    not site-wide)."""
+    payload: dict = {
         "@context": "https://schema.org",
         "@type": "WebSite",
         "name": settings.site_name,
         "url": base + "/",
         "description": DEFAULT_SITE_DESCRIPTION,
     }
+    if inboxes:
+        payload["mainEntity"] = {
+            "@type": "ItemList",
+            "name": f"Inboxes indexed by {settings.site_name}",
+            "numberOfItems": len(inboxes),
+            "itemListElement": [
+                {
+                    "@type": "ListItem",
+                    "position": i + 1,
+                    "url": f"{base}/{inbox.name}/",
+                    "name": inbox.name,
+                }
+                for i, inbox in enumerate(inboxes)
+            ],
+        }
+    return payload
+
+
+def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
+    """schema.org payload for `/<inbox_name>/` — a `DiscussionForum`
+    container plus an `ItemList` of the currently-most-active threads
+    so the page reads as a topical hub for crawlers. `active_threads`
+    is whatever the dashboard fetched (root-level ThreadNode objects);
+    we project just the bits search engines care about (URL + name).
+    """
+    payload: dict = {
+        "@context": "https://schema.org",
+        "@type": "DiscussionForum",
+        "name": inbox.name,
+        "url": f"{base}/{inbox.name}/",
+    }
+    if active_threads:
+        payload["mainEntity"] = {
+            "@type": "ItemList",
+            "name": f"Most active threads in {inbox.name}",
+            "numberOfItems": len(active_threads),
+            "itemListElement": [
+                {
+                    "@type": "ListItem",
+                    "position": i + 1,
+                    "url": f"{base}{_msg_url(t, inbox.name)}",
+                    "name": _clean_subject_filter(t.subject) or "(no subject)",
+                }
+                for i, t in enumerate(active_threads)
+            ],
+        }
+    return payload
 
 
 def _json_ld_message(
@@ -554,7 +707,7 @@ def sitemap():
     article means crawlers don't see the same content under multiple
     URLs (the duplicate-content trap that justified Phases 1–3).
     Cached for SITEMAP_TTL_SEC."""
-    base = request.url_root.rstrip("/")
+    base = _site_base()
     with SessionLocal() as session:
         def compute() -> str:
             entries: list[tuple[str, str | None]] = []
@@ -690,11 +843,13 @@ def index():
             {"name": inbox.name, "stats": archive_stats(session, inbox)}
             for inbox in inboxes
         ]
+    base = _site_base()
     return render_template(
         "index.html",
         inbox_summaries=inbox_summaries,
         current_inbox=None,
-        page_json_ld=_json_ld_index(request.url_root.rstrip("/")),
+        canonical_url=base + "/",
+        page_json_ld=_json_ld_index(base, inboxes),
     )
 
 
@@ -715,6 +870,7 @@ def inbox_dashboard(inbox_name: str):
         recent, recent_has_more = _fetch_recent(session, inbox, 0, RECENT_PAGE_SIZE)
         stats = archive_stats(session, inbox)
         spark = daily_volume(session, inbox, days=30)
+    base = _site_base()
     return render_template(
         "inbox.html",
         inbox_name=inbox.name,
@@ -729,6 +885,8 @@ def inbox_dashboard(inbox_name: str):
         recent_next_offset=RECENT_PAGE_SIZE,
         stats=stats,
         spark=spark,
+        canonical_url=f"{base}/{inbox.name}/",
+        page_json_ld=_json_ld_inbox(base, inbox, active),
     )
 
 
@@ -1030,7 +1188,7 @@ def inbox_feed(inbox_name: str):
         entries = recent_articles(session, inbox, limit=FEED_ENTRY_LIMIT)
         canonical_map = _canonical_inbox_names_for(session, [e.id for e in entries])
 
-    base = request.url_root
+    base = _site_base() + "/"
     return _atom_response(
         feed_id=f"{base}{inbox.name}/feed.atom",
         feed_title=f"{inbox.name} | {settings.site_name}",
@@ -1056,7 +1214,7 @@ def author_feed(inbox_name: str, sub: str):
         entries = author_recent(session, inbox, sub, limit=FEED_ENTRY_LIMIT)
         canonical_map = _canonical_inbox_names_for(session, [e.id for e in entries])
 
-    base = request.url_root
+    base = _site_base() + "/"
     sub_quoted = quote(sub, safe="")
     return _atom_response(
         feed_id=f"{base}{inbox.name}/author/{sub_quoted}/feed.atom",
@@ -1304,7 +1462,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             .order_by(Inbox.name)
         ).all())
         cross_post_inboxes = [n for ix_id, n in all_links if ix_id != inbox.id]
-        base = request.url_root.rstrip("/")
+        base = _site_base()
         canonical_url = _canonical_url_for(article, all_links, base=base)
         # Canonical inbox is what JSON-LD's isPartOf and the breadcrumb
         # should reflect — not necessarily the current URL's inbox.
