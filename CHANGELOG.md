@@ -11,6 +11,26 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Patch view: a full `git format-patch` payload now renders as one
+  highlighted block. The `index ...` metadata line, follow-up
+  `diff --git` blocks (multi-file patches), and the trailing
+  `-- \n<version>` signature were being chopped into separate
+  `<pre>` blocks, which broke copy-paste-to-patch and looked
+  visually fragmented.
+- Patch view: diff colours use Pygments class-based output instead
+  of inline `style=` attributes, so add/remove tones adapt to
+  Pico's light/dark theme via `light-dark()`.
+- Patch view: DCO trailers (`Signed-off-by:`, `Reviewed-by:`,
+  `Tested-by:`, `Acked-by:`, `Co-developed-by:`, `Reported-by:`,
+  `Suggested-by:`, `Cc:`, `To:`, `From:`) no longer route through
+  the message-ID linkifier, which had been smearing redacted email
+  addresses on these lines as `[off-list ref]` — confusingly close
+  to broken metadata for DCO chain verification. Allowlisted
+  senders surface verbatim; everyone else is replaced with the
+  explicit `<redacted>` placeholder.
+
 ## [1.8.1] – 2026-05-09
 
 ### Changed
