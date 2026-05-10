@@ -13,6 +13,11 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Added
 
+- Year-browse list on the inbox dashboard now groups by decade
+  (`2020s · 2026 2025 ... · 2010s · 2019 ... · 2000s · ...`) instead
+  of a flat row of ~30 inline years that read as a wall on narrow
+  viewports. Each decade gets its own line; no bullets, compact
+  small-text styling, no JS.
 - `SITE_BASE_URL` setting (optional). When set, used verbatim for
   every emitted absolute URL (`<link rel="canonical">`, `og:url`,
   JSON-LD `url`, sitemap, atom feed `id`). Force-corrects the scheme
