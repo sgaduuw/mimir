@@ -822,15 +822,20 @@ def test_og_type_article_on_message_page(client, tmp_path):
 
 def test_twitter_card_tags_match_og_pair(client, inbox_name):
     """twitter:title/description should mirror og:title/description so
-    Twitter's preview matches whatever Slack/etc. show via OG."""
+    Twitter's preview matches whatever Slack/etc. show via OG. The
+    card type bumped from `summary` to `summary_large_image` once the
+    SVG wordmark og:image landed (2026-05-11 review)."""
     html = client.get(f"/{inbox_name}/").data.decode()
-    assert _meta_value(html, "twitter:card") == "summary"
+    assert _meta_value(html, "twitter:card") == "summary_large_image"
     assert _meta_value(html, "twitter:title") == _meta_value(html, "og:title")
     assert (
         _meta_value(html, "twitter:description")
         == _meta_value(html, "og:description")
     )
     assert _meta_value(html, "twitter:title") == f"{inbox_name} | mimir"
+    # Image mirrors og:image.
+    assert _meta_value(html, "twitter:image") == _meta_value(html, "og:image")
+    assert _meta_value(html, "og:image").endswith("/og-image.svg")
 
 
 def test_meta_description_inbox_uses_rich_form_when_stats_present(client):
@@ -973,12 +978,19 @@ def test_search_page_does_not_emit_json_ld(client, inbox_name):
     assert blocks == []
 
 
-def test_inbox_dashboard_does_not_emit_json_ld(client, inbox_name):
-    """Same — only `/` and message pages have JSON-LD in this phase."""
+def test_inbox_dashboard_emits_discussion_forum_json_ld(client, inbox_name):
+    """The inbox dashboard ships a `DiscussionForum` payload so the
+    page reads as a topical hub for crawlers. ItemList of active
+    threads is included when threads exist; an empty test corpus
+    yields no `mainEntity`, but the type/name/url still appear."""
     blocks = _json_ld_blocks(
         client.get(f"/{inbox_name}/").data.decode()
     )
-    assert blocks == []
+    assert len(blocks) == 1
+    payload = blocks[0]
+    assert payload["@type"] == "DiscussionForum"
+    assert payload["name"] == inbox_name
+    assert payload["url"].endswith(f"/{inbox_name}/")
 
 
 def test_inbox_dashboard_no_trackers_hides_section(client, inbox_name):
@@ -1040,3 +1052,94 @@ def test_off_list_parent_hint_skips_already_configured_lists(client, tmp_path):
     body = client.get(url).data.decode()
     assert "off-list ancestor" in body
     assert "linux-arm-kernel@lists.infradead.org" not in body
+
+
+# Meta-sweep (issue #3): canonical, favicon/og:image, ItemList JSON-LD,
+# subject normalisation, display_name filter, SITE_BASE_URL override.
+
+
+def test_canonical_link_on_homepage(client):
+    """Every emitted page carries a canonical. Pre-meta-sweep the
+    homepage was missing one; now it pins itself."""
+    html = client.get("/").data.decode()
+    import re as _re
+    m = _re.search(r'<link rel="canonical" href="([^"]+)"', html)
+    assert m is not None
+    href = m.group(1)
+    assert href.endswith("/")
+    assert href.startswith("http://") or href.startswith("https://")
+
+
+def test_canonical_link_on_inbox_dashboard(client, inbox_name):
+    html = client.get(f"/{inbox_name}/").data.decode()
+    import re as _re
+    m = _re.search(r'<link rel="canonical" href="([^"]+)"', html)
+    assert m is not None
+    assert m.group(1).endswith(f"/{inbox_name}/")
+
+
+def test_index_json_ld_includes_inbox_item_list(client):
+    """`/` ships ItemList of configured inboxes so search engines can
+    treat it as a topical hub rather than a flat link list."""
+    blocks = _json_ld_blocks(client.get("/").data.decode())
+    assert len(blocks) == 1
+    payload = blocks[0]
+    assert payload["@type"] == "WebSite"
+    assert "mainEntity" in payload
+    ml = payload["mainEntity"]
+    assert ml["@type"] == "ItemList"
+    assert ml["numberOfItems"] >= 1
+    assert all("position" in item for item in ml["itemListElement"])
+
+
+def test_favicon_svg_served(client):
+    r = client.get("/favicon.svg")
+    assert r.status_code == 200
+    assert r.mimetype == "image/svg+xml"
+    assert b"<svg" in r.data
+
+
+def test_og_image_svg_served(client):
+    r = client.get("/og-image.svg")
+    assert r.status_code == 200
+    assert r.mimetype == "image/svg+xml"
+    assert b"<svg" in r.data
+    # site_name templated in.
+    assert b"mimir" in r.data or b"ratatoskr" in r.data
+
+
+def test_clean_subject_filter_collapses_whitespace():
+    from mimir.web import _clean_subject_filter
+    assert _clean_subject_filter("a\n  b") == "a b"
+    assert _clean_subject_filter("a\tb\r\nc") == "a b c"
+    assert _clean_subject_filter("  spaces  ") == "spaces"
+    assert _clean_subject_filter(None) == ""
+    assert _clean_subject_filter("") == ""
+
+
+def test_display_name_filter_strips_address(client):
+    from mimir.web import _display_name_filter
+    assert _display_name_filter("Bob <bob@example.com>") == "Bob"
+    assert _display_name_filter("bob@example.com") == "unknown sender"
+    assert _display_name_filter(None) == "unknown sender"
+    assert _display_name_filter("") == "unknown sender"
+
+
+def test_site_base_url_override_forces_scheme(monkeypatch):
+    """SITE_BASE_URL setting takes precedence over request.url_root —
+    the production escape hatch for `http://` leaking through a
+    misconfigured proxy chain."""
+    from mimir import config
+    monkeypatch.setattr(
+        config.settings, "site_base_url", "https://forced.example.com",
+    )
+    from mimir import create_app
+    c = create_app().test_client()
+    html = c.get("/").data.decode()
+    import re as _re
+    m = _re.search(r'<link rel="canonical" href="([^"]+)"', html)
+    assert m is not None
+    assert m.group(1).startswith("https://forced.example.com/")
+    # og:url and og:image also pick up the forced base.
+    assert _meta_value(html, "og:url").startswith("https://forced.example.com/")
+    assert _meta_value(html, "og:image").startswith("https://forced.example.com/")

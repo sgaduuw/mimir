@@ -20,7 +20,7 @@
   <ul>
     {% for t in active %}
     <li>
-      <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject or '(no subject)' }}</a>
+      <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject|clean_subject or '(no subject)' }}</a>
       <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
         &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} in 7d
         &middot; {{ t.author|safe_from }}</small>
@@ -37,7 +37,7 @@
     <ul>
       {% for a in pulls %}
       <li>
-        <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject or '(no subject)' }}</a>
+        <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
         <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}
           &middot; {{ a.author|safe_from }}</small>
       </li>
@@ -51,7 +51,7 @@
     <ul>
       {% for a in stable %}
       <li>
-        <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject or '(no subject)' }}</a>
+        <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
         <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}</small>
       </li>
       {% endfor %}
@@ -69,7 +69,7 @@
     <ul>
       {% for a in t.messages %}
       <li>
-        <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject or '(no subject)' }}</a>
+        <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
         <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}</small>
       </li>
       {% endfor %}
@@ -89,7 +89,7 @@
   <ul>
     {% for a in history %}
     <li>
-      <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject or '(no subject)' }}</a>
+      <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
       <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}
         &middot; {{ a.author|safe_from }}</small>
     </li>
