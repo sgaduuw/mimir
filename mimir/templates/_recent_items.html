@@ -4,7 +4,7 @@
    (bool), `recent_next_offset` (int). #}
 {% for a in recent %}
 <li>
-  <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject or '(no subject)' }}</a>
+  <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
   <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '????-??-??' }}
     &middot; {{ a.author|safe_from }}</small>
 </li>
