@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.9.0] – 2026-05-11
+
 ### Added
 
 - Year-browse list on the inbox dashboard now groups by decade
