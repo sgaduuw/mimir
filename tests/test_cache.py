@@ -10,6 +10,7 @@ import logging
 from datetime import date, datetime, timezone
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from mimir import cache
@@ -212,9 +213,10 @@ def test_unknown_tag_raises():
 
 
 def test_set_swallows_operational_error_on_lock(monkeypatch):
-    """A locked DB during a cache write must not propagate — the
-    request has already rendered. `set()` logs at warning and returns.
-    """
+    """Unit-level: a locked DB during a cache write must not propagate
+    — the request has already rendered. `set()` logs at warning and
+    returns. Mocked SessionLocal pins the swallow + log code path
+    without depending on real SQLite contention timing."""
     class _LockedSession:
         def __enter__(self):
             return self
@@ -244,6 +246,69 @@ def test_set_swallows_operational_error_on_lock(monkeypatch):
     assert any("cache write failed" in r.getMessage() for r in captured), (
         f"expected a 'cache write failed' warning, got {[r.getMessage() for r in captured]}"
     )
+
+
+def test_set_swallows_real_sqlite_lock_with_busy_timeout_zero():
+    """Integration-level companion to the mocked swallow test: open a
+    separate SQLite connection, hold an EXCLUSIVE transaction, then
+    call `cache.set()` against a connection with `busy_timeout=0`.
+    The real contention raises a real OperationalError, and `set()`
+    must still swallow it.
+
+    The mocked version proves the code path; this version proves
+    the swallow actually triggers under SQLite-level lock contention,
+    which is the scenario the contract describes."""
+    import sqlite3
+
+    from mimir.extensions import engine
+
+    db_path = engine.url.database
+    if not db_path or db_path == ":memory:":
+        pytest.skip("requires file-backed SQLite for cross-connection lock")
+
+    # Hold an EXCLUSIVE transaction on the cache table from a
+    # second connection. cache.set's own connection will hit
+    # OperationalError on commit/upsert.
+    blocker = sqlite3.connect(db_path)
+    try:
+        # busy_timeout 0 on the blocker so it returns immediately if
+        # it ever needs to wait; we never query through it.
+        blocker.execute("PRAGMA busy_timeout = 0")
+        blocker.execute("BEGIN EXCLUSIVE")
+
+        # Lower the engine's busy_timeout to 0 for this test so we
+        # don't wait the production 5s window.
+        with engine.connect() as conn:
+            conn.execute(text("PRAGMA busy_timeout = 0"))
+            conn.commit()
+
+        captured: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                captured.append(record)
+
+        handler = _Capture(level=logging.WARNING)
+        logger = logging.getLogger("mimir.cache")
+        logger.addHandler(handler)
+        try:
+            cache.set("xtest-real-lock-key", "value", ttl=60)  # must not raise
+        finally:
+            logger.removeHandler(handler)
+
+        # Either we got the swallow warning, or the write succeeded
+        # despite the lock (some SQLite versions do non-blocking
+        # writes via WAL). Both are acceptable; the contract is
+        # specifically "no exception propagates."
+        # The "cache write failed" warning IS expected here under
+        # EXCLUSIVE lock + busy_timeout 0; assert it appeared.
+        assert any("cache write failed" in r.getMessage() for r in captured), (
+            "expected a 'cache write failed' warning under real lock; "
+            f"got {[r.getMessage() for r in captured]}"
+        )
+    finally:
+        blocker.rollback()
+        blocker.close()
 
 
 def test_delete_for_inbox_pattern_boundary():
