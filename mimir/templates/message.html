@@ -14,10 +14,79 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    default (root → partial, deep → closed). #}
 <style>
   .thread-context { margin-block: 1rem; }
+  /* Toolbar sits flush against the top of the box in `partial` and visibly
+     standalone elsewhere. The label collapses to the summary line in
+     `closed`. */
+  .thread-context .thread-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.4rem 0.75rem;
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: var(--pico-border-radius);
+    margin: 0;
+  }
+  .thread-context .thread-toolbar > .thread-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-weight: bold;
+  }
+  .thread-context .thread-toolbar .thread-summary { display: none; }
+  /* The three-button toggle. Avoid Pico's [role="group"] pill component —
+     it'd force width: 100% and split the buttons into equal-width bars. */
+  .thread-context .thread-toggle {
+    display: inline-flex;
+    gap: 0;
+    flex: 0 0 auto;
+  }
+  .thread-context .thread-toggle > button {
+    /* defeat Pico's full-width block button defaults */
+    display: inline-block;
+    width: auto;
+    min-width: 0;
+    margin: 0;
+    padding: 0.15rem 0.55rem;
+    line-height: 1.1;
+    font-size: 0.85rem;
+    background: var(--pico-background-color);
+    color: var(--pico-secondary);
+    border: 1px solid var(--pico-muted-border-color);
+    border-right-width: 0;
+    border-radius: 0;
+    cursor: pointer;
+  }
+  .thread-context .thread-toggle > button:first-child {
+    border-top-left-radius: var(--pico-border-radius);
+    border-bottom-left-radius: var(--pico-border-radius);
+  }
+  .thread-context .thread-toggle > button:last-child {
+    border-right-width: 1px;
+    border-top-right-radius: var(--pico-border-radius);
+    border-bottom-right-radius: var(--pico-border-radius);
+  }
+  .thread-context .thread-toggle > button:hover {
+    background: var(--pico-secondary-background);
+    color: var(--pico-secondary-inverse);
+  }
+  .thread-context .thread-toggle > button[aria-pressed="true"] {
+    background: var(--pico-secondary);
+    color: var(--pico-secondary-inverse);
+    border-color: var(--pico-secondary);
+  }
+  /* Tree list. `list-style: none` on the ul plus list-style-type on each li
+     defeats Pico's marker styling (which leaks through `list-style: none`
+     alone on this Pico version). */
+  .thread-context .thread-list,
+  .thread-context .thread-list li {
+    list-style: none;
+    list-style-type: none;
+  }
   .thread-context .thread-list {
-    list-style: none; padding-left: 0; margin-bottom: 0;
+    padding-left: 0; margin: 0;
     font-family: monospace; line-height: 1.4;
   }
+  .thread-context .thread-list li::marker { content: ""; }
   .thread-context .thread-list li.is-active::before {
     content: "» ";
     font-weight: bold;
@@ -27,7 +96,6 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
     color: inherit;
     text-decoration: none;
   }
-  .thread-context .thread-summary { display: none; cursor: pointer; }
   .thread-context .thread-box {
     border: 1px solid var(--pico-muted-border-color);
     border-radius: var(--pico-border-radius);
@@ -35,34 +103,25 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
     max-height: min(50vh, 24rem);
     overflow-y: auto;
   }
-  .thread-context .thread-toggle {
-    display: inline-flex;
-    gap: 0.25rem;
-    margin-left: 0.5rem;
-    vertical-align: middle;
+  /* `partial`: connect the toolbar to the box top with shared borders. */
+  html[data-thread-fold="partial"] .thread-context .thread-toolbar {
+    border-bottom: 0;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
   }
-  .thread-context .thread-toggle button {
-    padding: 0.1rem 0.5rem;
-    margin: 0;
-    width: auto;
-    line-height: 1.2;
-    font-size: 0.85rem;
-    background: transparent;
-    color: var(--pico-secondary);
-    border: 1px solid var(--pico-muted-border-color);
+  html[data-thread-fold="partial"] .thread-context .thread-box {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
   }
-  .thread-context .thread-toggle button[aria-pressed="true"] {
-    background: var(--pico-secondary-background);
-    color: var(--pico-secondary-inverse);
-    border-color: var(--pico-secondary);
-  }
-  /* closed: hide the box + heading, show only the summary one-liner. */
-  html[data-thread-fold="closed"] .thread-context .thread-box,
-  html[data-thread-fold="closed"] .thread-context > h4 { display: none; }
-  html[data-thread-fold="closed"] .thread-context .thread-summary { display: block; }
-  /* expanded: drop the bordered scroll box; tree flows inline with the page. */
+  /* `closed`: hide the box, swap the label for the summary line, and
+     give the whole toolbar a cursor affordance so clicking it opens. */
+  html[data-thread-fold="closed"] .thread-context .thread-box { display: none; }
+  html[data-thread-fold="closed"] .thread-context .thread-toolbar { cursor: pointer; }
+  html[data-thread-fold="closed"] .thread-context .thread-toolbar > .thread-label .thread-count { display: none; }
+  html[data-thread-fold="closed"] .thread-context .thread-toolbar > .thread-label .thread-summary { display: inline; font-weight: normal; }
+  /* `expanded`: drop the bordered scroll box; tree flows inline. */
   html[data-thread-fold="expanded"] .thread-context .thread-box {
-    max-height: none; overflow-y: visible; border: none; padding: 0;
+    max-height: none; overflow-y: visible; border: none; padding: 0.5rem 0 0 0;
   }
 </style>
 <script>
@@ -82,20 +141,21 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
 </script>
 <section class="thread-context"
          data-thread-root="{{ thread[0].message_id if thread else '' }}">
-  <p class="thread-summary">
-    <small>
-      <strong>{{ thread|length }} message{{ '' if thread|length == 1 else 's' }}</strong>,
-      {{ thread_summary.author_count }} author{{ '' if thread_summary.author_count == 1 else 's' }},
-      {{ thread_summary.last_activity_rel }}
-    </small>
-  </p>
-  <h4>Thread ({{ thread|length }} message{{ '' if thread|length == 1 else 's' }})
-    <span class="thread-toggle" role="group" aria-label="Thread tree fold state">
+  <header class="thread-toolbar">
+    <span class="thread-label">
+      <span class="thread-count">Thread ({{ thread|length }} message{{ '' if thread|length == 1 else 's' }})</span>
+      <span class="thread-summary">
+        {{ thread|length }} message{{ '' if thread|length == 1 else 's' }},
+        {{ thread_summary.author_count }} author{{ '' if thread_summary.author_count == 1 else 's' }},
+        {{ thread_summary.last_activity_rel }}
+      </span>
+    </span>
+    <span class="thread-toggle" aria-label="Thread tree fold state">
       <button type="button" data-fold-set="closed" title="Collapse to summary">▼</button>
       <button type="button" data-fold-set="partial" title="Show tree in a scrollable box">≡</button>
       <button type="button" data-fold-set="expanded" title="Expand inline">▤</button>
     </span>
-  </h4>
+  </header>
   <div class="thread-box">
   <ul class="thread-list">
     {% if parent_off_list %}
@@ -170,9 +230,17 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
       });
     });
 
-    var summary = section.querySelector('.thread-summary');
-    if (summary) {
-      summary.addEventListener('click', function () { setFold('partial', true); });
+    /* In `closed` mode, clicking anywhere on the toolbar (except the
+       toggle buttons themselves) opens the tree to `partial`. The CSS
+       sets cursor: pointer on the toolbar in closed mode to signal it. */
+    var toolbar = section.querySelector('.thread-toolbar');
+    if (toolbar) {
+      toolbar.addEventListener('click', function (e) {
+        if (e.target.closest('button')) return;
+        if (html.getAttribute('data-thread-fold') === 'closed') {
+          setFold('partial', true);
+        }
+      });
     }
 
     /* After an HTMX swap, flip the active marker to whichever <li>
