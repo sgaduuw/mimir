@@ -240,25 +240,48 @@ def test_security_headers_present(client):
         assert r.headers.get(h), f"missing header {h}"
 
 
+def _parse_csp(csp: str) -> dict[str, list[str]]:
+    """Parse a CSP header into a {directive: [sources, ...]} map.
+    Robust to whitespace, directive order, and the `script-src` vs
+    `script-src-elem` substring trap."""
+    out: dict[str, list[str]] = {}
+    for part in csp.split(";"):
+        tokens = part.split()
+        if not tokens:
+            continue
+        out[tokens[0]] = tokens[1:]
+    return out
+
+
 def test_security_headers_values_pin_csp_contract(client):
     """Header presence isn't enough -- the *values* are the contract.
     A future refactor that left `script-src 'unsafe-inline'` in the
     CSP would silently re-enable the inline-script vector that
     blocked the thread-fold controller (#fixed in 1.12.2). Pin the
-    exact directives that matter."""
+    directives that matter via a parsed-directive lookup so a future
+    reorder of the CSP header doesn't silently invalidate the test."""
     r = client.get("/")
     csp = r.headers.get("Content-Security-Policy", "")
+    directives = _parse_csp(csp)
 
-    # default-src must be 'self' (no `*`, no permissive fallback).
-    assert "default-src 'self'" in csp
+    # default-src 'self' (no `*`, no permissive fallback).
+    assert directives.get("default-src") == ["'self'"]
+
     # script-src is the recurring footgun: no 'unsafe-inline', no
-    # 'unsafe-eval', and only the explicit unpkg.com allowlist.
-    assert "script-src" in csp
-    assert "'unsafe-inline'" not in csp.split("script-src", 1)[1].split(";", 1)[0]
-    assert "'unsafe-eval'" not in csp
+    # 'unsafe-eval'. Pin the negative contract directly on the
+    # directive's source list, not a substring of the raw header.
+    script_src = directives.get("script-src", [])
+    assert script_src, "script-src directive missing"
+    assert "'unsafe-inline'" not in script_src
+    assert "'unsafe-eval'" not in script_src
+    # 'unsafe-eval' must also be absent globally (no other directive
+    # may smuggle it in via, e.g., script-src-elem).
+    assert all("'unsafe-eval'" not in srcs for srcs in directives.values())
+
     # Other crucial directives that block embed/iframe abuse.
-    assert "frame-ancestors 'none'" in csp
-    assert "base-uri 'self'" in csp
+    assert directives.get("frame-ancestors") == ["'none'"]
+    assert directives.get("base-uri") == ["'self'"]
+
     # Other headers are short enough to pin exactly.
     assert r.headers["X-Content-Type-Options"] == "nosniff"
     assert r.headers["X-Frame-Options"] == "DENY"
