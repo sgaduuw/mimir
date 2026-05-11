@@ -24,9 +24,15 @@ def test_linkify_escapes_html_metacharacters():
 
 
 def test_linkify_escapes_ampersand_and_quote():
+    """markupsafe's quoting style is deterministic -- pin the
+    `&quot;` form directly. The old `&quot; or "` disjunction would
+    have masked a regression where escaping stopped applying to the
+    `"` character (raw quotes leaking into rendered HTML)."""
     out = linkify('a & b "quoted"')
     assert "&amp;" in out
-    assert "&quot;" in out or "\"" in out  # markupsafe quoting style
+    assert "&quot;" in out
+    # Negative: the raw form must NOT appear in escaped output.
+    assert '"quoted"' not in out
 
 
 def test_linkify_links_http_and_https():
