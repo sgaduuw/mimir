@@ -11,6 +11,29 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.10.0] – 2026-05-11
+
+### Changed
+
+- `/sitemap.xml` is now a sitemap index (`<sitemapindex>`) listing
+  one sub-sitemap per inbox plus `/meta-sitemap.xml`, replacing the
+  previous single monolithic `<urlset>`. Crawlers fetch sub-sitemaps
+  independently and can skip unchanged inboxes via the per-entry
+  `<lastmod>`. Each per-inbox sitemap (`/<inbox>/sitemap.xml`) lists
+  the dashboard, year and month archives that actually have data,
+  and the inbox's 5000 most-recent article URLs. Cross-posted
+  articles appear in each linked inbox's sitemap — the canonical
+  `<link>` on the page itself remains the deduplication signal.
+
+### Added
+
+- `/meta-sitemap.xml` — one-URL sub-sitemap covering `/`. Lives
+  behind the sitemap index so the index can stay pure
+  `<sitemapindex>` per the sitemaps.org schema.
+- `/<inbox>/sitemap.xml` — per-inbox sub-sitemap. Cached per inbox,
+  so an ingest into one inbox doesn't invalidate cached sitemaps
+  for the others.
+
 ## [1.9.0] – 2026-05-11
 
 ### Added
