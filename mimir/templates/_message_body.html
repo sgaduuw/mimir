@@ -1,0 +1,53 @@
+{# Content of <article id="msg">. Lives in its own template so the
+   message route can return just this partial for an HTMX swap
+   when the user clicks within the thread tree, leaving the
+   surrounding navigation + tree intact. Full-page renders include
+   it via {% include %} from message.html. #}
+<article id="msg" data-message-id="{{ article.message_id }}">
+  <header>
+    <h2>{{ parsed.subject|clean_subject or '(no subject)' }}</h2>
+    <p>
+      <strong>From:</strong> {{ parsed.author|safe_from }}<br>
+      <strong>Date:</strong> {{ article.date.strftime('%Y-%m-%d %H:%M:%S %z') if article.date else '?' }}
+      {% if cross_post_inboxes %}
+      <br><strong>Also in:</strong>
+        {% for other in cross_post_inboxes %}
+          <a href="{{ article|msg_url(other) }}">{{ other }}</a>{% if not loop.last %}, {% endif %}
+        {% endfor %}
+      {% endif %}
+    </p>
+  </header>
+
+  {% if related %}
+  <h4>Possibly related <small><em>(same subject, not in this thread)</em></small></h4>
+  <ul>
+    {% for r in related %}
+    <li>
+      <small>{{ r.date.strftime('%Y-%m-%d') if r.date else '?' }}</small>
+      &middot; <a href="{{ r|msg_url(inbox_name) }}">{{ r.subject|clean_subject or '(no subject)' }}</a>
+      &middot; <small>{{ r.author|safe_from }}</small>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <div class="message-body">
+    {% if parsed.body %}{{ parsed.body|render_body(msgid_urls) }}{% else %}<em>(no body)</em>{% endif %}
+  </div>
+
+  {% if parsed.attachments %}
+  <h4>Attachments</h4>
+  <ul>
+    {% for att in parsed.attachments %}
+    <li>
+      <a href="{{ article|msg_url(inbox_name) }}/attachment/{{ loop.index0 }}">{{ att.filename or '(unnamed)' }}</a>
+      <small>[{{ att.content_type }}] {{ att.content|length }} bytes
+        {% if att|is_previewable %}&middot;
+          <a href="{{ article|msg_url(inbox_name) }}/attachment/{{ loop.index0 }}/preview">preview</a>
+        {% endif %}
+      </small>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</article>

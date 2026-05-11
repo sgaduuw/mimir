@@ -298,6 +298,50 @@ def _canonical_url_for(
     return base + _msg_url(article, inbox_name)
 
 
+def _relative_time(then: datetime, now: datetime | None = None) -> str:
+    """Render a coarse relative-time string for the closed-state fold
+    summary ("23 messages, 5 authors, 2h ago"). Uses minutes/hours/days
+    units under 30 days; falls back to an absolute YYYY-MM-DD beyond
+    that, since "47d ago" is harder to parse than the date itself."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    delta = now - then
+    secs = int(delta.total_seconds())
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    if secs < 86400:
+        return f"{secs // 3600}h ago"
+    if secs < 86400 * 30:
+        return f"{secs // 86400}d ago"
+    return then.strftime("%Y-%m-%d")
+
+
+def _thread_summary(thread) -> dict:
+    """Compute the headline stats shown in the `closed` fold state:
+    total message count, unique-author count (by email so display-name
+    drift doesn't fragment the tally), and a coarse relative-time
+    string for the most-recent message in the thread."""
+    if not thread:
+        return {"author_count": 0, "last_activity_rel": "?"}
+    emails: set[str] = set()
+    for n in thread:
+        if not n.author:
+            continue
+        _, addr = parseaddr(n.author)
+        if addr:
+            emails.add(addr.lower())
+    dates = [n.date for n in thread if n.date]
+    last = max(dates) if dates else None
+    return {
+        "author_count": len(emails) or len(thread),
+        "last_activity_rel": _relative_time(last) if last else "?",
+    }
+
+
 @bp_web.app_template_filter("msg_url")
 def _msg_url_filter(article: Article, inbox_name: str) -> str:
     return _msg_url(article, inbox_name)
@@ -1614,14 +1658,27 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             article, parsed, canonical_url or "", canonical_inbox_name, base,
         ) if canonical_url else None
 
+    # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
+    thread_summary = _thread_summary(thread)
+
+    # HTMX intra-thread swap: when the click came from a tree link, return
+    # only the message-body partial (just the <article id="msg">). The
+    # surrounding tree + nav stay put on the client; the client-side script
+    # flips which <li> carries the .is-active class after the swap.
+    template = (
+        "_message_body.html"
+        if request.headers.get("HX-Request") == "true"
+        else "message.html"
+    )
     return render_template(
-        "message.html",
+        template,
         inbox_name=inbox.name,
         current_inbox=inbox.name,
         parsed=parsed,
         article=article,
         thread=thread,
         thread_urls=thread_urls,
+        thread_summary=thread_summary,
         msgid_urls=msgid_urls,
         parent_off_list=parent_off_list,
         parent_off_list_hints=parent_off_list_hints,
