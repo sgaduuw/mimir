@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.12.1] – 2026-05-11
+
 ### Fixed
 
 - Thread-fold toolbar visual + interactivity issues spotted on the
