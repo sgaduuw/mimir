@@ -8,6 +8,19 @@ with a few articles) set up by tests/conftest.py.
 import pytest
 
 
+def _clear_sitemap_cache():
+    """Sitemap routes cache their XML in the `cache` table; cross-test
+    mutations (e.g. flipping `art3.canonical_inbox_id`) won't be
+    visible until the cached rows expire. Tests that need a fresh
+    render call this first."""
+    from sqlalchemy import delete
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        s.commit()
+
+
 # Endpoints that don't depend on a configured inbox.
 def test_meta_index(client):
     assert client.get("/").status_code == 200
@@ -225,19 +238,26 @@ def test_inbox_scoped_message_id_redirect(client, inbox_name):
 
 
 def test_sitemap_xml(client):
+    """`/sitemap.xml` is the sitemap index: a `<sitemapindex>` of
+    `<sitemap>` children, one per inbox sub-sitemap plus `/meta-sitemap.xml`.
+    Cross-posts no longer collapse to one URL in this file — they're
+    listed per-inbox in each sub-sitemap (the canonical <link> on the
+    page tells crawlers which one wins)."""
     import xml.etree.ElementTree as ET
 
+    _clear_sitemap_cache()
     r = client.get("/sitemap.xml")
     assert r.status_code == 200
     assert r.mimetype == "application/xml"
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    urls = root.findall("s:url", ns)
-    # Always at least the meta-index plus per-inbox dashboards.
-    assert len(urls) > 0
-    locs = {u.find("s:loc", ns).text for u in urls}
-    # Meta-index is always present.
-    assert any(loc.endswith("/") and loc.count("/") <= 3 for loc in locs)
+    # Root element is <sitemapindex>, not <urlset>.
+    assert root.tag.endswith("sitemapindex")
+    sitemaps = root.findall("s:sitemap", ns)
+    locs = {sm.find("s:loc", ns).text for sm in sitemaps}
+    assert any(loc.endswith("/meta-sitemap.xml") for loc in locs)
+    assert any(loc.endswith("/alpha/sitemap.xml") for loc in locs)
+    assert any(loc.endswith("/beta/sitemap.xml") for loc in locs)
 
 
 # ProxyFix: trusted_proxy_hops controls X-Forwarded-* honouring
@@ -398,25 +418,13 @@ def test_canonical_url_for_combines_base_and_msg_url():
     )
 
 
-def test_sitemap_emits_no_duplicate_urls(client):
-    """The seeded cross-post art3 (alpha+beta) must surface as exactly
-    one URL in the sitemap, not one per linked inbox."""
-    import xml.etree.ElementTree as ET
-
-    r = client.get("/sitemap.xml")
-    assert r.status_code == 200
-    root = ET.fromstring(r.get_data())
-    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    locs = [u.find("s:loc", ns).text for u in root.findall("s:url", ns)]
-    # Article-level URLs end in /<id>; meta-index and dashboards don't.
-    article_locs = [loc for loc in locs if loc.rstrip("/").rsplit("/", 1)[-1].isdigit()]
-    assert len(article_locs) == len(set(article_locs))
-
-
-def test_sitemap_cross_post_uses_canonical_inbox(client):
-    """art3 is cross-posted alpha+beta. With canonical_inbox_id=NULL,
-    fallback is alphabetical-first ('alpha'). The sitemap entry for
-    art3 must be the alpha URL, not beta."""
+def test_sitemap_cross_post_appears_in_each_linked_inbox(client):
+    """art3 is cross-posted alpha+beta. In the per-inbox sitemap world,
+    it is listed under *both* `/alpha/sitemap.xml` and
+    `/beta/sitemap.xml` — each one is a real, crawlable URL, and the
+    canonical `<link>` on the page itself tells search engines which
+    to keep. The sitemap doesn't try to enforce one-canonical-URL-per-
+    article anymore (that was the old global-sitemap design)."""
     import xml.etree.ElementTree as ET
     from sqlalchemy import select
     from mimir.extensions import SessionLocal
@@ -428,47 +436,21 @@ def test_sitemap_cross_post_uses_canonical_inbox(client):
         ).scalar_one()
         art_id = art3.id
 
-    r = client.get("/sitemap.xml")
-    root = ET.fromstring(r.get_data())
+    _clear_sitemap_cache()
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    locs = [u.find("s:loc", ns).text for u in root.findall("s:url", ns)]
-    art3_locs = [loc for loc in locs if loc.endswith(f"/{art_id}")]
-    assert len(art3_locs) == 1
-    assert "/alpha/" in art3_locs[0]
-    assert "/beta/" not in art3_locs[0]
 
+    def article_locs(inbox: str) -> list[str]:
+        root = ET.fromstring(client.get(f"/{inbox}/sitemap.xml").get_data())
+        return [
+            u.find("s:loc", ns).text
+            for u in root.findall("s:url", ns)
+            if u.find("s:loc", ns).text.endswith(f"/{art_id}")
+        ]
 
-def test_sitemap_cross_post_respects_canonical_inbox_id(client):
-    """Setting canonical_inbox_id=beta.id flips art3's sitemap URL to
-    /beta/. Confirms the canonical column is read, not just the
-    alphabetical fallback."""
-    import xml.etree.ElementTree as ET
-    from sqlalchemy import select
-    from mimir.extensions import SessionLocal
-    from mimir.models import Article, Inbox
-
-    # Bust the sitemap cache so the change is visible immediately.
-    from mimir import cache
-    cache.purge_expired()
-    from mimir.models import CacheEntry
-    from sqlalchemy import delete
-    with SessionLocal() as s:
-        s.execute(delete(CacheEntry))
-        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
-        art3 = s.execute(
-            select(Article).where(Article.message_id == "art3@example.com")
-        ).scalar_one()
-        art3.canonical_inbox_id = beta.id
-        art_id = art3.id
-        s.commit()
-
-    r = client.get("/sitemap.xml")
-    root = ET.fromstring(r.get_data())
-    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    locs = [u.find("s:loc", ns).text for u in root.findall("s:url", ns)]
-    art3_locs = [loc for loc in locs if loc.endswith(f"/{art_id}")]
-    assert len(art3_locs) == 1
-    assert "/beta/" in art3_locs[0]
+    alpha_locs = article_locs("alpha")
+    beta_locs = article_locs("beta")
+    assert len(alpha_locs) == 1 and "/alpha/" in alpha_locs[0]
+    assert len(beta_locs) == 1 and "/beta/" in beta_locs[0]
 
 
 def test_atom_feed_cross_post_id_is_canonical_in_either_feed(client):
@@ -645,67 +627,83 @@ def test_message_subject_truncated_to_80(client, tmp_path):
     assert subject_part != long_subject
 
 
-def test_sitemap_meta_index_lastmod_is_global_max(client):
-    """Seeded articles range 2024-01-01 to 2024-03-01 (art3 cross-post).
-    The meta-index <lastmod> is the global max → 2024-03-01."""
+def test_sitemap_index_sub_sitemap_lastmods(client):
+    """The sitemap index emits a `<lastmod>` per sub-sitemap so
+    crawlers can skip unchanged inboxes. With seeded data, alpha,
+    beta, and the meta-sitemap all carry the global max 2024-03-01
+    (art3's cross-post date)."""
     import xml.etree.ElementTree as ET
+
+    _clear_sitemap_cache()
     r = client.get("/sitemap.xml")
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    first = root.findall("s:url", ns)[0]
-    assert first.find("s:loc", ns).text.endswith("/")
-    assert first.find("s:lastmod", ns).text == "2024-03-01"
+    lastmods = {
+        sm.find("s:loc", ns).text: (
+            sm.find("s:lastmod", ns).text
+            if sm.find("s:lastmod", ns) is not None
+            else None
+        )
+        for sm in root.findall("s:sitemap", ns)
+    }
+    meta_loc = next(loc for loc in lastmods if loc.endswith("/meta-sitemap.xml"))
+    alpha_loc = next(loc for loc in lastmods if loc.endswith("/alpha/sitemap.xml"))
+    beta_loc = next(loc for loc in lastmods if loc.endswith("/beta/sitemap.xml"))
+    assert lastmods[meta_loc] == "2024-03-01"
+    assert lastmods[alpha_loc] == "2024-03-01"
+    assert lastmods[beta_loc] == "2024-03-01"
 
 
-def test_sitemap_alpha_dashboard_lastmod_is_alpha_max(client):
-    """alpha is linked to art1 (2024-01-01), art3 (2024-03-01), art4
-    (2024-01-02) — max is 2024-03-01 (art3 cross-post)."""
+def test_meta_sitemap_lastmod_is_global_max(client):
+    """`/meta-sitemap.xml` is a one-URL urlset listing `/` with the
+    global max article date as its lastmod."""
     import xml.etree.ElementTree as ET
-    r = client.get("/sitemap.xml")
+
+    _clear_sitemap_cache()
+    r = client.get("/meta-sitemap.xml")
+    assert r.status_code == 200
+    assert r.mimetype == "application/xml"
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    for u in root.findall("s:url", ns):
-        if u.find("s:loc", ns).text.endswith("/alpha/"):
-            assert u.find("s:lastmod", ns).text == "2024-03-01"
-            return
-    raise AssertionError("alpha dashboard not in sitemap")
+    urls = root.findall("s:url", ns)
+    assert len(urls) == 1
+    assert urls[0].find("s:loc", ns).text.endswith("/")
+    assert urls[0].find("s:lastmod", ns).text == "2024-03-01"
 
 
-def test_sitemap_beta_dashboard_lastmod_is_beta_max(client):
-    """beta is linked to art2 (2024-02-01) and art3 (2024-03-01) —
-    max is 2024-03-01."""
+def test_inbox_sitemap_dashboard_lastmod_is_inbox_max(client):
+    """First entry of `/<inbox>/sitemap.xml` is the inbox dashboard,
+    with the per-inbox max as lastmod. alpha's range is 2024-01-01
+    to 2024-03-01 (art3 cross-post); beta's is 2024-02-01 to
+    2024-03-01."""
     import xml.etree.ElementTree as ET
-    r = client.get("/sitemap.xml")
-    root = ET.fromstring(r.get_data())
+
+    _clear_sitemap_cache()
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    for u in root.findall("s:url", ns):
-        if u.find("s:loc", ns).text.endswith("/beta/"):
-            assert u.find("s:lastmod", ns).text == "2024-03-01"
-            return
-    raise AssertionError("beta dashboard not in sitemap")
+    for inbox in ("alpha", "beta"):
+        root = ET.fromstring(client.get(f"/{inbox}/sitemap.xml").get_data())
+        urls = root.findall("s:url", ns)
+        assert urls[0].find("s:loc", ns).text.endswith(f"/{inbox}/")
+        assert urls[0].find("s:lastmod", ns).text == "2024-03-01"
 
 
-def test_sitemap_article_lastmod_matches_article_date(client):
-    """For per-article entries, <lastmod> should match the article's
-    own date in YYYY-MM-DD."""
+def test_inbox_sitemap_article_lastmod_matches_article_date(client):
+    """In a per-inbox sitemap, the per-article `<lastmod>` is the
+    article's own date in YYYY-MM-DD."""
     import xml.etree.ElementTree as ET
     from sqlalchemy import select
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
-    # Bust cache so the just-deployed change shows up.
-    from mimir.models import CacheEntry
-    from sqlalchemy import delete
     with SessionLocal() as s:
-        s.execute(delete(CacheEntry))
         art1 = s.execute(
             select(Article).where(Article.message_id == "art1@example.com")
         ).scalar_one()
-        s.commit()
         art1_id = art1.id
         art1_date = art1.date
 
-    r = client.get("/sitemap.xml")
+    _clear_sitemap_cache()
+    r = client.get("/alpha/sitemap.xml")
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     art1_lastmod = None
@@ -716,6 +714,57 @@ def test_sitemap_article_lastmod_matches_article_date(client):
             art1_lastmod = lm.text if lm is not None else None
             break
     assert art1_lastmod == art1_date.strftime("%Y-%m-%d")
+
+
+def test_inbox_sitemap_lists_year_and_month_archives(client):
+    """Year + month archives that actually have data appear as
+    lastmod-less `<url>` entries (discovery anchors, not refresh
+    signals). Empty months are skipped — `/alpha/2024/` and
+    `/alpha/2024/01/` are present, but only months with messages."""
+    import xml.etree.ElementTree as ET
+
+    _clear_sitemap_cache()
+    r = client.get("/alpha/sitemap.xml")
+    root = ET.fromstring(r.get_data())
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    locs = {u.find("s:loc", ns).text for u in root.findall("s:url", ns)}
+    assert any(loc.endswith("/alpha/2024/") for loc in locs)
+    # alpha has messages in 2024-01 (art1, art4) and 2024-03 (art3),
+    # but not 2024-02.
+    assert any(loc.endswith("/alpha/2024/01/") for loc in locs)
+    assert any(loc.endswith("/alpha/2024/03/") for loc in locs)
+    assert not any(loc.endswith("/alpha/2024/02/") for loc in locs)
+
+
+def test_inbox_sitemap_404_for_unknown_inbox(client):
+    """Unknown inbox slug returns 404 rather than rendering an empty
+    sitemap."""
+    r = client.get("/notreal/sitemap.xml")
+    assert r.status_code == 404
+
+
+def test_inbox_sitemap_articles_scoped_to_that_inbox(client):
+    """Articles only linked to beta (art2) don't appear in alpha's
+    sitemap, and vice versa."""
+    import xml.etree.ElementTree as ET
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as s:
+        art2 = s.execute(
+            select(Article).where(Article.message_id == "art2@example.com")
+        ).scalar_one()
+        art2_id = art2.id
+
+    _clear_sitemap_cache()
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    alpha_root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
+    alpha_locs = {u.find("s:loc", ns).text for u in alpha_root.findall("s:url", ns)}
+    assert not any(loc.endswith(f"/{art2_id}") for loc in alpha_locs)
+    beta_root = ET.fromstring(client.get("/beta/sitemap.xml").get_data())
+    beta_locs = {u.find("s:loc", ns).text for u in beta_root.findall("s:url", ns)}
+    assert any(loc.endswith(f"/{art2_id}") for loc in beta_locs)
 
 
 def test_global_message_id_lookup_uses_canonical_inbox(client):
