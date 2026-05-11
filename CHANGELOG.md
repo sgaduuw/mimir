@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.10.0] – 2026-05-11
+
 ### Changed
 
 - `/sitemap.xml` is now a sitemap index (`<sitemapindex>`) listing
