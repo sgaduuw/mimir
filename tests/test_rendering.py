@@ -6,6 +6,8 @@ adversarial inputs (XSS payloads, weird-scheme URLs, deeply nested
 quotes) never get exercised that way. These tests pin the
 escaping behavior and the structural transformations.
 """
+import re
+
 from markupsafe import Markup
 
 from mimir.rendering import URL_OR_MSGID_RE, linkify, parse_blocks, render_body
@@ -142,14 +144,25 @@ def test_render_body_empty():
 
 
 def test_render_body_wraps_text_in_pre():
+    """A plain text block must be enclosed by a <pre> open + close
+    around the actual content, not just contain a `<pre` substring
+    somewhere on the page (which would also pass if the body
+    rendered the text raw and a *different* block — diff, blockquote
+    — happened to be a `<pre>` further down)."""
     out = str(render_body("hello\nworld"))
-    assert "<pre" in out
-    assert "hello" in out
+    m = re.search(r"<pre[^>]*>(.*?)</pre>", out, re.DOTALL)
+    assert m is not None, f"no <pre>...</pre> in output: {out!r}"
+    assert "hello" in m.group(1)
+    assert "world" in m.group(1)
 
 
 def test_render_body_quotes_become_blockquote():
+    """A `> ` line must be wrapped in a real <blockquote>...</blockquote>
+    pair containing the quoted text — not just any open tag."""
     out = str(render_body("> quoted line"))
-    assert "<blockquote>" in out
+    m = re.search(r"<blockquote[^>]*>(.*?)</blockquote>", out, re.DOTALL)
+    assert m is not None, f"no <blockquote>...</blockquote>: {out!r}"
+    assert "quoted line" in m.group(1)
 
 
 def test_render_body_deeply_nested_quotes_collapse_to_details():
