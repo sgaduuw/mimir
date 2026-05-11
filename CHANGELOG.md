@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.12.0] – 2026-05-11
+
 ### Changed
 
 - Thread tree on message pages now has three fold states: `closed`
