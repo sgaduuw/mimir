@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.12.3] – 2026-05-11
+
 ### Fixed
 
 - `dev-seed-thread` would silently no-op when re-run within the same
