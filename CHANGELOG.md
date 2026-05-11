@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.12.2] – 2026-05-11
+
 ### Fixed
 
 - Thread-fold toggle buttons + tree-tab-on-load were dead on the
