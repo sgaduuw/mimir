@@ -130,6 +130,56 @@ def test_security_headers_present(client):
         assert r.headers.get(h), f"missing header {h}"
 
 
+def test_security_headers_values_pin_csp_contract(client):
+    """Header presence isn't enough -- the *values* are the contract.
+    A future refactor that left `script-src 'unsafe-inline'` in the
+    CSP would silently re-enable the inline-script vector that
+    blocked the thread-fold controller (#fixed in 1.12.2). Pin the
+    exact directives that matter."""
+    r = client.get("/")
+    csp = r.headers.get("Content-Security-Policy", "")
+
+    # default-src must be 'self' (no `*`, no permissive fallback).
+    assert "default-src 'self'" in csp
+    # script-src is the recurring footgun: no 'unsafe-inline', no
+    # 'unsafe-eval', and only the explicit unpkg.com allowlist.
+    assert "script-src" in csp
+    assert "'unsafe-inline'" not in csp.split("script-src", 1)[1].split(";", 1)[0]
+    assert "'unsafe-eval'" not in csp
+    # Other crucial directives that block embed/iframe abuse.
+    assert "frame-ancestors 'none'" in csp
+    assert "base-uri 'self'" in csp
+    # Other headers are short enough to pin exactly.
+    assert r.headers["X-Content-Type-Options"] == "nosniff"
+    assert r.headers["X-Frame-Options"] == "DENY"
+    assert r.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+
+
+def test_hsts_emitted_only_on_https_requests(client):
+    """HSTS is the one pin-the-browser-forever header in the bundle.
+    It must NOT emit on plain-HTTP dev sessions (where it would brick
+    the local workflow) and MUST emit on requests forwarded with
+    X-Forwarded-Proto: https. max-age and the includeSubDomains
+    directive are part of the contract; a refactor that drops either
+    would silently weaken the production posture."""
+    # Without the proxy header: no HSTS.
+    r_plain = client.get("/")
+    assert "Strict-Transport-Security" not in r_plain.headers
+
+    # With X-Forwarded-Proto: https: HSTS emitted with the pinned value.
+    r_https = client.get("/", headers={"X-Forwarded-Proto": "https"})
+    hsts = r_https.headers.get("Strict-Transport-Security", "")
+    assert hsts, "HSTS must emit when X-Forwarded-Proto=https"
+    assert "max-age=" in hsts
+    # max-age must be >= 6 months (15768000s); under that, browsers
+    # treat the policy as advisory rather than enforced.
+    import re
+    m = re.search(r"max-age=(\d+)", hsts)
+    assert m is not None
+    assert int(m.group(1)) >= 15_768_000
+    assert "includeSubDomains" in hsts
+
+
 def test_author_page_autodiscovery_link(client, inbox_name):
     """The per-author HTML page advertises its atom feed via
     `<link rel="alternate" type="application/atom+xml">` in the head,
