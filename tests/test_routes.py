@@ -958,6 +958,98 @@ def test_index_emits_website_json_ld(client):
     )
 
 
+def test_thread_summary_helper_counts_and_relative_time():
+    """`_thread_summary` returns author_count (deduped by email) and a
+    coarse relative-time string for the most-recent message. Drives
+    the closed-state fold one-liner ('23 messages, 5 authors, 2h ago')."""
+    from dataclasses import dataclass
+    from datetime import datetime, timedelta, timezone
+    from mimir.web import _thread_summary
+
+    @dataclass
+    class N:
+        author: str
+        date: datetime | None
+        message_id: str = ""
+        depth: int = 0
+
+    now = datetime.now(timezone.utc)
+    nodes = [
+        N(author="Alice <a@x.example>", date=now - timedelta(days=2)),
+        N(author="Alice <A@X.example>", date=now - timedelta(days=1)),  # dupe by email
+        N(author="Bob <b@y.example>", date=now - timedelta(hours=3)),
+        N(author=None, date=None),  # missing data; doesn't crash
+    ]
+    s = _thread_summary(nodes)
+    # Alice (case-insensitive dedupe) + Bob = 2; None ignored.
+    assert s["author_count"] == 2
+    assert s["last_activity_rel"] == "3h ago"
+
+
+def test_message_page_thread_fold_markup(client, tmp_path):
+    """Message page renders the three-state fold scaffolding when the
+    thread has 2+ messages: data-thread-root section, three toggle
+    buttons, the inline pin-and-set-attr script, and the closed-state
+    summary line. Single-message threads still skip the section entirely."""
+    # Single-message: no fold scaffolding.
+    _, url1 = _ingest_one_article(
+        tmp_path, "alpha", "fold-solo@example.com", subject="solo",
+    )
+    body1 = client.get(url1).data.decode()
+    assert "thread-context" not in body1
+    assert "data-thread-fold" not in body1
+
+    # Two-message thread (reply to known parent): fold scaffolding present.
+    # Each call re-points the inbox's mirror_path; the *current* view
+    # needs that mirror to resolve its own blob, so the reply's tmp_path
+    # is the one we leave installed when we hit reply_url.
+    root_dir = tmp_path / "root"
+    root_dir.mkdir()
+    reply_dir = tmp_path / "reply"
+    reply_dir.mkdir()
+    _ingest_one_article(
+        root_dir, "alpha", "fold-root@example.com",
+        subject="root msg",
+    )
+    _, reply_url = _ingest_one_article(
+        reply_dir, "alpha", "fold-reply@example.com",
+        subject="Re: root msg", in_reply_to="fold-root@example.com",
+    )
+    body2 = client.get(reply_url).data.decode()
+    assert 'class="thread-context"' in body2
+    assert 'data-thread-root=' in body2
+    assert 'data-fold-set="closed"' in body2
+    assert 'data-fold-set="partial"' in body2
+    assert 'data-fold-set="expanded"' in body2
+    assert "thread-summary" in body2
+    # FOUC-free pin script: setAttribute('data-thread-fold', ...) must
+    # fire *before* <section class="thread-context"> opens, so the CSS
+    # for the closed/expanded states resolves on first paint with no
+    # flash from a localStorage pin overriding the server default.
+    set_call_idx = body2.index("setAttribute('data-thread-fold'")
+    section_idx = body2.index('<section class="thread-context"')
+    assert set_call_idx < section_idx
+
+
+def test_message_page_htmx_request_returns_body_partial(client, tmp_path):
+    """When HX-Request: true is set, the message route returns only the
+    <article id="msg"> partial — no <html>, no <head>, no thread tree.
+    That's what lets the client-side script swap intra-thread nav into
+    `#msg` without re-rendering surrounding chrome."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "htmx-swap@example.com", subject="swap test",
+    )
+    r = client.get(url, headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert '<article id="msg"' in body
+    assert 'data-message-id="htmx-swap@example.com"' in body
+    # No surrounding chrome.
+    assert "<!doctype" not in body.lower()
+    assert "<html" not in body.lower()
+    assert "thread-context" not in body
+
+
 def test_message_page_emits_discussion_forum_posting(client, tmp_path):
     """Message page graph contains DiscussionForumPosting with all
     required-for-rich-results fields populated."""

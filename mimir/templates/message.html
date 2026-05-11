@@ -7,63 +7,97 @@
 Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|clean_subject or '(no subject)') | truncate(120) }}
 {%- endblock %}
 {% block content %}
-<article>
-  <header>
-    <h2>{{ parsed.subject|clean_subject or '(no subject)' }}</h2>
-    <p>
-      <strong>From:</strong> {{ parsed.author|safe_from }}<br>
-      <strong>Date:</strong> {{ article.date.strftime('%Y-%m-%d %H:%M:%S %z') if article.date else '?' }}
-      {% if cross_post_inboxes %}
-      <br><strong>Also in:</strong>
-        {% for other in cross_post_inboxes %}
-          <a href="{{ article|msg_url(other) }}">{{ other }}</a>{% if not loop.last %}, {% endif %}
-        {% endfor %}
-      {% endif %}
-    </p>
-  </header>
-
-  {% if thread|length > 1 or parent_off_list %}
-  {# Pure-CSS expand/collapse: hidden checkbox flips max-height on
-     the box and swaps the label text. Toggle only appears when the
-     thread is long enough that scrolling is meaningful. #}
-  <style>
-    .thread-wrap > input[type=checkbox] { display: none; }
-    .thread-box {
-      max-height: min(50vh, 24rem);
-      overflow-y: auto;
-      border: 1px solid var(--pico-muted-border-color);
-      border-radius: var(--pico-border-radius);
-      padding: 0.5rem 1rem;
-    }
-    .thread-wrap > input:checked ~ .thread-box {
-      max-height: none;
-      overflow-y: visible;
-    }
-    .thread-toggle {
-      cursor: pointer;
-      user-select: none;
-      margin-left: 0.5rem;
-      font-weight: normal;
-      color: var(--pico-secondary);
-    }
-    .thread-toggle:hover { text-decoration: underline; }
-    .thread-toggle [data-expanded] { display: none; }
-    .thread-wrap > input:checked ~ h4 .thread-toggle [data-collapsed] { display: none; }
-    .thread-wrap > input:checked ~ h4 .thread-toggle [data-expanded] { display: inline; }
-  </style>
-  <div class="thread-wrap">
-  <input type="checkbox" id="thread-expand">
+{% if thread|length > 1 or parent_off_list %}
+{# Three-state fold for the thread tree. State lives on <html data-thread-fold>
+   and is set by the inline script just below before this section paints, so
+   a localStorage pin doesn't cause a visible flash from the server's context
+   default (root → partial, deep → closed). #}
+<style>
+  .thread-context { margin-block: 1rem; }
+  .thread-context .thread-list {
+    list-style: none; padding-left: 0; margin-bottom: 0;
+    font-family: monospace; line-height: 1.4;
+  }
+  .thread-context .thread-list li.is-active::before {
+    content: "» ";
+    font-weight: bold;
+  }
+  .thread-context .thread-list li.is-active > a {
+    font-weight: bold;
+    color: inherit;
+    text-decoration: none;
+  }
+  .thread-context .thread-summary { display: none; cursor: pointer; }
+  .thread-context .thread-box {
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: var(--pico-border-radius);
+    padding: 0.5rem 1rem;
+    max-height: min(50vh, 24rem);
+    overflow-y: auto;
+  }
+  .thread-context .thread-toggle {
+    display: inline-flex;
+    gap: 0.25rem;
+    margin-left: 0.5rem;
+    vertical-align: middle;
+  }
+  .thread-context .thread-toggle button {
+    padding: 0.1rem 0.5rem;
+    margin: 0;
+    width: auto;
+    line-height: 1.2;
+    font-size: 0.85rem;
+    background: transparent;
+    color: var(--pico-secondary);
+    border: 1px solid var(--pico-muted-border-color);
+  }
+  .thread-context .thread-toggle button[aria-pressed="true"] {
+    background: var(--pico-secondary-background);
+    color: var(--pico-secondary-inverse);
+    border-color: var(--pico-secondary);
+  }
+  /* closed: hide the box + heading, show only the summary one-liner. */
+  html[data-thread-fold="closed"] .thread-context .thread-box,
+  html[data-thread-fold="closed"] .thread-context > h4 { display: none; }
+  html[data-thread-fold="closed"] .thread-context .thread-summary { display: block; }
+  /* expanded: drop the bordered scroll box; tree flows inline with the page. */
+  html[data-thread-fold="expanded"] .thread-context .thread-box {
+    max-height: none; overflow-y: visible; border: none; padding: 0;
+  }
+</style>
+<script>
+  /* Runs before .thread-context paints. Sets data-thread-fold on <html> so
+     CSS resolves to the right state on first render: no flash when a
+     localStorage pin overrides the server's context default. */
+  (function () {
+    var rootId = {{ (thread[0].message_id if thread else None)|tojson }};
+    var ctx = {{ ('root' if thread and thread[0].message_id == article.message_id else 'deep')|tojson }};
+    var pin = null;
+    try {
+      pin = rootId ? localStorage.getItem('mimir.fold.' + rootId) : null;
+    } catch (e) { /* private mode etc.; fall through to default. */ }
+    var mode = pin || (ctx === 'root' ? 'partial' : 'closed');
+    document.documentElement.setAttribute('data-thread-fold', mode);
+  })();
+</script>
+<section class="thread-context"
+         data-thread-root="{{ thread[0].message_id if thread else '' }}">
+  <p class="thread-summary">
+    <small>
+      <strong>{{ thread|length }} message{{ '' if thread|length == 1 else 's' }}</strong>,
+      {{ thread_summary.author_count }} author{{ '' if thread_summary.author_count == 1 else 's' }},
+      {{ thread_summary.last_activity_rel }}
+    </small>
+  </p>
   <h4>Thread ({{ thread|length }} message{{ '' if thread|length == 1 else 's' }})
-    {% if thread|length > 12 %}
-    <label for="thread-expand" class="thread-toggle">
-      <small data-collapsed>▾ expand</small>
-      <small data-expanded>▴ collapse</small>
-    </label>
-    {% endif %}
+    <span class="thread-toggle" role="group" aria-label="Thread tree fold state">
+      <button type="button" data-fold-set="closed" title="Collapse to summary">▼</button>
+      <button type="button" data-fold-set="partial" title="Show tree in a scrollable box">≡</button>
+      <button type="button" data-fold-set="expanded" title="Expand inline">▤</button>
+    </span>
   </h4>
   <div class="thread-box">
-  <ul style="list-style: none; padding-left: 0; margin-bottom: 0;
-             font-family: monospace; line-height: 1.4;">
+  <ul class="thread-list">
     {% if parent_off_list %}
     <li style="padding-left: 0; opacity: 0.6;">
       {% if parent_off_list_hints %}
@@ -75,51 +109,87 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
     {% endif %}
     {% set offset = 1 if parent_off_list else 0 %}
     {% for n in thread %}
-    <li style="padding-left: {{ (n.depth + offset) * 1.5 }}rem;">
-      {% if n.message_id == article.message_id %}
-        <strong>» {{ n.subject|clean_subject or '(no subject)' }}</strong>
-      {% else %}
-        <a href="{{ thread_urls[n.message_id] }}">{{ n.subject|clean_subject or '(no subject)' }}</a>
-      {% endif %}
+    <li style="padding-left: {{ (n.depth + offset) * 1.5 }}rem;"
+        data-message-id="{{ n.message_id }}"
+        {% if n.message_id == article.message_id %}class="is-active"{% endif %}>
+      <a href="{{ thread_urls[n.message_id] }}"
+         hx-get="{{ thread_urls[n.message_id] }}"
+         hx-target="#msg"
+         hx-swap="outerHTML"
+         hx-push-url="true">{{ n.subject|clean_subject or '(no subject)' }}</a>
       <small>&middot; {{ n.author|safe_from }} &middot; {{ n.date.strftime('%Y-%m-%d') if n.date else '' }}</small>
     </li>
     {% endfor %}
   </ul>
   </div>
-  </div>
-  {% endif %}
+</section>
+<script>
+  (function () {
+    var html = document.documentElement;
+    var section = document.querySelector('.thread-context');
+    if (!section) return;
+    var rootId = section.getAttribute('data-thread-root');
 
-  {% if related %}
-  <h4>Possibly related <small><em>(same subject, not in this thread)</em></small></h4>
-  <ul>
-    {% for r in related %}
-    <li>
-      <small>{{ r.date.strftime('%Y-%m-%d') if r.date else '?' }}</small>
-      &middot; <a href="{{ r|msg_url(inbox_name) }}">{{ r.subject|clean_subject or '(no subject)' }}</a>
-      &middot; <small>{{ r.author|safe_from }}</small>
-    </li>
-    {% endfor %}
-  </ul>
-  {% endif %}
+    function reflectToggle(mode) {
+      section.querySelectorAll('.thread-toggle button').forEach(function (b) {
+        b.setAttribute(
+          'aria-pressed',
+          b.getAttribute('data-fold-set') === mode ? 'true' : 'false'
+        );
+      });
+    }
 
-  <div class="message-body">
-    {% if parsed.body %}{{ parsed.body|render_body(msgid_urls) }}{% else %}<em>(no body)</em>{% endif %}
-  </div>
+    function setFold(mode, persist) {
+      html.setAttribute('data-thread-fold', mode);
+      reflectToggle(mode);
+      if (persist && rootId) {
+        try { localStorage.setItem('mimir.fold.' + rootId, mode); } catch (e) {}
+      }
+      if (mode === 'partial') scrollActiveIntoView();
+    }
 
-  {% if parsed.attachments %}
-  <h4>Attachments</h4>
-  <ul>
-    {% for att in parsed.attachments %}
-    <li>
-      <a href="{{ article|msg_url(inbox_name) }}/attachment/{{ loop.index0 }}">{{ att.filename or '(unnamed)' }}</a>
-      <small>[{{ att.content_type }}] {{ att.content|length }} bytes
-        {% if att|is_previewable %}&middot;
-          <a href="{{ article|msg_url(inbox_name) }}/attachment/{{ loop.index0 }}/preview">preview</a>
-        {% endif %}
-      </small>
-    </li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-</article>
+    function scrollActiveIntoView() {
+      var box = section.querySelector('.thread-box');
+      var active = section.querySelector('.thread-list li.is-active');
+      if (!box || !active) return;
+      var liRect = active.getBoundingClientRect();
+      var boxRect = box.getBoundingClientRect();
+      var target = box.scrollTop + (liRect.top - boxRect.top)
+                 - (boxRect.height / 2) + (liRect.height / 2);
+      box.scrollTop = Math.max(0, target);
+    }
+
+    reflectToggle(html.getAttribute('data-thread-fold') || 'partial');
+    if ((html.getAttribute('data-thread-fold') || 'partial') === 'partial') {
+      scrollActiveIntoView();
+    }
+
+    section.querySelectorAll('.thread-toggle button').forEach(function (b) {
+      b.addEventListener('click', function () {
+        setFold(b.getAttribute('data-fold-set'), true);
+      });
+    });
+
+    var summary = section.querySelector('.thread-summary');
+    if (summary) {
+      summary.addEventListener('click', function () { setFold('partial', true); });
+    }
+
+    /* After an HTMX swap, flip the active marker to whichever <li>
+       matches the new article's message-id. Class-toggling only; no
+       DOM rewrites, so hx-get on every anchor stays intact. */
+    document.body.addEventListener('htmx:afterSwap', function () {
+      var msg = document.getElementById('msg');
+      if (!msg) return;
+      var newId = msg.getAttribute('data-message-id');
+      if (!newId) return;
+      section.querySelectorAll('.thread-list li[data-message-id]').forEach(function (li) {
+        li.classList.toggle('is-active', li.getAttribute('data-message-id') === newId);
+      });
+      if (html.getAttribute('data-thread-fold') === 'partial') scrollActiveIntoView();
+    });
+  })();
+</script>
+{% endif %}
+{% include "_message_body.html" %}
 {% endblock %}

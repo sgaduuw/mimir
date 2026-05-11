@@ -11,6 +11,38 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.12.0] – 2026-05-11
+
+### Changed
+
+- Thread tree on message pages now has three fold states: `closed`
+  (one-liner `N messages, M authors, Th ago`), `partial` (the previous
+  bordered scrollable box, `min(50vh, 24rem)`), and `expanded` (no
+  cap, tree flows inline with the page). Default is context-aware
+  (root view → `partial`, deep reply → `closed`) and can be pinned
+  per-thread via localStorage; the pin survives across sessions. A
+  three-button toggle in the tree heading lets the user switch
+  between states without leaving the page. Pin-vs-default mismatch
+  is FOUC-free: an inline `<head>` script sets `data-thread-fold`
+  on `<html>` before the section paints, so CSS resolves to the
+  correct state on first paint.
+- Tree-scroll-follows-active in `partial` mode: the currently-viewed
+  message's `<li>` is centered in the scrollable box on render and
+  after any state change, so the active row is never off-screen on
+  long threads.
+
+### Added
+
+- HTMX-driven intra-thread navigation. Clicking a sibling/reply in
+  the thread tree fires `hx-get` against the message URL with
+  `HX-Request: true`, the server returns just the `<article id="msg">`
+  partial, and the client swaps it in place — leaving the tree,
+  navigation, and scroll position intact. The active marker in the
+  tree follows the new message via class-toggling on
+  `htmx:afterSwap`; the URL updates via `hx-push-url` so back/forward
+  and share-the-URL still work. Falls back to a full page load when
+  JS is off.
+
 ## [1.11.0] – 2026-05-11
 
 ### Added
