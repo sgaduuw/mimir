@@ -56,6 +56,23 @@ def test_datetime_keeps_tz():
     assert out.tzinfo is not None
 
 
+def test_datetime_keeps_non_utc_offset():
+    """isoformat() preserves the original UTC offset; the encoder
+    must not silently normalise to UTC. lkml ingest sees -0000 and
+    +0900 alike; serialising those as the same wall-clock with a
+    rewritten offset would corrupt the audit trail."""
+    from datetime import timedelta
+    tz_plus_2 = timezone(timedelta(hours=2))
+    tz_minus_5 = timezone(timedelta(hours=-5, minutes=-30))  # exotic offset
+    for tz in (tz_plus_2, tz_minus_5):
+        dt = datetime(2025, 1, 2, 3, 4, 5, tzinfo=tz)
+        out = _roundtrip(dt)
+        assert out == dt
+        assert out.utcoffset() == tz.utcoffset(None), (
+            f"offset changed across roundtrip: {out.utcoffset()} vs {tz.utcoffset(None)}"
+        )
+
+
 def test_date_roundtrip():
     assert _roundtrip(date(2025, 1, 2)) == date(2025, 1, 2)
 
@@ -136,6 +153,49 @@ def test_list_of_dataclasses():
         for i in range(3)
     ]
     assert _roundtrip(items) == items
+
+
+def test_nested_dict_of_list_of_dataclasses():
+    """The encoder recurses through dicts, lists, and tuples; verify
+    a non-flat shape (dict-of-list-of-dataclass) round-trips, since
+    every helper that hands data to the cache may build one. The
+    existing primitive + flat-dataclass tests don't exercise the
+    cross-product."""
+    payload = {
+        "alpha": [
+            ActiveThread(
+                id=1, inbox_name="alpha", message_id="a1@x",
+                subject="t1", author="a", date=None,
+                recent_count=1, reply_count=0, last_activity=None,
+            ),
+            ActiveThread(
+                id=2, inbox_name="alpha", message_id="a2@x",
+                subject="t2", author="b", date=None,
+                recent_count=0, reply_count=0, last_activity=None,
+            ),
+        ],
+        "beta": [],
+    }
+    out = _roundtrip(payload)
+    assert out == payload
+    assert isinstance(out["alpha"][0], ActiveThread)
+    assert isinstance(out["beta"], list)
+
+
+def test_dataclass_containing_nested_dict_roundtrip():
+    """ArchiveStats-like containers that *embed* dataclass fields
+    inside their own dataclass body work; verify the recursion lands
+    when a plain dict-of-dataclass is wrapped one level deeper."""
+    items = [
+        ArticleSummary(
+            id=i, subject=f"subj-{i}", author=f"u{i}@x", date=None,
+        )
+        for i in range(3)
+    ]
+    payload = {"recent": items, "meta": {"count": 3}}
+    out = _roundtrip(payload)
+    assert out == payload
+    assert all(isinstance(it, ArticleSummary) for it in out["recent"])
 
 
 def test_unknown_type_raises():
@@ -240,5 +300,47 @@ def test_delete_for_inbox_pattern_boundary():
                 sql_delete(CacheEntry).where(
                     CacheEntry.key.in_([_ns(k) for k in sentinels.keys()])
                 )
+            )
+            session.commit()
+
+
+def test_namespace_version_isolates_stale_rows():
+    """A bump to NAMESPACE_VERSION must orphan every cached row from
+    the old version. The contract is: rows written under `v<N>:` are
+    invisible to a process running with `NAMESPACE_VERSION = N + 1`.
+
+    Simulate the post-bump state by inserting a row with a stale
+    prefix and verifying `cache.get()` (which prefixes the lookup with
+    the current version) does NOT see it.
+    """
+    import datetime as _dt
+    from sqlalchemy import delete as sql_delete
+
+    from mimir.cache import NAMESPACE_VERSION
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    stale_prefix = f"v{NAMESPACE_VERSION - 1}:"
+    stale_key = stale_prefix + "xtest-stale-row"
+    expires_at = int(
+        (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=1)).timestamp()
+    )
+    with SessionLocal() as session:
+        session.execute(
+            sql_delete(CacheEntry).where(CacheEntry.key == stale_key)
+        )
+        session.add(CacheEntry(
+            key=stale_key, value='"stale-value"', expires_at=expires_at,
+        ))
+        session.commit()
+
+    try:
+        # The current-namespace get must see nothing -- the bare key
+        # gets prefixed with v{CURRENT}, which doesn't match v{OLD}:.
+        assert cache.get("xtest-stale-row") is None
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                sql_delete(CacheEntry).where(CacheEntry.key == stale_key)
             )
             session.commit()
