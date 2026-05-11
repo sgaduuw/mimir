@@ -160,6 +160,23 @@ def test_warm_cache_verbose_keeps_per_key_timings(seeded_db):
     assert "warm-cache:" in result.output and "ms total" in result.output
 
 
+def test_warm_cache_includes_atom_feed_sources(seeded_db):
+    """The atom routes use `recent_articles(limit=FEED_ENTRY_LIMIT)`
+    and `author_recent(..., limit=FEED_ENTRY_LIMIT)` — a different
+    cache key from the dashboard's `limit=5/10` calls. Warm both so
+    the first feed poll per hour returns a cache-hit too."""
+    from mimir.inboxes import set_tracked_authors
+    set_tracked_authors("alpha", {"Examples": "example.com"})
+    result = CliRunner().invoke(warm_cache_command, ["-v"])
+    assert result.exit_code == 0
+    # Recent feed flavour for each seeded inbox.
+    assert "alpha recent_articles (50)" in result.output
+    assert "beta recent_articles (50)" in result.output
+    # Tracker tile + feed flavour distinct lines.
+    assert "alpha tracker:Examples" in result.output
+    assert "alpha tracker:Examples (feed)" in result.output
+
+
 def test_warm_cache_skips_sitemap_when_site_base_url_unset(
     seeded_db, monkeypatch
 ):

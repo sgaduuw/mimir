@@ -11,6 +11,14 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- Per-author atom feed (`/<inbox>/author/<sub>/feed.atom`) is now
+  discoverable: the per-author HTML page emits a
+  `<link rel="alternate" type="application/atom+xml">` for feed-reader
+  autodiscovery, and the inbox dashboard's tracker tiles surface a
+  small `atom` link next to the existing `all →`.
+
 ### Changed
 
 - `warm-cache` now also refreshes the three sitemap caches
@@ -19,6 +27,12 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   hour no longer pays the cold compute on the chunky per-inbox
   sitemap. Skipped silently when `SITE_BASE_URL` is unset (the
   helper has no `request.url_root` to fall back on from the CLI).
+- `warm-cache` also refreshes the atom-feed data sources —
+  `recent_articles(limit=50)` per inbox (drives
+  `/<inbox>/feed.atom`) and `author_recent(..., limit=50)` per
+  tracked author (drives `/<inbox>/author/<sub>/feed.atom`).
+  Different cache keys from the dashboard's `limit=5/10` flavours,
+  so feed polls had been paying the cold compute first-per-hour.
 
 ## [1.10.0] – 2026-05-11
 
