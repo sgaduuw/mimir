@@ -1021,7 +1021,11 @@ def test_message_page_thread_fold_markup(client, tmp_path):
     assert 'data-fold-set="closed"' in body2
     assert 'data-fold-set="partial"' in body2
     assert 'data-fold-set="expanded"' in body2
-    assert "thread-summary" in body2
+    # The toolbar wraps both the label (with state-dependent count or
+    # summary line) and the three-button toggle in a single flex row
+    # that sits flush against the box top in the `partial` fold state.
+    assert 'class="thread-toolbar"' in body2
+    assert 'class="thread-summary"' in body2
     # FOUC-free pin script: setAttribute('data-thread-fold', ...) must
     # fire *before* <section class="thread-context"> opens, so the CSS
     # for the closed/expanded states resolves on first paint with no
