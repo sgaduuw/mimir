@@ -92,7 +92,13 @@ def test_from_with_encoded_display_name():
 def test_subject_with_invalid_utf8_does_not_raise():
     """Invalid UTF-8 in the body / headers used to crash older email
     library codepaths; the parser scrubs surrogate codepoints to
-    U+FFFD rather than raising."""
+    U+FFFD rather than raising.
+
+    Pin the *replacement* contract (U+FFFD shows up where the
+    surrogate was) rather than just `isinstance(str)`. The earlier,
+    looser check would have passed a regression that silently
+    returned `""` -- losing the rest of the subject -- instead of
+    replacing the bad byte sequence."""
     # Construct a Subject byte sequence that, decoded as UTF-8, would
     # contain a lone surrogate.
     raw = _msg().replace(
@@ -100,8 +106,12 @@ def test_subject_with_invalid_utf8_does_not_raise():
         b"Subject: =?UTF-8?Q?broken=ED=B0=80?=",  # U+DC00 alone
     )
     art = parse_message(raw)
-    # No raise; subject is a string. Replacement char OK.
     assert isinstance(art.subject, str)
+    # The "broken" prefix survives; the bad bytes become U+FFFD.
+    assert "broken" in art.subject
+    assert "�" in art.subject, (
+        f"surrogate replacement missing from subject: {art.subject!r}"
+    )
 
 
 # Date handling
