@@ -92,7 +92,13 @@ def test_from_with_encoded_display_name():
 def test_subject_with_invalid_utf8_does_not_raise():
     """Invalid UTF-8 in the body / headers used to crash older email
     library codepaths; the parser scrubs surrogate codepoints to
-    U+FFFD rather than raising."""
+    U+FFFD rather than raising.
+
+    Pin the *replacement* contract (U+FFFD shows up where the
+    surrogate was) rather than just `isinstance(str)`. The earlier,
+    looser check would have passed a regression that silently
+    returned `""` -- losing the rest of the subject -- instead of
+    replacing the bad byte sequence."""
     # Construct a Subject byte sequence that, decoded as UTF-8, would
     # contain a lone surrogate.
     raw = _msg().replace(
@@ -100,8 +106,12 @@ def test_subject_with_invalid_utf8_does_not_raise():
         b"Subject: =?UTF-8?Q?broken=ED=B0=80?=",  # U+DC00 alone
     )
     art = parse_message(raw)
-    # No raise; subject is a string. Replacement char OK.
     assert isinstance(art.subject, str)
+    # The "broken" prefix survives; the bad bytes become U+FFFD.
+    assert "broken" in art.subject
+    assert "�" in art.subject, (
+        f"surrogate replacement missing from subject: {art.subject!r}"
+    )
 
 
 # Date handling
@@ -139,12 +149,27 @@ def test_missing_date_returns_none():
 
 
 def test_group_address_does_not_crash():
+    """Group-address From (`"name": a@b, c@d;`) trips the stdlib
+    AddressHeader parser; the workaround in `parse_message` reads
+    From via `raw_items()` so the raw string survives unchanged.
+
+    Pin the *content* of `art.author` rather than just non-None.
+    The raw header text must round-trip: a regression that silently
+    normalised, lost, or replaced the group label or the addresses
+    would pass an `is not None` check but corrupt downstream display
+    (`safe_from`, JSON-LD author.name, atom-feed author)."""
     raw = _msg().replace(
         b"From: A. Person <a@example.com>",
         b'From: "ML": a@b, c@d;',  # group address
     )
     art = parse_message(raw)
-    assert art.author is not None  # raw header preserved
+    assert art.author is not None
+    # The literal characters of the group address must survive.
+    # Don't pin exact whitespace -- decode_header normalisation may
+    # adjust it -- but pin both the group label and both addresses.
+    assert "ML" in art.author
+    assert "a@b" in art.author
+    assert "c@d" in art.author
 
 
 # Multipart / attachments

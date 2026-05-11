@@ -6,6 +6,8 @@ adversarial inputs (XSS payloads, weird-scheme URLs, deeply nested
 quotes) never get exercised that way. These tests pin the
 escaping behavior and the structural transformations.
 """
+import re
+
 from markupsafe import Markup
 
 from mimir.rendering import URL_OR_MSGID_RE, linkify, parse_blocks, render_body
@@ -22,9 +24,15 @@ def test_linkify_escapes_html_metacharacters():
 
 
 def test_linkify_escapes_ampersand_and_quote():
+    """markupsafe's quoting style is deterministic -- pin the
+    `&quot;` form directly. The old `&quot; or "` disjunction would
+    have masked a regression where escaping stopped applying to the
+    `"` character (raw quotes leaking into rendered HTML)."""
     out = linkify('a & b "quoted"')
     assert "&amp;" in out
-    assert "&quot;" in out or "\"" in out  # markupsafe quoting style
+    assert "&quot;" in out
+    # Negative: the raw form must NOT appear in escaped output.
+    assert '"quoted"' not in out
 
 
 def test_linkify_links_http_and_https():
@@ -87,6 +95,18 @@ def test_url_or_msgid_regex_matches_msgid_only_with_brackets():
     assert all(m.group("msgid") is None for m in matches)
 
 
+def test_url_or_msgid_regex_matches_bracketed_msgid_positive():
+    """Positive companion to the bracket-guard contract: a
+    `<msgid@host>` token DOES capture in the msgid group. Without
+    this, a regression that broke bracketed matching would silently
+    leave every msgid rendering as plain text -- the negative test
+    above would still pass."""
+    s = "see <abc123-XYZ.0@example.invalid> for context"
+    matches = list(URL_OR_MSGID_RE.finditer(s))
+    msgids = [m.group("msgid") for m in matches if m.group("msgid")]
+    assert msgids == ["abc123-XYZ.0@example.invalid"]
+
+
 # parse_blocks — text / quote / diff segmentation
 
 
@@ -130,14 +150,25 @@ def test_render_body_empty():
 
 
 def test_render_body_wraps_text_in_pre():
+    """A plain text block must be enclosed by a <pre> open + close
+    around the actual content, not just contain a `<pre` substring
+    somewhere on the page (which would also pass if the body
+    rendered the text raw and a *different* block — diff, blockquote
+    — happened to be a `<pre>` further down)."""
     out = str(render_body("hello\nworld"))
-    assert "<pre" in out
-    assert "hello" in out
+    m = re.search(r"<pre[^>]*>(.*?)</pre>", out, re.DOTALL)
+    assert m is not None, f"no <pre>...</pre> in output: {out!r}"
+    assert "hello" in m.group(1)
+    assert "world" in m.group(1)
 
 
 def test_render_body_quotes_become_blockquote():
+    """A `> ` line must be wrapped in a real <blockquote>...</blockquote>
+    pair containing the quoted text — not just any open tag."""
     out = str(render_body("> quoted line"))
-    assert "<blockquote>" in out
+    m = re.search(r"<blockquote[^>]*>(.*?)</blockquote>", out, re.DOTALL)
+    assert m is not None, f"no <blockquote>...</blockquote>: {out!r}"
+    assert "quoted line" in m.group(1)
 
 
 def test_render_body_deeply_nested_quotes_collapse_to_details():
@@ -170,7 +201,9 @@ def test_render_body_diff_pygmentized():
 def test_render_body_diff_full_patch_stays_one_block():
     """A complete git format-patch payload must render as one
     `<div class="highlight">` block, not get chopped at `index ...`
-    or at the trailing `-- /<version>` signature."""
+    or at the trailing `-- /<version>` signature. Components must
+    appear in source order; a re-ordering bug would silently pass
+    presence-only checks."""
     body = (
         "diff --git a/x b/x\n"
         "index abc1234..def5678 100644\n"
@@ -186,10 +219,20 @@ def test_render_body_diff_full_patch_stays_one_block():
     # Exactly one Pygments wrapper — chopping into multiple blocks
     # was the regression that broke copy-paste-to-patch.
     assert out.count('class="highlight"') == 1
-    # Every patch component is inside that single block.
-    assert "diff --git" in out
-    assert "index abc1234..def5678" in out
-    assert "2.53.0" in out
+    # Every patch component is inside that single block, in source
+    # order: header → index → ---/+++ → hunk → -/+ lines → trailer.
+    idx_diff = out.index("diff --git")
+    idx_index = out.index("index abc1234..def5678")
+    idx_minus_file = out.index("--- a/x")
+    idx_plus_file = out.index("+++ b/x")
+    idx_hunk = out.index("@@ -1 +1 @@")
+    idx_old = out.index("-old")
+    idx_new = out.index("+new")
+    idx_trailer = out.index("2.53.0")
+    assert (
+        idx_diff < idx_index < idx_minus_file < idx_plus_file
+        < idx_hunk < idx_old < idx_new < idx_trailer
+    ), "patch components must render in source order"
 
 
 def test_render_body_diff_multi_file_patch_stays_one_block():
@@ -278,23 +321,55 @@ def test_non_trailer_msgid_linkify_unaffected_by_redactor():
     assert "[off-list ref]" in out
 
 
+def _no_live_tag_carries(out: str, banned_attr: str) -> None:
+    """Assert no element start tag in `out` carries `banned_attr`.
+
+    A renderer that fails to escape attributes can let a payload like
+    `onerror=alert(1)` survive as a real attribute on some legit tag
+    (e.g. `<pre onerror=...>` if a sanitizer slips). The string-search
+    `assert "onerror" in out` from older versions of this test would
+    pass even if the attribute were live, because the literal text
+    would still appear in the escaped form too. Walk every live tag
+    instead and assert none of them carries the attribute name.
+    """
+    import re
+    # Match HTML element start tags. Each match is the full `<tag ...>`.
+    for tag in re.findall(r"<[a-zA-Z][^>]*>", out):
+        assert banned_attr not in tag, (
+            f"live tag {tag!r} carries forbidden attr {banned_attr!r}"
+        )
+
+
 def test_render_body_xss_payload_in_text_is_escaped():
     """Adversarial input: a body containing literal HTML / JS markup
-    must round-trip to escaped text inside <pre>, never as live HTML."""
+    must round-trip to escaped text, never as live HTML. In particular
+    the `onerror=...` attribute must not survive as a real attribute
+    on any rendered element -- only as escaped text inside the body."""
     payload = "<img src=x onerror=alert(1)>"
     out = str(render_body(payload))
-    assert "<img" not in out  # the original tag is gone
+    # Original tag is gone, escaped form present.
+    assert "<img" not in out
     assert "&lt;img" in out
-    assert "onerror" in out  # but as text inside &lt;...&gt;
-    assert "alert" in out
+    # The full payload text round-trips as escaped text.
+    assert "onerror=alert(1)" in out
+    # No live tag carries onerror (this would catch a sanitizer that
+    # let the attribute survive on `<pre>` or another wrapping element).
+    _no_live_tag_carries(out, "onerror")
 
 
 def test_render_body_xss_via_quote_still_escaped():
     """An XSS payload nested inside a `>` quote should still be
-    escaped after the quote-strip pass."""
-    out = str(render_body("> <script>x</script>"))
+    escaped after the quote-strip pass. Both the literal `<script>`
+    must be escaped AND no live tag may carry script-execution
+    attributes."""
+    out = str(render_body("> <script>alert(1)</script>"))
     assert "<script>" not in out
     assert "&lt;script&gt;" in out
+    # Script content survives as escaped text.
+    assert "alert(1)" in out
+    # No live tag carries onload/onerror/etc.
+    for attr in ("onerror", "onload", "onclick"):
+        _no_live_tag_carries(out, attr)
 
 
 def test_render_body_url_in_quote_is_linked():
