@@ -1,20 +1,43 @@
-"""Click-level surface for the `admin inbox trackers` group plus the
-tracker-aware columns in `admin inbox list`. Service-layer behaviour
-is covered by `tests/test_inboxes.py`; these tests pin the CLI
-shape — argument parsing, exit codes, output strings — so a future
-refactor of the click wiring doesn't silently regress operator UX.
+"""Click-level surface for every command registered in `mimir.cli`.
+
+Service-layer behaviour is covered by `tests/test_inboxes.py`,
+`tests/test_ingest.py`, and `tests/test_sync.py`; these tests pin
+the CLI shape — argument parsing, exit codes, output strings,
+ClickException branches — so a future refactor of the click wiring
+doesn't silently regress operator UX.
+
+For commands that have to read real blobs (`show`, `reindex`,
+`ingest`), the test builds a tiny public-inbox v2 repo into
+`tmp_path` via `_build_pubinbox_repo` and re-points the seeded
+inbox row at it.
 """
+from pathlib import Path
+
 from click.testing import CliRunner
+from dulwich.objects import Blob, Commit, Tree
+from dulwich.repo import Repo
 
 from mimir.cli import (
+    admin_canonicals_backfill_command,
+    admin_failures_list_command,
+    admin_failures_replay_command,
+    admin_inbox_add_command,
     admin_inbox_list_command,
+    admin_inbox_remove_command,
+    admin_inbox_show_command,
     admin_inbox_trackers_add_command,
     admin_inbox_trackers_clear_command,
     admin_inbox_trackers_remove_command,
     admin_inbox_trackers_set_command,
     admin_inbox_trackers_show_command,
+    admin_inbox_update_command,
+    analyze_command,
     dev_seed_thread_command,
+    ingest_command,
+    reindex_command,
+    show_command,
     update_command,
+    vacuum_command,
     warm_cache_command,
 )
 from mimir.inboxes import get_inbox, set_tracked_authors
@@ -148,15 +171,31 @@ def test_warm_cache_default_emits_only_summary(seeded_db):
 
 
 def test_warm_cache_verbose_keeps_per_key_timings(seeded_db):
-    """-v restores the per-key timings on top of the summary line."""
+    """-v restores the per-key timings on top of the summary line.
+
+    Structural: each seeded inbox must get *multiple* per-key timing
+    lines (one per cached helper -- archive_stats, active_threads,
+    daily_volume, etc.). Pinning the literal label names ties the
+    test to incidental cache-key strings; asserting "each inbox got
+    several timings" catches the only regression that matters --
+    warm-cache stopped iterating an inbox -- without flagging on a
+    benign rename."""
     result = CliRunner().invoke(warm_cache_command, ["-v"])
     assert result.exit_code == 0
-    # Each seeded inbox (alpha, beta) gets at least one per-key line
-    # under -v. Pick a label that's stable across builds. The DB also
-    # has bootstrap-time `Settings.inboxes` entries (lkml etc.) at this
-    # point — fine, we don't assert on the inbox count.
-    assert "alpha archive_stats" in result.output
-    assert "beta archive_stats" in result.output
+    per_key_lines = [
+        line for line in result.output.splitlines()
+        if line.endswith(" ms") and "ms total" not in line
+    ]
+    alpha_lines = [line for line in per_key_lines if line.startswith("alpha ")]
+    beta_lines = [line for line in per_key_lines if line.startswith("beta ")]
+    # Lower bound, not exact: more helpers may join the warm-cache
+    # rotation; fewer means an inbox stopped being iterated.
+    assert len(alpha_lines) >= 5, (
+        f"alpha got only {len(alpha_lines)} per-key lines: {alpha_lines}"
+    )
+    assert len(beta_lines) >= 5, (
+        f"beta got only {len(beta_lines)} per-key lines: {beta_lines}"
+    )
     # Summary line is still there.
     assert "warm-cache:" in result.output and "ms total" in result.output
 
@@ -466,3 +505,490 @@ def test_dev_seed_thread_message_url_is_reachable(client, seeded_db, tmp_path):
         f"dev-seed URL {url_path} returned {r.status_code}; "
         f"the seed helper has likely drifted from the route shape"
     )
+
+
+# Shared helpers for the blob-touching commands (ingest / reindex / show).
+# A local copy beats importing private helpers across test files; if the
+# public-inbox v2 layout ever changes, both files update together but
+# neither has to depend on the other.
+
+
+def _rfc5322_msg(msgid: str, *, subject: str = "t", body: bytes = b"hello") -> bytes:
+    return (
+        b"Message-ID: <" + msgid.encode() + b">\r\n"
+        b"From: a@example.com\r\n"
+        b"Subject: " + subject.encode() + b"\r\n"
+        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+        b"\r\n"
+        + body
+    )
+
+
+def _build_pubinbox_repo(repo_path: Path, messages: list[bytes]) -> Path:
+    """Build a bare public-inbox v2 epoch repo: one commit per
+    message, each tree carries an `m` blob with raw RFC 5322 bytes."""
+    repo_path.parent.mkdir(parents=True, exist_ok=True)
+    repo = Repo.init_bare(str(repo_path), mkdir=True)
+    parent = None
+    for i, raw in enumerate(messages):
+        blob = Blob.from_string(raw)
+        repo.object_store.add_object(blob)
+        tree = Tree()
+        tree.add(b"m", 0o100644, blob.id)
+        repo.object_store.add_object(tree)
+        c = Commit()
+        c.tree = tree.id
+        c.parents = [parent] if parent else []
+        c.author = c.committer = b"test <t@x>"
+        c.commit_time = c.author_time = 1704067200 + i
+        c.commit_timezone = c.author_timezone = 0
+        c.encoding = b"UTF-8"
+        c.message = f"add msg {i}".encode()
+        repo.object_store.add_object(c)
+        parent = c.id
+    if parent is not None:
+        repo.refs[b"HEAD"] = parent
+    return repo_path
+
+
+def _repoint_inbox(name: str, mirror_dir: Path) -> None:
+    """Repoint a seeded Inbox row's mirror_path at the given tmp dir
+    so the read path resolves blobs against a real repo."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == name)).scalar_one()
+        ix.mirror_path = str(mirror_dir)
+        s.commit()
+
+
+# `ingest` -- batch ingest CLI.
+
+
+def test_ingest_command_runs_and_prints_per_epoch_line(seeded_db, tmp_path):
+    """`flask --app mimir ingest` walks every configured inbox's mirror
+    and emits one summary line per epoch. Pin both the side-effect
+    (article row count) and the visible contract (output shape).
+
+    Use epoch 2.git so the seeded fixture's epoch=0.git ArticleList
+    rows don't interfere with our assertions."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    mirror = tmp_path / "alpha-mirror"
+    _build_pubinbox_repo(mirror / "2.git", [
+        _rfc5322_msg("cli-ingest-1@example.com"),
+        _rfc5322_msg("cli-ingest-2@example.com"),
+    ])
+    _repoint_inbox("alpha", mirror)
+
+    result = CliRunner().invoke(ingest_command, ["--inbox", "alpha"])
+    assert result.exit_code == 0, result.output
+    # Per-epoch line shape: `<inbox>/<epoch>: new=N linked=N ...`
+    assert "alpha/2.git:" in result.output
+    assert "new=2" in result.output
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ids = s.execute(
+            select(Article.message_id)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(ArticleList.inbox_id == alpha.id, ArticleList.epoch == "2.git")
+        ).scalars().all()
+    assert "cli-ingest-1@example.com" in ids
+    assert "cli-ingest-2@example.com" in ids
+
+
+def test_ingest_command_unknown_inbox_clickexception():
+    """The `_select_inboxes` helper raises ClickException on an
+    unknown name; the CLI must surface that as a non-zero exit."""
+    result = CliRunner().invoke(ingest_command, ["--inbox", "no-such-inbox"])
+    assert result.exit_code != 0
+    assert "unknown inbox" in result.output
+
+
+# `reindex` -- single-epoch rewind, with and without --from-scratch.
+
+
+def test_reindex_default_rewinds_state_and_redrives(seeded_db, tmp_path):
+    """Default reindex: doesn't delete ArticleList rows, but clears
+    the IngestState cursor so the next walk starts at the beginning.
+    The actual messages are dup_db skips because they're already in
+    the DB; the operator-visible signal is the summary line."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox, IngestState
+
+    mirror = tmp_path / "alpha-mirror"
+    _build_pubinbox_repo(mirror / "2.git", [
+        _rfc5322_msg("reindex-1@example.com"),
+        _rfc5322_msg("reindex-2@example.com"),
+    ])
+    _repoint_inbox("alpha", mirror)
+
+    # First ingest seeds the cursor and the rows.
+    CliRunner().invoke(ingest_command, ["--inbox", "alpha"])
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        state = s.get(IngestState, (alpha.id, "2.git"))
+    assert state is not None
+    assert state.last_commit_sha is not None
+
+    # Reindex without --from-scratch: cursor goes back to None, the
+    # re-walk redrives the same commits, which are dup_db this time.
+    result = CliRunner().invoke(reindex_command, ["alpha", "2.git"])
+    assert result.exit_code == 0, result.output
+    assert "alpha/2.git:" in result.output
+    assert "dup_db=2" in result.output, result.output
+    assert "deleted" not in result.output  # only --from-scratch logs that
+
+
+def test_reindex_from_scratch_deletes_existing_links(seeded_db, tmp_path):
+    """`--from-scratch` drops the per-inbox ArticleList rows for the
+    epoch before re-walking, so the messages re-ingest as `linked`
+    (the Article rows survive because they may be cross-posted)."""
+    from sqlalchemy import func, select
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, Inbox
+
+    mirror = tmp_path / "alpha-mirror"
+    _build_pubinbox_repo(mirror / "2.git", [
+        _rfc5322_msg("scratch-1@example.com"),
+        _rfc5322_msg("scratch-2@example.com"),
+    ])
+    _repoint_inbox("alpha", mirror)
+    CliRunner().invoke(ingest_command, ["--inbox", "alpha"])
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        before = s.execute(
+            select(func.count()).select_from(ArticleList)
+            .where(ArticleList.inbox_id == alpha.id, ArticleList.epoch == "2.git")
+        ).scalar_one()
+    assert before == 2
+
+    result = CliRunner().invoke(reindex_command, ["alpha", "2.git", "--from-scratch"])
+    assert result.exit_code == 0, result.output
+    assert "deleted 2 existing inbox-links for alpha/2.git" in result.output
+    # The re-walk re-adds them via the linked-bucket path.
+    assert "linked=2" in result.output, result.output
+
+
+def test_reindex_missing_epoch_repo_clickexception(seeded_db, tmp_path):
+    """Reindex against an epoch directory that doesn't exist on disk
+    must raise a clean ClickException, not crash inside dulwich."""
+    _repoint_inbox("alpha", tmp_path / "alpha-mirror")  # dir doesn't exist
+    result = CliRunner().invoke(reindex_command, ["alpha", "0.git"])
+    assert result.exit_code != 0
+    assert "epoch repo not found" in result.output
+
+
+# `show` -- one-article inspect, with the three ClickException branches.
+
+
+def _ingest_one_for_show(tmp_path) -> tuple[str, Path]:
+    """Build a single-message epoch and ingest it, returning the
+    message-id and the mirror dir. Tests then drive `show` against
+    the seeded article. Uses epoch 2.git to avoid colliding with
+    seeded fixture rows at 0.git."""
+    msgid = "show-msg@example.com"
+    mirror = tmp_path / "alpha-mirror"
+    _build_pubinbox_repo(mirror / "2.git", [
+        _rfc5322_msg(msgid, subject="show test subject", body=b"hello show body"),
+    ])
+    _repoint_inbox("alpha", mirror)
+    CliRunner().invoke(ingest_command, ["--inbox", "alpha"])
+    return msgid, mirror
+
+
+def test_show_prints_db_row_and_parsed_blob(seeded_db, tmp_path):
+    msgid, _ = _ingest_one_for_show(tmp_path)
+    result = CliRunner().invoke(show_command, [msgid])
+    assert result.exit_code == 0, result.output
+    # DB-side section
+    assert "--- DB row ---" in result.output
+    assert "linked inboxes:" in result.output
+    assert "alpha/2.git@" in result.output
+    # Parsed-blob section
+    assert "--- parsed blob ---" in result.output
+    assert f"Message-ID: {msgid}" in result.output
+    assert "show test subject" in result.output
+    assert "hello show body" in result.output
+
+
+def test_show_no_body_suppresses_body(seeded_db, tmp_path):
+    msgid, _ = _ingest_one_for_show(tmp_path)
+    result = CliRunner().invoke(show_command, [msgid, "--no-body"])
+    assert result.exit_code == 0, result.output
+    assert "show test subject" in result.output  # headers still shown
+    assert "hello show body" not in result.output
+
+
+def test_show_body_chars_truncates_with_marker(seeded_db, tmp_path):
+    """When `--body-chars` is shorter than the body, the output is
+    truncated and a `... (N more chars truncated; ...)` line
+    explains it."""
+    long_body = b"x" * 200
+    msgid = "show-trunc@example.com"
+    mirror = tmp_path / "alpha-mirror"
+    _build_pubinbox_repo(mirror / "2.git", [
+        _rfc5322_msg(msgid, body=long_body),
+    ])
+    _repoint_inbox("alpha", mirror)
+    CliRunner().invoke(ingest_command, ["--inbox", "alpha"])
+
+    result = CliRunner().invoke(show_command, [msgid, "--body-chars", "50"])
+    assert result.exit_code == 0, result.output
+    assert "more chars truncated" in result.output
+    # 150 chars were dropped; the marker spells it out.
+    assert "150" in result.output
+
+
+def test_show_unknown_message_id_clickexception(seeded_db):
+    result = CliRunner().invoke(show_command, ["nope@nowhere.invalid"])
+    assert result.exit_code != 0
+    assert "no article" in result.output
+
+
+def test_show_inbox_filter_rejects_unlinked(seeded_db, tmp_path):
+    """`--inbox <name>` restricts the blob read to that inbox; if the
+    article isn't linked there, a ClickException lists where it
+    actually lives instead of silently falling back."""
+    msgid, _ = _ingest_one_for_show(tmp_path)
+    result = CliRunner().invoke(show_command, [msgid, "--inbox", "beta"])
+    assert result.exit_code != 0
+    assert "not linked to inbox 'beta'" in result.output
+    # The error includes the list of inboxes that DO have it.
+    assert "alpha" in result.output
+
+
+# `vacuum` / `analyze` -- DB-maintenance commands.
+
+
+def test_analyze_command_runs(seeded_db):
+    """`ANALYZE` is a no-op-shaped command on tiny DBs, but the CLI's
+    contract is: runs, returns 0, prints the timing line."""
+    result = CliRunner().invoke(analyze_command, [])
+    assert result.exit_code == 0, result.output
+    assert "ANALYZE complete" in result.output
+
+
+def test_vacuum_command_runs_and_reports_sizes(seeded_db):
+    """`vacuum` rebuilds the DB and checkpoints the WAL. On a tiny
+    test DB the reclamation is negligible, but the before/after/
+    reclaimed lines must all emit and the DB must still be openable
+    afterwards."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    result = CliRunner().invoke(vacuum_command, [])
+    assert result.exit_code == 0, result.output
+    assert "before:" in result.output
+    assert "after:" in result.output
+    assert "reclaimed" in result.output
+
+    # The DB is still usable after the engine.dispose() inside vacuum.
+    with SessionLocal() as s:
+        names = s.execute(select(Inbox.name)).scalars().all()
+    assert "alpha" in names
+
+
+# `admin failures list` / `replay` -- CLI wrappers around the service
+# layer (which has its own coverage in test_ingest.py).
+
+
+def _seed_parse_failure(inbox_name: str = "alpha") -> None:
+    """Insert one ParseFailure row tied to the seeded inbox."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox, ParseFailure
+    with SessionLocal() as s:
+        ix = s.execute(
+            select(Inbox).where(Inbox.name == inbox_name)
+        ).scalar_one()
+        now = datetime.now(timezone.utc)
+        s.add(ParseFailure(
+            inbox_id=ix.id,
+            epoch="0.git",
+            commit_sha="ab" * 20,
+            error_class="MessageTooLarge",
+            error_message="message exceeds cap",
+            first_seen=now,
+            last_attempt=now,
+            attempts=1,
+        ))
+        s.commit()
+
+
+def test_admin_failures_list_empty_says_so(seeded_db):
+    result = CliRunner().invoke(admin_failures_list_command, [])
+    assert result.exit_code == 0
+    assert "no parse failures" in result.output
+
+
+def test_admin_failures_list_prints_seeded_row_and_total(seeded_db):
+    _seed_parse_failure()
+    result = CliRunner().invoke(admin_failures_list_command, [])
+    assert result.exit_code == 0, result.output
+    assert "alpha/0.git@" in result.output  # `<inbox>/<epoch>@<sha[:12]>`
+    assert "MessageTooLarge" in result.output
+    assert "message exceeds cap" in result.output
+    assert "total: 1" in result.output
+
+
+def test_admin_failures_list_epoch_requires_inbox(seeded_db):
+    """`--epoch` without `--inbox` is rejected up-front; the filter
+    only makes sense scoped to an inbox."""
+    result = CliRunner().invoke(admin_failures_list_command, ["--epoch", "0.git"])
+    assert result.exit_code != 0
+    assert "--epoch requires --inbox" in result.output
+
+
+def test_admin_failures_replay_unknown_inbox_clickexception(seeded_db):
+    result = CliRunner().invoke(admin_failures_replay_command, ["no-such-inbox"])
+    assert result.exit_code != 0
+    # InboxNotFound is the underlying type; the CLI surfaces its str().
+    assert "no-such-inbox" in result.output
+
+
+# `admin canonicals backfill` -- no failure shape to assert; just
+# pin that the wrapper runs, exits 0, and emits the summary line.
+
+
+def test_admin_canonicals_backfill_runs_and_prints_summary(seeded_db):
+    result = CliRunner().invoke(admin_canonicals_backfill_command, [])
+    assert result.exit_code == 0, result.output
+    # Seeded DB has 4 articles, but none with list-shaped To/Cc -- so
+    # examined>0, resolved=0, unresolved>0. We only pin the line
+    # shape; counts depend on dashboard helpers and bootstrap state.
+    assert "backfill complete:" in result.output
+    assert "examined=" in result.output
+    assert "resolved=" in result.output
+
+
+# `admin inbox add / update / remove / show` -- service layer is
+# covered by test_inboxes.py; here we pin the click wiring (option
+# parsing, ClickException -> exit-nonzero, output shape).
+
+
+def test_admin_inbox_add_creates_inbox(seeded_db):
+    result = CliRunner().invoke(admin_inbox_add_command, [
+        "gamma",
+        "--mirror-path", "/tmp/gamma",
+        "--upstream-url", "https://example.com/gamma",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "created inbox 'gamma'" in result.output
+    # Confirm it landed in the DB.
+    assert get_inbox("gamma").upstream_url == "https://example.com/gamma"
+
+
+def test_admin_inbox_add_invalid_url_clickexception(seeded_db):
+    """`upstream_url` must be `https://...`; the validator raises
+    InboxValidationError, which the CLI surfaces as a ClickException."""
+    result = CliRunner().invoke(admin_inbox_add_command, [
+        "gamma",
+        "--mirror-path", "/tmp/gamma",
+        "--upstream-url", "not-a-url",
+    ])
+    assert result.exit_code != 0
+
+
+def test_admin_inbox_update_no_args_clickexception(seeded_db):
+    """Update must specify at least one field to change; calling with
+    none is a user error."""
+    result = CliRunner().invoke(admin_inbox_update_command, ["alpha"])
+    assert result.exit_code != 0
+    assert "nothing to update" in result.output
+
+
+def test_admin_inbox_update_changes_mirror_path(seeded_db):
+    result = CliRunner().invoke(admin_inbox_update_command, [
+        "alpha", "--mirror-path", "/tmp/alpha-new",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "updated inbox 'alpha'" in result.output
+    assert get_inbox("alpha").mirror_path == "/tmp/alpha-new"
+
+
+def test_admin_inbox_show_prints_fields_and_states(seeded_db):
+    """`admin inbox show <name>` prints the configured fields plus
+    the per-epoch ingest cursor state. The seeded alpha has linked
+    articles but no IngestState row -- exercise both branches in
+    one test by checking the "none -- never ingested" line."""
+    result = CliRunner().invoke(admin_inbox_show_command, ["alpha"])
+    assert result.exit_code == 0, result.output
+    assert "name:" in result.output and "alpha" in result.output
+    assert "mirror_path:" in result.output
+    assert "upstream_url:" in result.output
+    # Seeded fixture has 3 ArticleList rows on alpha (art1, art3, art4).
+    assert "linked articles: 3" in result.output
+    # No IngestState rows yet.
+    assert "never ingested" in result.output
+
+
+def test_admin_inbox_show_unknown_clickexception(seeded_db):
+    result = CliRunner().invoke(admin_inbox_show_command, ["no-such-inbox"])
+    assert result.exit_code != 0
+
+
+def test_admin_inbox_remove_yes_drops_inbox_and_orphans(seeded_db):
+    """With `--yes`, the prompt is skipped; the inbox row + its
+    ArticleList rows go away. Orphan articles (those left with no
+    remaining inbox links) also go by default."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, Inbox
+
+    # Pre-state: alpha exists, art1+art4 are alpha-only.
+    with SessionLocal() as s:
+        assert s.execute(
+            select(Inbox).where(Inbox.name == "alpha")
+        ).scalar_one_or_none() is not None
+        ids_before = set(s.execute(select(Article.message_id)).scalars().all())
+    assert {"art1@example.com", "art4@example.com"} <= ids_before
+
+    result = CliRunner().invoke(admin_inbox_remove_command, ["alpha", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "removed inbox 'alpha'" in result.output
+    assert "article_lists rows deleted:" in result.output
+
+    with SessionLocal() as s:
+        assert s.execute(
+            select(Inbox).where(Inbox.name == "alpha")
+        ).scalar_one_or_none() is None
+        ids_after = set(s.execute(select(Article.message_id)).scalars().all())
+    # art1 and art4 were alpha-only -> gone. art3 was cross-posted
+    # with beta -> survives. art2 is beta-only -> survives.
+    assert "art1@example.com" not in ids_after
+    assert "art4@example.com" not in ids_after
+    assert "art2@example.com" in ids_after
+    assert "art3@example.com" in ids_after
+
+
+def test_admin_inbox_remove_keep_orphans_preserves_articles(seeded_db):
+    """`--keep-orphan-articles` leaves Article rows with no remaining
+    links intact (article_lists rows go either way)."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    result = CliRunner().invoke(admin_inbox_remove_command, [
+        "alpha", "--yes", "--keep-orphan-articles",
+    ])
+    assert result.exit_code == 0, result.output
+    # Orphan-deleted line is suppressed under --keep-orphan-articles.
+    assert "orphan articles deleted" not in result.output
+
+    with SessionLocal() as s:
+        ids = set(s.execute(select(Article.message_id)).scalars().all())
+    # All four seed articles survive: alpha-only ones are now orphans
+    # but still present.
+    assert "art1@example.com" in ids
+    assert "art4@example.com" in ids
+    assert "art2@example.com" in ids
+    assert "art3@example.com" in ids
