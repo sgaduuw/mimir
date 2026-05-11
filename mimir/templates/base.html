@@ -1,5 +1,6 @@
 <!doctype html>
-<html lang="en">
+<html lang="en"
+      {% block html_data_attrs %}{% endblock %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -13,6 +14,12 @@
         href="/{{ current_inbox }}/feed.atom">
   {% endif %}
   {% block extra_atom_feeds %}{% endblock %}
+  {# Thread-fold controller. Synchronous (no defer/async) so the FOUC-free
+     block at the top of the file runs before <body> parses, sets
+     data-thread-fold on <html> from any localStorage pin + context default,
+     and CSS resolves the right state on first paint. Loads from /static/
+     because the CSP (script-src 'self') blocks inline scripts. #}
+  <script src="{{ url_for('static', filename='js/thread-fold.js') }}"></script>
 
   {#
     Title and meta-description are defined ONCE (each as a captured
