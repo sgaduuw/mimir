@@ -6,6 +6,15 @@
 {%- set _date = article.date.strftime('%Y-%m-%d') if article.date else 'unknown date' -%}
 Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|clean_subject or '(no subject)') | truncate(120) }}
 {%- endblock %}
+{# Surface thread-root + context to thread-fold.js via <html> data-attrs.
+   The static JS reads them on first <head> execution to set
+   data-thread-fold before the section paints (FOUC-free). #}
+{% block html_data_attrs %}
+{%- if thread and thread|length > 1 -%}
+data-thread-root="{{ thread[0].message_id }}"
+data-thread-context="{{ 'root' if thread[0].message_id == article.message_id else 'deep' }}"
+{%- endif -%}
+{% endblock %}
 {% block content %}
 {% if thread|length > 1 or parent_off_list %}
 {# Three-state fold for the thread tree. State lives on <html data-thread-fold>
@@ -124,21 +133,6 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
     max-height: none; overflow-y: visible; border: none; padding: 0.5rem 0 0 0;
   }
 </style>
-<script>
-  /* Runs before .thread-context paints. Sets data-thread-fold on <html> so
-     CSS resolves to the right state on first render: no flash when a
-     localStorage pin overrides the server's context default. */
-  (function () {
-    var rootId = {{ (thread[0].message_id if thread else None)|tojson }};
-    var ctx = {{ ('root' if thread and thread[0].message_id == article.message_id else 'deep')|tojson }};
-    var pin = null;
-    try {
-      pin = rootId ? localStorage.getItem('mimir.fold.' + rootId) : null;
-    } catch (e) { /* private mode etc.; fall through to default. */ }
-    var mode = pin || (ctx === 'root' ? 'partial' : 'closed');
-    document.documentElement.setAttribute('data-thread-fold', mode);
-  })();
-</script>
 <section class="thread-context"
          data-thread-root="{{ thread[0].message_id if thread else '' }}">
   <header class="thread-toolbar">
@@ -183,81 +177,10 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
   </ul>
   </div>
 </section>
-<script>
-  (function () {
-    var html = document.documentElement;
-    var section = document.querySelector('.thread-context');
-    if (!section) return;
-    var rootId = section.getAttribute('data-thread-root');
-
-    function reflectToggle(mode) {
-      section.querySelectorAll('.thread-toggle button').forEach(function (b) {
-        b.setAttribute(
-          'aria-pressed',
-          b.getAttribute('data-fold-set') === mode ? 'true' : 'false'
-        );
-      });
-    }
-
-    function setFold(mode, persist) {
-      html.setAttribute('data-thread-fold', mode);
-      reflectToggle(mode);
-      if (persist && rootId) {
-        try { localStorage.setItem('mimir.fold.' + rootId, mode); } catch (e) {}
-      }
-      if (mode === 'partial') scrollActiveIntoView();
-    }
-
-    function scrollActiveIntoView() {
-      var box = section.querySelector('.thread-box');
-      var active = section.querySelector('.thread-list li.is-active');
-      if (!box || !active) return;
-      var liRect = active.getBoundingClientRect();
-      var boxRect = box.getBoundingClientRect();
-      var target = box.scrollTop + (liRect.top - boxRect.top)
-                 - (boxRect.height / 2) + (liRect.height / 2);
-      box.scrollTop = Math.max(0, target);
-    }
-
-    reflectToggle(html.getAttribute('data-thread-fold') || 'partial');
-    if ((html.getAttribute('data-thread-fold') || 'partial') === 'partial') {
-      scrollActiveIntoView();
-    }
-
-    section.querySelectorAll('.thread-toggle button').forEach(function (b) {
-      b.addEventListener('click', function () {
-        setFold(b.getAttribute('data-fold-set'), true);
-      });
-    });
-
-    /* In `closed` mode, clicking anywhere on the toolbar (except the
-       toggle buttons themselves) opens the tree to `partial`. The CSS
-       sets cursor: pointer on the toolbar in closed mode to signal it. */
-    var toolbar = section.querySelector('.thread-toolbar');
-    if (toolbar) {
-      toolbar.addEventListener('click', function (e) {
-        if (e.target.closest('button')) return;
-        if (html.getAttribute('data-thread-fold') === 'closed') {
-          setFold('partial', true);
-        }
-      });
-    }
-
-    /* After an HTMX swap, flip the active marker to whichever <li>
-       matches the new article's message-id. Class-toggling only; no
-       DOM rewrites, so hx-get on every anchor stays intact. */
-    document.body.addEventListener('htmx:afterSwap', function () {
-      var msg = document.getElementById('msg');
-      if (!msg) return;
-      var newId = msg.getAttribute('data-message-id');
-      if (!newId) return;
-      section.querySelectorAll('.thread-list li[data-message-id]').forEach(function (li) {
-        li.classList.toggle('is-active', li.getAttribute('data-message-id') === newId);
-      });
-      if (html.getAttribute('data-thread-fold') === 'partial') scrollActiveIntoView();
-    });
-  })();
-</script>
+{# All JS lives in /static/js/thread-fold.js; loaded from base.html.
+   The data-thread-root / data-thread-context attrs on <html> (set via
+   the html_data_attrs block above) carry the per-page context the
+   controller needs. #}
 {% endif %}
 {% include "_message_body.html" %}
 {% endblock %}

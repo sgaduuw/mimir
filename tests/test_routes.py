@@ -1026,13 +1026,20 @@ def test_message_page_thread_fold_markup(client, tmp_path):
     # that sits flush against the box top in the `partial` fold state.
     assert 'class="thread-toolbar"' in body2
     assert 'class="thread-summary"' in body2
-    # FOUC-free pin script: setAttribute('data-thread-fold', ...) must
-    # fire *before* <section class="thread-context"> opens, so the CSS
-    # for the closed/expanded states resolves on first paint with no
-    # flash from a localStorage pin overriding the server default.
-    set_call_idx = body2.index("setAttribute('data-thread-fold'")
+    # FOUC-free pin: thread-fold.js loads synchronously from <head>
+    # before <body> parses. Per-page context for the script lives on
+    # <html> via data-thread-root + data-thread-context attrs (set by
+    # the html_data_attrs block in message.html). The script itself
+    # is external because the CSP (script-src 'self') blocks inline
+    # scripts.
+    assert 'src="/static/js/thread-fold.js"' in body2
+    assert 'data-thread-root="fold-root@example.com"' in body2
+    # Reply view is non-root, so context is "deep" (which the script
+    # maps to the `closed` default).
+    assert 'data-thread-context="deep"' in body2
+    script_idx = body2.index('src="/static/js/thread-fold.js"')
     section_idx = body2.index('<section class="thread-context"')
-    assert set_call_idx < section_idx
+    assert script_idx < section_idx
 
 
 def test_message_page_htmx_request_returns_body_partial(client, tmp_path):

@@ -11,6 +11,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Thread-fold toggle buttons + tree-tab-on-load were dead on the
+  v1.12.0/v1.12.1 deploy: the JS was inline in `message.html`, and
+  the production CSP (`script-src 'self' https://unpkg.com`) blocks
+  inline scripts without an explicit nonce or `'unsafe-inline'`.
+  Browsers silently dropped the controller code, so clicks gave
+  focus rings but no state change. Moved the controller to a static
+  asset at `/static/js/thread-fold.js` (CSP `'self'` allows it).
+  Per-page context (`data-thread-root`, `data-thread-context`) now
+  rides on `<html>` via Jinja blocks, so the FOUC-free synchronous
+  script in `<head>` still has everything it needs without inlining.
+
 ## [1.12.1] – 2026-05-11
 
 ### Fixed
