@@ -204,8 +204,11 @@ def test_monthly_volume_year_boundary(seeded_db):
     from mimir.models import Article, ArticleList
 
     alpha = _inbox(seeded_db, "alpha")
-    # Last instant of 2022 (one microsecond before midnight 2023-01-01).
-    boundary = datetime(2022, 12, 31, 23, 59, 59, 999_999, tzinfo=timezone.utc)
+    # Last hour of 2022, second-precision (no microseconds). SQLite's
+    # strftime rounds .999999s up across the year boundary on some
+    # builds, which is a separate edge from the BETWEEN-bounds
+    # regression this test is guarding -- so stay clearly inside 2022.
+    boundary = datetime(2022, 12, 31, 23, 59, 0, tzinfo=timezone.utc)
     with seeded_db() as s:
         art = Article(
             message_id="year-boundary@x",
