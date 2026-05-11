@@ -438,3 +438,209 @@ def test_clear_tracked_authors_unknown_raises(seeded_db):
     from mimir.inboxes import clear_tracked_authors
     with pytest.raises(InboxNotFound):
         clear_tracked_authors("nonexistent")
+
+
+# --------------------------------------------------------------------------
+# Service-layer surfaces previously without direct tests:
+# - bootstrap_inboxes (env reconciliation, runs on every startup)
+# - InboxRemovalReport counts on delete_inbox
+# - remove_inbox_data side effect of delete_inbox
+# --------------------------------------------------------------------------
+
+
+def test_bootstrap_inboxes_inserts_env_rows_then_no_ops_on_rerun(
+    seeded_db, monkeypatch,
+):
+    """Bootstrap inserts any env-declared inbox missing from the DB,
+    and a second call is a no-op (idempotent insert). The contract
+    is `INSERT ... ON CONFLICT DO NOTHING`; without idempotence the
+    web container's startup would race the scheduler sidecar's
+    parallel bootstrap and trip a UNIQUE violation."""
+    from sqlalchemy import select
+    from mimir.config import InboxConfig, settings
+    from mimir.inboxes import bootstrap_inboxes
+    from mimir.models import Inbox
+
+    monkeypatch.setattr(settings, "inboxes", {
+        "fresh-inbox": InboxConfig(
+            mirror_path="/tmp/fresh-inbox/git",
+            upstream_url="https://example.com/fresh-inbox",
+        ),
+    })
+
+    # First call: row inserted.
+    out_1 = bootstrap_inboxes()
+    assert "fresh-inbox" in out_1
+    with seeded_db() as s:
+        row = s.execute(
+            select(Inbox).where(Inbox.name == "fresh-inbox")
+        ).scalar_one()
+        assert row.mirror_path == "/tmp/fresh-inbox/git"
+
+    # Second call: no-op, same DB state.
+    out_2 = bootstrap_inboxes()
+    assert set(out_2.keys()) == set(out_1.keys())
+    with seeded_db() as s:
+        row_after = s.execute(
+            select(Inbox).where(Inbox.name == "fresh-inbox")
+        ).scalar_one()
+        assert row_after.id == row.id
+        assert row_after.mirror_path == "/tmp/fresh-inbox/git"
+
+
+def test_bootstrap_inboxes_preserves_admin_managed_rows(
+    seeded_db, monkeypatch,
+):
+    """A row added via the admin CLI (not present in `settings.inboxes`)
+    must survive a bootstrap pass intact. Without this contract, every
+    container restart would orphan operator changes."""
+    from sqlalchemy import select
+    from mimir.config import settings
+    from mimir.inboxes import bootstrap_inboxes
+    from mimir.models import Inbox
+
+    # Empty env: nothing to insert. alpha + beta are admin-managed
+    # by the seed fixture's standards (they came from the test
+    # fixture, not the env).
+    monkeypatch.setattr(settings, "inboxes", {})
+
+    bootstrap_inboxes()
+
+    with seeded_db() as s:
+        names = sorted(
+            n for n, in s.execute(select(Inbox.name))
+        )
+    # The seeded admin-managed rows still exist; bootstrap didn't
+    # delete or rename them.
+    assert "alpha" in names
+    assert "beta" in names
+
+
+def test_bootstrap_inboxes_does_not_overwrite_admin_edits(
+    seeded_db, monkeypatch,
+):
+    """If env declares an inbox whose name already exists in the DB
+    (e.g. the operator's `admin inbox update` edited the mirror_path),
+    bootstrap must NOT overwrite the operator's value. The
+    `on_conflict_do_nothing` is the load-bearing piece -- a refactor
+    to `on_conflict_do_update` would silently undo admin edits on
+    the next container restart."""
+    from sqlalchemy import select
+    from mimir.config import InboxConfig, settings
+    from mimir.inboxes import bootstrap_inboxes
+    from mimir.models import Inbox
+
+    # Env declares `alpha` with a different mirror_path than the
+    # seeded fixture's `/tmp/alpha`. Bootstrap must leave the
+    # existing row alone.
+    monkeypatch.setattr(settings, "inboxes", {
+        "alpha": InboxConfig(
+            mirror_path="/different/from/seeded",
+            upstream_url="https://different.example/alpha",
+        ),
+    })
+
+    bootstrap_inboxes()
+
+    with seeded_db() as s:
+        alpha = s.execute(
+            select(Inbox).where(Inbox.name == "alpha")
+        ).scalar_one()
+    assert alpha.mirror_path == "/tmp/alpha", (
+        "bootstrap clobbered an admin-managed mirror_path; the conflict "
+        "policy must stay DO NOTHING, not DO UPDATE"
+    )
+    assert alpha.upstream_url == "https://example.com/alpha"
+
+
+def test_delete_inbox_report_counts_pin_the_cascade(seeded_db):
+    """`InboxRemovalReport`'s counters are the operator-facing summary
+    of what `delete_inbox` did. The seeded fixture gives alpha three
+    ArticleList rows (art1, art3, art4) and no IngestState rows;
+    art1 + art4 are alpha-only so they orphan on delete. Pin all
+    three counts so a refactor that off-by-ones the tally is
+    surfaced."""
+    from mimir.inboxes import delete_inbox
+
+    report = delete_inbox("alpha", keep_orphan_articles=False)
+    assert report.name == "alpha"
+    # 3 ArticleList rows on alpha: art1, art3, art4.
+    assert report.article_lists_deleted == 3
+    # No IngestState rows seeded for alpha.
+    assert report.ingest_state_deleted == 0
+    # art1 + art4 are alpha-only; art3 cross-posts to beta -> survives.
+    assert report.orphan_articles_deleted == 2
+    # No mirror-data removal requested.
+    assert report.mirror_path_deleted is None
+
+
+def test_delete_inbox_keep_orphans_zeroes_orphan_count(seeded_db):
+    """`keep_orphan_articles=True` skips the orphan-delete pass; the
+    counter must reflect that (0, not the count that *would* have
+    been deleted)."""
+    from mimir.inboxes import delete_inbox
+    report = delete_inbox("alpha", keep_orphan_articles=True)
+    assert report.orphan_articles_deleted == 0
+
+
+def test_delete_inbox_remove_inbox_data_rms_mirror_dir(
+    seeded_db, tmp_path,
+):
+    """`remove_inbox_data=True` rm -rf's the on-disk mirror. The
+    mirror_path follows `Inboxes/<name>/git`; `delete_inbox` strips
+    the trailing `git` segment so the per-inbox wrapper directory
+    goes too. The report carries the path actually deleted."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.inboxes import delete_inbox
+    from mimir.models import Inbox
+
+    # Build a realistic mirror layout: tmp/alpha/git/0.git/.
+    wrapper = tmp_path / "alpha"
+    git_dir = wrapper / "git"
+    epoch_dir = git_dir / "0.git"
+    epoch_dir.mkdir(parents=True)
+    (epoch_dir / "HEAD").write_text("ref: refs/heads/master\n")
+
+    # Point the seeded alpha at this layout so delete_inbox can find it.
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.mirror_path = str(git_dir)
+        s.commit()
+
+    report = delete_inbox("alpha", remove_inbox_data=True)
+
+    assert report.mirror_path_deleted == str(wrapper), (
+        f"expected wrapper dir to be the removal target, got "
+        f"{report.mirror_path_deleted!r}"
+    )
+    # The wrapper and its contents are gone.
+    assert not wrapper.exists()
+    # tmp_path itself (the parent we don't own) is untouched.
+    assert tmp_path.exists()
+
+
+def test_delete_inbox_remove_inbox_data_handles_missing_mirror(
+    seeded_db, tmp_path,
+):
+    """`remove_inbox_data=True` against a mirror_path that doesn't
+    exist on disk must NOT raise; the row deletion still succeeds
+    and the report records nothing was actually rm'd."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.inboxes import delete_inbox
+    from mimir.models import Inbox
+
+    nonexistent = tmp_path / "no-such-mirror" / "git"
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.mirror_path = str(nonexistent)
+        s.commit()
+
+    report = delete_inbox("alpha", remove_inbox_data=True)
+    assert report.mirror_path_deleted is None
+    # And the DB row is gone.
+    with SessionLocal() as s:
+        assert s.execute(
+            select(Inbox).where(Inbox.name == "alpha")
+        ).scalar_one_or_none() is None
