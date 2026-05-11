@@ -112,13 +112,18 @@ data-thread-context="{{ 'root' if thread[0].message_id == article.message_id els
     max-height: min(50vh, 24rem);
     overflow-y: auto;
   }
-  /* `partial`: connect the toolbar to the box top with shared borders. */
-  html[data-thread-fold="partial"] .thread-context .thread-toolbar {
+  /* Toolbar attaches to the box top in any state where the box is
+     visible (partial or expanded). Shared borders merge the two into
+     a single connected unit; the toolbar squares its bottom, the box
+     squares its top. */
+  html[data-thread-fold="partial"] .thread-context .thread-toolbar,
+  html[data-thread-fold="expanded"] .thread-context .thread-toolbar {
     border-bottom: 0;
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
   }
-  html[data-thread-fold="partial"] .thread-context .thread-box {
+  html[data-thread-fold="partial"] .thread-context .thread-box,
+  html[data-thread-fold="expanded"] .thread-context .thread-box {
     border-top-left-radius: 0;
     border-top-right-radius: 0;
   }
@@ -128,9 +133,11 @@ data-thread-context="{{ 'root' if thread[0].message_id == article.message_id els
   html[data-thread-fold="closed"] .thread-context .thread-toolbar { cursor: pointer; }
   html[data-thread-fold="closed"] .thread-context .thread-toolbar > .thread-label .thread-count { display: none; }
   html[data-thread-fold="closed"] .thread-context .thread-toolbar > .thread-label .thread-summary { display: inline; font-weight: normal; }
-  /* `expanded`: drop the bordered scroll box; tree flows inline. */
+  /* `expanded`: drop only the height cap; keep the bordered box so
+     the tree stays visually connected to the toolbar above. */
   html[data-thread-fold="expanded"] .thread-context .thread-box {
-    max-height: none; overflow-y: visible; border: none; padding: 0.5rem 0 0 0;
+    max-height: none;
+    overflow-y: visible;
   }
 </style>
 <section class="thread-context"
