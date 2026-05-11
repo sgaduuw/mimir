@@ -1,6 +1,11 @@
 {% extends "base.html" %}
 {% block title %}{{ sub }} on {{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block meta_description %}Recent messages from senders matching '{{ sub }}' in the {{ inbox_name }} archive.{% endblock %}
+{% block extra_atom_feeds %}
+  <link rel="alternate" type="application/atom+xml"
+        title="{{ sub }} on {{ inbox_name }}"
+        href="/{{ inbox_name }}/author/{{ sub|urlencode }}/feed.atom">
+{% endblock %}
 {% block content %}
 <h2>Messages from <code>{{ sub }}</code> <small><em>· {{ inbox_name }}</em></small></h2>
 
