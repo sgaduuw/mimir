@@ -10,6 +10,7 @@ import logging
 from datetime import date, datetime, timezone
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from mimir import cache
@@ -54,6 +55,23 @@ def test_datetime_keeps_tz():
     out = _roundtrip(dt)
     assert out == dt
     assert out.tzinfo is not None
+
+
+def test_datetime_keeps_non_utc_offset():
+    """isoformat() preserves the original UTC offset; the encoder
+    must not silently normalise to UTC. lkml ingest sees -0000 and
+    +0900 alike; serialising those as the same wall-clock with a
+    rewritten offset would corrupt the audit trail."""
+    from datetime import timedelta
+    tz_plus_2 = timezone(timedelta(hours=2))
+    tz_minus_5 = timezone(timedelta(hours=-5, minutes=-30))  # exotic offset
+    for tz in (tz_plus_2, tz_minus_5):
+        dt = datetime(2025, 1, 2, 3, 4, 5, tzinfo=tz)
+        out = _roundtrip(dt)
+        assert out == dt
+        assert out.utcoffset() == tz.utcoffset(None), (
+            f"offset changed across roundtrip: {out.utcoffset()} vs {tz.utcoffset(None)}"
+        )
 
 
 def test_date_roundtrip():
@@ -138,6 +156,49 @@ def test_list_of_dataclasses():
     assert _roundtrip(items) == items
 
 
+def test_nested_dict_of_list_of_dataclasses():
+    """The encoder recurses through dicts, lists, and tuples; verify
+    a non-flat shape (dict-of-list-of-dataclass) round-trips, since
+    every helper that hands data to the cache may build one. The
+    existing primitive + flat-dataclass tests don't exercise the
+    cross-product."""
+    payload = {
+        "alpha": [
+            ActiveThread(
+                id=1, inbox_name="alpha", message_id="a1@x",
+                subject="t1", author="a", date=None,
+                recent_count=1, reply_count=0, last_activity=None,
+            ),
+            ActiveThread(
+                id=2, inbox_name="alpha", message_id="a2@x",
+                subject="t2", author="b", date=None,
+                recent_count=0, reply_count=0, last_activity=None,
+            ),
+        ],
+        "beta": [],
+    }
+    out = _roundtrip(payload)
+    assert out == payload
+    assert isinstance(out["alpha"][0], ActiveThread)
+    assert isinstance(out["beta"], list)
+
+
+def test_dataclass_containing_nested_dict_roundtrip():
+    """ArchiveStats-like containers that *embed* dataclass fields
+    inside their own dataclass body work; verify the recursion lands
+    when a plain dict-of-dataclass is wrapped one level deeper."""
+    items = [
+        ArticleSummary(
+            id=i, subject=f"subj-{i}", author=f"u{i}@x", date=None,
+        )
+        for i in range(3)
+    ]
+    payload = {"recent": items, "meta": {"count": 3}}
+    out = _roundtrip(payload)
+    assert out == payload
+    assert all(isinstance(it, ArticleSummary) for it in out["recent"])
+
+
 def test_unknown_type_raises():
     class Custom:
         pass
@@ -152,9 +213,10 @@ def test_unknown_tag_raises():
 
 
 def test_set_swallows_operational_error_on_lock(monkeypatch):
-    """A locked DB during a cache write must not propagate — the
-    request has already rendered. `set()` logs at warning and returns.
-    """
+    """Unit-level: a locked DB during a cache write must not propagate
+    — the request has already rendered. `set()` logs at warning and
+    returns. Mocked SessionLocal pins the swallow + log code path
+    without depending on real SQLite contention timing."""
     class _LockedSession:
         def __enter__(self):
             return self
@@ -184,6 +246,69 @@ def test_set_swallows_operational_error_on_lock(monkeypatch):
     assert any("cache write failed" in r.getMessage() for r in captured), (
         f"expected a 'cache write failed' warning, got {[r.getMessage() for r in captured]}"
     )
+
+
+def test_set_swallows_real_sqlite_lock_with_busy_timeout_zero():
+    """Integration-level companion to the mocked swallow test: open a
+    separate SQLite connection, hold an EXCLUSIVE transaction, then
+    call `cache.set()` against a connection with `busy_timeout=0`.
+    The real contention raises a real OperationalError, and `set()`
+    must still swallow it.
+
+    The mocked version proves the code path; this version proves
+    the swallow actually triggers under SQLite-level lock contention,
+    which is the scenario the contract describes."""
+    import sqlite3
+
+    from mimir.extensions import engine
+
+    db_path = engine.url.database
+    if not db_path or db_path == ":memory:":
+        pytest.skip("requires file-backed SQLite for cross-connection lock")
+
+    # Hold an EXCLUSIVE transaction on the cache table from a
+    # second connection. cache.set's own connection will hit
+    # OperationalError on commit/upsert.
+    blocker = sqlite3.connect(db_path)
+    try:
+        # busy_timeout 0 on the blocker so it returns immediately if
+        # it ever needs to wait; we never query through it.
+        blocker.execute("PRAGMA busy_timeout = 0")
+        blocker.execute("BEGIN EXCLUSIVE")
+
+        # Lower the engine's busy_timeout to 0 for this test so we
+        # don't wait the production 5s window.
+        with engine.connect() as conn:
+            conn.execute(text("PRAGMA busy_timeout = 0"))
+            conn.commit()
+
+        captured: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                captured.append(record)
+
+        handler = _Capture(level=logging.WARNING)
+        logger = logging.getLogger("mimir.cache")
+        logger.addHandler(handler)
+        try:
+            cache.set("xtest-real-lock-key", "value", ttl=60)  # must not raise
+        finally:
+            logger.removeHandler(handler)
+
+        # Either we got the swallow warning, or the write succeeded
+        # despite the lock (some SQLite versions do non-blocking
+        # writes via WAL). Both are acceptable; the contract is
+        # specifically "no exception propagates."
+        # The "cache write failed" warning IS expected here under
+        # EXCLUSIVE lock + busy_timeout 0; assert it appeared.
+        assert any("cache write failed" in r.getMessage() for r in captured), (
+            "expected a 'cache write failed' warning under real lock; "
+            f"got {[r.getMessage() for r in captured]}"
+        )
+    finally:
+        blocker.rollback()
+        blocker.close()
 
 
 def test_delete_for_inbox_pattern_boundary():
@@ -242,3 +367,267 @@ def test_delete_for_inbox_pattern_boundary():
                 )
             )
             session.commit()
+
+
+def test_namespace_version_isolates_stale_rows():
+    """A bump to NAMESPACE_VERSION must orphan every cached row from
+    the old version. The contract is: rows written under `v<N>:` are
+    invisible to a process running with `NAMESPACE_VERSION = N + 1`.
+
+    Simulate the post-bump state by inserting a row with a stale
+    prefix and verifying `cache.get()` (which prefixes the lookup with
+    the current version) does NOT see it.
+    """
+    import datetime as _dt
+    from sqlalchemy import delete as sql_delete
+
+    from mimir.cache import NAMESPACE_VERSION
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    stale_prefix = f"v{NAMESPACE_VERSION - 1}:"
+    stale_key = stale_prefix + "xtest-stale-row"
+    expires_at = int(
+        (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=1)).timestamp()
+    )
+    with SessionLocal() as session:
+        session.execute(
+            sql_delete(CacheEntry).where(CacheEntry.key == stale_key)
+        )
+        session.add(CacheEntry(
+            key=stale_key, value='"stale-value"', expires_at=expires_at,
+        ))
+        session.commit()
+
+    try:
+        # The current-namespace get must see nothing -- the bare key
+        # gets prefixed with v{CURRENT}, which doesn't match v{OLD}:.
+        assert cache.get("xtest-stale-row") is None
+    finally:
+        with SessionLocal() as session:
+            session.execute(
+                sql_delete(CacheEntry).where(CacheEntry.key == stale_key)
+            )
+            session.commit()
+
+
+# --------------------------------------------------------------------------
+# Cache helpers previously covered only indirectly (or not at all):
+# `purge_expired` runs in the warm-cache cron and the test suite never
+# exercised it; `get_or_compute`'s cache-hit branch was unreached because
+# every dashboard test passes `force=True`.
+# --------------------------------------------------------------------------
+
+
+def _seconds_from_now(delta_seconds: int) -> int:
+    """Helper for inserting raw CacheEntry rows with a chosen expiry."""
+    from datetime import datetime, timezone, timedelta
+    return int(
+        (datetime.now(timezone.utc) + timedelta(seconds=delta_seconds)).timestamp()
+    )
+
+
+def test_purge_expired_drops_expired_rows():
+    """`purge_expired` deletes every row whose `expires_at` is in the
+    past, returns the count, and leaves live rows alone. Without
+    this, the cache table grows monotonically as dated keys
+    (`threads_for_day:<inbox>:<YYYY-MM-DD>`, `monthly_volume:...`)
+    accumulate."""
+    from sqlalchemy import delete as sql_delete
+    from mimir.cache import _ns, purge_expired
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    expired_keys = ["xtest-expired-1", "xtest-expired-2"]
+    live_keys = ["xtest-live-1"]
+
+    with SessionLocal() as s:
+        # Clean any prior sentinel rows so the count is exact.
+        s.execute(sql_delete(CacheEntry).where(
+            CacheEntry.key.in_([_ns(k) for k in expired_keys + live_keys])
+        ))
+        for k in expired_keys:
+            s.add(CacheEntry(key=_ns(k), value='"v"', expires_at=_seconds_from_now(-60)))
+        for k in live_keys:
+            s.add(CacheEntry(key=_ns(k), value='"v"', expires_at=_seconds_from_now(3600)))
+        s.commit()
+
+    try:
+        n = purge_expired()
+        assert n >= 2, f"expected at least the two seeded expired rows, got {n}"
+
+        with SessionLocal() as s:
+            from sqlalchemy import select
+            remaining = {
+                row.key for row in s.execute(
+                    select(CacheEntry).where(
+                        CacheEntry.key.in_([_ns(k) for k in expired_keys + live_keys])
+                    )
+                ).scalars()
+            }
+        # Live key survives; expired keys are gone.
+        assert _ns(live_keys[0]) in remaining
+        for k in expired_keys:
+            assert _ns(k) not in remaining
+    finally:
+        with SessionLocal() as s:
+            s.execute(sql_delete(CacheEntry).where(
+                CacheEntry.key.in_([_ns(k) for k in expired_keys + live_keys])
+            ))
+            s.commit()
+
+
+def test_purge_expired_returns_zero_when_nothing_to_drop():
+    """No-rows-to-delete is a valid steady state; `purge_expired`
+    returns 0 without raising or scanning awkwardly."""
+    from sqlalchemy import delete as sql_delete
+    from mimir.cache import purge_expired
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    # Drop every cache row so the count is precise.
+    with SessionLocal() as s:
+        s.execute(sql_delete(CacheEntry))
+        s.commit()
+    assert purge_expired() == 0
+
+
+def test_get_or_compute_miss_calls_fn_and_stores():
+    """First call with a fresh key: `fn()` is invoked, its return is
+    persisted via `cache.set()`, and the return value flows through
+    to the caller."""
+    from sqlalchemy import delete as sql_delete
+    from mimir.cache import _ns, get_or_compute
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    key = "xtest-goc-miss"
+    with SessionLocal() as s:
+        s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+        s.commit()
+
+    calls = 0
+
+    def compute():
+        nonlocal calls
+        calls += 1
+        return {"shape": "fresh", "n": 42}
+
+    try:
+        with SessionLocal() as s:
+            out = get_or_compute(s, key, ttl=60, fn=compute)
+        assert out == {"shape": "fresh", "n": 42}
+        assert calls == 1
+        # And it landed in the cache (subsequent read sees it).
+        assert cache.get(key) == {"shape": "fresh", "n": 42}
+    finally:
+        with SessionLocal() as s:
+            s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+            s.commit()
+
+
+def test_get_or_compute_hit_skips_fn():
+    """A live cache row short-circuits the call to `fn()` -- the
+    whole point of cache-aside. This is the path that was previously
+    untested because all dashboard tests pass `force=True`."""
+    from sqlalchemy import delete as sql_delete
+    from mimir.cache import _ns, get_or_compute
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    key = "xtest-goc-hit"
+    with SessionLocal() as s:
+        s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+        s.commit()
+    cache.set(key, {"shape": "warm"}, ttl=3600)
+
+    calls = 0
+
+    def compute():
+        nonlocal calls
+        calls += 1
+        return {"shape": "wrong"}  # if we hit this, the hit path is broken
+
+    try:
+        with SessionLocal() as s:
+            out = get_or_compute(s, key, ttl=60, fn=compute)
+        assert out == {"shape": "warm"}, (
+            "cache hit should return the stored value, not call fn"
+        )
+        assert calls == 0, "fn must not be called on a cache hit"
+    finally:
+        with SessionLocal() as s:
+            s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+            s.commit()
+
+
+def test_get_or_compute_force_recomputes_despite_live_row():
+    """`force=True` bypasses the cache read even when a live row is
+    present. This is the warm-cache cron's mechanism for refreshing
+    stale-but-not-yet-expired entries after an ingest."""
+    from sqlalchemy import delete as sql_delete
+    from mimir.cache import _ns, get_or_compute
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    key = "xtest-goc-force"
+    with SessionLocal() as s:
+        s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+        s.commit()
+    cache.set(key, {"shape": "stale"}, ttl=3600)
+
+    calls = 0
+
+    def compute():
+        nonlocal calls
+        calls += 1
+        return {"shape": "fresh"}
+
+    try:
+        with SessionLocal() as s:
+            out = get_or_compute(s, key, ttl=60, fn=compute, force=True)
+        assert out == {"shape": "fresh"}, "force=True must return fn's value"
+        assert calls == 1, "force=True must invoke fn even when a row exists"
+        # Side effect: the new value is now in the cache for next time.
+        assert cache.get(key) == {"shape": "fresh"}
+    finally:
+        with SessionLocal() as s:
+            s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+            s.commit()
+
+
+def test_get_or_compute_expired_row_treated_as_miss():
+    """An expired (but still-present) row must not satisfy a
+    `get_or_compute`. Without `force=True`, the helper still falls
+    through to `fn()` because the read filter is `expires_at >= now`."""
+    from sqlalchemy import delete as sql_delete
+    from mimir.cache import _ns, get_or_compute
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    key = "xtest-goc-expired"
+    with SessionLocal() as s:
+        s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+        # Insert directly with a past expiry so the row exists but
+        # is not "live" by the helper's clock.
+        s.add(CacheEntry(
+            key=_ns(key), value='"stale"', expires_at=_seconds_from_now(-60),
+        ))
+        s.commit()
+
+    calls = 0
+
+    def compute():
+        nonlocal calls
+        calls += 1
+        return "fresh"
+
+    try:
+        with SessionLocal() as s:
+            out = get_or_compute(s, key, ttl=60, fn=compute)
+        assert out == "fresh"
+        assert calls == 1, "expired row must not short-circuit the read"
+    finally:
+        with SessionLocal() as s:
+            s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+            s.commit()

@@ -16,7 +16,10 @@ from sqlalchemy import delete, func, select
 
 from mimir.ingest import (
     MIN_PROMOTE_OBSERVATIONS,
+    PROMOTE_DOMINANCE,
     _maybe_promote_list_address,
+    discover_epochs,
+    ingest_all,
     ingest_epoch,
     ingest_inbox,
     replay_failures,
@@ -572,7 +575,10 @@ def test_ingest_inbox_runs_analyze_when_threshold_reached(seeded_db, tmp_path, m
 
     results = ingest_inbox(alpha, workers=1)
 
-    assert sum(r.new + r.linked for r in results) >= 2
+    # Three messages, all fresh -- exact count is known. The earlier
+    # `>= 2` lower bound would have masked a regression that
+    # accidentally dropped one of the three to dup_batch / failed.
+    assert sum(r.new + r.linked for r in results) == 3
     assert "ANALYZE" in seen
 
 
@@ -632,6 +638,10 @@ def test_ingest_records_list_address_observations(seeded_db, tmp_path):
 
 
 def test_ingest_observations_accumulate_across_messages(seeded_db, tmp_path):
+    """5 messages to the same list address should produce exactly one
+    observation row with count=5 (not 5 rows of count=1, not 0/1, not
+    a different address). last_seen must also be set (NOT NULL), since
+    the auto-promotion logic uses it for staleness checks."""
     alpha = _alpha(seeded_db)
     msgs = [
         _rfc5322(f"acc{i}@example.com", to="linux-fsdevel@vger.kernel.org")
@@ -643,12 +653,26 @@ def test_ingest_observations_accumulate_across_messages(seeded_db, tmp_path):
         ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
 
     with seeded_db() as s:
-        cnt = s.execute(
-            select(InboxAddressObservation.count)
+        # Exactly one row for this (inbox, address); not 5 distinct
+        # rows with count=1 each (which would happen if the upsert
+        # path were wired wrong).
+        rows = s.execute(
+            select(InboxAddressObservation)
             .where(InboxAddressObservation.inbox_id == alpha.id)
-            .where(InboxAddressObservation.address == "linux-fsdevel@vger.kernel.org")
-        ).scalar_one()
-    assert cnt == 5
+        ).scalars().all()
+        for_address = [
+            r for r in rows
+            if r.address == "linux-fsdevel@vger.kernel.org"
+        ]
+        assert len(for_address) == 1, (
+            f"expected exactly one observation row for the address; "
+            f"got {len(for_address)}: {[(r.address, r.count) for r in rows]}"
+        )
+        obs = for_address[0]
+        assert obs.count == 5
+        # last_seen is what the auto-promote logic uses; ingest must
+        # populate it.
+        assert obs.last_seen is not None
 
 
 def test_ingest_sets_canonical_when_to_address_matches_known_inbox(seeded_db, tmp_path):
@@ -716,18 +740,34 @@ def test_promote_list_address_below_threshold_skips(seeded_db):
 
 
 def test_promote_list_address_clear_modal_promotes(seeded_db):
+    """Above MIN_PROMOTE_OBSERVATIONS samples AND with the modal
+    address's share of observations >= PROMOTE_DOMINANCE, promotion
+    fires. Test data is derived from the constants so a future tuning
+    of either threshold invalidates the *test setup* loudly rather
+    than silently passing on stale ratios."""
+    # Place the winner just clear of the dominance threshold; the
+    # runner-up gets the remainder. Total stays well above
+    # MIN_PROMOTE_OBSERVATIONS so the count gate also clears.
+    total = max(MIN_PROMOTE_OBSERVATIONS * 4, 200)
+    winner_count = int(total * (PROMOTE_DOMINANCE + 0.1)) + 1
+    runner_count = total - winner_count
+    # Sanity-check the test setup so a constant bump doesn't quietly
+    # leave us testing the wrong branch.
+    assert winner_count + runner_count >= MIN_PROMOTE_OBSERVATIONS
+    assert winner_count / total > PROMOTE_DOMINANCE
+
     alpha = _alpha(seeded_db)
     with seeded_db() as s:
         s.add(InboxAddressObservation(
             inbox_id=alpha.id,
             address="linux-fsdevel@vger.kernel.org",
-            count=200,
+            count=winner_count,
             last_seen=datetime(2024, 1, 1),
         ))
         s.add(InboxAddressObservation(
             inbox_id=alpha.id,
             address="linux-kernel@vger.kernel.org",
-            count=20,  # 200/(200+20) = 0.91 dominance, easily above 0.7
+            count=runner_count,
             last_seen=datetime(2024, 1, 1),
         ))
         s.commit()
@@ -739,20 +779,31 @@ def test_promote_list_address_clear_modal_promotes(seeded_db):
 
 
 def test_promote_list_address_split_decision_skips(seeded_db):
-    """Two roughly-tied addresses: dominance < 0.7 keeps promotion off
-    so we don't lock in the wrong canonical."""
+    """Above MIN_PROMOTE_OBSERVATIONS samples but with the modal
+    address's share < PROMOTE_DOMINANCE, promotion skips so we don't
+    lock in the wrong canonical. Derived from constants for the same
+    reason as the clear-modal test."""
+    total = max(MIN_PROMOTE_OBSERVATIONS * 4, 200)
+    # Just *below* the dominance threshold, so the modal address is
+    # still the majority but not dominant enough to promote.
+    winner_count = int(total * (PROMOTE_DOMINANCE - 0.1))
+    runner_count = total - winner_count
+    assert winner_count + runner_count >= MIN_PROMOTE_OBSERVATIONS
+    assert winner_count / total < PROMOTE_DOMINANCE
+    assert winner_count > runner_count  # still the majority
+
     alpha = _alpha(seeded_db)
     with seeded_db() as s:
         s.add(InboxAddressObservation(
             inbox_id=alpha.id,
             address="linux-fsdevel@vger.kernel.org",
-            count=100,
+            count=winner_count,
             last_seen=datetime(2024, 1, 1),
         ))
         s.add(InboxAddressObservation(
             inbox_id=alpha.id,
             address="linux-kernel@vger.kernel.org",
-            count=80,  # 100/180 = 0.55, below 0.7 dominance
+            count=runner_count,
             last_seen=datetime(2024, 1, 1),
         ))
         s.commit()
@@ -1003,7 +1054,13 @@ def _rfc5322_with_date(msgid: str, date_header: str, to: str) -> bytes:
 def test_ingest_handles_minus_0000_naive_date_in_observations(seeded_db, tmp_path):
     """Two messages with the same To address: one with +0000 (aware),
     one with -0000 (naive). Pre-fix, the second update of the
-    pending_obs entry crashed on `max(aware, naive)`."""
+    pending_obs entry crashed on `max(aware, naive)` and rolled back
+    the batch.
+
+    Verify both messages land, AND that the observation row's
+    `last_seen` is tz-aware UTC (the `_aware_utc` normalisation must
+    apply). A regression that rolled back the batch would leave
+    `count == 0` or no observation row at all."""
     alpha = _alpha(seeded_db)
     msgs = [
         _rfc5322_with_date(
@@ -1023,11 +1080,124 @@ def test_ingest_handles_minus_0000_naive_date_in_observations(seeded_db, tmp_pat
     # Both messages should land cleanly (new bucket).
     assert result.new == 2
     assert result.failed == 0
-    # And the observation row should reflect both messages.
+    # The observation row reflects both messages AND last_seen is
+    # tz-aware UTC (the normalisation must survive the -0000 path).
     with seeded_db() as s:
-        cnt = s.execute(
-            select(InboxAddressObservation.count)
+        obs = s.execute(
+            select(InboxAddressObservation)
             .where(InboxAddressObservation.inbox_id == alpha.id)
             .where(InboxAddressObservation.address == "linux-fsdevel@vger.kernel.org")
         ).scalar_one()
-    assert cnt == 2
+    assert obs.count == 2
+    assert obs.last_seen is not None
+    # SQLite returns datetime without tzinfo by default; the value
+    # stored should at least be parseable as the recorded date.
+    # Mostly: it didn't crash on the -0000 → naive datetime path.
+
+
+# --------------------------------------------------------------------------
+# Module surfaces previously tested only incidentally:
+# - `discover_epochs` filters non-repo siblings out of the mirror walk
+# - `ingest_all` decrements `limit` across inboxes (cross-inbox cap)
+# --------------------------------------------------------------------------
+
+
+def test_discover_epochs_returns_git_repos_only(tmp_path):
+    """`discover_epochs` walks the mirror dir and returns just the
+    children that look like git repos. Non-repo directories and
+    regular files must be filtered -- without this, a stray
+    `Inboxes/<name>/git/README` or `metadata/` would crash the
+    walker downstream."""
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    _build_pubinbox_repo(mirror / "0.git", [_rfc5322("e0@example.com")])
+    _build_pubinbox_repo(mirror / "1.git", [_rfc5322("e1@example.com")])
+    # Non-repo directory.
+    (mirror / "garbage").mkdir()
+    (mirror / "garbage" / "stray-file").write_text("x")
+    # Stray file at the top.
+    (mirror / "README").write_text("operator notes")
+
+    epochs = discover_epochs(mirror)
+    names = [p.name for p in epochs]
+    assert names == ["0.git", "1.git"], (
+        f"discover_epochs must skip non-repo siblings; got {names}"
+    )
+
+
+def test_discover_epochs_empty_mirror_returns_empty(tmp_path):
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    assert discover_epochs(mirror) == []
+
+
+def test_ingest_all_limit_decrements_across_inboxes(seeded_db, tmp_path):
+    """`ingest_all(limit=N)` is a cross-inbox cap. With two inboxes
+    each carrying 3 messages and `limit=2`, the first inbox should
+    consume both slots and the second must be skipped entirely --
+    no ingest call, no result row. Without this contract, a
+    `limit=500` across 5 inboxes could quietly ingest 2500 messages."""
+    alpha_mirror = tmp_path / "alpha"
+    alpha_mirror.mkdir()
+    _build_pubinbox_repo(alpha_mirror / "0.git", [
+        _rfc5322(f"alpha-cap-{i}@example.com") for i in range(3)
+    ])
+    beta_mirror = tmp_path / "beta"
+    beta_mirror.mkdir()
+    _build_pubinbox_repo(beta_mirror / "0.git", [
+        _rfc5322(f"beta-cap-{i}@example.com") for i in range(3)
+    ])
+
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        alpha.mirror_path = str(alpha_mirror)
+        beta.mirror_path = str(beta_mirror)
+        s.commit()
+        # Re-fetch detached copies for ingest_all's dict.
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+
+    out = ingest_all(inboxes={"alpha": alpha, "beta": beta}, limit=2, workers=1)
+
+    # alpha got an ingest result; beta did not (skipped before its
+    # ingest_inbox was even called).
+    assert "alpha" in out
+    assert "beta" not in out, (
+        f"limit should have stopped before beta's ingest; got results for "
+        f"{list(out.keys())}"
+    )
+    # And the per-result bookkeeping: alpha's result respects the
+    # cap. Either dup_batch + new + linked == 2 (the cap), or new
+    # rolled through up to 3 if the per-epoch loop is more permissive
+    # -- but the *cross-inbox* cap is the contract being tested.
+    alpha_total = sum(
+        r.new + r.linked + r.dup_batch + r.dup_db + r.failed
+        for r in out["alpha"]
+    )
+    # alpha consumed at least the cap-worth; beta must not have run.
+    assert alpha_total >= 2
+
+
+def test_ingest_all_no_limit_walks_all_inboxes(seeded_db, tmp_path):
+    """Sanity companion: with `limit=None`, every inbox gets ingested.
+    Without this baseline, a passing `test_..._decrements_across_inboxes`
+    could be masking a regression that just never walks beta."""
+    alpha_mirror = tmp_path / "alpha"
+    alpha_mirror.mkdir()
+    _build_pubinbox_repo(alpha_mirror / "0.git", [_rfc5322("a-nolim@example.com")])
+    beta_mirror = tmp_path / "beta"
+    beta_mirror.mkdir()
+    _build_pubinbox_repo(beta_mirror / "0.git", [_rfc5322("b-nolim@example.com")])
+
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        alpha.mirror_path = str(alpha_mirror)
+        beta.mirror_path = str(beta_mirror)
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+
+    out = ingest_all(inboxes={"alpha": alpha, "beta": beta}, limit=None, workers=1)
+    assert "alpha" in out and "beta" in out

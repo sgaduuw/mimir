@@ -595,14 +595,18 @@ def dev_seed_thread_command(
         prev_commit = c.id
         return c.id
 
+    # Per-invocation uniqifier so re-running within the same second
+    # still produces fresh message-ids. Microsecond precision is enough
+    # to make collisions essentially impossible in dev use.
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
     for i in range(n_messages):
         is_root = i == 0
         if is_root:
-            msgid = f"dev-thread-root-{datetime.now().strftime('%H%M%S')}@example.invalid"
+            msgid = f"dev-thread-root-{stamp}@example.invalid"
             subject = f"[seed] root of a {n_messages}-message thread"
             in_reply_to = None
         else:
-            msgid = f"dev-thread-reply-{i}-{datetime.now().strftime('%H%M%S')}@example.invalid"
+            msgid = f"dev-thread-reply-{i}-{stamp}@example.invalid"
             subject = f"Re: [seed] root of a {n_messages}-message thread"
             # Alternate flat replies and nested: even = reply to root, odd = reply to prev.
             in_reply_to = parent_msgids[0] if i % 2 == 0 else parent_msgids[-1]

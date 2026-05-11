@@ -13,6 +13,7 @@ from mimir.cli import (
     admin_inbox_trackers_remove_command,
     admin_inbox_trackers_set_command,
     admin_inbox_trackers_show_command,
+    dev_seed_thread_command,
     update_command,
     warm_cache_command,
 )
@@ -215,12 +216,30 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
     assert "sitemap:meta" in result.output
     assert "sitemap:inbox:alpha" in result.output
     assert "sitemap:inbox:beta" in result.output
-    # Cache rows actually landed and decode to non-empty XML bodies.
-    for key in ("sitemap:index", "sitemap:meta",
-                "sitemap:inbox:alpha", "sitemap:inbox:beta"):
+
+    # Cache rows actually landed and decode to well-formed XML with
+    # the right schema-namespaced root element. A "<?xml" prefix
+    # check alone would pass on a malformed document.
+    import xml.etree.ElementTree as ET
+    ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
+    expected_root = {
+        "sitemap:index": "{%s}sitemapindex" % ns,
+        "sitemap:meta": "{%s}urlset" % ns,
+        "sitemap:inbox:alpha": "{%s}urlset" % ns,
+        "sitemap:inbox:beta": "{%s}urlset" % ns,
+    }
+    for key, expected_tag in expected_root.items():
         body = cache.get(key)
-        assert body is not None and "<?xml" in body
-        assert "example.test" in body
+        assert body is not None, f"missing cache row for {key}"
+        assert "example.test" in body, (
+            f"cache row for {key} doesn't carry the SITE_BASE_URL prefix; "
+            f"warm-cache may have run with the wrong base"
+        )
+        root = ET.fromstring(body)
+        assert root.tag == expected_tag, (
+            f"cache row for {key} has wrong root element: {root.tag!r} "
+            f"(expected {expected_tag!r})"
+        )
 
 
 def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
@@ -293,3 +312,157 @@ def test_update_verbose_prints_no_op_lines(seeded_db, monkeypatch):
     assert result.exit_code == 0
     assert "sync: cloned=[] fetched=[] failed=[]" in result.output
     assert "/0.git: new=0 linked=0" in result.output
+
+
+# `dev-seed-thread` builds a synthetic multi-message thread into a bare
+# git repo under <mirror-root>/<inbox>/git/, then ingests it. The CLI is
+# dev-only but the contract still needs pinning so a refactor of the
+# synth-thread shape (depth, in_reply_to chain, author dedup) doesn't
+# silently produce something that looks fine via `flask run` but breaks
+# real ingest paths the next time it's exercised.
+
+
+def test_dev_seed_thread_creates_inbox_and_articles(seeded_db, tmp_path):
+    """First invocation: creates the inbox, ingests N messages, prints a
+    URL pointing at a real article. Hermetic via --mirror-root."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    mirror_root = tmp_path / "Inboxes"
+    result = CliRunner().invoke(
+        dev_seed_thread_command,
+        [
+            "--inbox", "dev-thread-test",
+            "--messages", "5",
+            "--mirror-root", str(mirror_root),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "created inbox 'dev-thread-test'" in result.output
+    assert "new=5" in result.output  # all 5 are fresh
+    assert "navigate to: http://" in result.output
+
+    # Mirror layout on disk matches the documented shape.
+    assert (mirror_root / "dev-thread-test" / "git" / "0.git").is_dir()
+
+    # DB rows match.
+    with SessionLocal() as s:
+        ix = s.execute(
+            select(Inbox).where(Inbox.name == "dev-thread-test")
+        ).scalar_one()
+        assert ix.mirror_path == str(mirror_root / "dev-thread-test" / "git")
+        rows = s.execute(
+            select(Article.id)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(ArticleList.inbox_id == ix.id)
+        ).all()
+        assert len(rows) == 5
+
+
+def test_dev_seed_thread_forms_a_real_thread(seeded_db, tmp_path):
+    """Every reply must reference an in-archive parent so the
+    recursive-CTE walk-up (`find_thread_root`) terminates and renders
+    a tree. Without this guarantee, the dev-seeded inbox would render
+    every message as its own root, defeating the whole point of the
+    helper (which is to give the thread-fold UI something to display)."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    result = CliRunner().invoke(
+        dev_seed_thread_command,
+        [
+            "--inbox", "dev-thread-shape",
+            "--messages", "6",
+            "--mirror-root", str(tmp_path / "Inboxes"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    with SessionLocal() as s:
+        ix = s.execute(
+            select(Inbox).where(Inbox.name == "dev-thread-shape")
+        ).scalar_one()
+        articles = list(s.execute(
+            select(Article)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(ArticleList.inbox_id == ix.id)
+            .order_by(Article.date.asc())
+        ).scalars())
+
+    assert len(articles) == 6
+    # First article is the root: no thread_parent.
+    assert articles[0].thread_parent is None, (
+        "first seeded message must be the thread root"
+    )
+    # All replies reference a parent message-id that exists in the same
+    # set of seeded articles -- no off-list ancestors.
+    seeded_ids = {a.message_id for a in articles}
+    for a in articles[1:]:
+        assert a.thread_parent is not None
+        assert a.thread_parent in seeded_ids, (
+            f"reply {a.message_id} references off-list parent "
+            f"{a.thread_parent}; dev-seed should keep the thread closed"
+        )
+
+
+def test_dev_seed_thread_idempotent_appends_on_rerun(seeded_db, tmp_path):
+    """Re-running against an existing inbox doesn't recreate or
+    error out; it appends fresh messages to the same repo. The
+    CLI's `using existing inbox` log line is the operator-visible
+    signal that the second run took the append path."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    args = [
+        "--inbox", "dev-thread-idempotent",
+        "--messages", "3",
+        "--mirror-root", str(tmp_path / "Inboxes"),
+    ]
+    first = CliRunner().invoke(dev_seed_thread_command, args)
+    assert first.exit_code == 0, first.output
+    assert "created inbox 'dev-thread-idempotent'" in first.output
+
+    second = CliRunner().invoke(dev_seed_thread_command, args)
+    assert second.exit_code == 0, second.output
+    assert "using existing inbox 'dev-thread-idempotent'" in second.output
+
+    with SessionLocal() as s:
+        ix = s.execute(
+            select(Inbox).where(Inbox.name == "dev-thread-idempotent")
+        ).scalar_one()
+        rows = s.execute(
+            select(Article.id)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(ArticleList.inbox_id == ix.id)
+        ).all()
+    # Each run adds 3; two runs => 6 total.
+    assert len(rows) == 6
+
+
+def test_dev_seed_thread_message_url_is_reachable(client, seeded_db, tmp_path):
+    """The printed URL must resolve to a 200 against the running app.
+    Extracts the URL from CLI output and hits it; if dev-seed has
+    silently drifted (wrong path format, missing blob, etc.) this
+    catches it."""
+    import re
+
+    result = CliRunner().invoke(
+        dev_seed_thread_command,
+        [
+            "--inbox", "dev-thread-routable",
+            "--messages", "4",
+            "--mirror-root", str(tmp_path / "Inboxes"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    m = re.search(r"navigate to: http://[^/]+(/\S+)", result.output)
+    assert m is not None, f"no URL in output: {result.output}"
+    url_path = m.group(1)
+    r = client.get(url_path)
+    assert r.status_code == 200, (
+        f"dev-seed URL {url_path} returned {r.status_code}; "
+        f"the seed helper has likely drifted from the route shape"
+    )
