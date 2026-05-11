@@ -160,6 +160,72 @@ def test_warm_cache_verbose_keeps_per_key_timings(seeded_db):
     assert "warm-cache:" in result.output and "ms total" in result.output
 
 
+def test_warm_cache_skips_sitemap_when_site_base_url_unset(
+    seeded_db, monkeypatch
+):
+    """Without SITE_BASE_URL, sitemap renders rely on `request.url_root`
+    which isn't available from the CLI. Warm-cache skips them rather
+    than poison the cache with relative-looking URLs."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "site_base_url", "")
+    result = CliRunner().invoke(warm_cache_command, ["-v"])
+    assert result.exit_code == 0
+    assert "sitemap:index" not in result.output
+    assert "sitemap:meta" not in result.output
+    assert "sitemap:inbox:" not in result.output
+
+
+def test_warm_cache_includes_sitemap_when_site_base_url_set(
+    seeded_db, monkeypatch
+):
+    """With SITE_BASE_URL set, warm-cache pre-renders the three
+    sitemap surfaces — index, meta, and per-inbox — so the first
+    crawler hit per hour gets a cache-hit."""
+    from sqlalchemy import delete
+    from mimir import cache
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+    monkeypatch.setattr(settings, "site_base_url", "https://example.test")
+    # Clean slate so we can assert the entries exist post-run.
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        s.commit()
+
+    result = CliRunner().invoke(warm_cache_command, ["-v"])
+    assert result.exit_code == 0
+    assert "sitemap:index" in result.output
+    assert "sitemap:meta" in result.output
+    assert "sitemap:inbox:alpha" in result.output
+    assert "sitemap:inbox:beta" in result.output
+    # Cache rows actually landed and decode to non-empty XML bodies.
+    for key in ("sitemap:index", "sitemap:meta",
+                "sitemap:inbox:alpha", "sitemap:inbox:beta"):
+        body = cache.get(key)
+        assert body is not None and "<?xml" in body
+        assert "example.test" in body
+
+
+def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
+    """Passing force=True to the sitemap helpers must overwrite the
+    cached value, even when a live (unexpired) row exists. Without
+    this, warm-cache after a fresh ingest wouldn't see the new
+    article URLs until the 1h TTL elapsed."""
+    from sqlalchemy import select
+    from mimir import cache
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.web import inbox_sitemap_xml
+
+    cache.set("sitemap:inbox:alpha", "STALE", ttl=3600)
+    assert cache.get("sitemap:inbox:alpha") == "STALE"
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        body = inbox_sitemap_xml(s, alpha, "https://example.test", force=True)
+    assert "<?xml" in body
+    assert cache.get("sitemap:inbox:alpha") == body
+
+
 def test_update_default_silent_on_no_op(seeded_db, monkeypatch):
     """No-op ticks (no upstream changes, no new commits to ingest)
     must not emit per-inbox / per-epoch lines at default verbosity —
