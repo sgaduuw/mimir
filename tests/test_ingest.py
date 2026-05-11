@@ -16,6 +16,7 @@ from sqlalchemy import delete, func, select
 
 from mimir.ingest import (
     MIN_PROMOTE_OBSERVATIONS,
+    PROMOTE_DOMINANCE,
     _maybe_promote_list_address,
     ingest_epoch,
     ingest_inbox,
@@ -716,18 +717,34 @@ def test_promote_list_address_below_threshold_skips(seeded_db):
 
 
 def test_promote_list_address_clear_modal_promotes(seeded_db):
+    """Above MIN_PROMOTE_OBSERVATIONS samples AND with the modal
+    address's share of observations >= PROMOTE_DOMINANCE, promotion
+    fires. Test data is derived from the constants so a future tuning
+    of either threshold invalidates the *test setup* loudly rather
+    than silently passing on stale ratios."""
+    # Place the winner just clear of the dominance threshold; the
+    # runner-up gets the remainder. Total stays well above
+    # MIN_PROMOTE_OBSERVATIONS so the count gate also clears.
+    total = max(MIN_PROMOTE_OBSERVATIONS * 4, 200)
+    winner_count = int(total * (PROMOTE_DOMINANCE + 0.1)) + 1
+    runner_count = total - winner_count
+    # Sanity-check the test setup so a constant bump doesn't quietly
+    # leave us testing the wrong branch.
+    assert winner_count + runner_count >= MIN_PROMOTE_OBSERVATIONS
+    assert winner_count / total > PROMOTE_DOMINANCE
+
     alpha = _alpha(seeded_db)
     with seeded_db() as s:
         s.add(InboxAddressObservation(
             inbox_id=alpha.id,
             address="linux-fsdevel@vger.kernel.org",
-            count=200,
+            count=winner_count,
             last_seen=datetime(2024, 1, 1),
         ))
         s.add(InboxAddressObservation(
             inbox_id=alpha.id,
             address="linux-kernel@vger.kernel.org",
-            count=20,  # 200/(200+20) = 0.91 dominance, easily above 0.7
+            count=runner_count,
             last_seen=datetime(2024, 1, 1),
         ))
         s.commit()
@@ -739,20 +756,31 @@ def test_promote_list_address_clear_modal_promotes(seeded_db):
 
 
 def test_promote_list_address_split_decision_skips(seeded_db):
-    """Two roughly-tied addresses: dominance < 0.7 keeps promotion off
-    so we don't lock in the wrong canonical."""
+    """Above MIN_PROMOTE_OBSERVATIONS samples but with the modal
+    address's share < PROMOTE_DOMINANCE, promotion skips so we don't
+    lock in the wrong canonical. Derived from constants for the same
+    reason as the clear-modal test."""
+    total = max(MIN_PROMOTE_OBSERVATIONS * 4, 200)
+    # Just *below* the dominance threshold, so the modal address is
+    # still the majority but not dominant enough to promote.
+    winner_count = int(total * (PROMOTE_DOMINANCE - 0.1))
+    runner_count = total - winner_count
+    assert winner_count + runner_count >= MIN_PROMOTE_OBSERVATIONS
+    assert winner_count / total < PROMOTE_DOMINANCE
+    assert winner_count > runner_count  # still the majority
+
     alpha = _alpha(seeded_db)
     with seeded_db() as s:
         s.add(InboxAddressObservation(
             inbox_id=alpha.id,
             address="linux-fsdevel@vger.kernel.org",
-            count=100,
+            count=winner_count,
             last_seen=datetime(2024, 1, 1),
         ))
         s.add(InboxAddressObservation(
             inbox_id=alpha.id,
             address="linux-kernel@vger.kernel.org",
-            count=80,  # 100/180 = 0.55, below 0.7 dominance
+            count=runner_count,
             last_seen=datetime(2024, 1, 1),
         ))
         s.commit()
