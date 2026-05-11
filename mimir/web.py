@@ -748,6 +748,123 @@ def _per_inbox_latest_date(session) -> dict[str, str | None]:
     return {name: (dt.strftime("%Y-%m-%d") if dt else None) for name, dt in rows}
 
 
+def sitemap_index_xml(session: Session, base: str, *, force: bool = False) -> str:
+    """Cached body of `/sitemap.xml`. Lists `/meta-sitemap.xml` plus one
+    `/<inbox>/sitemap.xml` per configured inbox. Same cache key as the
+    route uses (`sitemap:index`) so `warm-cache` can pre-populate it
+    via `force=True`."""
+    def compute() -> str:
+        per_inbox_latest = _per_inbox_latest_date(session)
+        global_latest = max(
+            (d for d in per_inbox_latest.values() if d), default=None
+        )
+        entries: list[tuple[str, str | None]] = [
+            (f"{base}/meta-sitemap.xml", global_latest),
+        ]
+        inboxes = session.execute(
+            select(Inbox).order_by(Inbox.name)
+        ).scalars().all()
+        for inbox in inboxes:
+            entries.append((
+                f"{base}/{inbox.name}/sitemap.xml",
+                per_inbox_latest.get(inbox.name),
+            ))
+        return _build_sitemap_index_xml(entries)
+
+    return cache.get_or_compute(
+        session, "sitemap:index", SITEMAP_TTL_SEC, compute, force=force,
+    )
+
+
+def meta_sitemap_xml(session: Session, base: str, *, force: bool = False) -> str:
+    """Cached body of `/meta-sitemap.xml`. One-URL urlset covering `/`
+    with the global-max article date as lastmod."""
+    def compute() -> str:
+        per_inbox_latest = _per_inbox_latest_date(session)
+        global_latest = max(
+            (d for d in per_inbox_latest.values() if d), default=None
+        )
+        return _build_sitemap_xml([(base + "/", global_latest)])
+
+    return cache.get_or_compute(
+        session, "sitemap:meta", SITEMAP_TTL_SEC, compute, force=force,
+    )
+
+
+def inbox_sitemap_xml(
+    session: Session, inbox: Inbox, base: str, *, force: bool = False
+) -> str:
+    """Cached body of `/<inbox>/sitemap.xml`. Dashboard + year/month
+    archives that actually have data + the SITEMAP_RECENT_PER_INBOX
+    most-recent article URLs in this inbox."""
+    def compute() -> str:
+        entries: list[tuple[str, str | None]] = []
+
+        inbox_latest_dt = session.scalar(
+            select(func.max(Article.date))
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                Article.date.is_not(None),
+            )
+        )
+        inbox_latest = (
+            inbox_latest_dt.strftime("%Y-%m-%d") if inbox_latest_dt else None
+        )
+        entries.append((f"{base}/{inbox.name}/", inbox_latest))
+
+        # Distinct (year, month) pairs that actually have data, in
+        # one round-trip. Empty months are skipped — they'd 200
+        # with a "no messages" page, but the sitemap is for
+        # discovery surfaces with real content.
+        year_month_rows = session.execute(
+            select(
+                func.strftime("%Y", Article.date).label("y"),
+                func.strftime("%m", Article.date).label("m"),
+            )
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                Article.date.is_not(None),
+            )
+            .group_by("y", "m")
+            .order_by("y", "m")
+        ).all()
+        years_with_data: set[str] = {y for y, _ in year_month_rows}
+        for y in sorted(years_with_data, reverse=True):
+            entries.append((f"{base}/{inbox.name}/{y}/", None))
+        for y, m in sorted(year_month_rows, reverse=True):
+            entries.append((f"{base}/{inbox.name}/{y}/{m}/", None))
+
+        # Recent articles in the inbox — one URL per article at
+        # the inbox's own URL. No canonical-fallback dance:
+        # cross-posted articles will appear in each linked
+        # inbox's sitemap, which is correct (each is a real,
+        # crawlable URL — the canonical `<link>` on the page
+        # itself tells search engines which to keep).
+        recent = session.execute(
+            select(Article.id, Article.date)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                Article.date.is_not(None),
+            )
+            .order_by(Article.date.desc())
+            .limit(SITEMAP_RECENT_PER_INBOX)
+        ).all()
+        for art_id, date in recent:
+            entries.append((
+                f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}",
+                date.strftime("%Y-%m-%d"),
+            ))
+        return _build_sitemap_xml(entries)
+
+    return cache.get_or_compute(
+        session, f"sitemap:inbox:{inbox.name}", SITEMAP_TTL_SEC, compute,
+        force=force,
+    )
+
+
 @bp_web.route("/sitemap.xml")
 def sitemap():
     """Sitemap index. Lists `/meta-sitemap.xml` plus one
@@ -760,28 +877,8 @@ def sitemap():
     one global URL cap (1000) and a COALESCE join to pick the
     canonical inbox per cross-posted article. Per-inbox sitemaps
     don't need either — each one lists its own URLs."""
-    base = _site_base()
     with SessionLocal() as session:
-        def compute() -> str:
-            per_inbox_latest = _per_inbox_latest_date(session)
-            global_latest = max(
-                (d for d in per_inbox_latest.values() if d), default=None
-            )
-            entries: list[tuple[str, str | None]] = [
-                (f"{base}/meta-sitemap.xml", global_latest),
-            ]
-            inboxes = session.execute(
-                select(Inbox).order_by(Inbox.name)
-            ).scalars().all()
-            for inbox in inboxes:
-                entries.append((
-                    f"{base}/{inbox.name}/sitemap.xml",
-                    per_inbox_latest.get(inbox.name),
-                ))
-            return _build_sitemap_index_xml(entries)
-        body = cache.get_or_compute(
-            session, "sitemap:index", SITEMAP_TTL_SEC, compute
-        )
+        body = sitemap_index_xml(session, _site_base())
     return Response(body, mimetype="application/xml; charset=utf-8")
 
 
@@ -791,17 +888,8 @@ def meta_sitemap():
     so the index stays purely a `<sitemapindex>` (which can't carry
     a `<url>` for the root directly per sitemaps.org schema). lastmod
     is the global most-recent article date."""
-    base = _site_base()
     with SessionLocal() as session:
-        def compute() -> str:
-            per_inbox_latest = _per_inbox_latest_date(session)
-            global_latest = max(
-                (d for d in per_inbox_latest.values() if d), default=None
-            )
-            return _build_sitemap_xml([(base + "/", global_latest)])
-        body = cache.get_or_compute(
-            session, "sitemap:meta", SITEMAP_TTL_SEC, compute
-        )
+        body = meta_sitemap_xml(session, _site_base())
     return Response(body, mimetype="application/xml; charset=utf-8")
 
 
@@ -811,77 +899,9 @@ def inbox_sitemap(inbox_name: str):
     messages, plus the `SITEMAP_RECENT_PER_INBOX` most-recent article
     URLs. Cached per inbox, so an ingest into one inbox doesn't
     invalidate the others' cached responses."""
-    base = _site_base()
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
-
-        def compute() -> str:
-            entries: list[tuple[str, str | None]] = []
-
-            inbox_latest_dt = session.scalar(
-                select(func.max(Article.date))
-                .join(ArticleList, ArticleList.article_id == Article.id)
-                .where(
-                    ArticleList.inbox_id == inbox.id,
-                    Article.date.is_not(None),
-                )
-            )
-            inbox_latest = (
-                inbox_latest_dt.strftime("%Y-%m-%d") if inbox_latest_dt else None
-            )
-            entries.append((f"{base}/{inbox.name}/", inbox_latest))
-
-            # Distinct (year, month) pairs that actually have data, in
-            # one round-trip. Empty months are skipped — they'd 200
-            # with a "no messages" page, but the sitemap is for
-            # discovery surfaces with real content.
-            year_month_rows = session.execute(
-                select(
-                    func.strftime("%Y", Article.date).label("y"),
-                    func.strftime("%m", Article.date).label("m"),
-                )
-                .join(ArticleList, ArticleList.article_id == Article.id)
-                .where(
-                    ArticleList.inbox_id == inbox.id,
-                    Article.date.is_not(None),
-                )
-                .group_by("y", "m")
-                .order_by("y", "m")
-            ).all()
-            years_with_data: set[str] = {y for y, _ in year_month_rows}
-            for y in sorted(years_with_data, reverse=True):
-                entries.append((f"{base}/{inbox.name}/{y}/", None))
-            for y, m in sorted(year_month_rows, reverse=True):
-                entries.append((f"{base}/{inbox.name}/{y}/{m}/", None))
-
-            # Recent articles in the inbox — one URL per article at
-            # the inbox's own URL. No canonical-fallback dance:
-            # cross-posted articles will appear in each linked
-            # inbox's sitemap, which is correct (each is a real,
-            # crawlable URL — the canonical `<link>` on the page
-            # itself tells search engines which to keep).
-            recent = session.execute(
-                select(Article.id, Article.date)
-                .join(ArticleList, ArticleList.article_id == Article.id)
-                .where(
-                    ArticleList.inbox_id == inbox.id,
-                    Article.date.is_not(None),
-                )
-                .order_by(Article.date.desc())
-                .limit(SITEMAP_RECENT_PER_INBOX)
-            ).all()
-            for art_id, date in recent:
-                entries.append((
-                    f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}",
-                    date.strftime("%Y-%m-%d"),
-                ))
-            return _build_sitemap_xml(entries)
-        body = cache.get_or_compute(
-            session,
-            f"sitemap:inbox:{inbox.name}",
-            SITEMAP_TTL_SEC,
-            compute,
-        )
+        body = inbox_sitemap_xml(session, inbox, _site_base())
     return Response(body, mimetype="application/xml; charset=utf-8")
 
 

@@ -11,6 +11,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- `warm-cache` now also refreshes the three sitemap caches
+  (`sitemap:index`, `sitemap:meta`, `sitemap:inbox:<name>`) when
+  `SITE_BASE_URL` is set. Closes #14. The first crawler hit per
+  hour no longer pays the cold compute on the chunky per-inbox
+  sitemap. Skipped silently when `SITE_BASE_URL` is unset (the
+  helper has no `request.url_root` to fall back on from the CLI).
+
 ## [1.10.0] – 2026-05-11
 
 ### Changed
