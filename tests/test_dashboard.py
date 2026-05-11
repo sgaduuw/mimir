@@ -122,16 +122,53 @@ def test_daily_volume_zero_fills_missing_days(seeded_db):
 
 
 def test_daily_volume_max_count(seeded_db):
+    """`max_count` must equal the actual maximum count in the
+    returned series, not just `>= 0`. Seed two new articles on the
+    same recent day so the window has a non-zero peak, then assert
+    max_count picks it up.
+
+    The seeded-by-conftest articles all date to Jan 2024, which is
+    outside the 30-day window for any plausible test run date, so
+    without an in-window seed the helper's max_count is 0 and the
+    `vol.max_count == max(...)` check passes trivially."""
+    from datetime import datetime, timedelta, timezone
+    from mimir.models import Article, ArticleList
+
     alpha = _inbox(seeded_db, "alpha")
+    # Insert two articles dated 3 days ago so they fall in the
+    # daily_volume(days=30) window. Same day -> count of 2 on that day,
+    # 0 on the rest -> max_count == 2.
+    three_days_ago = datetime.now(timezone.utc) - timedelta(days=3)
     with seeded_db() as s:
+        for i in range(2):
+            art = Article(
+                message_id=f"daily-volume-max-{i}@x",
+                subject=f"d{i}",
+                author="u@x",
+                date=three_days_ago,
+                thread_parent=None,
+                subject_normalized=f"d{i}",
+            )
+            s.add(art)
+            s.flush()
+            s.add(ArticleList(
+                article_id=art.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="ee" * 20,
+            ))
+        s.commit()
+
         vol = daily_volume(s, alpha, days=30, force=True)
-    # Seeded alpha articles are all from 2024 (outside the recent
-    # 30-day window when the test runs after that), so all per-day
-    # counts in the window are 0 → max_count == 0. The helper's
-    # `default=1` only kicks in if the series is empty, which it
-    # never is for days >= 1.
+    # max_count is the real maximum -- not 0, not a hardcoded constant.
+    assert vol.max_count == 2
     assert vol.max_count == max(c for _, c in vol.days)
-    assert vol.max_count >= 0
+    # The two-article day shows count 2; every other day in the
+    # window is 0 since seeded conftest articles are outside the
+    # window.
+    counts = [c for _, c in vol.days]
+    assert counts.count(2) == 1
+    assert counts.count(0) == len(counts) - 1
 
 
 def test_monthly_volume_groups_by_month(seeded_db):
@@ -155,6 +192,51 @@ def test_monthly_volume_other_year_empty(seeded_db):
         vol = monthly_volume(s, alpha, year=2030, force=True)
     assert vol.total == 0
     assert all(count == 0 for _, count in vol.months)
+
+
+def test_monthly_volume_year_boundary(seeded_db):
+    """An article posted on the very last second of a year must be
+    attributed to that year, not the next. Off-by-one mistakes in the
+    BETWEEN-year filter (e.g. inclusive vs exclusive upper bound,
+    UTC drift) are an easy regression that the existing test for
+    "groups_by_month" doesn't exercise."""
+    from datetime import datetime, timezone
+    from mimir.models import Article, ArticleList
+
+    alpha = _inbox(seeded_db, "alpha")
+    # Last hour of 2022, second-precision (no microseconds). SQLite's
+    # strftime rounds .999999s up across the year boundary on some
+    # builds, which is a separate edge from the BETWEEN-bounds
+    # regression this test is guarding -- so stay clearly inside 2022.
+    boundary = datetime(2022, 12, 31, 23, 59, 0, tzinfo=timezone.utc)
+    with seeded_db() as s:
+        art = Article(
+            message_id="year-boundary@x",
+            subject="boundary",
+            author="u@x",
+            date=boundary,
+            thread_parent=None,
+            subject_normalized="boundary",
+        )
+        s.add(art)
+        s.flush()
+        s.add(ArticleList(
+            article_id=art.id, inbox_id=alpha.id,
+            epoch="0.git", commit_sha="bd" * 20,
+        ))
+        s.commit()
+
+        vol_2022 = monthly_volume(s, alpha, year=2022, force=True)
+        vol_2023 = monthly_volume(s, alpha, year=2023, force=True)
+
+    # Belongs to 2022, specifically December.
+    assert dict(vol_2022.months)[12] >= 1, (
+        f"boundary article (2022-12-31 23:59:59) missing from 2022 totals: {vol_2022}"
+    )
+    # Must NOT leak into the next year.
+    assert all(c == 0 for _, c in vol_2023.months), (
+        f"boundary article leaked into 2023: {vol_2023}"
+    )
 
 
 # search_articles — including the LIKE-wildcard escape
@@ -311,17 +393,73 @@ def test_latest_stable_releases_matches_glob(seeded_db):
 
 
 def test_this_day_in_history_returns_articles_summary(seeded_db):
-    """Just exercise the shape — the date-based filter is hard to
-    pin without freezing the clock; we just confirm it returns a
-    list of ArticleSummary and doesn't raise."""
+    """The shape contract: returns a list of ArticleSummary. Also pin
+    the date-filter behaviour: an article dated exactly `years_ago`
+    ago from today's date must appear in the result.
+
+    The older version only asserted the shape, which would have
+    passed on a no-op implementation. Seed an article matching the
+    today-minus-N filter and verify it's returned."""
+    from datetime import datetime, timedelta, timezone
     from mimir.dashboard import ArticleSummary
+    from mimir.models import Article, ArticleList
 
     alpha = _inbox(seeded_db, "alpha")
+    years_ago = 5
+    # Match the helper's date math: `now - timedelta(days=365*N)`,
+    # NOT calendar-year subtraction. Leap years drift the result by
+    # a couple of days vs the same calendar date, and a regression
+    # that hardcoded the wrong arithmetic would silently filter
+    # out articles. Compute identically to the helper.
+    target = datetime.now(timezone.utc) - timedelta(days=365 * years_ago)
+    target_dt = target.replace(hour=12, minute=0, second=0, microsecond=0)
     with seeded_db() as s:
-        results = this_day_in_history(s, alpha, years_ago=5, limit=3, force=True)
+        art = Article(
+            message_id="history-anchor@x",
+            subject="this day, five years ago",
+            author="u@x",
+            date=target_dt,
+            thread_parent=None,
+            subject_normalized="this day five years ago",
+        )
+        s.add(art)
+        s.flush()
+        s.add(ArticleList(
+            article_id=art.id, inbox_id=alpha.id,
+            epoch="0.git", commit_sha="hd" * 20,
+        ))
+        s.commit()
+
+        results = this_day_in_history(s, alpha, years_ago=years_ago, limit=10, force=True)
     assert isinstance(results, list)
     for r in results:
         assert isinstance(r, ArticleSummary)
+    # The seeded article must appear; if the date filter dropped it,
+    # the helper is broken. ArticleSummary doesn't carry message_id,
+    # so match on subject (unique to this test).
+    assert any(r.subject == "this day, five years ago" for r in results), (
+        f"this_day_in_history missed the on-target article: "
+        f"target={target_dt.isoformat()}, results={[r.subject for r in results]}"
+    )
+    # A different article seeded out-of-window must NOT appear.
+    with seeded_db() as s:
+        out = Article(
+            message_id="history-out-of-window@x",
+            subject="out of window",
+            author="u@x",
+            date=target_dt + timedelta(days=7),  # 7 days off the anchor
+            thread_parent=None,
+            subject_normalized="out of window",
+        )
+        s.add(out)
+        s.flush()
+        s.add(ArticleList(
+            article_id=out.id, inbox_id=alpha.id,
+            epoch="0.git", commit_sha="hw" * 20,
+        ))
+        s.commit()
+        results2 = this_day_in_history(s, alpha, years_ago=years_ago, limit=10, force=True)
+    assert not any(r.subject == "out of window" for r in results2)
 
 
 # recent_articles

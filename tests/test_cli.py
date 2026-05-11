@@ -216,12 +216,30 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
     assert "sitemap:meta" in result.output
     assert "sitemap:inbox:alpha" in result.output
     assert "sitemap:inbox:beta" in result.output
-    # Cache rows actually landed and decode to non-empty XML bodies.
-    for key in ("sitemap:index", "sitemap:meta",
-                "sitemap:inbox:alpha", "sitemap:inbox:beta"):
+
+    # Cache rows actually landed and decode to well-formed XML with
+    # the right schema-namespaced root element. A "<?xml" prefix
+    # check alone would pass on a malformed document.
+    import xml.etree.ElementTree as ET
+    ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
+    expected_root = {
+        "sitemap:index": "{%s}sitemapindex" % ns,
+        "sitemap:meta": "{%s}urlset" % ns,
+        "sitemap:inbox:alpha": "{%s}urlset" % ns,
+        "sitemap:inbox:beta": "{%s}urlset" % ns,
+    }
+    for key, expected_tag in expected_root.items():
         body = cache.get(key)
-        assert body is not None and "<?xml" in body
-        assert "example.test" in body
+        assert body is not None, f"missing cache row for {key}"
+        assert "example.test" in body, (
+            f"cache row for {key} doesn't carry the SITE_BASE_URL prefix; "
+            f"warm-cache may have run with the wrong base"
+        )
+        root = ET.fromstring(body)
+        assert root.tag == expected_tag, (
+            f"cache row for {key} has wrong root element: {root.tag!r} "
+            f"(expected {expected_tag!r})"
+        )
 
 
 def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
