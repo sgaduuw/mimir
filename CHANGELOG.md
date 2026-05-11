@@ -11,6 +11,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Thread-fold toolbar visual + interactivity issues spotted on the
+  v1.12.0 deploy: the three toggle buttons no longer stretch to
+  full-width-thirds (caused by Pico v2's `[role="group"]` pill
+  styling forcing `width: 100%` on the wrapper). Restructured the
+  toolbar into a single `<header>` flex row sitting flush against
+  the top of the thread box in `partial` mode (shared borders, top
+  corners squared). Squares-as-list-markers fixed by also setting
+  `list-style-type: none` on the `<li>`. In `closed` mode, clicking
+  anywhere on the toolbar (not just the summary text) opens the
+  tree to `partial`.
+
 ## [1.12.0] – 2026-05-11
 
 ### Changed
