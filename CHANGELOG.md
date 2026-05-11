@@ -11,6 +11,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- In `expanded` thread-fold state, the box border was dropped
+  entirely, breaking the visual connection with the bordered
+  toolbar above. The box now keeps its border in `expanded` (just
+  loses the height cap), so the toolbar + tree stay a single
+  connected unit. The "tree flows inline" was the original intent
+  but the half-bordered look made it feel broken.
+
 ## [1.12.2] – 2026-05-11
 
 ### Fixed
