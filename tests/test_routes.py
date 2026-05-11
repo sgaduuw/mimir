@@ -986,79 +986,333 @@ def test_thread_summary_helper_counts_and_relative_time():
     assert s["last_activity_rel"] == "3h ago"
 
 
-def test_message_page_thread_fold_markup(client, tmp_path):
-    """Message page renders the three-state fold scaffolding when the
-    thread has 2+ messages: data-thread-root section, three toggle
-    buttons, the inline pin-and-set-attr script, and the closed-state
-    summary line. Single-message threads still skip the section entirely."""
-    # Single-message: no fold scaffolding.
-    _, url1 = _ingest_one_article(
+def test_message_page_single_message_thread_skips_fold_scaffolding(
+    client, tmp_path,
+):
+    """When a thread has exactly one message and no off-list parent,
+    the whole `.thread-context` block is omitted: no fold scaffolding,
+    no toolbar, no `<html>`-level data attrs, no fold-controller
+    script context."""
+    _, url = _ingest_one_article(
         tmp_path, "alpha", "fold-solo@example.com", subject="solo",
     )
-    body1 = client.get(url1).data.decode()
-    assert "thread-context" not in body1
-    assert "data-thread-fold" not in body1
+    body = client.get(url).data.decode()
+    assert "thread-context" not in body
+    assert "data-thread-fold" not in body
+    assert "data-thread-root=" not in body
+    assert "data-fold-set=" not in body
+    # thread-fold.js is loaded on every page (from base.html) but with no
+    # data-thread-* attrs on <html> the controller short-circuits the
+    # FOUC-free block and the event handlers find no .thread-context.
+    assert 'src="/static/js/thread-fold.js"' in body
 
-    # Two-message thread (reply to known parent): fold scaffolding present.
-    # Each call re-points the inbox's mirror_path; the *current* view
-    # needs that mirror to resolve its own blob, so the reply's tmp_path
-    # is the one we leave installed when we hit reply_url.
-    root_dir = tmp_path / "root"
-    root_dir.mkdir()
-    reply_dir = tmp_path / "reply"
-    reply_dir.mkdir()
-    _ingest_one_article(
-        root_dir, "alpha", "fold-root@example.com",
-        subject="root msg",
+
+def _seed_three_message_thread(tmp_path, inbox_name):
+    """Build a 3-message thread root → reply → reply-to-reply in ONE
+    shared bare repo, so the inbox's mirror_path resolves blobs for
+    every article (not just the last-ingested one).
+
+    `_ingest_one_article` creates its own fresh `0.git` per call and
+    repoints mirror_path; that's fine for single-message tests but
+    breaks here -- viewing the root would 500 trying to look up the
+    root's commit_sha in the *reply's* mirror. This helper appends
+    each message as a separate commit in the same bare repo so all
+    three resolve under one mirror_path.
+
+    Returns a dict keyed by role ("root" / "reply" / "nested") with
+    `(article_id, url, message_id)` tuples for each.
+    """
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.ingest import ingest_epoch
+    from mimir.models import Article, Inbox
+
+    repo_dir = tmp_path / "0.git"
+    repo = Repo.init_bare(str(repo_dir), mkdir=True)
+    prev_commit = None
+
+    def _add(message_id: str, subject: str, in_reply_to: str | None) -> None:
+        nonlocal prev_commit
+        extra = b""
+        if in_reply_to is not None:
+            extra += b"In-Reply-To: <" + in_reply_to.encode() + b">\r\n"
+        raw = (
+            b"Message-ID: <" + message_id.encode() + b">\r\n"
+            b"From: a@b.example\r\n"
+            b"Subject: " + subject.encode() + b"\r\n"
+            b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+            + extra +
+            b"\r\n"
+            b"body"
+        )
+        blob = Blob.from_string(raw)
+        repo.object_store.add_object(blob)
+        tree = Tree()
+        tree.add(b"m", 0o100644, blob.id)
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.parents = [prev_commit] if prev_commit else []
+        commit.author = commit.committer = b"test <t@x>"
+        # 1704067200 == 2024-01-01 00:00 UTC; bumped per message so each
+        # commit is unique and threading order is stable.
+        commit.commit_time = commit.author_time = 1704067200 + len(_added)
+        commit.commit_timezone = commit.author_timezone = 0
+        commit.encoding = b"UTF-8"
+        commit.message = b"add"
+        repo.object_store.add_object(commit)
+        prev_commit = commit.id
+        _added.append(message_id)
+
+    _added: list[str] = []
+    _add("fold-root@example.com", "root msg", None)
+    _add("fold-reply@example.com", "Re: root msg", "fold-root@example.com")
+    _add("fold-nested@example.com", "Re: root msg", "fold-reply@example.com")
+    repo.refs[b"HEAD"] = prev_commit
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        ix.mirror_path = str(tmp_path)
+        s.commit()
+        ingest_epoch(s, ix, "0.git", repo_dir, workers=1)
+        out = {}
+        for role, mid in [
+            ("root", "fold-root@example.com"),
+            ("reply", "fold-reply@example.com"),
+            ("nested", "fold-nested@example.com"),
+        ]:
+            art = s.execute(
+                select(Article).where(Article.message_id == mid)
+            ).scalar_one()
+            url = f"/{inbox_name}/{art.date.year}/{art.date.month:02d}/{art.id}"
+            out[role] = (art.id, url, mid)
+        return out
+
+
+def test_message_page_thread_fold_context_is_root_when_viewing_root(
+    client, tmp_path,
+):
+    """Viewing the thread root sets data-thread-context="root" on
+    <html>; the controller script reads that and defaults the fold
+    state to `partial` (vs `closed` for a deep reply)."""
+    msgs = _seed_three_message_thread(tmp_path, "alpha")
+    body = client.get(msgs["root"][1]).data.decode()
+    assert 'data-thread-root="fold-root@example.com"' in body
+    assert 'data-thread-context="root"' in body
+
+
+def test_message_page_thread_fold_context_is_deep_for_replies(
+    client, tmp_path,
+):
+    """Viewing any non-root message in a thread sets
+    data-thread-context="deep" -- the controller defaults to `closed`
+    so the body gets full real estate."""
+    msgs = _seed_three_message_thread(tmp_path, "alpha")
+    body = client.get(msgs["nested"][1]).data.decode()
+    assert 'data-thread-root="fold-root@example.com"' in body
+    assert 'data-thread-context="deep"' in body
+
+
+def test_message_page_thread_fold_active_marker_on_current_li(
+    client, tmp_path,
+):
+    """The tree <li> whose data-message-id matches the current view
+    carries class="is-active"; the others carry no such class. The
+    JS controller toggles this class on htmx:afterSwap, but the
+    server's initial render has to set it correctly for the first
+    paint (when JS hasn't run yet or is disabled)."""
+    msgs = _seed_three_message_thread(tmp_path, "alpha")
+    _, nested_url, nested_mid = msgs["nested"]
+    body = client.get(nested_url).data.decode()
+
+    # The active <li> markup: data-message-id matches current view AND
+    # class="is-active". Use a regex-ish substring check; the exact
+    # element ordering is set by the template.
+    import re
+    li_active_pattern = re.compile(
+        r'<li[^>]*data-message-id="' + re.escape(nested_mid) +
+        r'"[^>]*class="is-active"',
+        re.DOTALL,
     )
-    _, reply_url = _ingest_one_article(
-        reply_dir, "alpha", "fold-reply@example.com",
-        subject="Re: root msg", in_reply_to="fold-root@example.com",
+    assert li_active_pattern.search(body) is not None, (
+        "expected active <li> for current message; markup was: "
+        + body[body.find("thread-list"):body.find("</ul>")]
     )
-    body2 = client.get(reply_url).data.decode()
-    assert 'class="thread-context"' in body2
-    assert 'data-thread-root=' in body2
-    assert 'data-fold-set="closed"' in body2
-    assert 'data-fold-set="partial"' in body2
-    assert 'data-fold-set="expanded"' in body2
-    # The toolbar wraps both the label (with state-dependent count or
-    # summary line) and the three-button toggle in a single flex row
-    # that sits flush against the box top in the `partial` fold state.
-    assert 'class="thread-toolbar"' in body2
-    assert 'class="thread-summary"' in body2
-    # FOUC-free pin: thread-fold.js loads synchronously from <head>
-    # before <body> parses. Per-page context for the script lives on
-    # <html> via data-thread-root + data-thread-context attrs (set by
-    # the html_data_attrs block in message.html). The script itself
-    # is external because the CSP (script-src 'self') blocks inline
-    # scripts.
-    assert 'src="/static/js/thread-fold.js"' in body2
-    assert 'data-thread-root="fold-root@example.com"' in body2
-    # Reply view is non-root, so context is "deep" (which the script
-    # maps to the `closed` default).
-    assert 'data-thread-context="deep"' in body2
-    script_idx = body2.index('src="/static/js/thread-fold.js"')
-    section_idx = body2.index('<section class="thread-context"')
+
+    # No other <li> carries .is-active. There are three <li> total
+    # (root + reply + nested); one is active, two must not be.
+    li_with_class = re.findall(r'<li[^>]*class="is-active"', body)
+    assert len(li_with_class) == 1
+
+
+def test_message_page_thread_fold_toolbar_summary_counts_match(
+    client, tmp_path,
+):
+    """The closed-state summary line ("N messages, M authors, Th ago")
+    inside .thread-summary must reflect the real thread shape -- the
+    seeded 3-message thread has 3 distinct authors (each
+    `_ingest_one_article` defaults to `a@b.example`, so the dedup ends
+    up at 1 author). Pin both counts explicitly so a future change to
+    the summary helper that drops uniqueness is caught."""
+    msgs = _seed_three_message_thread(tmp_path, "alpha")
+    body = client.get(msgs["root"][1]).data.decode()
+
+    import re
+    # Extract the .thread-summary span contents.
+    m = re.search(
+        r'<span class="thread-summary">(.*?)</span>',
+        body, re.DOTALL,
+    )
+    assert m is not None, "thread-summary span missing"
+    summary_text = " ".join(m.group(1).split())  # collapse whitespace
+    # All three articles share author "a@b.example" -> dedupes to 1.
+    assert "3 messages" in summary_text
+    assert "1 author" in summary_text
+    assert "1 authors" not in summary_text  # singular form
+    # Date in seeded thread is Jan 2024; render falls back to absolute
+    # YYYY-MM-DD beyond the 30-day relative window.
+    assert "2024-01-01" in summary_text
+
+
+def test_message_page_thread_fold_links_carry_htmx_attrs(
+    client, tmp_path,
+):
+    """Every non-active tree <li> must carry an <a> with the full HTMX
+    attribute set: hx-get, hx-target=#msg, hx-swap=outerHTML, and
+    hx-push-url=true. Without them, intra-thread navigation falls
+    back to full page reloads."""
+    msgs = _seed_three_message_thread(tmp_path, "alpha")
+    body = client.get(msgs["root"][1]).data.decode()
+
+    import re
+    # All <a> inside the actual thread-list <ul>. Anchor on the element
+    # open tag so the slice doesn't include the earlier `.thread-list`
+    # CSS rule in the <style> block.
+    ul_start = body.index('<ul class="thread-list"')
+    ul_end = body.index("</ul>", ul_start)
+    list_block = body[ul_start:ul_end]
+    anchors = re.findall(r'<a[^>]*>', list_block)
+    # Every <li> -- active or not -- carries an <a> with HTMX attrs.
+    # The active treatment is class-on-<li> + CSS, not anchor suppression:
+    # that keeps the JS controller's class-toggle-on-swap path simple
+    # (no DOM rewrites between active <span> and inactive <a>).
+    assert len(anchors) == 3, f"expected 3 anchors, got {len(anchors)}: {anchors}"
+    for a in anchors:
+        assert "hx-get=" in a
+        assert 'hx-target="#msg"' in a
+        assert 'hx-swap="outerHTML"' in a
+        assert 'hx-push-url="true"' in a
+
+
+def test_message_page_thread_fold_script_loads_before_section(
+    client, tmp_path,
+):
+    """thread-fold.js is loaded from /static/ with a synchronous
+    <script src=...> in <head>. It must execute *before* the
+    <section class="thread-context"> opens so that the FOUC-free
+    setAttribute on <html> resolves before CSS evaluates the section's
+    descendant rules. Otherwise a localStorage pin overriding the
+    server's context default would cause a visible flash."""
+    msgs = _seed_three_message_thread(tmp_path, "alpha")
+    body = client.get(msgs["nested"][1]).data.decode()
+    script_idx = body.index('src="/static/js/thread-fold.js"')
+    section_idx = body.index('<section class="thread-context"')
+    body_idx = body.index("<body")
+    assert script_idx < body_idx, (
+        "thread-fold.js must be loaded from <head>, not <body>, to run "
+        "before the section paints"
+    )
     assert script_idx < section_idx
 
 
 def test_message_page_htmx_request_returns_body_partial(client, tmp_path):
     """When HX-Request: true is set, the message route returns only the
-    <article id="msg"> partial — no <html>, no <head>, no thread tree.
+    <article id="msg"> partial -- no <html>, no <head>, no thread tree.
     That's what lets the client-side script swap intra-thread nav into
-    `#msg` without re-rendering surrounding chrome."""
+    `#msg` without re-rendering surrounding chrome. The partial must
+    carry the *content* the user came for, not just an empty article
+    wrapper: the headline/from/date header, the message body, and
+    attachments if any."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "htmx-swap@example.com", subject="swap test",
+        tmp_path, "alpha", "htmx-swap@example.com",
+        subject="swap test subject 12345",
     )
     r = client.get(url, headers={"HX-Request": "true"})
     assert r.status_code == 200
     body = r.data.decode()
-    assert '<article id="msg"' in body
+
+    # Outer shape: hx-swap=outerHTML on the link targets #msg, so the
+    # response's root element must be <article id="msg" data-message-id=...>.
+    assert body.lstrip().startswith("<article id=\"msg\""), (
+        "HTMX partial must start with the swap-target element so "
+        "hx-swap=outerHTML replaces #msg cleanly"
+    )
     assert 'data-message-id="htmx-swap@example.com"' in body
-    # No surrounding chrome.
-    assert "<!doctype" not in body.lower()
-    assert "<html" not in body.lower()
+
+    # Actual content present (not an empty wrapper).
+    assert "swap test subject 12345" in body
+    assert "<strong>From:</strong>" in body
+    assert "<strong>Date:</strong>" in body
+    assert 'class="message-body"' in body
+
+    # No surrounding chrome -- the chrome must stay on the client.
+    # Use stricter `<tag>` / `<tag ` patterns; bare "<head" would also
+    # match "<header>" inside the article, which is legitimate.
+    lower = body.lower()
+    assert "<!doctype" not in lower
+    assert "<html>" not in lower and "<html " not in lower
+    assert "<head>" not in lower and "<head " not in lower
+    assert "<body>" not in lower and "<body " not in lower
     assert "thread-context" not in body
+    assert "thread-toolbar" not in body
+    assert "thread-fold.js" not in body
+
+
+def test_message_page_full_and_htmx_responses_share_article_content(
+    client, tmp_path,
+):
+    """Full page render and HX-Request render must contain identical
+    content inside <article id="msg">. Regression guard: a refactor
+    that diverges the two render paths (e.g. one uses _message_body.html
+    and the other inlines) would silently break HTMX swap parity."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "parity@example.com", subject="parity check",
+    )
+    full = client.get(url).data.decode()
+    partial = client.get(url, headers={"HX-Request": "true"}).data.decode()
+
+    # Extract the <article id="msg"...> ... </article> block from each.
+    def article_block(html: str) -> str:
+        start = html.index('<article id="msg"')
+        end = html.index("</article>", start) + len("</article>")
+        return html[start:end]
+
+    assert article_block(full) == article_block(partial), (
+        "Full-page and HTMX-partial responses must share the exact "
+        "<article id=\"msg\"> contents; divergence breaks intra-thread "
+        "swap parity."
+    )
+
+
+def test_message_page_htmx_request_on_unknown_message_404s(
+    client, tmp_path,
+):
+    """HTMX requests at non-existent URLs must still 404 (not return an
+    empty 200 partial). HTMX surfaces this to htmx:responseError so the
+    client can react; a silent 200 with empty body would render a blank
+    panel where the message should be."""
+    # Seed one valid article so the inbox exists with a real mirror.
+    _ingest_one_article(
+        tmp_path, "alpha", "valid@example.com", subject="valid",
+    )
+    # Hit an article id that's 999999 above any real id; route 404s.
+    r = client.get(
+        "/alpha/2024/01/999999",
+        headers={"HX-Request": "true"},
+    )
+    assert r.status_code == 404
 
 
 def test_message_page_emits_discussion_forum_posting(client, tmp_path):
