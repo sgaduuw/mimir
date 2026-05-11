@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.11.0] – 2026-05-11
+
 ### Added
 
 - Per-author atom feed (`/<inbox>/author/<sub>/feed.atom`) is now
