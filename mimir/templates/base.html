@@ -12,6 +12,7 @@
         title="{{ current_inbox }} feed"
         href="/{{ current_inbox }}/feed.atom">
   {% endif %}
+  {% block extra_atom_feeds %}{% endblock %}
 
   {#
     Title and meta-description are defined ONCE (each as a captured

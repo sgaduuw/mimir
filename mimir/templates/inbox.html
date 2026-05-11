@@ -74,7 +74,12 @@
       </li>
       {% endfor %}
     </ul>
-    <small><a href="/{{ inbox_name }}/author/{{ t.substr|urlencode }}">all →</a></small>
+    <small>
+      <a href="/{{ inbox_name }}/author/{{ t.substr|urlencode }}">all →</a>
+      &middot;
+      <a href="/{{ inbox_name }}/author/{{ t.substr|urlencode }}/feed.atom"
+         title="Atom feed for {{ t.label }}">atom</a>
+    </small>
     {% else %}
     <p><em>No recent messages.</em></p>
     {% endif %}

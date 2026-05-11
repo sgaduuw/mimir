@@ -130,6 +130,32 @@ def test_security_headers_present(client):
         assert r.headers.get(h), f"missing header {h}"
 
 
+def test_author_page_autodiscovery_link(client, inbox_name):
+    """The per-author HTML page advertises its atom feed via
+    `<link rel="alternate" type="application/atom+xml">` in the head,
+    so feed readers can subscribe from the page URL alone."""
+    r = client.get(f"/{inbox_name}/author/example.com")
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert 'rel="alternate"' in body
+    assert 'type="application/atom+xml"' in body
+    assert f'/{inbox_name}/author/example.com/feed.atom' in body
+
+
+def test_inbox_tracker_tile_links_to_atom(client, inbox_name):
+    """The tracker tiles on the inbox dashboard surface a small `atom`
+    link next to `all →` so the per-author feed is discoverable
+    without visiting the HTML view first."""
+    from mimir.inboxes import set_tracked_authors
+
+    # Seed a tracker on the inbox so the tile section renders.
+    set_tracked_authors(inbox_name, {"Examples": "example.com"})
+    r = client.get(f"/{inbox_name}/")
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert f'/{inbox_name}/author/example.com/feed.atom' in body
+
+
 def test_atom_feed_well_formed(client, inbox_name):
     import xml.etree.ElementTree as ET
 

@@ -14,6 +14,7 @@ from mimir.dashboard import (
     daily_volume,
     latest_pull_requests,
     latest_stable_releases,
+    recent_articles,
     this_day_in_history,
 )
 from mimir.extensions import Base, SessionLocal, engine
@@ -42,7 +43,12 @@ from mimir.models import Article, ArticleList, Inbox, IngestState, ParseFailure
 from mimir.store import MessageNotFound, read_message
 from mimir.sync import sync_epochs
 from mimir.threading import active_threads, threads_for_day
-from mimir.web import inbox_sitemap_xml, meta_sitemap_xml, sitemap_index_xml
+from mimir.web import (
+    FEED_ENTRY_LIMIT,
+    inbox_sitemap_xml,
+    meta_sitemap_xml,
+    sitemap_index_xml,
+)
 
 
 def _configure_logging(verbose: int) -> None:
@@ -398,11 +404,27 @@ def warm_cache_command(verbose: int) -> None:
                  lambda s, ib=inbox: latest_stable_releases(s, ib, limit=5, force=True)),
                 (f"{inbox.name} this_day_in_history",
                  lambda s, ib=inbox: this_day_in_history(s, ib, years_ago=5, limit=3, force=True)),
+                # Atom feed source. Different cache key from the
+                # dashboard "Recent messages" loader because the limit
+                # is the cache key — feeds need 50, the dashboard's
+                # initial paint uses 10.
+                (f"{inbox.name} recent_articles ({FEED_ENTRY_LIMIT})",
+                 lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT, force=True)),
             ])
             for label, substr in (inbox.tracked_authors or {}).items():
+                # Dashboard tracker tile (limit=5) AND per-author atom
+                # feed (limit=FEED_ENTRY_LIMIT) hit different cache
+                # keys; warm both so the first feed poll per hour
+                # gets a cache-hit just like the dashboard.
                 targets.append((
                     f"{inbox.name} tracker:{label}",
                     lambda s, ib=inbox, sub=substr: author_recent(s, ib, sub, 5, force=True),
+                ))
+                targets.append((
+                    f"{inbox.name} tracker:{label} (feed)",
+                    lambda s, ib=inbox, sub=substr: author_recent(
+                        s, ib, sub, FEED_ENTRY_LIMIT, force=True
+                    ),
                 ))
         # Sitemap caches. Only warmed when SITE_BASE_URL is configured —
         # without it, the helper would cache a body with relative-looking
