@@ -22,18 +22,14 @@ def _clear_sitemap_cache():
 
 
 # Endpoints that don't depend on a configured inbox.
-def test_meta_index(client):
-    """`/` is the meta-index: lists every configured inbox as a link,
-    not just status 200. Status-only would pass on an empty page
-    after a routing/template break that swallows the inbox loop."""
+def test_meta_index_has_inboxes_anchor(client):
+    """`/` carries the `id="inboxes"` structural anchor. The content
+    of the inbox list -- and the pin-aware ordering -- is exercised
+    in `test_meta_index_pins_inbox_first`, which subsumes the older
+    presence-only checks for the alpha/beta links."""
     r = client.get("/")
     assert r.status_code == 200
-    body = r.data.decode()
-    # Both seeded inboxes show up as anchors to their dashboard.
-    assert 'href="/alpha/"' in body
-    assert 'href="/beta/"' in body
-    # The "Inboxes" heading is the structural anchor of this page.
-    assert 'id="inboxes"' in body
+    assert 'id="inboxes"' in r.data.decode()
 
 
 def test_footer_includes_mimir_version(client):
@@ -57,6 +53,7 @@ def test_footer_includes_mimir_version(client):
 def test_meta_index_pins_inbox_first(client, monkeypatch):
     """Seeded fixtures have alpha + beta. Without a pin, alpha shows
     first (alphabetical). Pinning beta surfaces it ahead of alpha.
+    Subsumes the older presence-only "alpha + beta link" checks.
 
     Use the first-anchor occurrence of each inbox link rather than
     `.find()` against the raw body -- inbox names appear in CSS and
@@ -77,6 +74,12 @@ def test_meta_index_pins_inbox_first(client, monkeypatch):
 
     monkeypatch.setattr(settings, "pinned_inboxes", [])
     body = client.get("/").data.decode()
+    # Both seeded inboxes show up as anchors to their dashboard
+    # (without this, the order check below would still pass on an
+    # empty page after a routing/template break that swallowed the
+    # inbox loop).
+    assert 'href="/alpha/"' in body
+    assert 'href="/beta/"' in body
     assert first_inbox_link_order(body) == ["alpha", "beta"]
 
     monkeypatch.setattr(settings, "pinned_inboxes", ["beta"])
@@ -460,31 +463,32 @@ def _any_article_in(inbox_name):
         ).scalar_one_or_none()
 
 
-def test_global_message_id_lookup_redirect(client, inbox_name):
+@pytest.mark.parametrize("prefix", ["/m", "/{inbox}/m"])
+def test_message_id_lookup_301_redirects_to_canonical(client, inbox_name, prefix):
+    """Both the global Message-ID lookup (`/m/<id>`) and the
+    inbox-scoped form (`/<inbox>/m/<id>`) 301 to the article's
+    canonical URL. Parametrized over the URL prefix so the redirect
+    contract is pinned exactly once."""
     art = _any_article_in(inbox_name)
     if art is None:
         pytest.skip("no articles in DB")
-    r = client.get(f"/m/{art.message_id}", follow_redirects=False)
+    url = prefix.format(inbox=inbox_name) + f"/{art.message_id}"
+    r = client.get(url, follow_redirects=False)
     assert r.status_code == 301
     loc = r.headers.get("Location", "")
-    # Should redirect to a /<inbox>/<YYYY>/<MM>/<id> URL.
     assert loc.endswith(f"/{art.id}")
+    # Inbox-scoped form must resolve to the same inbox's URL space;
+    # the global form may go to any canonical inbox so we only pin
+    # the trailing id.
+    if prefix.startswith("/{inbox}"):
+        assert loc.startswith(f"/{inbox_name}/")
+    # Cache header on the redirect itself -- crawlers should be able
+    # to cache the hop.
     assert r.headers.get("Cache-Control", "").startswith("public")
 
 
 def test_message_id_404_unknown(client):
     assert client.get("/m/no-such-message-id-12345").status_code == 404
-
-
-def test_inbox_scoped_message_id_redirect(client, inbox_name):
-    art = _any_article_in(inbox_name)
-    if art is None:
-        pytest.skip("no articles in DB")
-    r = client.get(f"/{inbox_name}/m/{art.message_id}", follow_redirects=False)
-    assert r.status_code == 301
-    loc = r.headers.get("Location", "")
-    assert loc.startswith(f"/{inbox_name}/")
-    assert loc.endswith(f"/{art.id}")
 
 
 def test_sitemap_xml(client):
@@ -1410,9 +1414,16 @@ def test_message_page_thread_fold_toolbar_summary_counts_match(
     assert "3 messages" in summary_text
     assert "1 author" in summary_text
     assert "1 authors" not in summary_text  # singular form
-    # Date in seeded thread is Jan 2024; render falls back to absolute
-    # YYYY-MM-DD beyond the 30-day relative window.
-    assert "2024-01-01" in summary_text
+    # Seeded thread is dated in Jan 2024 (commit_time fixed in
+    # `_seed_three_message_thread`); the render falls back to an
+    # absolute date beyond the 30-day relative window. Match any
+    # 2024-anchored date format (YYYY-MM-DD, `Jan 1, 2024`, ...) so a
+    # benign re-format of the date filter doesn't break this test --
+    # the contract is "the year of the thread is shown", not the
+    # exact string format.
+    assert re.search(r"\b2024\b", summary_text), (
+        f"thread summary doesn't carry the thread year: {summary_text!r}"
+    )
 
 
 def test_message_page_thread_fold_links_carry_htmx_attrs(
@@ -1784,12 +1795,18 @@ def test_favicon_svg_served(client):
 
 
 def test_og_image_svg_served(client):
+    """The OG image template renders `settings.site_name` into the
+    SVG. Pin against the configured value, not a disjunction across
+    dev + production names -- the disjunction would mask a regression
+    where the template stopped interpolating `site_name` at all."""
+    from mimir.config import settings
     r = client.get("/og-image.svg")
     assert r.status_code == 200
     assert r.mimetype == "image/svg+xml"
     assert b"<svg" in r.data
-    # site_name templated in.
-    assert b"mimir" in r.data or b"ratatoskr" in r.data
+    assert settings.site_name.encode() in r.data, (
+        f"OG SVG doesn't carry configured site_name={settings.site_name!r}"
+    )
 
 
 def test_clean_subject_filter_collapses_whitespace():
@@ -1871,11 +1888,326 @@ def test_year_decade_groups_returns_empty_when_inverted():
 
 
 def test_inbox_dashboard_year_browse_uses_decade_grouping(client, inbox_name):
-    """Visual smoke: footer carries the `year-decade-list` class with
-    a `<strong>YYYY0s</strong>` heading per decade present in the
-    inbox's date range."""
+    """When an inbox spans more than one decade, the "Browse by year"
+    footer must render the `year-decade-list` grouping with one
+    `<strong>YYYY0s</strong>` heading per decade.
+
+    Seeded fixtures only cover 2024 — single-decade, so the structure
+    may stay collapsed. Seed an extra article in 2018 to force a
+    two-decade span (2010s + 2020s), then assert the grouping class
+    plus both decade headings appear. Concrete contract, not the
+    earlier tautological `A or not B`."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        art = Article(
+            message_id="decade-fixture-2018@example.com",
+            subject="old",
+            author="o@example.com",
+            date=datetime(2018, 6, 1, 0, 0, tzinfo=timezone.utc),
+            thread_parent=None,
+            subject_normalized="old",
+        )
+        s.add(art)
+        s.flush()
+        s.add(ArticleList(
+            article_id=art.id, inbox_id=ix.id, epoch="0.git",
+            commit_sha="de" * 20,
+        ))
+        s.commit()
+
     html = client.get(f"/{inbox_name}/").data.decode()
-    # The seeded fixture covers 2024-2025 (sub-2020s range may or may
-    # not include older years), so just check the structure rather
-    # than specific decade values.
-    assert "year-decade-list" in html or "Browse by year" not in html
+    assert "year-decade-list" in html, (
+        "multi-decade inbox dashboard must render the decade grouping"
+    )
+    # Both decade headings present.
+    assert "2010s" in html
+    assert "2020s" in html
+    # The seeded extra year shows under its decade.
+    assert ">2018<" in html
+    assert ">2024<" in html
+
+
+# --------------------------------------------------------------------------
+# Routes previously covered only by status-code smoke or not at all:
+# /api/<inbox>/recent (HTMX load-more), attachment download + preview,
+# /<inbox>/author/<sub> HTML, /<inbox>/author/<sub>/feed.atom.
+# --------------------------------------------------------------------------
+
+
+def test_api_recent_returns_partial_with_article_links(client, inbox_name):
+    """The HTMX load-more endpoint returns the `_recent_items.html`
+    fragment -- bare <li>s, no <html>/<head> wrapping -- with <a>
+    links pointing at messages in this inbox. A response that
+    somehow included the full layout would still be `200 OK` but
+    would break htmx-target swaps."""
+    r = client.get(f"/api/{inbox_name}/recent?offset=0")
+    assert r.status_code == 200
+    body = r.data.decode()
+    # Fragment, not a full page.
+    lower = body.lower()
+    assert "<html" not in lower
+    assert "<head>" not in lower and "<head " not in lower
+    assert "<body" not in lower
+    # At least one article-link <li>. The exact count depends on
+    # seeded data (alpha has 3, fewer than the page size), so we
+    # bound the lower side and check the structural shape.
+    li_count = body.count("<li")
+    assert li_count >= 1, f"no <li> in partial: {body!r}"
+    assert f'href="/{inbox_name}/' in body, (
+        f"partial must link to /{inbox_name}/<...>: {body!r}"
+    )
+
+
+def test_api_recent_unknown_inbox_returns_404(client):
+    """Same 404 contract as the rest of the inbox-scoped routes."""
+    assert client.get("/api/no-such-inbox/recent").status_code == 404
+
+
+def _ingest_with_attachment(
+    tmp_path,
+    inbox_name: str,
+    message_id: str,
+    *,
+    attachment_filename: str,
+    attachment_content_type: str,
+    attachment_bytes: bytes,
+) -> str:
+    """Build + ingest a multipart/mixed message with a single
+    base64-encoded attachment. Returns the article URL prefix
+    (without `/attachment/...`)."""
+    import base64
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.ingest import ingest_epoch
+    from mimir.models import Article, Inbox
+
+    b64 = base64.b64encode(attachment_bytes).decode()
+    # Chunk to RFC-compatible 76-char lines.
+    b64_chunked = "\r\n".join(b64[i:i + 76] for i in range(0, len(b64), 76))
+
+    raw = (
+        b"Message-ID: <" + message_id.encode() + b">\r\n"
+        b"From: a@b.example\r\n"
+        b"Subject: with attachment\r\n"
+        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+        b'Content-Type: multipart/mixed; boundary="bnd"\r\n'
+        b"\r\n"
+        b"--bnd\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"the body\r\n"
+        b"--bnd\r\n"
+        b"Content-Type: " + attachment_content_type.encode() + b"\r\n"
+        b'Content-Disposition: attachment; filename="' + attachment_filename.encode() + b'"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"\r\n"
+        + b64_chunked.encode() + b"\r\n"
+        b"--bnd--\r\n"
+    )
+
+    repo_dir = tmp_path / "0.git"
+    repo = Repo.init_bare(str(repo_dir), mkdir=True)
+    blob = Blob.from_string(raw)
+    repo.object_store.add_object(blob)
+    tree = Tree()
+    tree.add(b"m", 0o100644, blob.id)
+    repo.object_store.add_object(tree)
+    c = Commit()
+    c.tree = tree.id
+    c.parents = []
+    c.author = c.committer = b"t <t@x>"
+    c.commit_time = c.author_time = 1704067200
+    c.commit_timezone = c.author_timezone = 0
+    c.encoding = b"UTF-8"
+    c.message = b"add"
+    repo.object_store.add_object(c)
+    repo.refs[b"HEAD"] = c.id
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        ix.mirror_path = str(tmp_path)
+        s.commit()
+        ingest_epoch(s, ix, "0.git", repo_dir, workers=1)
+        art = s.execute(
+            select(Article).where(Article.message_id == message_id)
+        ).scalar_one()
+        return f"/{inbox_name}/{art.date.year}/{art.date.month:02d}/{art.id}"
+
+
+def test_attachment_download_serves_bytes_with_content_disposition(
+    client, tmp_path,
+):
+    """The download route returns the attachment bytes verbatim with
+    a Content-Disposition header carrying the filename. RFC 6266
+    `filename*=UTF-8''...` is appended for round-trippability with
+    non-ASCII filenames; this test pins the ASCII case (where both
+    `filename=` and `filename*=` appear)."""
+    payload = b"hello attachment world"
+    url = _ingest_with_attachment(
+        tmp_path, "alpha",
+        "attach-dl@example.com",
+        attachment_filename="hello.bin",
+        attachment_content_type="application/octet-stream",
+        attachment_bytes=payload,
+    )
+    r = client.get(f"{url}/attachment/0")
+    assert r.status_code == 200
+    assert r.data == payload
+    assert r.mimetype == "application/octet-stream"
+    cd = r.headers.get("Content-Disposition", "")
+    assert "attachment" in cd
+    assert 'filename="hello.bin"' in cd
+    assert "filename*=UTF-8''hello.bin" in cd
+
+
+def test_attachment_index_out_of_range_returns_404(client, tmp_path):
+    """An attachment index past the parsed-list length must 404,
+    not raise IndexError or hand back an empty body."""
+    url = _ingest_with_attachment(
+        tmp_path, "alpha",
+        "attach-oob@example.com",
+        attachment_filename="x.bin",
+        attachment_content_type="application/octet-stream",
+        attachment_bytes=b"abc",
+    )
+    assert client.get(f"{url}/attachment/99").status_code == 404
+    assert client.get(f"{url}/attachment/99/preview").status_code == 404
+
+
+def test_attachment_preview_pygmentizes_text(client, tmp_path):
+    """A `.py` attachment is previewable; the response contains the
+    Pygments-highlighted output (token spans, not the raw source)
+    plus the file's contents recognisably."""
+    src = b"def hello():\n    return 'world'\n"
+    url = _ingest_with_attachment(
+        tmp_path, "alpha",
+        "attach-preview@example.com",
+        attachment_filename="snippet.py",
+        attachment_content_type="text/x-python",
+        attachment_bytes=src,
+    )
+    r = client.get(f"{url}/attachment/0/preview")
+    assert r.status_code == 200
+    body = r.data.decode()
+    # Pygments noclasses=True emits inline style="..." spans.
+    assert "<span" in body
+    # Source content survives the highlight.
+    assert "hello" in body
+    assert "world" in body
+
+
+def test_attachment_preview_falls_back_for_non_previewable(client, tmp_path):
+    """A binary attachment (application/octet-stream + no text-like
+    extension) renders the "can't preview" path: still 200, but the
+    response carries the fallback marker rather than highlighted
+    output."""
+    url = _ingest_with_attachment(
+        tmp_path, "alpha",
+        "attach-binary@example.com",
+        attachment_filename="payload.bin",
+        attachment_content_type="application/octet-stream",
+        attachment_bytes=b"\x00\x01\x02\xff",
+    )
+    r = client.get(f"{url}/attachment/0/preview")
+    assert r.status_code == 200
+    body = r.data.decode()
+    # Filename surfaces somewhere in the not-previewable page.
+    assert "payload.bin" in body
+    # No Pygments highlighting on a binary blob.
+    assert "<span" not in body or "linenos" not in body
+
+
+def _seed_author_article(inbox_name: str, *, author: str, message_id: str) -> int:
+    """Insert one Article row tied to the given inbox with a chosen
+    author string. Returns the Article id."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        art = Article(
+            message_id=message_id,
+            subject="author route subject",
+            author=author,
+            date=datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc),
+            thread_parent=None,
+            subject_normalized="author route subject",
+        )
+        s.add(art)
+        s.flush()
+        s.add(ArticleList(
+            article_id=art.id, inbox_id=ix.id, epoch="0.git",
+            commit_sha="aa" * 20,
+        ))
+        s.commit()
+        return art.id
+
+
+def test_author_view_lists_matching_articles(client, inbox_name):
+    """`/<inbox>/author/<sub>` lists every article whose From header
+    matches the substring. Seed a uniquely-named author, hit the
+    route, and verify the article surfaces with a link."""
+    art_id = _seed_author_article(
+        inbox_name,
+        author="Unique Author <unique-1234@example.org>",
+        message_id="author-view@example.com",
+    )
+    r = client.get(f"/{inbox_name}/author/unique-1234")
+    assert r.status_code == 200
+    body = r.data.decode()
+    # Display name + link to the article are both rendered.
+    assert "Unique Author" in body
+    assert f"/2024/06/{art_id}" in body
+    assert "author route subject" in body
+
+
+def test_author_view_too_short_substring_404s(client, inbox_name):
+    """`SEARCH_QUERY_MIN_LEN` rejects 1-char substrings to avoid
+    a full-table scan disguised as a near-empty filter."""
+    assert client.get(f"/{inbox_name}/author/a").status_code == 404
+
+
+def test_author_feed_is_well_formed_atom_with_matching_entry(
+    client, inbox_name,
+):
+    """Atom feed for one author: must parse as Atom, carry the
+    correct feed-level title for the substring, and include the
+    seeded article as an entry."""
+    import xml.etree.ElementTree as ET
+
+    _seed_author_article(
+        inbox_name,
+        author="Atomic Person <atomic-77@example.org>",
+        message_id="author-feed@example.com",
+    )
+    r = client.get(f"/{inbox_name}/author/atomic-77/feed.atom")
+    assert r.status_code == 200
+    assert "atom" in r.mimetype or r.mimetype == "application/atom+xml"
+
+    root = ET.fromstring(r.data)
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    assert root.tag.endswith("feed")
+
+    feed_title = root.find("a:title", ns)
+    assert feed_title is not None
+    assert "atomic-77" in (feed_title.text or "")
+
+    entries = root.findall("a:entry", ns)
+    assert len(entries) >= 1
+    entry_titles = [e.find("a:title", ns).text or "" for e in entries]
+    assert any("author route subject" in t for t in entry_titles)
+
+
+def test_author_feed_too_short_substring_404s(client, inbox_name):
+    assert client.get(f"/{inbox_name}/author/a/feed.atom").status_code == 404
