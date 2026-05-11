@@ -139,12 +139,27 @@ def test_missing_date_returns_none():
 
 
 def test_group_address_does_not_crash():
+    """Group-address From (`"name": a@b, c@d;`) trips the stdlib
+    AddressHeader parser; the workaround in `parse_message` reads
+    From via `raw_items()` so the raw string survives unchanged.
+
+    Pin the *content* of `art.author` rather than just non-None.
+    The raw header text must round-trip: a regression that silently
+    normalised, lost, or replaced the group label or the addresses
+    would pass an `is not None` check but corrupt downstream display
+    (`safe_from`, JSON-LD author.name, atom-feed author)."""
     raw = _msg().replace(
         b"From: A. Person <a@example.com>",
         b'From: "ML": a@b, c@d;',  # group address
     )
     art = parse_message(raw)
-    assert art.author is not None  # raw header preserved
+    assert art.author is not None
+    # The literal characters of the group address must survive.
+    # Don't pin exact whitespace -- decode_header normalisation may
+    # adjust it -- but pin both the group label and both addresses.
+    assert "ML" in art.author
+    assert "a@b" in art.author
+    assert "c@d" in art.author
 
 
 # Multipart / attachments
