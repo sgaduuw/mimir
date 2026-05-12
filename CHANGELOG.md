@@ -11,6 +11,21 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- `/static/*` assets (currently `thread-fold.js`; future logos /
+  bytes-on-disk images) now carry `Cache-Control: public,
+  max-age=86400` instead of Flask's default `no-cache`. Every page
+  load was re-fetching the JS controller; with the homepage hero
+  image landing in the same release window, the cost would have
+  scaled by the size of any new static asset. The routed
+  Cache-Control entries (favicon, og-image, sitemap, etc.) are
+  unaffected — they're applied by the `bp_web` after-request hook,
+  which doesn't see `/static/*` traffic. 1-day TTL trades a small
+  bandwidth saving for fast deploy-cycle propagation: a JS bug fix
+  lands within 24 hours rather than the week the routed-asset
+  entries use.
+
 ## [1.12.3] – 2026-05-11
 
 ### Fixed
