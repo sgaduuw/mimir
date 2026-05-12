@@ -8,7 +8,12 @@ from email.utils import parseaddr
 from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from flask import Blueprint, Response, abort, g, redirect, render_template, request
+from pathlib import Path
+
+from flask import (
+    Blueprint, Response, abort, g, redirect, render_template, request,
+    send_from_directory,
+)
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_for_filename, guess_lexer
@@ -86,6 +91,7 @@ def _inject_template_globals() -> dict:
         "mimir_version": mimir_version,
         "site_base": site_base,
         "default_canonical_url": default_canonical,
+        "og_image_alt": OG_IMAGE_ALT,
     }
 
 
@@ -109,7 +115,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.robots": "public, max-age=86400",
     "web.security_txt": "public, max-age=3600",
     "web.favicon_svg": "public, max-age=604800",
-    "web.og_image_svg": "public, max-age=604800",
+    "web.og_image_png": "public, max-age=604800",
     "web.sitemap": "public, max-age=300",
     "web.meta_sitemap": "public, max-age=300",
     "web.inbox_sitemap": "public, max-age=300",
@@ -229,11 +235,21 @@ def _site_base() -> str:
     deterministic override for production where ProxyFix may or may
     not be wired correctly across the Tailscale Funnel + Caddy chain.
     Falls back to `request.url_root` for local-dev and any deployment
-    that doesn't supply the override.
+    that doesn't supply the override; if `X-Forwarded-Proto: https` is
+    present but ProxyFix didn't translate it (wrong hop count, header
+    not in the trusted set), we still upgrade the scheme. Otherwise
+    canonical / og:url / og:image / JSON-LD URLs split between http and
+    https on the same page when only one of those signals is wired.
     """
     if settings.site_base_url:
         return settings.site_base_url.rstrip("/")
-    return request.url_root.rstrip("/")
+    base = request.url_root.rstrip("/")
+    if (
+        request.headers.get("X-Forwarded-Proto") == "https"
+        and base.startswith("http://")
+    ):
+        base = "https://" + base[len("http://"):]
+    return base
 
 
 def _msg_url(article: Article, inbox_name: str) -> str:
@@ -539,23 +555,6 @@ _FAVICON_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
     '<text x="0" y="14" font-size="14">🐿️</text></svg>'
 )
-# OG image is a 1200x630 wordmark — the size most link-card renderers
-# expect. Amber accent (#ffc107) matches Pico's primary so previews
-# stay visually consistent with the site. site_name is templated in
-# so a forked deploy with `SITE_NAME=…` automatically gets a matching
-# image without per-fork art assets.
-_OG_IMAGE_TEMPLATE = (
-    '<svg xmlns="http://www.w3.org/2000/svg" '
-    'viewBox="0 0 1200 630" width="1200" height="630">'
-    '<rect width="1200" height="630" fill="#1c1917"/>'
-    '<text x="600" y="330" text-anchor="middle" '
-    'font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" '
-    'font-size="160" font-weight="700" fill="#ffc107">{name}</text>'
-    '<text x="600" y="420" text-anchor="middle" '
-    'font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" '
-    'font-size="36" fill="#a8a29e">mailing-list archives</text>'
-    '</svg>'
-)
 
 
 @bp_web.route("/favicon.svg")
@@ -563,13 +562,30 @@ def favicon_svg():
     return Response(_FAVICON_SVG, mimetype="image/svg+xml")
 
 
-@bp_web.route("/og-image.svg")
-def og_image_svg():
-    name = settings.site_name.replace("<", "&lt;").replace(">", "&gt;")
-    return Response(
-        _OG_IMAGE_TEMPLATE.format(name=name),
-        mimetype="image/svg+xml",
-    )
+# OG image: 1200x630 PNG composited from a 17th-century Icelandic
+# Edda manuscript depiction of Ratatoskr (AM 738 4to era, Árni
+# Magnússon Institute, public domain). Twitter/X doesn't render SVG
+# and LinkedIn is inconsistent on it; PNG is the safer baseline. The
+# asset is pre-baked by `bake_og_image.py` and checked in under
+# `static/img/`; this route exists to keep the URL at the site root
+# (matches the prior `/og-image.svg` shape and reads as deliberate
+# branding rather than a deep static-folder path).
+OG_IMAGE_FILENAME = "og-image.png"
+OG_IMAGE_WIDTH = 1200
+OG_IMAGE_HEIGHT = 630
+OG_IMAGE_ALT = (
+    "Ratatoskr from a 17th-century Icelandic Edda manuscript "
+    "(AM 738 4to era, Árni Magnússon Institute, public domain), "
+    "next to the ratatoskr.run wordmark."
+)
+
+
+_STATIC_IMG_DIR = Path(__file__).resolve().parent / "static" / "img"
+
+
+@bp_web.route("/og-image.png")
+def og_image_png():
+    return send_from_directory(_STATIC_IMG_DIR, OG_IMAGE_FILENAME, mimetype="image/png")
 
 
 @bp_web.route("/security.txt")
@@ -675,9 +691,12 @@ def _json_ld_message(
     rich-result section) and BreadcrumbList (surfaces the
     Site → Inbox → Subject chain in SERPs).
 
-    Author goes through `_safe_from_filter`, so redacted senders show
-    `<hidden>` in JSON-LD too. `dateModified` mirrors `datePublished`
-    because mimir doesn't track edits.
+    Author goes through `_display_name_filter` — display name only,
+    no email and no `<hidden>` placeholder. The placeholder is a
+    rendering decision for the visible HTML; in machine-readable
+    metadata it reads as broken data and was flagged as such in the
+    2026-05-12 review. `dateModified` mirrors `datePublished` because
+    mimir doesn't track edits.
 
     Prefers `parsed.date` (the original RFC 5322 Date header) over
     `article.date` (the public-inbox commit time) — the message's
@@ -701,7 +720,7 @@ def _json_ld_message(
         "headline": subject,
         "author": {
             "@type": "Person",
-            "name": _safe_from_filter(parsed.author) or "unknown",
+            "name": _display_name_filter(parsed.author),
         },
         "isPartOf": {
             "@type": "WebSite",
@@ -1300,7 +1319,11 @@ def _atom_response(
         )
         if a.author:
             author_el = SubElement(entry, "author")
-            SubElement(author_el, "name").text = _safe_from_filter(a.author)
+            # Display name only — same posture as JSON-LD's author.name.
+            # Feed readers render <author><name> as the byline; the
+            # `<hidden>` placeholder reads as broken metadata there
+            # exactly as it did in JSON-LD before the 2026-05-12 fix.
+            SubElement(author_el, "name").text = _display_name_filter(a.author)
 
     body = (
         '<?xml version="1.0" encoding="utf-8"?>\n'

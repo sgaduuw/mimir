@@ -1,12 +1,16 @@
 /* Thread-tree fold-state controller.
  *
  * Loaded from <head> with src="...thread-fold.js" so it runs synchronously
- * before <body> parses. The early block reads context (data-thread-root,
+ * before <body> parses. The early block reads context (data-thread-root-id,
  * data-thread-context) off <html> -- set by Jinja blocks in base.html and
  * message.html -- plus any localStorage pin, and sets data-thread-fold on
  * <html>. CSS attribute selectors then resolve the right state (closed /
  * partial / expanded) on first paint, so a pin overriding the server's
  * default doesn't flash.
+ *
+ * The data-thread-root-id and data-article-id values are integer
+ * Article IDs, not RFC 822 Message-IDs (the visible HTML hides the
+ * latter for privacy). The script treats them as opaque strings.
  *
  * The wire-handlers block defers until DOMContentLoaded since it needs the
  * actual .thread-context section to exist in the DOM.
@@ -18,7 +22,7 @@
  */
 (function () {
   var html = document.documentElement;
-  var rootId = html.getAttribute("data-thread-root") || null;
+  var rootId = html.getAttribute("data-thread-root-id") || null;
   var ctx = html.getAttribute("data-thread-context") || "deep";
 
   if (rootId || ctx === "root") {
@@ -35,7 +39,7 @@
   function init() {
     var section = document.querySelector(".thread-context");
     if (!section) return;
-    var rootIdNow = section.getAttribute("data-thread-root") || rootId;
+    var rootIdNow = section.getAttribute("data-thread-root-id") || rootId;
 
     function reflectToggle(modeNow) {
       section.querySelectorAll(".thread-toggle button").forEach(function (b) {
@@ -98,15 +102,15 @@
     }
 
     /* After an HTMX swap, flip the active marker to whichever <li>
-     * matches the new article's message-id. Class-toggling only; no DOM
+     * matches the new article's id. Class-toggling only; no DOM
      * rewrites, so hx-get on every anchor stays intact. */
     document.body.addEventListener("htmx:afterSwap", function () {
       var msg = document.getElementById("msg");
       if (!msg) return;
-      var newId = msg.getAttribute("data-message-id");
+      var newId = msg.getAttribute("data-article-id");
       if (!newId) return;
-      section.querySelectorAll(".thread-list li[data-message-id]").forEach(function (li) {
-        li.classList.toggle("is-active", li.getAttribute("data-message-id") === newId);
+      section.querySelectorAll(".thread-list li[data-article-id]").forEach(function (li) {
+        li.classList.toggle("is-active", li.getAttribute("data-article-id") === newId);
       });
       if (html.getAttribute("data-thread-fold") === "partial") scrollActiveIntoView();
     });

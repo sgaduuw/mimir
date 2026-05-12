@@ -11,6 +11,87 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.13.0] – 2026-05-12
+
+Driven by the 2026-05-12 production-page re-review. User-visible
+branding on the front page and link-card previews, plus a sweep of
+privacy / metadata / scheme correctness fixes flagged by the
+review and a few adjacent items the bundles surfaced.
+
+### Added
+
+- Homepage hero on `/`: small (~220px) Ratatoskr figure left of the
+  site wordmark and tagline. Manuscript-marginalia layout, stacks on
+  narrow viewports. Same source image as the OG card so a link-card
+  preview reads as a screenshot of the destination.
+- Footer credit line on every page: `Logo: Ratatoskr from a
+  17th-century Icelandic Edda manuscript, Árni Magnússon Institute
+  (public domain).` Same string reused as the `og:image:alt` value.
+- Visible **Search** submit button on `/<inbox>/search` (paired with
+  the existing input inside a Pico `[role="group"]` for the inline
+  pill look). Enter-to-submit on a hardware keyboard already worked;
+  the button matters for phone-thumb usability.
+
+### Changed
+
+- The OG image is now a 1200×630 PNG instead of a templated SVG
+  wordmark. Twitter/X doesn't render SVG and LinkedIn is inconsistent
+  on it; PNG is the safer baseline. Composition: a 17th-century
+  Icelandic Edda manuscript depiction of Ratatoskr (Árni Magnússon
+  Institute, public domain) on the left, the `ratatoskr.run`
+  wordmark + tagline on the right in Palatino on a sampled
+  parchment background. Asset is pre-baked by `bake_og_image.py`
+  (Pillow, dev-only dep) and checked in at
+  `mimir/static/img/og-image.png`. Route is now `/og-image.png`;
+  `/og-image.svg` is removed (was a wordmark-only placeholder, low
+  reach). `og:image:width=1200`, `og:image:height=630`, and
+  `og:image:alt` (mirrored on `twitter:image:alt`) are now emitted
+  for the picky link-card renderers.
+
+### Fixed
+
+- Message-ID no longer leaks via the thread-tree `data-*` attributes.
+  Tree `<li>` elements, the `<article id="msg">` wrapper, and the
+  `<html>`-level fold-controller hooks previously carried the RFC 822
+  Message-ID (which often encodes a sender's email-shaped token), even
+  while the visible HTML hid it via `<hidden>`. The attributes now
+  carry the integer `Article.id` and have been renamed
+  `data-article-id` and `data-thread-root-id` to make the migration
+  obvious. Thread-fold pins keyed by Message-ID in `localStorage` will
+  miss once and re-establish on next interaction.
+- JSON-LD `author.name` on message pages is now the display name
+  only, matching the visible page's privacy posture. Previously it
+  carried the literal `<hidden>` placeholder for redacted senders
+  (reads as broken metadata in structured data) and the full email
+  for allowlisted senders (defeats the visible redaction symmetry).
+  Both surfaces now consistently render the display name.
+- Atom feed `<author><name>` now uses display-name only, matching
+  JSON-LD's `author.name`. Previously a redacted sender's byline
+  rendered as `David Woodhouse <hidden>` in feed readers — same
+  broken-metadata shape the JSON-LD fix already cleaned up.
+- `_site_base()` now upgrades the URL scheme to `https` whenever
+  `X-Forwarded-Proto: https` is on the request, even if `ProxyFix`
+  isn't decoding it (wrong hop count, header outside the trusted
+  set). Defends against the canonical / og:url / og:image / JSON-LD
+  URLs splitting between `http` and `https` on the same page when
+  only one signal is wired up. `SITE_BASE_URL` remains the
+  deterministic override.
+- `/static/*` assets (currently `thread-fold.js` plus the new
+  Ratatoskr image) now carry `Cache-Control: public, max-age=86400`
+  instead of Flask's default `no-cache`. Every page load was
+  re-fetching the JS controller; with the homepage hero image
+  landing in the same release, the cost would have scaled by the
+  size of any new static asset. The routed Cache-Control entries
+  (favicon, og-image, sitemap, etc.) are unaffected — they're
+  applied by the `bp_web` after-request hook, which doesn't see
+  `/static/*` traffic. 1-day TTL trades a small bandwidth saving
+  for fast deploy-cycle propagation: a JS bug fix lands within 24
+  hours rather than the week the routed-asset entries use.
+- `<html lang="en">` now renders as a clean single-line tag on every
+  route. The pre-fix shape left a stray indented `>` on its own line
+  in view-source on every non-message page (the `html_data_attrs`
+  block was always empty there). Cosmetic.
+
 ## [1.12.3] – 2026-05-11
 
 ### Fixed
