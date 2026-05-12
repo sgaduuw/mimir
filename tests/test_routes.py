@@ -1825,6 +1825,30 @@ def test_og_image_png_served(client):
     assert (width, height) == (1200, 630)
 
 
+def test_static_assets_carry_cache_control(client):
+    """Files served by Flask's built-in /static/* blueprint must carry
+    a public Cache-Control with a non-trivial max-age. Flask defaults
+    to `no-cache`, which makes every page load re-fetch the JS
+    controller (and any future bytes-on-disk asset). The
+    `_add_cache_headers` after_request hook is registered on bp_web
+    and doesn't run for /static/*, so the only lever is
+    SEND_FILE_MAX_AGE_DEFAULT in the app factory."""
+    import re
+    r = client.get("/static/js/thread-fold.js")
+    assert r.status_code == 200
+    cc = r.headers.get("Cache-Control", "")
+    assert cc.startswith("public"), (
+        f"/static/* must be cacheable; got Cache-Control={cc!r}. "
+        "Check SEND_FILE_MAX_AGE_DEFAULT in mimir.create_app."
+    )
+    m = re.search(r"max-age=(\d+)", cc)
+    assert m is not None, f"no max-age in Cache-Control={cc!r}"
+    # Pin a sane lower bound; bare "max-age=0" or trivially small
+    # values would defeat the purpose. Anything >= 1h is fine; the
+    # current default is 1 day.
+    assert int(m.group(1)) >= 3600
+
+
 def test_clean_subject_filter_collapses_whitespace():
     from mimir.web import _clean_subject_filter
     assert _clean_subject_filter("a\n  b") == "a b"
