@@ -762,6 +762,61 @@ def _json_ld_message(
     }
 
 
+def _json_ld_search(
+    base: str, inbox_name: str, query: str, canonical_url: str,
+) -> dict:
+    """schema.org `SearchResultsPage` for `/<inbox_name>/search?q=…`.
+    Emitted only when the route is rendering actual results (the
+    no-query / too-short forms are just a search box, not a results
+    page). `url` mirrors the canonical, which strips the query
+    string — same SEO posture as the `<link rel="canonical">`: this
+    is the page-shape, not the result-set."""
+    return {
+        "@context": "https://schema.org",
+        "@type": "SearchResultsPage",
+        "name": f"Search results for '{query}' in {inbox_name}",
+        "url": canonical_url,
+        "description": f"Search results for '{query}' in {inbox_name}.",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": inbox_name,
+            "url": f"{base}/{inbox_name}/",
+        },
+    }
+
+
+def _json_ld_author(
+    base: str, inbox_name: str, sub: str, canonical_url: str,
+) -> dict:
+    """schema.org `ProfilePage` for `/<inbox_name>/author/<sub>`. The
+    `mainEntity` is a `Person` whose `name` is the sender substring
+    we matched against — usually a full email or a domain like
+    `@kernel.org`, sometimes a personal display-name fragment. We
+    don't try to resolve it to a single identity (the substring may
+    match many people, deliberately so for `@kernel.org`-shaped
+    queries); `name` is the literal token the page is indexed against.
+    """
+    return {
+        "@context": "https://schema.org",
+        "@type": "ProfilePage",
+        "name": f"Messages from {sub} in {inbox_name}",
+        "url": canonical_url,
+        "description": (
+            f"Recent messages from senders matching '{sub}' "
+            f"in the {inbox_name} archive."
+        ),
+        "mainEntity": {
+            "@type": "Person",
+            "name": sub,
+        },
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": inbox_name,
+            "url": f"{base}/{inbox_name}/",
+        },
+    }
+
+
 SITEMAP_RECENT_PER_INBOX = 5000
 SITEMAP_TTL_SEC = 3600
 
@@ -1241,6 +1296,19 @@ def search(inbox_name: str):
             results = search_articles(session, inbox, q, limit=SEARCH_RESULT_CAP)
             truncated = len(results) >= SEARCH_RESULT_CAP
 
+    # SearchResultsPage only when we're actually rendering results.
+    # The no-query and too-short shapes are a bare search form, not a
+    # "results page" — emitting the type would give crawlers a wrong
+    # signal. Canonical URL is `_site_base() + /<inbox>/search` (no
+    # query), matching the <link rel="canonical"> the context
+    # processor emits — keeps individual ?q= URLs out of the index.
+    page_json_ld = None
+    if results:
+        canonical_url = _site_base() + f"/{inbox.name}/search"
+        page_json_ld = _json_ld_search(
+            _site_base(), inbox.name, q, canonical_url,
+        )
+
     return render_template(
         "search.html",
         inbox_name=inbox.name,
@@ -1252,6 +1320,7 @@ def search(inbox_name: str):
         too_short=too_short,
         min_len=SEARCH_QUERY_MIN_LEN,
         max_len=SEARCH_QUERY_MAX_LEN,
+        page_json_ld=page_json_ld,
     )
 
 
@@ -1346,6 +1415,15 @@ def author_view(inbox_name: str, sub: str):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         results = author_recent(session, inbox, sub, limit=AUTHOR_VIEW_LIMIT)
+    # Pin the canonical URL with `sub` percent-encoded so the page's
+    # <link rel="canonical"> matches the <link rel="alternate"> for
+    # the atom feed (which uses Jinja's `urlencode` filter on `sub`).
+    # `request.path` would surface raw `@` for queries like
+    # `torvalds@`; the encoded form is standards-conformant and keeps
+    # the two surfaces consistent (2026-05-13 review nit).
+    base = _site_base()
+    sub_quoted = quote(sub, safe="")
+    canonical_url = f"{base}/{inbox.name}/author/{sub_quoted}"
     return render_template(
         "author.html",
         inbox_name=inbox.name,
@@ -1354,6 +1432,8 @@ def author_view(inbox_name: str, sub: str):
         results=results,
         truncated=len(results) >= AUTHOR_VIEW_LIMIT,
         result_cap=AUTHOR_VIEW_LIMIT,
+        canonical_url=canonical_url,
+        page_json_ld=_json_ld_author(base, inbox.name, sub, canonical_url),
     )
 
 
