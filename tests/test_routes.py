@@ -232,6 +232,25 @@ def test_inbox_search_form_has_visible_submit_button(client, inbox_name):
     )
 
 
+def test_search_and_author_pages_lead_with_h1(client, inbox_name):
+    """Both content pages lead with `<h1>`, not `<h2>` -- a11y +
+    SEO both want a single top-level heading per page (2026-05-13
+    review nit). Pin both content pages so a future template tweak
+    that drops the h1 back to h2 fails loudly."""
+    import re
+    for url in (f"/{inbox_name}/search", f"/{inbox_name}/author/torvalds"):
+        body = client.get(url).data.decode()
+        # Slice from <main> so the nav / footer don't satisfy the
+        # assertion. Pico wraps content in `<main class="container">`.
+        main_idx = body.index("<main")
+        first_h = re.search(r"<(h[1-6])\b", body[main_idx:])
+        assert first_h is not None, f"no heading on {url}"
+        assert first_h.group(1) == "h1", (
+            f"first heading on {url} is <{first_h.group(1)}>, "
+            f"expected <h1> (2026-05-13 review)"
+        )
+
+
 def test_year_out_of_range_404(client, inbox_name):
     assert client.get(f"/{inbox_name}/1990/").status_code == 404
     # _max_archive_year() = current_year + 1; pick something solidly above.
@@ -1804,13 +1823,37 @@ def test_message_json_ld_author_strips_email_even_when_allowlisted(
     assert "@b.example" not in posting["author"]["name"]
 
 
-def test_search_page_does_not_emit_json_ld(client, inbox_name):
-    """Routes without JSON-LD plumbing should not emit a stray empty
-    block. Search is a representative example."""
+def test_search_page_emits_no_json_ld_without_results(client, inbox_name):
+    """Empty / too-short / zero-results queries get a bare search
+    form, no SearchResultsPage payload — emitting it would tell
+    crawlers "this is a results page" when it isn't. The seed
+    corpus has no `Linux`-shaped subjects."""
     blocks = _json_ld_blocks(
         client.get(f"/{inbox_name}/search?q=Linux").data.decode()
     )
     assert blocks == []
+    # Same for the empty-q and too-short forms.
+    assert _json_ld_blocks(client.get(f"/{inbox_name}/search").data.decode()) == []
+    assert _json_ld_blocks(client.get(f"/{inbox_name}/search?q=x").data.decode()) == []
+
+
+def test_search_page_emits_searchresultspage_with_results(client, inbox_name):
+    """When the search route renders actual results, a
+    `SearchResultsPage` payload appears so crawlers get a structured
+    signal. `url` mirrors the `<link rel="canonical">` (bare
+    `/<inbox>/search`, no query) so individual `?q=` URLs stay out
+    of the index. Suggested in the 2026-05-13 review."""
+    blocks = _json_ld_blocks(
+        client.get(f"/{inbox_name}/search?q=hello").data.decode()
+    )
+    assert len(blocks) == 1
+    payload = blocks[0]
+    assert payload["@type"] == "SearchResultsPage"
+    assert "hello" in payload["name"]
+    assert payload["url"].endswith(f"/{inbox_name}/search")
+    assert "?" not in payload["url"]
+    assert payload["isPartOf"]["@type"] == "WebSite"
+    assert payload["isPartOf"]["name"] == inbox_name
 
 
 def test_inbox_dashboard_emits_discussion_forum_json_ld(client, inbox_name):
@@ -2348,6 +2391,55 @@ def test_author_view_too_short_substring_404s(client, inbox_name):
     """`SEARCH_QUERY_MIN_LEN` rejects 1-char substrings to avoid
     a full-table scan disguised as a near-empty filter."""
     assert client.get(f"/{inbox_name}/author/a").status_code == 404
+
+
+def test_author_view_canonical_uses_percent_encoded_at(client, inbox_name):
+    """The `<link rel="canonical">` and the `<link rel="alternate"
+    type="application/atom+xml">` must use the same encoding for
+    `sub` -- before the 2026-05-13 review fix the canonical kept
+    the raw `@` (via `request.path`) while the atom feed link used
+    `%40` (via Jinja's `urlencode`). The route now pins canonical
+    with `urllib.parse.quote(sub)` so both surfaces agree."""
+    import re
+    body = client.get(f"/{inbox_name}/author/torvalds@").data.decode()
+    canonical = re.search(r'<link rel="canonical" href="([^"]+)"', body)
+    # Author page emits two atom-feed <link>s in <head>: the inbox
+    # feed (from base.html) and the author-specific feed (from the
+    # `extra_atom_feeds` block in author.html). Pick the one whose
+    # href contains `/author/` -- that's the one that's supposed to
+    # mirror the canonical encoding.
+    atom_hrefs = re.findall(
+        r'<link rel="alternate" type="application/atom\+xml"[^>]*?'
+        r'href="([^"]+)"',
+        body,
+    )
+    author_atom = next((h for h in atom_hrefs if "/author/" in h), None)
+    assert canonical is not None and author_atom is not None
+    # Both URLs must encode `@` consistently. We pick `%40`
+    # (standards-conformant; what Jinja's urlencode emits).
+    assert "%40" in canonical.group(1)
+    assert "@" not in canonical.group(1).split("/author/")[1].split("/")[0]
+    assert "%40" in author_atom
+
+
+def test_author_view_emits_profilepage_json_ld(client, inbox_name):
+    """`/<inbox>/author/<sub>` ships a `ProfilePage` payload with a
+    `Person` mainEntity. Suggested in the 2026-05-13 review --
+    cheap structured-data signal for crawlers (the substring is the
+    Person.name; we don't try to resolve to a single identity)."""
+    blocks = _json_ld_blocks(
+        client.get(f"/{inbox_name}/author/torvalds").data.decode()
+    )
+    assert len(blocks) == 1
+    payload = blocks[0]
+    assert payload["@type"] == "ProfilePage"
+    assert "torvalds" in payload["name"]
+    assert payload["mainEntity"]["@type"] == "Person"
+    assert payload["mainEntity"]["name"] == "torvalds"
+    assert payload["isPartOf"]["@type"] == "WebSite"
+    assert payload["isPartOf"]["name"] == inbox_name
+    # url must match the canonical (percent-encoded form).
+    assert payload["url"].endswith(f"/{inbox_name}/author/torvalds")
 
 
 def test_author_feed_is_well_formed_atom_with_matching_entry(
