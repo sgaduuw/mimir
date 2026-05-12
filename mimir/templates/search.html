@@ -8,7 +8,7 @@ Search the {{ inbox_name }} archive by subject or author.
 {%- endif -%}
 {% endblock %}
 {% block content %}
-<h2>Search <small><em>· {{ inbox_name }}</em></small></h2>
+<h1>Search <small><em>· {{ inbox_name }}</em></small></h1>
 
 <form method="get" action="/{{ inbox_name }}/search">
   {# fieldset role="group" gives Pico its inline-row treatment so the

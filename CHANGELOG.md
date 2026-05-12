@@ -11,6 +11,41 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- `SearchResultsPage` JSON-LD on `/<inbox>/search` when the route is
+  rendering actual results (skipped on no-query / too-short / zero-
+  results forms — those are bare search boxes, not results pages).
+  `url` mirrors the `<link rel="canonical">` (bare `/<inbox>/search`,
+  no query string), keeping individual `?q=` URLs out of the index
+  while still giving crawlers a structured-data signal that this
+  page is search results. Suggested in the 2026-05-13 review.
+- `ProfilePage` JSON-LD on `/<inbox>/author/<sub>` with a `Person`
+  mainEntity whose `name` is the sender substring the page indexes
+  against. We don't try to resolve the substring to a single
+  identity (queries like `@kernel.org` deliberately match many
+  people); the structured data describes the page, not a single
+  person. Suggested in the 2026-05-13 review.
+
+### Changed
+
+- `<h2>` on the search and author pages promoted to `<h1>` — both
+  are top-level pages and accessibility / SEO consumers expect a
+  single top-level heading per page. The page `<title>` is
+  captured separately in `base.html` so this is purely a
+  body-content fix. Flagged in the 2026-05-13 review.
+
+### Fixed
+
+- `<link rel="canonical">` on `/<inbox>/author/<sub>` now uses
+  `urllib.parse.quote` on the `sub` segment, matching the
+  `urlencode` filter used by the `<link rel="alternate"
+  type="application/atom+xml">` for the author-feed. Pre-fix, a
+  query like `torvalds@` rendered the canonical with raw `@` and
+  the atom link with `%40` — same target, two encodings.
+  Cosmetic but the kind of nit a reviewer notices. Flagged in the
+  2026-05-13 review.
+
 ## [1.13.0] – 2026-05-12
 
 Driven by the 2026-05-12 production-page re-review. User-visible
