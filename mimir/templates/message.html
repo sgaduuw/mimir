@@ -8,10 +8,16 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
 {%- endblock %}
 {# Surface thread-root + context to thread-fold.js via <html> data-attrs.
    The static JS reads them on first <head> execution to set
-   data-thread-fold before the section paints (FOUC-free). #}
+   data-thread-fold before the section paints (FOUC-free).
+
+   `data-thread-root-id` carries Article.id (integer), not the RFC 822
+   Message-ID — Message-IDs leak email-shaped tokens that the visible
+   redaction was supposed to hide (2026-05-12 review). The JS treats
+   the value as an opaque string, so the format swap is invisible
+   above the wire. #}
 {% block html_data_attrs %}
 {%- if thread and thread|length > 1 -%}
-data-thread-root="{{ thread[0].message_id }}"
+data-thread-root-id="{{ thread[0].id }}"
 data-thread-context="{{ 'root' if thread[0].message_id == article.message_id else 'deep' }}"
 {%- endif -%}
 {% endblock %}
@@ -141,7 +147,7 @@ data-thread-context="{{ 'root' if thread[0].message_id == article.message_id els
   }
 </style>
 <section class="thread-context"
-         data-thread-root="{{ thread[0].message_id if thread else '' }}">
+         data-thread-root-id="{{ thread[0].id if thread else '' }}">
   <header class="thread-toolbar">
     <span class="thread-label">
       <span class="thread-count">Thread ({{ thread|length }} message{{ '' if thread|length == 1 else 's' }})</span>
@@ -171,7 +177,7 @@ data-thread-context="{{ 'root' if thread[0].message_id == article.message_id els
     {% set offset = 1 if parent_off_list else 0 %}
     {% for n in thread %}
     <li style="padding-left: {{ (n.depth + offset) * 1.5 }}rem;"
-        data-message-id="{{ n.message_id }}"
+        data-article-id="{{ n.id }}"
         {% if n.message_id == article.message_id %}class="is-active"{% endif %}>
       <a href="{{ thread_urls[n.message_id] }}"
          hx-get="{{ thread_urls[n.message_id] }}"
@@ -185,8 +191,8 @@ data-thread-context="{{ 'root' if thread[0].message_id == article.message_id els
   </div>
 </section>
 {# All JS lives in /static/js/thread-fold.js; loaded from base.html.
-   The data-thread-root / data-thread-context attrs on <html> (set via
-   the html_data_attrs block above) carry the per-page context the
+   The data-thread-root-id / data-thread-context attrs on <html> (set
+   via the html_data_attrs block above) carry the per-page context the
    controller needs. #}
 {% endif %}
 {% include "_message_body.html" %}
