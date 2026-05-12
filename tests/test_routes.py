@@ -193,6 +193,45 @@ def test_inbox_search_with_query_echoes_query(client, inbox_name):
     assert 'value="Linux"' in body
 
 
+def test_html_open_tag_is_single_line_on_routes_without_data_attrs(
+    client, inbox_name,
+):
+    """`<html lang="en">` renders as a clean single-line tag on every
+    route that doesn't override the `html_data_attrs` block. The
+    pre-fix shape left a stray indented `>` on its own line in
+    view-source whenever the block was empty (most routes), flagged
+    in the 2026-05-12 review."""
+    for url in ("/", f"/{inbox_name}/", f"/{inbox_name}/search"):
+        body = client.get(url).data.decode()
+        # Locate the opening html tag and verify it closes on the
+        # same line. A broken render leaves `<html lang="en"\n      >`.
+        idx = body.index("<html lang=")
+        same_line_close = body.index(">", idx)
+        assert "\n" not in body[idx:same_line_close], (
+            f"<html ...> on {url} spans multiple lines: "
+            f"{body[idx:same_line_close + 1]!r}"
+        )
+
+
+def test_inbox_search_form_has_visible_submit_button(client, inbox_name):
+    """Phone-thumb usability: enter-to-submit works on a hardware
+    keyboard but isn't obvious on touch. A `<button type="submit">`
+    inside the form fixes that. Flagged in the 2026-05-12 review."""
+    import re
+    body = client.get(f"/{inbox_name}/search").data.decode()
+    # Slice down to the search form so a stray <button> elsewhere on
+    # the page (none today, but defends future drift) doesn't satisfy
+    # the assertion.
+    form_match = re.search(r"<form[^>]*\baction=\"/[^\"]*search\"[^>]*>(.*?)</form>",
+                           body, re.DOTALL)
+    assert form_match is not None, "search form missing"
+    form_html = form_match.group(1)
+    assert re.search(r'<button[^>]+type="submit"', form_html), (
+        "search form must carry a visible submit button "
+        "(see 2026-05-12 review note on touch usability)"
+    )
+
+
 def test_year_out_of_range_404(client, inbox_name):
     assert client.get(f"/{inbox_name}/1990/").status_code == 404
     # _max_archive_year() = current_year + 1; pick something solidly above.
@@ -395,6 +434,43 @@ def test_atom_feed_well_formed(client, inbox_name):
         assert "/2024/" in href or "/2025/" in href or "/2026/" in href, (
             f"entry link doesn't look like a message URL: {href}"
         )
+
+
+def test_atom_feed_author_strips_placeholder_and_email(
+    client, tmp_path, monkeypatch,
+):
+    """Atom <author><name> is the display name only -- same posture
+    as JSON-LD's author.name. Feed readers render <name> as the
+    byline, where the `<hidden>` placeholder reads as broken
+    metadata exactly as it did in JSON-LD before the 2026-05-12
+    fix. Allowlisted senders also surface display-name only -- the
+    visible HTML still shows their full address, but the structured
+    surfaces stay symmetric across feed readers and search engines."""
+    import xml.etree.ElementTree as ET
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    _ingest_one_article(
+        tmp_path, "alpha", "atom-named@example.com",
+        author="David Woodhouse <dwmw2@infradead.org>",
+    )
+    r = client.get("/alpha/feed.atom")
+    assert r.status_code == 200
+    root = ET.fromstring(r.get_data())
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    names = [
+        e.findtext("a:author/a:name", default="", namespaces=ns)
+        for e in root.findall("a:entry", ns)
+    ]
+    target = next(n for n in names if "David Woodhouse" in n)
+    assert target == "David Woodhouse"
+    # Belt-and-braces: across all entries, no placeholder, no `@`
+    # in any byline. The seeded `a@b.example` corpus has no display
+    # name and falls through to the neutral fallback rather than
+    # leaking the bare address.
+    for n in names:
+        assert "<hidden>" not in n
+        assert "@" not in n
 
 
 # robots.txt / security.txt / sitemap.xml
@@ -778,6 +854,7 @@ def _ingest_one_article(
     subject: str = "test",
     in_reply_to: str | None = None,
     to: str | None = None,
+    author: str = "a@b.example",
 ) -> tuple[int, str]:
     """Build a tiny pubinbox-shaped bare repo with one message and
     ingest it into `inbox_name`. Repoints the inbox's mirror_path at
@@ -797,7 +874,7 @@ def _ingest_one_article(
         extra += b"To: " + to.encode() + b"\r\n"
     raw = (
         b"Message-ID: <" + message_id.encode() + b">\r\n"
-        b"From: a@b.example\r\n"
+        b"From: " + author.encode() + b"\r\n"
         b"Subject: " + subject.encode() + b"\r\n"
         b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
         + extra +
@@ -1083,6 +1160,16 @@ def _meta_value(html: str, name_or_property: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _data_attr_values(html: str) -> str:
+    """Concatenate every `data-…="…"` attribute value in the document
+    into a single string for `not-in` checks. Used to defend the
+    invariant that machine-readable attributes never carry tokens
+    (Message-IDs, raw email addresses) that the visible HTML
+    redacted."""
+    import re
+    return "\n".join(re.findall(r'data-[a-z0-9-]+="([^"]*)"', html))
+
+
 def test_meta_index_emits_default_description(client):
     html = client.get("/").data.decode()
     desc = _meta_value(html, "description")
@@ -1141,8 +1228,9 @@ def test_og_type_article_on_message_page(client, tmp_path):
 def test_twitter_card_tags_match_og_pair(client, inbox_name):
     """twitter:title/description should mirror og:title/description so
     Twitter's preview matches whatever Slack/etc. show via OG. The
-    card type bumped from `summary` to `summary_large_image` once the
-    SVG wordmark og:image landed (2026-05-11 review)."""
+    card type is `summary_large_image` paired with the 1200x630 PNG
+    og:image (Twitter/X doesn't render SVG, LinkedIn is inconsistent
+    on it -- flagged in the 2026-05-12 review)."""
     html = client.get(f"/{inbox_name}/").data.decode()
     assert _meta_value(html, "twitter:card") == "summary_large_image"
     assert _meta_value(html, "twitter:title") == _meta_value(html, "og:title")
@@ -1151,9 +1239,16 @@ def test_twitter_card_tags_match_og_pair(client, inbox_name):
         == _meta_value(html, "og:description")
     )
     assert _meta_value(html, "twitter:title") == f"{inbox_name} | mimir"
-    # Image mirrors og:image.
+    # Image mirrors og:image; the asset itself is a 1200x630 PNG.
     assert _meta_value(html, "twitter:image") == _meta_value(html, "og:image")
-    assert _meta_value(html, "og:image").endswith("/og-image.svg")
+    assert _meta_value(html, "og:image").endswith("/og-image.png")
+    # Width / height / alt help picky link-card renderers pick the
+    # intended size and improve a11y. Mirrored on twitter:image:alt.
+    assert _meta_value(html, "og:image:width") == "1200"
+    assert _meta_value(html, "og:image:height") == "630"
+    og_alt = _meta_value(html, "og:image:alt") or ""
+    assert "Ratatoskr" in og_alt
+    assert _meta_value(html, "twitter:image:alt") == og_alt
 
 
 def test_meta_description_inbox_uses_rich_form_when_stats_present(client):
@@ -1242,7 +1337,7 @@ def test_message_page_single_message_thread_skips_fold_scaffolding(
     body = client.get(url).data.decode()
     assert "thread-context" not in body
     assert "data-thread-fold" not in body
-    assert "data-thread-root=" not in body
+    assert "data-thread-root-id=" not in body
     assert "data-fold-set=" not in body
     # thread-fold.js is loaded on every page (from base.html) but with no
     # data-thread-* attrs on <html> the controller short-circuits the
@@ -1339,11 +1434,18 @@ def test_message_page_thread_fold_context_is_root_when_viewing_root(
 ):
     """Viewing the thread root sets data-thread-context="root" on
     <html>; the controller script reads that and defaults the fold
-    state to `partial` (vs `closed` for a deep reply)."""
+    state to `partial` (vs `closed` for a deep reply). The thread-
+    root id is the integer Article.id, not the RFC 822 Message-ID
+    -- the latter would leak email-shaped tokens that the visible
+    redaction was supposed to hide."""
     msgs = _seed_three_message_thread(tmp_path, "alpha")
+    root_id = msgs["root"][0]
     body = client.get(msgs["root"][1]).data.decode()
-    assert 'data-thread-root="fold-root@example.com"' in body
+    assert f'data-thread-root-id="{root_id}"' in body
     assert 'data-thread-context="root"' in body
+    # Belt-and-braces: the RFC 822 Message-ID must not appear in any
+    # data-* attribute.
+    assert "fold-root@example.com" not in _data_attr_values(body)
 
 
 def test_message_page_thread_fold_context_is_deep_for_replies(
@@ -1353,29 +1455,30 @@ def test_message_page_thread_fold_context_is_deep_for_replies(
     data-thread-context="deep" -- the controller defaults to `closed`
     so the body gets full real estate."""
     msgs = _seed_three_message_thread(tmp_path, "alpha")
+    root_id = msgs["root"][0]
     body = client.get(msgs["nested"][1]).data.decode()
-    assert 'data-thread-root="fold-root@example.com"' in body
+    assert f'data-thread-root-id="{root_id}"' in body
     assert 'data-thread-context="deep"' in body
 
 
 def test_message_page_thread_fold_active_marker_on_current_li(
     client, tmp_path,
 ):
-    """The tree <li> whose data-message-id matches the current view
+    """The tree <li> whose data-article-id matches the current view
     carries class="is-active"; the others carry no such class. The
     JS controller toggles this class on htmx:afterSwap, but the
     server's initial render has to set it correctly for the first
     paint (when JS hasn't run yet or is disabled)."""
     msgs = _seed_three_message_thread(tmp_path, "alpha")
-    _, nested_url, nested_mid = msgs["nested"]
+    nested_id, nested_url, nested_mid = msgs["nested"]
     body = client.get(nested_url).data.decode()
 
-    # The active <li> markup: data-message-id matches current view AND
+    # The active <li> markup: data-article-id matches current view AND
     # class="is-active". Use a regex-ish substring check; the exact
     # element ordering is set by the template.
     import re
     li_active_pattern = re.compile(
-        r'<li[^>]*data-message-id="' + re.escape(nested_mid) +
+        r'<li[^>]*data-article-id="' + re.escape(str(nested_id)) +
         r'"[^>]*class="is-active"',
         re.DOTALL,
     )
@@ -1388,6 +1491,11 @@ def test_message_page_thread_fold_active_marker_on_current_li(
     # (root + reply + nested); one is active, two must not be.
     li_with_class = re.findall(r'<li[^>]*class="is-active"', body)
     assert len(li_with_class) == 1
+    # Message-ID must not have leaked into any data-* attribute on the
+    # <li>: the original visible-redaction rationale is "Message-IDs
+    # leak email-shaped tokens"; carrying them in data-message-id
+    # silently undid that. Belt-and-braces check.
+    assert nested_mid not in _data_attr_values(body)
 
 
 def test_message_page_thread_fold_toolbar_summary_counts_match(
@@ -1485,7 +1593,7 @@ def test_message_page_htmx_request_returns_body_partial(client, tmp_path):
     carry the *content* the user came for, not just an empty article
     wrapper: the headline/from/date header, the message body, and
     attachments if any."""
-    _, url = _ingest_one_article(
+    art_id, url = _ingest_one_article(
         tmp_path, "alpha", "htmx-swap@example.com",
         subject="swap test subject 12345",
     )
@@ -1494,12 +1602,15 @@ def test_message_page_htmx_request_returns_body_partial(client, tmp_path):
     body = r.data.decode()
 
     # Outer shape: hx-swap=outerHTML on the link targets #msg, so the
-    # response's root element must be <article id="msg" data-message-id=...>.
+    # response's root element must be <article id="msg" data-article-id=...>.
     assert body.lstrip().startswith("<article id=\"msg\""), (
         "HTMX partial must start with the swap-target element so "
         "hx-swap=outerHTML replaces #msg cleanly"
     )
-    assert 'data-message-id="htmx-swap@example.com"' in body
+    assert f'data-article-id="{art_id}"' in body
+    # The Message-ID is the original RFC 822 token; it must not appear
+    # in any data-* attribute. The swap key is the integer Article id.
+    assert "htmx-swap@example.com" not in _data_attr_values(body)
 
     # Actual content present (not an empty wrapper).
     assert "swap test subject 12345" in body
@@ -1636,32 +1747,61 @@ def test_message_breadcrumb_subject_truncated_to_80(client, tmp_path):
     assert last["name"] != long_subject
 
 
-def test_message_json_ld_author_uses_safe_from_redaction(client, tmp_path, monkeypatch):
-    """Authors outside the email allowlist render as `<hidden>` in
-    the HTML body — same redaction must apply to JSON-LD's
-    author.name, otherwise the schema leaks what the page hides."""
+def test_message_json_ld_author_strips_hidden_placeholder(
+    client, tmp_path, monkeypatch,
+):
+    """JSON-LD author.name on a redacted sender is the display name
+    only — no `<hidden>` placeholder. The placeholder is a rendering
+    decision for the visible HTML; in structured data it reads as
+    broken metadata. Flagged in the 2026-05-12 review."""
     from mimir.config import settings
     monkeypatch.setattr(settings, "email_allowlist", [])  # nothing allowlisted
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-redact@example.com",
+        tmp_path, "alpha", "jsonld-named@example.com",
+        author="David Woodhouse <dwmw2@infradead.org>",
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
     posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
-    # _ingest_one_article uses From: a@b.example — no name part, no
-    # allowlist match → safe_from returns "<hidden>".
-    assert posting["author"]["name"] == "<hidden>"
+    assert posting["author"]["name"] == "David Woodhouse"
 
 
-def test_message_json_ld_author_full_when_allowlisted(client, tmp_path, monkeypatch):
-    """And the inverse: allowlisted senders flow through unredacted."""
+def test_message_json_ld_author_no_email_leak_for_bare_address(
+    client, tmp_path, monkeypatch,
+):
+    """A From: line with only a bare address falls back to a neutral
+    string in JSON-LD — not the email itself, which would defeat the
+    visible HTML redaction the page already applied."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    # _ingest_one_article's default `author=a@b.example` is a bare
+    # address with no display name.
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-bare@example.com",
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    assert "<hidden>" not in posting["author"]["name"]
+    assert "@" not in posting["author"]["name"]
+
+
+def test_message_json_ld_author_strips_email_even_when_allowlisted(
+    client, tmp_path, monkeypatch,
+):
+    """Allowlisted senders surface their full From-line in the visible
+    HTML (institutional kernel.org accounts), but JSON-LD's
+    author.name is still display-name only — schema.org consumers
+    don't need the email and crawlers should treat both author
+    surfaces consistently."""
     from mimir.config import settings
     monkeypatch.setattr(settings, "email_allowlist", ["@b.example"])
     _, url = _ingest_one_article(
         tmp_path, "alpha", "jsonld-allow@example.com",
+        author="Allowed Person <allowed@b.example>",
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
     posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
-    assert "a@b.example" in posting["author"]["name"]
+    assert posting["author"]["name"] == "Allowed Person"
+    assert "@b.example" not in posting["author"]["name"]
 
 
 def test_search_page_does_not_emit_json_ld(client, inbox_name):
@@ -1794,19 +1934,51 @@ def test_favicon_svg_served(client):
     assert b"<svg" in r.data
 
 
-def test_og_image_svg_served(client):
-    """The OG image template renders `settings.site_name` into the
-    SVG. Pin against the configured value, not a disjunction across
-    dev + production names -- the disjunction would mask a regression
-    where the template stopped interpolating `site_name` at all."""
-    from mimir.config import settings
-    r = client.get("/og-image.svg")
+def test_og_image_png_served(client):
+    """The OG image is a pre-baked 1200x630 PNG (no longer an SVG
+    rendered from a template -- Twitter/X doesn't render SVG and
+    LinkedIn is inconsistent on it; flagged in the 2026-05-12
+    review). The asset lives at `mimir/static/img/og-image.png` and
+    is served from the site root for URL-shape continuity with the
+    prior `/og-image.svg`. The route is bare bytes; we assert the
+    PNG signature and the dimensions reflect the baked composite."""
+    r = client.get("/og-image.png")
     assert r.status_code == 200
-    assert r.mimetype == "image/svg+xml"
-    assert b"<svg" in r.data
-    assert settings.site_name.encode() in r.data, (
-        f"OG SVG doesn't carry configured site_name={settings.site_name!r}"
+    assert r.mimetype == "image/png"
+    # PNG magic bytes — defends against the file being silently
+    # replaced by something else with a `.png` name.
+    assert r.data[:8] == b"\x89PNG\r\n\x1a\n"
+    # IHDR chunk holds width/height in the first 8 bytes after the
+    # length+type prefix (16..24). Pin the dimensions; a re-bake at
+    # a different size would invalidate the og:image:width/height
+    # meta tags emitted in base.html.
+    import struct
+    width, height = struct.unpack(">II", r.data[16:24])
+    assert (width, height) == (1200, 630)
+
+
+def test_static_assets_carry_cache_control(client):
+    """Files served by Flask's built-in /static/* blueprint must carry
+    a public Cache-Control with a non-trivial max-age. Flask defaults
+    to `no-cache`, which makes every page load re-fetch the JS
+    controller (and any future bytes-on-disk asset). The
+    `_add_cache_headers` after_request hook is registered on bp_web
+    and doesn't run for /static/*, so the only lever is
+    SEND_FILE_MAX_AGE_DEFAULT in the app factory."""
+    import re
+    r = client.get("/static/js/thread-fold.js")
+    assert r.status_code == 200
+    cc = r.headers.get("Cache-Control", "")
+    assert cc.startswith("public"), (
+        f"/static/* must be cacheable; got Cache-Control={cc!r}. "
+        "Check SEND_FILE_MAX_AGE_DEFAULT in mimir.create_app."
     )
+    m = re.search(r"max-age=(\d+)", cc)
+    assert m is not None, f"no max-age in Cache-Control={cc!r}"
+    # Pin a sane lower bound; bare "max-age=0" or trivially small
+    # values would defeat the purpose. Anything >= 1h is fine; the
+    # current default is 1 day.
+    assert int(m.group(1)) >= 3600
 
 
 def test_clean_subject_filter_collapses_whitespace():

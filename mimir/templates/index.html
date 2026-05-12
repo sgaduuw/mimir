@@ -1,9 +1,50 @@
 {% extends "base.html" %}
 {% block title %}{{ site_name }}{% endblock %}
 {% block content %}
-<h1>{{ site_name }}</h1>
-<p><small><em>indexed mailing list archives, served from local
-public-inbox v2 mirrors.</em></small></p>
+<style>
+  /* Manuscript-marginalia layout: small squirrel left of the wordmark.
+     Stacks on narrow viewports so the figure doesn't crowd the heading
+     on a phone. */
+  .index-hero {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+  .index-hero figure {
+    flex: 0 0 auto;
+    margin: 0;
+    line-height: 0;
+  }
+  .index-hero img {
+    height: auto;
+    width: 220px;
+    max-width: 30vw;
+    display: block;
+  }
+  .index-hero hgroup {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+  }
+  .index-hero h1 { margin-bottom: 0.25rem; }
+  @media (max-width: 480px) {
+    .index-hero { flex-direction: column; align-items: flex-start; gap: 0.75rem; }
+    .index-hero img { width: 160px; max-width: 50vw; }
+  }
+</style>
+<section class="index-hero">
+  <figure>
+    {# Decorative; the screen-reader caption lives in the global footer
+       credit + the og:image alt, so empty alt here is correct. #}
+    <img src="{{ url_for('static', filename='img/ratatoskr.png') }}" alt="">
+  </figure>
+  <hgroup>
+    <h1>{{ site_name }}</h1>
+    <p><small><em>indexed mailing list archives, served from local
+    public-inbox v2 mirrors.</em></small></p>
+  </hgroup>
+</section>
 
 <h2 id="inboxes">Inboxes</h2>
 

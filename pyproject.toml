@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mimir"
-version = "1.12.3"
+version = "1.13.0"
 description = "toy project for reading lkml"
 authors = ["Eelco Wesemann <6771014+sgaduuw@users.noreply.github.com>"]
 license = "MIT"
@@ -20,6 +20,7 @@ gunicorn = "^26.0.0"
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.15.12"
 pytest = "^9.0.3"
+pillow = "^12.2.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
