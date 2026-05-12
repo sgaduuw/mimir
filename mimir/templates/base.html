@@ -1,6 +1,10 @@
 <!doctype html>
-<html lang="en"
-      {% block html_data_attrs %}{% endblock %}>
+{# `html_data_attrs` is empty on most routes; collapsing it inline keeps
+   `<html lang="en">` as a clean single-line tag on those pages instead
+   of leaving a stray indented `>` on its own line in view-source. The
+   override block in message.html prepends its own leading space when
+   it has attrs to emit. #}
+<html lang="en"{% block html_data_attrs %}{% endblock %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">

@@ -11,6 +11,26 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- Visible **Search** submit button on `/<inbox>/search` (paired with
+  the existing input inside a Pico `[role="group"]` for the inline
+  pill look). Enter-to-submit on a hardware keyboard already worked;
+  the button matters for phone-thumb usability. Flagged in the
+  2026-05-12 review.
+
+### Fixed
+
+- `<html lang="en">` now renders as a clean single-line tag on every
+  route. The pre-fix shape left a stray indented `>` on its own line
+  in view-source on every non-message page (the `html_data_attrs`
+  block was always empty there). Cosmetic, called out in the
+  2026-05-12 review.
+- Atom feed `<author><name>` now uses display-name only, matching
+  JSON-LD's `author.name`. Previously a redacted sender's byline
+  rendered as `David Woodhouse <hidden>` in feed readers — same
+  broken-metadata shape the JSON-LD fix already cleaned up.
+
 ### Changed
 
 - The OG image is now a 1200×630 PNG instead of a templated SVG
