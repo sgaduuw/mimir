@@ -1319,7 +1319,11 @@ def _atom_response(
         )
         if a.author:
             author_el = SubElement(entry, "author")
-            SubElement(author_el, "name").text = _safe_from_filter(a.author)
+            # Display name only — same posture as JSON-LD's author.name.
+            # Feed readers render <author><name> as the byline; the
+            # `<hidden>` placeholder reads as broken metadata there
+            # exactly as it did in JSON-LD before the 2026-05-12 fix.
+            SubElement(author_el, "name").text = _display_name_filter(a.author)
 
     body = (
         '<?xml version="1.0" encoding="utf-8"?>\n'

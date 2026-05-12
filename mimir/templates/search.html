@@ -11,13 +11,20 @@ Search the {{ inbox_name }} archive by subject or author.
 <h2>Search <small><em>· {{ inbox_name }}</em></small></h2>
 
 <form method="get" action="/{{ inbox_name }}/search">
-  <input type="search"
-         name="q"
-         value="{{ query }}"
-         placeholder="subject or author …"
-         minlength="{{ min_len }}"
-         maxlength="{{ max_len }}"
-         autofocus>
+  {# fieldset role="group" gives Pico its inline-row treatment so the
+     input + button render as a unified pill on one line. Enter-to-
+     submit still works on hardware keyboards; the visible button is
+     for phone-thumb usability (2026-05-12 review). #}
+  <fieldset role="group">
+    <input type="search"
+           name="q"
+           value="{{ query }}"
+           placeholder="subject or author …"
+           minlength="{{ min_len }}"
+           maxlength="{{ max_len }}"
+           autofocus>
+    <button type="submit">Search</button>
+  </fieldset>
   <small><em>Substring match against subject and From; case-insensitive.</em></small>
 </form>
 

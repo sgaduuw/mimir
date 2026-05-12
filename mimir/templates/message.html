@@ -14,12 +14,16 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    Message-ID — Message-IDs leak email-shaped tokens that the visible
    redaction was supposed to hide (2026-05-12 review). The JS treats
    the value as an opaque string, so the format swap is invisible
-   above the wire. #}
-{% block html_data_attrs %}
-{%- if thread and thread|length > 1 -%}
-data-thread-root-id="{{ thread[0].id }}"
-data-thread-context="{{ 'root' if thread[0].message_id == article.message_id else 'deep' }}"
-{%- endif -%}
+   above the wire.
+
+   Leading space before `data-thread-root-id` is intentional: base.html
+   collapses the html_data_attrs block inline against `<html lang="en"`
+   so non-message routes get a clean single-line tag. When this block
+   is empty (single-message thread), nothing is emitted; when
+   populated, the leading space cleanly separates the attrs from
+   `lang="en"`. #}
+{% block html_data_attrs -%}
+{%- if thread and thread|length > 1 %} data-thread-root-id="{{ thread[0].id }}" data-thread-context="{{ 'root' if thread[0].message_id == article.message_id else 'deep' }}"{%- endif -%}
 {% endblock %}
 {% block content %}
 {% if thread|length > 1 or parent_off_list %}
