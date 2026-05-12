@@ -1152,8 +1152,9 @@ def test_og_type_article_on_message_page(client, tmp_path):
 def test_twitter_card_tags_match_og_pair(client, inbox_name):
     """twitter:title/description should mirror og:title/description so
     Twitter's preview matches whatever Slack/etc. show via OG. The
-    card type bumped from `summary` to `summary_large_image` once the
-    SVG wordmark og:image landed (2026-05-11 review)."""
+    card type is `summary_large_image` paired with the 1200x630 PNG
+    og:image (Twitter/X doesn't render SVG, LinkedIn is inconsistent
+    on it -- flagged in the 2026-05-12 review)."""
     html = client.get(f"/{inbox_name}/").data.decode()
     assert _meta_value(html, "twitter:card") == "summary_large_image"
     assert _meta_value(html, "twitter:title") == _meta_value(html, "og:title")
@@ -1162,9 +1163,16 @@ def test_twitter_card_tags_match_og_pair(client, inbox_name):
         == _meta_value(html, "og:description")
     )
     assert _meta_value(html, "twitter:title") == f"{inbox_name} | mimir"
-    # Image mirrors og:image.
+    # Image mirrors og:image; the asset itself is a 1200x630 PNG.
     assert _meta_value(html, "twitter:image") == _meta_value(html, "og:image")
-    assert _meta_value(html, "og:image").endswith("/og-image.svg")
+    assert _meta_value(html, "og:image").endswith("/og-image.png")
+    # Width / height / alt help picky link-card renderers pick the
+    # intended size and improve a11y. Mirrored on twitter:image:alt.
+    assert _meta_value(html, "og:image:width") == "1200"
+    assert _meta_value(html, "og:image:height") == "630"
+    og_alt = _meta_value(html, "og:image:alt") or ""
+    assert "Ratatoskr" in og_alt
+    assert _meta_value(html, "twitter:image:alt") == og_alt
 
 
 def test_meta_description_inbox_uses_rich_form_when_stats_present(client):
@@ -1850,19 +1858,51 @@ def test_favicon_svg_served(client):
     assert b"<svg" in r.data
 
 
-def test_og_image_svg_served(client):
-    """The OG image template renders `settings.site_name` into the
-    SVG. Pin against the configured value, not a disjunction across
-    dev + production names -- the disjunction would mask a regression
-    where the template stopped interpolating `site_name` at all."""
-    from mimir.config import settings
-    r = client.get("/og-image.svg")
+def test_og_image_png_served(client):
+    """The OG image is a pre-baked 1200x630 PNG (no longer an SVG
+    rendered from a template -- Twitter/X doesn't render SVG and
+    LinkedIn is inconsistent on it; flagged in the 2026-05-12
+    review). The asset lives at `mimir/static/img/og-image.png` and
+    is served from the site root for URL-shape continuity with the
+    prior `/og-image.svg`. The route is bare bytes; we assert the
+    PNG signature and the dimensions reflect the baked composite."""
+    r = client.get("/og-image.png")
     assert r.status_code == 200
-    assert r.mimetype == "image/svg+xml"
-    assert b"<svg" in r.data
-    assert settings.site_name.encode() in r.data, (
-        f"OG SVG doesn't carry configured site_name={settings.site_name!r}"
+    assert r.mimetype == "image/png"
+    # PNG magic bytes — defends against the file being silently
+    # replaced by something else with a `.png` name.
+    assert r.data[:8] == b"\x89PNG\r\n\x1a\n"
+    # IHDR chunk holds width/height in the first 8 bytes after the
+    # length+type prefix (16..24). Pin the dimensions; a re-bake at
+    # a different size would invalidate the og:image:width/height
+    # meta tags emitted in base.html.
+    import struct
+    width, height = struct.unpack(">II", r.data[16:24])
+    assert (width, height) == (1200, 630)
+
+
+def test_static_assets_carry_cache_control(client):
+    """Files served by Flask's built-in /static/* blueprint must carry
+    a public Cache-Control with a non-trivial max-age. Flask defaults
+    to `no-cache`, which makes every page load re-fetch the JS
+    controller (and any future bytes-on-disk asset). The
+    `_add_cache_headers` after_request hook is registered on bp_web
+    and doesn't run for /static/*, so the only lever is
+    SEND_FILE_MAX_AGE_DEFAULT in the app factory."""
+    import re
+    r = client.get("/static/js/thread-fold.js")
+    assert r.status_code == 200
+    cc = r.headers.get("Cache-Control", "")
+    assert cc.startswith("public"), (
+        f"/static/* must be cacheable; got Cache-Control={cc!r}. "
+        "Check SEND_FILE_MAX_AGE_DEFAULT in mimir.create_app."
     )
+    m = re.search(r"max-age=(\d+)", cc)
+    assert m is not None, f"no max-age in Cache-Control={cc!r}"
+    # Pin a sane lower bound; bare "max-age=0" or trivially small
+    # values would defeat the purpose. Anything >= 1h is fine; the
+    # current default is 1 day.
+    assert int(m.group(1)) >= 3600
 
 
 def test_clean_subject_filter_collapses_whitespace():
