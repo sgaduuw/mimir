@@ -11,6 +11,32 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- The OG image is now a 1200×630 PNG instead of a templated SVG
+  wordmark. Twitter/X doesn't render SVG and LinkedIn is inconsistent
+  on it (flagged in the 2026-05-12 review); PNG is the safer
+  baseline. Composition: a 17th-century Icelandic Edda manuscript
+  depiction of Ratatoskr (Árni Magnússon Institute, public domain)
+  on the left, the `ratatoskr.run` wordmark + tagline on the right
+  in Palatino on a sampled parchment background. Asset is pre-baked
+  by `bake_og_image.py` (Pillow, dev-only dep) and checked in at
+  `mimir/static/img/og-image.png`. Route is now `/og-image.png`;
+  `/og-image.svg` is removed (was a wordmark-only placeholder, low
+  reach). `og:image:width=1200`, `og:image:height=630`, and
+  `og:image:alt` (mirrored on `twitter:image:alt`) are now emitted
+  for the picky link-card renderers.
+
+### Added
+
+- Homepage hero on `/`: small (~220px) Ratatoskr figure left of the
+  site wordmark and tagline. Manuscript-marginalia layout, stacks on
+  narrow viewports. Same source image as the OG card so a link-card
+  preview reads as a screenshot of the destination.
+- Footer credit line on every page: `Logo: Ratatoskr from a
+  17th-century Icelandic Edda manuscript, Árni Magnússon Institute
+  (public domain).` Same string reused as the `og:image:alt` value.
+
 ## [1.12.3] – 2026-05-11
 
 ### Fixed
