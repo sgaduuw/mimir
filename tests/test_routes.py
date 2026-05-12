@@ -193,6 +193,45 @@ def test_inbox_search_with_query_echoes_query(client, inbox_name):
     assert 'value="Linux"' in body
 
 
+def test_html_open_tag_is_single_line_on_routes_without_data_attrs(
+    client, inbox_name,
+):
+    """`<html lang="en">` renders as a clean single-line tag on every
+    route that doesn't override the `html_data_attrs` block. The
+    pre-fix shape left a stray indented `>` on its own line in
+    view-source whenever the block was empty (most routes), flagged
+    in the 2026-05-12 review."""
+    for url in ("/", f"/{inbox_name}/", f"/{inbox_name}/search"):
+        body = client.get(url).data.decode()
+        # Locate the opening html tag and verify it closes on the
+        # same line. A broken render leaves `<html lang="en"\n      >`.
+        idx = body.index("<html lang=")
+        same_line_close = body.index(">", idx)
+        assert "\n" not in body[idx:same_line_close], (
+            f"<html ...> on {url} spans multiple lines: "
+            f"{body[idx:same_line_close + 1]!r}"
+        )
+
+
+def test_inbox_search_form_has_visible_submit_button(client, inbox_name):
+    """Phone-thumb usability: enter-to-submit works on a hardware
+    keyboard but isn't obvious on touch. A `<button type="submit">`
+    inside the form fixes that. Flagged in the 2026-05-12 review."""
+    import re
+    body = client.get(f"/{inbox_name}/search").data.decode()
+    # Slice down to the search form so a stray <button> elsewhere on
+    # the page (none today, but defends future drift) doesn't satisfy
+    # the assertion.
+    form_match = re.search(r"<form[^>]*\baction=\"/[^\"]*search\"[^>]*>(.*?)</form>",
+                           body, re.DOTALL)
+    assert form_match is not None, "search form missing"
+    form_html = form_match.group(1)
+    assert re.search(r'<button[^>]+type="submit"', form_html), (
+        "search form must carry a visible submit button "
+        "(see 2026-05-12 review note on touch usability)"
+    )
+
+
 def test_year_out_of_range_404(client, inbox_name):
     assert client.get(f"/{inbox_name}/1990/").status_code == 404
     # _max_archive_year() = current_year + 1; pick something solidly above.
@@ -395,6 +434,43 @@ def test_atom_feed_well_formed(client, inbox_name):
         assert "/2024/" in href or "/2025/" in href or "/2026/" in href, (
             f"entry link doesn't look like a message URL: {href}"
         )
+
+
+def test_atom_feed_author_strips_placeholder_and_email(
+    client, tmp_path, monkeypatch,
+):
+    """Atom <author><name> is the display name only -- same posture
+    as JSON-LD's author.name. Feed readers render <name> as the
+    byline, where the `<hidden>` placeholder reads as broken
+    metadata exactly as it did in JSON-LD before the 2026-05-12
+    fix. Allowlisted senders also surface display-name only -- the
+    visible HTML still shows their full address, but the structured
+    surfaces stay symmetric across feed readers and search engines."""
+    import xml.etree.ElementTree as ET
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    _ingest_one_article(
+        tmp_path, "alpha", "atom-named@example.com",
+        author="David Woodhouse <dwmw2@infradead.org>",
+    )
+    r = client.get("/alpha/feed.atom")
+    assert r.status_code == 200
+    root = ET.fromstring(r.get_data())
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    names = [
+        e.findtext("a:author/a:name", default="", namespaces=ns)
+        for e in root.findall("a:entry", ns)
+    ]
+    target = next(n for n in names if "David Woodhouse" in n)
+    assert target == "David Woodhouse"
+    # Belt-and-braces: across all entries, no placeholder, no `@`
+    # in any byline. The seeded `a@b.example` corpus has no display
+    # name and falls through to the neutral fallback rather than
+    # leaking the bare address.
+    for n in names:
+        assert "<hidden>" not in n
+        assert "@" not in n
 
 
 # robots.txt / security.txt / sitemap.xml
