@@ -778,6 +778,7 @@ def _ingest_one_article(
     subject: str = "test",
     in_reply_to: str | None = None,
     to: str | None = None,
+    author: str = "a@b.example",
 ) -> tuple[int, str]:
     """Build a tiny pubinbox-shaped bare repo with one message and
     ingest it into `inbox_name`. Repoints the inbox's mirror_path at
@@ -797,7 +798,7 @@ def _ingest_one_article(
         extra += b"To: " + to.encode() + b"\r\n"
     raw = (
         b"Message-ID: <" + message_id.encode() + b">\r\n"
-        b"From: a@b.example\r\n"
+        b"From: " + author.encode() + b"\r\n"
         b"Subject: " + subject.encode() + b"\r\n"
         b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
         + extra +
@@ -1083,6 +1084,16 @@ def _meta_value(html: str, name_or_property: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _data_attr_values(html: str) -> str:
+    """Concatenate every `data-…="…"` attribute value in the document
+    into a single string for `not-in` checks. Used to defend the
+    invariant that machine-readable attributes never carry tokens
+    (Message-IDs, raw email addresses) that the visible HTML
+    redacted."""
+    import re
+    return "\n".join(re.findall(r'data-[a-z0-9-]+="([^"]*)"', html))
+
+
 def test_meta_index_emits_default_description(client):
     html = client.get("/").data.decode()
     desc = _meta_value(html, "description")
@@ -1242,7 +1253,7 @@ def test_message_page_single_message_thread_skips_fold_scaffolding(
     body = client.get(url).data.decode()
     assert "thread-context" not in body
     assert "data-thread-fold" not in body
-    assert "data-thread-root=" not in body
+    assert "data-thread-root-id=" not in body
     assert "data-fold-set=" not in body
     # thread-fold.js is loaded on every page (from base.html) but with no
     # data-thread-* attrs on <html> the controller short-circuits the
@@ -1339,11 +1350,18 @@ def test_message_page_thread_fold_context_is_root_when_viewing_root(
 ):
     """Viewing the thread root sets data-thread-context="root" on
     <html>; the controller script reads that and defaults the fold
-    state to `partial` (vs `closed` for a deep reply)."""
+    state to `partial` (vs `closed` for a deep reply). The thread-
+    root id is the integer Article.id, not the RFC 822 Message-ID
+    -- the latter would leak email-shaped tokens that the visible
+    redaction was supposed to hide."""
     msgs = _seed_three_message_thread(tmp_path, "alpha")
+    root_id = msgs["root"][0]
     body = client.get(msgs["root"][1]).data.decode()
-    assert 'data-thread-root="fold-root@example.com"' in body
+    assert f'data-thread-root-id="{root_id}"' in body
     assert 'data-thread-context="root"' in body
+    # Belt-and-braces: the RFC 822 Message-ID must not appear in any
+    # data-* attribute.
+    assert "fold-root@example.com" not in _data_attr_values(body)
 
 
 def test_message_page_thread_fold_context_is_deep_for_replies(
@@ -1353,29 +1371,30 @@ def test_message_page_thread_fold_context_is_deep_for_replies(
     data-thread-context="deep" -- the controller defaults to `closed`
     so the body gets full real estate."""
     msgs = _seed_three_message_thread(tmp_path, "alpha")
+    root_id = msgs["root"][0]
     body = client.get(msgs["nested"][1]).data.decode()
-    assert 'data-thread-root="fold-root@example.com"' in body
+    assert f'data-thread-root-id="{root_id}"' in body
     assert 'data-thread-context="deep"' in body
 
 
 def test_message_page_thread_fold_active_marker_on_current_li(
     client, tmp_path,
 ):
-    """The tree <li> whose data-message-id matches the current view
+    """The tree <li> whose data-article-id matches the current view
     carries class="is-active"; the others carry no such class. The
     JS controller toggles this class on htmx:afterSwap, but the
     server's initial render has to set it correctly for the first
     paint (when JS hasn't run yet or is disabled)."""
     msgs = _seed_three_message_thread(tmp_path, "alpha")
-    _, nested_url, nested_mid = msgs["nested"]
+    nested_id, nested_url, nested_mid = msgs["nested"]
     body = client.get(nested_url).data.decode()
 
-    # The active <li> markup: data-message-id matches current view AND
+    # The active <li> markup: data-article-id matches current view AND
     # class="is-active". Use a regex-ish substring check; the exact
     # element ordering is set by the template.
     import re
     li_active_pattern = re.compile(
-        r'<li[^>]*data-message-id="' + re.escape(nested_mid) +
+        r'<li[^>]*data-article-id="' + re.escape(str(nested_id)) +
         r'"[^>]*class="is-active"',
         re.DOTALL,
     )
@@ -1388,6 +1407,11 @@ def test_message_page_thread_fold_active_marker_on_current_li(
     # (root + reply + nested); one is active, two must not be.
     li_with_class = re.findall(r'<li[^>]*class="is-active"', body)
     assert len(li_with_class) == 1
+    # Message-ID must not have leaked into any data-* attribute on the
+    # <li>: the original visible-redaction rationale is "Message-IDs
+    # leak email-shaped tokens"; carrying them in data-message-id
+    # silently undid that. Belt-and-braces check.
+    assert nested_mid not in _data_attr_values(body)
 
 
 def test_message_page_thread_fold_toolbar_summary_counts_match(
@@ -1485,7 +1509,7 @@ def test_message_page_htmx_request_returns_body_partial(client, tmp_path):
     carry the *content* the user came for, not just an empty article
     wrapper: the headline/from/date header, the message body, and
     attachments if any."""
-    _, url = _ingest_one_article(
+    art_id, url = _ingest_one_article(
         tmp_path, "alpha", "htmx-swap@example.com",
         subject="swap test subject 12345",
     )
@@ -1494,12 +1518,15 @@ def test_message_page_htmx_request_returns_body_partial(client, tmp_path):
     body = r.data.decode()
 
     # Outer shape: hx-swap=outerHTML on the link targets #msg, so the
-    # response's root element must be <article id="msg" data-message-id=...>.
+    # response's root element must be <article id="msg" data-article-id=...>.
     assert body.lstrip().startswith("<article id=\"msg\""), (
         "HTMX partial must start with the swap-target element so "
         "hx-swap=outerHTML replaces #msg cleanly"
     )
-    assert 'data-message-id="htmx-swap@example.com"' in body
+    assert f'data-article-id="{art_id}"' in body
+    # The Message-ID is the original RFC 822 token; it must not appear
+    # in any data-* attribute. The swap key is the integer Article id.
+    assert "htmx-swap@example.com" not in _data_attr_values(body)
 
     # Actual content present (not an empty wrapper).
     assert "swap test subject 12345" in body
@@ -1636,32 +1663,61 @@ def test_message_breadcrumb_subject_truncated_to_80(client, tmp_path):
     assert last["name"] != long_subject
 
 
-def test_message_json_ld_author_uses_safe_from_redaction(client, tmp_path, monkeypatch):
-    """Authors outside the email allowlist render as `<hidden>` in
-    the HTML body — same redaction must apply to JSON-LD's
-    author.name, otherwise the schema leaks what the page hides."""
+def test_message_json_ld_author_strips_hidden_placeholder(
+    client, tmp_path, monkeypatch,
+):
+    """JSON-LD author.name on a redacted sender is the display name
+    only — no `<hidden>` placeholder. The placeholder is a rendering
+    decision for the visible HTML; in structured data it reads as
+    broken metadata. Flagged in the 2026-05-12 review."""
     from mimir.config import settings
     monkeypatch.setattr(settings, "email_allowlist", [])  # nothing allowlisted
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-redact@example.com",
+        tmp_path, "alpha", "jsonld-named@example.com",
+        author="David Woodhouse <dwmw2@infradead.org>",
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
     posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
-    # _ingest_one_article uses From: a@b.example — no name part, no
-    # allowlist match → safe_from returns "<hidden>".
-    assert posting["author"]["name"] == "<hidden>"
+    assert posting["author"]["name"] == "David Woodhouse"
 
 
-def test_message_json_ld_author_full_when_allowlisted(client, tmp_path, monkeypatch):
-    """And the inverse: allowlisted senders flow through unredacted."""
+def test_message_json_ld_author_no_email_leak_for_bare_address(
+    client, tmp_path, monkeypatch,
+):
+    """A From: line with only a bare address falls back to a neutral
+    string in JSON-LD — not the email itself, which would defeat the
+    visible HTML redaction the page already applied."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    # _ingest_one_article's default `author=a@b.example` is a bare
+    # address with no display name.
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-bare@example.com",
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    assert "<hidden>" not in posting["author"]["name"]
+    assert "@" not in posting["author"]["name"]
+
+
+def test_message_json_ld_author_strips_email_even_when_allowlisted(
+    client, tmp_path, monkeypatch,
+):
+    """Allowlisted senders surface their full From-line in the visible
+    HTML (institutional kernel.org accounts), but JSON-LD's
+    author.name is still display-name only — schema.org consumers
+    don't need the email and crawlers should treat both author
+    surfaces consistently."""
     from mimir.config import settings
     monkeypatch.setattr(settings, "email_allowlist", ["@b.example"])
     _, url = _ingest_one_article(
         tmp_path, "alpha", "jsonld-allow@example.com",
+        author="Allowed Person <allowed@b.example>",
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
     posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
-    assert "a@b.example" in posting["author"]["name"]
+    assert posting["author"]["name"] == "Allowed Person"
+    assert "@b.example" not in posting["author"]["name"]
 
 
 def test_search_page_does_not_emit_json_ld(client, inbox_name):
