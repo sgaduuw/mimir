@@ -11,6 +11,12 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.13.1] – 2026-05-13
+
+Polish PATCH on top of 1.13.0, addressing the four nits the
+2026-05-13 launch-approval review flagged on the search and
+author pages. No behavior changes; pure SEO / a11y / consistency.
+
 ### Added
 
 - `SearchResultsPage` JSON-LD on `/<inbox>/search` when the route is
@@ -19,13 +25,13 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   `url` mirrors the `<link rel="canonical">` (bare `/<inbox>/search`,
   no query string), keeping individual `?q=` URLs out of the index
   while still giving crawlers a structured-data signal that this
-  page is search results. Suggested in the 2026-05-13 review.
+  page is search results.
 - `ProfilePage` JSON-LD on `/<inbox>/author/<sub>` with a `Person`
   mainEntity whose `name` is the sender substring the page indexes
   against. We don't try to resolve the substring to a single
   identity (queries like `@kernel.org` deliberately match many
   people); the structured data describes the page, not a single
-  person. Suggested in the 2026-05-13 review.
+  person.
 
 ### Changed
 
@@ -33,7 +39,7 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   are top-level pages and accessibility / SEO consumers expect a
   single top-level heading per page. The page `<title>` is
   captured separately in `base.html` so this is purely a
-  body-content fix. Flagged in the 2026-05-13 review.
+  body-content fix.
 
 ### Fixed
 
@@ -43,8 +49,6 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   type="application/atom+xml">` for the author-feed. Pre-fix, a
   query like `torvalds@` rendered the canonical with raw `@` and
   the atom link with `%40` — same target, two encodings.
-  Cosmetic but the kind of nit a reviewer notices. Flagged in the
-  2026-05-13 review.
 
 ## [1.13.0] – 2026-05-12
 
