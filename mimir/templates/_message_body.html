@@ -3,7 +3,7 @@
    when the user clicks within the thread tree, leaving the
    surrounding navigation + tree intact. Full-page renders include
    it via {% include %} from message.html. #}
-<article id="msg" data-message-id="{{ article.message_id }}">
+<article id="msg" data-article-id="{{ article.id }}">
   <header>
     <h2>{{ parsed.subject|clean_subject or '(no subject)' }}</h2>
     <p>

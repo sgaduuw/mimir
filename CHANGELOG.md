@@ -39,6 +39,28 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Fixed
 
+- Message-ID no longer leaks via the thread-tree `data-*` attributes.
+  Tree `<li>` elements, the `<article id="msg">` wrapper, and the
+  `<html>`-level fold-controller hooks previously carried the RFC 822
+  Message-ID (which often encodes a sender's email-shaped token), even
+  while the visible HTML hid it via `<hidden>`. The attributes now
+  carry the integer `Article.id` and have been renamed
+  `data-article-id` and `data-thread-root-id` to make the migration
+  obvious. Thread-fold pins keyed by Message-ID in `localStorage` will
+  miss once and re-establish on next interaction.
+- JSON-LD `author.name` on message pages is now the display name
+  only, matching the visible page's privacy posture. Previously it
+  carried the literal `<hidden>` placeholder for redacted senders
+  (reads as broken metadata in structured data) and the full email
+  for allowlisted senders (defeats the visible redaction symmetry).
+  Both surfaces now consistently render the display name.
+- `_site_base()` now upgrades the URL scheme to `https` whenever
+  `X-Forwarded-Proto: https` is on the request, even if `ProxyFix`
+  isn't decoding it (wrong hop count, header outside the trusted
+  set). Defends against the canonical / og:url / og:image / JSON-LD
+  URLs splitting between `http` and `https` on the same page when
+  only one signal is wired up. `SITE_BASE_URL` remains the
+  deterministic override.
 - `/static/*` assets (currently `thread-fold.js`; future logos /
   bytes-on-disk images) now carry `Cache-Control: public,
   max-age=86400` instead of Flask's default `no-cache`. Every page
