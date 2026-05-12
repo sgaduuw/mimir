@@ -29,6 +29,18 @@ def create_app() -> Flask:
     app.jinja_env.trim_blocks = True
     app.jinja_env.lstrip_blocks = True
 
+    # Cache /static/* assets (thread-fold.js, future logos, etc.) for
+    # one day. Flask's default is `no-cache`, which made every page
+    # load re-fetch the JS controller and any served images. The
+    # routed assets (favicon, og-image) carry their own Cache-Control
+    # entries via the per-endpoint map in mimir.web; this default
+    # covers everything served by Flask's built-in static blueprint,
+    # which the per-endpoint map can't reach (different blueprint).
+    # 1 day balances bandwidth savings against deploy-cycle
+    # propagation: a JS bug fix lands within 24 hours rather than the
+    # week the routed-asset entries use.
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 86400
+
     # Honour X-Forwarded-* headers when running behind a known number of
     # trusted reverse-proxy hops, so request.remote_addr / .scheme /
     # .host reflect the real client. Off by default — enabling this when

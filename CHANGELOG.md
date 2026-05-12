@@ -11,6 +11,32 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- The OG image is now a 1200×630 PNG instead of a templated SVG
+  wordmark. Twitter/X doesn't render SVG and LinkedIn is inconsistent
+  on it (flagged in the 2026-05-12 review); PNG is the safer
+  baseline. Composition: a 17th-century Icelandic Edda manuscript
+  depiction of Ratatoskr (Árni Magnússon Institute, public domain)
+  on the left, the `ratatoskr.run` wordmark + tagline on the right
+  in Palatino on a sampled parchment background. Asset is pre-baked
+  by `bake_og_image.py` (Pillow, dev-only dep) and checked in at
+  `mimir/static/img/og-image.png`. Route is now `/og-image.png`;
+  `/og-image.svg` is removed (was a wordmark-only placeholder, low
+  reach). `og:image:width=1200`, `og:image:height=630`, and
+  `og:image:alt` (mirrored on `twitter:image:alt`) are now emitted
+  for the picky link-card renderers.
+
+### Added
+
+- Homepage hero on `/`: small (~220px) Ratatoskr figure left of the
+  site wordmark and tagline. Manuscript-marginalia layout, stacks on
+  narrow viewports. Same source image as the OG card so a link-card
+  preview reads as a screenshot of the destination.
+- Footer credit line on every page: `Logo: Ratatoskr from a
+  17th-century Icelandic Edda manuscript, Árni Magnússon Institute
+  (public domain).` Same string reused as the `og:image:alt` value.
+
 ### Fixed
 
 - Message-ID no longer leaks via the thread-tree `data-*` attributes.
@@ -35,6 +61,18 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   URLs splitting between `http` and `https` on the same page when
   only one signal is wired up. `SITE_BASE_URL` remains the
   deterministic override.
+- `/static/*` assets (currently `thread-fold.js`; future logos /
+  bytes-on-disk images) now carry `Cache-Control: public,
+  max-age=86400` instead of Flask's default `no-cache`. Every page
+  load was re-fetching the JS controller; with the homepage hero
+  image landing in the same release window, the cost would have
+  scaled by the size of any new static asset. The routed
+  Cache-Control entries (favicon, og-image, sitemap, etc.) are
+  unaffected — they're applied by the `bp_web` after-request hook,
+  which doesn't see `/static/*` traffic. 1-day TTL trades a small
+  bandwidth saving for fast deploy-cycle propagation: a JS bug fix
+  lands within 24 hours rather than the week the routed-asset
+  entries use.
 
 ## [1.12.3] – 2026-05-11
 
