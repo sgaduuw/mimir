@@ -229,11 +229,21 @@ def _site_base() -> str:
     deterministic override for production where ProxyFix may or may
     not be wired correctly across the Tailscale Funnel + Caddy chain.
     Falls back to `request.url_root` for local-dev and any deployment
-    that doesn't supply the override.
+    that doesn't supply the override; if `X-Forwarded-Proto: https` is
+    present but ProxyFix didn't translate it (wrong hop count, header
+    not in the trusted set), we still upgrade the scheme. Otherwise
+    canonical / og:url / og:image / JSON-LD URLs split between http and
+    https on the same page when only one of those signals is wired.
     """
     if settings.site_base_url:
         return settings.site_base_url.rstrip("/")
-    return request.url_root.rstrip("/")
+    base = request.url_root.rstrip("/")
+    if (
+        request.headers.get("X-Forwarded-Proto") == "https"
+        and base.startswith("http://")
+    ):
+        base = "https://" + base[len("http://"):]
+    return base
 
 
 def _msg_url(article: Article, inbox_name: str) -> str:
@@ -675,9 +685,12 @@ def _json_ld_message(
     rich-result section) and BreadcrumbList (surfaces the
     Site → Inbox → Subject chain in SERPs).
 
-    Author goes through `_safe_from_filter`, so redacted senders show
-    `<hidden>` in JSON-LD too. `dateModified` mirrors `datePublished`
-    because mimir doesn't track edits.
+    Author goes through `_display_name_filter` — display name only,
+    no email and no `<hidden>` placeholder. The placeholder is a
+    rendering decision for the visible HTML; in machine-readable
+    metadata it reads as broken data and was flagged as such in the
+    2026-05-12 review. `dateModified` mirrors `datePublished` because
+    mimir doesn't track edits.
 
     Prefers `parsed.date` (the original RFC 5322 Date header) over
     `article.date` (the public-inbox commit time) — the message's
@@ -701,7 +714,7 @@ def _json_ld_message(
         "headline": subject,
         "author": {
             "@type": "Person",
-            "name": _safe_from_filter(parsed.author) or "unknown",
+            "name": _display_name_filter(parsed.author),
         },
         "isPartOf": {
             "@type": "WebSite",
