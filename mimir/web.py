@@ -466,12 +466,15 @@ def _display_name_filter(author: str | None) -> str:
 
 
 def _redact_trailer_address(email: str) -> str:
-    """Return the angle-bracketed replacement for an email on a DCO
+    """Return the visible-text replacement for an email on a DCO
     trailer line. Allowlisted addresses survive verbatim so the DCO
     chain stays verifiable for known maintainers; everyone else gets
     `<redacted>` — a placeholder that obviously isn't broken metadata
     (unlike the prior `[off-list ref]` smear from the msgid linkifier
     when it tried to look these up as message-IDs and found nothing).
+
+    Return value is plain text (including the literal angle brackets);
+    the trailer renderer html-escapes it before splicing into output.
     """
     addr_lower = email.lower()
     if any(token.lower() in addr_lower for token in settings.email_allowlist):
@@ -1567,12 +1570,25 @@ def _fetch_article_for_attachment(
     return article, parsed.attachments[n]
 
 
+_HEADER_CTL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
 def _content_disposition(filename: str | None) -> str:
     """Build a Content-Disposition header that handles non-ASCII filenames
-    via RFC 6266 (filename* parameter)."""
+    via RFC 6266 (filename* parameter).
+
+    Strips control bytes (CR, LF, NUL, tab, DEL) from the ASCII
+    `filename="…"` form: a maliciously-crafted attachment filename
+    carrying CR/LF would otherwise inject extra HTTP response
+    headers (RFC 7230 header-line splitting). Defense in depth on
+    top of whatever the WSGI layer rejects. The percent-encoded
+    `filename*` form is unaffected — `quote()` already escapes
+    them as `%0D`/`%0A`/etc.
+    """
     if not filename:
         return "attachment"
-    safe_ascii = filename.replace('"', "").replace("\\", "")
+    safe_ascii = _HEADER_CTL_RE.sub("", filename)
+    safe_ascii = safe_ascii.replace('"', "").replace("\\", "")
     quoted = quote(filename, safe="")
     return f'attachment; filename="{safe_ascii}"; filename*=UTF-8\'\'{quoted}'
 

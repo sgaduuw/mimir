@@ -298,6 +298,58 @@ def test_trailer_keeps_allowlisted_addresses_when_redactor_says_so():
     assert "redacted" in out
 
 
+def test_trailer_redactor_output_html_metacharacters_are_escaped():
+    """The redactor returns plain text; the renderer must escape it
+    before splicing into HTML output. A redactor that returned literal
+    angle brackets and metachars (which the production redactor does:
+    `<{email}>` for allowlisted senders) would otherwise smuggle live
+    HTML into the page — the very XSS surface the redaction is meant
+    to close. Pin the contract: whatever the redactor returns, the
+    rendered output must not contain unescaped angle brackets coming
+    from that return value."""
+    # Build a body line that the trailer-recognition regex will match.
+    # The redactor returns plain-text content carrying `<`, `>`, and `"`
+    # — exactly what an attacker would smuggle through an address with
+    # HTML metacharacters in the local-part, given the existing email
+    # regex permits them.
+    payload = '<a"onmouseover=alert(1)@kernel.org>'
+    out = str(render_body(
+        "Signed-off-by: X <something@example.com>",
+        address_redactor=lambda _e: payload,
+    ))
+    # The literal angle bracket from the redactor must not introduce
+    # a live tag. Escaped form must be present, raw form must not.
+    assert payload not in out
+    assert "&lt;a&quot;onmouseover=alert(1)@kernel.org&gt;" in out
+    # Walk every live tag and assert none carries the smuggled handler.
+    _no_live_tag_carries(out, "onmouseover")
+
+
+def test_trailer_email_regex_excludes_html_metacharacters():
+    """Defense in depth on top of the renderer escaping: the email
+    regex itself shouldn't capture local-parts that contain HTML
+    metacharacters (`"`, `<`, `'`, `=`). A trailer line carrying such
+    an address should fall through to the default `_render_line` path,
+    where it gets `html.escape`d as plain text."""
+    body = 'Signed-off-by: A <a"b@kernel.org>'
+    # With a redactor that would emit unsafe HTML, the regex tightening
+    # should mean the redactor isn't called at all for this address.
+    seen_emails: list[str] = []
+
+    def spy(email: str) -> str:
+        seen_emails.append(email)
+        return f"<{email}>"
+
+    out = str(render_body(body, address_redactor=spy))
+    assert seen_emails == [], (
+        f"redactor should not have been called for an address containing "
+        f"HTML metacharacters; got {seen_emails!r}"
+    )
+    # The raw payload must be present only as escaped text.
+    assert '<a"b@kernel.org>' not in out
+    assert "&lt;a&quot;b@kernel.org&gt;" in out
+
+
 def test_trailer_recognition_is_case_insensitive():
     """Some senders capitalise trailer keys (`SIGNED-OFF-BY:` etc.);
     the recognition shouldn't drop them just because of case."""
