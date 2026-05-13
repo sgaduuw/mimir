@@ -467,6 +467,7 @@ def test_atom_feed_well_formed(client, inbox_name):
 
     A feed missing entries -- which the older presence-only test
     would've passed -- is useless to feed readers."""
+    import re
     import xml.etree.ElementTree as ET
 
     r = client.get(f"/{inbox_name}/feed.atom")
@@ -495,7 +496,10 @@ def test_atom_feed_well_formed(client, inbox_name):
         # mustn't leak (only path) and the path must be one of mimir's
         # message URLs.
         href = alt.get("href")
-        assert "/2024/" in href or "/2025/" in href or "/2026/" in href, (
+        # Path-shape match rather than a hardcoded year disjunction —
+        # the latter goes stale every January and gives no diagnostic
+        # value beyond "the URL contains some year we listed."
+        assert re.search(r"/\d{4}/\d{2}/\d+(?:[/?#]|$)", href), (
             f"entry link doesn't look like a message URL: {href}"
         )
 
@@ -1379,12 +1383,18 @@ def test_thread_summary_helper_counts_and_relative_time():
     now = datetime.now(timezone.utc)
     nodes = [
         N(author="Alice <a@x.example>", date=now - timedelta(days=2)),
-        N(author="Alice <A@X.example>", date=now - timedelta(days=1)),  # dupe by email
+        # Same address, different display name. Dedup must key on
+        # email so display-name drift (signatures change, From-line
+        # variations) doesn't fragment the count. A regression that
+        # deduped on the full author string or just the display name
+        # would emit 3 here.
+        N(author="Alicia Q. <A@X.example>", date=now - timedelta(days=1)),
         N(author="Bob <b@y.example>", date=now - timedelta(hours=3)),
         N(author=None, date=None),  # missing data; doesn't crash
     ]
     s = _thread_summary(nodes)
-    # Alice (case-insensitive dedupe) + Bob = 2; None ignored.
+    # Alice/Alicia (case-insensitive dedup on the email) + Bob = 2;
+    # None ignored.
     assert s["author_count"] == 2
     assert s["last_activity_rel"] == "3h ago"
 

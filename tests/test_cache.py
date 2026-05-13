@@ -25,9 +25,15 @@ def _roundtrip(value):
 
 
 def test_registry_has_expected_tags():
-    assert set(_TYPES.keys()) == {
-        "ActiveThread", "ArchiveStats", "ArticleSummary", "DailyVolume", "MonthlyVolume",
-    }
+    """The five currently-registered cached dataclasses must round-
+    trip cleanly. Subset rather than equality so that adding a new
+    cached dataclass tomorrow doesn't fail this test; the per-class
+    `_TAGS[X]` assertions still catch the removal regression
+    (a dropped class would `KeyError` on lookup)."""
+    assert {
+        "ActiveThread", "ArchiveStats", "ArticleSummary",
+        "DailyVolume", "MonthlyVolume",
+    }.issubset(_TYPES.keys())
     assert _TAGS[ActiveThread] == "ActiveThread"
     assert _TAGS[ArchiveStats] == "ArchiveStats"
     assert _TAGS[ArticleSummary] == "ArticleSummary"
@@ -479,17 +485,36 @@ def test_purge_expired_drops_expired_rows():
 
 def test_purge_expired_returns_zero_when_nothing_to_drop():
     """No-rows-to-delete is a valid steady state; `purge_expired`
-    returns 0 without raising or scanning awkwardly."""
-    from sqlalchemy import delete as sql_delete
-    from mimir.cache import purge_expired
+    returns 0 without raising. Build the meaningful case: at least
+    one *live* row exists, none are expired; assert the call returns
+    0 AND the live row survives. The older shape ("delete every row
+    first, then call purge") was tautological — nothing was there
+    to drop because the test had just emptied the table."""
+    from sqlalchemy import delete as sql_delete, select
+    from mimir.cache import _ns, purge_expired
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
-    # Drop every cache row so the count is precise.
+    live_key = "xtest-purge-zero-live"
     with SessionLocal() as s:
-        s.execute(sql_delete(CacheEntry))
+        s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(live_key)))
+        s.add(CacheEntry(
+            key=_ns(live_key), value='"v"', expires_at=_seconds_from_now(3600),
+        ))
         s.commit()
-    assert purge_expired() == 0
+
+    try:
+        assert purge_expired() == 0
+        # Live row survives.
+        with SessionLocal() as s:
+            survived = s.execute(
+                select(CacheEntry).where(CacheEntry.key == _ns(live_key))
+            ).scalar_one_or_none()
+        assert survived is not None
+    finally:
+        with SessionLocal() as s:
+            s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(live_key)))
+            s.commit()
 
 
 def test_get_or_compute_miss_calls_fn_and_stores():
