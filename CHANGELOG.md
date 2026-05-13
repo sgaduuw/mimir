@@ -11,6 +11,14 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.13.2] – 2026-05-13
+
+Security PATCH addressing a stored XSS in DCO-trailer rendering
+surfaced by a test-suite audit, plus a defense-in-depth strip of
+control bytes from the Content-Disposition header on attachment
+downloads. No schema or behaviour changes for benign inputs;
+deployable as a drop-in replacement on 1.13.x.
+
 ### Security
 
 - DCO-trailer rendering (`Signed-off-by:` / `Reviewed-by:` /
