@@ -11,6 +11,38 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.13.3] – 2026-05-13
+
+Dev/CI-only PATCH on top of 1.13.2. No user-visible behaviour
+change; the runtime artifact is byte-identical apart from the
+footer version string. Bumped to lock in the post-audit suite
+state and refresh the GitHub Actions toolchain ahead of the
+Node.js 20 deprecation deadline.
+
+### Changed
+
+- GitHub Actions refreshed to Node.js-24-capable majors ahead of
+  the 2026-06-02 forced-migration date (`actions/checkout@v6`,
+  `actions/setup-python@v6`, `actions/cache@v5`,
+  `docker/setup-buildx-action@v4`, `docker/login-action@v4`,
+  `docker/metadata-action@v6`, `docker/build-push-action@v7`). No
+  workflow behaviour change; the run-output annotations about
+  Node.js 20 are gone.
+- Test suite hardened against the 2026-05-13 audit findings.
+  Net +23 tests (511 → 534): real-path cache round-trips for
+  every registered dataclass, SQLite PRAGMA verification (WAL /
+  foreign_keys / busy_timeout / synchronous / per-connection
+  application), multi-worker ingest (pins `parse_message`
+  picklability), `KEPT_HEADERS` filter assertion, surrogate-
+  escape range path, `replay_failures` cross-post branch,
+  `_INBOX_NAMES` republish after CRUD, URL 4-tuple identity
+  (`/<inbox>/<YYYY>/<MM>/<id>` 404s on mismatch — never 301),
+  recursive-CTE cycle termination (replaces a tautology),
+  out-of-order thread arrival, `init-db` end-to-end,
+  `admin failures replay` happy path, pickle-pivot regression
+  marker. Five LOW polish items reshaped in place so a regression
+  would actually trip them.
+
 ## [1.13.2] – 2026-05-13
 
 Security PATCH addressing a stored XSS in DCO-trailer rendering

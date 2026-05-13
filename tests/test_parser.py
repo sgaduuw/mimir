@@ -114,6 +114,47 @@ def test_subject_with_invalid_utf8_does_not_raise():
     )
 
 
+def test_surrogate_escape_range_recovers_valid_utf8_pair():
+    """`_scrub_surrogates` distinguishes two cases (CONTEXT.md):
+
+    1. Lone surrogates *outside* the surrogate-escape range
+       (U+D800-U+DC7F, U+DD00-U+DFFF). No original byte to recover;
+       replace with U+FFFD. Covered by the preceding test.
+    2. Surrogate-escape range (U+DC80-U+DCFF). The codepoints hold
+       original invalid bytes from a misdecoded charset; round-trip
+       through `errors='surrogateescape'` recovers them. Bytes that
+       happen to form valid UTF-8 come back as their proper
+       characters; anything else becomes U+FFFD.
+
+    Pin case 2 directly: the byte sequence `0xC3 0xA9` is valid
+    UTF-8 for `é`. When it lands in a `str` as U+DC83 U+DCA9
+    (i.e. surrogate-escape-encoded after a charset mismatch), the
+    scrubber should recover it to literal `é`."""
+    from mimir.parser import _scrub_surrogates
+
+    # U+DC83 = 0xDC80 + 0x83 (surrogate-escape for byte 0x83? No -
+    # surrogate-escape maps byte 0xCC to U+DCCC etc. The 0xC3 byte
+    # becomes U+DCC3 and 0xA9 becomes U+DCA9.)
+    surrogate_escaped = "\udcc3\udca9"
+    out = _scrub_surrogates(surrogate_escaped)
+    # The byte pair 0xC3 0xA9 decodes as UTF-8 'é'.
+    assert out == "é", (
+        f"expected surrogate-escape pair to round-trip to 'é', got {out!r}"
+    )
+
+
+def test_surrogate_escape_range_unrecoverable_byte_becomes_replacement():
+    """The surrogate-escape range path's *other* arm: a byte that
+    doesn't form valid UTF-8 with its neighbours becomes U+FFFD."""
+    from mimir.parser import _scrub_surrogates
+
+    # Lone 0xC3 (UTF-8 continuation byte expected, none follows).
+    out = _scrub_surrogates("\udcc3")
+    assert out == "�", (
+        f"expected unrecoverable surrogate-escape byte to become U+FFFD, got {out!r}"
+    )
+
+
 # Date handling
 
 

@@ -644,3 +644,48 @@ def test_delete_inbox_remove_inbox_data_handles_missing_mirror(
         assert s.execute(
             select(Inbox).where(Inbox.name == "alpha")
         ).scalar_one_or_none() is None
+
+
+# --------------------------------------------------------------------------
+# _INBOX_NAMES module cache: republish after every CRUD op.
+#
+# `inbox_names()` is what nav rendering reads — cheap (no DB hit).
+# Every CRUD function in `mimir.inboxes` calls `_publish_names()` to
+# keep it fresh. Existing tests all go through DB-backed reads
+# (`list_inboxes`, `get_inbox`), which means a regression where
+# `_publish_names()` stopped firing would silently break nav while
+# every functional test stayed green. Pin the republish via
+# `inbox_names()` directly.
+# --------------------------------------------------------------------------
+
+
+def test_inbox_names_cache_refreshes_after_create_update_delete(seeded_db):
+    """Each CRUD op must republish the nav-name cache. Exercise the
+    three ops back-to-back so a regression in any one of the
+    `_publish_names` call sites surfaces."""
+    from mimir.inboxes import (
+        create_inbox, delete_inbox, inbox_names, update_inbox,
+    )
+
+    baseline = set(inbox_names())
+    assert {"alpha", "beta"}.issubset(baseline), (
+        f"seed should publish alpha+beta into the name cache; got {baseline}"
+    )
+
+    # CREATE — cache picks up the new name.
+    create_inbox(
+        name="xtest-cache-refresh",
+        upstream_url="https://example.com/xtest",
+        mirror_path="/tmp/xtest-cache-refresh",
+    )
+    assert "xtest-cache-refresh" in inbox_names()
+
+    # UPDATE (rename) — old name out, new name in.
+    update_inbox("xtest-cache-refresh", new_name="xtest-cache-renamed")
+    names = inbox_names()
+    assert "xtest-cache-refresh" not in names
+    assert "xtest-cache-renamed" in names
+
+    # DELETE — name leaves the cache.
+    delete_inbox("xtest-cache-renamed")
+    assert "xtest-cache-renamed" not in inbox_names()
