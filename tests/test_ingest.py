@@ -1201,3 +1201,213 @@ def test_ingest_all_no_limit_walks_all_inboxes(seeded_db, tmp_path):
 
     out = ingest_all(inboxes={"alpha": alpha, "beta": beta}, limit=None, workers=1)
     assert "alpha" in out and "beta" in out
+
+
+# --------------------------------------------------------------------------
+# Multi-worker ingest (workers>1).
+#
+# Every other ingest test in this file pins `workers=1`. The
+# CLAUDE.md rule "`parse_message` must stay importable at module
+# level so it pickles cleanly to worker processes" has nothing
+# enforcing it; a closure-capturing refactor would break production
+# and pass CI. One end-to-end run with `workers=2` is enough to
+# catch that.
+# --------------------------------------------------------------------------
+
+
+def test_ingest_with_multiple_workers_succeeds(seeded_db, tmp_path):
+    """`workers=2` walks the epoch through a ProcessPoolExecutor.
+    The parsed-message contract requires `parse_message` to pickle
+    cleanly across the boundary; a regression that broke picklability
+    (closure capture, runtime-bound state) would only surface in
+    production. Pin the path with a small synthetic corpus."""
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "alpha-workers"
+    mirror_root.mkdir()
+    _build_pubinbox_repo(mirror_root / "0.git", [
+        _rfc5322(f"w-{i}@example.com") for i in range(4)
+    ])
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        s.commit()
+        result = ingest_epoch(s, ix, "0.git", mirror_root / "0.git", workers=2)
+
+    assert result.new == 4
+    assert result.failed == 0
+
+
+# --------------------------------------------------------------------------
+# KEPT_HEADERS filter.
+#
+# The header filter is what keeps row size at ~471 B; without it the
+# `Received:` chains and DKIM/ARC blobs flow into the `headers` dict
+# and balloon the article rows. A regression that disabled the
+# filter would only show up as DB-row bloat in production. Pin the
+# filter directly: ingest a message rich in dropped-class headers
+# plus a kept-class header and verify the survivors match.
+# --------------------------------------------------------------------------
+
+
+def test_kept_headers_filter_drops_received_dkim_spam(seeded_db, tmp_path):
+    """The KEPT_HEADERS set is the load-bearing piece of the row-size
+    invariant. Ingest a message with several headers in the dropped
+    class (Received chains, DKIM-Signature, X-Spam-Status,
+    Authentication-Results) plus a kept-class header (User-Agent).
+    Then re-read the article via `store.read_message` and assert the
+    `parsed.headers` keys match the kept-class only."""
+    from mimir.store import read_message
+
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "alpha-kept"
+    mirror_root.mkdir()
+    msgid = "kept-headers@example.com"
+    raw = (
+        b"Message-ID: <" + msgid.encode() + b">\r\n"
+        b"From: a@b.example\r\n"
+        b"Subject: t\r\n"
+        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+        b"User-Agent: kept-agent/1.0\r\n"
+        b"Received: from mta1.example by mta2.example; Mon, 1 Jan 2024 00:00:01 +0000\r\n"
+        b"Received: from mta0.example by mta1.example; Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+        b"DKIM-Signature: v=1; a=rsa-sha256; d=example.com; s=sel; b=AAAA\r\n"
+        b"X-Spam-Status: No, score=-1.0\r\n"
+        b"Authentication-Results: mta.example; dkim=pass\r\n"
+        b"\r\nbody"
+    )
+    _build_pubinbox_repo(mirror_root / "0.git", [raw])
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        s.commit()
+        ingest_epoch(s, ix, "0.git", mirror_root / "0.git", workers=1)
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        parsed = read_message(s, ix, msgid)
+
+    # Lowercase header names; KEPT_HEADERS is case-insensitive.
+    keys_lower = {k.lower() for k in parsed.headers}
+    # Kept: User-Agent survives.
+    assert "user-agent" in keys_lower
+    # Dropped: every header in the dropped class must be absent.
+    for dropped in (
+        "received", "dkim-signature", "x-spam-status", "authentication-results",
+    ):
+        assert dropped not in keys_lower, (
+            f"{dropped!r} should be filtered out by KEPT_HEADERS; "
+            f"got headers={sorted(keys_lower)}"
+        )
+
+
+# --------------------------------------------------------------------------
+# replay_failures cross-post branch.
+#
+# Existing tests cover replay_failures' three primary buckets — recovered
+# (new article), still_failed (parser still rejects), skipped (mirror
+# gone). The cross-post branch at ingest.py:506-518 (article already
+# exists in another inbox, missing only the article_lists row for
+# *this* inbox) is unreached. Defensive code path per the comment;
+# pin it.
+# --------------------------------------------------------------------------
+
+
+def test_replay_failures_cross_post_links_existing_article(
+    seeded_db, tmp_path, monkeypatch,
+):
+    """A message that's already an article in another inbox should
+    replay into a new `article_lists` row in the failing inbox, not
+    a duplicate Article. Construct the scenario directly:
+
+    1. Ingest a message normally in beta -> articles row + article_lists(beta).
+    2. Stage a parse failure in alpha for the same message-id at a
+       different commit_sha (simulating the case where alpha briefly
+       failed before recovery).
+    3. Replay alpha -> the existing Article gains an alpha
+       article_lists row; no duplicate Article is inserted.
+    """
+    import datetime as _dt
+
+    from mimir.models import Article, ArticleList, ParseFailure
+
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+
+    msgid = "cross-replay@example.com"
+    beta_mirror = tmp_path / "beta-mirror"
+    beta_mirror.mkdir()
+    _build_pubinbox_repo(beta_mirror / "0.git", [_rfc5322(msgid)])
+    alpha_mirror = tmp_path / "alpha-mirror"
+    alpha_mirror.mkdir()
+    _build_pubinbox_repo(alpha_mirror / "0.git", [_rfc5322(msgid)])
+
+    with seeded_db() as s:
+        beta = s.execute(select(Inbox).where(Inbox.id == beta.id)).scalar_one()
+        beta.mirror_path = str(beta_mirror)
+        s.commit()
+        ingest_epoch(s, beta, "0.git", beta_mirror / "0.git", workers=1)
+
+    # Confirm the article exists in beta and is *not* linked to alpha yet.
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == msgid)
+        ).scalar_one()
+        alpha_link = s.execute(
+            select(ArticleList).where(
+                ArticleList.article_id == art.id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one_or_none()
+        assert alpha_link is None
+
+    # Read the SHA out of alpha's epoch — replay needs a real blob to parse.
+    from dulwich.repo import Repo as DulwichRepo
+
+    repo = DulwichRepo(str(alpha_mirror / "0.git"))
+    alpha_sha = repo.head().decode()
+
+    # Stage a failure row pointing at alpha's epoch + sha for this msgid.
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(alpha_mirror)
+        s.add(ParseFailure(
+            inbox_id=ix.id,
+            epoch="0.git",
+            commit_sha=alpha_sha,
+            error_class="ValueError",
+            error_message="prior failure",
+            attempts=1,
+            first_seen=_dt.datetime.now(_dt.timezone.utc),
+            last_attempt=_dt.datetime.now(_dt.timezone.utc),
+        ))
+        s.commit()
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    result = replay_failures(ix)
+    assert result.attempted == 1
+    assert result.recovered == 1
+    assert result.still_failed == 0
+    assert result.skipped == 0
+
+    # Cross-post branch fired: no duplicate Article, alpha link now exists.
+    with seeded_db() as s:
+        arts = s.execute(
+            select(Article).where(Article.message_id == msgid)
+        ).scalars().all()
+        assert len(arts) == 1, (
+            f"expected 1 Article row for cross-posted msgid, got {len(arts)}"
+        )
+        # The alpha article_lists row now exists.
+        s.execute(
+            select(ArticleList).where(
+                ArticleList.article_id == arts[0].id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one()
+        # And the failure row is gone.
+        assert s.execute(
+            select(func.count()).select_from(ParseFailure)
+            .where(ParseFailure.inbox_id == alpha.id)
+        ).scalar_one() == 0
