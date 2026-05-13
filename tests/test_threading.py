@@ -183,11 +183,97 @@ def test_get_thread_depth_for_nested_replies(seeded_db):
     assert by_id["d3@example.com"] == 3
 
 
-def test_get_thread_max_depth_caps_runaway():
-    """The recursive-CTE depth cap is configured at MAX_DEPTH; pin
-    the value so a future change doesn't accidentally raise it
-    enough to enable runaway loops on a synthetic cycle."""
-    assert MAX_DEPTH == 1000
+def test_find_thread_root_terminates_on_cycle(seeded_db):
+    """A synthetic `thread_parent` cycle (`a → b → a`) is data we'd
+    rather not have, but real-world archives have had loops before.
+    The CTE caps recursion at MAX_DEPTH; without it, the walk would
+    run forever. Build the cycle and assert the call returns within
+    bounded work (the test's mere completion is the assertion —
+    pytest's per-test timeout would catch a true infinite loop)."""
+    alpha = _inbox(seeded_db, "alpha")
+    with seeded_db() as s:
+        a = Article(
+            message_id="cycle-a@example.com", subject="a", author="x",
+            date=datetime(2024, 5, 1, tzinfo=timezone.utc),
+            thread_parent="cycle-b@example.com",
+            subject_normalized="a",
+        )
+        b = Article(
+            message_id="cycle-b@example.com", subject="b", author="x",
+            date=datetime(2024, 5, 2, tzinfo=timezone.utc),
+            thread_parent="cycle-a@example.com",
+            subject_normalized="b",
+        )
+        s.add_all([a, b])
+        s.flush()
+        s.add_all([
+            ArticleList(article_id=a.id, inbox_id=alpha.id, epoch="0.git", commit_sha="ca" * 20),
+            ArticleList(article_id=b.id, inbox_id=alpha.id, epoch="0.git", commit_sha="cb" * 20),
+        ])
+        s.commit()
+        # The walk terminates; result is one of the cycle members
+        # (which one depends on MAX_DEPTH parity). The contract is
+        # "terminates and returns deterministically", not "picks a
+        # specific node". A regression that removed the depth guard
+        # would hang the request thread.
+        root = find_thread_root(s, alpha, "cycle-a@example.com")
+        assert root in ("cycle-a@example.com", "cycle-b@example.com"), (
+            f"cycle walk produced unexpected root: {root!r}"
+        )
+
+
+def test_max_depth_value_is_sensible():
+    """Companion sanity: MAX_DEPTH must be high enough for real lkml
+    threads (~50 deep at most) and low enough to bound the CTE row
+    count for cycle defense. 100..10000 is the sane window. Pin a
+    range rather than the literal so a value tweak doesn't trip on
+    this test alone."""
+    assert 100 <= MAX_DEPTH <= 10_000
+
+
+def test_find_thread_root_handles_out_of_order_arrival(seeded_db):
+    """Cross-epoch ingest can deliver a reply before its parent —
+    the reply commits first, then a later ingest pass finds the
+    parent. The recursive CTE must reflect the new shape on the
+    next query without any backfill step (this was one of the
+    reasons the materialized-`thread_root_id`-column design was
+    rejected; see CONTEXT.md "Threading via recursive CTE")."""
+    alpha = _inbox(seeded_db, "alpha")
+
+    # Step 1: insert the reply alone. Its parent doesn't exist yet.
+    with seeded_db() as s:
+        reply = Article(
+            message_id="ooo-reply@example.com", subject="Re: ooo", author="r",
+            date=datetime(2024, 6, 2, tzinfo=timezone.utc),
+            thread_parent="ooo-parent@example.com",
+            subject_normalized="ooo",
+        )
+        s.add(reply)
+        s.flush()
+        s.add(ArticleList(article_id=reply.id, inbox_id=alpha.id, epoch="0.git", commit_sha="01" * 20))
+        s.commit()
+        # Walk-up from the reply: parent is off-list → root is the reply.
+        first = find_thread_root(s, alpha, "ooo-reply@example.com")
+    assert first == "ooo-reply@example.com"
+
+    # Step 2: parent arrives in a later ingest pass.
+    with seeded_db() as s:
+        parent = Article(
+            message_id="ooo-parent@example.com", subject="ooo", author="p",
+            date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            thread_parent=None,
+            subject_normalized="ooo",
+        )
+        s.add(parent)
+        s.flush()
+        s.add(ArticleList(article_id=parent.id, inbox_id=alpha.id, epoch="0.git", commit_sha="02" * 20))
+        s.commit()
+        # Walk-up from the reply now: parent exists → root is the parent.
+        second = find_thread_root(s, alpha, "ooo-reply@example.com")
+    assert second == "ooo-parent@example.com", (
+        "after parent arrives, walk-up from the reply must reach it; "
+        "the CTE recomputes per query, no backfill needed"
+    )
 
 
 # active_threads / threads_for_day / threads_for_month
