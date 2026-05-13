@@ -65,7 +65,13 @@ _TRAILER_LINE_RE = re.compile(
     r"^(?:" + "|".join(re.escape(k) for k in TRAILER_KEYS) + r"):\s",
     re.IGNORECASE,
 )
-_EMAIL_ANGLE_RE = re.compile(r"<([^>@\s]+@[^>@\s]+)>")
+# Local-part / domain restricted to a conservative RFC 5322 subset that
+# excludes HTML metacharacters (`"`, `'`, `<`, `=`, etc.). The trailer
+# renderer also html-escapes the redactor's return value as defense in
+# depth; tightening here means hostile addresses fall through to the
+# default `_render_line` path (which always escapes) instead of going
+# through the redactor branch at all.
+_EMAIL_ANGLE_RE = re.compile(r"<([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+)>")
 
 _DIFF_LEXER = DiffLexer()
 # Class-based output so the diff inherits the page theme via CSS.
@@ -168,12 +174,13 @@ def linkify(
     `address_redactor` is an optional callable ``(email_str) -> str``
     applied to ``<email>`` patterns on DCO trailer lines
     (``Signed-off-by:``, ``Reviewed-by:``, etc.). The callable returns
-    the replacement to emit verbatim (already including the angle
-    brackets it wants displayed); typically the web-layer wrapper
-    returns ``<addr@dom>`` for allowlisted senders and ``<redacted>``
-    otherwise. Without a redactor, trailer lines fall through to the
-    msgid linkifier and emit ``[off-list ref]`` which actively looks
-    like broken DCO metadata.
+    *plain text* — typically ``<addr@dom>`` for allowlisted senders
+    and ``<redacted>`` otherwise; the renderer html-escapes the
+    return value before splicing into output, so the redactor cannot
+    smuggle live HTML regardless of what it returns. Without a
+    redactor, trailer lines fall through to the msgid linkifier and
+    emit ``[off-list ref]`` which actively looks like broken DCO
+    metadata.
     """
     msgid_urls = msgid_urls or {}
     rendered_lines: list[str] = []
@@ -213,7 +220,14 @@ def _render_line(line: str, msgid_urls: dict[str, str]) -> str:
 def _render_trailer_line(line: str, redactor) -> str:
     """Trailer-line variant of `_render_line`: redacts ``<email>``
     patterns via `redactor` instead of msgid-linkifying them. URLs
-    elsewhere on the line still get the normal URL treatment."""
+    elsewhere on the line still get the normal URL treatment.
+
+    The redactor returns *plain text* — including the literal angle
+    brackets it wants visible. This renderer html-escapes the return
+    value before splicing into output, so a redactor cannot smuggle
+    live HTML through this code path regardless of what the email
+    regex matched.
+    """
     out: list[str] = []
     pos = 0
     spans: list[tuple[int, int, str]] = []
@@ -227,7 +241,7 @@ def _render_trailer_line(line: str, redactor) -> str:
                 replacement += html.escape(trimmed)
             spans.append((m.start(), m.end(), replacement))
     for m in _EMAIL_ANGLE_RE.finditer(line):
-        spans.append((m.start(), m.end(), redactor(m.group(1))))
+        spans.append((m.start(), m.end(), html.escape(redactor(m.group(1)))))
     spans.sort()
     for start, end, replacement in spans:
         out.append(html.escape(line[pos:start]))
