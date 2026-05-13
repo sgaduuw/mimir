@@ -262,6 +262,51 @@ def test_month_out_of_range_404(client, inbox_name):
     assert client.get(f"/{inbox_name}/2024/13/").status_code == 404
 
 
+def test_message_url_four_tuple_identity_404s_on_mismatch(
+    client, tmp_path,
+):
+    """`/<inbox>/<YYYY>/<MM>/<article_id>` is a 4-tuple identity:
+    inbox + year + month + id must ALL match the article's storage
+    or the route 404s. CONTEXT.md (URL scheme) is explicit — "URLs
+    either resolve exactly or don't resolve at all" — but the
+    in-range component tests only catch impossible values
+    (year 1990, month 0/13). The mismatched-but-plausible case
+    (right id, wrong year/month/inbox) is unpinned, and that's the
+    case a regression introducing a 301-to-canonical helper would
+    quietly break.
+
+    Ingest a real article and then probe every mismatched corner."""
+    art_id, real_url = _ingest_one_article(
+        tmp_path, "alpha", "four-tuple-identity@example.com",
+    )
+    # Sanity: the correct URL resolves.
+    assert client.get(real_url).status_code == 200
+
+    # Parse the right components out so the wrong ones are nearby
+    # (and definitely-different).
+    parts = real_url.strip("/").split("/")
+    # ['alpha', '2024', '01', '<id>']
+    assert len(parts) == 4 and parts[0] == "alpha"
+    real_year, real_month, real_id = parts[1], parts[2], parts[3]
+    other_year = "2023" if real_year != "2023" else "2022"
+    other_month = "07" if real_month != "07" else "08"
+    assert "beta" != "alpha"  # sanity — beta exists in seed
+
+    for wrong in (
+        # Wrong year, right month + id.
+        f"/alpha/{other_year}/{real_month}/{real_id}",
+        # Wrong month, right year + id.
+        f"/alpha/{real_year}/{other_month}/{real_id}",
+        # Wrong inbox, right year + month + id (article isn't linked to beta).
+        f"/beta/{real_year}/{real_month}/{real_id}",
+    ):
+        r = client.get(wrong, follow_redirects=False)
+        assert r.status_code == 404, (
+            f"expected 404 on mismatched URL {wrong!r}, got {r.status_code} "
+            f"(location={r.headers.get('Location')!r})"
+        )
+
+
 def test_search_too_short(client, inbox_name):
     """Single-char query: server-side min-length check kicks in;
     response is 200 but renders the 'type at least N characters'
@@ -422,6 +467,7 @@ def test_atom_feed_well_formed(client, inbox_name):
 
     A feed missing entries -- which the older presence-only test
     would've passed -- is useless to feed readers."""
+    import re
     import xml.etree.ElementTree as ET
 
     r = client.get(f"/{inbox_name}/feed.atom")
@@ -450,7 +496,10 @@ def test_atom_feed_well_formed(client, inbox_name):
         # mustn't leak (only path) and the path must be one of mimir's
         # message URLs.
         href = alt.get("href")
-        assert "/2024/" in href or "/2025/" in href or "/2026/" in href, (
+        # Path-shape match rather than a hardcoded year disjunction —
+        # the latter goes stale every January and gives no diagnostic
+        # value beyond "the URL contains some year we listed."
+        assert re.search(r"/\d{4}/\d{2}/\d+(?:[/?#]|$)", href), (
             f"entry link doesn't look like a message URL: {href}"
         )
 
@@ -1334,12 +1383,18 @@ def test_thread_summary_helper_counts_and_relative_time():
     now = datetime.now(timezone.utc)
     nodes = [
         N(author="Alice <a@x.example>", date=now - timedelta(days=2)),
-        N(author="Alice <A@X.example>", date=now - timedelta(days=1)),  # dupe by email
+        # Same address, different display name. Dedup must key on
+        # email so display-name drift (signatures change, From-line
+        # variations) doesn't fragment the count. A regression that
+        # deduped on the full author string or just the display name
+        # would emit 3 here.
+        N(author="Alicia Q. <A@X.example>", date=now - timedelta(days=1)),
         N(author="Bob <b@y.example>", date=now - timedelta(hours=3)),
         N(author=None, date=None),  # missing data; doesn't crash
     ]
     s = _thread_summary(nodes)
-    # Alice (case-insensitive dedupe) + Bob = 2; None ignored.
+    # Alice/Alicia (case-insensitive dedup on the email) + Bob = 2;
+    # None ignored.
     assert s["author_count"] == 2
     assert s["last_activity_rel"] == "3h ago"
 

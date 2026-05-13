@@ -243,11 +243,17 @@ def test_monthly_volume_year_boundary(seeded_db):
 
 
 def test_search_articles_subject_substring(seeded_db):
+    """Subject-substring search. The token deliberately doesn't
+    coincide with the inbox name: `"alpha"` would also match the
+    inbox slug, so a regression that searched the wrong column
+    (or the wrong join shape) could still pass. `"hello"` appears
+    only in the subject column."""
     alpha = _inbox(seeded_db, "alpha")
     ids = _ids_by_message_id(seeded_db)
     with seeded_db() as s:
-        results = search_articles(s, alpha, "alpha", force=True)
-    # art1 ("hello alpha") and art4 ("Re: hello alpha") match.
+        results = search_articles(s, alpha, "hello", force=True)
+    # art1 ("hello alpha") and art4 ("Re: hello alpha") match;
+    # art3 ("cross-posted note") doesn't.
     assert {r.id for r in results} == {ids["art1@example.com"], ids["art4@example.com"]}
 
 
