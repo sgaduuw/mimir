@@ -631,3 +631,151 @@ def test_get_or_compute_expired_row_treated_as_miss():
         with SessionLocal() as s:
             s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
             s.commit()
+
+
+# --------------------------------------------------------------------------
+# Real-path round-trips for every registered dataclass.
+#
+# The `_roundtrip` helper above goes encoder → json text → decoder; the
+# tests below go through the *real* `cache.set` → SQLite TEXT column →
+# `cache.get` path. The two paths diverge whenever a value survives
+# `json.dumps`/`json.loads` but trips up SQLite's TEXT encoding —
+# surrogates being the obvious case. A registered dataclass that
+# round-trips via `_roundtrip` but fails the real path would silently
+# break dashboard caching in production.
+# --------------------------------------------------------------------------
+
+
+def _real_path_roundtrip(key: str, value):
+    """`cache.set` then `cache.get`. Strips the row in the caller's
+    `finally:` (use the same key)."""
+    cache.set(key, value, ttl=3600)
+    return cache.get(key)
+
+
+def _drop_cache_key(key: str) -> None:
+    from sqlalchemy import delete as sql_delete
+    from mimir.cache import _ns
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    with SessionLocal() as s:
+        s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+        s.commit()
+
+
+def test_real_path_roundtrip_active_thread():
+    key = "xtest-real-path-active-thread"
+    value = ActiveThread(
+        id=1, inbox_name="lkml", message_id="m1@x", subject="s", author="a",
+        date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        recent_count=2, reply_count=1,
+        last_activity=datetime(2025, 1, 2, tzinfo=timezone.utc),
+    )
+    try:
+        assert _real_path_roundtrip(key, value) == value
+    finally:
+        _drop_cache_key(key)
+
+
+def test_real_path_roundtrip_article_summary():
+    key = "xtest-real-path-article-summary"
+    value = ArticleSummary(
+        id=42, subject="patch", author="Foo <foo@bar>",
+        date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    )
+    try:
+        assert _real_path_roundtrip(key, value) == value
+    finally:
+        _drop_cache_key(key)
+
+
+def test_real_path_roundtrip_archive_stats():
+    key = "xtest-real-path-archive-stats"
+    value = ArchiveStats(
+        total=100, epochs=3,
+        first_date=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        last_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    )
+    try:
+        assert _real_path_roundtrip(key, value) == value
+    finally:
+        _drop_cache_key(key)
+
+
+def test_real_path_roundtrip_daily_volume():
+    key = "xtest-real-path-daily-volume"
+    value = DailyVolume(
+        days=[(date(2025, 1, 1), 5), (date(2025, 1, 2), 0), (date(2025, 1, 3), 10)],
+        max_count=10,
+    )
+    try:
+        out = _real_path_roundtrip(key, value)
+        assert out == value
+        # Inner items must come back as tuples, not lists — DailyVolume
+        # ships them through `tuple(...)` and templates index by attr.
+        assert all(isinstance(d, tuple) for d in out.days)
+    finally:
+        _drop_cache_key(key)
+
+
+def test_real_path_roundtrip_monthly_volume():
+    key = "xtest-real-path-monthly-volume"
+    value = MonthlyVolume(
+        year=2024, months=[(m, m * 10) for m in range(1, 13)], total=780,
+    )
+    try:
+        out = _real_path_roundtrip(key, value)
+        assert out == value
+        assert all(isinstance(t, tuple) for t in out.months)
+    finally:
+        _drop_cache_key(key)
+
+
+def test_real_path_roundtrip_string_with_surrogate_escape_range():
+    """Surrogate-escape range bytes (U+DC80-U+DCFF) come out of the
+    MIME parser when bytes don't decode against the declared charset.
+    `parse_message` scrubs them to U+FFFD before persisting, so they
+    shouldn't reach the cache. But if scrubbing ever regressed, a
+    surrogate-containing subject would land in `ArticleSummary` and
+    flow through `cache.set`. Pin the behaviour: either it works (no
+    visible production impact), or it raises loudly (a 500 on the
+    page that triggered the cache write, not silent corruption).
+
+    Specifically: `json.dumps` with the default `ensure_ascii=True`
+    escapes lone surrogates as `\\uXXXX` sequences, which survive the
+    SQLite TEXT round-trip and decode back to the same character. So
+    the contract is "survives." Locking it in here means a future
+    `ensure_ascii=False` performance tweak would loudly break this
+    test rather than silently 500 dashboards in production."""
+    key = "xtest-real-path-surrogate"
+    payload = ArticleSummary(
+        id=99,
+        # U+DCFF, a surrogate-escape codepoint from a malformed-charset
+        # body. Lone surrogate; not part of a valid pair.
+        subject="bad encoding \udcff in subject",
+        author="a@b.example",
+        date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    )
+    try:
+        out = _real_path_roundtrip(key, payload)
+        assert out == payload
+    finally:
+        _drop_cache_key(key)
+
+
+def test_cache_module_has_no_pickle_dependency():
+    """Regression marker for the 2026-04-ish pickle-pivot. The original
+    cache was a single pickle file; concurrent-write races dropped
+    entries and pickle.loads on any code path that could *write* the
+    file would have been an RCE surface. The SQLite-JSON design has
+    neither problem. Pin "no pickle anywhere in this module" so a
+    future contributor reaching for the convenient pickle.dumps
+    trips this test instead of merging."""
+    import inspect
+
+    src = inspect.getsource(cache)
+    assert "pickle" not in src, (
+        "mimir.cache must not depend on pickle (concurrent-write races + "
+        "RCE surface on read). See CONTEXT.md 'Cross-process cache'."
+    )
