@@ -10,7 +10,7 @@ import pytest
 
 from mimir.models import Inbox
 from mimir.store import MessageNotFound, read_message
-from mimir.web import _content_disposition, _safe_from_filter
+from mimir.web import _content_disposition, _redact_trailer_address, _safe_from_filter
 
 
 def _alpha(seeded_db) -> Inbox:
@@ -114,3 +114,57 @@ def test_content_disposition_non_ascii_filename():
     assert "filename*=UTF-8''" in cd
     # 'é' is U+00E9 → UTF-8 0xC3 0xA9 → %C3%A9
     assert "%C3%A9" in cd
+
+
+def test_content_disposition_strips_control_bytes_from_ascii_form():
+    """Control bytes (CR, LF, NUL, tab, DEL) in the ASCII `filename="…"`
+    form would let a maliciously-crafted attachment filename inject
+    extra HTTP response headers (RFC 7230 header-line splitting).
+    Defense in depth on top of whatever the WSGI layer rejects: strip
+    them before they reach the header value. The percent-encoded
+    `filename*` form is unaffected — quote() already escapes them."""
+    cd = _content_disposition("evil\r\nX-Injected: yes.txt")
+    assert "\r" not in cd
+    assert "\n" not in cd
+    # The ASCII form survives with the control bytes excised.
+    assert 'filename="evilX-Injected: yes.txt"' in cd
+    # The filename* form percent-encodes them.
+    assert "%0D" in cd
+    assert "%0A" in cd
+
+
+# web._redact_trailer_address — DCO trailer redaction
+
+
+def test_redact_trailer_address_allowlisted_returns_visible_angle_form():
+    """Allowlisted addresses surface inside literal angle brackets so the
+    rendered output reads `<addr@kernel.org>` — the renderer escapes the
+    return value, so the redactor returns plain text with raw angle
+    brackets and the browser sees them as visible characters."""
+    out = _redact_trailer_address("torvalds@kernel.org")
+    assert out == "<torvalds@kernel.org>"
+
+
+def test_redact_trailer_address_non_allowlisted_returns_redacted():
+    """Non-allowlisted addresses collapse to a single `<redacted>` token
+    — plain text, again rendered as visible characters after the
+    template's escaping pass."""
+    out = _redact_trailer_address("random@example.com")
+    assert out == "<redacted>"
+
+
+def test_redact_trailer_address_substring_match_is_intentionally_loose(monkeypatch):
+    """The allowlist uses substring matching, by design (see CONTEXT.md
+    — an allowlist token matches any address containing that substring).
+    This is intentional looseness for ergonomics; pin it here so a
+    future tightening is a conscious decision, not a silent drift."""
+    from mimir.config import settings
+    # Set an explicit token to make the assertion deterministic — the
+    # default allowlist contains the same token but pinning it here
+    # keeps the test independent of the default's evolution.
+    monkeypatch.setattr(settings, "email_allowlist", ["@kernel.org"])
+    out = _redact_trailer_address("attacker@kernel.org.evil.example")
+    # Substring `@kernel.org` matches at position 8 in the address,
+    # even though the actual host is `kernel.org.evil.example`. The
+    # redactor returns the allowlisted form.
+    assert out == "<attacker@kernel.org.evil.example>"

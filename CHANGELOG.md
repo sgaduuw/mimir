@@ -11,6 +11,31 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Security
+
+- DCO-trailer rendering (`Signed-off-by:` / `Reviewed-by:` /
+  `Acked-by:` / `Tested-by:` / `Reported-by:` lines in message
+  bodies) escapes the redactor's return value before splicing into
+  HTML output. Previously, the trailer renderer trusted the
+  redactor to return safe HTML and spliced its output verbatim;
+  combined with a permissive email regex that allowed `"`, `'`,
+  `<`, `=` in the local-part, a message body carrying a crafted
+  `Signed-off-by: X <a"onmouseover=alert(1)@kernel.org>` line
+  could land a live event-handler attribute on the rendered page
+  whenever the substring allowlist matched. The fix is
+  defense-in-depth: the renderer now `html.escape`s the redactor
+  output, and `_EMAIL_ANGLE_RE` is tightened to exclude HTML
+  metacharacters so hostile addresses fall through to the default
+  escaped-text path. No data migration required; effective on
+  every page render after upgrade.
+- `_content_disposition` strips control bytes (CR, LF, NUL, tab,
+  DEL) from the ASCII `filename="…"` form of the
+  Content-Disposition header on attachment downloads. A
+  maliciously-crafted attachment filename carrying CR/LF would
+  otherwise have permitted HTTP response-header injection (RFC
+  7230 header-line splitting) had the WSGI layer not already
+  rejected the bytes. Defense in depth at the application layer.
+
 ## [1.13.1] – 2026-05-13
 
 Polish PATCH on top of 1.13.0, addressing the four nits the
