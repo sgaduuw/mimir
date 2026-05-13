@@ -153,16 +153,18 @@ def test_redact_trailer_address_non_allowlisted_returns_redacted():
     assert out == "<redacted>"
 
 
-def test_redact_trailer_address_substring_match_is_intentionally_loose():
+def test_redact_trailer_address_substring_match_is_intentionally_loose(monkeypatch):
     """The allowlist uses substring matching, by design (see CONTEXT.md
-    — 'kernel.org' allowlist token matches any address containing that
-    substring). This is intentional looseness for ergonomics; pin it
-    here so a future tightening is a conscious decision, not a silent
-    drift."""
-    # `kernel.org` substring matches even when it's not the actual host.
-    # Documented behavior — flag it loudly if this ever changes.
+    — an allowlist token matches any address containing that substring).
+    This is intentional looseness for ergonomics; pin it here so a
+    future tightening is a conscious decision, not a silent drift."""
     from mimir.config import settings
-    if not any("kernel.org" in t.lower() for t in settings.email_allowlist):
-        pytest.skip("default email_allowlist doesn't include kernel.org token")
+    # Set an explicit token to make the assertion deterministic — the
+    # default allowlist contains the same token but pinning it here
+    # keeps the test independent of the default's evolution.
+    monkeypatch.setattr(settings, "email_allowlist", ["@kernel.org"])
     out = _redact_trailer_address("attacker@kernel.org.evil.example")
+    # Substring `@kernel.org` matches at position 8 in the address,
+    # even though the actual host is `kernel.org.evil.example`. The
+    # redactor returns the allowlisted form.
     assert out == "<attacker@kernel.org.evil.example>"
