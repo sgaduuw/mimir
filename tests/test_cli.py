@@ -34,6 +34,7 @@ from mimir.cli import (
     analyze_command,
     dev_seed_thread_command,
     ingest_command,
+    init_db_command,
     reindex_command,
     show_command,
     update_command,
@@ -853,6 +854,114 @@ def test_admin_failures_replay_unknown_inbox_clickexception(seeded_db):
     assert result.exit_code != 0
     # InboxNotFound is the underlying type; the CLI surfaces its str().
     assert "no-such-inbox" in result.output
+
+
+def test_admin_failures_replay_happy_path_recovers_and_clears(
+    seeded_db, tmp_path, monkeypatch,
+):
+    """The replay happy path: stage a failure for a real parseable
+    blob, invoke the CLI, assert the summary line reports
+    `recovered=1` and the row is gone. Only `unknown_inbox` was
+    covered before; the success branch — the one operators actually
+    invoke after a parser fix — was unreached.
+
+    Mirror the test_ingest replay setup but drive it through the
+    Click runner so the CLI argument parsing + ClickException
+    boundary + output-shape are all exercised end-to-end."""
+    import datetime as _dt
+    import mimir.parser
+    from sqlalchemy import func, select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox, ParseFailure
+
+    # Build a real repo so replay_failures can fetch the blob.
+    mirror_root = tmp_path / "replay-cli-mirror"
+    mirror_root.mkdir()
+    _build_pubinbox_repo(mirror_root / "0.git", [
+        _rfc5322_msg("cli-replay@example.com", body=b"x" * 500),
+    ])
+    _repoint_inbox("alpha", mirror_root)
+
+    # Stage a failure for the real commit_sha so replay finds work.
+    repo = Repo(str(mirror_root / "0.git"))
+    sha = repo.head().decode()
+    now = _dt.datetime.now(_dt.timezone.utc)
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        s.add(ParseFailure(
+            inbox_id=ix.id,
+            epoch="0.git",
+            commit_sha=sha,
+            error_class="MessageTooLarge",
+            error_message="prior cap was too tight",
+            first_seen=now,
+            last_attempt=now,
+            attempts=1,
+        ))
+        s.commit()
+
+    # Ensure parser MAX_RAW_MESSAGE_BYTES doesn't reject the blob.
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 50_000_000)
+
+    result = CliRunner().invoke(admin_failures_replay_command, ["alpha"])
+    assert result.exit_code == 0, result.output
+    assert "alpha: attempted=1 recovered=1 still_failed=0 skipped=0" in result.output
+
+    # The failure row is gone.
+    with SessionLocal() as s:
+        remaining = s.execute(
+            select(func.count()).select_from(ParseFailure)
+            .where(ParseFailure.commit_sha == sha)
+        ).scalar_one()
+    assert remaining == 0
+
+
+# `init-db` -- bootstrap helper; documented in CLAUDE.md as a quick
+# local-dev path that the operator falls back to when alembic isn't
+# applicable. Untested historically because alembic is the real
+# migration story.
+
+
+def test_init_db_command_runs_and_creates_schema(tmp_path, monkeypatch):
+    """`flask --app mimir init-db` calls `Base.metadata.create_all`
+    against the configured engine. Hard to test in-place (the
+    engine is module-global and already migrated), so point it at
+    a throwaway sqlite file via the engine's URL.
+
+    Pin two things:
+    1. Exit code 0 and "schema created" output (operator UX).
+    2. The expected tables actually exist on the fresh file
+       afterwards. A regression that swapped `create_all` for a
+       no-op would still print "schema created"; the table check
+       catches it.
+    """
+    import sqlalchemy
+    from mimir.extensions import Base
+    from mimir import extensions as ext_module
+    from mimir import cli as cli_module
+
+    fresh_db = tmp_path / "fresh-init-db.sqlite"
+    fresh_url = f"sqlite:///{fresh_db}"
+    fresh_engine = sqlalchemy.create_engine(fresh_url, future=True)
+
+    # The CLI module captured `engine` at import time, so monkeypatching
+    # `mimir.extensions.engine` doesn't reach it. Patch the cli module's
+    # own bound name too.
+    monkeypatch.setattr(ext_module, "engine", fresh_engine)
+    monkeypatch.setattr(cli_module, "engine", fresh_engine)
+
+    result = CliRunner().invoke(init_db_command, [])
+    assert result.exit_code == 0, result.output
+    assert "schema created" in result.output
+
+    # Tables exist on the fresh DB.
+    inspector = sqlalchemy.inspect(fresh_engine)
+    tables = set(inspector.get_table_names())
+    expected = {t.name for t in Base.metadata.tables.values()}
+    missing = expected - tables
+    assert not missing, (
+        f"init-db should have created every ORM table; missing {missing}"
+    )
 
 
 # `admin canonicals backfill` -- no failure shape to assert; just
