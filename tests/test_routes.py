@@ -874,6 +874,7 @@ def _ingest_one_article(
     in_reply_to: str | None = None,
     to: str | None = None,
     author: str = "a@b.example",
+    body: bytes = b"body",
 ) -> tuple[int, str]:
     """Build a tiny pubinbox-shaped bare repo with one message and
     ingest it into `inbox_name`. Repoints the inbox's mirror_path at
@@ -898,7 +899,7 @@ def _ingest_one_article(
         b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
         + extra +
         b"\r\n"
-        b"body"
+        + body
     )
     repo_dir = tmp_path / "0.git"
     repo = Repo.init_bare(str(repo_dir), mkdir=True)
@@ -1821,6 +1822,117 @@ def test_message_json_ld_author_strips_email_even_when_allowlisted(
     posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
     assert posting["author"]["name"] == "Allowed Person"
     assert "@b.example" not in posting["author"]["name"]
+
+
+def test_message_page_visible_html_redacts_non_allowlisted_from_address(
+    client, tmp_path, monkeypatch,
+):
+    """Visible-HTML side of the redaction posture: a non-allowlisted
+    From: must surface as `<display-name> <hidden>` on the rendered
+    message page, never as the raw address. Unit-level coverage in
+    `test_helpers.py` pins `_safe_from_filter` in isolation; this
+    pins the template-side wiring (`| safe_from`) — a regression that
+    dropped the filter would pass every existing redaction test
+    because the structured surfaces (JSON-LD, atom, data-*) have
+    their own paths."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "visible-html-redact@example.com",
+        author="Joe User <joe@example.com>",
+    )
+    body = client.get(url).data.decode()
+    assert "joe@example.com" not in body
+    assert "Joe User" in body
+    assert "&lt;hidden&gt;" in body or "<hidden>" in body
+
+
+def test_message_page_visible_html_surfaces_allowlisted_from_address(
+    client, tmp_path, monkeypatch,
+):
+    """Companion to the redaction test: allowlisted senders DO surface
+    their address verbatim on the visible HTML page (kernel.org-shaped
+    institutional accounts). Pinning both halves keeps the redaction
+    posture explicit."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "email_allowlist", ["@b.example"])
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "visible-html-allow@example.com",
+        author="Allowed Person <allowed@b.example>",
+    )
+    body = client.get(url).data.decode()
+    assert "allowed@b.example" in body
+    assert "<hidden>" not in body
+
+
+def test_message_page_dco_trailer_redacts_non_allowlisted_address(
+    client, tmp_path, monkeypatch,
+):
+    """End-to-end of `_redact_trailer_address`: a `Signed-off-by:` in
+    the body must surface allowlisted addresses verbatim and non-
+    allowlisted ones as `<redacted>`. CONTEXT.md flags this as one of
+    the three display-time redaction invariants; previously had zero
+    end-to-end coverage."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "email_allowlist", ["@kernel.org"])
+    body = (
+        b"text body\n\n"
+        b"Signed-off-by: Maintainer <m@kernel.org>\n"
+        b"Signed-off-by: Outsider <o@example.com>\n"
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "dco-redact@example.com", body=body,
+    )
+    page = client.get(url).data.decode()
+    # Allowlisted address survives verbatim.
+    assert "m@kernel.org" in page
+    # Non-allowlisted address is gone.
+    assert "o@example.com" not in page
+    # Redacted placeholder is visible.
+    assert "redacted" in page
+
+
+def test_message_page_dco_trailer_no_xss_via_address_metacharacters(
+    client, tmp_path, monkeypatch,
+):
+    """Hostile-trailer XSS: an attacker-controlled DCO trailer with
+    HTML metacharacters in the local-part must not land a live tag
+    or attribute on the rendered page, even when the substring
+    allowlist matches.
+
+    Two defenses are in play and this test pins both:
+    1. The email regex no longer matches local-parts containing
+       HTML metacharacters (`"`, `<`, `'`, `=`).
+    2. Even if it did, the renderer escapes the redactor's return
+       value before splicing into output.
+
+    Either defense alone closes the gap; both together is the
+    intended posture. Production redactor `_redact_trailer_address`
+    is used (no monkeypatch) since it's what the route actually
+    wires."""
+    import re as _re
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "email_allowlist", ["kernel.org"])
+    # Payload smuggles a real event-handler attribute through the
+    # local-part. The `"` would break out of a quoted attribute if
+    # the renderer ever rendered this in attribute context; here we
+    # want to confirm it never reaches HTML at all.
+    body = (
+        b"text body\n\n"
+        b'Signed-off-by: Attacker <a"onmouseover=alert(1)@kernel.org>\n'
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "dco-xss@example.com", body=body,
+    )
+    page = client.get(url).data.decode()
+    # No live tag may carry the smuggled event-handler attribute.
+    for tag in _re.findall(r"<[a-zA-Z][^>]*>", page):
+        assert "onmouseover" not in tag, (
+            f"live tag {tag!r} carries onmouseover from a DCO trailer payload"
+        )
+    # The raw payload must not appear verbatim in the page; if it
+    # rendered as text it would be escaped.
+    assert 'a"onmouseover=alert(1)@kernel.org' not in page
 
 
 def test_search_page_emits_no_json_ld_without_results(client, inbox_name):
