@@ -580,6 +580,19 @@ no-op. Operator can run this on a cron / systemd timer; the
 schema is replaced transactionally on every change so consumers
 never see a half-loaded subsystems table.
 
+`update-mainline` runs two passes against the tree:
+
+1. **MAINTAINERS load** — replaces the `subsystems` schema as
+   above. Skipped when HEAD is unchanged. `--skip-maintainers`
+   disables this pass for the tick.
+2. **`Link:`-trailer walk** — scans every new commit for
+   `Link: https://lore.kernel.org/.../<msgid>` trailers and
+   inserts `mainline_commits` rows. Resumable; the first run
+   walks the full history (~1.5M commits on Linus's tree, a few
+   minutes). The patch page renders an "Applied as `<sha>` on
+   YYYY-MM-DD" line whenever an article's Message-ID matches a
+   recorded commit. `--skip-commits` disables this pass.
+
 ### Backfilling `article_files`
 
 New articles get their diff-touched paths extracted automatically
