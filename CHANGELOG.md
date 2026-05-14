@@ -11,6 +11,21 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- Per-subsystem dashboard at `/<inbox>/subsystem/<name>/`
+  (issue #72 slice 1). Renders the MAINTAINERS-derived header
+  (section name, status, `M:`/`R:` maintainers) and a list of
+  recent articles linked to this inbox whose diff-touched paths
+  match the subsystem's `F:` globs and aren't vetoed by `X:`
+  globs. Slice 1 supports trailing-slash directory prefixes and
+  exact paths; wildcard `F:` rules (`fs/*/file.c`-style) are
+  skipped silently and folded in by a follow-up slice along with
+  the active-threads scoping and the daily-volume sparkline.
+  Operator-facing surface: maintainer addresses render verbatim
+  here (the per-patch header redacts them for compactness, the
+  dashboard doesn't).
+
 ## [1.16.0] – 2026-05-14
 
 MINOR release adding vim-style keyboard navigation. Single-feature
