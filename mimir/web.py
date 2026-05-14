@@ -39,10 +39,11 @@ from mimir.dashboard import (
 )
 from mimir.extensions import SessionLocal
 from mimir.inboxes import inbox_names
-from mimir.models import Article, ArticleList, Inbox
+from mimir.models import Article, ArticleFile, ArticleList, Inbox
 from mimir.parser import ParsedArticle
 from mimir.rendering import URL_OR_MSGID_RE, redact_trailer_addresses, render_body
 from mimir.store import MessageNotFound, read_message
+from mimir.subsystems import recent_patches_touching, subsystems_for_article
 from mimir.threading import (
     THREADS_SINCE_MAX_DAYS,
     active_threads,
@@ -1886,6 +1887,23 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
     thread_summary = _thread_summary(thread)
 
+    # Subsystem header + "other recent patches touching <path>" sidebar.
+    # Only fires for patch-shaped articles (those with at least one
+    # ArticleFile row). Non-patch threads (cover letters as text,
+    # discussion) get empty results and the template skips the
+    # blocks. Opens a fresh session since the route's earlier with-
+    # block has closed by this point.
+    with SessionLocal() as session:
+        subsystem_hits = subsystems_for_article(session, article.id)
+        touched_paths = [
+            f.path for f in session.execute(
+                select(ArticleFile).where(ArticleFile.article_id == article.id)
+            ).scalars()
+        ]
+        related_patches = recent_patches_touching(
+            session, touched_paths, exclude_article_id=article.id, limit=5,
+        ) if touched_paths else []
+
     # HTMX intra-thread swap: when the click came from a tree link, return
     # only the message-body partial (just the <article id="msg">). The
     # surrounding tree + nav stay put on the client; the client-side script
@@ -1911,4 +1929,6 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         cross_post_inboxes=cross_post_inboxes,
         canonical_url=canonical_url,
         page_json_ld=page_json_ld,
+        subsystem_hits=subsystem_hits,
+        related_patches=related_patches,
     )
