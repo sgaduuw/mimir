@@ -9,7 +9,7 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
-from flask import Flask  # noqa: E402
+from flask import Flask, Response  # noqa: E402
 from werkzeug.middleware.proxy_fix import ProxyFix  # noqa: E402
 
 from mimir.cli import register_cli  # noqa: E402
@@ -51,6 +51,27 @@ def create_app() -> Flask:
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=n, x_proto=n, x_host=n)
 
     app.register_blueprint(bp_web)
+    _register_indexnow_key_route(app)
     register_cli(app)
     bootstrap_inboxes()
     return app
+
+
+def _register_indexnow_key_route(app: Flask) -> None:
+    """Serve the IndexNow ownership-verification file at /<key>.txt
+    when (and only when) `settings.indexnow_key` is set. The path
+    contains the literal key value — that's how IndexNow proves the
+    submitter owns the host. Registered dynamically because the URL
+    is config-dependent; an unconfigured deploy doesn't expose the
+    endpoint at all."""
+    key = settings.indexnow_key
+    if not key:
+        return
+
+    def _serve():
+        # Spec says the body must be exactly the key. Trailing newline
+        # is tolerated by every consumer but we omit it for byte-equal
+        # parity with the value the operator set.
+        return Response(key, mimetype="text/plain; charset=utf-8")
+
+    app.add_url_rule(f"/{key}.txt", "indexnow_key_file", _serve)
