@@ -33,7 +33,7 @@ from mimir.inboxes import (
     set_tracked_authors,
     update_inbox,
 )
-from mimir import indexnow, maintainers
+from mimir import indexnow, maintainers, patches
 from mimir.config import settings
 from mimir.ingest import (
     DEFAULT_WORKERS,
@@ -517,6 +517,50 @@ def update_mainline_command(skip_fetch: bool, force: bool, verbose: int) -> None
     click.echo(
         f"update-mainline: loaded {len(parsed)} subsystems "
         f"from {tree_name}@{head_sha[:12]}"
+    )
+
+
+@click.command("backfill-article-files")
+@click.option(
+    "--limit", type=int, default=None,
+    help="Cap the number of articles examined this session.",
+)
+@click.option(
+    "--reprocess", is_flag=True,
+    help="Re-extract for articles that already have rows (deletes "
+         "existing rows first). Use after an extractor change.",
+)
+@click.option(
+    "-v", "--verbose", count=True,
+    help="-v: progress every batch.",
+)
+def backfill_article_files_command(
+    limit: int | None, reprocess: bool, verbose: int,
+) -> None:
+    """One-shot walker that fills `article_files` for articles
+    ingested before the extractor landed.
+
+    Newest-first so a `--limit`-bounded session covers the most-
+    visible articles first. Idempotent: articles with existing
+    rows are skipped unless `--reprocess`. Mirror-unreachable
+    articles are skipped (not failed); a re-run from a host that
+    has the mirror picks them up.
+    """
+    _configure_logging(verbose)
+    progress_fn = None
+    if verbose:
+        def progress_fn(r):  # noqa: E306
+            click.echo(
+                f"... examined={r.examined} indexed={r.indexed} "
+                f"no_diff={r.no_diff} skipped={r.skipped} failed={r.failed}"
+            )
+    result = patches.backfill_article_files(
+        limit=limit, reprocess=reprocess, progress=progress_fn,
+    )
+    click.echo(
+        f"backfill complete: examined={result.examined} "
+        f"indexed={result.indexed} no_diff={result.no_diff} "
+        f"skipped={result.skipped} failed={result.failed}"
     )
 
 
@@ -1347,6 +1391,7 @@ def register_cli(app: Flask) -> None:
     app.cli.add_command(show_command)
     app.cli.add_command(update_command)
     app.cli.add_command(update_mainline_command)
+    app.cli.add_command(backfill_article_files_command)
     app.cli.add_command(warm_cache_command)
     app.cli.add_command(vacuum_command)
     app.cli.add_command(analyze_command)

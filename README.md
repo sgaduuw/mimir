@@ -580,6 +580,22 @@ no-op. Operator can run this on a cron / systemd timer; the
 schema is replaced transactionally on every change so consumers
 never see a half-loaded subsystems table.
 
+### Backfilling `article_files`
+
+New articles get their diff-touched paths extracted automatically
+at ingest time (parsing `diff --git a/<old> b/<new>` headers out
+of patch bodies). For articles ingested before that landed, run:
+
+```sh
+poetry run flask --app mimir backfill-article-files [-v]
+```
+
+Idempotent — articles that already have rows are skipped. Pass
+`--limit N` to bound a session for huge archives; the walker is
+newest-first, so a `--limit` run covers the most-visible articles
+first. `--reprocess` re-extracts for articles whose rows already
+exist (use after an extractor change).
+
 ## IndexNow (Bing / Yandex push notifications)
 
 Off by default. Set `INDEXNOW_KEY` to enable: the `update`
