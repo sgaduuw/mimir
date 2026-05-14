@@ -104,6 +104,8 @@ def test_ingest_new_message_creates_article(seeded_db, tmp_path):
     assert result.dup_batch == 0
     assert result.dup_db == 0
     assert result.failed == 0
+    # IndexNow feeds off this list — must match the `new` bucket exactly.
+    assert result.new_message_ids == ["fresh@example.com"]
 
     with seeded_db() as s:
         art = s.execute(
@@ -116,6 +118,27 @@ def test_ingest_new_message_creates_article(seeded_db, tmp_path):
             )
         ).scalar_one()
         assert link.epoch == "0.git"
+
+
+def test_ingest_new_message_ids_only_tracks_new_bucket(seeded_db, tmp_path):
+    """`new_message_ids` is the IndexNow feed: only freshly-created
+    Articles (the `new` bucket) belong in it. `linked` rows (cross-
+    post: the Article already existed, just got a new ArticleList
+    row) and `dup_*` rows must not appear — IndexNow would otherwise
+    push URLs that didn't actually become discoverable this tick."""
+    alpha = _alpha(seeded_db)
+    _build_pubinbox_repo(tmp_path / "0.git", [
+        _rfc5322("brand-new@example.com"),
+        _rfc5322("art2@example.com"),           # seeded in beta → `linked`
+        _rfc5322("brand-new@example.com"),      # same Message-ID → `dup_batch`
+    ])
+    with seeded_db() as s:
+        result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+
+    assert result.new == 1
+    assert result.linked == 1
+    assert result.dup_batch == 1
+    assert result.new_message_ids == ["brand-new@example.com"]
 
 
 # Bucket: linked (cross-post)
