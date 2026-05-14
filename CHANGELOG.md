@@ -11,6 +11,12 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.14.1] – 2026-05-14
+
+PATCH on top of 1.14.0 surfacing successful IndexNow pushes in
+default scheduler output. UX-only; no schema, no config, no wire
+contract change.
+
 ### Changed
 
 - `update` now prints `indexnow: pushed N URL(s)` at default
