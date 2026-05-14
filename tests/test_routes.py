@@ -2048,6 +2048,244 @@ def test_message_page_shows_related_patches_touching_same_file(
     assert "second touching shared" not in related_section
 
 
+def test_message_page_short_thread_does_not_get_sidebar_class(client, tmp_path):
+    """Short threads (below LONG_THREAD_SIDEBAR_THRESHOLD) keep the
+    above-body layout — the sidebar modifier class is absent so the
+    CSS grid rule doesn't fire."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "short-thread@example.com", subject="solo",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="message-page-grid"' in body
+    assert "message-page-grid--with-sidebar" not in body
+
+
+def test_message_page_long_thread_gets_sidebar_class(client, tmp_path):
+    """Threads at or above LONG_THREAD_SIDEBAR_THRESHOLD (20 by
+    default) get the `--with-sidebar` modifier so the CSS media
+    query switches to the right-rail layout on wide viewports."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from mimir.web import LONG_THREAD_SIDEBAR_THRESHOLD
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    # Build a thread of `threshold` messages all chained off one root.
+    # The root article goes through the real ingest path so the
+    # message view can read its body via the git mirror; the replies
+    # are SQL-only -- they only need to inflate the thread count, the
+    # view doesn't read their bodies.
+    _, root_url = _ingest_one_article(
+        tmp_path, "alpha", "long-root@example.com", subject="long thread root",
+    )
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        for i in range(LONG_THREAD_SIDEBAR_THRESHOLD - 1):
+            r = Article(
+                message_id=f"long-r{i}@example.com",
+                subject=f"Re: long thread root [{i}]",
+                author="r@example",
+                date=datetime(2024, 1, 1, 12, i, tzinfo=timezone.utc),
+                thread_parent="long-root@example.com",
+                subject_normalized="long thread root",
+                lists=[ArticleList(inbox_id=alpha.id, epoch="0.git",
+                                   commit_sha="d" * 40)],
+            )
+            s.add(r)
+        s.commit()
+    body = client.get(root_url).data.decode()
+    assert "message-page-grid--with-sidebar" in body
+
+
+def test_message_page_renders_hunk_quote_with_jump_to_parent(client, tmp_path):
+    """A reply that quotes a patch hunk from its parent renders
+    the quote folded inside `<details class="hunk-quote">` with a
+    `↗ jump to hunk` link pointing at the parent message's URL.
+    Pins the issue-68 slice-1 end-to-end: parser → renderer →
+    template, with the view computing `parent_url` from
+    `article.thread_parent` via the thread's URL map."""
+    parent_dir = tmp_path / "parent"
+    reply_dir = tmp_path / "reply"
+    parent_dir.mkdir()
+    reply_dir.mkdir()
+    _, parent_url = _ingest_one_article(
+        parent_dir, "alpha", "patch-parent@example.com",
+        subject="[PATCH] foo: fix bar",
+        body=(
+            b"This adds a thing.\n\n"
+            b"diff --git a/foo b/foo\n"
+            b"@@ -1,3 +1,3 @@\n"
+            b" int main(void) {\n"
+            b"-    return 0;\n"
+            b"+    return 1;\n"
+            b" }\n"
+        ),
+    )
+    _, reply_url = _ingest_one_article(
+        reply_dir, "alpha", "patch-reply@example.com",
+        subject="Re: [PATCH] foo: fix bar",
+        in_reply_to="patch-parent@example.com",
+        body=(
+            b"On Mon, Alice wrote:\n"
+            b"> @@ -1,3 +1,3 @@\n"
+            b">  int main(void) {\n"
+            b"> -    return 0;\n"
+            b"> +    return 1;\n"
+            b">  }\n\n"
+            b"Looks good, but consider returning -1 instead.\n"
+        ),
+    )
+    body = client.get(reply_url).data.decode()
+    assert '<details class="hunk-quote">' in body
+    assert "quoted hunk" in body
+    assert "↗ jump to hunk" in body
+    assert f'href="{parent_url}"' in body
+
+
+def test_message_page_hunk_quote_omits_jump_link_when_parent_off_list(
+    client, tmp_path,
+):
+    """A reply whose parent isn't in this archive (off-list ancestor)
+    has no resolvable `parent_url`. The fold still happens, but the
+    jump-to-hunk link is omitted rather than pointing at a dead URL."""
+    _, reply_url = _ingest_one_article(
+        tmp_path, "alpha", "orphan-reply@example.com",
+        subject="Re: missing patch",
+        in_reply_to="off-list-patch@example.com",
+        body=(
+            b"> @@ -1 +1 @@\n"
+            b"> -a\n"
+            b"> +b\n\n"
+            b"My comment.\n"
+        ),
+    )
+    body = client.get(reply_url).data.decode()
+    assert '<details class="hunk-quote">' in body
+    assert "↗ jump to hunk" not in body
+
+
+def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
+    """`/<inbox>/subsystem/<name>/` renders the subsystem name,
+    status, maintainers, and a list of recent patches touching
+    the subsystem's paths."""
+    _seed_subsystem(
+        "BCACHEFS", "Supported",
+        files=["fs/bcachefs/"],
+        maintainers=[("M", "Kent Overstreet", "kent.overstreet@linux.dev")],
+    )
+    patch_body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    _ingest_one_article(
+        tmp_path, "alpha", "dash-1@example.com",
+        subject="bcachefs: tweak super", body=patch_body,
+    )
+    r = client.get("/alpha/subsystem/BCACHEFS/")
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert "BCACHEFS" in body
+    assert "Supported" in body
+    assert "Kent Overstreet" in body
+    # Maintainer address renders on the dashboard page (operator-
+    # facing surface; the per-patch header redacts it to keep that
+    # surface compact, the dashboard doesn't).
+    assert "kent.overstreet@linux.dev" in body
+    # The recent-patches list surfaces the seeded article.
+    assert "bcachefs: tweak super" in body
+
+
+def test_subsystem_dashboard_404_on_unknown_subsystem(client):
+    assert client.get("/alpha/subsystem/NOPE/").status_code == 404
+
+
+def test_subsystem_dashboard_404_on_unknown_inbox(client):
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    assert client.get("/nonexistent/subsystem/BCACHEFS/").status_code == 404
+
+
+def test_subsystem_dashboard_scopes_recent_to_inbox(client, tmp_path):
+    """The dashboard URL is per-inbox; only articles linked to that
+    inbox surface in the recent list."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    patch_body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _ingest_one_article(
+        tmp_path / "a", "alpha", "scope-a@example.com",
+        subject="alpha-side patch", body=patch_body,
+    )
+    _ingest_one_article(
+        tmp_path / "b", "beta", "scope-b@example.com",
+        subject="beta-side patch", body=patch_body,
+    )
+    body_a = client.get("/alpha/subsystem/BCACHEFS/").data.decode()
+    body_b = client.get("/beta/subsystem/BCACHEFS/").data.decode()
+    assert "alpha-side patch" in body_a
+    assert "beta-side patch" not in body_a
+    assert "beta-side patch" in body_b
+    assert "alpha-side patch" not in body_b
+
+
+def test_subsystem_dashboard_empty_when_no_matches(client):
+    """A subsystem with no articles in this inbox still renders
+    cleanly with an empty-state message, not a 404 or an error."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    r = client.get("/alpha/subsystem/BCACHEFS/")
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert "BCACHEFS" in body
+    assert "No patches touching" in body
+
+
+def test_subsystem_dashboard_renders_sparkline(client):
+    """Slice 2: the per-subsystem dashboard renders a 30-day
+    sparkline SVG. Even with no in-scope articles, the SVG ships
+    (all-zero bars) so the surface doesn't disappear on dormant
+    subsystems."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    body = client.get("/alpha/subsystem/BCACHEFS/").data.decode()
+    assert "<svg" in body
+    # The SVG carries an aria-label naming the subsystem.
+    assert "BCACHEFS, last 30 days" in body
+
+
+def test_subsystem_dashboard_renders_active_threads_section(
+    client, tmp_path,
+):
+    """Slice 2: a thread with a recent patch matching the
+    subsystem's paths surfaces under "Most active threads".
+    `_ingest_one_article` pins commit_time at 2023-11-14, so we
+    backfill the article's date to a recent value post-ingest to
+    land inside the 7-day active window."""
+    from datetime import datetime, timedelta, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    patch_body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "active-thread@example.com",
+        subject="bcachefs active thread", body=patch_body,
+    )
+    # Bump the article's date into the active window so the
+    # decay-weighted CTE picks it up. URL date doesn't matter for
+    # the dashboard surface.
+    with SessionLocal() as s:
+        art = s.get(Article, art_id)
+        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        s.commit()
+    body = client.get("/alpha/subsystem/BCACHEFS/").data.decode()
+    assert "Most active threads" in body
+    assert "bcachefs active thread" in body
+    # Sparkline SVG is unconditional.
+    assert "<svg" in body
+
+
 def _seed_mainline_commit(message_id, commit_sha="abc1234567890def" + "0" * 24,
                           tree_name="linus", date=None):
     """Insert a MainlineCommit row for a route test. The render
