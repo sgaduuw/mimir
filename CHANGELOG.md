@@ -11,6 +11,14 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.13.4] – 2026-05-14
+
+PATCH on top of 1.13.3 fixing two `DiscussionForumPosting`
+structured-data findings Google Search Console flagged against
+ratatoskr.run on 2026-05-14. No schema or behaviour change for
+human readers; the JSON-LD blob on message pages grows a `text`
+snippet and an `author.url`.
+
 ### Fixed
 
 - `DiscussionForumPosting` JSON-LD on message pages now carries a
@@ -22,6 +30,12 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   field. Empty or whitespace-only bodies still omit `text`, and
   fallback "unknown sender" authors omit `url`, so the structured
   data validator stays clean across the corpus.
+- Body-text snippet emitted into JSON-LD passes through the same
+  DCO trailer redaction the visible HTML applies (new
+  `rendering.redact_trailer_addresses` plaintext helper), so
+  non-allowlisted `Signed-off-by:` addresses don't leak through
+  structured data even though they're redacted on the rendered
+  page.
 
 ## [1.13.3] – 2026-05-13
 
