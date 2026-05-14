@@ -26,6 +26,7 @@ from mimir.ingest import (
 )
 from mimir.models import (
     Article,
+    ArticleFile,
     ArticleList,
     Inbox,
     InboxAddressObservation,
@@ -139,6 +140,184 @@ def test_ingest_new_message_ids_only_tracks_new_bucket(seeded_db, tmp_path):
     assert result.linked == 1
     assert result.dup_batch == 1
     assert result.new_message_ids == ["brand-new@example.com"]
+
+
+# ArticleFile (diff-touched paths) integration
+
+
+def test_ingest_extracts_diff_touched_paths_for_patch_body(
+    seeded_db, tmp_path,
+):
+    """Patch bodies get one ArticleFile row per `diff --git`
+    header. The b/ side is stored — that's the path reviewers and
+    MAINTAINERS globs look at."""
+    alpha = _alpha(seeded_db)
+    patch_body = (
+        b"Signed-off-by: A <a@example>\n\n"
+        b"diff --git a/fs/foo/a.c b/fs/foo/a.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"diff --git a/include/uapi/foo.h b/include/uapi/foo.h\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    _build_pubinbox_repo(tmp_path / "0.git", [
+        _rfc5322("patch@example.com", body=patch_body),
+    ])
+    with seeded_db() as s:
+        result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+
+    assert result.new == 1
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == "patch@example.com")
+        ).scalar_one()
+        paths = {
+            row.path for row in s.execute(
+                select(ArticleFile).where(ArticleFile.article_id == art.id)
+            ).scalars()
+        }
+    assert paths == {"fs/foo/a.c", "include/uapi/foo.h"}
+
+
+def test_ingest_extracts_no_paths_for_prose_only_body(
+    seeded_db, tmp_path,
+):
+    """Non-patch bodies create zero ArticleFile rows. The "other
+    patches touching X" sidebar must not include discussion-only
+    threads."""
+    alpha = _alpha(seeded_db)
+    _build_pubinbox_repo(tmp_path / "0.git", [
+        _rfc5322("prose@example.com", body=b"just a discussion, no diff here\n"),
+    ])
+    with seeded_db() as s:
+        result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+
+    assert result.new == 1
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == "prose@example.com")
+        ).scalar_one()
+        rows = s.execute(
+            select(ArticleFile).where(ArticleFile.article_id == art.id)
+        ).all()
+    assert rows == []
+
+
+def test_ingest_linked_cross_post_does_not_double_add_files(
+    seeded_db, tmp_path,
+):
+    """When a message gets `linked` (already in another inbox),
+    the existing Article retains its ArticleFile rows — the linked
+    row doesn't trigger re-extraction. Otherwise a cross-posted
+    patch would accumulate duplicate rows per linked inbox."""
+    alpha = _alpha(seeded_db)
+    patch_body = (
+        b"diff --git a/fs/x/file.c b/fs/x/file.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    # First ingest into beta (the seeded second inbox).
+    with seeded_db() as s:
+        from mimir.models import Inbox
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        _build_pubinbox_repo(tmp_path / "beta-0.git", [
+            _rfc5322("xpost@example.com", body=patch_body),
+        ])
+        ingest_epoch(s, beta, "0.git", tmp_path / "beta-0.git", workers=1)
+
+    # Then ingest the same Message-ID into alpha → `linked`.
+    _build_pubinbox_repo(tmp_path / "alpha-0.git", [
+        _rfc5322("xpost@example.com", body=patch_body),
+    ])
+    with seeded_db() as s:
+        result = ingest_epoch(s, alpha, "0.git", tmp_path / "alpha-0.git", workers=1)
+
+    assert result.linked == 1
+    assert result.new == 0
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == "xpost@example.com")
+        ).scalar_one()
+        paths = [
+            row.path for row in s.execute(
+                select(ArticleFile).where(ArticleFile.article_id == art.id)
+            ).scalars()
+        ]
+    # Exactly one row — not duplicated across the two linked inboxes.
+    assert paths == ["fs/x/file.c"]
+
+
+# patch-series cover-letter detection at ingest
+
+
+def test_ingest_records_patch_series_key_for_cover_letter(
+    seeded_db, tmp_path,
+):
+    """A `[PATCH v2 0/3] <title>` subject lands a series key +
+    version on the Article row. Non-cover-letter articles leave
+    both columns NULL."""
+    alpha = _alpha(seeded_db)
+    msgs = [
+        _rfc5322(
+            "cover-v2@example.com",
+            body=b"x",
+        ).replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH v2 0/3] improve foo handling\r\n",
+        ),
+        _rfc5322(
+            "patch-1of3@example.com",
+            body=b"x",
+        ).replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH v2 1/3] foo: add bar\r\n",
+        ),
+    ]
+    _build_pubinbox_repo(tmp_path / "0.git", msgs)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+        cover = s.execute(
+            select(Article).where(Article.message_id == "cover-v2@example.com")
+        ).scalar_one()
+        patch = s.execute(
+            select(Article).where(Article.message_id == "patch-1of3@example.com")
+        ).scalar_one()
+    assert cover.patch_series_key is not None
+    assert cover.patch_series_version == "v2"
+    # Non-cover-letter (1/3) → NULL columns.
+    assert patch.patch_series_key is None
+    assert patch.patch_series_version is None
+
+
+def test_ingest_groups_v1_and_v2_under_same_series_key(seeded_db, tmp_path):
+    """Two cover letters with the same title + same author get the
+    same `patch_series_key`. Pins the cross-revision linkage that
+    drives the timeline render."""
+    alpha = _alpha(seeded_db)
+    msgs = [
+        _rfc5322("v1-cover@example.com", body=b"x").replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH 0/3] improve foo handling\r\n",
+        ),
+        _rfc5322("v2-cover@example.com", body=b"x").replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH v2 0/3] improve foo handling\r\n",
+        ),
+    ]
+    _build_pubinbox_repo(tmp_path / "0.git", msgs)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+        rows = list(s.execute(
+            select(Article).where(
+                Article.message_id.in_(["v1-cover@example.com", "v2-cover@example.com"])
+            )
+        ).scalars())
+    keys = {r.patch_series_key for r in rows}
+    assert len(keys) == 1
+    assert None not in keys
+    versions = {r.message_id: r.patch_series_version for r in rows}
+    assert versions == {
+        "v1-cover@example.com": "v1",
+        "v2-cover@example.com": "v2",
+    }
 
 
 # Bucket: linked (cross-post)

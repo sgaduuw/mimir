@@ -199,5 +199,70 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    via the html_data_attrs block above) carry the per-page context the
    controller needs. #}
 {% endif %}
+{# Mainline application(s): if this article's Message-ID is
+   referenced by a `Link:` trailer in a Linus-tree commit, surface
+   the commit SHA + date. The patch-page reader's "did this land?"
+   question is the highest-value differentiator on the issue-67/
+   issue-66 cluster, so it gets rendered prominently — above the
+   message body, not folded behind a <details>. Skipped silently
+   when there's no recorded application; the absence isn't
+   informative (the data may simply not be indexed, or the commit
+   may not have carried a `Link:` trailer). #}
+{% if mainline_applications %}
+<aside class="mainline-applications" style="margin-block: 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--pico-primary); background: var(--pico-muted-background-color);">
+  {% for app in mainline_applications %}
+  <small>
+    <strong>Applied as</strong>
+    <code>{{ app.commit_sha[:12] }}</code>
+    in the <code>{{ app.tree_name }}</code> tree
+    on {{ app.committed_at.strftime('%Y-%m-%d') if app.committed_at else 'unknown' }}
+  </small>
+  {% if not loop.last %}<br>{% endif %}
+  {% endfor %}
+</aside>
+{% endif %}
+{# Patch-series timeline: when this article is a cover letter
+   (patch_series_key populated at ingest), surface the v1 → v2 →
+   v3 timeline pointing at each revision. The current article is
+   highlighted; others are links. The arrow notation reads left-
+   to-right oldest-to-newest. Skipped silently when there's no
+   series — most articles. #}
+{% if patch_series_revisions and patch_series_revisions|length > 1 %}
+<aside class="patch-series" style="margin-block: 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--pico-primary); background: var(--pico-muted-background-color);">
+  <small>
+    <strong>Series revisions:</strong>
+    {% for rev, url in patch_series_revisions %}
+      {% if rev.id == article.id %}
+      <strong>{{ rev.patch_series_version }}</strong>
+      ({{ rev.date.strftime('%Y-%m-%d') if rev.date else '?' }})
+      {% else %}
+      <a href="{{ url }}">{{ rev.patch_series_version }}</a>
+      ({{ rev.date.strftime('%Y-%m-%d') if rev.date else '?' }})
+      {% endif %}
+      {% if not loop.last %} → {% endif %}
+    {% endfor %}
+  </small>
+</aside>
+{% endif %}
 {% include "_message_body.html" %}
+{# Related patches: other recent articles touching at least one
+   file this patch touches. The reverse-lookup side of the
+   subsystem header — useful when reviewing one patch in a larger
+   recent flurry. Skipped silently when the article isn't a patch. #}
+{% if related_patches %}
+<section style="margin-block: 1rem;">
+  <details>
+    <summary><strong>Other recent patches touching these files</strong></summary>
+    <ul>
+      {% for p in related_patches %}
+      <li>
+        <a href="/{{ p.inbox_name }}/{{ p.date.year }}/{{ '%02d' % p.date.month }}/{{ p.article_id }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
+        <small>&middot; {{ p.author|safe_from }}
+          &middot; {{ p.date.strftime('%Y-%m-%d') if p.date else '' }}</small>
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+</section>
+{% endif %}
 {% endblock %}

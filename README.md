@@ -555,6 +555,74 @@ dev), see `deploy/README.md`. Three shapes are covered:
   TLS site block with the `X-Forwarded-Proto` and `X-Request-Id`
   headers mimir reads).
 
+## Mainline tree (MAINTAINERS)
+
+mimir mirrors Linus's `linux.git` locally so it can read
+`MAINTAINERS` and surface subsystem ownership on patch pages (work
+in progress; first slice ships the data, follow-up slices wire
+the render path). Tree path is configurable via `MAINLINE_TREE_PATH`
+(default `Mainline/linux.git` alongside the per-inbox mirrors)
+and `MAINLINE_TREE_URL`.
+
+```sh
+# Clone (first run) or fetch + load:
+poetry run flask --app mimir update-mainline
+
+# Re-parse the local HEAD without fetching:
+poetry run flask --app mimir update-mainline --skip-fetch
+
+# Force re-parse even when HEAD hasn't moved (after a parser fix):
+poetry run flask --app mimir update-mainline --force
+```
+
+Steady-state ticks (HEAD unchanged) are cheap: fetch, compare,
+no-op. Operator can run this on a cron / systemd timer; the
+schema is replaced transactionally on every change so consumers
+never see a half-loaded subsystems table.
+
+`update-mainline` runs two passes against the tree:
+
+1. **MAINTAINERS load** — replaces the `subsystems` schema as
+   above. Skipped when HEAD is unchanged. `--skip-maintainers`
+   disables this pass for the tick.
+2. **`Link:`-trailer walk** — scans every new commit for
+   `Link: https://lore.kernel.org/.../<msgid>` trailers and
+   inserts `mainline_commits` rows. Resumable; the first run
+   walks the full history (~1.5M commits on Linus's tree, a few
+   minutes). The patch page renders an "Applied as `<sha>` on
+   YYYY-MM-DD" line whenever an article's Message-ID matches a
+   recorded commit. `--skip-commits` disables this pass.
+
+### Backfilling `article_files`
+
+New articles get their diff-touched paths extracted automatically
+at ingest time (parsing `diff --git a/<old> b/<new>` headers out
+of patch bodies). For articles ingested before that landed, run:
+
+```sh
+poetry run flask --app mimir backfill-article-files [-v]
+```
+
+Idempotent — articles that already have rows are skipped. Pass
+`--limit N` to bound a session for huge archives; the walker is
+newest-first, so a `--limit` run covers the most-visible articles
+first. `--reprocess` re-extracts for articles whose rows already
+exist (use after an extractor change).
+
+### Backfilling patch-series detection
+
+Cover-letter subjects (`[PATCH ... 0/N] <title>`) are tagged with
+a stable series key + version at ingest. For articles ingested
+before that landed:
+
+```sh
+poetry run flask --app mimir backfill-patch-series [-v]
+```
+
+Cheaper than the article-files backfill — only reads
+subject + author, no body re-parse via git mirror. Idempotent;
+`--limit N` and `--reprocess` work the same way.
+
 ## IndexNow (Bing / Yandex push notifications)
 
 Off by default. Set `INDEXNOW_KEY` to enable: the `update`

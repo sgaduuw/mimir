@@ -20,7 +20,7 @@ from pygments.lexers import get_lexer_for_filename, guess_lexer
 from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
 from mimir.canonical import extract_list_addresses
@@ -39,16 +39,21 @@ from mimir.dashboard import (
 )
 from mimir.extensions import SessionLocal
 from mimir.inboxes import inbox_names
-from mimir.models import Article, ArticleList, Inbox
+from mimir.models import (
+    Article, ArticleFile, ArticleList, Inbox, MainlineCommit,
+)
 from mimir.parser import ParsedArticle
 from mimir.rendering import URL_OR_MSGID_RE, redact_trailer_addresses, render_body
 from mimir.store import MessageNotFound, read_message
+from mimir.subsystems import recent_patches_touching, subsystems_for_article
 from mimir.threading import (
+    THREADS_SINCE_MAX_DAYS,
     active_threads,
     find_thread_root,
     get_thread,
     threads_for_day,
     threads_for_month,
+    threads_since,
 )
 
 bp_web = Blueprint("web", __name__)
@@ -106,6 +111,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.inbox_dashboard": "public, max-age=60",
     "web.daily_today": "public, max-age=60",
     "web.daily_yesterday": "public, max-age=600",
+    "web.threads_since_view": "public, max-age=600",
     "web.year_archive": "public, max-age=600",
     "web.month_archive": "public, max-age=600",
     "web.search": "public, max-age=300",
@@ -1250,6 +1256,50 @@ def daily_yesterday(inbox_name: str):
     return _daily_view(inbox_name, yesterday, "Yesterday")
 
 
+@bp_web.route("/<inbox_name>/since/<since_str>")
+def threads_since_view(inbox_name: str, since_str: str):
+    """"What I missed" view: every thread with activity from `since` to
+    now. Window is clamped to `THREADS_SINCE_MAX_DAYS` (90 days) below
+    the present; the template renders a notice when the requested
+    `since` falls before the cap so the operator sees why the window
+    starts where it does."""
+    try:
+        since = date_cls.fromisoformat(since_str)
+    except ValueError:
+        abort(404)
+    today = datetime.now(timezone.utc).date()
+    if since > today:
+        abort(404)
+    floor = today - timedelta(days=THREADS_SINCE_MAX_DAYS)
+    capped = since < floor
+    effective = floor if capped else since
+    start = datetime.combine(effective, datetime.min.time(), tzinfo=timezone.utc)
+    end = datetime.now(timezone.utc)
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        threads = threads_since(session, inbox, since)
+        total = session.scalar(
+            select(func.count(Article.id))
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                Article.date >= start.strftime("%Y-%m-%d %H:%M:%S"),
+                Article.date < end.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        )
+    return render_template(
+        "since.html",
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
+        since=since,
+        effective_since=effective,
+        capped=capped,
+        max_days=THREADS_SINCE_MAX_DAYS,
+        threads=threads,
+        total_messages=total or 0,
+    )
+
+
 # Plausible bounds for an inbox archive: lkml itself goes back to ~1995.
 # Outside this range a year URL is almost certainly user error / scraper
 # noise; 404 is the right response.
@@ -1839,6 +1889,39 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
     thread_summary = _thread_summary(thread)
 
+    # Subsystem header + related patches + mainline applications +
+    # patch-series timeline. Single session for all lookups; empty
+    # results are handled template-side via `{% if %}`. Opens a
+    # fresh session since the route's earlier with-block has closed
+    # by this point.
+    with SessionLocal() as session:
+        subsystem_hits = subsystems_for_article(session, article.id)
+        touched_paths = [
+            f.path for f in session.execute(
+                select(ArticleFile).where(ArticleFile.article_id == article.id)
+            ).scalars()
+        ]
+        related_patches = recent_patches_touching(
+            session, touched_paths, exclude_article_id=article.id, limit=5,
+        ) if touched_paths else []
+        mainline_applications = list(session.execute(
+            select(MainlineCommit)
+            .where(MainlineCommit.message_id == article.message_id)
+            .order_by(MainlineCommit.committed_at.asc())
+        ).scalars())
+        patch_series_revisions: list[tuple[Article, str]] = []
+        if article.patch_series_key:
+            revisions = list(session.execute(
+                select(Article)
+                .options(selectinload(Article.lists))
+                .where(Article.patch_series_key == article.patch_series_key)
+                .order_by(Article.date.asc().nulls_last())
+            ).scalars())
+            for rev in revisions:
+                link_set = [(al.inbox_id, al.inbox.name) for al in rev.lists]
+                url = _canonical_url_for(rev, link_set, base="") or ""
+                patch_series_revisions.append((rev, url))
+
     # HTMX intra-thread swap: when the click came from a tree link, return
     # only the message-body partial (just the <article id="msg">). The
     # surrounding tree + nav stay put on the client; the client-side script
@@ -1864,4 +1947,8 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         cross_post_inboxes=cross_post_inboxes,
         canonical_url=canonical_url,
         page_json_ld=page_json_ld,
+        subsystem_hits=subsystem_hits,
+        related_patches=related_patches,
+        mainline_applications=mainline_applications,
+        patch_series_revisions=patch_series_revisions,
     )

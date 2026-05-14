@@ -74,12 +74,16 @@ def _reset_db():
     import mimir.inboxes
     from mimir.models import (
         Article,
+        ArticleFile,
         ArticleList,
         CacheEntry,
         Inbox,
         InboxAddressObservation,
         IngestState,
+        MainlineCommit,
+        MainlineState,
         ParseFailure,
+        Subsystem,
     )
 
     with SessionLocal() as s:
@@ -88,12 +92,18 @@ def _reset_db():
         # for article deletes — but explicit is cheaper on a tiny DB
         # and immune to FK-order surprises.
         s.execute(delete(IngestState))
+        s.execute(delete(ArticleFile))   # FK to articles; clear before Article
         s.execute(delete(ArticleList))
         s.execute(delete(Article))
         s.execute(delete(ParseFailure))
         s.execute(delete(InboxAddressObservation))
         s.execute(delete(Inbox))
         s.execute(delete(CacheEntry))
+        s.execute(delete(MainlineCommit))
+        s.execute(delete(MainlineState))
+        # Subsystem cascades to subsystem_paths + subsystem_maintainers
+        # via ON DELETE CASCADE (FKs declared on the child tables).
+        s.execute(delete(Subsystem))
         s.commit()
 
     mimir.inboxes._INBOX_NAMES[:] = []
