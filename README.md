@@ -596,6 +596,20 @@ newest-first, so a `--limit` run covers the most-visible articles
 first. `--reprocess` re-extracts for articles whose rows already
 exist (use after an extractor change).
 
+### Backfilling patch-series detection
+
+Cover-letter subjects (`[PATCH ... 0/N] <title>`) are tagged with
+a stable series key + version at ingest. For articles ingested
+before that landed:
+
+```sh
+poetry run flask --app mimir backfill-patch-series [-v]
+```
+
+Cheaper than the article-files backfill — only reads
+subject + author, no body re-parse via git mirror. Idempotent;
+`--limit N` and `--reprocess` work the same way.
+
 ## IndexNow (Bing / Yandex push notifications)
 
 Off by default. Set `INDEXNOW_KEY` to enable: the `update`
