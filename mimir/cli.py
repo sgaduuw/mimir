@@ -1,4 +1,5 @@
 import logging
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,7 +33,7 @@ from mimir.inboxes import (
     set_tracked_authors,
     update_inbox,
 )
-from mimir import indexnow
+from mimir import indexnow, maintainers
 from mimir.config import settings
 from mimir.ingest import (
     DEFAULT_WORKERS,
@@ -41,7 +42,17 @@ from mimir.ingest import (
     ingest_epoch,
     replay_failures,
 )
-from mimir.models import Article, ArticleList, Inbox, IngestState, ParseFailure
+from mimir.models import (
+    Article,
+    ArticleList,
+    Inbox,
+    IngestState,
+    MainlineState,
+    ParseFailure,
+    Subsystem,
+    SubsystemMaintainer,
+    SubsystemPath,
+)
 from mimir.store import MessageNotFound, read_message
 from mimir.sync import sync_epochs
 from mimir.threading import active_threads, threads_for_day
@@ -399,6 +410,114 @@ def _push_indexnow(message_ids: list[str]) -> None:
     # for `-v` operators who want the per-chunk status detail.
     if submitted:
         click.echo(f"indexnow: pushed {submitted} URL(s)")
+
+
+@click.command("update-mainline")
+@click.option(
+    "--skip-fetch", is_flag=True,
+    help="Don't `git fetch` the mainline mirror; just re-read the local HEAD.",
+)
+@click.option(
+    "--force", is_flag=True,
+    help="Re-parse MAINTAINERS and replace subsystems even if HEAD hasn't moved.",
+)
+@click.option(
+    "-v", "--verbose", count=True,
+    help="-v: progress detail. -vv: debug.",
+)
+def update_mainline_command(skip_fetch: bool, force: bool, verbose: int) -> None:
+    """Sync the mainline kernel tree (Linus's `linux.git`) and load
+    its MAINTAINERS file into the local subsystems schema.
+
+    Clones the tree on first run, fetches on subsequent runs.
+    Reads MAINTAINERS from the resulting HEAD blob and replaces the
+    `subsystems` / `subsystem_paths` / `subsystem_maintainers` tables
+    transactionally — the upstream file is the source of truth, the
+    DB is a cached projection.
+
+    Tracked-state is per-tree (`MainlineState.last_commit_sha`), so
+    a steady-state tick with no upstream movement is cheap: fetch,
+    compare HEADs, no-op. `--force` re-parses even on no-op for
+    debugging or after a parser fix.
+    """
+    _configure_logging(verbose)
+    tree_path = Path(settings.mainline_tree_path)
+    if not tree_path.is_absolute():
+        from mimir.config import PROJECT_ROOT
+        tree_path = PROJECT_ROOT / tree_path
+
+    if not tree_path.exists():
+        tree_path.parent.mkdir(parents=True, exist_ok=True)
+        click.echo(f"cloning {settings.mainline_tree_url} -> {tree_path}")
+        # `--` stops git from interpreting an option-shaped URL as a
+        # flag (same defensive pattern as `mimir.sync.clone_epoch`).
+        subprocess.run(
+            ["git", "clone", "--mirror", "--",
+             settings.mainline_tree_url, str(tree_path)],
+            check=True,
+        )
+    elif not skip_fetch:
+        if verbose:
+            click.echo(f"fetching {tree_path}")
+        subprocess.run(
+            ["git", "-C", str(tree_path), "fetch", "--quiet", "--prune"],
+            check=True,
+        )
+
+    # Read HEAD + MAINTAINERS blob via dulwich (no shell-out; we'd
+    # have to subprocess `git show HEAD:MAINTAINERS` otherwise, and
+    # dulwich is already in the dep tree for the ingest path).
+    from dulwich.repo import Repo
+    repo = Repo(str(tree_path))
+    head_sha = repo.head().decode("ascii")
+    commit = repo[repo.head()]
+    tree = repo[commit.tree]
+    try:
+        _mode, blob_sha = tree[b"MAINTAINERS"]
+    except KeyError:
+        raise click.ClickException(
+            f"no MAINTAINERS file at HEAD of {tree_path}; wrong tree?"
+        )
+    blob_bytes = repo[blob_sha].data
+
+    tree_name = "linus"  # fixed slug for now; supports future linux-stable, etc.
+    with SessionLocal() as session:
+        state = session.get(MainlineState, tree_name)
+        if state is None:
+            state = MainlineState(tree_name=tree_name)
+            session.add(state)
+        if state.last_commit_sha == head_sha and not force:
+            click.echo(
+                f"update-mainline: no change (HEAD {head_sha[:12]}); "
+                "use --force to re-parse"
+            )
+            return
+
+        parsed = maintainers.parse(blob_bytes)
+        # Replace-all in one transaction. The cascade FK on
+        # `subsystems.id` clears `subsystem_paths` + `subsystem_maintainers`
+        # via ON DELETE CASCADE, but SQLite needs `PRAGMA foreign_keys=ON`
+        # (set by `mimir.extensions` on every connection) for the
+        # cascade to fire — confirmed there.
+        session.execute(delete(Subsystem))
+        for sub in parsed:
+            row = Subsystem(name=sub.name, status=sub.status)
+            for path in sub.files:
+                row.paths.append(SubsystemPath(glob=path, is_exclude=False))
+            for path in sub.excludes:
+                row.paths.append(SubsystemPath(glob=path, is_exclude=True))
+            for m in sub.maintainers:
+                row.maintainers.append(SubsystemMaintainer(
+                    role=m.role, name=m.name, address=m.address,
+                ))
+            session.add(row)
+        state.last_commit_sha = head_sha
+        session.commit()
+
+    click.echo(
+        f"update-mainline: loaded {len(parsed)} subsystems "
+        f"from {tree_name}@{head_sha[:12]}"
+    )
 
 
 @click.command("warm-cache")
@@ -1227,6 +1346,7 @@ def register_cli(app: Flask) -> None:
     app.cli.add_command(reindex_command)
     app.cli.add_command(show_command)
     app.cli.add_command(update_command)
+    app.cli.add_command(update_mainline_command)
     app.cli.add_command(warm_cache_command)
     app.cli.add_command(vacuum_command)
     app.cli.add_command(analyze_command)

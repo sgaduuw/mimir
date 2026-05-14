@@ -140,6 +140,87 @@ class InboxAddressObservation(Base):
     last_seen: Mapped[datetime] = mapped_column()
 
 
+class Subsystem(Base):
+    """One MAINTAINERS section (e.g. "BCACHEFS"). Replaced wholesale
+    on every `update-mainline` tick — the upstream file is the
+    source of truth, mimir's table is a cached projection. The CLI
+    runs `DELETE FROM subsystems` (cascades to paths + maintainers)
+    then re-inserts; idempotent and avoids drift if the upstream file
+    renames or removes entries.
+
+    `name` is the section title verbatim, which means uppercase ASCII
+    in current usage but the schema permits arbitrary Unicode. `status`
+    is the `S:` field (`Supported`, `Maintained`, `Odd Fixes`, `Orphan`,
+    `Obsolete`); NULL for sections that omit it (rare but legal)."""
+    __tablename__ = "subsystems"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    paths: Mapped[list["SubsystemPath"]] = relationship(
+        back_populates="subsystem", cascade="all, delete-orphan"
+    )
+    maintainers: Mapped[list["SubsystemMaintainer"]] = relationship(
+        back_populates="subsystem", cascade="all, delete-orphan"
+    )
+
+
+class SubsystemPath(Base):
+    """One `F:` (include) or `X:` (exclude) glob from a MAINTAINERS
+    section. The literal MAINTAINERS-shaped string is stored
+    (trailing slash, brace expansion, etc.) — interpretation lives
+    in the future glob-matcher, not in the schema."""
+    __tablename__ = "subsystem_paths"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subsystem_id: Mapped[int] = mapped_column(
+        ForeignKey("subsystems.id", ondelete="CASCADE"), index=True
+    )
+    glob: Mapped[str] = mapped_column(String)
+    # True for `X:` (exclude) lines, False for `F:` (include).
+    is_exclude: Mapped[bool] = mapped_column(default=False)
+
+    subsystem: Mapped[Subsystem] = relationship(back_populates="paths")
+
+
+class SubsystemMaintainer(Base):
+    """One `M:` (maintainer) or `R:` (reviewer) entry. The list
+    address (MAINTAINERS' `L:` field) lives elsewhere — it's per-
+    subsystem, not per-person, and is captured as
+    `Subsystem.lists` in the parser dataclass. (Decided not to
+    schema it separately for slice 1; revisit if a downstream
+    surface needs the per-section list addresses indexed.)"""
+    __tablename__ = "subsystem_maintainers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subsystem_id: Mapped[int] = mapped_column(
+        ForeignKey("subsystems.id", ondelete="CASCADE"), index=True
+    )
+    # `M` or `R`. Indexed because the "maintainers only" filter on a
+    # subsystem page is the common read.
+    role: Mapped[str] = mapped_column(String, index=True)
+    # Display name from the entry; empty string when the source had a
+    # bare address (rare but legal).
+    name: Mapped[str] = mapped_column(String, default="")
+    address: Mapped[str] = mapped_column(String, index=True)
+
+    subsystem: Mapped[Subsystem] = relationship(back_populates="maintainers")
+
+
+class MainlineState(Base):
+    """Tracks which version of the mainline tree (Linus's `linux.git`)
+    we last read MAINTAINERS from. One row keyed by tree_name so the
+    schema permits future mirroring of multiple trees (linux-stable,
+    linux-next) without a migration. `last_commit_sha` is the HEAD
+    commit at the time of the last successful `update-mainline`
+    run; lets the CLI skip the parse step when HEAD hasn't moved."""
+    __tablename__ = "mainline_state"
+
+    tree_name: Mapped[str] = mapped_column(String, primary_key=True)
+    last_commit_sha: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class ParseFailure(Base):
     """One row per (inbox, epoch, commit_sha) whose `m` blob couldn't
     be parsed. Persisted so the operator can enumerate them and replay
