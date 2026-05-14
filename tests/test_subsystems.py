@@ -1,6 +1,6 @@
 """Subsystem resolution against article-touched paths. Glob-matcher
 unit tests + integration against the seeded test DB."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -13,6 +13,8 @@ from mimir.models import (
     SubsystemPath,
 )
 from mimir.subsystems import (
+    active_threads_in_subsystem,
+    daily_volume_in_subsystem,
     path_matches_glob,
     recent_articles_in_subsystem,
     recent_patches_touching,
@@ -397,3 +399,149 @@ def test_recent_articles_in_subsystem_wildcard_globs_skipped_silently(
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         out = recent_articles_in_subsystem(s, alpha, sub)
     assert out == []
+
+
+# `active_threads_in_subsystem` integration — slice 2 of the
+# per-subsystem dashboard. Same decay-weighted scoring as the
+# landing-page `active_threads`, but constrained to messages
+# touching the subsystem's paths.
+
+
+def _add_recent_thread_root(
+    session, msgid, paths, subject="recent root", inbox_name="alpha",
+):
+    """Insert a recent (today-ish) article with ArticleFile rows so
+    the active-threads CTE picks it up as a seed."""
+    from mimir.models import ArticleList
+    inbox = session.execute(
+        select(Inbox).where(Inbox.name == inbox_name)
+    ).scalar_one()
+    art = Article(
+        message_id=msgid,
+        subject=subject,
+        author="a@example",
+        date=datetime.now(timezone.utc) - timedelta(hours=1),
+        thread_parent=None,
+        subject_normalized=subject,
+        canonical_inbox_id=inbox.id,
+        lists=[ArticleList(inbox_id=inbox.id, epoch="0.git",
+                           commit_sha="f" * 40)],
+        files=[ArticleFile(path=p) for p in paths],
+    )
+    session.add(art)
+    session.flush()
+    return art
+
+
+def test_active_threads_in_subsystem_returns_threads_with_matching_path(
+    seeded_db,
+):
+    """A thread with a recent message touching the subsystem's
+    paths surfaces in the dashboard's active-threads list. A
+    thread with a recent message touching unrelated paths does
+    not."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_thread_root(s, "bch@x", ["fs/bcachefs/super.c"],
+                                subject="bcachefs work")
+        _add_recent_thread_root(s, "other@x", ["fs/btrfs/extent.c"],
+                                subject="btrfs work")
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = active_threads_in_subsystem(s, alpha, sub, force=True)
+    msgids = {t.message_id for t in out}
+    assert "bch@x" in msgids
+    assert "other@x" not in msgids
+
+
+def test_active_threads_in_subsystem_respects_excludes(seeded_db):
+    """X: globs veto threads whose seed message's paths are all
+    excluded — same per-article-keep-if-one-in-scope rule as the
+    recent-patches surface."""
+    with seeded_db() as s:
+        sub = _add_subsystem(
+            s, "BTRFS-MAIN", "Maintained",
+            files=["fs/btrfs/"], excludes=["fs/btrfs/tests/"],
+        )
+        _add_recent_thread_root(s, "main@x", ["fs/btrfs/extent.c"],
+                                subject="main work")
+        _add_recent_thread_root(s, "tests@x", ["fs/btrfs/tests/runner.c"],
+                                subject="tests work")
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = active_threads_in_subsystem(s, alpha, sub, force=True)
+    msgids = {t.message_id for t in out}
+    assert msgids == {"main@x"}
+
+
+def test_active_threads_in_subsystem_scoped_to_inbox(seeded_db):
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_thread_root(s, "a-side@x", ["fs/bcachefs/a.c"],
+                                inbox_name="alpha")
+        _add_recent_thread_root(s, "b-side@x", ["fs/bcachefs/b.c"],
+                                inbox_name="beta")
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        out_alpha = active_threads_in_subsystem(s, alpha, sub, force=True)
+        out_beta = active_threads_in_subsystem(s, beta, sub, force=True)
+    assert {t.message_id for t in out_alpha} == {"a-side@x"}
+    assert {t.message_id for t in out_beta} == {"b-side@x"}
+
+
+def test_active_threads_in_subsystem_empty_when_wildcard_only(seeded_db):
+    """A subsystem with only wildcard F: rules has no supported
+    globs in slice 2 and returns no active threads — same
+    documented behaviour as `recent_articles_in_subsystem`."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "ARCH-CSTAR", None, files=["arch/*/cstar/"])
+        _add_recent_thread_root(s, "match@x", ["arch/x86/cstar/init.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = active_threads_in_subsystem(s, alpha, sub, force=True)
+    assert out == []
+
+
+# `daily_volume_in_subsystem` integration.
+
+
+def test_daily_volume_in_subsystem_counts_matching_articles(seeded_db):
+    """An article touching a subsystem path increments that day's
+    bar. An article touching an unrelated path does not."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_thread_root(s, "in@x", ["fs/bcachefs/super.c"])
+        _add_recent_thread_root(s, "out@x", ["fs/btrfs/extent.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        spark = daily_volume_in_subsystem(s, alpha, sub, days=7, force=True)
+    # Today's bar should reflect the one in-scope article.
+    today_count = sum(c for _, c in spark.days)
+    assert today_count == 1
+
+
+def test_daily_volume_in_subsystem_zero_fills_when_empty(seeded_db):
+    """A dormant subsystem still returns a fully zero-filled
+    `days` series so the sparkline renders cleanly."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "DORMANT", None, files=["drivers/dormant/"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        spark = daily_volume_in_subsystem(s, alpha, sub, days=14, force=True)
+    assert len(spark.days) == 14
+    assert all(c == 0 for _, c in spark.days)
+
+
+def test_daily_volume_in_subsystem_returns_zero_series_for_wildcard_only(
+    seeded_db,
+):
+    """A subsystem with only wildcard F: rules has no supported
+    globs in slice 2 — the sparkline still renders, all zeros."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "ARCH-CSTAR", None, files=["arch/*/cstar/"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        spark = daily_volume_in_subsystem(s, alpha, sub, days=10, force=True)
+    assert len(spark.days) == 10
+    assert all(c == 0 for _, c in spark.days)

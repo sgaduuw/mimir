@@ -46,6 +46,8 @@ from mimir.parser import ParsedArticle
 from mimir.rendering import URL_OR_MSGID_RE, redact_trailer_addresses, render_body
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import (
+    active_threads_in_subsystem,
+    daily_volume_in_subsystem,
     recent_articles_in_subsystem,
     recent_patches_touching,
     subsystems_for_article,
@@ -1345,6 +1347,12 @@ def subsystem_dashboard(inbox_name: str, name: str):
             session, inbox, subsystem,
             limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
         )
+        active = active_threads_in_subsystem(
+            session, inbox, subsystem, days=7, limit=10,
+        )
+        spark = daily_volume_in_subsystem(
+            session, inbox, subsystem, days=30,
+        )
     return render_template(
         "subsystem.html",
         inbox_name=inbox.name,
@@ -1352,6 +1360,8 @@ def subsystem_dashboard(inbox_name: str, name: str):
         subsystem=subsystem,
         recent=recent,
         recent_limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+        active=active,
+        spark=spark,
     )
 
 
