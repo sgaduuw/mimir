@@ -78,6 +78,15 @@ class Article(Base):
         back_populates="article", cascade="all, delete-orphan"
     )
 
+    # Diff-touched paths for articles whose body parses as a patch.
+    # Populated at ingest time only when extraction finds any
+    # `diff --git` headers; non-patch articles have zero rows here.
+    # Used by the patch-page subsystem header and the "other recent
+    # patches touching X" sidebar (issue #67 slices 2+3).
+    files: Mapped[list["ArticleFile"]] = relationship(
+        back_populates="article", cascade="all, delete-orphan"
+    )
+
 
 class ArticleList(Base):
     """Per-inbox presence of an Article. (epoch, commit_sha) point at
@@ -138,6 +147,32 @@ class InboxAddressObservation(Base):
     address: Mapped[str] = mapped_column(String, primary_key=True)
     count: Mapped[int] = mapped_column(default=0)
     last_seen: Mapped[datetime] = mapped_column()
+
+
+class ArticleFile(Base):
+    """One (article, file-path) pair extracted from a patch body's
+    `diff --git a/<path> b/<path>` headers. Composite PK so each
+    pair is unique; backfill / re-ingest stays idempotent without
+    a UNIQUE constraint song-and-dance.
+
+    Why only diffs and not free-text path mentions in cover letters:
+    `diff --git` is a strong signal (machine-generated, unambiguous),
+    whereas prose-shaped mentions like "we should touch fs/foo/" are
+    high-noise. The cost of missing those is that the "other
+    patches touching X" sidebar under-represents discussion-only
+    threads — acceptable trade for high-precision matches."""
+    __tablename__ = "article_files"
+
+    article_id: Mapped[int] = mapped_column(
+        ForeignKey("articles.id", ondelete="CASCADE"), primary_key=True
+    )
+    # Path as it appears after `b/` in the `diff --git` line. We
+    # store the literal string; downstream glob-matching against
+    # MAINTAINERS' `F:` patterns interprets directory semantics.
+    # Indexed for the "other patches touching <path>" reverse query.
+    path: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+
+    article: Mapped[Article] = relationship(back_populates="files")
 
 
 class Subsystem(Base):

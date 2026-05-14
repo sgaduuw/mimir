@@ -18,6 +18,7 @@ from mimir.config import settings
 from mimir.extensions import SessionLocal, engine
 from mimir.models import (
     Article,
+    ArticleFile,
     ArticleList,
     Inbox,
     InboxAddressObservation,
@@ -25,6 +26,7 @@ from mimir.models import (
     ParseFailure,
 )
 from mimir.parser import ParsedArticle, normalize_subject, parse_message
+from mimir.patches import extract_touched_paths
 from mimir.store import MessageNotFound, read_message
 
 logger = logging.getLogger(__name__)
@@ -189,6 +191,10 @@ def _to_article(
     thread_parent = parsed.in_reply_to or (
         parsed.references[-1] if parsed.references else None
     )
+    # Extract diff-touched paths for patch bodies. Empty set on non-
+    # patch articles. ArticleFile rows take their article_id at flush
+    # via the back-populated relationship — no manual id wiring.
+    touched_paths = extract_touched_paths(parsed.body)
     return Article(
         message_id=parsed.message_id,
         subject=parsed.subject,
@@ -198,6 +204,7 @@ def _to_article(
         subject_normalized=normalize_subject(parsed.subject),
         canonical_inbox_id=canonical_inbox_id,
         lists=[ArticleList(inbox_id=inbox_id, epoch=epoch, commit_sha=commit_sha)],
+        files=[ArticleFile(path=p) for p in sorted(touched_paths)],
     )
 
 
