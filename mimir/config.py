@@ -116,6 +116,33 @@ class Settings(BaseSettings):
     # disable.
     analyze_after_ingest_rows: int = 10000
 
+    # IndexNow (https://www.indexnow.org/). Push-notification protocol
+    # for new URLs, consumed by Bing/Yandex/Naver/Seznam/Yep. Google
+    # is *not* a consumer as of this writing — set this expecting Bing
+    # to discover new posts faster, not Google.
+    #
+    # Setting `indexnow_key` enables the feature: the `update` CLI
+    # batches the canonical URLs of articles created in each tick
+    # and POSTs them to `indexnow_endpoint`. The key is a 8-128 char
+    # hex/alnum string (the spec is loose); generate one with e.g.
+    # `python -c "import secrets; print(secrets.token_hex(16))"` and
+    # set INDEXNOW_KEY in the env. Unset = feature disabled, no calls
+    # made, key-verification route not registered.
+    #
+    # `site_base_url` MUST also be set for IndexNow to work — the
+    # protocol needs an absolute host and the keyLocation URL.
+    #
+    # `indexnow_max_per_tick` is the "looks like a backfill, skip the
+    # push" cap. When `update` produces more new articles than this
+    # in one tick (fresh deploy, post-outage catch-up, etc.), the
+    # whole notification is skipped and a warning logged; the sitemap
+    # remains the discovery path for the backlog. Steady-state lkml
+    # is dozens to hundreds per tick, so 1000 is a comfortable
+    # ceiling.
+    indexnow_key: str | None = None
+    indexnow_endpoint: str = "https://api.indexnow.org/indexnow"
+    indexnow_max_per_tick: int = 1000
+
     # security.txt (RFC 9116). Setting `security_contact` enables
     # /security.txt and /.well-known/security.txt; the routes 404 when
     # it's empty. The `Expires:` field is computed at request time as
