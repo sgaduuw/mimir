@@ -32,6 +32,8 @@ from mimir.inboxes import (
     set_tracked_authors,
     update_inbox,
 )
+from mimir import indexnow
+from mimir.config import settings
 from mimir.ingest import (
     DEFAULT_WORKERS,
     backfill_canonicals,
@@ -49,6 +51,9 @@ from mimir.web import (
     meta_sitemap_xml,
     sitemap_index_xml,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _configure_logging(verbose: int) -> None:
@@ -347,14 +352,46 @@ def update_command(
         return
 
     results_by_name = ingest_all(inboxes=inboxes, workers=workers)
+    new_message_ids: list[str] = []
     for name, results in results_by_name.items():
         for r in results:
+            new_message_ids.extend(r.new_message_ids)
             if verbose or r.new or r.linked or r.failed:
                 click.echo(
                     f"{name}/{r.epoch}: new={r.new} linked={r.linked} "
                     f"dup_batch={r.dup_batch} dup_db={r.dup_db} "
                     f"failed={r.failed} head={r.last_commit_sha}"
                 )
+
+    _push_indexnow(new_message_ids)
+
+
+def _push_indexnow(message_ids: list[str]) -> None:
+    """Best-effort IndexNow push for an update tick. No-op when the
+    feature isn't configured; skip-with-warning when the per-tick
+    count exceeds `indexnow_max_per_tick` (fresh-deploy or post-
+    outage catch-up shouldn't act like a backfill — the sitemap
+    handles the backlog naturally on Bing's regular crawl)."""
+    if not message_ids or not settings.indexnow_key:
+        return
+    cap = settings.indexnow_max_per_tick
+    if len(message_ids) > cap:
+        logger.warning(
+            "indexnow: %d new URLs this tick exceeds INDEXNOW_MAX_PER_TICK=%d "
+            "— skipping push, relying on sitemap",
+            len(message_ids), cap,
+        )
+        return
+    base = (settings.site_base_url or "").rstrip("/")
+    if not base:
+        logger.warning(
+            "indexnow: key set but SITE_BASE_URL empty, cannot build URLs — "
+            "skipping push"
+        )
+        return
+    with SessionLocal() as session:
+        urls = indexnow.build_urls(session, message_ids, base=base)
+    indexnow.notify(urls)
 
 
 @click.command("warm-cache")

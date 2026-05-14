@@ -72,6 +72,15 @@ class IngestResult(BaseModel):
     dup_db: int = 0
     failed: int = 0
     last_commit_sha: str | None = None
+    # Message IDs of articles created (`new` bucket only — cross-post
+    # `linked` rows don't produce a new public URL). Consumed by the
+    # `update` scheduler tick to feed IndexNow push notifications.
+    # Bounded by `result.new` per epoch; steady-state lkml ticks are
+    # in the dozens-to-hundreds range. `reindex --from-scratch`-style
+    # operations can balloon this, but those code paths don't call
+    # the IndexNow notifier — the cost there is just a list of
+    # short strings the caller discards.
+    new_message_ids: list[str] = []
 
 
 def _walk_epoch(
@@ -405,6 +414,7 @@ def ingest_epoch(
         ))
         seen_in_batch.add(parsed.message_id)
         result.new += 1
+        result.new_message_ids.append(parsed.message_id)
         logger.debug("%s/%s commit %s: new %s", inbox_name, epoch_name, commit_sha[:12], parsed.message_id)
 
         if processed % PROGRESS_EVERY == 0:

@@ -11,6 +11,24 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- IndexNow (https://www.indexnow.org/) push-notification support.
+  Off by default; set `INDEXNOW_KEY` to enable. When enabled, the
+  `update` scheduler tick POSTs the canonical URLs of newly-
+  ingested articles to `api.indexnow.org`, which fans out to Bing,
+  Yandex, Naver, Seznam, and Yep. Google does not consume
+  IndexNow. Pre-existing articles are not backfilled to the
+  protocol; only articles newly created per tick are pushed.
+  `INDEXNOW_MAX_PER_TICK` (default 1000) is a backfill guard:
+  ticks that produce more new URLs than this skip the push and
+  log a warning, leaving the sitemap as the discovery path for the
+  backlog. The ownership-verification file is served at
+  `/<key>.txt` (route only registered when the key is set; an
+  unconfigured deploy doesn't expose it). All network calls are
+  best-effort: failures log and never break the ingest tick.
+  Operator setup: see "IndexNow" section in README.
+
 ## [1.13.4] – 2026-05-14
 
 PATCH on top of 1.13.3 fixing two `DiscussionForumPosting`
