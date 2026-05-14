@@ -59,6 +59,27 @@ class Article(Base):
     # whitespace collapsed) for JWZ-style grouping of orphan threads.
     subject_normalized: Mapped[str] = mapped_column(String, default="", index=True)
 
+    # Patch-series identity for cover letters (`[PATCH ... 0/N]`
+    # subjects). NULL on every non-cover-letter article. Indexed
+    # so the timeline render — "v1 (date) → v2 (date) → v3 (this)"
+    # — can fetch siblings in one query.
+    # `patch_series_key` is a SHA-1 hex digest over
+    # (author-address, normalised-title) — opaque on purpose so a
+    # query or log line doesn't leak the author's email. See
+    # `mimir.patch_series.series_key`.
+    # `patch_series_version` is a short marker like `v1`, `v2`,
+    # `rfc`. The unversioned-but-cover-letter case is materialised
+    # as `v1`.
+    # Per-patch (1/N, 2/N, ...) attachment to a series is a future
+    # slice; for now these columns are populated for cover letters
+    # only.
+    patch_series_key: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True,
+    )
+    patch_series_version: Mapped[str | None] = mapped_column(
+        String, nullable=True,
+    )
+
     # Author's intended primary list, derived from the first list-shaped
     # address in `To:` (then `Cc:`) at ingest time. NULL when no
     # list-shaped address matched a known inbox — render-time falls back
@@ -245,15 +266,54 @@ class SubsystemMaintainer(Base):
 
 class MainlineState(Base):
     """Tracks which version of the mainline tree (Linus's `linux.git`)
-    we last read MAINTAINERS from. One row keyed by tree_name so the
+    we last interacted with. One row keyed by tree_name so the
     schema permits future mirroring of multiple trees (linux-stable,
-    linux-next) without a migration. `last_commit_sha` is the HEAD
-    commit at the time of the last successful `update-mainline`
-    run; lets the CLI skip the parse step when HEAD hasn't moved."""
+    linux-next) without a migration.
+
+    Two independent cursors:
+    - `last_commit_sha` — HEAD at the last MAINTAINERS load. Lets
+      `update-mainline` skip the parse step when HEAD hasn't moved.
+    - `commits_walked_to_sha` — the most recent commit the
+      `Link:`-trailer walker has processed. Independent of the
+      MAINTAINERS cursor because MAINTAINERS only changes when
+      that one file does, but the commit walker has new work on
+      almost every tick. Walker is incremental: the next run
+      starts after this SHA.
+    """
     __tablename__ = "mainline_state"
 
     tree_name: Mapped[str] = mapped_column(String, primary_key=True)
     last_commit_sha: Mapped[str | None] = mapped_column(String, nullable=True)
+    commits_walked_to_sha: Mapped[str | None] = mapped_column(
+        String, nullable=True,
+    )
+
+
+class MainlineCommit(Base):
+    """One (commit, referenced message-id) pair extracted from a
+    `Link: https://lore.kernel.org/.../<msgid>` trailer in a
+    mainline-tree commit message.
+
+    Composite PK so a commit can carry multiple `Link:` trailers
+    (rare but legal — a fix referencing two prior reports, say).
+    `message_id` is indexed because the patch-page lookup is "given
+    this article's message_id, do we have any commits that applied
+    it?" — the read of record.
+
+    `tree_name` is indexed so the future stable / next surfaces can
+    filter cheaply. For now there's one tree (`linus`).
+
+    `committed_at` is the commit's commit-time in UTC — what we
+    render as "Applied as <sha> on <date>" on the patch page.
+    """
+    __tablename__ = "mainline_commits"
+
+    commit_sha: Mapped[str] = mapped_column(String, primary_key=True)
+    message_id: Mapped[str] = mapped_column(
+        String, primary_key=True, index=True,
+    )
+    tree_name: Mapped[str] = mapped_column(String, index=True)
+    committed_at: Mapped[datetime] = mapped_column()
 
 
 class ParseFailure(Base):
