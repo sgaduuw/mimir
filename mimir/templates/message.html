@@ -199,5 +199,58 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    via the html_data_attrs block above) carry the per-page context the
    controller needs. #}
 {% endif %}
+{# Subsystem header: MAINTAINERS-derived ownership for the
+   files this patch touches. Skipped silently when the article
+   isn't a patch or no subsystem rules match. Rendered above
+   the message body so a reviewer can see who normally takes
+   patches in this area before reading the diff. #}
+{% if subsystem_hits %}
+<section class="subsystem-context" style="margin-block: 1rem;">
+  <details>
+    <summary>
+      <strong>Subsystem:</strong>
+      {% for hit in subsystem_hits %}
+        {{ hit.name }}{% if not loop.last %}, {% endif %}
+      {% endfor %}
+    </summary>
+    {% for hit in subsystem_hits %}
+    <article style="margin-block: 0.5rem;">
+      <header style="margin-block-end: 0.25rem;">
+        <strong>{{ hit.name }}</strong>
+        {% if hit.status %}<small>· {{ hit.status }}</small>{% endif %}
+      </header>
+      {% if hit.maintainers %}
+      <ul style="margin: 0; padding-inline-start: 1rem;">
+        {% for role, name, address in hit.maintainers %}
+        <li><small><kbd>{{ role }}</kbd>
+          {{ name }}{% if name %} {% endif %}&lt;{{ address }}&gt;</small></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </details>
+</section>
+{% endif %}
 {% include "_message_body.html" %}
+{# Related patches: other recent articles touching at least one
+   file this patch touches. The reverse-lookup side of the
+   subsystem header — useful when reviewing one patch in a larger
+   recent flurry. Skipped silently when the article isn't a patch. #}
+{% if related_patches %}
+<section style="margin-block: 1rem;">
+  <details>
+    <summary><strong>Other recent patches touching these files</strong></summary>
+    <ul>
+      {% for p in related_patches %}
+      <li>
+        <a href="/{{ p.inbox_name }}/{{ p.date.year }}/{{ '%02d' % p.date.month }}/{{ p.article_id }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
+        <small>&middot; {{ p.author|safe_from }}
+          &middot; {{ p.date.strftime('%Y-%m-%d') if p.date else '' }}</small>
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+</section>
+{% endif %}
 {% endblock %}
