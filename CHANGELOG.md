@@ -18,13 +18,22 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   (section name, status, `M:`/`R:` maintainers) and a list of
   recent articles linked to this inbox whose diff-touched paths
   match the subsystem's `F:` globs and aren't vetoed by `X:`
-  globs. Slice 1 supports trailing-slash directory prefixes and
-  exact paths; wildcard `F:` rules (`fs/*/file.c`-style) are
-  skipped silently and folded in by a follow-up slice along with
-  the active-threads scoping and the daily-volume sparkline.
-  Operator-facing surface: maintainer addresses render verbatim
-  here (the per-patch header redacts them for compactness, the
-  dashboard doesn't).
+  globs. Operator-facing surface: maintainer addresses render
+  verbatim here (the per-patch header redacts them for
+  compactness, the dashboard doesn't).
+- Subsystem dashboard slice 2: active-threads section + 30-day
+  daily-volume sparkline, both scoped to the subsystem's paths
+  (issue #72 slice 2). Same decay-weighted ranking as the
+  landing-page active threads and the same SVG shape as the
+  per-inbox sparkline; the seed set of the recursive CTE is
+  filtered through a new `_subsystem_path_filter_sql` helper
+  that emits a parameterised `SELECT article_id FROM
+  article_files WHERE …` clause matching the subsystem's `F:` /
+  `X:` rules. Wildcard `F:` globs are still skipped silently in
+  this slice (same as slice 1). Slice 3 will add the
+  active-reviewers cross-ref, which requires indexing
+  `Reviewed-by:` / `Acked-by:` / `Tested-by:` trailers (parser +
+  schema change deferred to a follow-up issue).
 
 ## [1.16.0] – 2026-05-14
 
