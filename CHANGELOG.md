@@ -26,6 +26,20 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   path or article-data changes in this slice; subsequent slices
   add diff-touched-paths extraction and the patch-page
   subsystem header.
+- Diff-touched-paths extraction at ingest (issue #67 slice 2).
+  New `article_files(article_id, path)` join table; populated
+  automatically for articles whose body contains `diff --git`
+  headers. The `b/` (post-rename destination) path is stored —
+  the path reviewers and MAINTAINERS `F:` globs care about.
+  Cross-posted articles don't double-add rows; non-patch bodies
+  produce zero rows. New `backfill-article-files` CLI walks
+  previously-ingested articles to fill the table on existing
+  deployments: `flask --app mimir backfill-article-files [--limit
+  N] [--reprocess]`. Idempotent (rows-already-present articles
+  skip); newest-first walk so a bounded session covers the
+  most-visible articles. No render path changes yet; slice 3
+  wires the subsystem header and the "other patches touching X"
+  sidebar.
 
 ## [1.14.1] – 2026-05-14
 
