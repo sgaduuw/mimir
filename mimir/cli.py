@@ -33,7 +33,7 @@ from mimir.inboxes import (
     set_tracked_authors,
     update_inbox,
 )
-from mimir import indexnow, maintainers, patch_series, patches
+from mimir import indexnow, maintainers, patch_series, patches, trailers
 from mimir.config import settings
 from mimir.ingest import (
     DEFAULT_WORKERS,
@@ -608,6 +608,48 @@ def backfill_article_files_command(
     click.echo(
         f"backfill complete: examined={result.examined} "
         f"indexed={result.indexed} no_diff={result.no_diff} "
+        f"skipped={result.skipped} failed={result.failed}"
+    )
+
+
+@click.command("backfill-article-trailers")
+@click.option(
+    "--limit", type=int, default=None,
+    help="Cap the number of articles examined this session.",
+)
+@click.option(
+    "--reprocess", is_flag=True,
+    help="Re-extract for articles that already have rows (deletes "
+         "existing rows first). Use after an extractor change.",
+)
+@click.option(
+    "-v", "--verbose", count=True,
+    help="-v: progress every batch.",
+)
+def backfill_article_trailers_command(
+    limit: int | None, reprocess: bool, verbose: int,
+) -> None:
+    """One-shot walker that fills `article_trailers` for articles
+    ingested before the extractor landed.
+
+    Mirrors `backfill-article-files`: newest-first, idempotent,
+    mirror-unreachable rows skipped (not failed).
+    """
+    _configure_logging(verbose)
+    progress_fn = None
+    if verbose:
+        def progress_fn(r):  # noqa: E306
+            click.echo(
+                f"... examined={r.examined} indexed={r.indexed} "
+                f"no_trailers={r.no_trailers} skipped={r.skipped} "
+                f"failed={r.failed}"
+            )
+    result = trailers.backfill_article_trailers(
+        limit=limit, reprocess=reprocess, progress=progress_fn,
+    )
+    click.echo(
+        f"backfill complete: examined={result.examined} "
+        f"indexed={result.indexed} no_trailers={result.no_trailers} "
         f"skipped={result.skipped} failed={result.failed}"
     )
 
@@ -1484,6 +1526,7 @@ def register_cli(app: Flask) -> None:
     app.cli.add_command(update_command)
     app.cli.add_command(update_mainline_command)
     app.cli.add_command(backfill_article_files_command)
+    app.cli.add_command(backfill_article_trailers_command)
     app.cli.add_command(backfill_patch_series_command)
     app.cli.add_command(warm_cache_command)
     app.cli.add_command(vacuum_command)

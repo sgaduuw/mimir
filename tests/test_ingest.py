@@ -28,6 +28,7 @@ from mimir.models import (
     Article,
     ArticleFile,
     ArticleList,
+    ArticleTrailer,
     Inbox,
     InboxAddressObservation,
     IngestState,
@@ -198,6 +199,60 @@ def test_ingest_extracts_no_paths_for_prose_only_body(
         ).scalar_one()
         rows = s.execute(
             select(ArticleFile).where(ArticleFile.article_id == art.id)
+        ).all()
+    assert rows == []
+
+
+def test_ingest_extracts_review_trailers(seeded_db, tmp_path):
+    """Bodies carrying `Reviewed-by:` / `Acked-by:` / etc. land
+    one ArticleTrailer row per attestation. Address is stored
+    verbatim; address_normalized is lowercased for case-insensitive
+    per-author lookups (slice 3 of #97). Signed-off-by is NOT
+    indexed (chain-of-custody, not a review signal)."""
+    alpha = _alpha(seeded_db)
+    body = (
+        b"Looks good.\n\n"
+        b"Signed-off-by: Author <author@example.com>\n"
+        b"Reviewed-by: Alice <Alice@Example.COM>\n"
+        b"Acked-by: Bob <bob@kernel.org>\n"
+    )
+    _build_pubinbox_repo(tmp_path / "0.git", [
+        _rfc5322("trailers@example.com", body=body),
+    ])
+    with seeded_db() as s:
+        result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+
+    assert result.new == 1
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == "trailers@example.com")
+        ).scalar_one()
+        rows = sorted(
+            (t.role, t.address, t.address_normalized) for t in s.execute(
+                select(ArticleTrailer).where(ArticleTrailer.article_id == art.id)
+            ).scalars()
+        )
+    assert rows == [
+        ("Acked-by", "bob@kernel.org", "bob@kernel.org"),
+        ("Reviewed-by", "Alice@Example.COM", "alice@example.com"),
+    ]
+
+
+def test_ingest_extracts_no_trailers_for_prose_only_body(seeded_db, tmp_path):
+    """Prose bodies create zero ArticleTrailer rows."""
+    alpha = _alpha(seeded_db)
+    _build_pubinbox_repo(tmp_path / "0.git", [
+        _rfc5322("prose-trailers@example.com", body=b"just chatting\n"),
+    ])
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == "prose-trailers@example.com")
+        ).scalar_one()
+        rows = s.execute(
+            select(ArticleTrailer).where(ArticleTrailer.article_id == art.id)
         ).all()
     assert rows == []
 

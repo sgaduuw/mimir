@@ -76,6 +76,7 @@ def _reset_db():
         Article,
         ArticleFile,
         ArticleList,
+        ArticleTrailer,
         CacheEntry,
         Inbox,
         InboxAddressObservation,
@@ -93,6 +94,7 @@ def _reset_db():
         # and immune to FK-order surprises.
         s.execute(delete(IngestState))
         s.execute(delete(ArticleFile))   # FK to articles; clear before Article
+        s.execute(delete(ArticleTrailer))  # FK to articles
         s.execute(delete(ArticleList))
         s.execute(delete(Article))
         s.execute(delete(ParseFailure))
