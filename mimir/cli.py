@@ -391,7 +391,14 @@ def _push_indexnow(message_ids: list[str]) -> None:
         return
     with SessionLocal() as session:
         urls = indexnow.build_urls(session, message_ids, base=base)
-    indexnow.notify(urls)
+    submitted = indexnow.notify(urls)
+    # State-change line at default verbosity: the per-epoch
+    # `name/epoch: new=N ...` lines emit via click.echo at the same
+    # level for the same reason — "anything in the scheduler log
+    # signals a real event." The INFO log inside `notify` stays put
+    # for `-v` operators who want the per-chunk status detail.
+    if submitted:
+        click.echo(f"indexnow: pushed {submitted} URL(s)")
 
 
 @click.command("warm-cache")

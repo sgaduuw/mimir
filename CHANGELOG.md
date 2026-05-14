@@ -11,6 +11,23 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.14.1] – 2026-05-14
+
+PATCH on top of 1.14.0 surfacing successful IndexNow pushes in
+default scheduler output. UX-only; no schema, no config, no wire
+contract change.
+
+### Changed
+
+- `update` now prints `indexnow: pushed N URL(s)` at default
+  verbosity on every successful push, mirroring the existing per-
+  epoch state-change lines. Previously the only IndexNow signal
+  in default scheduler output was failure paths (cap exceeded,
+  network error); the success line was an INFO log suppressed at
+  default verbosity, so "is IndexNow actually working?" needed
+  `-v` to answer. The per-chunk INFO log inside `notify` stays
+  put for operators who want the full status detail.
+
 ## [1.14.0] – 2026-05-14
 
 MINOR release adding off-by-default IndexNow push-notification
