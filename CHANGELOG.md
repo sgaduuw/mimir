@@ -24,6 +24,21 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   indent-based heuristics) so prose with code-shaped tokens
   doesn't get false-positive highlighting. Fences inside
   quoted blocks (`> \`\`\`c`) keep the quote structure.
+- Patch-series cover-letter timeline (issue #65). Cover-letter
+  subjects (`[PATCH ... 0/N] <title>`) are detected at ingest and
+  tagged with a stable `patch_series_key` + `patch_series_version`
+  on the Article row. The message-page view for a cover letter
+  renders an "Series revisions: v1 (date) → v2 (date) → **v3**"
+  timeline above the body when ≥2 revisions exist, each prior
+  revision linked to its own page. Series identity is
+  `(normalised-title, author-address)` SHA-1, so a query or log
+  line doesn't leak the author's email through the key itself.
+  Individual `1/N`+ patches are not attached to the series in
+  this slice — that's a future refinement (subject churn between
+  revisions makes per-patch linking a harder heuristic problem).
+  New `backfill-patch-series` CLI walks pre-detector articles to
+  fill the columns on existing deployments — cheap (subject +
+  author only, no body re-parse).
 
 - MAINTAINERS file parser + new `update-mainline` CLI (foundation
   for issue #67, MAINTAINERS-driven subsystem awareness). Mirrors
@@ -61,6 +76,38 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   most-visible articles. No render path changes yet; slice 3
   wires the subsystem header and the "other patches touching X"
   sidebar.
+- Patch-page subsystem header and "other recent patches touching
+  these files" sidebar (issue #67 slice 3 — closes #67). For
+  articles with at least one `article_files` row, the message
+  page renders a collapsible header showing every MAINTAINERS
+  section that claims any of the touched paths, with the
+  section's status (`Maintained`, `Supported`, etc.) and its
+  `M:`/`R:` entries (display name + address, role tagged with
+  `<kbd>M</kbd>` or `<kbd>R</kbd>`). Below the message body, a
+  second collapsible block surfaces up to 5 other recent
+  articles that share any path, ordered by date desc, linking
+  to each article's canonical inbox URL so cross-posts resolve
+  cleanly. Both blocks are silently omitted for non-patch
+  articles (no `article_files` rows = empty results). Glob
+  matching handles MAINTAINERS' three common shapes (directory
+  prefix with trailing slash, exact-file, fnmatch wildcard); `X:`
+  excludes veto include matches within the same subsystem only.
+  Unblocks issue #72 (per-subsystem dashboards), which reads the
+  same `subsystems` + `article_files` joins from this slice.
+- Mainline `Link:`-trailer indexing (issue #66). The
+  `update-mainline` CLI now runs a second pass after MAINTAINERS:
+  walks every commit on the configured mainline tree, extracts
+  any `Link: https://lore.kernel.org/.../<msgid>` trailers, and
+  inserts a row per (commit, msgid) into the new
+  `mainline_commits` table. Resumable via a second cursor on
+  `MainlineState` so steady-state ticks only walk new commits.
+  First-run walks the full Linus history (~1.5M commits, minutes
+  on a fresh deploy). Patch pages now surface "Applied as
+  `<sha>` in `linus` on YYYY-MM-DD" whenever the article's
+  Message-ID matches a recorded commit — the user-visible payoff
+  that closes the lore-archive → mainline-tree loop. New flags
+  on `update-mainline`: `--skip-commits` (load MAINTAINERS
+  only), `--skip-maintainers` (walker only).
 
 ## [1.14.1] – 2026-05-14
 

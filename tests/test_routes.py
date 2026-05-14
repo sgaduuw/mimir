@@ -1840,6 +1840,273 @@ def test_message_page_emits_discussion_forum_posting(client, tmp_path):
     assert posting["dateModified"] == posting["datePublished"]
 
 
+def _seed_subsystem(name, status, files, maintainers=()):
+    """Slot a Subsystem row in for route-side render tests. Keeps
+    each test self-contained; the autouse `_reset_db` wipes
+    between tests."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Subsystem, SubsystemMaintainer, SubsystemPath
+    with SessionLocal() as s:
+        sub = Subsystem(name=name, status=status)
+        for f in files:
+            sub.paths.append(SubsystemPath(glob=f, is_exclude=False))
+        for role, mname, addr in maintainers:
+            sub.maintainers.append(
+                SubsystemMaintainer(role=role, name=mname, address=addr)
+            )
+        s.add(sub)
+        s.commit()
+
+
+def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
+    """A patch article whose touched-paths match a Subsystem
+    surfaces the section name + maintainer on the rendered page.
+    Pins the slice-3 happy path: subsystem_hits flows from view
+    to template, the <details> block renders."""
+    _seed_subsystem(
+        "BCACHEFS", "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[("M", "Kent Overstreet", "kent.overstreet@linux.dev")],
+    )
+    patch_body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "subsys-patch@example.com", body=patch_body,
+    )
+    body = client.get(url).data.decode()
+    # Subsystem info renders inside the article <header> alongside
+    # From / Date — it's identity metadata, not a floating aside.
+    # Maintainer name shown, no address, no role tag. Detail moved
+    # to MAINTAINERS-driven per-subsystem dashboards (issue #72).
+    assert "<strong>Subsystem:</strong>" in body
+    assert "BCACHEFS" in body
+    assert "Kent Overstreet" in body
+    assert "Maintainer" in body
+    assert "kent.overstreet@linux.dev" not in body
+    assert "<kbd>M</kbd>" not in body
+
+
+def test_message_page_no_subsystem_block_when_no_match(client, tmp_path):
+    """A patch touching paths no Subsystem claims renders without
+    the Subsystem header line."""
+    _seed_subsystem(
+        "BCACHEFS", "Maintained", files=["fs/bcachefs/"],
+    )
+    patch_body = (
+        b"diff --git a/fs/unrelated/file.c b/fs/unrelated/file.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "no-match@example.com", body=patch_body,
+    )
+    body = client.get(url).data.decode()
+    assert "<strong>Subsystem:</strong>" not in body
+
+
+def test_message_page_no_subsystem_block_for_prose_only(client, tmp_path):
+    """A discussion-only article (no diff in body) has no
+    ArticleFile rows, so no Subsystem header line and no
+    related-patches block."""
+    _seed_subsystem("BCACHEFS", "Maintained", files=["fs/bcachefs/"])
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "prose@example.com",
+        body=b"just a discussion, no diff\n",
+    )
+    body = client.get(url).data.decode()
+    assert "<strong>Subsystem:</strong>" not in body
+    assert "Other recent patches touching" not in body
+
+
+def test_message_page_shows_related_patches_touching_same_file(
+    client, tmp_path,
+):
+    """When two patches touch the same file, viewing one surfaces
+    the other in the "Other recent patches touching these files"
+    section. The current article is filtered out of its own
+    sidebar.
+
+    The article we view (second) is the one whose mirror_path
+    `_ingest_one_article` left in place — that's the one the route
+    can re-parse via `read_message`. The first article only needs
+    its ArticleFile rows to land for the related-patches reverse
+    lookup, which doesn't re-read the blob."""
+    patch_body = (
+        b"diff --git a/fs/shared/file.c b/fs/shared/file.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    # Ingest each into its own tmp subdir; `_ingest_one_article`
+    # repoints the inbox's mirror_path each call, so only the
+    # SECOND article's blob is reachable for the message view.
+    (tmp_path / "first").mkdir()
+    (tmp_path / "second").mkdir()
+    _, first_url = _ingest_one_article(
+        tmp_path / "first", "alpha", "first@example.com",
+        body=patch_body, subject="first touching shared",
+    )
+    _, second_url = _ingest_one_article(
+        tmp_path / "second", "alpha", "second@example.com",
+        body=patch_body, subject="second touching shared",
+    )
+    body = client.get(second_url).data.decode()
+    assert "Other recent patches touching" in body
+    assert "first touching shared" in body
+    # Self-exclusion: the current article's subject isn't in the
+    # related-patches block.
+    related_section = body.split("Other recent patches touching")[1]
+    assert "second touching shared" not in related_section
+
+
+def _seed_mainline_commit(message_id, commit_sha="abc1234567890def" + "0" * 24,
+                          tree_name="linus", date=None):
+    """Insert a MainlineCommit row for a route test. The render
+    side reads commit_sha (truncated to 12 chars), tree_name, and
+    committed_at."""
+    from datetime import datetime, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+    with SessionLocal() as s:
+        s.add(MainlineCommit(
+            commit_sha=commit_sha,
+            message_id=message_id,
+            tree_name=tree_name,
+            committed_at=date or datetime(2024, 6, 1, tzinfo=timezone.utc),
+        ))
+        s.commit()
+
+
+def test_message_page_shows_applied_as_when_mainline_commit_matches(
+    client, tmp_path,
+):
+    """An article whose Message-ID matches a `mainline_commits` row
+    surfaces an "Applied as <sha>" line above the message body.
+    Pins the issue-66 happy path: walker → DB → render."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "applied-msg@example.com",
+    )
+    _seed_mainline_commit(
+        message_id="applied-msg@example.com",
+        commit_sha="abc1234567890def1234567890abcdef12345678",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="mainline-applications"' in body
+    assert "Applied as" in body
+    # SHA truncated to first 12 chars on display.
+    assert "<code>abc123456789</code>" in body
+    assert "<code>linus</code>" in body
+    # The tree-name is disambiguated with the word "tree" so the
+    # short identifier doesn't read as a person's first name.
+    assert "tree" in body
+
+
+def test_message_page_no_applied_as_when_no_commit_matches(
+    client, tmp_path,
+):
+    """Articles without a mainline-commit reference render without
+    the aside. Absence is non-informative (may simply not be
+    indexed yet); the surface is opt-in."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "unapplied@example.com",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="mainline-applications"' not in body
+    assert "Applied as" not in body
+
+
+def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_links(
+    client, tmp_path,
+):
+    """When a commit references the article via two `Link:` trailers
+    (rare), or when two distinct commits apply the same patch (less
+    rare on backports), every mainline_commits row gets a line.
+    Ordered by committed_at asc — the first application is the
+    primary one."""
+    from datetime import datetime, timezone
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "multi-app@example.com",
+    )
+    _seed_mainline_commit(
+        message_id="multi-app@example.com",
+        commit_sha="11" * 20,
+        date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+    )
+    _seed_mainline_commit(
+        message_id="multi-app@example.com",
+        commit_sha="22" * 20,
+        date=datetime(2024, 7, 1, tzinfo=timezone.utc),
+    )
+    body = client.get(url).data.decode()
+    # Both shas appear, ordered by date asc (June before July).
+    first_idx = body.index("<code>111111111111</code>")
+    second_idx = body.index("<code>222222222222</code>")
+    assert first_idx < second_idx
+
+
+def test_message_page_renders_patch_series_timeline(client, tmp_path):
+    """When two cover letters share a `patch_series_key`, viewing
+    one renders a `<aside class="patch-series">` with both
+    versions: the current one as plain text (`<strong>v2</strong>`),
+    the other as a link. Pins the issue-65 happy path."""
+    # Two cover-letter subjects, same author, same title → same
+    # series. mkdir each subdir first; `_ingest_one_article`
+    # creates `0.git` inside but doesn't make the parent.
+    (tmp_path / "v1").mkdir()
+    (tmp_path / "v2").mkdir()
+    common_author = "Alice <a@example>"
+    _, v1_url = _ingest_one_article(
+        tmp_path / "v1", "alpha", "v1-cover@example.com",
+        subject="[PATCH 0/3] improve foo handling",
+        author=common_author,
+    )
+    _, v2_url = _ingest_one_article(
+        tmp_path / "v2", "alpha", "v2-cover@example.com",
+        subject="[PATCH v2 0/3] improve foo handling",
+        author=common_author,
+    )
+    body = client.get(v2_url).data.decode()
+    assert 'class="patch-series"' in body
+    assert "Series revisions:" in body
+    # The current revision (v2) is rendered as bold, not as a link.
+    assert "<strong>v2</strong>" in body
+    # The prior revision (v1) is rendered as a link.
+    assert "<a href=" in body.split('class="patch-series"')[1].split("</aside>")[0]
+    assert ">v1</a>" in body.split('class="patch-series"')[1].split("</aside>")[0]
+    # Arrow between revisions.
+    assert "→" in body.split('class="patch-series"')[1].split("</aside>")[0]
+
+
+def test_message_page_no_series_timeline_for_individual_patch(
+    client, tmp_path,
+):
+    """A `[PATCH v2 1/3]` subject is an individual patch, not a
+    cover letter. The series block doesn't render on those pages
+    in slice 1."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "patch-1of3@example.com",
+        subject="[PATCH v2 1/3] foo: add bar",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="patch-series"' not in body
+    assert "Series revisions:" not in body
+
+
+def test_message_page_no_series_timeline_for_solo_cover_letter(
+    client, tmp_path,
+):
+    """A cover letter with no other revisions in the DB (only
+    v1, no v2 yet) still gets the `patch_series_key` set but
+    renders no timeline — the timeline needs ≥2 revisions to be
+    useful, and one row on its own would just say "v1 (this)"
+    which is visual clutter."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "lonely-v1@example.com",
+        subject="[PATCH 0/3] something nobody resent",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="patch-series"' not in body
+
+
 def test_message_page_emits_breadcrumb_list(client, tmp_path):
     """The same @graph also carries a BreadcrumbList with the
     Site → Inbox → Subject chain."""
