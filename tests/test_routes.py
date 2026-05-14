@@ -1879,6 +1879,120 @@ def test_message_json_ld_author_strips_email_even_when_allowlisted(
     assert "@b.example" not in posting["author"]["name"]
 
 
+def test_message_json_ld_includes_text_snippet(client, tmp_path):
+    """Google's DiscussionForumPosting validator requires one of
+    `text` / `image` / `video`; we ship `text` derived from the
+    parsed body. Search Console flagged this as critical on
+    2026-05-14."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-text@example.com",
+        body=b"Hello world, this is the body of the message.",
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    assert "text" in posting
+    assert posting["text"].startswith("Hello world")
+
+
+def test_message_json_ld_text_truncated_at_word_boundary(client, tmp_path):
+    """Long bodies are truncated under JSON_LD_TEXT_MAX so the
+    structured-data blob stays lean across the crawl. Truncation
+    falls on the last whitespace inside the cap and adds an
+    ellipsis."""
+    from mimir.web import JSON_LD_TEXT_MAX
+    # 4× the cap, all real words so collapsing whitespace doesn't
+    # shrink it under the limit.
+    body = (b"alpha bravo " * (JSON_LD_TEXT_MAX // 6))
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-text-long@example.com", body=body,
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    text = posting["text"]
+    assert text.endswith("...")
+    # Trailing ellipsis is 3 chars; the rest must fit under the cap.
+    assert len(text) <= JSON_LD_TEXT_MAX + 3
+    # No mid-word cut: the char before the ellipsis is a letter
+    # (last full word) not a partial token.
+    assert text[-4].isalpha()
+
+
+def test_message_json_ld_text_redacts_dco_trailer_addresses(
+    client, tmp_path, monkeypatch,
+):
+    """The JSON-LD `text` snippet must apply the same DCO trailer
+    redaction as the visible HTML — otherwise non-allowlisted
+    Signed-off-by addresses leak through structured data even
+    though the rendered page redacts them. CONTEXT.md flags
+    cross-surface consistency as the rule."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "email_allowlist", ["@kernel.org"])
+    body = (
+        b"text body\n\n"
+        b"Signed-off-by: Maintainer <m@kernel.org>\n"
+        b"Signed-off-by: Outsider <o@example.com>\n"
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-text-dco@example.com", body=body,
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    text = posting["text"]
+    assert "m@kernel.org" in text     # allowlisted survives
+    assert "o@example.com" not in text  # non-allowlisted redacted
+    assert "<redacted>" in text
+
+
+def test_message_json_ld_text_omitted_when_body_empty(client, tmp_path):
+    """Whitespace-only bodies emit no `text` field rather than an
+    empty string, which would re-fail the validator that flagged
+    this in the first place."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-text-empty@example.com",
+        body=b"   \n\t  \n",
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    assert "text" not in posting
+
+
+def test_message_json_ld_author_has_url(client, tmp_path, monkeypatch):
+    """`author.url` points at the per-inbox author view. Search
+    Console flagged the missing url as a non-critical issue on
+    2026-05-14. The URL uses the canonical inbox (passed through
+    from the message view) and percent-encodes the display name so
+    spaces and other path-unsafe chars survive intact."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-author-url@example.com",
+        author="David Woodhouse <dwmw2@infradead.org>",
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    author = posting["author"]
+    assert author["name"] == "David Woodhouse"
+    assert author["url"].endswith("/alpha/author/David%20Woodhouse")
+
+
+def test_message_json_ld_author_url_omitted_for_unknown_sender(
+    client, tmp_path, monkeypatch,
+):
+    """A bare address with no display name renders as
+    `unknown sender` (see `_display_name_filter`), which would
+    match no one as a substring — omit the URL so we don't ship
+    a stable link to a useless query."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-author-url-bare@example.com",
+        # Bare address → parseaddr returns no display name.
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    assert "url" not in posting["author"]
+
+
 def test_message_page_visible_html_redacts_non_allowlisted_from_address(
     client, tmp_path, monkeypatch,
 ):
