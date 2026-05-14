@@ -1876,16 +1876,21 @@ def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
         tmp_path, "alpha", "subsys-patch@example.com", body=patch_body,
     )
     body = client.get(url).data.decode()
-    assert 'class="subsystem-context"' in body
+    # Subsystem info renders inside the article <header> alongside
+    # From / Date — it's identity metadata, not a floating aside.
+    # Maintainer name shown, no address, no role tag. Detail moved
+    # to MAINTAINERS-driven per-subsystem dashboards (issue #72).
+    assert "<strong>Subsystem:</strong>" in body
     assert "BCACHEFS" in body
     assert "Kent Overstreet" in body
-    assert "kent.overstreet@linux.dev" in body
-    assert "<kbd>M</kbd>" in body
+    assert "Maintainer" in body
+    assert "kent.overstreet@linux.dev" not in body
+    assert "<kbd>M</kbd>" not in body
 
 
 def test_message_page_no_subsystem_block_when_no_match(client, tmp_path):
     """A patch touching paths no Subsystem claims renders without
-    the header block. Avoids an empty `<details>` shell."""
+    the Subsystem header line."""
     _seed_subsystem(
         "BCACHEFS", "Maintained", files=["fs/bcachefs/"],
     )
@@ -1897,20 +1902,20 @@ def test_message_page_no_subsystem_block_when_no_match(client, tmp_path):
         tmp_path, "alpha", "no-match@example.com", body=patch_body,
     )
     body = client.get(url).data.decode()
-    assert 'class="subsystem-context"' not in body
+    assert "<strong>Subsystem:</strong>" not in body
 
 
 def test_message_page_no_subsystem_block_for_prose_only(client, tmp_path):
     """A discussion-only article (no diff in body) has no
-    ArticleFile rows, so no subsystem block and no related-patches
-    block."""
+    ArticleFile rows, so no Subsystem header line and no
+    related-patches block."""
     _seed_subsystem("BCACHEFS", "Maintained", files=["fs/bcachefs/"])
     _, url = _ingest_one_article(
         tmp_path, "alpha", "prose@example.com",
         body=b"just a discussion, no diff\n",
     )
     body = client.get(url).data.decode()
-    assert 'class="subsystem-context"' not in body
+    assert "<strong>Subsystem:</strong>" not in body
     assert "Other recent patches touching" not in body
 
 
@@ -1990,6 +1995,9 @@ def test_message_page_shows_applied_as_when_mainline_commit_matches(
     # SHA truncated to first 12 chars on display.
     assert "<code>abc123456789</code>" in body
     assert "<code>linus</code>" in body
+    # The tree-name is disambiguated with the word "tree" so the
+    # short identifier doesn't read as a person's first name.
+    assert "tree" in body
 
 
 def test_message_page_no_applied_as_when_no_commit_matches(
