@@ -1317,6 +1317,17 @@ def threads_since_view(inbox_name: str, since_str: str):
     )
 
 
+# Threshold above which the message-page layout switches from
+# "thread tree above body" to "thread tree as a right rail" on
+# wide viewports. Picked from issue #68's >~20-message guideline:
+# below this, the above-body box is fine; above it, the box's
+# height cap ends up paginating most of the tree out of view and
+# the rail layout (mutt / Thunderbird / Discourse) is what
+# everyone expects. The CSS still falls back to above-body on
+# narrow viewports regardless of length.
+LONG_THREAD_SIDEBAR_THRESHOLD = 20
+
+
 # Cap on the per-subsystem dashboard's recent-patches list.
 # MAINTAINERS subsystems vary wildly in volume (BCACHEFS is busy,
 # some are dormant). A flat cap keeps response size bounded and the
@@ -1997,6 +2008,11 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
     if article.thread_parent and article.thread_parent in thread_urls:
         parent_url = thread_urls[article.thread_parent]
 
+    # Long threads switch to a right-rail tree layout on wide
+    # viewports — see LONG_THREAD_SIDEBAR_THRESHOLD. Narrow
+    # viewports stack regardless via the CSS media query.
+    long_thread = len(thread) >= LONG_THREAD_SIDEBAR_THRESHOLD
+
     # HTMX intra-thread swap: when the click came from a tree link, return
     # only the message-body partial (just the <article id="msg">). The
     # surrounding tree + nav stay put on the client; the client-side script
@@ -2027,4 +2043,5 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         related_patches=related_patches,
         mainline_applications=mainline_applications,
         patch_series_revisions=patch_series_revisions,
+        long_thread=long_thread,
     )

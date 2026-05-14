@@ -26,12 +26,46 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
 {%- if thread and thread|length > 1 %} data-thread-root-id="{{ thread[0].id }}" data-thread-context="{{ 'root' if thread[0].message_id == article.message_id else 'deep' }}"{%- endif -%}
 {% endblock %}
 {% block content %}
+<div class="message-page-grid{% if long_thread %} message-page-grid--with-sidebar{% endif %}">
 {% if thread|length > 1 or parent_off_list %}
 {# Three-state fold for the thread tree. State lives on <html data-thread-fold>
    and is set by the inline script just below before this section paints, so
    a localStorage pin doesn't cause a visible flash from the server's context
    default (root → partial, deep → closed). #}
 <style>
+  /* Long-thread sidebar layout (issue #68 slice 2). For threads
+     above LONG_THREAD_SIDEBAR_THRESHOLD on wide viewports, the
+     thread tree becomes a right rail and the message body / asides
+     flow as the main column. Narrow viewports always stack
+     (thread above body), regardless of length. */
+  @media (min-width: 60rem) {
+    .message-page-grid--with-sidebar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 22rem;
+      grid-template-areas: "main sidebar";
+      column-gap: 1.5rem;
+      align-items: start;
+    }
+    .message-page-grid--with-sidebar > .message-page-main {
+      grid-area: main;
+      min-width: 0;
+    }
+    .message-page-grid--with-sidebar > .thread-context {
+      grid-area: sidebar;
+      position: sticky;
+      top: 1rem;
+      max-height: calc(100vh - 2rem);
+      display: flex;
+      flex-direction: column;
+    }
+    /* In sidebar mode the box should fill its rail vertically and
+       scroll inside, not the height-capped above-body shape. */
+    .message-page-grid--with-sidebar .thread-context .thread-box {
+      max-height: none;
+      flex: 1 1 auto;
+      overflow-y: auto;
+    }
+  }
   .thread-context { margin-block: 1rem; }
   /* Toolbar sits flush against the top of the box in `partial` and visibly
      standalone elsewhere. The label collapses to the summary line in
@@ -199,6 +233,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    via the html_data_attrs block above) carry the per-page context the
    controller needs. #}
 {% endif %}
+<div class="message-page-main">
 {# Mainline application(s): if this article's Message-ID is
    referenced by a `Link:` trailer in a Linus-tree commit, surface
    the commit SHA + date. The patch-page reader's "did this land?"
@@ -265,4 +300,6 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
   </details>
 </section>
 {% endif %}
+</div>{# /.message-page-main #}
+</div>{# /.message-page-grid #}
 {% endblock %}
