@@ -118,10 +118,12 @@ def test_update_mainline_is_noop_when_head_unchanged(
 
     runner = CliRunner()
     assert runner.invoke(update_mainline_command, ["--skip-fetch"]).exit_code == 0
-    # Second invocation: same HEAD → no-op message, no work done.
+    # Second invocation: same HEAD → no-op message for MAINTAINERS,
+    # no work done on that side. (The Link-trailer walker still
+    # runs but examines zero new commits.)
     result = runner.invoke(update_mainline_command, ["--skip-fetch"])
     assert result.exit_code == 0
-    assert "no change" in result.output
+    assert "MAINTAINERS unchanged" in result.output
     # Row count unchanged (sanity: the no-op didn't accidentally
     # truncate and not re-insert).
     with seeded_db() as s:
@@ -192,6 +194,123 @@ def test_update_mainline_picks_up_head_movement(
         assert names == {"BCACHEFS", "XFS FILESYSTEM"}, (
             "old subsystems must be gone after replace-all"
         )
+
+
+def test_update_mainline_walks_link_trailers_in_commit_messages(
+    seeded_db, tmp_path, monkeypatch,
+):
+    """The MAINTAINERS load and the Link-trailer walk are
+    independent passes on the same tree. The walker indexes
+    every `Link: https://lore.kernel.org/.../<msgid>` it finds
+    into `mainline_commits`. Pins the second-pass wiring inside
+    `update-mainline`."""
+    repo_path = tmp_path / "linux.git"
+    _build_mainline_repo(repo_path, _SAMPLE_MAINTAINERS)
+    # Append a commit with a lore Link trailer on top of the
+    # MAINTAINERS commit. The walker should see two commits and
+    # extract one row.
+    from dulwich.repo import Repo
+    from dulwich.objects import Blob, Commit, Tree
+    repo = Repo(str(repo_path))
+    parent = repo.head()
+    blob = Blob.from_string(_SAMPLE_MAINTAINERS)
+    repo.object_store.add_object(blob)
+    tree = Tree()
+    tree.add(b"MAINTAINERS", 0o100644, blob.id)
+    repo.object_store.add_object(tree)
+    extra = Commit()
+    extra.tree = tree.id
+    extra.parents = [parent]
+    extra.author = extra.committer = b"t <t@x>"
+    extra.commit_time = extra.author_time = 1700000100
+    extra.commit_timezone = extra.author_timezone = 0
+    extra.encoding = b"UTF-8"
+    extra.message = (
+        b"Fix something.\n\n"
+        b"Link: https://lore.kernel.org/r/fix-msg@example.com\n"
+    )
+    repo.object_store.add_object(extra)
+    repo.refs[b"HEAD"] = extra.id
+    monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
+
+    result = CliRunner().invoke(update_mainline_command, ["--skip-fetch"])
+    assert result.exit_code == 0, result.output
+    assert "walked 2 commits" in result.output
+
+    from mimir.models import MainlineCommit
+    with seeded_db() as s:
+        rows = list(s.execute(select(MainlineCommit)).scalars())
+    assert [r.message_id for r in rows] == ["fix-msg@example.com"]
+
+
+def test_update_mainline_skip_commits_does_not_walk(
+    seeded_db, tmp_path, monkeypatch,
+):
+    """`--skip-commits` keeps the MAINTAINERS pass but skips the
+    Link-trailer walk. Useful when an operator only wants to
+    refresh the subsystem schema."""
+    repo_path = tmp_path / "linux.git"
+    _build_mainline_repo(repo_path, _SAMPLE_MAINTAINERS)
+    monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
+    result = CliRunner().invoke(
+        update_mainline_command, ["--skip-fetch", "--skip-commits"],
+    )
+    assert result.exit_code == 0
+    assert "loaded 2 subsystems" in result.output
+    assert "walked" not in result.output
+
+    from mimir.models import MainlineCommit
+    with seeded_db() as s:
+        assert s.execute(select(MainlineCommit)).all() == []
+
+
+def test_update_mainline_skip_maintainers_only_walks_commits(
+    seeded_db, tmp_path, monkeypatch,
+):
+    """`--skip-maintainers` does the inverse — only the
+    Link-trailer walk runs. Useful for an operator who wants to
+    backfill mainline_commits without re-loading subsystems."""
+    repo_path = tmp_path / "linux.git"
+    _build_mainline_repo(
+        repo_path,
+        _SAMPLE_MAINTAINERS,
+    )
+    # Hand-build a commit with a Link trailer on top.
+    from dulwich.repo import Repo
+    from dulwich.objects import Blob, Commit, Tree
+    repo = Repo(str(repo_path))
+    parent = repo.head()
+    blob = Blob.from_string(_SAMPLE_MAINTAINERS)
+    repo.object_store.add_object(blob)
+    tree = Tree()
+    tree.add(b"MAINTAINERS", 0o100644, blob.id)
+    repo.object_store.add_object(tree)
+    extra = Commit()
+    extra.tree = tree.id
+    extra.parents = [parent]
+    extra.author = extra.committer = b"t <t@x>"
+    extra.commit_time = extra.author_time = 1700000100
+    extra.commit_timezone = extra.author_timezone = 0
+    extra.encoding = b"UTF-8"
+    extra.message = b"x\n\nLink: https://lore.kernel.org/r/only-walk@x\n"
+    repo.object_store.add_object(extra)
+    repo.refs[b"HEAD"] = extra.id
+    monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
+
+    result = CliRunner().invoke(
+        update_mainline_command, ["--skip-fetch", "--skip-maintainers"],
+    )
+    assert result.exit_code == 0
+    assert "loaded" not in result.output    # MAINTAINERS skipped
+    assert "walked 2 commits" in result.output
+
+    from mimir.models import MainlineCommit, Subsystem
+    with seeded_db() as s:
+        # No subsystems loaded.
+        assert s.execute(select(Subsystem)).all() == []
+        # But mainline_commits got the row.
+        rows = list(s.execute(select(MainlineCommit)).scalars())
+    assert [r.message_id for r in rows] == ["only-walk@x"]
 
 
 def test_update_mainline_errors_if_maintainers_blob_missing(
