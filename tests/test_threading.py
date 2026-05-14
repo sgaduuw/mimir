@@ -20,12 +20,14 @@ from sqlalchemy import select
 from mimir.models import Article, ArticleList, Inbox
 from mimir.threading import (
     MAX_DEPTH,
+    THREADS_SINCE_MAX_DAYS,
     _active_threads_query,
     active_threads,
     find_thread_root,
     get_thread,
     threads_for_day,
     threads_for_month,
+    threads_since,
 )
 
 
@@ -324,6 +326,51 @@ def test_threads_for_day_empty_day(seeded_db):
     with seeded_db() as s:
         results = threads_for_day(s, alpha, datetime(2030, 1, 1).date(), force=True)
     assert results == []
+
+
+def test_threads_since_finds_recent_thread(seeded_db):
+    """A thread with activity inside the (capped) since window shows
+    up; an old thread outside the window doesn't."""
+    from datetime import timedelta
+    alpha = _inbox(seeded_db, "alpha")
+    now = datetime.now(timezone.utc)
+    with seeded_db() as s:
+        art = Article(
+            message_id="recent-since@example.com",
+            subject="recent",
+            author="X",
+            date=now - timedelta(days=3),
+            thread_parent=None, subject_normalized="recent",
+        )
+        s.add(art)
+        s.flush()
+        s.add(ArticleList(
+            article_id=art.id, inbox_id=alpha.id,
+            epoch="0.git", commit_sha="ee" * 20,
+        ))
+        s.commit()
+    since = (now - timedelta(days=10)).date()
+    with seeded_db() as s:
+        results = threads_since(s, alpha, since, force=True)
+    msgids = {r.message_id for r in results}
+    assert "recent-since@example.com" in msgids
+    # art1 (2024-01-01) is far outside the 90-day window.
+    assert "art1@example.com" not in msgids
+
+
+def test_threads_since_future_returns_empty(seeded_db):
+    from datetime import timedelta
+    alpha = _inbox(seeded_db, "alpha")
+    future = (datetime.now(timezone.utc) + timedelta(days=2)).date()
+    with seeded_db() as s:
+        results = threads_since(s, alpha, future, force=True)
+    assert results == []
+
+
+def test_threads_since_max_days_is_sensible():
+    """Pin the cap so a stray refactor doesn't silently loosen it.
+    90 days bounds the recursive CTE for a UI surface anyone can hit."""
+    assert THREADS_SINCE_MAX_DAYS == 90
 
 
 def test_threads_for_month_groups_by_month(seeded_db):
