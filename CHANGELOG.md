@@ -11,6 +11,59 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.17.0] – 2026-05-15
+
+MINOR release. Two feature batches: per-subsystem dashboards
+(#72) and message-page reader UX (#68). No schema changes;
+ships as HTML/JS/CSS additions plus two new helpers in
+`mimir.subsystems`.
+
+### Added
+
+- **Per-subsystem dashboards** at `/<inbox>/subsystem/<name>/`
+  (closes issue #72). The MAINTAINERS data indexed in 1.15.0
+  now powers a dedicated dashboard per subsystem with four
+  surfaces: section header (name, status, full `M:`/`R:`
+  maintainers, operator-facing with addresses verbatim), F:/X:
+  paths list, 30-day daily-volume sparkline scoped to the
+  subsystem's paths, and most-active threads (last 7 days,
+  decay-weighted). Recent patches list at the bottom for direct
+  navigation. Article scoping and active-threads ranking go
+  through a new `_subsystem_path_filter_sql` helper that emits a
+  parameterised `SELECT article_id FROM article_files WHERE …`
+  clause; the existing `_active_threads_query` gains an optional
+  `extra_seed_filter_sql` so the same recursive CTE serves both
+  the landing page and the per-subsystem variant. Wildcard `F:`
+  globs (`fs/*/file.c`-style) are skipped silently; they're a
+  small minority of MAINTAINERS rules. Active-reviewers cross-
+  ref (the originally-scoped slice 3 of #72) is split out as
+  issue #97 since it requires indexing
+  `Reviewed-by:` / `Acked-by:` / `Tested-by:` trailers (parser +
+  schema change of its own).
+- **Hunk-anchored quote rendering** on reply bodies (closes
+  issue #68 slice 1). When a first-level `>` quote in a message
+  body contains a diff hunk (the patch-review "let me quote this
+  chunk of your patch" pattern), the renderer wraps the quote in
+  a `<details class="hunk-quote">` so the wall of quoted diff
+  doesn't bury the inline commentary. When the parent message is
+  in this archive, the `<summary>` carries a "↗ jump to hunk"
+  link pointing at it (resolved from `article.thread_parent` via
+  the thread's URL map). First-level non-diff quotes stay as
+  plain `<blockquote>` so the immediate context of a reply stays
+  visible by default; deeper quotes still collapse via the
+  existing depth-based rule.
+- **Long-thread sidebar layout** on the message page (closes
+  issue #68 slice 2). Threads at or above 20 messages render the
+  thread tree as a sticky right rail (22rem wide) on viewports
+  >= 60rem, with the message body and asides flowing in the main
+  column to its left. The above-body box stays the default for
+  short threads and on narrow viewports. Tree-on-rail matches
+  the canonical desktop mail-client layout (mutt / Thunderbird /
+  Discourse) and stops the height-capped box from paginating
+  most of a long tree out of view. The fold toggle and
+  active-marker scaffolding stay put; the rail's inner box caps
+  to viewport height and scrolls inside its own bounds.
+
 ## [1.16.0] – 2026-05-14
 
 MINOR release adding vim-style keyboard navigation. Single-feature

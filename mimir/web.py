@@ -40,12 +40,18 @@ from mimir.dashboard import (
 from mimir.extensions import SessionLocal
 from mimir.inboxes import inbox_names
 from mimir.models import (
-    Article, ArticleFile, ArticleList, Inbox, MainlineCommit,
+    Article, ArticleFile, ArticleList, Inbox, MainlineCommit, Subsystem,
 )
 from mimir.parser import ParsedArticle
 from mimir.rendering import URL_OR_MSGID_RE, redact_trailer_addresses, render_body
 from mimir.store import MessageNotFound, read_message
-from mimir.subsystems import recent_patches_touching, subsystems_for_article
+from mimir.subsystems import (
+    active_threads_in_subsystem,
+    daily_volume_in_subsystem,
+    recent_articles_in_subsystem,
+    recent_patches_touching,
+    subsystems_for_article,
+)
 from mimir.threading import (
     THREADS_SINCE_MAX_DAYS,
     active_threads,
@@ -112,6 +118,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.daily_today": "public, max-age=60",
     "web.daily_yesterday": "public, max-age=600",
     "web.threads_since_view": "public, max-age=600",
+    "web.subsystem_dashboard": "public, max-age=600",
     "web.year_archive": "public, max-age=600",
     "web.month_archive": "public, max-age=600",
     "web.search": "public, max-age=300",
@@ -379,11 +386,12 @@ def _msg_url_filter(article: Article, inbox_name: str) -> str:
 
 
 @bp_web.app_template_filter("render_body")
-def _render_body_filter(body, msgid_urls=None):
+def _render_body_filter(body, msgid_urls=None, parent_url=None):
     return render_body(
         body,
         msgid_urls=msgid_urls,
         address_redactor=_redact_trailer_address,
+        parent_url=parent_url,
     )
 
 
@@ -1309,6 +1317,66 @@ def threads_since_view(inbox_name: str, since_str: str):
     )
 
 
+# Threshold above which the message-page layout switches from
+# "thread tree above body" to "thread tree as a right rail" on
+# wide viewports. Picked from issue #68's >~20-message guideline:
+# below this, the above-body box is fine; above it, the box's
+# height cap ends up paginating most of the tree out of view and
+# the rail layout (mutt / Thunderbird / Discourse) is what
+# everyone expects. The CSS still falls back to above-body on
+# narrow viewports regardless of length.
+LONG_THREAD_SIDEBAR_THRESHOLD = 20
+
+
+# Cap on the per-subsystem dashboard's recent-patches list.
+# MAINTAINERS subsystems vary wildly in volume (BCACHEFS is busy,
+# some are dormant). A flat cap keeps response size bounded and the
+# rendered list readable; a future slice can paginate.
+SUBSYSTEM_RECENT_PATCHES_LIMIT = 30
+
+
+@bp_web.route("/<inbox_name>/subsystem/<path:name>/")
+def subsystem_dashboard(inbox_name: str, name: str):
+    """Per-subsystem dashboard. Slice 1 surfaces the section's
+    MAINTAINERS-derived header (name, status, M:/R: maintainers)
+    and a list of recent articles linked to this inbox whose
+    diff-touched paths match the subsystem's F: globs (and aren't
+    vetoed by X: globs). Future slices add active-threads and
+    daily-volume sparkline scoped to the same path set."""
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        subsystem = session.execute(
+            select(Subsystem)
+            .options(
+                selectinload(Subsystem.maintainers),
+                selectinload(Subsystem.paths),
+            )
+            .where(Subsystem.name == name)
+        ).scalar_one_or_none()
+        if subsystem is None:
+            abort(404)
+        recent = recent_articles_in_subsystem(
+            session, inbox, subsystem,
+            limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+        )
+        active = active_threads_in_subsystem(
+            session, inbox, subsystem, days=7, limit=10,
+        )
+        spark = daily_volume_in_subsystem(
+            session, inbox, subsystem, days=30,
+        )
+    return render_template(
+        "subsystem.html",
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
+        subsystem=subsystem,
+        recent=recent,
+        recent_limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+        active=active,
+        spark=spark,
+    )
+
+
 # Plausible bounds for an inbox archive: lkml itself goes back to ~1995.
 # Outside this range a year URL is almost certainly user error / scraper
 # noise; 404 is the right response.
@@ -1931,6 +1999,20 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 url = _canonical_url_for(rev, link_set, base="") or ""
                 patch_series_revisions.append((rev, url))
 
+    # Parent URL for the hunk-anchored quote renderer: the message
+    # this article replies to. When the parent is in-scope (i.e. in
+    # the same archive and surfaced in the thread tree), `thread_urls`
+    # carries its URL. Off-list parents have no URL and the renderer
+    # falls back to a plain <details> without the jump link.
+    parent_url: str | None = None
+    if article.thread_parent and article.thread_parent in thread_urls:
+        parent_url = thread_urls[article.thread_parent]
+
+    # Long threads switch to a right-rail tree layout on wide
+    # viewports — see LONG_THREAD_SIDEBAR_THRESHOLD. Narrow
+    # viewports stack regardless via the CSS media query.
+    long_thread = len(thread) >= LONG_THREAD_SIDEBAR_THRESHOLD
+
     # HTMX intra-thread swap: when the click came from a tree link, return
     # only the message-body partial (just the <article id="msg">). The
     # surrounding tree + nav stay put on the client; the client-side script
@@ -1948,6 +2030,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         article=article,
         thread=thread,
         thread_urls=thread_urls,
+        parent_url=parent_url,
         thread_summary=thread_summary,
         msgid_urls=msgid_urls,
         parent_off_list=parent_off_list,
@@ -1960,4 +2043,5 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         related_patches=related_patches,
         mainline_applications=mainline_applications,
         patch_series_revisions=patch_series_revisions,
+        long_thread=long_thread,
     )
