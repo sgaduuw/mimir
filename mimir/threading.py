@@ -160,12 +160,20 @@ def _active_threads_query(
     *,
     order_by: str = "score",
     limit: int | None = None,
+    extra_seed_filter_sql: str = "",
+    extra_params: dict | None = None,
 ) -> list[ActiveThread]:
     """Run the active-threads recursive CTE over a `[start, end)` window.
 
     `order_by`: 'score' (decay-weighted) or 'last_activity' (recency).
     `limit`: None means unbounded (return every thread with at least one
     message in the window).
+
+    `extra_seed_filter_sql`: optional SQL fragment AND-ed into the
+    seed step's WHERE clause. Used by the per-subsystem dashboard
+    to constrain the recursive walk to messages touching specific
+    paths. Caller-supplied — must reference bind parameters only
+    via the `extra_params` dict (not string-interpolated values).
     """
     order_sql = _ORDER_CLAUSES[order_by]
     limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
@@ -177,6 +185,7 @@ def _active_threads_query(
             FROM articles a
             JOIN article_lists al ON al.article_id = a.id
             WHERE al.inbox_id = :inbox_id AND a.date >= :start AND a.date < :end
+              {extra_seed_filter_sql}
             UNION ALL
             SELECT c.recent_id, a.message_id, a.thread_parent,
                    c.recent_date, c.depth + 1
@@ -204,15 +213,15 @@ def _active_threads_query(
         {limit_sql}
         """
     )
-    rows = session.execute(
-        sql,
-        {
-            "inbox_id": inbox.id,
-            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
-            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
-            "max_depth": MAX_DEPTH,
-        },
-    ).all()
+    params = {
+        "inbox_id": inbox.id,
+        "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+        "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+        "max_depth": MAX_DEPTH,
+    }
+    if extra_params:
+        params.update(extra_params)
+    rows = session.execute(sql, params).all()
     return [
         ActiveThread(
             id=r.id,

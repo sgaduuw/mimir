@@ -2125,6 +2125,52 @@ def test_subsystem_dashboard_empty_when_no_matches(client):
     assert "No patches touching" in body
 
 
+def test_subsystem_dashboard_renders_sparkline(client):
+    """Slice 2: the per-subsystem dashboard renders a 30-day
+    sparkline SVG. Even with no in-scope articles, the SVG ships
+    (all-zero bars) so the surface doesn't disappear on dormant
+    subsystems."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    body = client.get("/alpha/subsystem/BCACHEFS/").data.decode()
+    assert "<svg" in body
+    # The SVG carries an aria-label naming the subsystem.
+    assert "BCACHEFS, last 30 days" in body
+
+
+def test_subsystem_dashboard_renders_active_threads_section(
+    client, tmp_path,
+):
+    """Slice 2: a thread with a recent patch matching the
+    subsystem's paths surfaces under "Most active threads".
+    `_ingest_one_article` pins commit_time at 2023-11-14, so we
+    backfill the article's date to a recent value post-ingest to
+    land inside the 7-day active window."""
+    from datetime import datetime, timedelta, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    patch_body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "active-thread@example.com",
+        subject="bcachefs active thread", body=patch_body,
+    )
+    # Bump the article's date into the active window so the
+    # decay-weighted CTE picks it up. URL date doesn't matter for
+    # the dashboard surface.
+    with SessionLocal() as s:
+        art = s.get(Article, art_id)
+        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        s.commit()
+    body = client.get("/alpha/subsystem/BCACHEFS/").data.decode()
+    assert "Most active threads" in body
+    assert "bcachefs active thread" in body
+    # Sparkline SVG is unconditional.
+    assert "<svg" in body
+
+
 def _seed_mainline_commit(message_id, commit_sha="abc1234567890def" + "0" * 24,
                           tree_name="linus", date=None):
     """Insert a MainlineCommit row for a route test. The render

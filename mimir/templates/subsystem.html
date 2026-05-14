@@ -29,6 +29,38 @@
   </ul>
   {% endif %}
 
+  {% if spark and spark.days %}
+  <h2><small>Last 30 days</small></h2>
+  <svg width="186" height="28" style="vertical-align: middle;"
+       aria-label="Daily message volume in {{ subsystem.name }}, last 30 days">
+    {% for day, count in spark.days %}
+      {% set h = (count / spark.max_count * 26) if spark.max_count > 0 else 0 %}
+      <rect x="{{ loop.index0 * 6 }}"
+            y="{{ 27 - h }}"
+            width="5"
+            height="{{ h if h > 0 else 1 }}"
+            fill="currentColor"
+            opacity="0.55">
+        <title>{{ day.strftime('%Y-%m-%d') }}: {{ count }} message{{ '' if count == 1 else 's' }}</title>
+      </rect>
+    {% endfor %}
+  </svg>
+  {% endif %}
+
+  {% if active %}
+  <h2>Most active threads <small><em>(last 7 days)</em></small></h2>
+  <ul>
+    {% for t in active %}
+    <li>
+      <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject|clean_subject or '(no subject)' }}</a>
+      <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
+        &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} in 7d
+        &middot; {{ t.author|safe_from }}</small>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
   <h2>Recent patches</h2>
   {% if recent %}
   <p><small>Most-recent {{ recent|length }} patch{{ '' if recent|length == 1 else 'es' }} in this subsystem on {{ inbox_name }}{% if recent|length >= recent_limit %} (capped at {{ recent_limit }}){% endif %}, ordered by date desc.</small></p>

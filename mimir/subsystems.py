@@ -28,14 +28,14 @@ exist in MAINTAINERS — `X:` only acts on its own section.
 """
 import fnmatch
 from collections import defaultdict
-from datetime import datetime
+from datetime import date as date_cls, datetime, timedelta, timezone
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
-from sqlalchemy import or_
-
+from mimir import cache
+from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume
 from mimir.models import (
     Article,
     ArticleFile,
@@ -43,6 +43,11 @@ from mimir.models import (
     Inbox,
     Subsystem,
     SubsystemPath,
+)
+from mimir.threading import (
+    ACTIVE_THREADS_CACHE_TTL_SEC,
+    ActiveThread,
+    _active_threads_query,
 )
 
 
@@ -358,9 +363,168 @@ def recent_articles_in_subsystem(
     return out
 
 
+def _subsystem_path_filter_sql(
+    subsystem: Subsystem, prefix: str = "ssp",
+) -> tuple[str, dict] | None:
+    """Return `(sql, params)` where `sql` is a
+    `SELECT article_id FROM article_files WHERE ...` clause that
+    enumerates article IDs matching the subsystem's F: globs and
+    not vetoed by its X: globs. `params` is the bind-parameter
+    dict to pass to `text()`.
+
+    Per-path semantics: an article belongs to the subsystem if at
+    least one of its `article_files.path` rows is matched by an
+    include and not by any exclude. Same rule as the in-memory
+    pass in `recent_articles_in_subsystem`.
+
+    Returns `None` when the subsystem has no supported (non-
+    wildcard) include rules — caller should treat that as "no
+    articles" rather than running an unfiltered query. Wildcard
+    F: rules (`fs/*/file.c`-style) are skipped silently in this
+    slice for the same reason they're skipped in
+    `recent_articles_in_subsystem`.
+    """
+    includes = [r.glob for r in subsystem.paths if not r.is_exclude]
+    excludes = [r.glob for r in subsystem.paths if r.is_exclude]
+
+    params: dict[str, str] = {}
+
+    def build(globs: list[str], label: str) -> str:
+        parts: list[str] = []
+        for i, g in enumerate(globs):
+            if g.endswith("/"):
+                pname_pre = f"{prefix}_{label}_pre_{i}"
+                # Escape LIKE wildcards so a glob containing `_`
+                # (e.g. `arch/x86_64/`) doesn't widen the match.
+                like_val = (
+                    g.replace("\\", "\\\\")
+                     .replace("%", "\\%")
+                     .replace("_", "\\_")
+                )
+                params[pname_pre] = like_val + "%"
+                parts.append(f"path LIKE :{pname_pre} ESCAPE '\\'")
+                # Also include the bare directory path.
+                pname_eq = f"{prefix}_{label}_eq_{i}"
+                params[pname_eq] = g[:-1]
+                parts.append(f"path = :{pname_eq}")
+            elif not any(c in g for c in "*?["):
+                pname = f"{prefix}_{label}_eq_{i}"
+                params[pname] = g
+                parts.append(f"path = :{pname}")
+            # else: wildcard skipped (slice 1/2)
+        return " OR ".join(parts)
+
+    inc_sql = build(includes, "inc")
+    if not inc_sql:
+        return None
+    sql = f"SELECT article_id FROM article_files WHERE ({inc_sql})"
+    exc_sql = build(excludes, "exc")
+    if exc_sql:
+        sql += f" AND NOT ({exc_sql})"
+    return sql, params
+
+
+def daily_volume_in_subsystem(
+    session: Session, inbox: Inbox, subsystem: Subsystem,
+    days: int = 30, force: bool = False,
+) -> DailyVolume:
+    """Daily message counts in `inbox` for articles whose paths
+    match `subsystem`'s F: globs (minus X: vetoes) over the last
+    `days` days, zero-filled. Cached per `(inbox, subsystem, days)`
+    key for the same TTL as the global `daily_volume`.
+
+    Returns an empty-but-zero-filled series (all zeros) when the
+    subsystem has no supported globs; the sparkline still renders,
+    just flat.
+    """
+    def compute() -> DailyVolume:
+        today = date_cls.today()
+        start = today - timedelta(days=days - 1)
+        path_filter = _subsystem_path_filter_sql(subsystem, prefix="dvss")
+        if path_filter is None:
+            return DailyVolume(
+                days=[
+                    (start + timedelta(days=i), 0)
+                    for i in range(days)
+                ],
+                max_count=1,
+            )
+        path_sql, path_params = path_filter
+        rows = session.execute(
+            text(
+                f"""
+                SELECT date(a.date) AS day, COUNT(*) AS n
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                WHERE al.inbox_id = :inbox_id AND a.date >= :start
+                  AND a.id IN ({path_sql})
+                GROUP BY day
+                """
+            ),
+            {"inbox_id": inbox.id, "start": start.isoformat(), **path_params},
+        ).all()
+        counts = {date_cls.fromisoformat(r.day): r.n for r in rows if r.day}
+        series = [
+            (start + timedelta(days=i), counts.get(start + timedelta(days=i), 0))
+            for i in range(days)
+        ]
+        return DailyVolume(
+            days=series,
+            max_count=max((c for _, c in series), default=1),
+        )
+
+    return cache.get_or_compute(
+        session,
+        f"daily_volume_in_subsystem:{inbox.name}:{subsystem.id}:{days}",
+        DAILY_VOLUME_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
+def active_threads_in_subsystem(
+    session: Session, inbox: Inbox, subsystem: Subsystem,
+    days: int = 7, limit: int = 10, force: bool = False,
+) -> list[ActiveThread]:
+    """Most-active threads in `inbox` over the last `days` days
+    among messages whose paths match `subsystem`'s F: globs (minus
+    X: vetoes). Same decay-weighted score as the landing-page
+    `active_threads`; the only difference is the seed-set filter.
+
+    Returns an empty list when the subsystem has no supported
+    globs (slice 1/2 ignores wildcard rules). Cached per
+    `(inbox, subsystem, days, limit)` for the same TTL as the
+    global active-threads cache.
+    """
+    def compute() -> list[ActiveThread]:
+        path_filter = _subsystem_path_filter_sql(subsystem, prefix="atss")
+        if path_filter is None:
+            return []
+        path_sql, path_params = path_filter
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        return _active_threads_query(
+            session, inbox, start, end,
+            order_by="score", limit=limit,
+            extra_seed_filter_sql=f" AND a.id IN ({path_sql})",
+            extra_params=path_params,
+        )
+
+    return cache.get_or_compute(
+        session,
+        f"active_threads_in_subsystem:{inbox.name}:{subsystem.id}:{days}:{limit}",
+        ACTIVE_THREADS_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
 __all__ = [
     "RelatedPatch",
     "SubsystemHit",
+    "_subsystem_path_filter_sql",
+    "active_threads_in_subsystem",
+    "daily_volume_in_subsystem",
     "path_matches_glob",
     "recent_articles_in_subsystem",
     "recent_patches_touching",
