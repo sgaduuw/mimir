@@ -47,12 +47,28 @@ _LINK_RE = re.compile(
 
 def extract_message_ids(commit_message: bytes) -> list[str]:
     """Return every `lore.kernel.org` msgid referenced by `Link:`
-    trailers in this commit message, in source-file order. Returns
-    `[]` when no trailers match. Decoding is UTF-8 with surrogate-
-    escape so a non-decodable byte in a commit message doesn't
-    crash the walker."""
+    trailers in this commit message, in source-file order, deduped.
+    Returns `[]` when no trailers match. Decoding is UTF-8 with
+    surrogate-escape so a non-decodable byte in a commit message
+    doesn't crash the walker.
+
+    Real-world commits sometimes carry the same Message-ID twice
+    (e.g. one Link with the `/r/` slug and another with `/all/`, or
+    a stable-cherry-pick that copies the original trailer alongside
+    an Upstream: line that's itself a Link). Without dedup those
+    duplicates land as parallel insert rows and trip the UNIQUE
+    `(commit_sha, message_id)` constraint, aborting the whole
+    batch — observed against linux.git commit 9e8e8912b05f."""
     text = commit_message.decode("utf-8", errors="surrogateescape")
-    return [m.group(1) for m in _LINK_RE.finditer(text)]
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _LINK_RE.finditer(text):
+        mid = m.group(1)
+        if mid in seen:
+            continue
+        seen.add(mid)
+        out.append(mid)
+    return out
 
 
 class WalkResult(BaseModel):
