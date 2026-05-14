@@ -13,6 +13,17 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Added
 
+- Long-thread sidebar layout on the message page (issue #68
+  slice 2). Threads at or above 20 messages render the thread
+  tree as a sticky right rail (22rem wide) on viewports >= 60rem,
+  with the message body and asides flowing in the main column to
+  its left. The above-body box stays the default for short
+  threads and on narrow viewports. Tree-on-rail matches the
+  canonical desktop mail-client layout (mutt / Thunderbird /
+  Discourse) and stops the height-capped box from paginating most
+  of a long tree out of view. The fold toggle and active-marker
+  scaffolding stay put; the rail keeps the box scroll inside its
+  own bounds.
 - Hunk-anchored quote rendering on reply bodies (issue #68
   slice 1). When a first-level `>` quote in a message body
   contains a diff hunk (the patch-review "let me quote this
