@@ -10,7 +10,7 @@ from pathlib import Path
 
 from dulwich.objects import Commit, Tree
 from dulwich.repo import Repo
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from mimir.mainline import extract_message_ids, walk_commits
 from mimir.models import MainlineCommit, MainlineState
@@ -283,3 +283,42 @@ def test_walk_commits_rewalks_when_cursor_missing(seeded_db, tmp_path):
     # Walker re-walks from the beginning despite the stale cursor.
     assert result.commits_seen == 1
     assert result.rows_inserted == 1
+
+
+def test_walk_commits_full_rewalk_is_idempotent_via_on_conflict(
+    seeded_db, tmp_path,
+):
+    """A full rewalk over an already-populated table must not
+    crash on the `(commit_sha, message_id)` UNIQUE constraint —
+    the INSERT runs with `ON CONFLICT DO NOTHING`. Hit on the
+    1.15.0 / 1.15.1 production runs against linux.git, where
+    dulwich's reverse-walker re-emitted some commits across batch
+    boundaries (or via merge-graph paths) and the second
+    observation collided with the first. The 1.15.3 fix is to
+    swallow conflicts at the DB layer."""
+    repo_path = tmp_path / "tree.git"
+    repo = _bare_repo(repo_path)
+    _build_commit(repo, b"a\n\nLink: https://lore.kernel.org/r/m@x\n")
+
+    # First walk: populates the row.
+    with seeded_db() as s:
+        result_1 = walk_commits(s, repo_path)
+    assert result_1.commits_seen == 1
+
+    # Force-clear the cursor so the next walk re-walks from
+    # scratch. Without the ON CONFLICT clause this raised
+    # IntegrityError on the existing row.
+    with seeded_db() as s:
+        state = s.get(MainlineState, "linus")
+        state.commits_walked_to_sha = None
+        s.commit()
+
+    with seeded_db() as s:
+        result_2 = walk_commits(s, repo_path)
+    assert result_2.commits_seen == 1
+    # rows_inserted counts observations the walker emitted; the
+    # DB silently dropped the duplicate, so the table row count
+    # stays at 1 (not 2).
+    with seeded_db() as s:
+        row_count = s.scalar(select(func.count(MainlineCommit.commit_sha)))
+    assert row_count == 1

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from dulwich.repo import Repo
 from pydantic import BaseModel
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from mimir.models import MainlineCommit, MainlineState
@@ -130,12 +131,30 @@ def walk_commits(
     walker = repo.get_walker(include=[head], exclude=exclude, reverse=True)
 
     result = WalkResult(last_walked_sha=since)
-    pending_rows: list[MainlineCommit] = []
+    pending_rows: list[dict] = []
     last_seen: str | None = since
 
     def flush() -> None:
         if pending_rows:
-            session.add_all(pending_rows)
+            # INSERT OR IGNORE on the (commit_sha, message_id) UNIQUE
+            # so duplicate observations are silently dropped. Three
+            # ways a dup can arrive: (1) two `Link:` URL variants of
+            # the same msgid inside one commit message (already
+            # deduped at the extract layer in 1.15.1, but defence-
+            # in-depth doesn't hurt); (2) dulwich's reverse=True
+            # walker re-emitting the same commit from a merge graph
+            # within one walk; (3) a cursor-missing rewalk landing
+            # on commits already recorded in a prior run. Without
+            # ON CONFLICT, any of these aborts the batch and leaves
+            # the walker stuck.
+            stmt = (
+                sqlite_insert(MainlineCommit)
+                .values(pending_rows)
+                .on_conflict_do_nothing(
+                    index_elements=["commit_sha", "message_id"],
+                )
+            )
+            session.execute(stmt)
             pending_rows.clear()
         state.commits_walked_to_sha = last_seen
         session.commit()
@@ -153,12 +172,12 @@ def walk_commits(
                 commit.commit_time, tz=timezone.utc,
             )
             for mid in msgids:
-                pending_rows.append(MainlineCommit(
-                    commit_sha=sha,
-                    message_id=mid,
-                    tree_name=tree_name,
-                    committed_at=committed_at,
-                ))
+                pending_rows.append({
+                    "commit_sha": sha,
+                    "message_id": mid,
+                    "tree_name": tree_name,
+                    "committed_at": committed_at,
+                })
                 result.rows_inserted += 1
 
         if result.commits_seen % _BATCH == 0:

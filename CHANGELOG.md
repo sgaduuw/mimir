@@ -11,6 +11,35 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.15.3] – 2026-05-14
+
+PATCH on top of 1.15.2 fixing a second mainline-walker crash
+hit on the production `update-mainline` run. The 1.15.1 fix
+covered within-commit duplicate `Link:` trailers; this one
+covers the cross-commit case where the same
+`(commit_sha, message_id)` pair reaches the insert batch twice
+(observed on linux.git, batch starting at commit
+`6cd249cfad68`). Symptom is identical (`UNIQUE constraint
+failed: mainline_commits.commit_sha, mainline_commits.message_id`);
+root cause is in the walker, not the trailer parser.
+
+### Fixed
+
+- `mainline.walk_commits` now inserts via SQLite's
+  `INSERT ... ON CONFLICT DO NOTHING` on the
+  `(commit_sha, message_id)` UNIQUE, so duplicate observations
+  are silently ignored at the DB layer. Three independent paths
+  could produce a duplicate: (1) two `Link:` URL variants of one
+  Message-ID within one commit (already deduped at the extract
+  layer in 1.15.1, kept as defence in depth); (2) dulwich's
+  `reverse=True` walker re-emitting the same commit when the
+  graph has merge commits; (3) a cursor-missing rewalk
+  re-recording rows from a prior successful run. All three
+  failure modes are now handled by the same conflict clause.
+- A new test (`test_walk_commits_full_rewalk_is_idempotent_via_on_conflict`)
+  exercises the rewalk-over-populated-table path so a regression
+  would surface in CI.
+
 ## [1.15.2] – 2026-05-14
 
 PATCH on top of 1.15.1 declaring `/data/Mainline` as a canonical
