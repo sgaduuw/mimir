@@ -80,6 +80,7 @@ def _reset_db():
         Inbox,
         InboxAddressObservation,
         IngestState,
+        MainlineCommit,
         MainlineState,
         ParseFailure,
         Subsystem,
@@ -98,9 +99,11 @@ def _reset_db():
         s.execute(delete(InboxAddressObservation))
         s.execute(delete(Inbox))
         s.execute(delete(CacheEntry))
-        # Subsystem cascades to subsystem_paths + subsystem_maintainers.
-        s.execute(delete(Subsystem))
+        s.execute(delete(MainlineCommit))
         s.execute(delete(MainlineState))
+        # Subsystem cascades to subsystem_paths + subsystem_maintainers
+        # via ON DELETE CASCADE (FKs declared on the child tables).
+        s.execute(delete(Subsystem))
         s.commit()
 
     mimir.inboxes._INBOX_NAMES[:] = []

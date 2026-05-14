@@ -79,6 +79,20 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   excludes veto include matches within the same subsystem only.
   Unblocks issue #72 (per-subsystem dashboards), which reads the
   same `subsystems` + `article_files` joins from this slice.
+- Mainline `Link:`-trailer indexing (issue #66). The
+  `update-mainline` CLI now runs a second pass after MAINTAINERS:
+  walks every commit on the configured mainline tree, extracts
+  any `Link: https://lore.kernel.org/.../<msgid>` trailers, and
+  inserts a row per (commit, msgid) into the new
+  `mainline_commits` table. Resumable via a second cursor on
+  `MainlineState` so steady-state ticks only walk new commits.
+  First-run walks the full Linus history (~1.5M commits, minutes
+  on a fresh deploy). Patch pages now surface "Applied as
+  `<sha>` in `linus` on YYYY-MM-DD" whenever the article's
+  Message-ID matches a recorded commit — the user-visible payoff
+  that closes the lore-archive → mainline-tree loop. New flags
+  on `update-mainline`: `--skip-commits` (load MAINTAINERS
+  only), `--skip-maintainers` (walker only).
 
 ## [1.14.1] – 2026-05-14
 
