@@ -8,10 +8,15 @@
 #
 # Default volume:
 #   /data — single state directory. Holds:
-#     /data/db       — SQLite DB (DATABASE_URL=sqlite:////data/db/mimir.db)
-#     /data/Inboxes  — public-inbox mirrors. /app/Inboxes is a
-#                      symlink to this so the default relative
-#                      `INBOXES` config still resolves cleanly.
+#     /data/db        — SQLite DB (DATABASE_URL=sqlite:////data/db/mimir.db)
+#     /data/Inboxes   — public-inbox mirrors. /app/Inboxes is a
+#                       symlink to this so the default relative
+#                       `INBOXES` config still resolves cleanly.
+#     /data/Mainline  — Linus's linux.git (and other configured
+#                       upstream trees) for MAINTAINERS + Link:
+#                       trailer indexing. /app/Mainline symlinks
+#                       through so the default relative
+#                       MAINLINE_TREE_PATH resolves to here.
 #
 # Operator must `chown -R 1001:1001 <host-data-dir>` before bringing
 # the container up (rootful podman / docker — no UID remapping).
@@ -79,8 +84,9 @@ ENV PATH="/app/.venv/bin:$PATH" \
 # run. /app/Inboxes is a symlink so the default relative INBOXES
 # config (Inboxes/<name>/git, resolved from cwd /app) still finds
 # the mirrors.
-RUN mkdir -p /data/db /data/Inboxes \
+RUN mkdir -p /data/db /data/Inboxes /data/Mainline \
  && ln -s /data/Inboxes /app/Inboxes \
+ && ln -s /data/Mainline /app/Mainline \
  && chown -R mimir:mimir /data /app
 
 USER mimir
