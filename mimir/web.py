@@ -39,7 +39,7 @@ from mimir.dashboard import (
 )
 from mimir.extensions import SessionLocal
 from mimir.inboxes import inbox_names
-from mimir.models import Article, ArticleList, Inbox
+from mimir.models import Article, ArticleList, Inbox, MainlineCommit
 from mimir.parser import ParsedArticle
 from mimir.rendering import URL_OR_MSGID_RE, redact_trailer_addresses, render_body
 from mimir.store import MessageNotFound, read_message
@@ -1839,6 +1839,19 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
     thread_summary = _thread_summary(thread)
 
+    # Mainline applications: look for `mainline_commits` rows whose
+    # message_id matches this article's. Populated by
+    # `update-mainline`'s Link-trailer walker. Most articles
+    # produce zero matches (only the actual patch message a commit
+    # cites gets a row); the template skips the surface when the
+    # list is empty.
+    with SessionLocal() as session:
+        mainline_applications = list(session.execute(
+            select(MainlineCommit)
+            .where(MainlineCommit.message_id == article.message_id)
+            .order_by(MainlineCommit.committed_at.asc())
+        ).scalars())
+
     # HTMX intra-thread swap: when the click came from a tree link, return
     # only the message-body partial (just the <article id="msg">). The
     # surrounding tree + nav stay put on the client; the client-side script
@@ -1864,4 +1877,5 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         cross_post_inboxes=cross_post_inboxes,
         canonical_url=canonical_url,
         page_json_ld=page_json_ld,
+        mainline_applications=mainline_applications,
     )

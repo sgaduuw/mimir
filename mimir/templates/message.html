@@ -199,5 +199,27 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    via the html_data_attrs block above) carry the per-page context the
    controller needs. #}
 {% endif %}
+{# Mainline application(s): if this article's Message-ID is
+   referenced by a `Link:` trailer in a Linus-tree commit, surface
+   the commit SHA + date. The patch-page reader's "did this land?"
+   question is the highest-value differentiator on the issue-67/
+   issue-66 cluster, so it gets rendered prominently — above the
+   message body, not folded behind a <details>. Skipped silently
+   when there's no recorded application; the absence isn't
+   informative (the data may simply not be indexed, or the commit
+   may not have carried a `Link:` trailer). #}
+{% if mainline_applications %}
+<aside class="mainline-applications" style="margin-block: 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--pico-primary); background: var(--pico-muted-background-color);">
+  {% for app in mainline_applications %}
+  <small>
+    <strong>Applied as</strong>
+    <code>{{ app.commit_sha[:12] }}</code>
+    in <code>{{ app.tree_name }}</code>
+    on {{ app.committed_at.strftime('%Y-%m-%d') if app.committed_at else 'unknown' }}
+  </small>
+  {% if not loop.last %}<br>{% endif %}
+  {% endfor %}
+</aside>
+{% endif %}
 {% include "_message_body.html" %}
 {% endblock %}

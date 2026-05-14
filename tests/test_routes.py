@@ -1786,6 +1786,88 @@ def test_message_page_emits_discussion_forum_posting(client, tmp_path):
     assert posting["dateModified"] == posting["datePublished"]
 
 
+def _seed_mainline_commit(message_id, commit_sha="abc1234567890def" + "0" * 24,
+                          tree_name="linus", date=None):
+    """Insert a MainlineCommit row for a route test. The render
+    side reads commit_sha (truncated to 12 chars), tree_name, and
+    committed_at."""
+    from datetime import datetime, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+    with SessionLocal() as s:
+        s.add(MainlineCommit(
+            commit_sha=commit_sha,
+            message_id=message_id,
+            tree_name=tree_name,
+            committed_at=date or datetime(2024, 6, 1, tzinfo=timezone.utc),
+        ))
+        s.commit()
+
+
+def test_message_page_shows_applied_as_when_mainline_commit_matches(
+    client, tmp_path,
+):
+    """An article whose Message-ID matches a `mainline_commits` row
+    surfaces an "Applied as <sha>" line above the message body.
+    Pins the issue-66 happy path: walker → DB → render."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "applied-msg@example.com",
+    )
+    _seed_mainline_commit(
+        message_id="applied-msg@example.com",
+        commit_sha="abc1234567890def1234567890abcdef12345678",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="mainline-applications"' in body
+    assert "Applied as" in body
+    # SHA truncated to first 12 chars on display.
+    assert "<code>abc123456789</code>" in body
+    assert "<code>linus</code>" in body
+
+
+def test_message_page_no_applied_as_when_no_commit_matches(
+    client, tmp_path,
+):
+    """Articles without a mainline-commit reference render without
+    the aside. Absence is non-informative (may simply not be
+    indexed yet); the surface is opt-in."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "unapplied@example.com",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="mainline-applications"' not in body
+    assert "Applied as" not in body
+
+
+def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_links(
+    client, tmp_path,
+):
+    """When a commit references the article via two `Link:` trailers
+    (rare), or when two distinct commits apply the same patch (less
+    rare on backports), every mainline_commits row gets a line.
+    Ordered by committed_at asc — the first application is the
+    primary one."""
+    from datetime import datetime, timezone
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "multi-app@example.com",
+    )
+    _seed_mainline_commit(
+        message_id="multi-app@example.com",
+        commit_sha="11" * 20,
+        date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+    )
+    _seed_mainline_commit(
+        message_id="multi-app@example.com",
+        commit_sha="22" * 20,
+        date=datetime(2024, 7, 1, tzinfo=timezone.utc),
+    )
+    body = client.get(url).data.decode()
+    # Both shas appear, ordered by date asc (June before July).
+    first_idx = body.index("<code>111111111111</code>")
+    second_idx = body.index("<code>222222222222</code>")
+    assert first_idx < second_idx
+
+
 def test_message_page_emits_breadcrumb_list(client, tmp_path):
     """The same @graph also carries a BreadcrumbList with the
     Site → Inbox → Subject chain."""
