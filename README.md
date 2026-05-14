@@ -555,6 +555,41 @@ dev), see `deploy/README.md`. Three shapes are covered:
   TLS site block with the `X-Forwarded-Proto` and `X-Request-Id`
   headers mimir reads).
 
+## IndexNow (Bing / Yandex push notifications)
+
+Off by default. Set `INDEXNOW_KEY` to enable: the `update`
+scheduler tick will push the canonical URL of every newly-ingested
+article to `https://api.indexnow.org/indexnow`, which fans out to
+Bing, Yandex, Naver, Seznam, and Yep. Google does **not** consume
+IndexNow, so this won't help Google discovery; it only accelerates
+Bing-family crawlers.
+
+```sh
+# Generate a key once (32 hex chars; the spec is loose on length).
+python -c "import secrets; print(secrets.token_hex(16))"
+
+# Set in the deployment env. SITE_BASE_URL must also be set so the
+# protocol can build the keyLocation URL and the host field.
+export INDEXNOW_KEY=8c3aef...        # the generated key
+export SITE_BASE_URL=https://example.test
+```
+
+Once enabled, mimir serves the key file at
+`https://<host>/<key>.txt` (registered only when `INDEXNOW_KEY` is
+set — an unconfigured deploy doesn't expose the endpoint). Pre-
+existing articles in the DB are **not** backfilled to IndexNow;
+only articles newly created on each `update` tick are pushed.
+
+`INDEXNOW_MAX_PER_TICK` (default `1000`) is a backfill guard:
+when a single `update` produces more new URLs than this (fresh
+deploy, post-outage catch-up, etc.), the push is skipped entirely
+and a warning logged — the sitemap remains the discovery path for
+the backlog. Raise the cap if your steady-state new-articles-per-
+tick legitimately exceeds it.
+
+All notification calls are best-effort: network errors and non-2xx
+responses log a warning and don't break the ingest tick.
+
 ## Linting and tests
 
 ```sh
