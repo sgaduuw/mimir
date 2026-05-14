@@ -1497,6 +1497,73 @@ def test_message_page_single_message_thread_skips_fold_scaffolding(
     assert 'src="/static/js/thread-fold.js"' in body
 
 
+def test_keyboard_nav_script_loaded_on_every_page(client, inbox_name):
+    """keyboard-nav.js (vim-style hjkl + ? for help) ships on every
+    rendered page via base.html. Deferred (no FOUC concern; the
+    controller binds on document keydown after parse)."""
+    for path in ("/", f"/{inbox_name}/", f"/{inbox_name}/today"):
+        body = client.get(path, follow_redirects=True).data.decode()
+        assert 'src="/static/js/keyboard-nav.js"' in body, (
+            f"keyboard-nav.js missing on {path!r}"
+        )
+        # `defer` keeps the load asynchronous — unlike thread-fold.js,
+        # which is synchronous to dodge FOUC.
+        assert 'src="/static/js/keyboard-nav.js" defer' in body
+
+
+def test_keyboard_help_dialog_present_on_every_page(client, inbox_name):
+    """The `?` key opens a <dialog id="keyboard-help"> — must be
+    rendered on every page so the binding works everywhere, not
+    just inside an inbox."""
+    for path in ("/", f"/{inbox_name}/"):
+        body = client.get(path, follow_redirects=True).data.decode()
+        assert 'id="keyboard-help"' in body, (
+            f"keyboard-help dialog missing on {path!r}"
+        )
+        # Each binding row carries its <kbd> label — pin the full set
+        # so a refactor that drops a row is caught.
+        for key in ("h", "j", "k", "l", "Esc", "?"):
+            assert f"<kbd>{key}</kbd>" in body
+
+
+def test_keyboard_nav_data_nav_up_meta_index_has_no_parent(client):
+    """`/` is the top — no parent, `h` is a no-op. The attribute is
+    omitted entirely (not set to empty) so the JS short-circuits on
+    `getAttribute` returning null."""
+    body = client.get("/").data.decode()
+    assert "data-nav-up=" not in body
+
+
+def test_keyboard_nav_data_nav_up_inbox_dashboard_points_at_root(
+    client, inbox_name,
+):
+    """The inbox dashboard's `h` key goes up to the meta-index."""
+    body = client.get(f"/{inbox_name}/").data.decode()
+    assert 'data-nav-up="/"' in body
+
+
+def test_keyboard_nav_data_nav_up_message_page_points_at_inbox(
+    client, tmp_path, inbox_name,
+):
+    """A message page's `h` key goes up to the inbox dashboard. Pins
+    the "back out one level" mental model the issue specifies."""
+    _, url = _ingest_one_article(
+        tmp_path, inbox_name, "kbd-nav-up@example.com",
+    )
+    body = client.get(url).data.decode()
+    assert f'data-nav-up="/{inbox_name}/"' in body
+
+
+def test_keyboard_nav_data_nav_up_daily_view_points_at_inbox(
+    client, inbox_name,
+):
+    """The daily view is a leaf surface inside the inbox — `h` goes
+    back to the dashboard, not all the way to `/`. Pins the
+    `is_inbox_root` discriminator on `request.path`."""
+    body = client.get(f"/{inbox_name}/today").data.decode()
+    assert f'data-nav-up="/{inbox_name}/"' in body
+
+
 def _seed_three_message_thread(tmp_path, inbox_name):
     """Build a 3-message thread root → reply → reply-to-reply in ONE
     shared bare repo, so the inbox's mirror_path resolves blobs for
