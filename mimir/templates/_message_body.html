@@ -15,6 +15,27 @@
           <a href="{{ article|msg_url(other) }}">{{ other }}</a>{% if not loop.last %}, {% endif %}
         {% endfor %}
       {% endif %}
+      {# Subsystem ownership: MAINTAINERS-derived for the files this
+         patch touches. Sits inside the article header so it reads as
+         part of the message's identity card alongside From / Date,
+         not as a floating aside above the body. Silently skipped
+         for non-patch articles. #}
+      {% if subsystem_hits %}
+      {% set _maint_names = [] %}
+      {% for hit in subsystem_hits %}
+        {% for _role, _name, _addr in hit.maintainers %}
+          {% if _role == 'M' and _name and _name not in _maint_names %}
+            {% set _ = _maint_names.append(_name) %}
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+      <br><strong>Subsystem:</strong>
+      {% for hit in subsystem_hits %}{{ hit.name }}{% if not loop.last %}, {% endif %}{% endfor %}
+      {% if _maint_names %}
+        &middot; <strong>Maintainer{{ '' if _maint_names|length == 1 else 's' }}:</strong>
+        {{ _maint_names|join(', ') }}
+      {% endif %}
+      {% endif %}
     </p>
   </header>
 

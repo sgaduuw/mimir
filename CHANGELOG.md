@@ -11,6 +11,79 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.15.0] – 2026-05-14
+
+MINOR release with five Tier-1 feature additions, three of them
+mimir-specific differentiators against lore.kernel.org:
+MAINTAINERS-driven subsystem awareness on patch pages, mainline
+correlation (`Link:`-trailer indexing of Linus's tree),
+patch-series version timelines on cover letters. Plus a
+fenced-code highlighter for non-diff code blocks and a
+date-range "what I missed" view.
+
+### Added
+
+- **MAINTAINERS-driven subsystem awareness** (issue #67). Patch
+  pages now show subsystem ownership inside the article header
+  alongside From / Date: `Subsystem: BCACHEFS · Maintainer: Kent
+  Overstreet`. Below the body, a collapsible "Other recent
+  patches touching these files" block surfaces up to 5 recent
+  articles sharing any touched path. Ingest extracts the
+  `b/<path>` from every `diff --git` header into a new
+  `article_files` join table; `update-mainline` mirrors Linus's
+  `linux.git` locally (configurable via `MAINLINE_TREE_PATH`)
+  and parses MAINTAINERS into `subsystems` / `subsystem_paths` /
+  `subsystem_maintainers` tables. `--skip-fetch` / `--force` /
+  `--skip-maintainers` / `--skip-commits` flags for partial
+  passes. `backfill-article-files` CLI fills `article_files` on
+  existing deployments (idempotent, newest-first).
+- **Mainline correlation** (issue #66). `update-mainline` now
+  also walks every commit on the configured tree, extracts
+  `Link: https://lore.kernel.org/.../<msgid>` trailers, and
+  records them in a new `mainline_commits` table. Patch pages
+  whose Message-ID matches a recorded commit surface "Applied
+  as `<sha>` in the `<tree>` tree on YYYY-MM-DD" as a
+  prominent left-bordered aside above the body. This is the
+  user-visible payoff that closes the lore-archive →
+  mainline-tree loop. First-run on a fresh deploy walks the full
+  ~1.5M-commit Linus history; subsequent ticks resume via a
+  second cursor on `MainlineState` and only walk new commits.
+- **Patch-series cover-letter timeline** (issue #65 slice 1).
+  Cover-letter subjects (`[PATCH ... 0/N] <title>`) are detected
+  at ingest and tagged with `patch_series_key` +
+  `patch_series_version` columns on Article. Cover-letter pages
+  with ≥2 revisions render `Series revisions: v1 (date) → v2
+  (date) → **v3**`, each prior revision linked to its own page.
+  Series identity is SHA-1 of `(normalised-title, author-address)`
+  so a query or log line can't leak the author's email through
+  the key. Individual `1/N`+ patches don't attach in this slice
+  (subject churn between revisions is a separate heuristic
+  problem). `backfill-patch-series` CLI fills the columns on
+  existing deployments. Cheap: subject + author only, no body
+  re-parse.
+- **Fenced-code-block syntax highlighting** (issue #69). Markdown
+  triple-backtick fences in patch bodies (common in cover
+  letters and design discussions) are now Pygments-highlighted
+  with the language from the fence info string. `\`\`\`c` /
+  `\`\`\`python` / `\`\`\`bash` use the matching lexer; a bare
+  `\`\`\`` defaults to C (kernel-list context); unknown info
+  strings fall back to TextLexer rather than crash. Detection is
+  fence-anchored (no indent-based heuristics) so prose with
+  code-shaped tokens doesn't get false-positive highlighting.
+  Fences inside quoted blocks keep the quote structure. The
+  Pygments stylesheet was extended with token classes for
+  keyword / function / builtin / string / number / comment /
+  preprocessor / operator, `light-dark()`-paired for both themes.
+- **"What I missed" date-range view** at `/<inbox>/since/<YYYY-MM-DD>`
+  (issue #73). Lists every thread with activity from the given
+  date to now, ordered by last activity desc. Window clamps to
+  90 days below the present so a "since 2010" URL doesn't drag
+  a multi-year recursive CTE walk into a synchronous request;
+  the template surfaces a notice when the requested date falls
+  before the cap. Reuses the active-threads CTE infrastructure
+  via a new `threads_since` helper. Cached 10 minutes per
+  `(inbox, since)`.
+
 ## [1.14.1] – 2026-05-14
 
 PATCH on top of 1.14.0 surfacing successful IndexNow pushes in
