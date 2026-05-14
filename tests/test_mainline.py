@@ -72,6 +72,35 @@ def test_extract_returns_empty_when_no_link_trailer():
     assert extract_message_ids(msg) == []
 
 
+def test_extract_dedupes_same_msgid_across_link_variants():
+    """Real commits sometimes carry the same Message-ID under both
+    the `/r/` and `/all/` slug, or duplicate a Link trailer in a
+    cherry-pick. Without dedup these collide on the
+    `(commit_sha, message_id)` UNIQUE constraint and abort the
+    batch (observed against linux.git commit 9e8e8912b05f, 1.15.0
+    deploy)."""
+    msg = (
+        b"Subject.\n\n"
+        b"Link: https://lore.kernel.org/r/same@x\n"
+        b"Link: https://lore.kernel.org/all/same@x/\n"
+        b"Signed-off-by: X <x@y>\n"
+    )
+    assert extract_message_ids(msg) == ["same@x"]
+
+
+def test_extract_dedupe_preserves_order_of_distinct_msgids():
+    """Dedup keeps the first occurrence of each msgid and preserves
+    insertion order — order is what we'd want if a renderer ever
+    sorts by appearance."""
+    msg = (
+        b"Link: https://lore.kernel.org/r/a@x\n"
+        b"Link: https://lore.kernel.org/r/b@x\n"
+        b"Link: https://lore.kernel.org/all/a@x/\n"
+        b"Link: https://lore.kernel.org/r/c@x\n"
+    )
+    assert extract_message_ids(msg) == ["a@x", "b@x", "c@x"]
+
+
 def test_extract_handles_non_decodable_bytes_via_surrogateescape():
     """A stray non-UTF-8 byte must not crash the extractor — those
     appear occasionally in older commits with contributor names
