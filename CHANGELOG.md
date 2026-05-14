@@ -11,6 +11,22 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- MAINTAINERS file parser + new `update-mainline` CLI (foundation
+  for issue #67, MAINTAINERS-driven subsystem awareness). Mirrors
+  Linus's `linux.git` locally (path configurable via
+  `MAINLINE_TREE_PATH`, defaults to `Mainline/linux.git`
+  alongside the per-inbox mirrors), reads MAINTAINERS from HEAD,
+  and replaces the new `subsystems` / `subsystem_paths` /
+  `subsystem_maintainers` tables transactionally. `MainlineState`
+  tracks HEAD so steady-state ticks with no upstream movement
+  no-op without re-parsing. `--force` re-parses regardless;
+  `--skip-fetch` reads the local HEAD without pulling. No render-
+  path or article-data changes in this slice; subsequent slices
+  add diff-touched-paths extraction and the patch-page
+  subsystem header.
+
 ## [1.14.1] – 2026-05-14
 
 PATCH on top of 1.14.0 surfacing successful IndexNow pushes in

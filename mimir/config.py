@@ -116,6 +116,20 @@ class Settings(BaseSettings):
     # disable.
     analyze_after_ingest_rows: int = 10000
 
+    # Mainline tree (Linus's `linux.git`). Mirrored locally so the
+    # `update-mainline` CLI can read MAINTAINERS — and, in a later
+    # slice, walk commit-message `Link:` trailers for the patch-page
+    # "applied as <sha>" surface.
+    #
+    # Path follows the same pattern as the per-inbox mirrors under
+    # `Inboxes/`; pick `Mainline/linux.git` so a typical deploy gets
+    # `<data root>/Inboxes/<list>/git` and `<data root>/Mainline/linux.git`
+    # side-by-side. Override via MAINLINE_TREE_PATH / MAINLINE_TREE_URL.
+    mainline_tree_path: Path = Path("Mainline/linux.git")
+    mainline_tree_url: str = (
+        "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+    )
+
     # IndexNow (https://www.indexnow.org/). Push-notification protocol
     # for new URLs, consumed by Bing/Yandex/Naver/Seznam/Yep. Google
     # is *not* a consumer as of this writing — set this expecting Bing

@@ -555,6 +555,31 @@ dev), see `deploy/README.md`. Three shapes are covered:
   TLS site block with the `X-Forwarded-Proto` and `X-Request-Id`
   headers mimir reads).
 
+## Mainline tree (MAINTAINERS)
+
+mimir mirrors Linus's `linux.git` locally so it can read
+`MAINTAINERS` and surface subsystem ownership on patch pages (work
+in progress; first slice ships the data, follow-up slices wire
+the render path). Tree path is configurable via `MAINLINE_TREE_PATH`
+(default `Mainline/linux.git` alongside the per-inbox mirrors)
+and `MAINLINE_TREE_URL`.
+
+```sh
+# Clone (first run) or fetch + load:
+poetry run flask --app mimir update-mainline
+
+# Re-parse the local HEAD without fetching:
+poetry run flask --app mimir update-mainline --skip-fetch
+
+# Force re-parse even when HEAD hasn't moved (after a parser fix):
+poetry run flask --app mimir update-mainline --force
+```
+
+Steady-state ticks (HEAD unchanged) are cheap: fetch, compare,
+no-op. Operator can run this on a cron / systemd timer; the
+schema is replaced transactionally on every change so consumers
+never see a half-loaded subsystems table.
+
 ## IndexNow (Bing / Yandex push notifications)
 
 Off by default. Set `INDEXNOW_KEY` to enable: the `update`
