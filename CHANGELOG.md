@@ -11,6 +11,18 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- `DiscussionForumPosting` JSON-LD on message pages now carries a
+  `text` snippet derived from the parsed body (truncated at the
+  last whitespace inside 2000 chars) and an `author.url` pointing
+  at the per-inbox author view. Both were flagged by Google Search
+  Console on 2026-05-14: missing `text` blocked Discussions
+  rich-result eligibility, missing `author.url` was a non-critical
+  field. Empty or whitespace-only bodies still omit `text`, and
+  fallback "unknown sender" authors omit `url`, so the structured
+  data validator stays clean across the corpus.
+
 ## [1.13.3] – 2026-05-13
 
 Dev/CI-only PATCH on top of 1.13.2. No user-visible behaviour
