@@ -11,6 +11,35 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- **Index review-attestation trailers** at ingest time (slice 1
+  of #97). New `article_trailers` table records one row per
+  `Reviewed-by:`, `Acked-by:`, `Tested-by:`, `Reported-by:`,
+  `Suggested-by:`, `Co-developed-by:`, or
+  `Reported-and-tested-by:` line in a message body. Address is
+  stored verbatim plus a lowercased `address_normalized` for
+  case-insensitive lookups. Indexed on
+  `(role, address_normalized)` for the per-author "reviewed by
+  this person" surface (slice 3) and on `article_id` for the
+  per-message lookup. `Signed-off-by:` is deliberately not
+  indexed (chain-of-custody, not a review signal). Quoted
+  trailer lines from a parent message are skipped via the
+  same line-start regex anchor used for diff extraction. New
+  CLI subcommand `flask --app mimir backfill-article-trailers`
+  walks historical articles to populate the table; idempotent
+  and resumable, mirrors `backfill-article-files` in shape and
+  flags. No render surfaces yet; slices 2+3 will add the per-
+  subsystem and per-author reviewer pages.
+
+### Migration
+
+After upgrading: run `alembic upgrade head` to create
+`article_trailers`, then `flask --app mimir
+backfill-article-trailers` to populate it for existing
+articles. The web UI continues to render unchanged in the
+meantime.
+
 ## [1.17.0] – 2026-05-15
 
 MINOR release. Two feature batches: per-subsystem dashboards
