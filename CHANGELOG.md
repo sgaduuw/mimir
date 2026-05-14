@@ -11,103 +11,78 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.15.0] – 2026-05-14
+
+MINOR release with five Tier-1 feature additions, three of them
+mimir-specific differentiators against lore.kernel.org:
+MAINTAINERS-driven subsystem awareness on patch pages, mainline
+correlation (`Link:`-trailer indexing of Linus's tree),
+patch-series version timelines on cover letters. Plus a
+fenced-code highlighter for non-diff code blocks and a
+date-range "what I missed" view.
+
 ### Added
 
-- Fenced-code-block syntax highlighting in message bodies
-  (issue #69). Markdown-style triple-backtick fences in patch
-  bodies — common in cover letters and design discussions — are
-  now Pygments-highlighted with the language selected by the
-  fence info string. `\`\`\`c` / `\`\`\`python` / `\`\`\`bash` use
-  the matching lexer; a bare `\`\`\`` defaults to C (kernel-list
-  context); unknown info strings fall back to TextLexer rather
-  than crash. Detection is fence-anchored only (no
-  indent-based heuristics) so prose with code-shaped tokens
-  doesn't get false-positive highlighting. Fences inside
-  quoted blocks (`> \`\`\`c`) keep the quote structure.
-- Patch-series cover-letter timeline (issue #65). Cover-letter
-  subjects (`[PATCH ... 0/N] <title>`) are detected at ingest and
-  tagged with a stable `patch_series_key` + `patch_series_version`
-  on the Article row. The message-page view for a cover letter
-  renders an "Series revisions: v1 (date) → v2 (date) → **v3**"
-  timeline above the body when ≥2 revisions exist, each prior
-  revision linked to its own page. Series identity is
-  `(normalised-title, author-address)` SHA-1, so a query or log
-  line doesn't leak the author's email through the key itself.
-  Individual `1/N`+ patches are not attached to the series in
-  this slice — that's a future refinement (subject churn between
-  revisions makes per-patch linking a harder heuristic problem).
-  New `backfill-patch-series` CLI walks pre-detector articles to
-  fill the columns on existing deployments — cheap (subject +
-  author only, no body re-parse).
-
-- MAINTAINERS file parser + new `update-mainline` CLI (foundation
-  for issue #67, MAINTAINERS-driven subsystem awareness). Mirrors
-  Linus's `linux.git` locally (path configurable via
-  `MAINLINE_TREE_PATH`, defaults to `Mainline/linux.git`
-  alongside the per-inbox mirrors), reads MAINTAINERS from HEAD,
-  and replaces the new `subsystems` / `subsystem_paths` /
-  `subsystem_maintainers` tables transactionally. `MainlineState`
-  tracks HEAD so steady-state ticks with no upstream movement
-  no-op without re-parsing. `--force` re-parses regardless;
-  `--skip-fetch` reads the local HEAD without pulling. No render-
-  path or article-data changes in this slice; subsequent slices
-  add diff-touched-paths extraction and the patch-page
-  subsystem header.
-- "What I missed" date-range view at `/<inbox>/since/<YYYY-MM-DD>`
-  (issue #73). Renders every thread with activity from the given
-  date to now, ordered by last activity desc. Window clamps to 90
-  days below the present so a "since 2010" URL doesn't drag a
-  multi-year recursive CTE walk into a synchronous request; the
-  template surfaces a notice when the requested date falls before
-  the cap. Reuses the existing active-threads CTE infrastructure
-  via a new `threads_since` helper in `mimir.threading`. Cached 10
-  minutes per `(inbox, since)`.
-- Diff-touched-paths extraction at ingest (issue #67 slice 2).
-  New `article_files(article_id, path)` join table; populated
-  automatically for articles whose body contains `diff --git`
-  headers. The `b/` (post-rename destination) path is stored —
-  the path reviewers and MAINTAINERS `F:` globs care about.
-  Cross-posted articles don't double-add rows; non-patch bodies
-  produce zero rows. New `backfill-article-files` CLI walks
-  previously-ingested articles to fill the table on existing
-  deployments: `flask --app mimir backfill-article-files [--limit
-  N] [--reprocess]`. Idempotent (rows-already-present articles
-  skip); newest-first walk so a bounded session covers the
-  most-visible articles. No render path changes yet; slice 3
-  wires the subsystem header and the "other patches touching X"
-  sidebar.
-- Patch-page subsystem header and "other recent patches touching
-  these files" sidebar (issue #67 slice 3 — closes #67). For
-  articles with at least one `article_files` row, the message
-  page renders a collapsible header showing every MAINTAINERS
-  section that claims any of the touched paths, with the
-  section's status (`Maintained`, `Supported`, etc.) and its
-  `M:`/`R:` entries (display name + address, role tagged with
-  `<kbd>M</kbd>` or `<kbd>R</kbd>`). Below the message body, a
-  second collapsible block surfaces up to 5 other recent
-  articles that share any path, ordered by date desc, linking
-  to each article's canonical inbox URL so cross-posts resolve
-  cleanly. Both blocks are silently omitted for non-patch
-  articles (no `article_files` rows = empty results). Glob
-  matching handles MAINTAINERS' three common shapes (directory
-  prefix with trailing slash, exact-file, fnmatch wildcard); `X:`
-  excludes veto include matches within the same subsystem only.
-  Unblocks issue #72 (per-subsystem dashboards), which reads the
-  same `subsystems` + `article_files` joins from this slice.
-- Mainline `Link:`-trailer indexing (issue #66). The
-  `update-mainline` CLI now runs a second pass after MAINTAINERS:
-  walks every commit on the configured mainline tree, extracts
-  any `Link: https://lore.kernel.org/.../<msgid>` trailers, and
-  inserts a row per (commit, msgid) into the new
-  `mainline_commits` table. Resumable via a second cursor on
-  `MainlineState` so steady-state ticks only walk new commits.
-  First-run walks the full Linus history (~1.5M commits, minutes
-  on a fresh deploy). Patch pages now surface "Applied as
-  `<sha>` in `linus` on YYYY-MM-DD" whenever the article's
-  Message-ID matches a recorded commit — the user-visible payoff
-  that closes the lore-archive → mainline-tree loop. New flags
-  on `update-mainline`: `--skip-commits` (load MAINTAINERS
-  only), `--skip-maintainers` (walker only).
+- **MAINTAINERS-driven subsystem awareness** (issue #67). Patch
+  pages now show subsystem ownership inside the article header
+  alongside From / Date: `Subsystem: BCACHEFS · Maintainer: Kent
+  Overstreet`. Below the body, a collapsible "Other recent
+  patches touching these files" block surfaces up to 5 recent
+  articles sharing any touched path. Ingest extracts the
+  `b/<path>` from every `diff --git` header into a new
+  `article_files` join table; `update-mainline` mirrors Linus's
+  `linux.git` locally (configurable via `MAINLINE_TREE_PATH`)
+  and parses MAINTAINERS into `subsystems` / `subsystem_paths` /
+  `subsystem_maintainers` tables. `--skip-fetch` / `--force` /
+  `--skip-maintainers` / `--skip-commits` flags for partial
+  passes. `backfill-article-files` CLI fills `article_files` on
+  existing deployments (idempotent, newest-first).
+- **Mainline correlation** (issue #66). `update-mainline` now
+  also walks every commit on the configured tree, extracts
+  `Link: https://lore.kernel.org/.../<msgid>` trailers, and
+  records them in a new `mainline_commits` table. Patch pages
+  whose Message-ID matches a recorded commit surface "Applied
+  as `<sha>` in the `<tree>` tree on YYYY-MM-DD" as a
+  prominent left-bordered aside above the body. This is the
+  user-visible payoff that closes the lore-archive →
+  mainline-tree loop. First-run on a fresh deploy walks the full
+  ~1.5M-commit Linus history; subsequent ticks resume via a
+  second cursor on `MainlineState` and only walk new commits.
+- **Patch-series cover-letter timeline** (issue #65 slice 1).
+  Cover-letter subjects (`[PATCH ... 0/N] <title>`) are detected
+  at ingest and tagged with `patch_series_key` +
+  `patch_series_version` columns on Article. Cover-letter pages
+  with ≥2 revisions render `Series revisions: v1 (date) → v2
+  (date) → **v3**`, each prior revision linked to its own page.
+  Series identity is SHA-1 of `(normalised-title, author-address)`
+  so a query or log line can't leak the author's email through
+  the key. Individual `1/N`+ patches don't attach in this slice
+  (subject churn between revisions is a separate heuristic
+  problem). `backfill-patch-series` CLI fills the columns on
+  existing deployments. Cheap: subject + author only, no body
+  re-parse.
+- **Fenced-code-block syntax highlighting** (issue #69). Markdown
+  triple-backtick fences in patch bodies (common in cover
+  letters and design discussions) are now Pygments-highlighted
+  with the language from the fence info string. `\`\`\`c` /
+  `\`\`\`python` / `\`\`\`bash` use the matching lexer; a bare
+  `\`\`\`` defaults to C (kernel-list context); unknown info
+  strings fall back to TextLexer rather than crash. Detection is
+  fence-anchored (no indent-based heuristics) so prose with
+  code-shaped tokens doesn't get false-positive highlighting.
+  Fences inside quoted blocks keep the quote structure. The
+  Pygments stylesheet was extended with token classes for
+  keyword / function / builtin / string / number / comment /
+  preprocessor / operator, `light-dark()`-paired for both themes.
+- **"What I missed" date-range view** at `/<inbox>/since/<YYYY-MM-DD>`
+  (issue #73). Lists every thread with activity from the given
+  date to now, ordered by last activity desc. Window clamps to
+  90 days below the present so a "since 2010" URL doesn't drag
+  a multi-year recursive CTE walk into a synchronous request;
+  the template surfaces a notice when the requested date falls
+  before the cap. Reuses the active-threads CTE infrastructure
+  via a new `threads_since` helper. Cached 10 minutes per
+  `(inbox, since)`.
 
 ## [1.14.1] – 2026-05-14
 
