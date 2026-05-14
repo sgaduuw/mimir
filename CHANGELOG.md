@@ -11,6 +11,28 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.15.1] – 2026-05-14
+
+PATCH on top of 1.15.0 fixing a mainline-walker crash hit on the
+first production `update-mainline` run against linux.git. No
+schema, no config, no behaviour change for the happy path; the
+walker now survives commits that carry the same Message-ID under
+multiple `Link:` URL forms.
+
+### Fixed
+
+- `mainline.extract_message_ids` now dedupes Message-IDs within a
+  single commit's `Link:` trailers. Real commits occasionally
+  carry the same Message-ID under both the `/r/` and `/all/` lore
+  URL forms, or duplicate a `Link:` trailer in a stable
+  cherry-pick. Without dedup those collide on the
+  `(commit_sha, message_id)` UNIQUE constraint and abort the
+  insert batch (observed against linux.git commit
+  `9e8e8912b05f` on the 1.15.0 first run). On the next
+  `update-mainline` invocation after upgrading, the walker
+  resumes from the cursor it had reached before the crash and
+  continues cleanly.
+
 ## [1.15.0] – 2026-05-14
 
 MINOR release with five Tier-1 feature additions, three of them
