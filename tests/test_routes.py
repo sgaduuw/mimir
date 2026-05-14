@@ -1453,6 +1453,29 @@ def test_thread_summary_helper_counts_and_relative_time():
     assert s["last_activity_rel"] == "3h ago"
 
 
+def test_message_page_emits_vary_hx_request(client, tmp_path):
+    """The message endpoint returns either the full page or just the
+    `_message_body.html` partial depending on `HX-Request`. Without
+    `Vary: HX-Request`, an intermediary cache (Cloudflare, browser
+    bfcache, Chrome prerender cache) can serve a partial response
+    to a regular navigation (page renders as just the <article>,
+    no chrome) or a full page to an HTMX swap (full page chrome
+    duplicates into #msg). Both observed on the production deploy
+    on 2026-05-14. The Vary header keys the two response shapes
+    separately so caches treat them as distinct entities."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "vary-test@example.com", subject="vary",
+    )
+    # Full-page response.
+    r = client.get(url)
+    assert r.status_code == 200
+    assert r.headers.get("Vary") == "HX-Request"
+    # HTMX partial response.
+    r_hx = client.get(url, headers={"HX-Request": "true"})
+    assert r_hx.status_code == 200
+    assert r_hx.headers.get("Vary") == "HX-Request"
+
+
 def test_message_page_single_message_thread_skips_fold_scaffolding(
     client, tmp_path,
 ):
