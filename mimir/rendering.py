@@ -346,14 +346,39 @@ def _render_block(
     msgid_urls: dict[str, str],
     address_redactor=None,
     depth: int = 0,
+    parent_url: str | None = None,
 ) -> str:
     if block.kind == "quote":
         stripped = [_strip_one_quote_level(line) for line in block.lines]
         inner = "\n".join(stripped)
+        inner_blocks = parse_blocks(inner)
         inner_html = "".join(
-            _render_block(b, msgid_urls, address_redactor, depth + 1)
-            for b in parse_blocks(inner)
+            _render_block(b, msgid_urls, address_redactor, depth + 1, parent_url)
+            for b in inner_blocks
         )
+        # A first-level quote containing a diff is the patch-review
+        # "quoted hunk" pattern: a reviewer pasting a chunk of the
+        # parent patch to comment on it. Without folding, deep reviews
+        # turn the page into wall-of-diff that buries the inline
+        # commentary. Wrap in <details> by default and surface a
+        # "↗ jump to hunk" link to the parent message (where the
+        # original hunk lives in context).
+        is_hunk_quote = (
+            depth == 0
+            and any(b.kind == "diff" for b in inner_blocks)
+        )
+        if is_hunk_quote:
+            jump = ""
+            if parent_url:
+                jump = (
+                    ' <a href="' + html.escape(parent_url) +
+                    '">↗ jump to hunk</a>'
+                )
+            return (
+                '<details class="hunk-quote"><summary>'
+                f'<small><em>quoted hunk</em>{jump}</small></summary>'
+                f"<blockquote>{inner_html}</blockquote></details>"
+            )
         if depth + 1 >= QUOTE_COLLAPSE_AT_DEPTH:
             # Wrap deep quotes in <details> so the user can collapse the
             # nested levels. Pico styles details/summary out of the box.
@@ -383,12 +408,22 @@ def render_body(
     body: str | None,
     msgid_urls: dict[str, str] | None = None,
     address_redactor=None,
+    parent_url: str | None = None,
 ) -> Markup:
+    """Render `body` to HTML.
+
+    `parent_url`: if set, first-level quote blocks that contain a
+    diff (patch-review "quoted hunk" pattern) are wrapped in a
+    `<details>` with a "↗ jump to hunk" link pointing here. Pass
+    the URL of the message being replied to (typically resolved
+    from `article.thread_parent` via the thread's URL map).
+    """
     if not body:
         return Markup("")
     return Markup(
         "".join(
-            _render_block(b, msgid_urls or {}, address_redactor)
+            _render_block(b, msgid_urls or {}, address_redactor,
+                          parent_url=parent_url)
             for b in parse_blocks(body)
         )
     )

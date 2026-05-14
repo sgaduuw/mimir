@@ -386,11 +386,12 @@ def _msg_url_filter(article: Article, inbox_name: str) -> str:
 
 
 @bp_web.app_template_filter("render_body")
-def _render_body_filter(body, msgid_urls=None):
+def _render_body_filter(body, msgid_urls=None, parent_url=None):
     return render_body(
         body,
         msgid_urls=msgid_urls,
         address_redactor=_redact_trailer_address,
+        parent_url=parent_url,
     )
 
 
@@ -1987,6 +1988,15 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 url = _canonical_url_for(rev, link_set, base="") or ""
                 patch_series_revisions.append((rev, url))
 
+    # Parent URL for the hunk-anchored quote renderer: the message
+    # this article replies to. When the parent is in-scope (i.e. in
+    # the same archive and surfaced in the thread tree), `thread_urls`
+    # carries its URL. Off-list parents have no URL and the renderer
+    # falls back to a plain <details> without the jump link.
+    parent_url: str | None = None
+    if article.thread_parent and article.thread_parent in thread_urls:
+        parent_url = thread_urls[article.thread_parent]
+
     # HTMX intra-thread swap: when the click came from a tree link, return
     # only the message-body partial (just the <article id="msg">). The
     # surrounding tree + nav stay put on the client; the client-side script
@@ -2004,6 +2014,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         article=article,
         thread=thread,
         thread_urls=thread_urls,
+        parent_url=parent_url,
         thread_summary=thread_summary,
         msgid_urls=msgid_urls,
         parent_off_list=parent_off_list,

@@ -179,6 +179,70 @@ def test_render_body_deeply_nested_quotes_collapse_to_details():
     assert "<summary>" in out
 
 
+def test_render_body_first_level_quoted_diff_folds_as_hunk_quote():
+    """A reviewer's first-level quote of a patch hunk gets folded
+    into a `<details class="hunk-quote">` so a wall of quoted diff
+    doesn't bury the inline commentary. Without the fold, a long
+    review thread is unreadable."""
+    body = (
+        "Some context above.\n\n"
+        "> @@ -1,3 +1,3 @@\n"
+        ">  int main(void) {\n"
+        "> -    return 0;\n"
+        "> +    return 1;\n"
+        ">  }\n\n"
+        "And my comment below."
+    )
+    out = str(render_body(body))
+    assert '<details class="hunk-quote">' in out
+    assert "quoted hunk" in out
+    # The diff inside renders via Pygments — its tokens flow into
+    # the <blockquote>. Pin one token class to confirm the diff
+    # path ran (not just a text dump).
+    assert 'class="highlight"' in out
+
+
+def test_render_body_first_level_quoted_diff_emits_jump_to_hunk_with_parent_url():
+    """When the renderer is given `parent_url`, the hunk-quote
+    `<summary>` carries a clickable "↗ jump to hunk" link
+    pointing at it. The link is HTML-escaped so a hostile parent
+    URL can't smuggle markup through."""
+    body = "> @@ -1 +1 @@\n> -x\n> +y\n"
+    out = str(render_body(body, parent_url="/lkml/2024/01/42"))
+    assert "↗ jump to hunk" in out
+    assert 'href="/lkml/2024/01/42"' in out
+
+
+def test_render_body_first_level_quoted_diff_without_parent_url_omits_link():
+    """No parent URL → the fold still happens (the wall-of-diff
+    is the primary concern), but no link is emitted."""
+    body = "> @@ -1 +1 @@\n> -x\n> +y\n"
+    out = str(render_body(body))
+    assert '<details class="hunk-quote">' in out
+    assert "↗ jump to hunk" not in out
+
+
+def test_render_body_first_level_quoted_text_only_stays_as_blockquote():
+    """A first-level quote without a diff inside stays as a plain
+    `<blockquote>` — only hunk-quotes get the fold. The immediate
+    context of a reply must remain visible by default."""
+    out = str(render_body("> just text, no diff here"))
+    assert '<details class="hunk-quote">' not in out
+    assert "<blockquote>" in out
+
+
+def test_render_body_hunk_quote_jump_link_escapes_parent_url():
+    """The parent URL flows from server-built strings, but defense
+    in depth: characters that could break out of the `href`
+    attribute must be HTML-escaped."""
+    body = "> @@ -1 +1 @@\n> -a\n> +b\n"
+    out = str(render_body(body, parent_url='/x"><script>alert(1)</script>'))
+    # The hostile chars must NOT appear unescaped inside the rendered
+    # output (the renderer html-escapes them on the way into href).
+    assert "<script>alert(1)</script>" not in out
+    assert "&lt;script&gt;" in out or "&quot;" in out
+
+
 def test_render_body_diff_pygmentized():
     body = (
         "diff --git a/x b/x\n"
