@@ -41,7 +41,7 @@ from mimir.extensions import SessionLocal
 from mimir.inboxes import inbox_names
 from mimir.models import Article, ArticleList, Inbox
 from mimir.parser import ParsedArticle
-from mimir.rendering import URL_OR_MSGID_RE, render_body
+from mimir.rendering import URL_OR_MSGID_RE, redact_trailer_addresses, render_body
 from mimir.store import MessageNotFound, read_message
 from mimir.threading import (
     active_threads,
@@ -682,6 +682,36 @@ def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
     return payload
 
 
+JSON_LD_TEXT_MAX = 2000
+
+
+def _json_ld_text_snippet(body: str | None) -> str | None:
+    """Return a plaintext snippet of `body` suitable for the
+    DiscussionForumPosting `text` field, or None when there's nothing
+    usable. Whitespace is collapsed (mail bodies have lots of hard
+    wraps that read as paragraph noise in JSON-LD); truncation
+    happens at the last whitespace inside JSON_LD_TEXT_MAX so we
+    don't slice mid-word, with a trailing ellipsis when we did
+    truncate. Returning None lets the caller omit the field
+    entirely — emitting an empty string would re-fail Google's
+    "either text/image/video" validator."""
+    if not body:
+        return None
+    collapsed = " ".join(body.split())
+    if not collapsed:
+        return None
+    if len(collapsed) <= JSON_LD_TEXT_MAX:
+        return collapsed
+    head = collapsed[:JSON_LD_TEXT_MAX]
+    cut = head.rfind(" ")
+    # Pathological no-space body: hard-cut at the limit rather than
+    # returning the entire string just because rfind didn't find a
+    # break point.
+    if cut <= 0:
+        cut = JSON_LD_TEXT_MAX
+    return head[:cut].rstrip() + "..."
+
+
 def _json_ld_message(
     article: Article,
     parsed: ParsedArticle,
@@ -698,8 +728,19 @@ def _json_ld_message(
     no email and no `<hidden>` placeholder. The placeholder is a
     rendering decision for the visible HTML; in machine-readable
     metadata it reads as broken data and was flagged as such in the
-    2026-05-12 review. `dateModified` mirrors `datePublished` because
-    mimir doesn't track edits.
+    2026-05-12 review. `author.url` points at the per-inbox author
+    view so the Person has a stable target for "more posts by this
+    author"; required-by-Google for the Discussions rich-result
+    eligibility (non-critical, Search Console 2026-05-14).
+    `dateModified` mirrors `datePublished` because mimir doesn't
+    track edits.
+
+    `text` carries a plain-text snippet of `parsed.body`, capped at
+    JSON_LD_TEXT_MAX chars (truncated at the last whitespace inside
+    the cap) — Google's DiscussionForumPosting validator treats one
+    of `text` / `image` / `video` as required (critical, Search
+    Console 2026-05-14). Omitted entirely when the body is missing
+    or whitespace-only: an empty string would re-fail the validator.
 
     Prefers `parsed.date` (the original RFC 5322 Date header) over
     `article.date` (the public-inbox commit time) — the message's
@@ -715,22 +756,40 @@ def _json_ld_message(
     )
     subject = parsed.subject or "(no subject)"
     breadcrumb_subject = subject if len(subject) <= 80 else subject[:77] + "..."
+    author_name = _display_name_filter(parsed.author)
+    author: dict = {"@type": "Person", "name": author_name}
+    # Per-inbox author view is a substring match on the From field;
+    # the display name is exactly what'll match the author's other
+    # posts. Skip the URL when we fell back to "unknown sender" —
+    # that token doesn't match anyone.
+    if author_name and author_name != "unknown sender":
+        author["url"] = f"{base}/{inbox_name}/author/{quote(author_name, safe='')}"
     forum_post: dict = {
         "@type": "DiscussionForumPosting",
         "@id": canonical_url,
         "url": canonical_url,
         "mainEntityOfPage": canonical_url,
         "headline": subject,
-        "author": {
-            "@type": "Person",
-            "name": _display_name_filter(parsed.author),
-        },
+        "author": author,
         "isPartOf": {
             "@type": "WebSite",
             "name": inbox_name,
             "url": f"{base}/{inbox_name}/",
         },
     }
+    # Apply the same DCO trailer redaction the visible HTML uses
+    # before snippeting — JSON-LD `text` is yet another surface a
+    # crawler scrapes, and CONTEXT.md's redaction invariants treat
+    # every surface uniformly. Without this, non-allowlisted
+    # Signed-off-by addresses would leak through the structured
+    # data even though the rendered page redacts them.
+    redacted_body = (
+        redact_trailer_addresses(parsed.body, _redact_trailer_address)
+        if parsed.body else parsed.body
+    )
+    body_snippet = _json_ld_text_snippet(redacted_body)
+    if body_snippet:
+        forum_post["text"] = body_snippet
     if iso_date:
         forum_post["datePublished"] = iso_date
         forum_post["dateModified"] = iso_date
