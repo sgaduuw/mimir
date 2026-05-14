@@ -54,16 +54,17 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
       grid-area: sidebar;
       position: sticky;
       top: 1rem;
-      max-height: calc(100vh - 2rem);
-      display: flex;
-      flex-direction: column;
+      /* No height/max-height on the wrapper itself — the inner
+         scroll container caps to viewport so the rail can never
+         extend beyond what the user can see, regardless of the
+         article body's height (which sets the grid cell). */
     }
-    /* In sidebar mode the box should fill its rail vertically and
-       scroll inside, not the height-capped above-body shape. */
+    /* In sidebar mode the inner box scrolls within a viewport-
+       relative cap, not the above-body 50vh box. The `8rem`
+       leaves room for the toolbar above + a margin so the bottom
+       of the rail visually clears the viewport bottom. */
     .message-page-grid--with-sidebar .thread-context .thread-box {
-      max-height: none;
-      flex: 1 1 auto;
-      overflow-y: auto;
+      max-height: calc(100vh - 8rem);
     }
   }
   .thread-context { margin-block: 1rem; }
