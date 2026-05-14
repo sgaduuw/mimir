@@ -40,12 +40,16 @@ from mimir.dashboard import (
 from mimir.extensions import SessionLocal
 from mimir.inboxes import inbox_names
 from mimir.models import (
-    Article, ArticleFile, ArticleList, Inbox, MainlineCommit,
+    Article, ArticleFile, ArticleList, Inbox, MainlineCommit, Subsystem,
 )
 from mimir.parser import ParsedArticle
 from mimir.rendering import URL_OR_MSGID_RE, redact_trailer_addresses, render_body
 from mimir.store import MessageNotFound, read_message
-from mimir.subsystems import recent_patches_touching, subsystems_for_article
+from mimir.subsystems import (
+    recent_articles_in_subsystem,
+    recent_patches_touching,
+    subsystems_for_article,
+)
 from mimir.threading import (
     THREADS_SINCE_MAX_DAYS,
     active_threads,
@@ -112,6 +116,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.daily_today": "public, max-age=60",
     "web.daily_yesterday": "public, max-age=600",
     "web.threads_since_view": "public, max-age=600",
+    "web.subsystem_dashboard": "public, max-age=600",
     "web.year_archive": "public, max-age=600",
     "web.month_archive": "public, max-age=600",
     "web.search": "public, max-age=300",
@@ -1306,6 +1311,47 @@ def threads_since_view(inbox_name: str, since_str: str):
         max_days=THREADS_SINCE_MAX_DAYS,
         threads=threads,
         total_messages=total or 0,
+    )
+
+
+# Cap on the per-subsystem dashboard's recent-patches list.
+# MAINTAINERS subsystems vary wildly in volume (BCACHEFS is busy,
+# some are dormant). A flat cap keeps response size bounded and the
+# rendered list readable; a future slice can paginate.
+SUBSYSTEM_RECENT_PATCHES_LIMIT = 30
+
+
+@bp_web.route("/<inbox_name>/subsystem/<path:name>/")
+def subsystem_dashboard(inbox_name: str, name: str):
+    """Per-subsystem dashboard. Slice 1 surfaces the section's
+    MAINTAINERS-derived header (name, status, M:/R: maintainers)
+    and a list of recent articles linked to this inbox whose
+    diff-touched paths match the subsystem's F: globs (and aren't
+    vetoed by X: globs). Future slices add active-threads and
+    daily-volume sparkline scoped to the same path set."""
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        subsystem = session.execute(
+            select(Subsystem)
+            .options(
+                selectinload(Subsystem.maintainers),
+                selectinload(Subsystem.paths),
+            )
+            .where(Subsystem.name == name)
+        ).scalar_one_or_none()
+        if subsystem is None:
+            abort(404)
+        recent = recent_articles_in_subsystem(
+            session, inbox, subsystem,
+            limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+        )
+    return render_template(
+        "subsystem.html",
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
+        subsystem=subsystem,
+        recent=recent,
+        recent_limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
     )
 
 
