@@ -289,3 +289,43 @@ def test_update_no_op_when_key_unset(monkeypatch):
 
     _push_indexnow(["m@example.com"])
     assert notify_calls == []
+
+
+def test_update_echoes_one_line_on_successful_push(
+    seeded_db, monkeypatch, capsys,
+):
+    """Successful submissions surface in default scheduler output
+    via click.echo, not just the INFO-level log (which is hidden at
+    default verbosity). Mirrors the per-epoch `name/epoch: new=N
+    ...` lines — anything in the scheduler journal signals a real
+    event."""
+    from mimir.cli import _push_indexnow
+    monkeypatch.setattr(indexnow, "notify", lambda urls: len(urls))
+    monkeypatch.setattr(settings, "indexnow_key", "k" * 32)
+    monkeypatch.setattr(settings, "site_base_url", "https://example.test")
+    monkeypatch.setattr(settings, "indexnow_max_per_tick", 1000)
+
+    # `build_urls` runs against the test DB. The seeded fixture has
+    # `art2@example.com` in beta — use it so build_urls returns a
+    # non-empty list and notify reports submitted > 0.
+    _push_indexnow(["art2@example.com"])
+    captured = capsys.readouterr()
+    assert "indexnow: pushed 1 URL(s)" in captured.out
+
+
+def test_update_no_echo_when_notify_returns_zero(
+    seeded_db, monkeypatch, capsys,
+):
+    """notify swallows failures and returns 0 on network/HTTP
+    errors. In that case there's no successful push to announce —
+    the warning log inside notify already covers the failure; we
+    don't want a second misleading "pushed 0 URL(s)" line."""
+    from mimir.cli import _push_indexnow
+    monkeypatch.setattr(indexnow, "notify", lambda urls: 0)
+    monkeypatch.setattr(settings, "indexnow_key", "k" * 32)
+    monkeypatch.setattr(settings, "site_base_url", "https://example.test")
+    monkeypatch.setattr(settings, "indexnow_max_per_tick", 1000)
+
+    _push_indexnow(["art2@example.com"])
+    captured = capsys.readouterr()
+    assert "indexnow:" not in captured.out
