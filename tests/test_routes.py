@@ -2048,6 +2048,73 @@ def test_message_page_shows_related_patches_touching_same_file(
     assert "second touching shared" not in related_section
 
 
+def test_message_page_renders_hunk_quote_with_jump_to_parent(client, tmp_path):
+    """A reply that quotes a patch hunk from its parent renders
+    the quote folded inside `<details class="hunk-quote">` with a
+    `↗ jump to hunk` link pointing at the parent message's URL.
+    Pins the issue-68 slice-1 end-to-end: parser → renderer →
+    template, with the view computing `parent_url` from
+    `article.thread_parent` via the thread's URL map."""
+    parent_dir = tmp_path / "parent"
+    reply_dir = tmp_path / "reply"
+    parent_dir.mkdir()
+    reply_dir.mkdir()
+    _, parent_url = _ingest_one_article(
+        parent_dir, "alpha", "patch-parent@example.com",
+        subject="[PATCH] foo: fix bar",
+        body=(
+            b"This adds a thing.\n\n"
+            b"diff --git a/foo b/foo\n"
+            b"@@ -1,3 +1,3 @@\n"
+            b" int main(void) {\n"
+            b"-    return 0;\n"
+            b"+    return 1;\n"
+            b" }\n"
+        ),
+    )
+    _, reply_url = _ingest_one_article(
+        reply_dir, "alpha", "patch-reply@example.com",
+        subject="Re: [PATCH] foo: fix bar",
+        in_reply_to="patch-parent@example.com",
+        body=(
+            b"On Mon, Alice wrote:\n"
+            b"> @@ -1,3 +1,3 @@\n"
+            b">  int main(void) {\n"
+            b"> -    return 0;\n"
+            b"> +    return 1;\n"
+            b">  }\n\n"
+            b"Looks good, but consider returning -1 instead.\n"
+        ),
+    )
+    body = client.get(reply_url).data.decode()
+    assert '<details class="hunk-quote">' in body
+    assert "quoted hunk" in body
+    assert "↗ jump to hunk" in body
+    assert f'href="{parent_url}"' in body
+
+
+def test_message_page_hunk_quote_omits_jump_link_when_parent_off_list(
+    client, tmp_path,
+):
+    """A reply whose parent isn't in this archive (off-list ancestor)
+    has no resolvable `parent_url`. The fold still happens, but the
+    jump-to-hunk link is omitted rather than pointing at a dead URL."""
+    _, reply_url = _ingest_one_article(
+        tmp_path, "alpha", "orphan-reply@example.com",
+        subject="Re: missing patch",
+        in_reply_to="off-list-patch@example.com",
+        body=(
+            b"> @@ -1 +1 @@\n"
+            b"> -a\n"
+            b"> +b\n\n"
+            b"My comment.\n"
+        ),
+    )
+    body = client.get(reply_url).data.decode()
+    assert '<details class="hunk-quote">' in body
+    assert "↗ jump to hunk" not in body
+
+
 def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
     """`/<inbox>/subsystem/<name>/` renders the subsystem name,
     status, maintainers, and a list of recent patches touching

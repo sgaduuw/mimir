@@ -13,6 +13,17 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Added
 
+- Hunk-anchored quote rendering on reply bodies (issue #68
+  slice 1). When a first-level `>` quote in a message body
+  contains a diff hunk (the patch-review "let me quote this
+  chunk of your patch" pattern), the renderer wraps the quote
+  in a `<details class="hunk-quote">` so the wall of quoted
+  diff doesn't bury the inline commentary. When the parent
+  message is in this archive, the `<summary>` carries a
+  "↗ jump to hunk" link pointing at it. First-level non-diff
+  quotes stay as plain `<blockquote>` (the immediate context of
+  a reply remains visible by default); deeper quotes still
+  collapse via the existing depth-based rule.
 - Per-subsystem dashboard at `/<inbox>/subsystem/<name>/`
   (issue #72 slice 1). Renders the MAINTAINERS-derived header
   (section name, status, `M:`/`R:` maintainers) and a list of
