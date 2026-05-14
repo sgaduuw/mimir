@@ -279,6 +279,52 @@ def threads_for_day(
     )
 
 
+# Cap on the "what I missed" window — keeps the recursive CTE
+# bounded for a UI surface that anyone can hit. Operators returning
+# from a holiday longer than this see "showing last 90 days" rather
+# than a 30-second query.
+THREADS_SINCE_MAX_DAYS = 90
+
+
+def threads_since(
+    session: Session,
+    inbox: Inbox,
+    since: date,
+    force: bool = False,
+) -> list[ActiveThread]:
+    """Every thread in `inbox` with at least one message after
+    `since` (UTC, inclusive of that whole day) up to now, ordered
+    by last activity desc.
+
+    Window is clamped to `THREADS_SINCE_MAX_DAYS` (90 days) below
+    the present so a "since 2010" URL doesn't drag a multi-year
+    CTE walk into a synchronous request. Caller renders a
+    "showing last N days" notice when the requested window
+    exceeds the cap; this helper returns whatever fits in the
+    capped window.
+    """
+    def compute() -> list[ActiveThread]:
+        end = datetime.now(timezone.utc)
+        floor = end - timedelta(days=THREADS_SINCE_MAX_DAYS)
+        start = datetime.combine(since, datetime.min.time(), tzinfo=timezone.utc)
+        if start < floor:
+            start = floor
+        if start >= end:
+            return []
+        return _active_threads_query(
+            session, inbox, start, end,
+            order_by="last_activity", limit=None,
+        )
+
+    return cache.get_or_compute(
+        session,
+        f"threads_since:{inbox.name}:{since.isoformat()}",
+        ACTIVE_THREADS_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
 def threads_for_month(
     session: Session,
     inbox: Inbox,

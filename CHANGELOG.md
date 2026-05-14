@@ -38,6 +38,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   path or article-data changes in this slice; subsequent slices
   add diff-touched-paths extraction and the patch-page
   subsystem header.
+- "What I missed" date-range view at `/<inbox>/since/<YYYY-MM-DD>`
+  (issue #73). Renders every thread with activity from the given
+  date to now, ordered by last activity desc. Window clamps to 90
+  days below the present so a "since 2010" URL doesn't drag a
+  multi-year recursive CTE walk into a synchronous request; the
+  template surfaces a notice when the requested date falls before
+  the cap. Reuses the existing active-threads CTE infrastructure
+  via a new `threads_since` helper in `mimir.threading`. Cached 10
+  minutes per `(inbox, since)`.
 - Diff-touched-paths extraction at ingest (issue #67 slice 2).
   New `article_files(article_id, path)` join table; populated
   automatically for articles whose body contains `diff --git`
