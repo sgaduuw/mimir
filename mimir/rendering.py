@@ -251,6 +251,24 @@ def _render_trailer_line(line: str, redactor) -> str:
     return "".join(out)
 
 
+def redact_trailer_addresses(text: str, redactor) -> str:
+    """Plain-text variant of the DCO trailer redaction the HTML
+    renderer applies via `_render_trailer_line`. Walks the body
+    line-by-line, applies `redactor` to every `<email>` pattern on
+    a `Signed-off-by:` / `Reviewed-by:` / etc. line, and returns
+    plaintext with the substitutions in place. Used by surfaces
+    that consume body content outside the HTML pipeline (JSON-LD
+    `text` snippet today) so the redaction posture stays
+    consistent across every place a body byte can flow."""
+    out: list[str] = []
+    for line in text.split("\n"):
+        if _TRAILER_LINE_RE.match(line):
+            out.append(_EMAIL_ANGLE_RE.sub(lambda m: redactor(m.group(1)), line))
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 QUOTE_COLLAPSE_AT_DEPTH = 2  # depth at which nested quotes auto-collapse
 
 
