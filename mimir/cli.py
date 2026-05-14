@@ -33,7 +33,7 @@ from mimir.inboxes import (
     set_tracked_authors,
     update_inbox,
 )
-from mimir import indexnow, maintainers, patches
+from mimir import indexnow, maintainers, patch_series, patches
 from mimir.config import settings
 from mimir.ingest import (
     DEFAULT_WORKERS,
@@ -609,6 +609,50 @@ def backfill_article_files_command(
         f"backfill complete: examined={result.examined} "
         f"indexed={result.indexed} no_diff={result.no_diff} "
         f"skipped={result.skipped} failed={result.failed}"
+    )
+
+
+@click.command("backfill-patch-series")
+@click.option(
+    "--limit", type=int, default=None,
+    help="Cap the number of articles examined this session.",
+)
+@click.option(
+    "--reprocess", is_flag=True,
+    help="Re-detect for articles whose key is already set (clears "
+         "stale rows that no longer parse as cover letters).",
+)
+@click.option(
+    "-v", "--verbose", count=True,
+    help="-v: progress every batch.",
+)
+def backfill_patch_series_command(
+    limit: int | None, reprocess: bool, verbose: int,
+) -> None:
+    """One-shot walker that fills `patch_series_key` and
+    `patch_series_version` on articles ingested before the
+    cover-letter detector landed.
+
+    Cheaper than the article-files backfill: only reads
+    subject + author, no body re-parse via git mirror.
+    Idempotent — articles whose key is set are skipped unless
+    `--reprocess`. Newest-first walk.
+    """
+    _configure_logging(verbose)
+    progress_fn = None
+    if verbose:
+        def progress_fn(r):  # noqa: E306
+            click.echo(
+                f"... examined={r.examined} indexed={r.indexed} "
+                f"not_cover={r.not_cover} skipped={r.skipped}"
+            )
+    result = patch_series.backfill_patch_series(
+        limit=limit, reprocess=reprocess, progress=progress_fn,
+    )
+    click.echo(
+        f"backfill complete: examined={result.examined} "
+        f"indexed={result.indexed} not_cover={result.not_cover} "
+        f"skipped={result.skipped}"
     )
 
 
@@ -1440,6 +1484,7 @@ def register_cli(app: Flask) -> None:
     app.cli.add_command(update_command)
     app.cli.add_command(update_mainline_command)
     app.cli.add_command(backfill_article_files_command)
+    app.cli.add_command(backfill_patch_series_command)
     app.cli.add_command(warm_cache_command)
     app.cli.add_command(vacuum_command)
     app.cli.add_command(analyze_command)

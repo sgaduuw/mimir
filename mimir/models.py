@@ -59,6 +59,27 @@ class Article(Base):
     # whitespace collapsed) for JWZ-style grouping of orphan threads.
     subject_normalized: Mapped[str] = mapped_column(String, default="", index=True)
 
+    # Patch-series identity for cover letters (`[PATCH ... 0/N]`
+    # subjects). NULL on every non-cover-letter article. Indexed
+    # so the timeline render — "v1 (date) → v2 (date) → v3 (this)"
+    # — can fetch siblings in one query.
+    # `patch_series_key` is a SHA-1 hex digest over
+    # (author-address, normalised-title) — opaque on purpose so a
+    # query or log line doesn't leak the author's email. See
+    # `mimir.patch_series.series_key`.
+    # `patch_series_version` is a short marker like `v1`, `v2`,
+    # `rfc`. The unversioned-but-cover-letter case is materialised
+    # as `v1`.
+    # Per-patch (1/N, 2/N, ...) attachment to a series is a future
+    # slice; for now these columns are populated for cover letters
+    # only.
+    patch_series_key: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True,
+    )
+    patch_series_version: Mapped[str | None] = mapped_column(
+        String, nullable=True,
+    )
+
     # Author's intended primary list, derived from the first list-shaped
     # address in `To:` (then `Cc:`) at ingest time. NULL when no
     # list-shaped address matched a known inbox — render-time falls back

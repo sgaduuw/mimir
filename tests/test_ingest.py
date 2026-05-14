@@ -245,6 +245,81 @@ def test_ingest_linked_cross_post_does_not_double_add_files(
     assert paths == ["fs/x/file.c"]
 
 
+# patch-series cover-letter detection at ingest
+
+
+def test_ingest_records_patch_series_key_for_cover_letter(
+    seeded_db, tmp_path,
+):
+    """A `[PATCH v2 0/3] <title>` subject lands a series key +
+    version on the Article row. Non-cover-letter articles leave
+    both columns NULL."""
+    alpha = _alpha(seeded_db)
+    msgs = [
+        _rfc5322(
+            "cover-v2@example.com",
+            body=b"x",
+        ).replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH v2 0/3] improve foo handling\r\n",
+        ),
+        _rfc5322(
+            "patch-1of3@example.com",
+            body=b"x",
+        ).replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH v2 1/3] foo: add bar\r\n",
+        ),
+    ]
+    _build_pubinbox_repo(tmp_path / "0.git", msgs)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+        cover = s.execute(
+            select(Article).where(Article.message_id == "cover-v2@example.com")
+        ).scalar_one()
+        patch = s.execute(
+            select(Article).where(Article.message_id == "patch-1of3@example.com")
+        ).scalar_one()
+    assert cover.patch_series_key is not None
+    assert cover.patch_series_version == "v2"
+    # Non-cover-letter (1/3) → NULL columns.
+    assert patch.patch_series_key is None
+    assert patch.patch_series_version is None
+
+
+def test_ingest_groups_v1_and_v2_under_same_series_key(seeded_db, tmp_path):
+    """Two cover letters with the same title + same author get the
+    same `patch_series_key`. Pins the cross-revision linkage that
+    drives the timeline render."""
+    alpha = _alpha(seeded_db)
+    msgs = [
+        _rfc5322("v1-cover@example.com", body=b"x").replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH 0/3] improve foo handling\r\n",
+        ),
+        _rfc5322("v2-cover@example.com", body=b"x").replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH v2 0/3] improve foo handling\r\n",
+        ),
+    ]
+    _build_pubinbox_repo(tmp_path / "0.git", msgs)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+        rows = list(s.execute(
+            select(Article).where(
+                Article.message_id.in_(["v1-cover@example.com", "v2-cover@example.com"])
+            )
+        ).scalars())
+    keys = {r.patch_series_key for r in rows}
+    assert len(keys) == 1
+    assert None not in keys
+    versions = {r.message_id: r.patch_series_version for r in rows}
+    assert versions == {
+        "v1-cover@example.com": "v1",
+        "v2-cover@example.com": "v2",
+    }
+
+
 # Bucket: linked (cross-post)
 
 
