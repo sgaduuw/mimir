@@ -20,7 +20,7 @@ from pygments.lexers import get_lexer_for_filename, guess_lexer
 from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
 from mimir.canonical import extract_list_addresses
@@ -1839,6 +1839,28 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
     thread_summary = _thread_summary(thread)
 
+    # Patch-series timeline: when this article is a cover letter
+    # (patch_series_key populated), surface every other revision
+    # in the same series. Slice 1 attaches the key to cover
+    # letters only, so per-patch (1/N, 2/N) pages render no
+    # timeline. Order by date asc so the surface reads
+    # left-to-right v1 → v2 → v3.
+    patch_series_revisions: list[tuple[Article, str]] = []
+    if article.patch_series_key:
+        with SessionLocal() as session:
+            revisions = list(session.execute(
+                select(Article)
+                .options(selectinload(Article.lists))
+                .where(Article.patch_series_key == article.patch_series_key)
+                .order_by(Article.date.asc().nulls_last())
+            ).scalars())
+            # Build a canonical-inbox URL per revision so cross-
+            # posts resolve under the right inbox name.
+            for rev in revisions:
+                link_set = [(al.inbox_id, al.inbox.name) for al in rev.lists]
+                url = _canonical_url_for(rev, link_set, base="") or ""
+                patch_series_revisions.append((rev, url))
+
     # HTMX intra-thread swap: when the click came from a tree link, return
     # only the message-body partial (just the <article id="msg">). The
     # surrounding tree + nav stay put on the client; the client-side script
@@ -1864,4 +1886,5 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         cross_post_inboxes=cross_post_inboxes,
         canonical_url=canonical_url,
         page_json_ld=page_json_ld,
+        patch_series_revisions=patch_series_revisions,
     )

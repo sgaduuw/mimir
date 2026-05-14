@@ -1786,6 +1786,70 @@ def test_message_page_emits_discussion_forum_posting(client, tmp_path):
     assert posting["dateModified"] == posting["datePublished"]
 
 
+def test_message_page_renders_patch_series_timeline(client, tmp_path):
+    """When two cover letters share a `patch_series_key`, viewing
+    one renders a `<aside class="patch-series">` with both
+    versions: the current one as plain text (`<strong>v2</strong>`),
+    the other as a link. Pins the issue-65 happy path."""
+    # Two cover-letter subjects, same author, same title → same
+    # series. mkdir each subdir first; `_ingest_one_article`
+    # creates `0.git` inside but doesn't make the parent.
+    (tmp_path / "v1").mkdir()
+    (tmp_path / "v2").mkdir()
+    common_author = "Alice <a@example>"
+    _, v1_url = _ingest_one_article(
+        tmp_path / "v1", "alpha", "v1-cover@example.com",
+        subject="[PATCH 0/3] improve foo handling",
+        author=common_author,
+    )
+    _, v2_url = _ingest_one_article(
+        tmp_path / "v2", "alpha", "v2-cover@example.com",
+        subject="[PATCH v2 0/3] improve foo handling",
+        author=common_author,
+    )
+    body = client.get(v2_url).data.decode()
+    assert 'class="patch-series"' in body
+    assert "Series revisions:" in body
+    # The current revision (v2) is rendered as bold, not as a link.
+    assert "<strong>v2</strong>" in body
+    # The prior revision (v1) is rendered as a link.
+    assert "<a href=" in body.split('class="patch-series"')[1].split("</aside>")[0]
+    assert ">v1</a>" in body.split('class="patch-series"')[1].split("</aside>")[0]
+    # Arrow between revisions.
+    assert "→" in body.split('class="patch-series"')[1].split("</aside>")[0]
+
+
+def test_message_page_no_series_timeline_for_individual_patch(
+    client, tmp_path,
+):
+    """A `[PATCH v2 1/3]` subject is an individual patch, not a
+    cover letter. The series block doesn't render on those pages
+    in slice 1."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "patch-1of3@example.com",
+        subject="[PATCH v2 1/3] foo: add bar",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="patch-series"' not in body
+    assert "Series revisions:" not in body
+
+
+def test_message_page_no_series_timeline_for_solo_cover_letter(
+    client, tmp_path,
+):
+    """A cover letter with no other revisions in the DB (only
+    v1, no v2 yet) still gets the `patch_series_key` set but
+    renders no timeline — the timeline needs ≥2 revisions to be
+    useful, and one row on its own would just say "v1 (this)"
+    which is visual clutter."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "lonely-v1@example.com",
+        subject="[PATCH 0/3] something nobody resent",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="patch-series"' not in body
+
+
 def test_message_page_emits_breadcrumb_list(client, tmp_path):
     """The same @graph also carries a BreadcrumbList with the
     Site → Inbox → Subject chain."""
