@@ -11,6 +11,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.14.0] – 2026-05-14
+
+MINOR release adding off-by-default IndexNow push-notification
+support. The `update` scheduler tick now notifies Bing/Yandex/
+Naver/Seznam/Yep of newly-ingested article URLs when an operator
+sets `INDEXNOW_KEY`. Google does not consume IndexNow, so this
+won't accelerate Google discovery (separate JSON-LD fixes in 1.13
+.4 handled the Search Console findings).
+
 ### Added
 
 - IndexNow (https://www.indexnow.org/) push-notification support.
