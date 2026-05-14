@@ -11,6 +11,27 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.15.2] – 2026-05-14
+
+PATCH on top of 1.15.1 declaring `/data/Mainline` as a canonical
+state subdir in the Dockerfile. No code or schema change; the
+running container behaves identically once the directory exists
+(which `git clone --bare` would have ensured anyway). The fix
+makes the image self-consistent for fresh deploys where the
+`/data` volume doesn't pre-exist with operator-created subdirs.
+
+### Fixed
+
+- Dockerfile now creates `/data/Mainline` at build time and
+  symlinks `/app/Mainline → /data/Mainline`, matching the
+  Inboxes pattern. Without this, `chown -R mimir:mimir /data`
+  didn't pre-stage the Mainline subdir, leaving it
+  root-owned-on-first-clone on hosts where the volume mount
+  was empty at container start. The 1.15.0 first run on
+  Coruscant got past it because `git clone --bare` creates the
+  parent path, but the image is now self-consistent without
+  relying on that side effect.
+
 ## [1.15.1] – 2026-05-14
 
 PATCH on top of 1.15.0 fixing a mainline-walker crash hit on the
