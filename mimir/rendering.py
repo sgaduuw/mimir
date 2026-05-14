@@ -5,7 +5,10 @@ from dataclasses import dataclass, field
 from markupsafe import Markup
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
-from pygments.lexers import DiffLexer
+from pygments.lexers import DiffLexer, get_lexer_by_name
+from pygments.lexers.c_cpp import CLexer
+from pygments.lexers.special import TextLexer
+from pygments.util import ClassNotFound
 
 QUOTE_PREFIX_RE = re.compile(r"^((?:>\s?)+)")
 STRIP_ONE_LEVEL_RE = re.compile(r"^>\s?")
@@ -80,11 +83,48 @@ _DIFF_LEXER = DiffLexer()
 # add/remove colours stay legible in both modes.
 _DIFF_FORMATTER = HtmlFormatter(noclasses=False, nobackground=True, cssclass="highlight")
 
+# Fenced-code-block detection. Markdown-style triple-backtick fence
+# with an optional info string identifying the language:
+#   ```           — opens a fence; language defaults to C (kernel
+#                   list discussions are overwhelmingly C-shaped)
+#   ```c          — opens a C fence
+#   ```python     — opens a Python fence
+#   ```           — closes whichever fence is open
+#
+# Why fences only (not indent-based detection): high precision.
+# Markdown's 4-space-indent code blocks would false-positive on any
+# mail client that quotes with leading whitespace; the fence
+# discriminator is unambiguous and stays inside its delimiters.
+_FENCE_RE = re.compile(r"^\s*```\s*([A-Za-z0-9_+-]*)\s*$")
+
+_CODE_FORMATTER = HtmlFormatter(noclasses=False, nobackground=True, cssclass="highlight")
+
+_DEFAULT_CODE_LEXER = CLexer()
+
+
+def _lexer_for_fence(info: str):
+    """Pick a Pygments lexer for a code fence's info string.
+
+    Empty info → `CLexer` (kernel-list discussions default to C).
+    Known language → that lexer.
+    Unknown name → fall back to `TextLexer` so the block renders as
+    monospace plaintext rather than crashing on `ClassNotFound`.
+    """
+    if not info:
+        return _DEFAULT_CODE_LEXER
+    try:
+        return get_lexer_by_name(info)
+    except ClassNotFound:
+        return TextLexer()
+
 
 @dataclass
 class _Block:
-    kind: str  # "text" | "quote" | "diff"
+    kind: str  # "text" | "quote" | "diff" | "code"
     lines: list[str] = field(default_factory=list)
+    # For `code` blocks: the info-string from the fence (`c`,
+    # `python`, etc.; empty = default to C). Ignored for other kinds.
+    info: str = ""
 
 
 def _quote_depth(line: str) -> int:
@@ -114,14 +154,43 @@ def parse_blocks(text: str) -> list[_Block]:
     blocks: list[_Block] = []
     in_diff = False
     in_trailer = False
+    in_code = False
+    code_info = ""
 
-    def push(kind: str, line: str) -> None:
+    def push(kind: str, line: str, info: str = "") -> None:
         if blocks and blocks[-1].kind == kind:
             blocks[-1].lines.append(line)
         else:
-            blocks.append(_Block(kind=kind, lines=[line]))
+            blocks.append(_Block(kind=kind, lines=[line], info=info))
 
     for raw_line in text.splitlines():
+        # Code-fence handling takes precedence over everything else
+        # once we're inside a fence — quotes, diffs, and prose all
+        # stop being meaningful until the closing fence.
+        fence = _FENCE_RE.match(raw_line)
+        if in_code:
+            if fence is not None:
+                # Closing fence ends the block; don't include the
+                # delimiter line in the rendered code.
+                in_code = False
+                code_info = ""
+            else:
+                push("code", raw_line, info=code_info)
+            continue
+        if fence is not None:
+            # Opening fence. The info-string lets the renderer pick
+            # a lexer. We deliberately do NOT emit the delimiter as
+            # part of the code block — the delimiter is the
+            # markdown wrapper, not the code.
+            in_code = True
+            code_info = fence.group(1).lower()
+            in_diff = False  # any prior diff state is irrelevant
+            # Seed an empty block so an empty fence still renders
+            # something (avoids the "no block emitted" edge case
+            # if the operator pasted an empty fence).
+            blocks.append(_Block(kind="code", lines=[], info=code_info))
+            continue
+
         if in_diff and in_trailer:
             push("diff", raw_line)
             continue
@@ -297,6 +366,11 @@ def _render_block(
     if block.kind == "diff":
         diff_text = "\n".join(block.lines)
         return highlight(diff_text, _DIFF_LEXER, _DIFF_FORMATTER)
+
+    if block.kind == "code":
+        code_text = "\n".join(block.lines)
+        lexer = _lexer_for_fence(block.info)
+        return highlight(code_text, lexer, _CODE_FORMATTER)
 
     text = "\n".join(block.lines)
     return (
