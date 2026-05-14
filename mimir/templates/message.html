@@ -254,6 +254,29 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
   </details>
 </section>
 {% endif %}
+{# Patch-series timeline: when this article is a cover letter
+   (patch_series_key populated at ingest), surface the v1 → v2 →
+   v3 timeline pointing at each revision. The current article is
+   highlighted; others are links. The arrow notation reads left-
+   to-right oldest-to-newest. Skipped silently when there's no
+   series — most articles. #}
+{% if patch_series_revisions and patch_series_revisions|length > 1 %}
+<aside class="patch-series" style="margin-block: 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--pico-primary); background: var(--pico-muted-background-color);">
+  <small>
+    <strong>Series revisions:</strong>
+    {% for rev, url in patch_series_revisions %}
+      {% if rev.id == article.id %}
+      <strong>{{ rev.patch_series_version }}</strong>
+      ({{ rev.date.strftime('%Y-%m-%d') if rev.date else '?' }})
+      {% else %}
+      <a href="{{ url }}">{{ rev.patch_series_version }}</a>
+      ({{ rev.date.strftime('%Y-%m-%d') if rev.date else '?' }})
+      {% endif %}
+      {% if not loop.last %} → {% endif %}
+    {% endfor %}
+  </small>
+</aside>
+{% endif %}
 {% include "_message_body.html" %}
 {# Related patches: other recent articles touching at least one
    file this patch touches. The reverse-lookup side of the

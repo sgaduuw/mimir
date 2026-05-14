@@ -20,7 +20,7 @@ from pygments.lexers import get_lexer_for_filename, guess_lexer
 from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
 from mimir.canonical import extract_list_addresses
@@ -1889,11 +1889,11 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
     thread_summary = _thread_summary(thread)
 
-    # Subsystem header + related patches + mainline applications.
-    # Single session for all three lookups; empty results are
-    # handled template-side via `{% if %}`. Opens a fresh session
-    # since the route's earlier with-block has closed by this
-    # point.
+    # Subsystem header + related patches + mainline applications +
+    # patch-series timeline. Single session for all lookups; empty
+    # results are handled template-side via `{% if %}`. Opens a
+    # fresh session since the route's earlier with-block has closed
+    # by this point.
     with SessionLocal() as session:
         subsystem_hits = subsystems_for_article(session, article.id)
         touched_paths = [
@@ -1909,6 +1909,18 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             .where(MainlineCommit.message_id == article.message_id)
             .order_by(MainlineCommit.committed_at.asc())
         ).scalars())
+        patch_series_revisions: list[tuple[Article, str]] = []
+        if article.patch_series_key:
+            revisions = list(session.execute(
+                select(Article)
+                .options(selectinload(Article.lists))
+                .where(Article.patch_series_key == article.patch_series_key)
+                .order_by(Article.date.asc().nulls_last())
+            ).scalars())
+            for rev in revisions:
+                link_set = [(al.inbox_id, al.inbox.name) for al in rev.lists]
+                url = _canonical_url_for(rev, link_set, base="") or ""
+                patch_series_revisions.append((rev, url))
 
     # HTMX intra-thread swap: when the click came from a tree link, return
     # only the message-body partial (just the <article id="msg">). The
@@ -1938,4 +1950,5 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         subsystem_hits=subsystem_hits,
         related_patches=related_patches,
         mainline_applications=mainline_applications,
+        patch_series_revisions=patch_series_revisions,
     )

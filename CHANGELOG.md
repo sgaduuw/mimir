@@ -24,6 +24,21 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   indent-based heuristics) so prose with code-shaped tokens
   doesn't get false-positive highlighting. Fences inside
   quoted blocks (`> \`\`\`c`) keep the quote structure.
+- Patch-series cover-letter timeline (issue #65). Cover-letter
+  subjects (`[PATCH ... 0/N] <title>`) are detected at ingest and
+  tagged with a stable `patch_series_key` + `patch_series_version`
+  on the Article row. The message-page view for a cover letter
+  renders an "Series revisions: v1 (date) → v2 (date) → **v3**"
+  timeline above the body when ≥2 revisions exist, each prior
+  revision linked to its own page. Series identity is
+  `(normalised-title, author-address)` SHA-1, so a query or log
+  line doesn't leak the author's email through the key itself.
+  Individual `1/N`+ patches are not attached to the series in
+  this slice — that's a future refinement (subject churn between
+  revisions makes per-patch linking a harder heuristic problem).
+  New `backfill-patch-series` CLI walks pre-detector articles to
+  fill the columns on existing deployments — cheap (subject +
+  author only, no body re-parse).
 
 - MAINTAINERS file parser + new `update-mainline` CLI (foundation
   for issue #67, MAINTAINERS-driven subsystem awareness). Mirrors
