@@ -13,6 +13,18 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Added
 
+- Fenced-code-block syntax highlighting in message bodies
+  (issue #69). Markdown-style triple-backtick fences in patch
+  bodies — common in cover letters and design discussions — are
+  now Pygments-highlighted with the language selected by the
+  fence info string. `\`\`\`c` / `\`\`\`python` / `\`\`\`bash` use
+  the matching lexer; a bare `\`\`\`` defaults to C (kernel-list
+  context); unknown info strings fall back to TextLexer rather
+  than crash. Detection is fence-anchored only (no
+  indent-based heuristics) so prose with code-shaped tokens
+  doesn't get false-positive highlighting. Fences inside
+  quoted blocks (`> \`\`\`c`) keep the quote structure.
+
 - MAINTAINERS file parser + new `update-mainline` CLI (foundation
   for issue #67, MAINTAINERS-driven subsystem awareness). Mirrors
   Linus's `linux.git` locally (path configurable via
