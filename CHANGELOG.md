@@ -11,6 +11,33 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.15.4] – 2026-05-14
+
+PATCH on top of 1.15.3 fixing an HTMX-versus-cache collision on
+the message endpoint. The endpoint returns one of two responses
+keyed only on the `HX-Request` request header: the full page on
+plain navigation, or just the `_message_body.html` partial on
+HTMX intra-thread swaps. Without `Vary: HX-Request`, any
+intermediary cache (Cloudflare, browser bfcache, Chrome prerender
+cache for sites with speculation rules) keyed both responses by
+URL alone and could serve either to either request type. Two
+visible failure modes were observed on the production deploy:
+
+- A direct navigation rendering just the `<article id="msg">`
+  with no surrounding chrome (the cached HTMX partial served to a
+  full-page request).
+- An HTMX click duplicating the entire page chrome into `#msg`
+  (the cached full page served to an HTMX swap request, whose
+  `<html>`/`<body>` wrappers the parser strips while keeping
+  their `<header>` / `<main>` / `<footer>` children).
+
+### Fixed
+
+- `web.message` now emits `Vary: HX-Request` on every response.
+  Caches key partial vs full responses separately, so the wrong
+  shape can't be served to either request type. Other endpoints
+  don't vary by `HX-Request` and don't carry the header.
+
 ## [1.15.3] – 2026-05-14
 
 PATCH on top of 1.15.2 fixing a second mainline-walker crash

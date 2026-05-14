@@ -192,6 +192,15 @@ def _add_cache_headers(response):
         rule = _CACHE_CONTROL_BY_ENDPOINT.get(request.endpoint)
         if rule:
             response.headers["Cache-Control"] = rule
+    # The message route returns a partial (`_message_body.html`) under
+    # `HX-Request: true` and the full page otherwise. Without Vary,
+    # caches (browser bfcache, Cloudflare, Chrome's prerender cache
+    # for sites with speculation rules) can serve a full-page response
+    # to an HTMX request, which then swaps the entire <body>'s
+    # children into `#msg` and visibly duplicates the page chrome.
+    # The Vary header keys the two response variants separately.
+    if request.endpoint == "web.message":
+        response.headers["Vary"] = "HX-Request"
     for k, v in _SECURITY_HEADERS.items():
         response.headers.setdefault(k, v)
     # HSTS only when we know the request came in over HTTPS — set
