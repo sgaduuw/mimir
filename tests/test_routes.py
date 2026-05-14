@@ -2048,6 +2048,83 @@ def test_message_page_shows_related_patches_touching_same_file(
     assert "second touching shared" not in related_section
 
 
+def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
+    """`/<inbox>/subsystem/<name>/` renders the subsystem name,
+    status, maintainers, and a list of recent patches touching
+    the subsystem's paths."""
+    _seed_subsystem(
+        "BCACHEFS", "Supported",
+        files=["fs/bcachefs/"],
+        maintainers=[("M", "Kent Overstreet", "kent.overstreet@linux.dev")],
+    )
+    patch_body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    _ingest_one_article(
+        tmp_path, "alpha", "dash-1@example.com",
+        subject="bcachefs: tweak super", body=patch_body,
+    )
+    r = client.get("/alpha/subsystem/BCACHEFS/")
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert "BCACHEFS" in body
+    assert "Supported" in body
+    assert "Kent Overstreet" in body
+    # Maintainer address renders on the dashboard page (operator-
+    # facing surface; the per-patch header redacts it to keep that
+    # surface compact, the dashboard doesn't).
+    assert "kent.overstreet@linux.dev" in body
+    # The recent-patches list surfaces the seeded article.
+    assert "bcachefs: tweak super" in body
+
+
+def test_subsystem_dashboard_404_on_unknown_subsystem(client):
+    assert client.get("/alpha/subsystem/NOPE/").status_code == 404
+
+
+def test_subsystem_dashboard_404_on_unknown_inbox(client):
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    assert client.get("/nonexistent/subsystem/BCACHEFS/").status_code == 404
+
+
+def test_subsystem_dashboard_scopes_recent_to_inbox(client, tmp_path):
+    """The dashboard URL is per-inbox; only articles linked to that
+    inbox surface in the recent list."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    patch_body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _ingest_one_article(
+        tmp_path / "a", "alpha", "scope-a@example.com",
+        subject="alpha-side patch", body=patch_body,
+    )
+    _ingest_one_article(
+        tmp_path / "b", "beta", "scope-b@example.com",
+        subject="beta-side patch", body=patch_body,
+    )
+    body_a = client.get("/alpha/subsystem/BCACHEFS/").data.decode()
+    body_b = client.get("/beta/subsystem/BCACHEFS/").data.decode()
+    assert "alpha-side patch" in body_a
+    assert "beta-side patch" not in body_a
+    assert "beta-side patch" in body_b
+    assert "alpha-side patch" not in body_b
+
+
+def test_subsystem_dashboard_empty_when_no_matches(client):
+    """A subsystem with no articles in this inbox still renders
+    cleanly with an empty-state message, not a 404 or an error."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    r = client.get("/alpha/subsystem/BCACHEFS/")
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert "BCACHEFS" in body
+    assert "No patches touching" in body
+
+
 def _seed_mainline_commit(message_id, commit_sha="abc1234567890def" + "0" * 24,
                           tree_name="linus", date=None):
     """Insert a MainlineCommit row for a route test. The render

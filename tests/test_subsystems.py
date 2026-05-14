@@ -14,6 +14,7 @@ from mimir.models import (
 )
 from mimir.subsystems import (
     path_matches_glob,
+    recent_articles_in_subsystem,
     recent_patches_touching,
     subsystems_for_article,
 )
@@ -256,3 +257,143 @@ def test_recent_patches_touching_resolves_canonical_inbox(seeded_db):
         out = recent_patches_touching(s, ["fs/x.c"], exclude_article_id=-1)
     assert len(out) == 1
     assert out[0].inbox_name == "beta"
+
+
+# `recent_articles_in_subsystem` integration — slice 1 of the
+# per-subsystem dashboard. Filters by inbox + by the subsystem's
+# include/exclude globs.
+
+
+def test_recent_articles_in_subsystem_basic_match(seeded_db):
+    """Articles whose paths match the subsystem's F: globs surface
+    in the dashboard list; non-matching articles don't."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_patch_article(s, "in1@x", ["fs/bcachefs/super.c"])
+        _add_patch_article(s, "in2@x", ["fs/bcachefs/io.c"])
+        _add_patch_article(s, "out@x", ["fs/btrfs/extent.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = recent_articles_in_subsystem(s, alpha, sub)
+    msgids = {p.message_id for p in out}
+    assert msgids == {"in1@x", "in2@x"}
+
+
+def test_recent_articles_in_subsystem_respects_exclude_globs(seeded_db):
+    """A subsystem's X: globs veto articles whose only matched
+    paths are excluded. The dashboard mirrors the patch-page
+    header semantics."""
+    with seeded_db() as s:
+        sub = _add_subsystem(
+            s, "BTRFS-MAIN", "Maintained",
+            files=["fs/btrfs/"],
+            excludes=["fs/btrfs/tests/"],
+        )
+        _add_patch_article(s, "main@x", ["fs/btrfs/extent.c"])
+        _add_patch_article(s, "tests@x", ["fs/btrfs/tests/runner.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = recent_articles_in_subsystem(s, alpha, sub)
+    assert {p.message_id for p in out} == {"main@x"}
+
+
+def test_recent_articles_in_subsystem_keeps_article_with_one_in_scope_path(
+    seeded_db,
+):
+    """An article touching both an included and an excluded path
+    still belongs to the subsystem — the X: pass only vetoes
+    articles whose paths are *all* excluded."""
+    with seeded_db() as s:
+        sub = _add_subsystem(
+            s, "BTRFS-MAIN", "Maintained",
+            files=["fs/btrfs/"],
+            excludes=["fs/btrfs/tests/"],
+        )
+        _add_patch_article(s, "mixed@x", [
+            "fs/btrfs/extent.c", "fs/btrfs/tests/runner.c",
+        ])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = recent_articles_in_subsystem(s, alpha, sub)
+    assert {p.message_id for p in out} == {"mixed@x"}
+
+
+def test_recent_articles_in_subsystem_scoped_to_inbox(seeded_db):
+    """Articles linked only to the other inbox don't appear."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_patch_article(s, "in-alpha@x", ["fs/bcachefs/super.c"],
+                           inbox_name="alpha")
+        _add_patch_article(s, "in-beta@x", ["fs/bcachefs/io.c"],
+                           inbox_name="beta")
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        out_alpha = recent_articles_in_subsystem(s, alpha, sub)
+        out_beta = recent_articles_in_subsystem(s, beta, sub)
+    assert {p.message_id for p in out_alpha} == {"in-alpha@x"}
+    assert {p.message_id for p in out_beta} == {"in-beta@x"}
+
+
+def test_recent_articles_in_subsystem_orders_by_date_desc(seeded_db):
+    """Newest articles first — operator wants "what's been happening
+    in this subsystem lately" at the top."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        from mimir.models import ArticleList
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        for i, day in enumerate([10, 5, 15]):
+            art = Article(
+                message_id=f"d{i}@x",
+                subject=f"patch {i}",
+                author="a@x",
+                date=datetime(2024, 6, day, tzinfo=timezone.utc),
+                thread_parent=None, subject_normalized=f"patch {i}",
+                canonical_inbox_id=alpha.id,
+                lists=[ArticleList(inbox_id=alpha.id, epoch="0.git",
+                                   commit_sha="f" * 40)],
+                files=[ArticleFile(path="fs/bcachefs/super.c")],
+            )
+            s.add(art)
+        s.commit()
+        out = recent_articles_in_subsystem(s, alpha, sub)
+    assert [p.date.day for p in out] == [15, 10, 5]
+
+
+def test_recent_articles_in_subsystem_exact_path_glob(seeded_db):
+    """A non-directory F: rule (e.g. `Documentation/foo.rst`) still
+    matches articles touching that exact path. Wildcard globs are
+    deliberately skipped in slice 1; this test pins the exact-path
+    case which IS supported."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "DOCS", None, files=["Documentation/foo.rst"])
+        _add_patch_article(s, "doc@x", ["Documentation/foo.rst"])
+        _add_patch_article(s, "elsewhere@x", ["Documentation/bar.rst"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = recent_articles_in_subsystem(s, alpha, sub)
+    assert {p.message_id for p in out} == {"doc@x"}
+
+
+def test_recent_articles_in_subsystem_empty_when_no_matches(seeded_db):
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "DORMANT", None, files=["drivers/dormant/"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = recent_articles_in_subsystem(s, alpha, sub)
+    assert out == []
+
+
+def test_recent_articles_in_subsystem_wildcard_globs_skipped_silently(
+    seeded_db,
+):
+    """Slice 1 doesn't index wildcard globs. A subsystem with ONLY
+    wildcard rules currently returns no articles even if articles
+    would conceptually match — documented behaviour, not a crash."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "ARCH-CSTAR", None, files=["arch/*/cstar/"])
+        _add_patch_article(s, "match@x", ["arch/x86/cstar/init.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = recent_articles_in_subsystem(s, alpha, sub)
+    assert out == []
