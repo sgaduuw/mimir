@@ -156,6 +156,52 @@ def test_inbox_yesterday_route_renders_yesterday_label(client, inbox_name):
     assert yesterday in body
 
 
+def test_inbox_since_smoke_recent(client, inbox_name):
+    """`/since/<recent-date>` resolves and renders without the cap
+    notice; the seeded archive is older than 90d so the body just
+    says 'no messages in this window' but the route still 200s."""
+    from datetime import datetime, timedelta, timezone
+    recent = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+    r = client.get(f"/{inbox_name}/since/{recent}")
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert "Window capped" not in body
+    assert recent in body
+
+
+def test_inbox_since_caps_window_with_notice(client, inbox_name):
+    """A since-date older than 90 days clamps the window to the
+    90-day floor and the template surfaces a notice so the operator
+    sees why the window starts where it does."""
+    from datetime import datetime, timedelta, timezone
+    old = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+    r = client.get(f"/{inbox_name}/since/{old}")
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert "Window capped" in body
+    # The effective-since date (today - 90d) appears in the notice.
+    floor = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+    assert floor in body
+
+
+def test_inbox_since_malformed_date_404(client, inbox_name):
+    assert client.get(f"/{inbox_name}/since/not-a-date").status_code == 404
+    assert client.get(f"/{inbox_name}/since/2024-13-01").status_code == 404
+    assert client.get(f"/{inbox_name}/since/2024-02-30").status_code == 404
+
+
+def test_inbox_since_future_date_404(client, inbox_name):
+    from datetime import datetime, timedelta, timezone
+    future = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d")
+    assert client.get(f"/{inbox_name}/since/{future}").status_code == 404
+
+
+def test_unknown_inbox_since_404(client):
+    assert (
+        client.get("/nonexistent/since/2024-01-01").status_code == 404
+    )
+
+
 def test_inbox_year_archive_renders_year_label(client, inbox_name):
     body = client.get(f"/{inbox_name}/2024/").data.decode()
     # Page title block lifts the year into <title>.
@@ -1021,6 +1067,14 @@ def test_daily_today_title(client, inbox_name):
     title = _title_of(client.get(f"/{inbox_name}/today").data.decode())
     assert " | " in title
     assert title.endswith(f" | {inbox_name} | mimir")
+
+
+def test_since_title_shape(client, inbox_name):
+    from datetime import datetime, timedelta, timezone
+    recent = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
+    title = _title_of(client.get(f"/{inbox_name}/since/{recent}").data.decode())
+    assert title.endswith(f" | {inbox_name} | mimir")
+    assert recent in title
 
 
 def test_message_subject_truncated_to_80(client, tmp_path):

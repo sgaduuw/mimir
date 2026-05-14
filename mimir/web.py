@@ -44,11 +44,13 @@ from mimir.parser import ParsedArticle
 from mimir.rendering import URL_OR_MSGID_RE, redact_trailer_addresses, render_body
 from mimir.store import MessageNotFound, read_message
 from mimir.threading import (
+    THREADS_SINCE_MAX_DAYS,
     active_threads,
     find_thread_root,
     get_thread,
     threads_for_day,
     threads_for_month,
+    threads_since,
 )
 
 bp_web = Blueprint("web", __name__)
@@ -106,6 +108,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.inbox_dashboard": "public, max-age=60",
     "web.daily_today": "public, max-age=60",
     "web.daily_yesterday": "public, max-age=600",
+    "web.threads_since_view": "public, max-age=600",
     "web.year_archive": "public, max-age=600",
     "web.month_archive": "public, max-age=600",
     "web.search": "public, max-age=300",
@@ -1248,6 +1251,50 @@ def daily_today(inbox_name: str):
 def daily_yesterday(inbox_name: str):
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
     return _daily_view(inbox_name, yesterday, "Yesterday")
+
+
+@bp_web.route("/<inbox_name>/since/<since_str>")
+def threads_since_view(inbox_name: str, since_str: str):
+    """"What I missed" view: every thread with activity from `since` to
+    now. Window is clamped to `THREADS_SINCE_MAX_DAYS` (90 days) below
+    the present; the template renders a notice when the requested
+    `since` falls before the cap so the operator sees why the window
+    starts where it does."""
+    try:
+        since = date_cls.fromisoformat(since_str)
+    except ValueError:
+        abort(404)
+    today = datetime.now(timezone.utc).date()
+    if since > today:
+        abort(404)
+    floor = today - timedelta(days=THREADS_SINCE_MAX_DAYS)
+    capped = since < floor
+    effective = floor if capped else since
+    start = datetime.combine(effective, datetime.min.time(), tzinfo=timezone.utc)
+    end = datetime.now(timezone.utc)
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        threads = threads_since(session, inbox, since)
+        total = session.scalar(
+            select(func.count(Article.id))
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                Article.date >= start.strftime("%Y-%m-%d %H:%M:%S"),
+                Article.date < end.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        )
+    return render_template(
+        "since.html",
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
+        since=since,
+        effective_since=effective,
+        capped=capped,
+        max_days=THREADS_SINCE_MAX_DAYS,
+        threads=threads,
+        total_messages=total or 0,
+    )
 
 
 # Plausible bounds for an inbox archive: lkml itself goes back to ~1995.
