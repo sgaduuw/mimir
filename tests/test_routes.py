@@ -2048,6 +2048,54 @@ def test_message_page_shows_related_patches_touching_same_file(
     assert "second touching shared" not in related_section
 
 
+def test_message_page_short_thread_does_not_get_sidebar_class(client, tmp_path):
+    """Short threads (below LONG_THREAD_SIDEBAR_THRESHOLD) keep the
+    above-body layout — the sidebar modifier class is absent so the
+    CSS grid rule doesn't fire."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "short-thread@example.com", subject="solo",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="message-page-grid"' in body
+    assert "message-page-grid--with-sidebar" not in body
+
+
+def test_message_page_long_thread_gets_sidebar_class(client, tmp_path):
+    """Threads at or above LONG_THREAD_SIDEBAR_THRESHOLD (20 by
+    default) get the `--with-sidebar` modifier so the CSS media
+    query switches to the right-rail layout on wide viewports."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from mimir.web import LONG_THREAD_SIDEBAR_THRESHOLD
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    # Build a thread of `threshold` messages all chained off one root.
+    # The root article goes through the real ingest path so the
+    # message view can read its body via the git mirror; the replies
+    # are SQL-only -- they only need to inflate the thread count, the
+    # view doesn't read their bodies.
+    _, root_url = _ingest_one_article(
+        tmp_path, "alpha", "long-root@example.com", subject="long thread root",
+    )
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        for i in range(LONG_THREAD_SIDEBAR_THRESHOLD - 1):
+            r = Article(
+                message_id=f"long-r{i}@example.com",
+                subject=f"Re: long thread root [{i}]",
+                author="r@example",
+                date=datetime(2024, 1, 1, 12, i, tzinfo=timezone.utc),
+                thread_parent="long-root@example.com",
+                subject_normalized="long thread root",
+                lists=[ArticleList(inbox_id=alpha.id, epoch="0.git",
+                                   commit_sha="d" * 40)],
+            )
+            s.add(r)
+        s.commit()
+    body = client.get(root_url).data.decode()
+    assert "message-page-grid--with-sidebar" in body
+
+
 def test_message_page_renders_hunk_quote_with_jump_to_parent(client, tmp_path):
     """A reply that quotes a patch hunk from its parent renders
     the quote folded inside `<details class="hunk-quote">` with a
