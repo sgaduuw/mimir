@@ -198,6 +198,144 @@ def test_render_body_diff_pygmentized():
     assert 'style="color' not in out
 
 
+def test_render_body_fenced_code_block_default_c():
+    """A bare triple-backtick fence defaults to the C lexer — the
+    kernel-list context is overwhelmingly C-shaped, and an
+    unspecified fence is most commonly someone pasting a code
+    snippet in C. Pin: class-based output (Pygments token classes
+    present, no inline styles)."""
+    body = (
+        "Here's a fix:\n\n"
+        "```\n"
+        "static int foo(void) {\n"
+        "    return -EINVAL;\n"
+        "}\n"
+        "```\n\n"
+        "What do you think?\n"
+    )
+    out = str(render_body(body))
+    assert 'class="highlight"' in out
+    # `static`, `int`, `return` are C keywords → Pygments emits
+    # them with the `k` (keyword) token class.
+    assert 'class="k">static</span>' in out
+    assert 'class="k">return</span>' in out
+    # Surrounding prose still renders as `<pre>` text (not part of
+    # the highlighted block).
+    assert "Here&#x27;s a fix" in out or "Here's a fix" in out
+    assert "What do you think?" in out
+    # No inline colours; the page-level CSS handles theming.
+    assert 'style="color' not in out
+
+
+def test_render_body_fenced_code_block_with_python_info_string():
+    """`\\`\\`\\`python` selects the Python lexer. Pygments' Python
+    token class for `def` is `k` (keyword)."""
+    body = (
+        "```python\n"
+        "def hello():\n"
+        "    return 42\n"
+        "```\n"
+    )
+    out = str(render_body(body))
+    assert 'class="highlight"' in out
+    # `def` is a Python keyword, same `k` class. Distinguish from C
+    # by checking for `class="nf">hello`: Pygments tags function
+    # definitions in Python with the `nf` (Name.Function) class
+    # which C doesn't use the same way.
+    assert 'class="nf">hello</span>' in out
+
+
+def test_render_body_fenced_code_block_unknown_language_falls_back_to_text():
+    """An unknown info string (e.g. `\\`\\`\\`foobar`) falls back to
+    `TextLexer` rather than raising. The block still renders as
+    monospace; just no token classes."""
+    body = (
+        "```foobar-not-a-language\n"
+        "literal text not highlighted\n"
+        "```\n"
+    )
+    out = str(render_body(body))
+    assert 'class="highlight"' in out
+    assert "literal text not highlighted" in out
+
+
+def test_render_body_fenced_code_block_excludes_delimiters_from_output():
+    """The triple-backtick fence delimiters are markdown wrappers,
+    not code. They must not appear in the rendered block."""
+    body = (
+        "```c\n"
+        "int x = 1;\n"
+        "```\n"
+    )
+    out = str(render_body(body))
+    # The opening / closing ``` lines aren't part of the C block.
+    assert "```" not in out
+
+
+def test_render_body_unclosed_fence_runs_to_end_of_body():
+    """An unclosed fence (no terminating triple-backtick) runs to
+    the end of the body — the same forgiving behaviour markdown
+    renderers use. Better than dropping the content silently.
+    Pygments tokenises each word, so we check the tokens land in
+    the highlight block in order."""
+    body = (
+        "```c\n"
+        "int x = 1;\n"
+        "still inside the fence\n"
+    )
+    out = str(render_body(body))
+    assert 'class="highlight"' in out
+    # The text is tokenised by Pygments into per-word `<span>`s;
+    # confirm each token lands in source order inside the
+    # highlighted block (no prose pipeline rendering kicked in).
+    for token in ("still", "inside", "the", "fence"):
+        assert f">{token}</span>" in out
+
+
+def test_render_body_text_after_closed_fence_is_plain_pre():
+    """Re-entering prose after a closed fence must use the plain
+    `<pre>` text pipeline, not stay in code mode. Pins the
+    state-machine transition out of the fence."""
+    body = (
+        "```c\n"
+        "int x;\n"
+        "```\n"
+        "back to prose with https://example.test\n"
+    )
+    out = str(render_body(body))
+    # The post-fence URL should be linkified — that only happens in
+    # the prose pipeline, not in a code block.
+    assert 'href="https://example.test"' in out
+
+
+def test_render_body_fence_inside_quote_is_treated_as_quote_content():
+    """A reviewer quoting code (`> \\`\\`\\`c`) keeps the quote
+    structure; we don't re-enter code mode inside a blockquote.
+    The quote depth check runs first."""
+    body = (
+        "> ```c\n"
+        "> int x = 1;\n"
+        "> ```\n"
+        "Followup prose.\n"
+    )
+    out = str(render_body(body))
+    assert "<blockquote>" in out
+    # The fence opener inside the quote shouldn't have toggled the
+    # state machine for the post-quote prose.
+    assert "Followup prose." in out
+
+
+def test_parse_blocks_records_code_fence_info_string():
+    """The block dataclass carries the info-string forwards so the
+    renderer can pick the right lexer per block, not just at the
+    parse-blocks level."""
+    blocks = parse_blocks("```python\nprint(1)\n```\n")
+    code_blocks = [b for b in blocks if b.kind == "code"]
+    assert len(code_blocks) == 1
+    assert code_blocks[0].info == "python"
+    assert code_blocks[0].lines == ["print(1)"]
+
+
 def test_render_body_diff_full_patch_stays_one_block():
     """A complete git format-patch payload must render as one
     `<div class="highlight">` block, not get chopped at `index ...`
