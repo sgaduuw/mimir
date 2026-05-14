@@ -11,6 +11,22 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- Vim-style keyboard navigation. `h` (back out one level), `j`
+  (next message in thread), `k` (previous message in thread),
+  `l` (drill in, placeholder that becomes useful on list surfaces
+  in a follow-up), `Esc` (close help / fold thread tree), `?`
+  (toggle keyboard-help overlay). Shortcuts bypass when focus is
+  in an `<input>`, `<textarea>`, `<select>`, or
+  `[contenteditable]` element; modifier keys (Ctrl/Cmd/Alt) pass
+  through to the browser. `j`/`k` drive the existing intra-thread
+  HTMX swap so the thread tree's active marker tracks the
+  rendered message without a full page reload. Help overlay
+  opens via `?` and closes with `Esc` or backdrop click; rendered
+  on every page so the binding is universally available. Closes
+  #70.
+
 ## [1.15.4] – 2026-05-14
 
 PATCH on top of 1.15.3 fixing an HTMX-versus-cache collision on

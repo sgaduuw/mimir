@@ -1,10 +1,20 @@
 <!doctype html>
+{# Derive a sane "back out one level" target for the vim-style `h` key.
+   - On `/`: no parent, key is a no-op.
+   - On the inbox dashboard `/<inbox>/`: parent is `/`.
+   - On any other in-inbox page: parent is `/<inbox>/`.
+   `current_inbox` is wired into every render via the context processor
+   in mimir.web; `request.path` is Flask's stdlib var. #}
+{%- if current_inbox -%}
+  {%- set _inbox_root = '/' ~ current_inbox ~ '/' -%}
+  {%- set nav_up_url = '/' if request.path == _inbox_root else _inbox_root -%}
+{%- endif -%}
 {# `html_data_attrs` is empty on most routes; collapsing it inline keeps
    `<html lang="en">` as a clean single-line tag on those pages instead
    of leaving a stray indented `>` on its own line in view-source. The
    override block in message.html prepends its own leading space when
    it has attrs to emit. #}
-<html lang="en"{% block html_data_attrs %}{% endblock %}>
+<html lang="en"{% block html_data_attrs %}{% endblock %}{% if nav_up_url %} data-nav-up="{{ nav_up_url }}"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -24,6 +34,11 @@
      and CSS resolves the right state on first paint. Loads from /static/
      because the CSP (script-src 'self') blocks inline scripts. #}
   <script src="{{ url_for('static', filename='js/thread-fold.js') }}"></script>
+  {# Vim-style keyboard navigation: h/j/k/l, Esc to close fold, ? for
+     help. Deferred since nothing here needs to run before paint —
+     contrast thread-fold.js, which must run synchronously to avoid
+     FOUC. #}
+  <script src="{{ url_for('static', filename='js/keyboard-nav.js') }}" defer></script>
 
   {#
     Title and meta-description are defined ONCE (each as a captured
@@ -157,5 +172,31 @@
         manuscript, Árni Magnússon Institute (public domain).</em></small>
     </footer>
   </main>
+  {# Keyboard-help overlay. Rendered on every page so the `?` key
+     always opens it; native <dialog> handles Esc-to-dismiss and
+     focus trapping. Hidden by default — only `showModal()` (driven
+     by keyboard-nav.js) makes it visible. #}
+  <dialog id="keyboard-help" aria-labelledby="kbd-help-title">
+    <article style="max-width: 28rem;">
+      <header style="margin-bottom: 0.75rem;">
+        <strong id="kbd-help-title">Keyboard shortcuts</strong>
+      </header>
+      <table>
+        <tbody>
+          <tr><td><kbd>h</kbd></td><td>back out one level</td></tr>
+          <tr><td><kbd>j</kbd></td><td>next message in thread</td></tr>
+          <tr><td><kbd>k</kbd></td><td>previous message in thread</td></tr>
+          <tr><td><kbd>l</kbd></td><td>drill in</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>close help / fold thread tree</td></tr>
+          <tr><td><kbd>?</kbd></td><td>toggle this help</td></tr>
+        </tbody>
+      </table>
+      <footer style="margin-top: 0.75rem;">
+        <small>Shortcuts bypass when typing in a search box or form
+          field. Modifier keys (Ctrl/Cmd/Alt) pass through to the
+          browser.</small>
+      </footer>
+    </article>
+  </dialog>
 </body>
 </html>
