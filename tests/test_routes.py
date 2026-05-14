@@ -1840,6 +1840,119 @@ def test_message_page_emits_discussion_forum_posting(client, tmp_path):
     assert posting["dateModified"] == posting["datePublished"]
 
 
+def _seed_subsystem(name, status, files, maintainers=()):
+    """Slot a Subsystem row in for route-side render tests. Keeps
+    each test self-contained; the autouse `_reset_db` wipes
+    between tests."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Subsystem, SubsystemMaintainer, SubsystemPath
+    with SessionLocal() as s:
+        sub = Subsystem(name=name, status=status)
+        for f in files:
+            sub.paths.append(SubsystemPath(glob=f, is_exclude=False))
+        for role, mname, addr in maintainers:
+            sub.maintainers.append(
+                SubsystemMaintainer(role=role, name=mname, address=addr)
+            )
+        s.add(sub)
+        s.commit()
+
+
+def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
+    """A patch article whose touched-paths match a Subsystem
+    surfaces the section name + maintainer on the rendered page.
+    Pins the slice-3 happy path: subsystem_hits flows from view
+    to template, the <details> block renders."""
+    _seed_subsystem(
+        "BCACHEFS", "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[("M", "Kent Overstreet", "kent.overstreet@linux.dev")],
+    )
+    patch_body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "subsys-patch@example.com", body=patch_body,
+    )
+    body = client.get(url).data.decode()
+    assert 'class="subsystem-context"' in body
+    assert "BCACHEFS" in body
+    assert "Kent Overstreet" in body
+    assert "kent.overstreet@linux.dev" in body
+    assert "<kbd>M</kbd>" in body
+
+
+def test_message_page_no_subsystem_block_when_no_match(client, tmp_path):
+    """A patch touching paths no Subsystem claims renders without
+    the header block. Avoids an empty `<details>` shell."""
+    _seed_subsystem(
+        "BCACHEFS", "Maintained", files=["fs/bcachefs/"],
+    )
+    patch_body = (
+        b"diff --git a/fs/unrelated/file.c b/fs/unrelated/file.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "no-match@example.com", body=patch_body,
+    )
+    body = client.get(url).data.decode()
+    assert 'class="subsystem-context"' not in body
+
+
+def test_message_page_no_subsystem_block_for_prose_only(client, tmp_path):
+    """A discussion-only article (no diff in body) has no
+    ArticleFile rows, so no subsystem block and no related-patches
+    block."""
+    _seed_subsystem("BCACHEFS", "Maintained", files=["fs/bcachefs/"])
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "prose@example.com",
+        body=b"just a discussion, no diff\n",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="subsystem-context"' not in body
+    assert "Other recent patches touching" not in body
+
+
+def test_message_page_shows_related_patches_touching_same_file(
+    client, tmp_path,
+):
+    """When two patches touch the same file, viewing one surfaces
+    the other in the "Other recent patches touching these files"
+    section. The current article is filtered out of its own
+    sidebar.
+
+    The article we view (second) is the one whose mirror_path
+    `_ingest_one_article` left in place — that's the one the route
+    can re-parse via `read_message`. The first article only needs
+    its ArticleFile rows to land for the related-patches reverse
+    lookup, which doesn't re-read the blob."""
+    patch_body = (
+        b"diff --git a/fs/shared/file.c b/fs/shared/file.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    # Ingest each into its own tmp subdir; `_ingest_one_article`
+    # repoints the inbox's mirror_path each call, so only the
+    # SECOND article's blob is reachable for the message view.
+    (tmp_path / "first").mkdir()
+    (tmp_path / "second").mkdir()
+    _, first_url = _ingest_one_article(
+        tmp_path / "first", "alpha", "first@example.com",
+        body=patch_body, subject="first touching shared",
+    )
+    _, second_url = _ingest_one_article(
+        tmp_path / "second", "alpha", "second@example.com",
+        body=patch_body, subject="second touching shared",
+    )
+    body = client.get(second_url).data.decode()
+    assert "Other recent patches touching" in body
+    assert "first touching shared" in body
+    # Self-exclusion: the current article's subject isn't in the
+    # related-patches block.
+    related_section = body.split("Other recent patches touching")[1]
+    assert "second touching shared" not in related_section
+
+
 def test_message_page_emits_breadcrumb_list(client, tmp_path):
     """The same @graph also carries a BreadcrumbList with the
     Site → Inbox → Subject chain."""

@@ -61,6 +61,24 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   most-visible articles. No render path changes yet; slice 3
   wires the subsystem header and the "other patches touching X"
   sidebar.
+- Patch-page subsystem header and "other recent patches touching
+  these files" sidebar (issue #67 slice 3 — closes #67). For
+  articles with at least one `article_files` row, the message
+  page renders a collapsible header showing every MAINTAINERS
+  section that claims any of the touched paths, with the
+  section's status (`Maintained`, `Supported`, etc.) and its
+  `M:`/`R:` entries (display name + address, role tagged with
+  `<kbd>M</kbd>` or `<kbd>R</kbd>`). Below the message body, a
+  second collapsible block surfaces up to 5 other recent
+  articles that share any path, ordered by date desc, linking
+  to each article's canonical inbox URL so cross-posts resolve
+  cleanly. Both blocks are silently omitted for non-patch
+  articles (no `article_files` rows = empty results). Glob
+  matching handles MAINTAINERS' three common shapes (directory
+  prefix with trailing slash, exact-file, fnmatch wildcard); `X:`
+  excludes veto include matches within the same subsystem only.
+  Unblocks issue #72 (per-subsystem dashboards), which reads the
+  same `subsystems` + `article_files` joins from this slice.
 
 ## [1.14.1] – 2026-05-14
 
