@@ -70,6 +70,12 @@ from mimir.web import (
 
 logger = logging.getLogger(__name__)
 
+# Refresh-window used by warm-cache. See the call site in
+# `warm_cache_command` for the calibration rationale (cron period +
+# jitter buffer). A key with less remaining TTL than this gets
+# recomputed; one with more remaining TTL is left alone.
+WARM_CACHE_REFRESH_WITHIN_SEC = 450
+
 
 def _configure_logging(verbose: int) -> None:
     if verbose >= 2:
@@ -733,6 +739,7 @@ def warm_cache_command(verbose: int) -> None:
         */5 * * * * cd ~/Projects/python/mimir && poetry run flask --app mimir warm-cache
     """
     from mimir.config import settings as _settings
+    from mimir import cache as _cache
     today = datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
     inboxes = bootstrap_inboxes()
@@ -743,36 +750,34 @@ def warm_cache_command(verbose: int) -> None:
         for inbox in inboxes.values():
             targets.extend([
                 (f"{inbox.name} active_threads (7d, 10)",
-                 lambda s, ib=inbox: active_threads(s, ib, days=7, limit=10, force=True)),
+                 lambda s, ib=inbox: active_threads(s, ib, days=7, limit=10)),
                 (f"{inbox.name} threads_for_day (today)",
-                 lambda s, ib=inbox: threads_for_day(s, ib, today, force=True)),
+                 lambda s, ib=inbox: threads_for_day(s, ib, today)),
                 (f"{inbox.name} threads_for_day (yesterday)",
-                 lambda s, ib=inbox: threads_for_day(s, ib, yesterday, force=True)),
+                 lambda s, ib=inbox: threads_for_day(s, ib, yesterday)),
                 (f"{inbox.name} daily_volume (30d)",
-                 lambda s, ib=inbox: daily_volume(s, ib, days=30, force=True)),
+                 lambda s, ib=inbox: daily_volume(s, ib, days=30)),
                 (f"{inbox.name} archive_stats",
-                 lambda s, ib=inbox: archive_stats(s, ib, force=True)),
+                 lambda s, ib=inbox: archive_stats(s, ib)),
                 (f"{inbox.name} latest_pull_requests",
-                 lambda s, ib=inbox: latest_pull_requests(s, ib, limit=5, force=True)),
+                 lambda s, ib=inbox: latest_pull_requests(s, ib, limit=5)),
                 (f"{inbox.name} latest_stable_releases",
-                 lambda s, ib=inbox: latest_stable_releases(s, ib, limit=5, force=True)),
+                 lambda s, ib=inbox: latest_stable_releases(s, ib, limit=5)),
                 (f"{inbox.name} this_day_in_history",
-                 lambda s, ib=inbox: this_day_in_history(s, ib, years_ago=5, limit=3, force=True)),
+                 lambda s, ib=inbox: this_day_in_history(s, ib, years_ago=5, limit=3)),
                 # Atom feed source. Different cache key from the
                 # dashboard "Recent messages" loader because the limit
                 # is the cache key — feeds need 50, the dashboard's
                 # initial paint uses 10.
                 (f"{inbox.name} recent_articles ({FEED_ENTRY_LIMIT})",
-                 lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT, force=True)),
+                 lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT)),
                 # Per-inbox subsystem discoverability widget. One
                 # warm target per inbox: the cache key is limit-less
                 # since v1.19.3, so every caller (front-page top-12,
                 # inbox dashboard top-10, cross-inbox aggregator)
                 # slices from the same cached top-100 payload.
                 (f"{inbox.name} most_active_subsystems_in_inbox (7d)",
-                 lambda s, ib=inbox: most_active_subsystems_in_inbox(
-                     s, ib, days=7, force=True,
-                 )),
+                 lambda s, ib=inbox: most_active_subsystems_in_inbox(s, ib, days=7)),
             ])
             for label, substr in (inbox.tracked_authors or {}).items():
                 # Dashboard tracker tile (limit=5) AND per-author atom
@@ -781,12 +786,12 @@ def warm_cache_command(verbose: int) -> None:
                 # gets a cache-hit just like the dashboard.
                 targets.append((
                     f"{inbox.name} tracker:{label}",
-                    lambda s, ib=inbox, sub=substr: author_recent(s, ib, sub, 5, force=True),
+                    lambda s, ib=inbox, sub=substr: author_recent(s, ib, sub, 5),
                 ))
                 targets.append((
                     f"{inbox.name} tracker:{label} (feed)",
                     lambda s, ib=inbox, sub=substr: author_recent(
-                        s, ib, sub, FEED_ENTRY_LIMIT, force=True
+                        s, ib, sub, FEED_ENTRY_LIMIT,
                     ),
                 ))
         # Front-page cross-inbox subsystem teaser. After the per-
@@ -797,9 +802,7 @@ def warm_cache_command(verbose: int) -> None:
         # consumer.
         targets.append((
             "most_active_subsystems_global (7d)",
-            lambda s: most_active_subsystems_global(
-                s, days=7, force=True,
-            ),
+            lambda s: most_active_subsystems_global(s, days=7),
         ))
         # Sitemap caches. Only warmed when SITE_BASE_URL is configured —
         # without it, the helper would cache a body with relative-looking
@@ -810,24 +813,31 @@ def warm_cache_command(verbose: int) -> None:
         if sitemap_base:
             targets.append((
                 "sitemap:index",
-                lambda s, base=sitemap_base: sitemap_index_xml(s, base, force=True),
+                lambda s, base=sitemap_base: sitemap_index_xml(s, base),
             ))
             targets.append((
                 "sitemap:meta",
-                lambda s, base=sitemap_base: meta_sitemap_xml(s, base, force=True),
+                lambda s, base=sitemap_base: meta_sitemap_xml(s, base),
             ))
             for inbox in inboxes.values():
                 targets.append((
                     f"sitemap:inbox:{inbox.name}",
-                    lambda s, ib=inbox, base=sitemap_base: inbox_sitemap_xml(
-                        s, ib, base, force=True
-                    ),
+                    lambda s, ib=inbox, base=sitemap_base: inbox_sitemap_xml(s, ib, base),
                 ))
-        for label, fn in targets:
-            t0 = time.perf_counter()
-            fn(session)
-            if verbose:
-                click.echo(f"{label}: {(time.perf_counter() - t0) * 1000:.0f} ms")
+        # TTL-aware refresh: a *cron-period* + jitter buffer. The cron
+        # fires every 5 minutes; refreshing keys whose remaining TTL
+        # is < ~7.5 min means 5-min-TTL keys (active_threads) refresh
+        # every tick, 1-hour-TTL keys (daily_volume, listings) refresh
+        # on the tick that lands inside the last 7.5 min of the hour,
+        # and 24h-TTL keys (archive_stats) refresh on the tick nearest
+        # their daily expiry. Previously every key was force-recomputed
+        # on every tick regardless of TTL headroom.
+        with _cache.refresh_window(WARM_CACHE_REFRESH_WITHIN_SEC):
+            for label, fn in targets:
+                t0 = time.perf_counter()
+                fn(session)
+                if verbose:
+                    click.echo(f"{label}: {(time.perf_counter() - t0) * 1000:.0f} ms")
 
     total_ms = (time.perf_counter() - total_start) * 1000
     click.echo(
@@ -838,7 +848,6 @@ def warm_cache_command(verbose: int) -> None:
     # Drop expired rows so the cache table doesn't grow monotonically
     # as search keys, dated `threads_for_day:...:YYYY-MM-DD` keys, and
     # `monthly_volume:<inbox>:<year>` keys for past years accumulate.
-    from mimir import cache as _cache
     purged = _cache.purge_expired()
     if purged:
         click.echo(f"purged {purged} expired cache row{'' if purged == 1 else 's'}")

@@ -621,6 +621,82 @@ def test_get_or_compute_force_recomputes_despite_live_row():
             s.commit()
 
 
+def test_refresh_window_recomputes_when_near_expiry():
+    """Inside an active `refresh_window`, a still-live row whose
+    remaining TTL is less than the window must be recomputed. This is
+    what lets warm-cache refresh 24h-TTL keys *before* they expire,
+    without recomputing every key on every cron tick."""
+    from sqlalchemy import delete as sql_delete
+    from mimir.cache import _ns, get_or_compute, refresh_window
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    key = "xtest-refresh-near-expiry"
+    with SessionLocal() as s:
+        s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+        # 60 s of TTL remaining, but the window asks for "anything
+        # within 300 s of expiry" — so recompute.
+        s.add(CacheEntry(
+            key=_ns(key), value='"stale"', expires_at=_seconds_from_now(60),
+        ))
+        s.commit()
+
+    calls = 0
+
+    def compute():
+        nonlocal calls
+        calls += 1
+        return "fresh"
+
+    try:
+        with SessionLocal() as s, refresh_window(300):
+            out = get_or_compute(s, key, ttl=60, fn=compute)
+        assert out == "fresh"
+        assert calls == 1, "near-expiry row inside refresh_window must recompute"
+    finally:
+        with SessionLocal() as s:
+            s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+            s.commit()
+
+
+def test_refresh_window_skips_when_plenty_of_ttl_left():
+    """Inside an active `refresh_window`, a row whose remaining TTL
+    *exceeds* the window must still be served from cache. This is
+    what lets 24h-TTL keys (archive_stats) sit unbothered across most
+    5-minute warm-cache ticks."""
+    from sqlalchemy import delete as sql_delete
+    from mimir.cache import _ns, get_or_compute, refresh_window
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    key = "xtest-refresh-far-from-expiry"
+    with SessionLocal() as s:
+        s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+        # 1 hour of TTL remaining; window is 5 min — skip recompute.
+        s.add(CacheEntry(
+            key=_ns(key), value='"stale-but-fresh-enough"',
+            expires_at=_seconds_from_now(3600),
+        ))
+        s.commit()
+
+    calls = 0
+
+    def compute():
+        nonlocal calls
+        calls += 1
+        return "fresh"
+
+    try:
+        with SessionLocal() as s, refresh_window(300):
+            out = get_or_compute(s, key, ttl=60, fn=compute)
+        assert out == "stale-but-fresh-enough"
+        assert calls == 0, "row outside refresh_window must short-circuit"
+    finally:
+        with SessionLocal() as s:
+            s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+            s.commit()
+
+
 def test_get_or_compute_expired_row_treated_as_miss():
     """An expired (but still-present) row must not satisfy a
     `get_or_compute`. Without `force=True`, the helper still falls
