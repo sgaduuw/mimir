@@ -290,7 +290,15 @@ def recent_articles_in_subsystem(
         includes = [r for r in subsystem.paths if not r.is_exclude]
         excludes = [r.glob for r in subsystem.paths if r.is_exclude]
 
-        # Build OR conditions for each supported include glob.
+        # Build OR conditions for each supported include glob. Exact
+        # paths (the modal MAINTAINERS shape: explicit `F: drivers/
+        # foo/bar.c` lines) are collapsed into a single `path IN
+        # (...)` clause instead of one OR-equality per rule — wide
+        # subsystems can list dozens of files, and IN lets SQLite
+        # build one in-memory probe instead of walking a long OR
+        # disjunction. Directory-prefix `dir/` entries still need
+        # one LIKE per rule (each escapes its own metacharacters).
+        exact_paths: list[str] = []
         or_conds = []
         for rule in includes:
             g = rule.glob
@@ -302,10 +310,12 @@ def recent_articles_in_subsystem(
                 prefix = g.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 or_conds.append(ArticleFile.path.like(prefix + "%", escape="\\"))
                 # Also match the bare directory path (no trailing slash).
-                or_conds.append(ArticleFile.path == g[:-1])
+                exact_paths.append(g[:-1])
             elif not any(c in g for c in "*?["):
-                or_conds.append(ArticleFile.path == g)
+                exact_paths.append(g)
             # else: wildcard — skipped in slice 1
+        if exact_paths:
+            or_conds.append(ArticleFile.path.in_(exact_paths))
         if not or_conds:
             return []
 
