@@ -22,6 +22,7 @@ from contextvars import ContextVar
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Iterator
 
+from pydantic import BaseModel
 from sqlalchemy import delete as delete_stmt, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import OperationalError
@@ -96,10 +97,26 @@ def _encode(obj: Any) -> Any:
         return {k: _encode(v) for k, v in obj.items()}
     tag = _TAGS.get(type(obj))
     if tag is not None:
-        return {
-            "__t": tag,
-            "v": {f.name: _encode(getattr(obj, f.name)) for f in dataclasses.fields(obj)},
-        }
+        if dataclasses.is_dataclass(obj):
+            fields = {
+                f.name: _encode(getattr(obj, f.name))
+                for f in dataclasses.fields(obj)
+            }
+        elif isinstance(obj, BaseModel):
+            # Iterate via `model_fields` + getattr so nested BaseModel /
+            # dataclass values recurse through `_encode` (which knows
+            # the type tags), instead of through `model_dump()` which
+            # would flatten them to plain dicts and lose the tags.
+            fields = {
+                name: _encode(getattr(obj, name))
+                for name in type(obj).model_fields
+            }
+        else:
+            raise TypeError(
+                f"cache: registered type {type(obj).__name__!r} is neither "
+                f"dataclass nor pydantic BaseModel"
+            )
+        return {"__t": tag, "v": fields}
     raise TypeError(f"cache: don't know how to encode {type(obj).__name__}")
 
 

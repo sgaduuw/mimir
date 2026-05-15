@@ -286,6 +286,49 @@ def test_recent_articles_in_subsystem_basic_match(seeded_db):
     assert msgids == {"in1@x", "in2@x"}
 
 
+def test_recent_articles_in_subsystem_is_cached(seeded_db):
+    """The helper is the dominant cold-load cost of the per-subsystem
+    dashboard (joins article_files × article_lists × articles with one
+    OR clause per F: glob, then a Python X: pass). A repeated call
+    must short-circuit through the cache instead of re-running the
+    join; a `force=True` call must bypass."""
+    from mimir import cache
+    from mimir.cache import _ns
+    from mimir.models import CacheEntry
+    from sqlalchemy import delete as sql_delete
+
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_patch_article(s, "cache-hit@x", ["fs/bcachefs/super.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+        # Clean any prior cache row for this (inbox, subsystem, limit).
+        nskey = _ns(f"recent_articles_in_subsystem:alpha:{sub.id}:20")
+        s.execute(sql_delete(CacheEntry).where(CacheEntry.key == nskey))
+        s.commit()
+
+        # First call computes + caches.
+        first = recent_articles_in_subsystem(s, alpha, sub)
+        assert {p.message_id for p in first} == {"cache-hit@x"}
+
+        # Cache row landed.
+        assert cache.get(f"recent_articles_in_subsystem:alpha:{sub.id}:20") is not None
+
+        # Add a NEW matching article that would surface if the helper
+        # recomputed. Without force the cache hides it.
+        _add_patch_article(s, "added-after@x", ["fs/bcachefs/io.c"])
+        s.commit()
+        second = recent_articles_in_subsystem(s, alpha, sub)
+        assert {p.message_id for p in second} == {"cache-hit@x"}, (
+            f"expected cache hit returning stale row; got recompute: {second}"
+        )
+
+        # force=True bypasses and picks up the new article.
+        third = recent_articles_in_subsystem(s, alpha, sub, force=True)
+        assert {p.message_id for p in third} == {"cache-hit@x", "added-after@x"}
+
+
 def test_recent_articles_in_subsystem_respects_exclude_globs(seeded_db):
     """A subsystem's X: globs veto articles whose only matched
     paths are excluded. The dashboard mirrors the patch-page
