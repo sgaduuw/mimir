@@ -499,71 +499,78 @@ def replay_failures(
             q = q.limit(limit)
         rows = list(session.execute(q).scalars())
 
-        # Group by epoch so we open each dulwich repo once.
+        # Group by epoch so we open each dulwich repo once. Close
+        # each cached repo before returning: dulwich's `Repo` holds
+        # FDs on pack files, refs, and the loose-object dir, and has
+        # no `__del__`, so the FDs leak until the dict gets GC'd.
         repo_cache: dict[str, Repo] = {}
-        for row in rows:
-            out.attempted += 1
-            repo_path = Path(attached.mirror_path) / row.epoch
-            repo = repo_cache.get(row.epoch)
-            if repo is None:
+        try:
+            for row in rows:
+                out.attempted += 1
+                repo_path = Path(attached.mirror_path) / row.epoch
+                repo = repo_cache.get(row.epoch)
+                if repo is None:
+                    try:
+                        repo = Repo(str(repo_path))
+                    except (NotGitRepository, FileNotFoundError):
+                        out.skipped += 1
+                        continue
+                    repo_cache[row.epoch] = repo
+
                 try:
-                    repo = Repo(str(repo_path))
-                except (NotGitRepository, FileNotFoundError):
+                    commit = repo[row.commit_sha.encode()]
+                    tree = repo[commit.tree]
+                    _mode, blob_sha = tree[b"m"]
+                    raw = repo[blob_sha].data
+                    commit_time = datetime.fromtimestamp(commit.commit_time, timezone.utc)
+                except KeyError:
+                    # Commit or `m` blob missing — mirror was pruned or
+                    # rewound. Leave the row in place; surface to operator.
                     out.skipped += 1
                     continue
-                repo_cache[row.epoch] = repo
 
-            try:
-                commit = repo[row.commit_sha.encode()]
-                tree = repo[commit.tree]
-                _mode, blob_sha = tree[b"m"]
-                raw = repo[blob_sha].data
-                commit_time = datetime.fromtimestamp(commit.commit_time, timezone.utc)
-            except KeyError:
-                # Commit or `m` blob missing — mirror was pruned or
-                # rewound. Leave the row in place; surface to operator.
-                out.skipped += 1
-                continue
+                try:
+                    parsed = parse_message(raw)
+                except Exception as exc:
+                    row.last_attempt = datetime.now(timezone.utc)
+                    row.attempts += 1
+                    row.error_class = type(exc).__name__
+                    row.error_message = str(exc)[:1000]
+                    out.still_failed += 1
+                    continue
 
-            try:
-                parsed = parse_message(raw)
-            except Exception as exc:
-                row.last_attempt = datetime.now(timezone.utc)
-                row.attempts += 1
-                row.error_class = type(exc).__name__
-                row.error_message = str(exc)[:1000]
-                out.still_failed += 1
-                continue
-
-            existing_id = session.execute(
-                select(Article.id).where(Article.message_id == parsed.message_id)
-            ).scalar_one_or_none()
-            if existing_id is None:
-                session.add(_to_article(
-                    parsed, inbox_id=attached.id, epoch=row.epoch,
-                    commit_sha=row.commit_sha, date=commit_time,
-                ))
-            else:
-                # Cross-post: link if not already linked. We only ever
-                # have a failure row for a SHA whose article wasn't
-                # successfully ingested in *this* inbox, but be defensive
-                # against the (rare) case where another path inserted it.
-                already_linked = session.execute(
-                    select(ArticleList.article_id).where(
-                        ArticleList.article_id == existing_id,
-                        ArticleList.inbox_id == attached.id,
-                    )
+                existing_id = session.execute(
+                    select(Article.id).where(Article.message_id == parsed.message_id)
                 ).scalar_one_or_none()
-                if already_linked is None:
-                    session.add(ArticleList(
-                        article_id=existing_id,
-                        inbox_id=attached.id,
-                        epoch=row.epoch,
-                        commit_sha=row.commit_sha,
+                if existing_id is None:
+                    session.add(_to_article(
+                        parsed, inbox_id=attached.id, epoch=row.epoch,
+                        commit_sha=row.commit_sha, date=commit_time,
                     ))
-            session.delete(row)
-            out.recovered += 1
-        session.commit()
+                else:
+                    # Cross-post: link if not already linked. We only ever
+                    # have a failure row for a SHA whose article wasn't
+                    # successfully ingested in *this* inbox, but be defensive
+                    # against the (rare) case where another path inserted it.
+                    already_linked = session.execute(
+                        select(ArticleList.article_id).where(
+                            ArticleList.article_id == existing_id,
+                            ArticleList.inbox_id == attached.id,
+                        )
+                    ).scalar_one_or_none()
+                    if already_linked is None:
+                        session.add(ArticleList(
+                            article_id=existing_id,
+                            inbox_id=attached.id,
+                            epoch=row.epoch,
+                            commit_sha=row.commit_sha,
+                        ))
+                session.delete(row)
+                out.recovered += 1
+            session.commit()
+        finally:
+            for repo in repo_cache.values():
+                repo.close()
     return out
 
 
