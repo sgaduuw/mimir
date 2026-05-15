@@ -783,7 +783,8 @@ def test_articles_reviewed_by_matches_address_case_insensitively(
                 address_normalized="mixed@kernel.org",
             )],
         )
-        s.add(art); s.commit()
+        s.add(art)
+        s.commit()
         out = articles_reviewed_by(s, inbox, "mixed@kernel.org", force=True)
     assert {e.message_id for e in out} == {"case@x"}
 
@@ -879,7 +880,8 @@ def test_articles_reviewed_by_resolves_canonical_inbox(seeded_db):
                 address_normalized="a@kernel.org",
             )],
         )
-        s.add(art); s.commit()
+        s.add(art)
+        s.commit()
         # Query the per-reviewer page from alpha; entry should still
         # carry beta as the inbox_name (where the canonical URL lives).
         out = articles_reviewed_by(s, alpha, "a@kernel.org", force=True)
