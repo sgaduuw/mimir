@@ -10,7 +10,7 @@ Seed recap (from conftest.py):
 - beta:  art2 (2024-02-01), art3 (2024-03-01)
 - art3 is cross-posted between alpha and beta.
 """
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -360,11 +360,12 @@ def test_author_recent_respects_limit(seeded_db):
 
 def test_latest_pull_requests_matches_subject_prefix(seeded_db):
     alpha = _inbox(seeded_db, "alpha")
+    recent = datetime.now(timezone.utc) - timedelta(days=7)
     with seeded_db() as s:
         pull = Article(
             message_id="pull@example.com",
             subject="[GIT PULL] something", author="Maintainer",
-            date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            date=recent,
             thread_parent=None, subject_normalized="[git pull] something",
         )
         s.add(pull)
@@ -376,14 +377,38 @@ def test_latest_pull_requests_matches_subject_prefix(seeded_db):
     assert {r.id for r in results} == {pull_id}
 
 
+def test_latest_pull_requests_recency_floor_excludes_old(seeded_db):
+    """A `[GIT PULL]` older than the recency floor must not appear. The
+    floor exists so SQLite can stop at the floor in the reverse date-index
+    scan instead of walking the full inbox proving the negative when
+    fewer than `limit` matches exist."""
+    from mimir.dashboard import LISTING_RECENCY_FLOOR_DAYS
+    alpha = _inbox(seeded_db, "alpha")
+    too_old = datetime.now(timezone.utc) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS + 30)
+    with seeded_db() as s:
+        pull = Article(
+            message_id="oldpull@example.com",
+            subject="[GIT PULL] ancient", author="Maintainer",
+            date=too_old,
+            thread_parent=None, subject_normalized="[git pull] ancient",
+        )
+        s.add(pull)
+        s.flush()
+        s.add(ArticleList(article_id=pull.id, inbox_id=alpha.id, epoch="0.git", commit_sha="ce" * 20))
+        s.commit()
+        results = latest_pull_requests(s, alpha, force=True)
+    assert results == []
+
+
 def test_latest_stable_releases_matches_glob(seeded_db):
     """`Linux <digit>...` is the GLOB pattern."""
     alpha = _inbox(seeded_db, "alpha")
+    recent = datetime.now(timezone.utc) - timedelta(days=7)
     with seeded_db() as s:
         rel = Article(
             message_id="rel@example.com",
             subject="Linux 6.10 released", author="Maintainer",
-            date=datetime(2024, 7, 1, tzinfo=timezone.utc),
+            date=recent,
             thread_parent=None, subject_normalized="linux 6.10 released",
         )
         s.add(rel)
@@ -393,6 +418,26 @@ def test_latest_stable_releases_matches_glob(seeded_db):
         s.commit()
         results = latest_stable_releases(s, alpha, force=True)
     assert {r.id for r in results} == {rel_id}
+
+
+def test_latest_stable_releases_recency_floor_excludes_old(seeded_db):
+    """Release announcements older than the recency floor must not appear."""
+    from mimir.dashboard import LISTING_RECENCY_FLOOR_DAYS
+    alpha = _inbox(seeded_db, "alpha")
+    too_old = datetime.now(timezone.utc) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS + 30)
+    with seeded_db() as s:
+        rel = Article(
+            message_id="oldrel@example.com",
+            subject="Linux 4.0 released", author="Maintainer",
+            date=too_old,
+            thread_parent=None, subject_normalized="linux 4.0 released",
+        )
+        s.add(rel)
+        s.flush()
+        s.add(ArticleList(article_id=rel.id, inbox_id=alpha.id, epoch="0.git", commit_sha="dd" * 20))
+        s.commit()
+        results = latest_stable_releases(s, alpha, force=True)
+    assert results == []
 
 
 # this_day_in_history

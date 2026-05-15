@@ -25,6 +25,16 @@ STATS_CACHE_TTL_SEC = 86400  # 1 day
 DAILY_VOLUME_CACHE_TTL_SEC = 3600  # 1 hour
 LISTING_CACHE_TTL_SEC = 300  # 5 minutes — trackers, pulls, stable, history
 
+# Recency floor for `latest_pull_requests` / `latest_stable_releases`.
+# Without it, an inbox that has fewer than `limit` matches forces SQLite
+# to walk the entire per-inbox date index proving the negative, which
+# warm-cache was paying ~3 s per inbox for. Pull requests happen on
+# every merge window (~8–10 weeks); stable releases are weekly. 180 d
+# covers ~2 merge cycles and ~25 stable releases, comfortably above
+# what the LIMIT-5 widgets surface. An inbox with no matches in this
+# window renders an empty panel, which is the truthful answer.
+LISTING_RECENCY_FLOOR_DAYS = 180
+
 # Floor for the "first message" stat. Filters out the rare backdated repost
 # (e.g. Linus's 1991 "hello minix" anniversary repost, which would otherwise
 # make the archive's date-span footer claim mimir goes back to 1991). lkml
@@ -137,10 +147,14 @@ def latest_pull_requests(
     session: Session, inbox: Inbox, limit: int = 5, force: bool = False
 ) -> list[ArticleSummary]:
     """Recent `[GIT PULL] ...` originals in `inbox`."""
+    floor = datetime.now(timezone.utc) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
+
     def compute() -> list[ArticleSummary]:
         rows = session.execute(
             _inbox_scoped(
-                select(Article).where(Article.subject.ilike("[GIT PULL]%")),
+                select(Article)
+                .where(Article.subject.ilike("[GIT PULL]%"))
+                .where(Article.date >= floor),
                 inbox,
             )
             .order_by(Article.date.desc().nulls_last())
@@ -162,10 +176,14 @@ def latest_stable_releases(
 ) -> list[ArticleSummary]:
     """Recent release announcements in `inbox`: subject starting with
     'Linux <digit>...'. GLOB is case-sensitive in SQLite."""
+    floor = datetime.now(timezone.utc) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
+
     def compute() -> list[ArticleSummary]:
         rows = session.execute(
             _inbox_scoped(
-                select(Article).where(text("subject GLOB 'Linux [0-9]*'")),
+                select(Article)
+                .where(text("subject GLOB 'Linux [0-9]*'"))
+                .where(Article.date >= floor),
                 inbox,
             )
             .order_by(Article.date.desc().nulls_last())

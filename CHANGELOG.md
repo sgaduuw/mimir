@@ -11,6 +11,16 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- `latest_pull_requests` and `latest_stable_releases` are now
+  scoped to the last 180 days. Without the floor, an inbox with
+  fewer than `limit` matches forced SQLite to walk the full
+  per-inbox date index proving the negative, costing ~3 s per
+  inbox in warm-cache and dominating wall time on quiet inboxes.
+  Inboxes with no matching activity in the window render an
+  empty panel.
+
 ## [1.19.3] – 2026-05-15
 
 Third PATCH on top of 1.19.0. The 1.19.1 and 1.19.2 hotfixes
