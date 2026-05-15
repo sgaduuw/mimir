@@ -2238,7 +2238,7 @@ def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
         tmp_path, "alpha", "dash-1@example.com",
         subject="bcachefs: tweak super", body=patch_body,
     )
-    r = client.get("/alpha/subsystem/BCACHEFS/")
+    r = client.get("/alpha/subsystem/bcachefs/")
     assert r.status_code == 200
     body = r.data.decode()
     assert "BCACHEFS" in body
@@ -2280,7 +2280,7 @@ def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
         art = s.get(Article, art_id)
         art.date = datetime.now(timezone.utc) - timedelta(hours=2)
         s.commit()
-    r = client.get("/alpha/subsystem/BCACHEFS/")
+    r = client.get("/alpha/subsystem/bcachefs/")
     assert r.status_code == 200
     text = r.data.decode()
     assert "Active reviewers" in text
@@ -2368,7 +2368,7 @@ def test_subsystem_dashboard_no_link_for_non_allowlisted_reviewer(
         art = s.get(Article, art_id)
         art.date = datetime.now(timezone.utc) - timedelta(hours=2)
         s.commit()
-    text = client.get("/alpha/subsystem/BCACHEFS/").data.decode()
+    text = client.get("/alpha/subsystem/bcachefs/").data.decode()
     assert "Active reviewers" in text
     # Address is redacted in the display surface (safe_from policy).
     assert "rando@somecorp.example" not in text
@@ -2377,12 +2377,48 @@ def test_subsystem_dashboard_no_link_for_non_allowlisted_reviewer(
 
 
 def test_subsystem_dashboard_404_on_unknown_subsystem(client):
-    assert client.get("/alpha/subsystem/NOPE/").status_code == 404
+    """404 on an unknown subsystem name. URL is already lowercase
+    so the redirect doesn't intercept; the lookup misses and 404
+    fires."""
+    assert client.get("/alpha/subsystem/nope/").status_code == 404
+
+
+def test_subsystem_dashboard_redirects_uppercase_to_canonical(client):
+    """MAINTAINERS stores subsystem names uppercase (`BCACHEFS`);
+    the route canonicalises URLs to the lowercase form. An
+    uppercase request 301s to the lowercase URL rather than serving
+    the page directly, so bookmarks and search-engine indexing
+    consolidate on one URL."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    r = client.get("/alpha/subsystem/BCACHEFS/")
+    assert r.status_code == 301
+    assert r.headers["Location"].endswith("/alpha/subsystem/bcachefs/")
+
+
+def test_subsystem_dashboard_redirects_mixed_case(client):
+    """Any non-lowercase shape (mixed casing, single capital, …)
+    redirects to the lowercase canonical form."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    r = client.get("/alpha/subsystem/BcacheFS/")
+    assert r.status_code == 301
+    assert r.headers["Location"].endswith("/alpha/subsystem/bcachefs/")
+
+
+def test_subsystem_dashboard_lookup_case_insensitive(client):
+    """The lowercase URL matches the uppercase DB row via
+    `func.lower(Subsystem.name)`. Pin so a future schema change
+    that lowercases stored names doesn't silently break the lookup
+    (or vice-versa)."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    r = client.get("/alpha/subsystem/bcachefs/")
+    assert r.status_code == 200
+    # H1 still renders the upstream-verbatim casing.
+    assert "BCACHEFS" in r.data.decode()
 
 
 def test_subsystem_dashboard_404_on_unknown_inbox(client):
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
-    assert client.get("/nonexistent/subsystem/BCACHEFS/").status_code == 404
+    assert client.get("/nonexistent/subsystem/bcachefs/").status_code == 404
 
 
 def test_subsystem_dashboard_scopes_recent_to_inbox(client, tmp_path):
@@ -2403,8 +2439,8 @@ def test_subsystem_dashboard_scopes_recent_to_inbox(client, tmp_path):
         tmp_path / "b", "beta", "scope-b@example.com",
         subject="beta-side patch", body=patch_body,
     )
-    body_a = client.get("/alpha/subsystem/BCACHEFS/").data.decode()
-    body_b = client.get("/beta/subsystem/BCACHEFS/").data.decode()
+    body_a = client.get("/alpha/subsystem/bcachefs/").data.decode()
+    body_b = client.get("/beta/subsystem/bcachefs/").data.decode()
     assert "alpha-side patch" in body_a
     assert "beta-side patch" not in body_a
     assert "beta-side patch" in body_b
@@ -2415,7 +2451,7 @@ def test_subsystem_dashboard_empty_when_no_matches(client):
     """A subsystem with no articles in this inbox still renders
     cleanly with an empty-state message, not a 404 or an error."""
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
-    r = client.get("/alpha/subsystem/BCACHEFS/")
+    r = client.get("/alpha/subsystem/bcachefs/")
     assert r.status_code == 200
     body = r.data.decode()
     assert "BCACHEFS" in body
@@ -2428,7 +2464,7 @@ def test_subsystem_dashboard_renders_sparkline(client):
     (all-zero bars) so the surface doesn't disappear on dormant
     subsystems."""
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
-    body = client.get("/alpha/subsystem/BCACHEFS/").data.decode()
+    body = client.get("/alpha/subsystem/bcachefs/").data.decode()
     assert "<svg" in body
     # The SVG carries an aria-label naming the subsystem.
     assert "BCACHEFS, last 30 days" in body
@@ -2461,7 +2497,7 @@ def test_subsystem_dashboard_renders_active_threads_section(
         art = s.get(Article, art_id)
         art.date = datetime.now(timezone.utc) - timedelta(hours=2)
         s.commit()
-    body = client.get("/alpha/subsystem/BCACHEFS/").data.decode()
+    body = client.get("/alpha/subsystem/bcachefs/").data.decode()
     assert "Most active threads" in body
     assert "bcachefs active thread" in body
     # Sparkline SVG is unconditional.

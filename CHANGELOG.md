@@ -13,6 +13,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Changed
 
+- **Subsystem dashboard URLs are now lowercase**. MAINTAINERS
+  stores subsystem names in upper-case ASCII (`BCACHEFS`,
+  `BTRFS FILE SYSTEM`); the route now treats lowercase as the
+  canonical URL form. Uppercase or mixed-case requests return a
+  301 redirect to the canonical lowercase URL, consolidating
+  bookmarks and search-engine indexing on one shape. Lookup is
+  case-insensitive against the stored row, so the H1 still renders
+  the upstream-verbatim casing on the dashboard page.
+
 - **Inbox overview on `/` is now a card grid** rather than a flat
   list. Each card shows the inbox name, a "📌 pinned" badge when
   the inbox is in `Settings.pinned_inboxes`, the message and epoch
