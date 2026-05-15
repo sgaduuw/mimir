@@ -11,6 +11,33 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.19.1] – 2026-05-15
+
+PATCH on top of 1.19.0 fixing a fan-out blowup in the front-
+page and per-inbox subsystem surfaces. The 1.19.0 deploy
+returned 500 on `/` and `/<inbox>/` against the production
+corpus when the cache was empty: `most_active_subsystems_in_inbox`
+ran one COUNT query per MAINTAINERS subsystem (~1500 on lkml),
+and the resulting cold call exceeded gunicorn's 30s worker
+timeout. The cache-namespace bump in 1.19.0 forced exactly that
+cold path on every request immediately after deploy.
+
+### Fixed
+
+- `most_active_subsystems_in_inbox` and the downstream
+  `most_active_subsystems_global` rewritten to one bulk SQL plus
+  a Python inverted-index walk: a single SELECT pulls every
+  `(article_id, path, date)` tuple for the recent in-window
+  articles in the inbox, and `subsystem_paths` rules are
+  bucketed into `dir_prefix → {subsystem_id}` and
+  `exact_path → {subsystem_id}` lookup maps so each path-row
+  resolves to its matching subsystems in O(path_components).
+  Sparkline fetch is deferred to the surviving top-N rather
+  than every matching subsystem. Cold call drops from ≈30s
+  (timeout) to ≈1-2s on the lkml corpus. The cached value
+  shape is unchanged (`list[SubsystemActivity]`); no schema or
+  namespace bump.
+
 ## [1.19.0] – 2026-05-15
 
 MINOR release. UX-focused pass: the front page and per-inbox

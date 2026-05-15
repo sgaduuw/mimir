@@ -861,71 +861,135 @@ def most_active_subsystems_in_inbox(
     def compute() -> list[SubsystemActivity]:
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=days)
+        # One SQL: every (article_id, path, date) tuple for recent
+        # in-window articles linked to this inbox. The date filter
+        # is selective on the production corpus (millions of rows
+        # → thousands of tuples) and we then match in Python.
+        #
+        # The earlier shape ran one COUNT per subsystem (~1500 on
+        # lkml), which blew through gunicorn's worker timeout cold
+        # on the production deploy of 1.19.0 (filed as the 1.19.1
+        # hotfix). One bulk SQL plus a Python inverted-index walk
+        # is bounded by the recent-window article count instead of
+        # the MAINTAINERS subsystem count.
+        rows = session.execute(
+            text(
+                """
+                SELECT a.id AS article_id, af.path, a.date AS art_date
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                JOIN article_files af ON af.article_id = a.id
+                WHERE al.inbox_id = :inbox_id AND a.date >= :start
+                """
+            ),
+            {"inbox_id": inbox.id, "start": start.isoformat()},
+        ).all()
+
+        # Inverted indices over MAINTAINERS subsystem path rules.
+        # Built fresh per call; the subsystems table is small
+        # (≈1500 rows × a handful of paths each) so this costs
+        # tens of milliseconds. include_* / exclude_* mirror the
+        # F: / X: rules; has_include caps the search space to
+        # subsystems with at least one *supported* (non-wildcard)
+        # include rule, same convention as `_subsystem_path_filter_sql`.
         subs = session.execute(
             select(Subsystem).options(
                 selectinload(Subsystem.paths),
-                # Maintainer roster eagerly loaded so the per-row
-                # "maintained by <name>" decoration on the card
-                # doesn't trigger an N+1 fan-out across ~1000
-                # subsystems.
                 selectinload(Subsystem.maintainers),
             )
         ).scalars().all()
-        out: list[SubsystemActivity] = []
+        subs_by_id: dict[int, Subsystem] = {}
+        include_prefix: dict[str, set[int]] = defaultdict(set)
+        include_exact: dict[str, set[int]] = defaultdict(set)
+        exclude_prefix: dict[str, set[int]] = defaultdict(set)
+        exclude_exact: dict[str, set[int]] = defaultdict(set)
         for sub in subs:
-            path_filter = _subsystem_path_filter_sql(sub, prefix="mass")
-            if path_filter is None:
+            subs_by_id[sub.id] = sub
+            for rule in sub.paths:
+                glob = rule.glob
+                if glob.endswith("/"):
+                    bucket = (
+                        exclude_prefix if rule.is_exclude else include_prefix
+                    )
+                    bucket[glob[:-1]].add(sub.id)
+                elif not any(c in glob for c in "*?["):
+                    bucket = (
+                        exclude_exact if rule.is_exclude else include_exact
+                    )
+                    bucket[glob].add(sub.id)
+                # else: wildcard rules skipped (slice 1/2 contract;
+                # the per-subsystem filter SQL skips them too).
+
+        def matches_for(
+            path: str,
+            prefix_map: dict[str, set[int]],
+            exact_map: dict[str, set[int]],
+        ) -> set[int]:
+            out: set[int] = set()
+            if path in exact_map:
+                out.update(exact_map[path])
+            # Walk parent directories so `fs/bcachefs/super.c`
+            # matches an `fs/bcachefs/` rule via its `fs/bcachefs`
+            # parent. O(path_components) per lookup.
+            parts = path.split("/")
+            for i in range(len(parts), 0, -1):
+                key = "/".join(parts[:i])
+                if key in prefix_map:
+                    out.update(prefix_map[key])
+            return out
+
+        # Per-subsystem aggregation. `article_set` tracks distinct
+        # article_ids so a patch touching three files in the same
+        # subsystem counts once, matching the prior COUNT(*) over
+        # a deduplicated article_id IN (…) subquery.
+        counts: dict[int, set[int]] = defaultdict(set)
+        last_activity: dict[int, datetime] = {}
+        for r in rows:
+            inc = matches_for(r.path, include_prefix, include_exact)
+            if not inc:
                 continue
-            path_sql, path_params = path_filter
-            row = session.execute(
-                text(
-                    f"""
-                    SELECT COUNT(*) AS n, MAX(a.date) AS last_date
-                    FROM articles a
-                    JOIN article_lists al ON al.article_id = a.id
-                    WHERE al.inbox_id = :inbox_id
-                      AND a.date >= :start
-                      AND a.id IN ({path_sql})
-                    """
-                ),
-                {
-                    "inbox_id": inbox.id,
-                    "start": start.isoformat(),
-                    **path_params,
-                },
-            ).one()
-            if row.n <= 0:
+            exc = matches_for(r.path, exclude_prefix, exclude_exact)
+            matched = inc - exc
+            if not matched:
                 continue
-            # Pick the first M: maintainer for the card decoration.
-            # R: reviewers don't carry the "maintained by" framing.
-            # ID-order keeps the choice stable across re-parses
-            # (MAINTAINERS rows are recreated wholesale on each
-            # update-mainline; new ids reflect the source order).
+            path_date = _coerce_dt(r.art_date)
+            for sub_id in matched:
+                counts[sub_id].add(r.article_id)
+                prev = last_activity.get(sub_id)
+                if prev is None or path_date > prev:
+                    last_activity[sub_id] = path_date
+
+        # Sort + truncate FIRST, then fetch sparklines only for
+        # the surviving top-N. The earlier shape fetched a
+        # sparkline per matching subsystem which fanned out
+        # `daily_volume_in_subsystem` calls across hundreds of
+        # entries we'd then discard.
+        ranked = sorted(
+            counts.items(),
+            key=lambda kv: (-len(kv[1]), -last_activity[kv[0]].timestamp()),
+        )[:limit]
+
+        out: list[SubsystemActivity] = []
+        for sub_id, article_set in ranked:
+            sub = subs_by_id[sub_id]
             maintainers = sorted(
                 (m for m in sub.maintainers if m.role == "M"),
                 key=lambda m: m.id,
             )
             top_maintainer = maintainers[0].name if maintainers else ""
             out.append(SubsystemActivity(
-                id=sub.id, name=sub.name,
+                id=sub_id, name=sub.name,
                 inbox_name=inbox.name,
-                message_count=row.n,
-                last_activity=_coerce_dt(row.last_date),
+                message_count=len(article_set),
+                last_activity=last_activity[sub_id],
                 maintainer_name=top_maintainer,
                 multiple_maintainers=len(maintainers) > 1,
                 status=sub.status,
-                # 7-day per-subsystem sparkline for the card. Same
-                # cached helper the per-subsystem dashboard reads,
-                # different `days` key (30d there, 7d here) so we
-                # don't share the cache row.
                 spark=daily_volume_in_subsystem(
                     session, inbox, sub, days=7,
                 ),
             ))
-        # Primary: message_count DESC; tiebreak: last_activity DESC
-        # so equally-active subsystems surface by freshness.
-        out.sort(key=lambda a: (-a.message_count, -a.last_activity.timestamp()))
-        return out[:limit]
+        return out
 
     return cache.get_or_compute(
         session,
