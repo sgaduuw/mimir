@@ -20,6 +20,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   inbox in warm-cache and dominating wall time on quiet inboxes.
   Inboxes with no matching activity in the window render an
   empty panel.
+- `warm-cache` no longer force-recomputes every key on every
+  tick. A new `cache.refresh_window(...)` context manager makes
+  `get_or_compute` recompute only rows whose remaining TTL is
+  below the window. With the cron firing every 5 minutes and a
+  window of 450 s, 5-min-TTL keys still refresh every tick (no
+  change), 1-hour-TTL keys refresh on the tick that lands in the
+  last ~7.5 min of the hour, and 24h-TTL keys (`archive_stats`)
+  refresh once per day instead of 288 times. Behavior at the
+  request path is unchanged.
 
 ## [1.19.3] – 2026-05-15
 
