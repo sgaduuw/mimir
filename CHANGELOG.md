@@ -11,6 +11,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Security
+
+- `sync`: enforce wall-clock timeouts on the `manifest.js.gz`
+  fetch (60 s) and on `git clone` (30 min) / `git fetch` (10 min),
+  plus a 16 MiB cap on the manifest body. A hostile or misbehaving
+  upstream can no longer stall the scheduler tick indefinitely or
+  OOM the ingest sidecar via a giant response. `sync_epochs`
+  catches `subprocess.SubprocessError` so a timeout on one epoch
+  surfaces in `SyncResult.failed` and the tick continues.
 ### Fixed
 
 - `search_articles` cache key now case-folds the query so `Foo`
@@ -19,6 +28,14 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   the underlying SQL would return identical results either way;
   the per-casing cache rows just wasted space and made cache
   hits less likely for the next visitor's query.
+- Canonical-inbox resolution and the off-list-parent hint now
+  read `To:` / `Cc:` headers case-insensitively. RFC 5322 field
+  names are case-insensitive and `mimir.parser` preserves the
+  wire casing; some ML re-mailers downcase headers, so a strict
+  `headers.get("To")` silently returned `None` and dropped the
+  list addresses on the floor. Both `extract_list_addresses`
+  callers (canonical-inbox pinning at ingest and the off-list
+  list-host hint on the message page) recover transparently.
 - `active_threads` decay score now clamps the recency exponent at
   zero. `pow(0.5, julianday('now') - julianday(date))` blows up to
   astronomically large values when `date` is in the future, letting
