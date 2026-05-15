@@ -2138,23 +2138,27 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             article, parsed, canonical_url or "", canonical_inbox_name, base,
         ) if canonical_url else None
 
-    # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
-    thread_summary = _thread_summary(thread)
-
-    # Subsystem header + related patches + mainline applications +
-    # patch-series timeline. Single session for all lookups; empty
-    # results are handled template-side via `{% if %}`. Opens a
-    # fresh session since the route's earlier with-block has closed
-    # by this point.
-    with SessionLocal() as session:
+        # Subsystem header + related patches + mainline applications +
+        # patch-series timeline. Inlined into the route's main session
+        # so a single connection covers the whole render — opening a
+        # second SessionLocal here previously cost an extra connect /
+        # WAL-snapshot acquire per message page.
         subsystem_hits = subsystems_for_article(session, article.id)
-        touched_paths = [
-            f.path for f in session.execute(
-                select(ArticleFile).where(ArticleFile.article_id == article.id)
-            ).scalars()
-        ]
-        related_patches = recent_patches_touching(
-            session, touched_paths, exclude_article_id=article.id, limit=5,
+        touched_paths = list(session.execute(
+            select(ArticleFile.path).where(ArticleFile.article_id == article.id)
+        ).scalars())
+        # `recent_patches_touching` is a `path IN (...)` join over
+        # `article_files × articles` that gets reused across every
+        # render of this article. Cache it; new ingest activity on
+        # the same paths surfaces within the 5-minute TTL.
+        related_patches = cache.get_or_compute(
+            session,
+            f"msg_related:{article.id}",
+            300,
+            lambda: recent_patches_touching(
+                session, touched_paths,
+                exclude_article_id=article.id, limit=5,
+            ),
         ) if touched_paths else []
         mainline_applications = list(session.execute(
             select(MainlineCommit)
@@ -2173,6 +2177,9 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 link_set = [(al.inbox_id, al.inbox.name) for al in rev.lists]
                 url = _canonical_url_for(rev, link_set, base="") or ""
                 patch_series_revisions.append((rev, url))
+
+    # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
+    thread_summary = _thread_summary(thread)
 
     # Parent URL for the hunk-anchored quote renderer: the message
     # this article replies to. When the parent is in-scope (i.e. in
