@@ -11,7 +11,7 @@ Off-by-default: `notify` and the route registration in `web.py` are
 both no-ops unless `settings.indexnow_key` is set. See
 `Settings.indexnow_key` for the operator-facing knobs.
 
-`build_urls` is the message-IDs-to-canonical-URLs bridge — it lives
+`build_urls` is the message-IDs-to-canonical-URLs bridge, it lives
 here, not in `cli.py`, so the CLI seam stays small and the URL-
 construction tests can exercise the same path the scheduler uses.
 """
@@ -49,12 +49,12 @@ def build_urls(session: Session, message_ids: list[str], base: str) -> list[str]
     `Article.canonical_inbox_id`, falling back to the alphabetically-
     first linked inbox) and composes `<base>/<inbox>/<YYYY>/<MM>/<id>`.
     Articles with no linked inbox (corrupt rows, shouldn't happen) or
-    no date are skipped silently — the alternative is a dangling URL
+    no date are skipped silently, the alternative is a dangling URL
     in the push, which is worse than a missed notification.
 
     Two queries: one for Articles, one for their ArticleList joins.
     Both bounded by len(message_ids), which is capped above by the
-    `update` caller — no risk of pulling the full archive.
+    `update` caller, no risk of pulling the full archive.
     """
     if not message_ids:
         return []
@@ -101,7 +101,7 @@ def build_urls(session: Session, message_ids: list[str], base: str) -> list[str]
 def notify(urls: list[str]) -> int:
     """POST `urls` to IndexNow. Returns the number of URLs that were
     submitted (0 on no-op, no key, no base URL, no URLs, or any
-    network/HTTP failure — we never raise to the caller).
+    network/HTTP failure, we never raise to the caller).
 
     No-ops silently when `settings.indexnow_key` or
     `settings.site_base_url` is unset, so the scheduler can call
@@ -123,7 +123,7 @@ def notify(urls: list[str]) -> int:
         if urls and not base:
             logger.warning(
                 "indexnow: key set but site_base_url empty, cannot build "
-                "keyLocation — skipping push"
+                "keyLocation, skipping push"
             )
         return 0
 
@@ -170,7 +170,7 @@ def notify(urls: list[str]) -> int:
                 len(chunk), exc,
             )
         except Exception as exc:
-            # Any other surprise (JSON encoding, socket weirdness) —
+            # Any other surprise (JSON encoding, socket weirdness)
             # log and keep going. The whole feature is best-effort;
             # the sitemap is the durable discovery path.
             logger.warning(

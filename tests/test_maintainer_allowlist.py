@@ -39,7 +39,7 @@ def test_empty_when_no_maintainers_indexed(seeded_db):
 
 
 def test_collects_m_and_r_roles(seeded_db):
-    """Both maintainer and reviewer roles contribute to the set —
+    """Both maintainer and reviewer roles contribute to the set , 
     the helper doesn't filter by role."""
     with seeded_db() as s:
         _add_maintainer(s, "BCACHEFS", "M", "Kent", "kent@example.com")
@@ -94,7 +94,7 @@ def test_invalidate_drops_cached_set(seeded_db):
         s.execute(SubsystemMaintainer.__table__.delete())
         s.commit()
     # Without invalidate(), the cached value would still hold
-    # kent@example.com — pin that behaviour first to make the test
+    # kent@example.com, pin that behaviour first to make the test
     # specifically about invalidation.
     stale = maintainer_allowlist.maintainer_addresses()
     assert "kent@example.com" in stale, "cache should still be warm"

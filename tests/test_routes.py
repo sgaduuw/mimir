@@ -49,7 +49,7 @@ def test_meta_index_pinned_card_carries_badge(client, monkeypatch):
     the layout doesn't rely on order alone.
 
     Assert against the rendered `<span class="inbox-card-pinned">`
-    opening tag rather than the class name on its own — the class
+    opening tag rather than the class name on its own, the class
     is also mentioned in the inline `<style>` block, so a substring
     check there would pass even without the badge rendering."""
     from mimir.config import settings
@@ -185,7 +185,7 @@ def test_meta_index_subsystem_card_status_badge_when_non_default(
         art.date = datetime.now(timezone.utc) - timedelta(hours=2)
         s.commit()
     text = client.get("/").data.decode()
-    # `class="subsystem-card-status">Supported<` shape — the class
+    # `class="subsystem-card-status">Supported<` shape, the class
     # is also referenced in the inline <style>, so anchor on the
     # opening tag with the status value to confirm it renders.
     assert '<span class="subsystem-card-status">Supported</span>' in text
@@ -194,7 +194,7 @@ def test_meta_index_subsystem_card_status_badge_when_non_default(
 def test_meta_index_subsystem_card_no_status_badge_for_default(
     client, tmp_path,
 ):
-    """`Maintained` is the upstream default — most subsystems sit
+    """`Maintained` is the upstream default, most subsystems sit
     at that value, so a badge on every card would be noise. Pin
     the suppression so a future change doesn't accidentally
     introduce that visual clutter."""
@@ -405,7 +405,7 @@ def test_inbox_year_archive_renders_year_label(client, inbox_name):
 
 def test_inbox_month_archive_renders_month_label(client, inbox_name):
     body = client.get(f"/{inbox_name}/2024/05/").data.decode()
-    # "May 2024" or similar — title block has at least the year + month
+    # "May 2024" or similar, title block has at least the year + month
     # in some recognisable form. Pin "2024" + a month-name fragment.
     assert "2024" in body
     assert any(
@@ -505,8 +505,8 @@ def test_message_url_four_tuple_identity_404s_on_mismatch(
 ):
     """`/<inbox>/<YYYY>/<MM>/<article_id>` is a 4-tuple identity:
     inbox + year + month + id must ALL match the article's storage
-    or the route 404s. CONTEXT.md (URL scheme) is explicit — "URLs
-    either resolve exactly or don't resolve at all" — but the
+    or the route 404s. CONTEXT.md (URL scheme) is explicit, "URLs
+    either resolve exactly or don't resolve at all", but the
     in-range component tests only catch impossible values
     (year 1990, month 0/13). The mismatched-but-plausible case
     (right id, wrong year/month/inbox) is unpinned, and that's the
@@ -528,7 +528,7 @@ def test_message_url_four_tuple_identity_404s_on_mismatch(
     real_year, real_month, real_id = parts[1], parts[2], parts[3]
     other_year = "2023" if real_year != "2023" else "2022"
     other_month = "07" if real_month != "07" else "08"
-    assert "beta" != "alpha"  # sanity — beta exists in seed
+    assert "beta" != "alpha"  # sanity, beta exists in seed
 
     for wrong in (
         # Wrong year, right month + id.
@@ -734,7 +734,7 @@ def test_atom_feed_well_formed(client, inbox_name):
         # mustn't leak (only path) and the path must be one of mimir's
         # message URLs.
         href = alt.get("href")
-        # Path-shape match rather than a hardcoded year disjunction —
+        # Path-shape match rather than a hardcoded year disjunction , 
         # the latter goes stale every January and gives no diagnostic
         # value beyond "the URL contains some year we listed."
         assert re.search(r"/\d{4}/\d{2}/\d+(?:[/?#]|$)", href), (
@@ -962,7 +962,7 @@ def test_proxy_fix_unwraps_remote_addr_from_xff(monkeypatch):
 
 
 def test_proxy_fix_off_keeps_connection_remote_addr(monkeypatch):
-    """With hops=0, XFF is NOT honoured — request.remote_addr stays
+    """With hops=0, XFF is NOT honoured, request.remote_addr stays
     the connection IP. Guards against accidentally enabling ProxyFix
     on a directly-exposed app, where attackers could spoof XFF."""
     from flask import request
@@ -1072,7 +1072,7 @@ def test_canonical_url_for_combines_base_and_msg_url():
 def test_sitemap_cross_post_appears_in_each_linked_inbox(client):
     """art3 is cross-posted alpha+beta. In the per-inbox sitemap world,
     it is listed under *both* `/alpha/sitemap.xml` and
-    `/beta/sitemap.xml` — each one is a real, crawlable URL, and the
+    `/beta/sitemap.xml`, each one is a real, crawlable URL, and the
     canonical `<link>` on the page itself tells search engines which
     to keep. The sitemap doesn't try to enforce one-canonical-URL-per-
     article anymore (that was the old global-sitemap design)."""
@@ -1107,7 +1107,7 @@ def test_sitemap_cross_post_appears_in_each_linked_inbox(client):
 def test_atom_feed_cross_post_id_is_canonical_in_either_feed(client):
     """The same cross-posted article surfaces in both /alpha/feed.atom
     and /beta/feed.atom. With canonical resolution, both feeds' entries
-    for art3 must carry the SAME <id> — the canonical URL — so feed
+    for art3 must carry the SAME <id>, the canonical URL, so feed
     readers that key on <id> deduplicate across feeds."""
     import xml.etree.ElementTree as ET
     from sqlalchemy import select
@@ -1248,7 +1248,7 @@ def test_year_archive_title(client, inbox_name):
 
 
 def test_month_archive_title(client, inbox_name):
-    # Month label format is "Month YYYY" — just sanity-check the
+    # Month label format is "Month YYYY", just sanity-check the
     # separator + scope tokens are present.
     title = _title_of(client.get(f"/{inbox_name}/2024/05/").data.decode())
     assert title.endswith(f" | {inbox_name} | mimir")
@@ -1380,7 +1380,7 @@ def test_inbox_sitemap_article_lastmod_matches_article_date(client):
 def test_inbox_sitemap_lists_year_and_month_archives(client):
     """Year + month archives that actually have data appear as
     lastmod-less `<url>` entries (discovery anchors, not refresh
-    signals). Empty months are skipped — `/alpha/2024/` and
+    signals). Empty months are skipped, `/alpha/2024/` and
     `/alpha/2024/01/` are present, but only months with messages."""
     import xml.etree.ElementTree as ET
 
@@ -1453,7 +1453,7 @@ def test_global_message_id_lookup_uses_canonical_inbox(client):
 
 def test_global_message_id_lookup_falls_back_to_alphabetical(client):
     """With canonical_inbox_id NULL (default for seeded art3), the
-    redirect goes to alphabetical-first — alpha."""
+    redirect goes to alphabetical-first, alpha."""
     r = client.get("/m/art3@example.com", follow_redirects=False)
     assert r.status_code == 301
     loc = r.headers.get("Location", "")
@@ -1698,13 +1698,13 @@ def test_keyboard_nav_script_loaded_on_every_page(client, inbox_name):
         assert 'src="/static/js/keyboard-nav.js"' in body, (
             f"keyboard-nav.js missing on {path!r}"
         )
-        # `defer` keeps the load asynchronous — unlike thread-fold.js,
+        # `defer` keeps the load asynchronous, unlike thread-fold.js,
         # which is synchronous to dodge FOUC.
         assert 'src="/static/js/keyboard-nav.js" defer' in body
 
 
 def test_keyboard_help_dialog_present_on_every_page(client, inbox_name):
-    """The `?` key opens a <dialog id="keyboard-help"> — must be
+    """The `?` key opens a <dialog id="keyboard-help">, must be
     rendered on every page so the binding works everywhere, not
     just inside an inbox."""
     for path in ("/", f"/{inbox_name}/"):
@@ -1712,14 +1712,14 @@ def test_keyboard_help_dialog_present_on_every_page(client, inbox_name):
         assert 'id="keyboard-help"' in body, (
             f"keyboard-help dialog missing on {path!r}"
         )
-        # Each binding row carries its <kbd> label — pin the full set
+        # Each binding row carries its <kbd> label, pin the full set
         # so a refactor that drops a row is caught.
         for key in ("h", "j", "k", "l", "Esc", "?"):
             assert f"<kbd>{key}</kbd>" in body
 
 
 def test_keyboard_nav_data_nav_up_meta_index_has_no_parent(client):
-    """`/` is the top — no parent, `h` is a no-op. The attribute is
+    """`/` is the top, no parent, `h` is a no-op. The attribute is
     omitted entirely (not set to empty) so the JS short-circuits on
     `getAttribute` returning null."""
     body = client.get("/").data.decode()
@@ -1749,7 +1749,7 @@ def test_keyboard_nav_data_nav_up_message_page_points_at_inbox(
 def test_keyboard_nav_data_nav_up_daily_view_points_at_inbox(
     client, inbox_name,
 ):
-    """The daily view is a leaf surface inside the inbox — `h` goes
+    """The daily view is a leaf surface inside the inbox, `h` goes
     back to the dashboard, not all the way to `/`. Pins the
     `is_inbox_root` discriminator on `request.path`."""
     body = client.get(f"/{inbox_name}/today").data.decode()
@@ -2159,7 +2159,7 @@ def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
     )
     body = client.get(url).data.decode()
     # Subsystem info renders inside the article <header> alongside
-    # From / Date — it's identity metadata, not a floating aside.
+    # From / Date, it's identity metadata, not a floating aside.
     # Maintainer name shown, no address, no role tag. Detail moved
     # to MAINTAINERS-driven per-subsystem dashboards (issue #72).
     assert "<strong>Subsystem:</strong>" in body
@@ -2211,7 +2211,7 @@ def test_message_page_shows_related_patches_touching_same_file(
     sidebar.
 
     The article we view (second) is the one whose mirror_path
-    `_ingest_one_article` left in place — that's the one the route
+    `_ingest_one_article` left in place; that's the one the route
     can re-parse via `read_message`. The first article only needs
     its ArticleFile rows to land for the related-patches reverse
     lookup, which doesn't re-read the blob."""
@@ -2243,7 +2243,7 @@ def test_message_page_shows_related_patches_touching_same_file(
 
 def test_message_page_short_thread_does_not_get_sidebar_class(client, tmp_path):
     """Short threads (below LONG_THREAD_SIDEBAR_THRESHOLD) keep the
-    above-body layout — the sidebar modifier class is absent so the
+    above-body layout, the sidebar modifier class is absent so the
     CSS grid rule doesn't fire."""
     _, url = _ingest_one_article(
         tmp_path, "alpha", "short-thread@example.com", subject="solo",
@@ -2396,7 +2396,7 @@ def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
 
     `_ingest_one_article` pins commit_time at 2023-11-14, so we
     backfill the article's date to a recent value post-ingest to
-    land inside the 30-day reviewer window — same trick as the
+    land inside the 30-day reviewer window, same trick as the
     active-threads section test."""
     from datetime import datetime, timedelta, timezone
     from mimir.extensions import SessionLocal
@@ -2703,7 +2703,7 @@ def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_lin
     """When a commit references the article via two `Link:` trailers
     (rare), or when two distinct commits apply the same patch (less
     rare on backports), every mainline_commits row gets a line.
-    Ordered by committed_at asc — the first application is the
+    Ordered by committed_at asc, the first application is the
     primary one."""
     from datetime import datetime, timezone
     _, url = _ingest_one_article(
@@ -2779,7 +2779,7 @@ def test_message_page_no_series_timeline_for_solo_cover_letter(
 ):
     """A cover letter with no other revisions in the DB (only
     v1, no v2 yet) still gets the `patch_series_key` set but
-    renders no timeline — the timeline needs ≥2 revisions to be
+    renders no timeline, the timeline needs ≥2 revisions to be
     useful, and one row on its own would just say "v1 (this)"
     which is visual clutter."""
     _, url = _ingest_one_article(
@@ -2830,7 +2830,7 @@ def test_message_json_ld_author_strips_hidden_placeholder(
     client, tmp_path, monkeypatch,
 ):
     """JSON-LD author.name on a redacted sender is the display name
-    only — no `<hidden>` placeholder. The placeholder is a rendering
+    only, no `<hidden>` placeholder. The placeholder is a rendering
     decision for the visible HTML; in structured data it reads as
     broken metadata. Flagged in the 2026-05-12 review."""
     from mimir.config import settings
@@ -2848,7 +2848,7 @@ def test_message_json_ld_author_no_email_leak_for_bare_address(
     client, tmp_path, monkeypatch,
 ):
     """A From: line with only a bare address falls back to a neutral
-    string in JSON-LD — not the email itself, which would defeat the
+    string in JSON-LD, not the email itself, which would defeat the
     visible HTML redaction the page already applied."""
     from mimir.config import settings
     monkeypatch.setattr(settings, "email_allowlist", [])
@@ -2868,7 +2868,7 @@ def test_message_json_ld_author_strips_email_even_when_allowlisted(
 ):
     """Allowlisted senders surface their full From-line in the visible
     HTML (institutional kernel.org accounts), but JSON-LD's
-    author.name is still display-name only — schema.org consumers
+    author.name is still display-name only, schema.org consumers
     don't need the email and crawlers should treat both author
     surfaces consistently."""
     from mimir.config import settings
@@ -2925,7 +2925,7 @@ def test_message_json_ld_text_redacts_dco_trailer_addresses(
     client, tmp_path, monkeypatch,
 ):
     """The JSON-LD `text` snippet must apply the same DCO trailer
-    redaction as the visible HTML — otherwise non-allowlisted
+    redaction as the visible HTML, otherwise non-allowlisted
     Signed-off-by addresses leak through structured data even
     though the rendered page redacts them. CONTEXT.md flags
     cross-surface consistency as the rule."""
@@ -2984,7 +2984,7 @@ def test_message_json_ld_author_url_omitted_for_unknown_sender(
 ):
     """A bare address with no display name renders as
     `unknown sender` (see `_display_name_filter`), which would
-    match no one as a substring — omit the URL so we don't ship
+    match no one as a substring, omit the URL so we don't ship
     a stable link to a useless query."""
     from mimir.config import settings
     monkeypatch.setattr(settings, "email_allowlist", [])
@@ -3004,7 +3004,7 @@ def test_message_page_visible_html_redacts_non_allowlisted_from_address(
     From: must surface as `<display-name> <hidden>` on the rendered
     message page, never as the raw address. Unit-level coverage in
     `test_helpers.py` pins `_safe_from_filter` in isolation; this
-    pins the template-side wiring (`| safe_from`) — a regression that
+    pins the template-side wiring (`| safe_from`), a regression that
     dropped the filter would pass every existing redaction test
     because the structured surfaces (JSON-LD, atom, data-*) have
     their own paths."""
@@ -3110,7 +3110,7 @@ def test_message_page_dco_trailer_no_xss_via_address_metacharacters(
 
 def test_search_page_emits_no_json_ld_without_results(client, inbox_name):
     """Empty / too-short / zero-results queries get a bare search
-    form, no SearchResultsPage payload — emitting it would tell
+    form, no SearchResultsPage payload, emitting it would tell
     crawlers "this is a results page" when it isn't. The seed
     corpus has no `Linux`-shaped subjects."""
     blocks = _json_ld_blocks(
@@ -3157,7 +3157,7 @@ def test_inbox_dashboard_emits_discussion_forum_json_ld(client, inbox_name):
 
 
 def test_inbox_dashboard_no_trackers_hides_section(client, inbox_name):
-    """alpha has tracked_authors=NULL by default — the tracker grid
+    """alpha has tracked_authors=NULL by default, the tracker grid
     should not render at all."""
     body = client.get(f"/{inbox_name}/").data.decode()
     assert "Latest from " not in body
@@ -3216,7 +3216,7 @@ def test_message_page_subsystem_header_is_clickable(client, tmp_path):
     )
     text = client.get(url).data.decode()
     # Link present with lowercased URL AND lowercased display
-    # (anti-shouty pass — display takes the lowercase form too).
+    # (anti-shouty pass, display takes the lowercase form too).
     assert '<a href="/alpha/subsystem/bcachefs/">bcachefs</a>' in text
 
 
@@ -3244,7 +3244,7 @@ def test_off_list_parent_hint_surfaces_unindexed_list(client, tmp_path):
 
 def test_off_list_parent_hint_skips_already_configured_lists(client, tmp_path):
     """If the To: address matches a configured inbox's list_address,
-    the hint must be suppressed — there's nothing to add, that list
+    the hint must be suppressed, there's nothing to add, that list
     is already indexed."""
     from sqlalchemy import select
     from mimir.extensions import SessionLocal
@@ -3321,7 +3321,7 @@ def test_og_image_png_served(client):
     r = client.get("/og-image.png")
     assert r.status_code == 200
     assert r.mimetype == "image/png"
-    # PNG magic bytes — defends against the file being silently
+    # PNG magic bytes, defends against the file being silently
     # replaced by something else with a `.png` name.
     assert r.data[:8] == b"\x89PNG\r\n\x1a\n"
     # IHDR chunk holds width/height in the first 8 bytes after the
@@ -3375,7 +3375,7 @@ def test_display_name_filter_strips_address(client):
 
 
 def test_site_base_url_override_forces_scheme(monkeypatch):
-    """SITE_BASE_URL setting takes precedence over request.url_root —
+    """SITE_BASE_URL setting takes precedence over request.url_root , 
     the production escape hatch for `http://` leaking through a
     misconfigured proxy chain."""
     from mimir import config
@@ -3440,7 +3440,7 @@ def test_inbox_dashboard_year_browse_uses_decade_grouping(client, inbox_name):
     footer must render the `year-decade-list` grouping with one
     `<strong>YYYY0s</strong>` heading per decade.
 
-    Seeded fixtures only cover 2024 — single-decade, so the structure
+    Seeded fixtures only cover 2024, single-decade, so the structure
     may stay collapsed. Seed an extra article in 2018 to force a
     two-decade span (2010s + 2020s), then assert the grouping class
     plus both decade headings appear. Concrete contract, not the
@@ -3810,7 +3810,7 @@ def test_author_feed_too_short_substring_404s(client, inbox_name):
     assert client.get(f"/{inbox_name}/author/a/feed.atom").status_code == 404
 
 
-# Per-reviewer page (`/<inbox>/reviewer/<address>`) — slice 3 of #97.
+# Per-reviewer page (`/<inbox>/reviewer/<address>`), slice 3 of #97.
 
 
 def test_reviewer_view_lists_attestations(client, tmp_path):
@@ -3865,7 +3865,7 @@ def test_reviewer_view_lowercases_address(client, tmp_path):
 
 def test_reviewer_view_empty_state_renders_cleanly(client):
     """A reviewer with no attestations still renders 200 with an
-    empty-state line, not a 404 — the URL is a valid public surface
+    empty-state line, not a 404, the URL is a valid public surface
     even when nothing has landed yet."""
     r = client.get("/alpha/reviewer/nobody@kernel.org")
     assert r.status_code == 200
@@ -3882,7 +3882,7 @@ def test_reviewer_view_404_on_unknown_inbox(client):
 
 def test_reviewer_view_inbox_scoped(client, tmp_path):
     """A reviewer active in `beta` doesn't show on the `alpha`
-    reviewer page — the URL is inbox-scoped just like every other
+    reviewer page, the URL is inbox-scoped just like every other
     /<inbox>/... surface."""
     body = (
         b"diff --git a/fs/z.c b/fs/z.c\n"

@@ -44,7 +44,7 @@ class ActiveThread:
 
     `recent_count` counts every message in the window (including the root
     if it was sent during the window). `reply_count` is the same minus
-    the root — so a brand-new thread posted today with no responses yet
+    the root, so a brand-new thread posted today with no responses yet
     shows reply_count=0, recent_count=1.
     """
     id: int
@@ -172,7 +172,7 @@ def _active_threads_query(
     `extra_seed_filter_sql`: optional SQL fragment AND-ed into the
     seed step's WHERE clause. Used by the per-subsystem dashboard
     to constrain the recursive walk to messages touching specific
-    paths. Caller-supplied — must reference bind parameters only
+    paths. Caller-supplied, must reference bind parameters only
     via the `extra_params` dict (not string-interpolated values).
     """
     order_sql = _ORDER_CLAUSES[order_by]
@@ -288,7 +288,7 @@ def threads_for_day(
     )
 
 
-# Cap on the "what I missed" window — keeps the recursive CTE
+# Cap on the "what I missed" window, keeps the recursive CTE
 # bounded for a UI surface that anyone can hit. Operators returning
 # from a holiday longer than this see "showing last 90 days" rather
 # than a 30-second query.

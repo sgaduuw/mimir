@@ -13,7 +13,7 @@ from markupsafe import Markup
 from mimir.rendering import URL_OR_MSGID_RE, linkify, parse_blocks, render_body
 
 
-# linkify — escaping + URL handling
+# linkify, escaping + URL handling
 
 
 def test_linkify_escapes_html_metacharacters():
@@ -44,7 +44,7 @@ def test_linkify_links_http_and_https():
 
 
 def test_linkify_rejects_javascript_scheme():
-    """A `javascript:` URL must NOT become an anchor — the URL regex
+    """A `javascript:` URL must NOT become an anchor, the URL regex
     only matches http/https. The literal text gets escaped."""
     out = linkify('click javascript:alert(1) here')
     assert "<a href=" not in out
@@ -107,7 +107,7 @@ def test_url_or_msgid_regex_matches_bracketed_msgid_positive():
     assert msgids == ["abc123-XYZ.0@example.invalid"]
 
 
-# parse_blocks — text / quote / diff segmentation
+# parse_blocks, text / quote / diff segmentation
 
 
 def test_parse_blocks_text_only():
@@ -141,7 +141,7 @@ def test_parse_blocks_diff_runs():
     assert kinds[-1] == "text"
 
 
-# render_body — full pipeline
+# render_body, full pipeline
 
 
 def test_render_body_empty():
@@ -153,8 +153,8 @@ def test_render_body_wraps_text_in_pre():
     """A plain text block must be enclosed by a <pre> open + close
     around the actual content, not just contain a `<pre` substring
     somewhere on the page (which would also pass if the body
-    rendered the text raw and a *different* block — diff, blockquote
-    — happened to be a `<pre>` further down)."""
+    rendered the text raw and a *different* block, diff, blockquote
+   , happened to be a `<pre>` further down)."""
     out = str(render_body("hello\nworld"))
     m = re.search(r"<pre[^>]*>(.*?)</pre>", out, re.DOTALL)
     assert m is not None, f"no <pre>...</pre> in output: {out!r}"
@@ -164,7 +164,7 @@ def test_render_body_wraps_text_in_pre():
 
 def test_render_body_quotes_become_blockquote():
     """A `> ` line must be wrapped in a real <blockquote>...</blockquote>
-    pair containing the quoted text — not just any open tag."""
+    pair containing the quoted text, not just any open tag."""
     out = str(render_body("> quoted line"))
     m = re.search(r"<blockquote[^>]*>(.*?)</blockquote>", out, re.DOTALL)
     assert m is not None, f"no <blockquote>...</blockquote>: {out!r}"
@@ -196,7 +196,7 @@ def test_render_body_first_level_quoted_diff_folds_as_hunk_quote():
     out = str(render_body(body))
     assert '<details class="hunk-quote">' in out
     assert "quoted hunk" in out
-    # The diff inside renders via Pygments — its tokens flow into
+    # The diff inside renders via Pygments, its tokens flow into
     # the <blockquote>. Pin one token class to confirm the diff
     # path ran (not just a text dump).
     assert 'class="highlight"' in out
@@ -224,7 +224,7 @@ def test_render_body_first_level_quoted_diff_without_parent_url_omits_link():
 
 def test_render_body_first_level_quoted_text_only_stays_as_blockquote():
     """A first-level quote without a diff inside stays as a plain
-    `<blockquote>` — only hunk-quotes get the fold. The immediate
+    `<blockquote>`, only hunk-quotes get the fold. The immediate
     context of a reply must remain visible by default."""
     out = str(render_body("> just text, no diff here"))
     assert '<details class="hunk-quote">' not in out
@@ -263,7 +263,7 @@ def test_render_body_diff_pygmentized():
 
 
 def test_render_body_fenced_code_block_default_c():
-    """A bare triple-backtick fence defaults to the C lexer — the
+    """A bare triple-backtick fence defaults to the C lexer, the
     kernel-list context is overwhelmingly C-shaped, and an
     unspecified fence is most commonly someone pasting a code
     snippet in C. Pin: class-based output (Pygments token classes
@@ -338,7 +338,7 @@ def test_render_body_fenced_code_block_excludes_delimiters_from_output():
 
 def test_render_body_unclosed_fence_runs_to_end_of_body():
     """An unclosed fence (no terminating triple-backtick) runs to
-    the end of the body — the same forgiving behaviour markdown
+    the end of the body; the same forgiving behaviour markdown
     renderers use. Better than dropping the content silently.
     Pygments tokenises each word, so we check the tokens land in
     the highlight block in order."""
@@ -367,7 +367,7 @@ def test_render_body_text_after_closed_fence_is_plain_pre():
         "back to prose with https://example.test\n"
     )
     out = str(render_body(body))
-    # The post-fence URL should be linkified — that only happens in
+    # The post-fence URL should be linkified, that only happens in
     # the prose pipeline, not in a code block.
     assert 'href="https://example.test"' in out
 
@@ -418,7 +418,7 @@ def test_render_body_diff_full_patch_stays_one_block():
         "2.53.0\n"
     )
     out = str(render_body(body))
-    # Exactly one Pygments wrapper — chopping into multiple blocks
+    # Exactly one Pygments wrapper, chopping into multiple blocks
     # was the regression that broke copy-paste-to-patch.
     assert out.count('class="highlight"') == 1
     # Every patch component is inside that single block, in source
@@ -465,7 +465,7 @@ def test_render_body_diff_multi_file_patch_stays_one_block():
 
 def test_trailer_addresses_not_msgid_linkified():
     """Without a redactor, an email in a Signed-off-by becomes
-    `[off-list ref]` (the msgid lookup failure) — a confusing
+    `[off-list ref]` (the msgid lookup failure), a confusing
     `<redacted>`-meets-`<broken>` artifact for DCO chains. With a
     redactor, trailer emails go through that instead."""
     body = "Signed-off-by: Bob <bob@example.com>"
@@ -486,7 +486,7 @@ def test_trailer_keeps_allowlisted_addresses_when_redactor_says_so():
         # Domain-suffix check (rather than substring) to keep CodeQL's
         # `py/incomplete-url-substring-sanitization` rule quiet on this
         # test helper. Production redactor uses substring matching via
-        # email_allowlist tokens by design — that's an intentional
+        # email_allowlist tokens by design; that's an intentional
         # looseness handled elsewhere.
         return f"<{email}>" if email.lower().endswith("@kernel.org") else "<redacted>"
 
@@ -505,13 +505,13 @@ def test_trailer_redactor_output_html_metacharacters_are_escaped():
     before splicing into HTML output. A redactor that returned literal
     angle brackets and metachars (which the production redactor does:
     `<{email}>` for allowlisted senders) would otherwise smuggle live
-    HTML into the page — the very XSS surface the redaction is meant
+    HTML into the page, the very XSS surface the redaction is meant
     to close. Pin the contract: whatever the redactor returns, the
     rendered output must not contain unescaped angle brackets coming
     from that return value."""
     # Build a body line that the trailer-recognition regex will match.
     # The redactor returns plain-text content carrying `<`, `>`, and `"`
-    # — exactly what an attacker would smuggle through an address with
+    #, exactly what an attacker would smuggle through an address with
     # HTML metacharacters in the local-part, given the existing email
     # regex permits them.
     payload = '<a"onmouseover=alert(1)@kernel.org>'
@@ -571,7 +571,7 @@ def test_non_trailer_msgid_linkify_unaffected_by_redactor():
         render_body(body, address_redactor=lambda _e: "<R>")
     )
     # Body-text msgid that doesn't match the archive collapses to the
-    # off-list ref placeholder, same as before.
+    # off-list ref placeholder; same as before.
     assert "[off-list ref]" in out
 
 

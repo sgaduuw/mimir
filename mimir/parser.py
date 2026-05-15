@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field, field_validator
 
 
 # Keep only the headers we actually use for display, threading, and triage.
-# The big space-eaters in lore archives — Received chains, DKIM/ARC blobs,
-# X-Spam-*, Authentication-Results — are all dropped. Compared with raw,
+# The big space-eaters in lore archives, Received chains, DKIM/ARC blobs,
+# X-Spam-*, Authentication-Results, are all dropped. Compared with raw,
 # this typically cuts the headers dict by 50-70%.
 KEPT_HEADERS = frozenset({
     "subject", "from", "to", "cc", "bcc", "reply-to", "sender",
@@ -32,9 +32,9 @@ def _scrub_surrogates(s: str) -> str:
     Two layers:
     1. Lone surrogates outside the surrogate-escape range (e.g. U+DF9D from
        broken UTF-16) have no original byte to recover. Replace with U+FFFD.
-    2. Surrogate-escape codepoints (U+DC80–U+DCFF) hold the original invalid
+    2. Surrogate-escape codepoints (U+DC80-U+DCFF) hold the original invalid
        bytes from a misdecoded charset. Round-tripping through bytes recovers
-       them — pairs that happened to be valid UTF-8 (e.g. 0xC3 0xA9) come
+       them, pairs that happened to be valid UTF-8 (e.g. 0xC3 0xA9) come
        back as their proper characters; anything else becomes U+FFFD.
     """
     s = _NON_ESCAPE_SURROGATE_RE.sub("�", s)
@@ -99,7 +99,7 @@ _SUBJECT_PREFIX_RE = re.compile(
 def normalize_subject(value: str | None) -> str:
     """Strip leading reply/forward prefixes ("Re:", "Fwd:", "Aw:", ...) so
     sibling orphan threads with the same conversation subject can be
-    matched. Bracketed tags like "[PATCH v3]" are *kept* — they
+    matched. Bracketed tags like "[PATCH v3]" are *kept*, they
     distinguish patch revisions, which we want to treat as related-but-
     distinct threads. Returns lowercase, whitespace-collapsed."""
     if not value:

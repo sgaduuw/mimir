@@ -42,7 +42,7 @@ PARSE_CHUNKSIZE = 50
 def _aware_utc(dt: datetime) -> datetime:
     """Return `dt` as a tz-aware UTC datetime. RFC 5322 dates with
     `-0000` come back from `email.utils.parsedate_to_datetime` as
-    naive — mixing those into a max() with tz-aware dates raises
+    naive, mixing those into a max() with tz-aware dates raises
     TypeError, which would crash an entire ingest batch the moment
     one such message landed. Cheap normalisation at every entry
     keeps the tally rows uniformly comparable."""
@@ -55,7 +55,7 @@ def _aware_utc(dt: datetime) -> datetime:
 # MIN_PROMOTE_OBSERVATIONS messages observed before the modal address
 # can be trusted, AND the modal address must account for at least
 # PROMOTE_DOMINANCE of the top-two combined to count as a clear winner.
-# Tuned conservative — false promotion would silently misroute canonical
+# Tuned conservative, false promotion would silently misroute canonical
 # resolution for every cross-posted article involving this inbox.
 MIN_PROMOTE_OBSERVATIONS = 50
 PROMOTE_DOMINANCE = 0.7
@@ -71,19 +71,19 @@ class IngestResult(BaseModel):
     linked: int = 0
     # Same Message-ID seen earlier in the current uncommitted batch.
     dup_batch: int = 0
-    # Article already in DB and already linked to this inbox — usually
+    # Article already in DB and already linked to this inbox, usually
     # a re-walk (rewound IngestState, reindex without --from-scratch),
     # or a public-inbox archive that committed the same `m` blob twice.
     dup_db: int = 0
     failed: int = 0
     last_commit_sha: str | None = None
-    # Message IDs of articles created (`new` bucket only — cross-post
+    # Message IDs of articles created (`new` bucket only, cross-post
     # `linked` rows don't produce a new public URL). Consumed by the
     # `update` scheduler tick to feed IndexNow push notifications.
     # Bounded by `result.new` per epoch; steady-state lkml ticks are
     # in the dozens-to-hundreds range. `reindex --from-scratch`-style
     # operations can balloon this, but those code paths don't call
-    # the IndexNow notifier — the cost there is just a list of
+    # the IndexNow notifier, the cost there is just a list of
     # short strings the caller discards.
     new_message_ids: list[str] = []
 
@@ -120,7 +120,7 @@ def _parse_pair(
     item: tuple[str, datetime, bytes],
 ) -> tuple[str, datetime, ParsedArticle | Exception]:
     """Worker entry point: parse one message, return either the parsed article
-    or the exception object — exceptions can't propagate out of pool.map cleanly
+    or the exception object, exceptions can't propagate out of pool.map cleanly
     without tearing down the whole pool. The commit_time is threaded through
     so the main process can use it as a fallback for bogus message Dates."""
     commit_sha, commit_time, raw = item
@@ -196,7 +196,7 @@ def _to_article(
     )
     # Extract diff-touched paths for patch bodies. Empty set on non-
     # patch articles. ArticleFile rows take their article_id at flush
-    # via the back-populated relationship — no manual id wiring.
+    # via the back-populated relationship, no manual id wiring.
     touched_paths = extract_touched_paths(parsed.body)
     # Same shape for review-attestation trailers: pure parse over
     # parsed.body, ArticleTrailer rows wired through the back-populated
@@ -255,7 +255,7 @@ def _flush_observations(
         index_elements=["inbox_id", "address"],
         set_={
             "count": InboxAddressObservation.count + stmt.excluded.count,
-            # SQLite's scalar max(a, b) — keeps the freshest timestamp
+            # SQLite's scalar max(a, b), keeps the freshest timestamp
             # when a stale tail-end batch lands after a newer one.
             "last_seen": func.max(
                 InboxAddressObservation.last_seen, stmt.excluded.last_seen
@@ -326,7 +326,7 @@ def ingest_epoch(
     # Used to (a) skip the cleanup DELETE on the hot fresh-ingest path
     # (set is empty for never-failed epochs) and (b) clear the row when
     # a previously-failed commit now parses cleanly. Tiny set in
-    # practice — typical clean parsers fail on <0.1% of messages.
+    # practice, typical clean parsers fail on <0.1% of messages.
     failed_shas: set[str] = set(session.execute(
         select(ParseFailure.commit_sha).where(
             ParseFailure.inbox_id == inbox_id,
@@ -336,7 +336,7 @@ def ingest_epoch(
 
     # Snapshot of {list_address: inbox_id} for canonical resolution.
     # Refreshed at start; promotion that happens later in this run
-    # affects future runs, not in-flight messages — acceptable lag for
+    # affects future runs, not in-flight messages, acceptable lag for
     # bootstrap, and Phase 2's backfill CLI sweeps the gap.
     address_to_inbox_id: dict[str, int] = dict(session.execute(
         select(Inbox.list_address, Inbox.id).where(Inbox.list_address.isnot(None))
@@ -381,7 +381,7 @@ def ingest_epoch(
             continue
         parsed = parsed_or_exc
 
-        # Previously failed, now parses cleanly — clear the row.
+        # Previously failed, now parses cleanly, clear the row.
         if commit_sha in failed_shas:
             session.execute(delete(ParseFailure).where(
                 ParseFailure.inbox_id == inbox_id,
@@ -393,7 +393,7 @@ def ingest_epoch(
         # Record list-shaped To/Cc addresses for this inbox. Done once
         # per parse so cross-posts contribute to *this* inbox's tally
         # (each linked inbox sees the same message and counts the same
-        # addresses, which is what we want — the modal address per
+        # addresses, which is what we want, the modal address per
         # inbox surfaces correctly).
         list_addrs = extract_list_addresses(parsed.headers)
         if list_addrs:
@@ -485,7 +485,7 @@ def replay_failures(
 
     On success: insert the Article (or cross-post link) and delete the
     failure row. On failure: bump attempts/last_attempt and refresh the
-    error fields. Sequential by design — replay is a low-volume admin
+    error fields. Sequential by design, replay is a low-volume admin
     op, not the hot ingest path.
     """
     out = ReplayResult()
@@ -520,7 +520,7 @@ def replay_failures(
                 raw = repo[blob_sha].data
                 commit_time = datetime.fromtimestamp(commit.commit_time, timezone.utc)
             except KeyError:
-                # Commit or `m` blob missing — mirror was pruned or
+                # Commit or `m` blob missing, mirror was pruned or
                 # rewound. Leave the row in place; surface to operator.
                 out.skipped += 1
                 continue
@@ -593,7 +593,7 @@ def backfill_canonicals(
     NULL` filter naturally picks up where a previous run left off).
 
     Mid-walk, every `promote_every` articles we re-run
-    `_maybe_promote_list_address` for inboxes still at NULL — that way
+    `_maybe_promote_list_address` for inboxes still at NULL, that way
     auto-promotion fires early in the pass (after the first ~50 newest
     messages per inbox accumulate observations) and the bulk of the
     walk resolves canonicals against a settled list_address map.
@@ -773,7 +773,7 @@ def ingest_inbox(
         session.commit()
 
     # Refresh planner stats when we've moved enough rows that prior
-    # `sqlite_stat1` can no longer be trusted — most importantly the
+    # `sqlite_stat1` can no longer be trusted, most importantly the
     # first ingest of a freshly-added inbox, which lands a whole archive
     # in one go and would otherwise leave the planner blind until the
     # next scheduled ANALYZE.

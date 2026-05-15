@@ -9,12 +9,12 @@ turning the returned set into `ArticleFile` rows.
 
 Strong signal only: we match `diff --git a/<old> b/<new>` headers,
 which are machine-generated and unambiguous. Prose-shaped mentions
-("we should touch fs/foo/") are deliberately ignored — high-noise
+("we should touch fs/foo/") are deliberately ignored, high-noise
 and lousy precision. The cost is missing discussion-only threads in
 the per-path reverse lookup; the win is that every match is a real
 patch hunk.
 
-The returned set carries the **`b/` path** — the post-rename
+The returned set carries the **`b/` path**, the post-rename
 destination when the patch renames a file, the only path when it
 doesn't. This matches what reviewers and `MAINTAINERS` globs expect:
 the new location of the code. The `a/` path is recoverable from the
@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # quoted bodies sometimes carry `diff --git` lines from earlier in
 # a thread (a reviewer pasting a hunk). Anchoring at line-start in
 # the body's own context catches the patch author's diffs and
-# misses re-quoted snippets — which is the right precision trade
+# misses re-quoted snippets, which is the right precision trade
 # (a reviewer's quoted diff doesn't represent "files this patch
 # touches").
 #
@@ -68,7 +68,7 @@ def extract_touched_paths(body: str | None) -> set[str]:
       (the regex anchors at column 0; quoted lines start with `>`
       and don't match)
 
-    Quoted-block detection is intentionally simplistic — we let the
+    Quoted-block detection is intentionally simplistic, we let the
     line-start anchor do the work. A reviewer who unquotes a hunk
     when responding (rare; git-send-email doesn't quote diffs the
     way mailers quote prose) will have those lines treated as fresh
@@ -106,7 +106,7 @@ def backfill_article_files(
     """Walk articles, extract diff-touched paths, insert ArticleFile
     rows. Idempotent: articles with existing rows are skipped unless
     `reprocess=True` (which deletes existing rows before re-extracting
-    — useful after an extractor change).
+   , useful after an extractor change).
 
     Newest-first ordering so a `--limit`-bounded session covers the
     most-recently-active articles first; that's where the
@@ -171,7 +171,7 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
         )
 
     # Pick any linked inbox to re-read the body. ArticleList rows are
-    # preloaded; if there isn't one, skip — the article exists only
+    # preloaded; if there isn't one, skip, the article exists only
     # in a deleted-inbox state, which shouldn't be possible given
     # the FK cascade, but be defensive.
     if not article.lists:
@@ -186,7 +186,7 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
         # Mirror unreachable on this host, or the recorded SHA isn't
         # in the local repo (dulwich raises bare KeyError for that).
         # Common in dev and after a partial-mirror rebuild; defer
-        # the work rather than fail loudly — a re-run from a host
+        # the work rather than fail loudly, a re-run from a host
         # with the full mirror picks the article up.
         return "skipped"
     except Exception as exc:

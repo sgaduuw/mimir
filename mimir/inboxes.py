@@ -2,7 +2,7 @@
 
 `Settings.inboxes` is the *bootstrap* source: each entry guarantees an
 `Inbox` row exists in the DB on first startup. After that, env entries
-never overwrite the row — admin edits to mirror_path / upstream_url
+never overwrite the row, admin edits to mirror_path / upstream_url
 are preserved across restarts. To rotate a value via env, drop the row
 through `delete_inbox()` first.
 
@@ -18,7 +18,7 @@ The CRUD service functions (`create_inbox`, `update_inbox`,
 `delete_inbox`) and the per-inbox tracker mutators (`set_tracked_authors`,
 `add_tracked_author`, `remove_tracked_author`, `clear_tracked_authors`)
 are shared between the CLI admin commands and the future Flask admin
-UI — keeps validation in one place.
+UI, keeps validation in one place.
 """
 import re
 import shutil
@@ -62,7 +62,7 @@ def validate_name(name: str) -> str:
     if not _NAME_RE.fullmatch(name):
         raise InboxValidationError(
             f"name {name!r} must be lowercase alphanumeric/hyphen, "
-            "1–64 chars, not starting or ending with a hyphen"
+            "1-64 chars, not starting or ending with a hyphen"
         )
     return name
 
@@ -91,7 +91,7 @@ def validate_tracked_authors(
     authors: dict[str, str] | None,
 ) -> dict[str, str] | None:
     """Validate a tracked-authors dict. Returns the (stripped) dict, or
-    None if input was None or empty (the two states collapse — both
+    None if input was None or empty (the two states collapse, both
     mean "no tracker tiles for this inbox"). Raises
     InboxValidationError on bad input."""
     if authors is None:
@@ -128,7 +128,7 @@ def validate_tracked_authors(
 def validate_mirror_path(mirror_path: str) -> str:
     """Validate a mirror_path string. Returns the stripped value.
 
-    No filesystem checks here — the directory is allowed to not exist
+    No filesystem checks here, the directory is allowed to not exist
     yet; `flask --app mimir update` will create it on first clone.
     Path-traversal validation belongs at the web-input boundary
     (deferred admin-UI task) where the value is untrusted.
@@ -156,7 +156,7 @@ def refresh_inbox_names() -> list[str]:
 
 
 def inbox_names() -> list[str]:
-    """The current set of inbox slugs, for nav rendering. Cheap — no DB hit."""
+    """The current set of inbox slugs, for nav rendering. Cheap, no DB hit."""
     return list(_INBOX_NAMES)
 
 
@@ -196,7 +196,7 @@ def bootstrap_inboxes() -> dict[str, Inbox]:
 
 def list_inboxes() -> list[Inbox]:
     """Every inbox in the DB, ordered by name. Detached from the
-    transient session — pass through `session.merge()` if needed."""
+    transient session, pass through `session.merge()` if needed."""
     with SessionLocal() as session:
         return list(
             session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
@@ -309,7 +309,7 @@ def delete_inbox(
     The FKs cascade-delete `article_lists` and `ingest_state` rows.
     By default, also deletes any `articles` left without remaining
     `article_lists` rows (orphans). Pass `keep_orphan_articles=True`
-    to keep them in place — useful if you plan to re-add the inbox.
+    to keep them in place, useful if you plan to re-add the inbox.
 
     `remove_inbox_data=True` additionally `rm -rf`s the on-disk
     public-inbox mirror at `mirror_path`. The caller is responsible
@@ -371,13 +371,13 @@ def set_tracked_authors(
     name: str, authors: dict[str, str] | None,
 ) -> Inbox:
     """Replace an inbox's tracked-authors dict. `authors=None` (or an
-    empty dict) writes NULL — the dashboard renders no tracker tiles
+    empty dict) writes NULL, the dashboard renders no tracker tiles
     for that inbox. Raises InboxNotFound / InboxValidationError as
     appropriate.
 
     No cache invalidation: `author_recent` cache keys embed the email
     substring, not the label, so adding/removing a tracker doesn't
-    invalidate any existing key — orphan rows age out via TTL.
+    invalidate any existing key, orphan rows age out via TTL.
     """
     cleaned = validate_tracked_authors(authors)
     with SessionLocal() as session:

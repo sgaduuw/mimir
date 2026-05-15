@@ -44,7 +44,7 @@ def _build_mainline_repo(repo_path: Path, blob_bytes: bytes,
                         parent: bytes | None = None) -> bytes:
     """Build (or append to) a bare repo with a single `MAINTAINERS`
     blob at HEAD. Returns the commit id. If `parent` is supplied,
-    the new commit chains onto it — useful for testing "HEAD moved"
+    the new commit chains onto it, useful for testing "HEAD moved"
     flow."""
     repo = (
         Repo(str(repo_path)) if repo_path.exists()
@@ -110,7 +110,7 @@ def test_update_mainline_loads_subsystems_from_head_blob(
 def test_update_mainline_is_noop_when_head_unchanged(
     seeded_db, tmp_path, monkeypatch,
 ):
-    """Second tick on an unchanged HEAD must skip the parse step —
+    """Second tick on an unchanged HEAD must skip the parse step , 
     that's the steady-state cheap path."""
     repo_path = tmp_path / "linux.git"
     _build_mainline_repo(repo_path, _SAMPLE_MAINTAINERS)
@@ -134,7 +134,7 @@ def test_update_mainline_force_reparses_even_on_unchanged_head(
     seeded_db, tmp_path, monkeypatch,
 ):
     """`--force` re-parses regardless of HEAD state. Useful after a
-    parser fix or for debugging — operator wants the side effect
+    parser fix or for debugging, operator wants the side effect
     even when the cheap path would skip."""
     repo_path = tmp_path / "linux.git"
     _build_mainline_repo(repo_path, _SAMPLE_MAINTAINERS)
@@ -267,7 +267,7 @@ def test_update_mainline_skip_commits_does_not_walk(
 def test_update_mainline_skip_maintainers_only_walks_commits(
     seeded_db, tmp_path, monkeypatch,
 ):
-    """`--skip-maintainers` does the inverse — only the
+    """`--skip-maintainers` does the inverse, only the
     Link-trailer walk runs. Useful for an operator who wants to
     backfill mainline_commits without re-loading subsystems."""
     repo_path = tmp_path / "linux.git"
@@ -317,7 +317,7 @@ def test_update_mainline_errors_if_maintainers_blob_missing(
     seeded_db, tmp_path, monkeypatch,
 ):
     """If the tree at the configured path doesn't have a MAINTAINERS
-    file at HEAD, fail loudly — almost certainly the wrong tree was
+    file at HEAD, fail loudly, almost certainly the wrong tree was
     configured. Better than silently loading zero subsystems."""
     # Build a bare repo with a different file at HEAD.
     repo_path = tmp_path / "linux.git"

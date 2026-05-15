@@ -85,7 +85,7 @@ def _get_inbox_or_404(session: Session, name: str) -> Inbox:
 def _inject_template_globals() -> dict:
     """Inboxes are needed by base.html for the nav. `current_inbox` is set
     per-view (None on the meta-index `/`). Names come from the cached
-    list populated at bootstrap — no per-request DB hit. `site_name` is
+    list populated at bootstrap, no per-request DB hit. `site_name` is
     the configurable brand; "mimir" stays as the page generator.
 
     `default_canonical_url` is the https-safe fallback for og:url on
@@ -199,7 +199,7 @@ def _start_request_timer():
 @bp_web.after_request
 def _add_cache_headers(response):
     # 200 OK and 301/302 redirects (Message-ID lookup) are cacheable;
-    # honor their dict entries. 4xx/5xx skip — error responses
+    # honor their dict entries. 4xx/5xx skip, error responses
     # shouldn't be pinned in upstream caches.
     if response.status_code in (200, 301, 302):
         rule = _CACHE_CONTROL_BY_ENDPOINT.get(request.endpoint)
@@ -216,7 +216,7 @@ def _add_cache_headers(response):
         response.headers["Vary"] = "HX-Request"
     for k, v in _SECURITY_HEADERS.items():
         response.headers.setdefault(k, v)
-    # HSTS only when we know the request came in over HTTPS — set
+    # HSTS only when we know the request came in over HTTPS, set
     # behind a reverse proxy that forwards X-Forwarded-Proto. Otherwise
     # an http://localhost dev session would tell the browser "force
     # https on this host forever," which would break the dev workflow.
@@ -247,8 +247,8 @@ def _log_request(response):
         # Read the header directly: Werkzeug's request.user_agent is a
         # UserAgent wrapper whose __bool__ depends on the bundled UA
         # parser detecting a known browser, which makes legitimate
-        # values like "curl/8.20.0" — and, with this Werkzeug, plain
-        # Firefox — evaluate falsy and silently turn into null. The
+        # values like "curl/8.20.0", and, with this Werkzeug, plain
+        # Firefox, evaluate falsy and silently turn into null. The
         # raw header is what we actually want to log.
         "ua": request.headers.get("User-Agent"),
         "referrer": request.referrer,
@@ -259,7 +259,7 @@ def _log_request(response):
 def _site_base() -> str:
     """Return the absolute base URL for emitted links, no trailing slash.
 
-    Prefers the explicit `SITE_BASE_URL` setting when set — that's the
+    Prefers the explicit `SITE_BASE_URL` setting when set; that's the
     deterministic override for production where ProxyFix may or may
     not be wired correctly across the Tailscale Funnel + Caddy chain.
     Falls back to `request.url_root` for local-dev and any deployment
@@ -282,7 +282,7 @@ def _site_base() -> str:
 
 def _msg_url(article: Article, inbox_name: str) -> str:
     """Build the canonical /<list>/YYYY/MM/<id> URL for an Article in
-    `inbox_name`. With cross-posts, the same article can render at
+    `inbox_name`. With cross-posts; the same article can render at
     multiple URLs (one per inbox it's linked to); the caller picks
     based on context (the URL's inbox)."""
     if article.date is not None:
@@ -297,7 +297,7 @@ def _canonical_inbox_name(
     """Pick the canonical inbox name for `article` from the list of
     `(inbox_id, inbox_name)` tuples it's linked to. Uses
     `article.canonical_inbox_id` when set; falls back to the
-    alphabetically-first link — stable across renders so the SEO
+    alphabetically-first link, stable across renders so the SEO
     signal doesn't flicker between equivalent cross-posts. Returns
     None only when `links` is empty (a corrupt row; should never
     happen given FK cascades)."""
@@ -452,7 +452,7 @@ def _is_allowlisted(address: str) -> bool:
 
     Per-request memoised via `flask.g` so the MAINTAINERS set is
     fetched at most once per render (the underlying DB-backed cache
-    is fast, but a long page can call this 50+ times — `g`-caching
+    is fast, but a long page can call this 50+ times, `g`-caching
     skips the per-call cache lookup entirely after the first hit).
 
     Outside a request context (CLI, tests calling the filters
@@ -513,7 +513,7 @@ def _clean_subject_filter(subject: str | None) -> str:
 def _display_name_filter(author: str | None) -> str:
     """Display name only, for contexts (meta-description, link cards)
     where the `<hidden>` placeholder reads as broken metadata in search
-    snippets. Allowlisted senders also surface just their display name —
+    snippets. Allowlisted senders also surface just their display name
     consistency over leaking addresses into descriptions. Falls back to
     'unknown sender' so the snippet doesn't render with an awkward
     trailing punctuation hole."""
@@ -544,7 +544,7 @@ def _is_allowlisted_address_filter(address: str | None) -> bool:
     Used by templates to decide whether to render a clickable
     reviewer link. The reviewer page itself (`/<inbox>/reviewer/<addr>`)
     accepts any address, but mimir only generates outbound links for
-    allowlisted addresses — this keeps non-public addresses out of
+    allowlisted addresses, this keeps non-public addresses out of
     URL bars / browser history / scraper paths reached via mimir's
     own navigation, matching the redaction posture of `safe_from`.
     """
@@ -557,7 +557,7 @@ def _redact_trailer_address(email: str) -> str:
     """Return the visible-text replacement for an email on a DCO
     trailer line. Allowlisted addresses survive verbatim so the DCO
     chain stays verifiable for known maintainers; everyone else gets
-    `<redacted>` — a placeholder that obviously isn't broken metadata
+    `<redacted>`, a placeholder that obviously isn't broken metadata
     (unlike the prior `[off-list ref]` smear from the msgid linkifier
     when it tried to look these up as message-IDs and found nothing).
 
@@ -608,7 +608,7 @@ def _fetch_recent(session: Session, inbox: Inbox, offset: int, limit: int):
 
 @bp_web.route("/healthz")
 def healthz():
-    """Cheap liveness probe — confirms the app factory ran. No DB
+    """Cheap liveness probe, confirms the app factory ran. No DB
     work; load balancers / orchestrators can hit this on the seconds-
     cadence they want."""
     return Response("ok\n", mimetype="text/plain", headers={"Cache-Control": "no-store"})
@@ -616,7 +616,7 @@ def healthz():
 
 @bp_web.route("/readyz")
 def readyz():
-    """Readiness probe — also confirms the DB is reachable via a
+    """Readiness probe, also confirms the DB is reachable via a
     `SELECT 1`. Slightly more expensive than /healthz; use for the
     'serving traffic' decision, not for liveness restarts."""
     try:
@@ -634,7 +634,7 @@ def readyz():
 
 @bp_web.route("/robots.txt")
 def robots():
-    """Static robots.txt — disallows attachment downloads (saves bot
+    """Static robots.txt, disallows attachment downloads (saves bot
     bandwidth on binaries) and points crawlers at the sitemap."""
     sitemap_url = _site_base() + "/sitemap.xml"
     body = render_template("robots.txt", sitemap_url=sitemap_url)
@@ -642,7 +642,7 @@ def robots():
 
 
 # Placeholder squirrel-adjacent emoji until a proper logo lands
-# (tracked in CONTEXT.md "Roadmap — Favicon / logo"). Inline SVG keeps
+# (tracked in CONTEXT.md "Roadmap, Favicon / logo"). Inline SVG keeps
 # the file at a couple of hundred bytes and avoids a static-folder
 # dependency. Browsers cache the response aggressively per the
 # `_CACHE_CONTROL_BY_ENDPOINT` map.
@@ -686,7 +686,7 @@ def og_image_png():
 @bp_web.route("/security.txt")
 @bp_web.route("/.well-known/security.txt")
 def security_txt():
-    """RFC 9116 security.txt. 404 unless `SECURITY_CONTACT` is set —
+    """RFC 9116 security.txt. 404 unless `SECURITY_CONTACT` is set
     don't ship a contact-less file. The Expires field is computed at
     request time as `now + 1 year` so it never falls into the past."""
     if not settings.security_contact:
@@ -744,7 +744,7 @@ def _json_ld_index(base: str, inboxes=()) -> dict:
 
 
 def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
-    """schema.org payload for `/<inbox_name>/` — a `DiscussionForum`
+    """schema.org payload for `/<inbox_name>/`, a `DiscussionForum`
     container plus an `ItemList` of the currently-most-active threads
     so the page reads as a topical hub for crawlers. `active_threads`
     is whatever the dashboard fetched (root-level ThreadNode objects);
@@ -785,7 +785,7 @@ def _json_ld_text_snippet(body: str | None) -> str | None:
     happens at the last whitespace inside JSON_LD_TEXT_MAX so we
     don't slice mid-word, with a trailing ellipsis when we did
     truncate. Returning None lets the caller omit the field
-    entirely — emitting an empty string would re-fail Google's
+    entirely, emitting an empty string would re-fail Google's
     "either text/image/video" validator."""
     if not body:
         return None
@@ -812,11 +812,11 @@ def _json_ld_message(
     base: str,
 ) -> dict:
     """schema.org @graph carrying both DiscussionForumPosting (the
-    primary signal — eligible for Google's "Discussions and forums"
+    primary signal, eligible for Google's "Discussions and forums"
     rich-result section) and BreadcrumbList (surfaces the
     Site → Inbox → Subject chain in SERPs).
 
-    Author goes through `_display_name_filter` — display name only,
+    Author goes through `_display_name_filter`, display name only,
     no email and no `<hidden>` placeholder. The placeholder is a
     rendering decision for the visible HTML; in machine-readable
     metadata it reads as broken data and was flagged as such in the
@@ -829,13 +829,13 @@ def _json_ld_message(
 
     `text` carries a plain-text snippet of `parsed.body`, capped at
     JSON_LD_TEXT_MAX chars (truncated at the last whitespace inside
-    the cap) — Google's DiscussionForumPosting validator treats one
+    the cap), Google's DiscussionForumPosting validator treats one
     of `text` / `image` / `video` as required (critical, Search
     Console 2026-05-14). Omitted entirely when the body is missing
     or whitespace-only: an empty string would re-fail the validator.
 
     Prefers `parsed.date` (the original RFC 5322 Date header) over
-    `article.date` (the public-inbox commit time) — the message's
+    `article.date` (the public-inbox commit time), the message's
     actual send date is more meaningful to search engines."""
     raw_date = parsed.date or article.date
     if raw_date is not None and raw_date.tzinfo is None:
@@ -852,7 +852,7 @@ def _json_ld_message(
     author: dict = {"@type": "Person", "name": author_name}
     # Per-inbox author view is a substring match on the From field;
     # the display name is exactly what'll match the author's other
-    # posts. Skip the URL when we fell back to "unknown sender" —
+    # posts. Skip the URL when we fell back to "unknown sender"
     # that token doesn't match anyone.
     if author_name and author_name != "unknown sender":
         author["url"] = f"{base}/{inbox_name}/author/{quote(author_name, safe='')}"
@@ -870,7 +870,7 @@ def _json_ld_message(
         },
     }
     # Apply the same DCO trailer redaction the visible HTML uses
-    # before snippeting — JSON-LD `text` is yet another surface a
+    # before snippeting, JSON-LD `text` is yet another surface a
     # crawler scrapes, and CONTEXT.md's redaction invariants treat
     # every surface uniformly. Without this, non-allowlisted
     # Signed-off-by addresses would leak through the structured
@@ -923,7 +923,7 @@ def _json_ld_search(
     Emitted only when the route is rendering actual results (the
     no-query / too-short forms are just a search box, not a results
     page). `url` mirrors the canonical, which strips the query
-    string — same SEO posture as the `<link rel="canonical">`: this
+    string, same SEO posture as the `<link rel="canonical">`: this
     is the page-shape, not the result-set."""
     return {
         "@context": "https://schema.org",
@@ -944,7 +944,7 @@ def _json_ld_author(
 ) -> dict:
     """schema.org `ProfilePage` for `/<inbox_name>/author/<sub>`. The
     `mainEntity` is a `Person` whose `name` is the sender substring
-    we matched against — usually a full email or a domain like
+    we matched against, usually a full email or a domain like
     `@kernel.org`, sometimes a personal display-name fragment. We
     don't try to resolve it to a single identity (the substring may
     match many people, deliberately so for `@kernel.org`-shaped
@@ -978,7 +978,7 @@ SITEMAP_TTL_SEC = 3600
 def _build_sitemap_xml(entries: list[tuple[str, str | None]]) -> str:
     """Render an XML <urlset> sitemap. Each entry is
     `(loc, lastmod | None)`; when `lastmod` is None the element is
-    omitted. Caller formats the timestamp — date-only `YYYY-MM-DD`
+    omitted. Caller formats the timestamp, date-only `YYYY-MM-DD`
     is what Google's docs recommend for crawl-scheduling and is what
     mimir emits."""
     root = Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
@@ -993,7 +993,7 @@ def _build_sitemap_xml(entries: list[tuple[str, str | None]]) -> str:
 def _build_sitemap_index_xml(entries: list[tuple[str, str | None]]) -> str:
     """Render a <sitemapindex> referencing sub-sitemaps. Same
     `(loc, lastmod)` shape as `_build_sitemap_xml`; the schema and
-    element names differ — `<sitemapindex>` of `<sitemap>` rather
+    element names differ, `<sitemapindex>` of `<sitemap>` rather
     than `<urlset>` of `<url>`."""
     root = Element(
         "sitemapindex", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
@@ -1086,7 +1086,7 @@ def inbox_sitemap_xml(
         entries.append((f"{base}/{inbox.name}/", inbox_latest))
 
         # Distinct (year, month) pairs that actually have data, in
-        # one round-trip. Empty months are skipped — they'd 200
+        # one round-trip. Empty months are skipped, they'd 200
         # with a "no messages" page, but the sitemap is for
         # discovery surfaces with real content.
         year_month_rows = session.execute(
@@ -1108,11 +1108,11 @@ def inbox_sitemap_xml(
         for y, m in sorted(year_month_rows, reverse=True):
             entries.append((f"{base}/{inbox.name}/{y}/{m}/", None))
 
-        # Recent articles in the inbox — one URL per article at
+        # Recent articles in the inbox, one URL per article at
         # the inbox's own URL. No canonical-fallback dance:
         # cross-posted articles will appear in each linked
         # inbox's sitemap, which is correct (each is a real,
-        # crawlable URL — the canonical `<link>` on the page
+        # crawlable URL, the canonical `<link>` on the page
         # itself tells search engines which to keep).
         recent = session.execute(
             select(Article.id, Article.date)
@@ -1148,7 +1148,7 @@ def sitemap():
     The split (issue #10) replaced a single monolithic sitemap with
     one global URL cap (1000) and a COALESCE join to pick the
     canonical inbox per cross-posted article. Per-inbox sitemaps
-    don't need either — each one lists its own URLs."""
+    don't need either, each one lists its own URLs."""
     with SessionLocal() as session:
         body = sitemap_index_xml(session, _site_base())
     return Response(body, mimetype="application/xml; charset=utf-8")
@@ -1193,7 +1193,7 @@ def message_id_lookup(message_id: str):
     (article.canonical_inbox_id; alphabetically-first linked inbox
     when canonical is unset). The message page's "Also in:" line
     surfaces the other inboxes from there. 301 because the target
-    is stable for the article's lifetime — transfers link equity
+    is stable for the article's lifetime, transfers link equity
     to the canonical destination.
     """
     with SessionLocal() as session:
@@ -1555,7 +1555,7 @@ def month_archive(inbox_name: str, year: int, month: int):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         threads = threads_for_month(session, inbox, year, month, limit=MONTH_THREAD_CAP)
-        # Reuse the cached `monthly_volume` count — keeps the warm-
+        # Reuse the cached `monthly_volume` count, keeps the warm-
         # path off the COUNT(*) over the month's article rows.
         volume = monthly_volume(session, inbox, year)
         total = next((c for m, c in volume.months if m == month), 0)
@@ -1609,10 +1609,10 @@ def search(inbox_name: str):
 
     # SearchResultsPage only when we're actually rendering results.
     # The no-query and too-short shapes are a bare search form, not a
-    # "results page" — emitting the type would give crawlers a wrong
+    # "results page", emitting the type would give crawlers a wrong
     # signal. Canonical URL is `_site_base() + /<inbox>/search` (no
     # query), matching the <link rel="canonical"> the context
-    # processor emits — keeps individual ?q= URLs out of the index.
+    # processor emits, keeps individual ?q= URLs out of the index.
     page_json_ld = None
     if results:
         canonical_url = _site_base() + f"/{inbox.name}/search"
@@ -1655,7 +1655,7 @@ def _atom_response(
     canonical_inbox_by_article: dict[int, str] | None = None,
 ) -> Response:
     """Render an Atom 1.0 feed from a list of `ArticleSummary`. Uses
-    stdlib ElementTree — no extra dep. Emits redacted authors via the
+    stdlib ElementTree, no extra dep. Emits redacted authors via the
     same `safe_from` rule the HTML side uses, so private email
     addresses don't leak via feed readers either.
 
@@ -1682,7 +1682,7 @@ def _atom_response(
     for a in entries:
         entry = SubElement(feed, "entry")
         # RFC 4151 tag URI. Use the canonical inbox name in the tag so
-        # cross-posted entries collapse to a single id across feeds —
+        # cross-posted entries collapse to a single id across feeds
         # readers that key on <id> won't show duplicates.
         date_str = a.date.strftime("%Y-%m-%d") if a.date else "1970-01-01"
         canonical_inbox_name = canonical_map.get(a.id, inbox_name)
@@ -1699,7 +1699,7 @@ def _atom_response(
         )
         if a.author:
             author_el = SubElement(entry, "author")
-            # Display name only — same posture as JSON-LD's author.name.
+            # Display name only, same posture as JSON-LD's author.name.
             # Feed readers render <author><name> as the byline; the
             # `<hidden>` placeholder reads as broken metadata there
             # exactly as it did in JSON-LD before the 2026-05-12 fix.
@@ -1750,7 +1750,7 @@ def author_view(inbox_name: str, sub: str):
 
 # Conservative pattern for the URL-side address: the same shape the
 # trailer extractor accepts (mimir/trailers.py _TRAILER_NAME_ADDR_RE).
-# Anything outside this falls to 404 — defends against hostile bytes
+# Anything outside this falls to 404, defends against hostile bytes
 # reaching the SQL parameter and keeps the canonical URL well-formed.
 _REVIEWER_ADDR_RE = re.compile(
     r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+$"
@@ -1856,7 +1856,7 @@ def inbox_feed(inbox_name: str):
 @bp_web.route("/<inbox_name>/author/<sub>/feed.atom")
 def author_feed(inbox_name: str, sub: str):
     """Atom feed of recent messages from one author. `sub` is a
-    substring of From — same shape the dashboard tracker uses, scoped
+    substring of From, same shape the dashboard tracker uses, scoped
     to one inbox."""
     sub = sub.strip()[:SEARCH_QUERY_MAX_LEN]
     if len(sub) < SEARCH_QUERY_MIN_LEN:
@@ -1943,7 +1943,7 @@ def _content_disposition(filename: str | None) -> str:
     carrying CR/LF would otherwise inject extra HTTP response
     headers (RFC 7230 header-line splitting). Defense in depth on
     top of whatever the WSGI layer rejects. The percent-encoded
-    `filename*` form is unaffected — `quote()` already escapes
+    `filename*` form is unaffected, `quote()` already escapes
     them as `%0D`/`%0A`/etc.
     """
     if not filename:
@@ -2053,7 +2053,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 parent_off_list = thread[0].thread_parent
 
         # When the parent is off-list, surface To/Cc list-shaped addresses
-        # that don't map to any configured inbox as a "hint" — those are
+        # that don't map to any configured inbox as a "hint", those are
         # candidate mailing lists the operator might want to add to mimir
         # to recover the missing parent. Strictly a hint: the parent could
         # also simply predate the indexed window. Capped at 3 to avoid a
@@ -2098,7 +2098,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         }
 
         # Resolve in-body <Message-ID> references to canonical URLs.
-        # Restrict to this inbox — cross-list refs render as plain text.
+        # Restrict to this inbox, cross-list refs render as plain text.
         msgid_urls: dict[str, str] = {}
         if parsed.body:
             candidates = {
@@ -2130,7 +2130,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         base = _site_base()
         canonical_url = _canonical_url_for(article, all_links, base=base)
         # Canonical inbox is what JSON-LD's isPartOf and the breadcrumb
-        # should reflect — not necessarily the current URL's inbox.
+        # should reflect, not necessarily the current URL's inbox.
         canonical_inbox_name = (
             _canonical_inbox_name(article, all_links) or inbox.name
         )
@@ -2184,7 +2184,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         parent_url = thread_urls[article.thread_parent]
 
     # Long threads switch to a right-rail tree layout on wide
-    # viewports — see LONG_THREAD_SIDEBAR_THRESHOLD. Narrow
+    # viewports, see LONG_THREAD_SIDEBAR_THRESHOLD. Narrow
     # viewports stack regardless via the CSS media query.
     long_thread = len(thread) >= LONG_THREAD_SIDEBAR_THRESHOLD
 

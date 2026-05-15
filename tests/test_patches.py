@@ -1,11 +1,11 @@
-"""Unit tests for `mimir.patches.extract_touched_paths` — the
+"""Unit tests for `mimir.patches.extract_touched_paths`, the
 diff-header path-extraction used at ingest and by the backfill CLI.
 """
 from mimir.patches import extract_touched_paths
 
 
 def test_extract_returns_empty_for_non_patch_body():
-    """A plain prose body returns the empty set — extraction is
+    """A plain prose body returns the empty set, extraction is
     strictly diff-driven."""
     body = (
         "Hi all,\n\n"
@@ -86,7 +86,7 @@ def test_extract_ignores_quoted_diff_lines_in_replies():
 
 
 def test_extract_handles_binary_diff_header():
-    """Binary diffs still emit a `diff --git` header — capture them
+    """Binary diffs still emit a `diff --git` header, capture them
     even though the hunk body is missing. Files matter for the
     subsystem mapping regardless of binary-ness."""
     body = (
@@ -98,7 +98,7 @@ def test_extract_handles_binary_diff_header():
 
 def test_extract_deduplicates_repeat_headers():
     """A series cover letter sometimes inlines stat output that
-    looks like another `diff --git` line — and patch-with-followup
+    looks like another `diff --git` line, and patch-with-followup
     bodies may include the same header twice. The set semantics
     naturally collapse duplicates."""
     body = (

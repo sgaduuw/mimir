@@ -26,7 +26,7 @@ defaults assume:
   growing past ~50 M would warrant revisiting SQLite.
 - **Single-user ingest at a time.** `flask --app mimir update` /
   `ingest` are not safe to run concurrently against the same DB.
-  Multiple readers (web server + warm-cache cron) are fine — WAL
+  Multiple readers (web server + warm-cache cron) are fine, WAL
   mode handles that.
 - **Append-only upstreams.** public-inbox v2 commits are append-
   only by design; mimir's "no updates ever" rule for existing rows
@@ -42,13 +42,13 @@ defaults assume:
   `1.git`, …), where each commit's tree contains a single `m` blob
   holding the raw RFC 5322 bytes of one message.
 - Parses each message with the stdlib email API under
-  `policy.default` — proper handling of MIME multiparts, RFC 2231
+  `policy.default`, proper handling of MIME multiparts, RFC 2231
   filenames, RFC 2047 encoded headers, and the like.
 - **Treats the public-inbox mirror as the source of truth.** SQLite
   is a lean index that records, per message, only what's needed to
   find and display it: `message_id` + threading hints + a few
   display fields (`subject`, `author`, `date`). Body, full headers,
-  and attachment bytes are *not* duplicated into SQLite — they're
+  and attachment bytes are *not* duplicated into SQLite, they're
   re-parsed from the git blob on demand.
 - **Cross-posted messages dedupe.** A message that appears in both
   lkml and linux-fsdevel produces one `articles` row plus one
@@ -80,23 +80,23 @@ SECRET_KEY=<run: python -c "import secrets; print(secrets.token_hex(32))">
 
 Defaults baked into `mimir/config.py`:
 
-- `DATABASE_URL` — `sqlite:///<project_root>/mimir.db`. Override
+- `DATABASE_URL`, `sqlite:///<project_root>/mimir.db`. Override
   per-deployment, e.g. `DATABASE_URL=sqlite:////data/mimir.db` for a
   container with a persistent volume.
-- `SITE_NAME` — `mimir`. The displayed brand in titles, the nav, and
+- `SITE_NAME`, `mimir`. The displayed brand in titles, the nav, and
   the `/` heading; set this to whatever you want the public site to
   be called.
-- `INBOXES` — a JSON map of `{name: {mirror_path, upstream_url}}`.
+- `INBOXES`, a JSON map of `{name: {mirror_path, upstream_url}}`.
   Defaults cover lkml and linux-fsdevel under `Inboxes/<name>/git`.
   See `mimir/config.py` for the exact shape; override via env, e.g.
   `INBOXES='{"lkml": {"mirror_path": "...", "upstream_url": "..."}}'`.
-- `EMAIL_ALLOWLIST` — substrings whose email addresses display in
+- `EMAIL_ALLOWLIST`, substrings whose email addresses display in
   full; everyone else gets `<hidden>`.
-- `TRACKED_AUTHORS` — `{label: from_substring}` pairs; each gets a
+- `TRACKED_AUTHORS`, `{label: from_substring}` pairs; each gets a
   tile on the per-inbox dashboard.
-- `SECURITY_CONTACT` — enables `/security.txt` and
+- `SECURITY_CONTACT`, enables `/security.txt` and
   `/.well-known/security.txt` (RFC 9116). Typical value:
-  `mailto:security@example.com`. Without it, both routes 404 — better
+  `mailto:security@example.com`. Without it, both routes 404, better
   than serving a contact-less file. Optional companions:
   `SECURITY_POLICY_URL`, `SECURITY_ENCRYPTION_URL`,
   `SECURITY_PREFERRED_LANGUAGES` (default `en`). The `Expires:` field
@@ -105,7 +105,7 @@ Defaults baked into `mimir/config.py`:
 
 `Settings.inboxes` (env) is the *bootstrap* source: each entry
 guarantees an `inboxes` row exists in the DB on first start, but env
-never overwrites existing rows on subsequent boots — admin edits to
+never overwrites existing rows on subsequent boots, admin edits to
 `mirror_path` / `upstream_url` survive restarts.
 
 ## Getting a public-inbox mirror
@@ -124,7 +124,7 @@ poetry run flask --app mimir update --skip-ingest     # download but don't index
 For each inbox `update` fetches the upstream `manifest.js.gz`, runs
 `git clone --mirror -- <url>` on any epoch missing locally, runs
 `git fetch --prune` on the ones already present, and then ingests
-new commits — all in one shot.
+new commits, all in one shot.
 
 Each epoch is roughly 1 GB and holds several hundred thousand
 messages, so a fresh clone of all of lkml (currently 19 epochs, ~6M
@@ -155,7 +155,7 @@ Parsing runs in a `ProcessPoolExecutor` (defaults to
 `os.cpu_count()`), with the main process collecting results in
 commit order and doing the SQL writes. The walker, dedup, batched
 commits, and per-(inbox, epoch) `IngestState` checkpoints are
-unaffected — parallelism is confined to the CPU-bound
+unaffected, parallelism is confined to the CPU-bound
 `parse_message` stage.
 
 To inspect a single message (smoke test for the git-backed read path):
@@ -169,7 +169,7 @@ poetry run flask --app mimir show '...' --body-chars -1      # full body, no tru
 By default the ingest is quiet apart from the per-epoch summary
 line. Parse failures are surfaced as warnings at any verbosity level.
 
-To re-walk a single epoch — e.g. to backfill messages that failed
+To re-walk a single epoch, e.g. to backfill messages that failed
 under an older parser version:
 
 ```sh
@@ -184,10 +184,10 @@ lkml/0.git: new=500 linked=0 dup_batch=0 dup_db=0 failed=0 head=8f282234b668f51b
 ```
 
 Every commit lands in exactly one bucket: `new` (Article inserted),
-`linked` (Article already existed in another inbox — added a new
+`linked` (Article already existed in another inbox, added a new
 `article_lists` row, i.e. a cross-post), `dup_batch` (same Message-ID
 seen earlier in the current uncommitted batch), `dup_db` (Article
-already in DB and already linked to this inbox — re-walks land
+already in DB and already linked to this inbox, re-walks land
 here), or `failed` (`parse_message` raised).
 
 The default form is non-destructive: existing rows are left alone
@@ -203,13 +203,13 @@ cross-post may still be linked from another inbox).
 | Same Message-ID seen across epochs           | Counted in `dup_db` (DB-level check)              |
 | Same Message-ID twice within one walk        | Counted in `dup_batch` (in-batch set)             |
 | Cross-post: Message-ID seen in another inbox | Article reused; one new `article_lists` row added (counts as `linked`) |
-| Existing article with the same Message-ID    | Left untouched — no updates, ever                 |
+| Existing article with the same Message-ID    | Left untouched, no updates, ever                 |
 | `parse_message` raises                       | Counted in `failed`; row recorded in `parse_failures`; SHA still advances |
 
 The "no updates, ever" stance assumes the underlying archive is
 immutable (public-inbox commits are append-only). If you want to
-retry a previously failed parse — for example after fixing a parser
-bug — see "Replaying parse failures" below, or wipe / rewind
+retry a previously failed parse, for example after fixing a parser
+bug, see "Replaying parse failures" below, or wipe / rewind
 `ingest_state.last_commit_sha` for that (inbox, epoch).
 
 ### Replaying parse failures
@@ -238,7 +238,7 @@ rows mean the commit or `m` blob is no longer in the mirror.
 `Settings.inboxes` (env) seeds the `inboxes` table on first
 startup, but you can also create / modify / delete inboxes
 directly. The CLI is the front-end to a service layer in
-`mimir.inboxes` — the future Flask admin UI will call the same
+`mimir.inboxes`, the future Flask admin UI will call the same
 functions.
 
 ```sh
@@ -257,7 +257,7 @@ Validation is enforced at the service layer:
   hyphens, ≤64 chars.
 - `<upstream_url>` must be `https://` with a non-empty host.
 - `<mirror_path>` must be a non-empty string. The directory is
-  allowed to not exist yet — `flask --app mimir update --inbox
+  allowed to not exist yet, `flask --app mimir update --inbox
   <name>` will create it on first clone.
 
 `add` only inserts the row. To actually populate the inbox:
@@ -271,11 +271,11 @@ flask --app mimir update --inbox my-list   # clone the mirror + ingest
 
 `remove` cascade-deletes via FK `ON DELETE CASCADE`: the inbox's
 `article_lists` and `ingest_state` rows go with it. By default it
-also drops `articles` left without remaining links — cross-posts to
+also drops `articles` left without remaining links, cross-posts to
 other inboxes survive untouched. `--keep-orphan-articles` opts out.
 
 `--remove-inbox-data` additionally `rm -rf`'s the on-disk
-public-inbox mirror at `<mirror_path>`. Permanent — re-cloning all
+public-inbox mirror at `<mirror_path>`. Permanent, re-cloning all
 of lkml takes hours and ~20 GB. The command prompts for explicit
 confirmation; use `--yes` to skip both the DB-removal prompt and
 the on-disk-removal prompt in a script.
@@ -373,9 +373,9 @@ poetry run flask --app mimir run        # http://127.0.0.1:5000/
 
 Routes:
 
-- `GET /` — meta-index: list of configured inboxes with
+- `GET /`, meta-index: list of configured inboxes with
   per-inbox row counts, epoch counts, and date spans.
-- `GET /<inbox>/` — per-inbox dashboard: most active threads (last
+- `GET /<inbox>/`, per-inbox dashboard: most active threads (last
   7 days, top 10 by decay-weighted score); side-by-side latest
   `[GIT PULL]` requests and `Linux N.N.N` release announcements;
   side-by-side per-author trackers driven by `Inbox.tracked_authors`
@@ -383,54 +383,54 @@ Routes:
   section is hidden when the inbox has no trackers configured); a
   "this day, 5 years ago" sample; the last 10 messages in the
   inbox; a 30-day daily-volume sparkline + archive stats footer.
-- `GET /<inbox>/today` and `GET /<inbox>/yesterday` — daily views
+- `GET /<inbox>/today` and `GET /<inbox>/yesterday`, daily views
   showing every thread with at least one message on that calendar
   day (UTC), plus the day's total message count.
-- `GET /<inbox>/<YYYY>/` — year archive: 12-month grid with per-month
+- `GET /<inbox>/<YYYY>/`, year archive: 12-month grid with per-month
   message counts; cells link to the month view, missing months
   dimmed. Prev/next year nav bounded by the plausible-archive range
   (1995..now+1).
-- `GET /<inbox>/<YYYY>/<MM>/` — month archive: every thread with at
+- `GET /<inbox>/<YYYY>/<MM>/`, month archive: every thread with at
   least one message that month, ordered by last activity desc, capped
   at 100 with a count notice when truncated. Prev/next month nav
   with year wraparound; breadcrumb up to the year view.
-- `GET /<inbox>/search?q=<query>` — substring search over `subject`
+- `GET /<inbox>/search?q=<query>`, substring search over `subject`
   and `author` (case-insensitive, OR-combined). 100-result cap,
   cached per (inbox, query). Form lives on the inbox dashboard.
   Caveats: queries with no matches can take seconds to scan on a
   cold cache; the date-index short-circuit only helps when *some*
   rows match. See `mimir.dashboard.search_articles`.
-- `GET /m/<message-id>` — Message-ID lookup. 302-redirects to the
+- `GET /m/<message-id>`, Message-ID lookup. 302-redirects to the
   canonical `/<inbox>/<YYYY>/<MM>/<article-id>` URL. For cross-posts,
   redirects to the alphabetically-first inbox; the message page's
   "Also in:" line surfaces the others. Useful for linking from
   outside the archive (commit trailers, IRC, lore.kernel.org refs).
   An inbox-scoped variant `GET /<inbox>/m/<message-id>` 404s when
   the message exists but isn't in the named inbox.
-- `GET /<inbox>/<YYYY>/<MM>/<article-id>` — single message:
+- `GET /<inbox>/<YYYY>/<MM>/<article-id>`, single message:
   headers, full thread tree with the current message highlighted,
   body, attachment list. When the thread root has an off-list
   parent, also shows a "Possibly related" surface of other archived
   messages with the same normalized subject (JWZ subject-based
   grouping). The year/month must match the article's archived date;
   mismatches return 404.
-- `GET /<inbox>/<YYYY>/<MM>/<article-id>/attachment/<n>` — binary
+- `GET /<inbox>/<YYYY>/<MM>/<article-id>/attachment/<n>`, binary
   download of the n-th attachment, served from the dulwich-fetched
   blob.
-- `GET /<inbox>/<YYYY>/<MM>/<article-id>/attachment/<n>/preview` —
+- `GET /<inbox>/<YYYY>/<MM>/<article-id>/attachment/<n>/preview`
   Pygments-highlighted inline preview for text-like attachments
   (patches, .c, .py, etc.); falls back to a "binary, can't preview"
   page otherwise.
-- `GET /api/<inbox>/recent?offset=N` — HTMX partial: next page of
+- `GET /api/<inbox>/recent?offset=N`, HTMX partial: next page of
   "Recent messages" entries plus a fresh "Load more" trigger.
-- `GET /healthz` and `GET /readyz` — cheap probes for orchestrators.
+- `GET /healthz` and `GET /readyz`, cheap probes for orchestrators.
   `/healthz` does no DB work; `/readyz` runs a `SELECT 1`. Both
   bypass the route cache via `Cache-Control: no-store`.
-- `GET /robots.txt` — disallows `/*/attachment/*` and points at the
+- `GET /robots.txt`, disallows `/*/attachment/*` and points at the
   sitemap.
-- `GET /sitemap.xml` — meta-index + per-inbox dashboards + recent
+- `GET /sitemap.xml`, meta-index + per-inbox dashboards + recent
   100 message URLs per inbox. Cached for 5 min.
-- `GET /security.txt` and `GET /.well-known/security.txt` —
+- `GET /security.txt` and `GET /.well-known/security.txt`
   RFC 9116 contact info. 404 unless `SECURITY_CONTACT` is set.
 
 The body rendering pipeline (`mimir/rendering.py`) walks the body
@@ -438,14 +438,14 @@ line by line, segments it into runs of *text*, *quote*, and *diff*,
 and emits HTML accordingly:
 
 - Quoted blocks (`>`-prefixed lines) become `<blockquote>` and
-  recurse for nested levels — `>>>>` ends up four `<blockquote>`
+  recurse for nested levels, `>>>>` ends up four `<blockquote>`
   deep. Levels at or beyond depth 2 collapse into `<details>` so
   the reader can expand on demand.
 - Inline unified diffs (recognized by `diff --git`, `--- `, `+++ `,
   `@@` starts) are run through Pygments' `DiffLexer` with inline
   styles, giving the standard green/red/cyan rendering.
 - Plain text runs are escaped, preserve newlines via `<pre>`, and
-  have URLs and `<Message-ID>`s linkified — clicking a referenced
+  have URLs and `<Message-ID>`s linkified, clicking a referenced
   Message-ID inside one message takes you to that message's
   per-inbox URL when it's in the archive (and renders as a neutral
   `[ref]` placeholder so the address part isn't re-leaked); refs
@@ -515,7 +515,7 @@ Sample `crontab` (daily at 04:00, only if no ingest is running):
 0 4 * * * cd ~/Projects/python/mimir && poetry run flask --app mimir vacuum >/dev/null
 ```
 
-On lkml-scale (~6 M articles, ~3.6 GB DB) a full VACUUM takes ~80–
+On lkml-scale (~6 M articles, ~3.6 GB DB) a full VACUUM takes ~80-
 120 s.
 
 ## Refreshing query-planner stats (ANALYZE)
@@ -524,7 +524,7 @@ SQLite's planner reads `sqlite_stat1` to pick query plans. The
 migration runs `ANALYZE` once on an empty schema, which doesn't
 help; as ingest fills the tables the stats stay zero and the
 planner can flip to bad plans (e.g. scanning all of `article_lists`
-instead of walking the date index). Run periodically — daily or
+instead of walking the date index). Run periodically, daily or
 after big ingest deltas:
 
 ```sh
@@ -537,27 +537,27 @@ Example crontab (4:30am, just after the daily vacuum):
 30 4 * * * cd ~/Projects/python/mimir && poetry run flask --app mimir analyze
 ```
 
-On lkml-scale ANALYZE takes ~5–15 s.
+On lkml-scale ANALYZE takes ~5-15 s.
 
 ## Deployment
 
 For real-host deployment (everything above runs as `flask run` for
 dev), see `deploy/README.md`. Three shapes are covered:
 
-- **Container** — `Dockerfile` and `compose.yaml` at the repo root.
+- **Container**, `Dockerfile` and `compose.yaml` at the repo root.
   Multi-stage build, non-root runtime, gunicorn behind a `${WORKERS}`
   knob, auto-`alembic upgrade head` on start, `/healthz` container
   healthcheck, `/data` (with `/data/db/` and `/data/Inboxes/`
   subpaths) as the single bind mount. `docker compose up --build`
   once `SECRET_KEY` is set.
-- **systemd** — `deploy/systemd/` carries the web-server unit plus
+- **systemd**, `deploy/systemd/` carries the web-server unit plus
   three timer/oneshot pairs replacing the cron lines for warm-cache
   (every minute), analyze (daily), and vacuum (weekly). For the
   weekly vacuum, the WAL truncate only lands fully when no other
   process holds the DB; do `systemctl stop mimir.service` before
   triggering it manually if that matters, or let the timer fire and
   accept best-effort.
-- **Reverse proxy** — `deploy/caddy/Caddyfile.example` (5 lines,
+- **Reverse proxy**, `deploy/caddy/Caddyfile.example` (5 lines,
   automatic HTTPS) and `deploy/nginx/mimir.conf.example` (full
   TLS site block with the `X-Forwarded-Proto` and `X-Request-Id`
   headers mimir reads).
@@ -589,10 +589,10 @@ never see a half-loaded subsystems table.
 
 `update-mainline` runs two passes against the tree:
 
-1. **MAINTAINERS load** — replaces the `subsystems` schema as
+1. **MAINTAINERS load**, replaces the `subsystems` schema as
    above. Skipped when HEAD is unchanged. `--skip-maintainers`
    disables this pass for the tick.
-2. **`Link:`-trailer walk** — scans every new commit for
+2. **`Link:`-trailer walk**, scans every new commit for
    `Link: https://lore.kernel.org/.../<msgid>` trailers and
    inserts `mainline_commits` rows. Resumable; the first run
    walks the full history (~1.5M commits on Linus's tree, a few
@@ -610,7 +610,7 @@ of patch bodies). For articles ingested before that landed, run:
 poetry run flask --app mimir backfill-article-files [-v]
 ```
 
-Idempotent — articles that already have rows are skipped. Pass
+Idempotent, articles that already have rows are skipped. Pass
 `--limit N` to bound a session for huge archives; the walker is
 newest-first, so a `--limit` run covers the most-visible articles
 first. `--reprocess` re-extracts for articles whose rows already
@@ -626,7 +626,7 @@ before that landed:
 poetry run flask --app mimir backfill-patch-series [-v]
 ```
 
-Cheaper than the article-files backfill — only reads
+Cheaper than the article-files backfill, only reads
 subject + author, no body re-parse via git mirror. Idempotent;
 `--limit N` and `--reprocess` work the same way.
 
@@ -651,14 +651,14 @@ export SITE_BASE_URL=https://example.test
 
 Once enabled, mimir serves the key file at
 `https://<host>/<key>.txt` (registered only when `INDEXNOW_KEY` is
-set — an unconfigured deploy doesn't expose the endpoint). Pre-
+set, an unconfigured deploy doesn't expose the endpoint). Pre-
 existing articles in the DB are **not** backfilled to IndexNow;
 only articles newly created on each `update` tick are pushed.
 
 `INDEXNOW_MAX_PER_TICK` (default `1000`) is a backfill guard:
 when a single `update` produces more new URLs than this (fresh
 deploy, post-outage catch-up, etc.), the push is skipped entirely
-and a warning logged — the sitemap remains the discovery path for
+and a warning logged, the sitemap remains the discovery path for
 the backlog. Raise the cap if your steady-state new-articles-per-
 tick legitimately exceeds it.
 
@@ -672,9 +672,9 @@ poetry run ruff check mimir/
 poetry run pytest
 ```
 
-Tests focus on the cache encoder/decoder round-trip — that's where
+Tests focus on the cache encoder/decoder round-trip, that's where
 silent corruption would be most expensive.
 
 ## License
 
-MIT — see `LICENSE`.
+MIT, see `LICENSE`.

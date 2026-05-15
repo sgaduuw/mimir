@@ -11,7 +11,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    data-thread-fold before the section paints (FOUC-free).
 
    `data-thread-root-id` carries Article.id (integer), not the RFC 822
-   Message-ID — Message-IDs leak email-shaped tokens that the visible
+   Message-ID, Message-IDs leak email-shaped tokens that the visible
    redaction was supposed to hide (2026-05-12 review). The JS treats
    the value as an opaque string, so the format swap is invisible
    above the wire.
@@ -54,7 +54,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
       grid-area: sidebar;
       position: sticky;
       top: 1rem;
-      /* No height/max-height on the wrapper itself — the inner
+      /* No height/max-height on the wrapper itself, the inner
          scroll container caps to viewport so the rail can never
          extend beyond what the user can see, regardless of the
          article body's height (which sets the grid cell). */
@@ -87,7 +87,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
     font-weight: bold;
   }
   .thread-context .thread-toolbar .thread-summary { display: none; }
-  /* The three-button toggle. Avoid Pico's [role="group"] pill component —
+  /* The three-button toggle. Avoid Pico's [role="group"] pill component , 
      it'd force width: 100% and split the buttons into equal-width bars. */
   .thread-context .thread-toggle {
     display: inline-flex;
@@ -239,7 +239,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    referenced by a `Link:` trailer in a Linus-tree commit, surface
    the commit SHA + date. The patch-page reader's "did this land?"
    question is the highest-value differentiator on the issue-67/
-   issue-66 cluster, so it gets rendered prominently — above the
+   issue-66 cluster, so it gets rendered prominently, above the
    message body, not folded behind a <details>. Skipped silently
    when there's no recorded application; the absence isn't
    informative (the data may simply not be indexed, or the commit
@@ -262,7 +262,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    v3 timeline pointing at each revision. The current article is
    highlighted; others are links. The arrow notation reads left-
    to-right oldest-to-newest. Skipped silently when there's no
-   series — most articles. #}
+   series, most articles. #}
 {% if patch_series_revisions and patch_series_revisions|length > 1 %}
 <aside class="patch-series" style="margin-block: 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--pico-primary); background: var(--pico-muted-background-color);">
   <small>
@@ -283,7 +283,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
 {% include "_message_body.html" %}
 {# Related patches: other recent articles touching at least one
    file this patch touches. The reverse-lookup side of the
-   subsystem header — useful when reviewing one patch in a larger
+   subsystem header, useful when reviewing one patch in a larger
    recent flurry. Skipped silently when the article isn't a patch. #}
 {% if related_patches %}
 <section style="margin-block: 1rem;">

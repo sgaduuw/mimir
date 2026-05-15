@@ -106,7 +106,7 @@ def test_ingest_new_message_creates_article(seeded_db, tmp_path):
     assert result.dup_batch == 0
     assert result.dup_db == 0
     assert result.failed == 0
-    # IndexNow feeds off this list — must match the `new` bucket exactly.
+    # IndexNow feeds off this list, must match the `new` bucket exactly.
     assert result.new_message_ids == ["fresh@example.com"]
 
     with seeded_db() as s:
@@ -126,7 +126,7 @@ def test_ingest_new_message_ids_only_tracks_new_bucket(seeded_db, tmp_path):
     """`new_message_ids` is the IndexNow feed: only freshly-created
     Articles (the `new` bucket) belong in it. `linked` rows (cross-
     post: the Article already existed, just got a new ArticleList
-    row) and `dup_*` rows must not appear — IndexNow would otherwise
+    row) and `dup_*` rows must not appear, IndexNow would otherwise
     push URLs that didn't actually become discoverable this tick."""
     alpha = _alpha(seeded_db)
     _build_pubinbox_repo(tmp_path / "0.git", [
@@ -150,7 +150,7 @@ def test_ingest_extracts_diff_touched_paths_for_patch_body(
     seeded_db, tmp_path,
 ):
     """Patch bodies get one ArticleFile row per `diff --git`
-    header. The b/ side is stored — that's the path reviewers and
+    header. The b/ side is stored; that's the path reviewers and
     MAINTAINERS globs look at."""
     alpha = _alpha(seeded_db)
     patch_body = (
@@ -261,7 +261,7 @@ def test_ingest_linked_cross_post_does_not_double_add_files(
     seeded_db, tmp_path,
 ):
     """When a message gets `linked` (already in another inbox),
-    the existing Article retains its ArticleFile rows — the linked
+    the existing Article retains its ArticleFile rows, the linked
     row doesn't trigger re-extraction. Otherwise a cross-posted
     patch would accumulate duplicate rows per linked inbox."""
     alpha = _alpha(seeded_db)
@@ -296,7 +296,7 @@ def test_ingest_linked_cross_post_does_not_double_add_files(
                 select(ArticleFile).where(ArticleFile.article_id == art.id)
             ).scalars()
         ]
-    # Exactly one row — not duplicated across the two linked inboxes.
+    # Exactly one row, not duplicated across the two linked inboxes.
     assert paths == ["fs/x/file.c"]
 
 
@@ -380,7 +380,7 @@ def test_ingest_groups_v1_and_v2_under_same_series_key(seeded_db, tmp_path):
 
 def test_ingest_linked_when_message_id_already_in_other_inbox(seeded_db, tmp_path):
     """art2@example.com is in beta (seeded). Ingesting it into alpha
-    must reuse the existing Article and add an article_lists row —
+    must reuse the existing Article and add an article_lists row , 
     that's the `linked` bucket."""
     alpha = _alpha(seeded_db)
     _build_pubinbox_repo(tmp_path / "0.git", [_rfc5322("art2@example.com")])
@@ -571,7 +571,7 @@ def test_failed_parse_persists_parse_failures_row(seeded_db, tmp_path):
     assert row.commit_sha == head
     assert row.epoch == "0.git"
     assert row.attempts == 1
-    assert row.error_class  # whatever parser raises — class name pinned
+    assert row.error_class  # whatever parser raises, class name pinned
     assert row.first_seen == row.last_attempt
 
 
@@ -979,7 +979,7 @@ def test_ingest_canonical_null_when_no_known_address_matches(seeded_db, tmp_path
 
 def test_promote_list_address_below_threshold_skips(seeded_db):
     """Below MIN_PROMOTE_OBSERVATIONS samples, promotion stays its
-    hand — even with a clear modal address."""
+    hand, even with a clear modal address."""
     alpha = _alpha(seeded_db)
     with seeded_db() as s:
         s.add(InboxAddressObservation(
@@ -1292,7 +1292,7 @@ def test_backfill_records_observations(seeded_db, tmp_path):
 # Regression: RFC 5322 dates with `-0000` come back tz-naive from
 # email.utils.parsedate_to_datetime. Mixing those into max() with
 # tz-aware dates raised TypeError mid-ingest and rolled back the
-# whole batch — production lkml ingest crashed after walking 6M
+# whole batch, production lkml ingest crashed after walking 6M
 # commits with only 26 articles persisting.
 
 
@@ -1560,7 +1560,7 @@ def test_kept_headers_filter_drops_received_dkim_spam(seeded_db, tmp_path):
 # --------------------------------------------------------------------------
 # replay_failures cross-post branch.
 #
-# Existing tests cover replay_failures' three primary buckets — recovered
+# Existing tests cover replay_failures' three primary buckets, recovered
 # (new article), still_failed (parser still rejects), skipped (mirror
 # gone). The cross-post branch at ingest.py:506-518 (article already
 # exists in another inbox, missing only the article_lists row for
@@ -1618,7 +1618,7 @@ def test_replay_failures_cross_post_links_existing_article(
         ).scalar_one_or_none()
         assert alpha_link is None
 
-    # Read the SHA out of alpha's epoch — replay needs a real blob to parse.
+    # Read the SHA out of alpha's epoch, replay needs a real blob to parse.
     from dulwich.repo import Repo as DulwichRepo
 
     repo = DulwichRepo(str(alpha_mirror / "0.git"))
