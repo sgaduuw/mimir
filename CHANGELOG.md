@@ -22,6 +22,14 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   surfaces in `SyncResult.failed` and the tick continues.
 ### Fixed
 
+- Canonical-inbox resolution and the off-list-parent hint now
+  read `To:` / `Cc:` headers case-insensitively. RFC 5322 field
+  names are case-insensitive and `mimir.parser` preserves the
+  wire casing; some ML re-mailers downcase headers, so a strict
+  `headers.get("To")` silently returned `None` and dropped the
+  list addresses on the floor. Both `extract_list_addresses`
+  callers (canonical-inbox pinning at ingest and the off-list
+  list-host hint on the message page) recover transparently.
 - `active_threads` decay score now clamps the recency exponent at
   zero. `pow(0.5, julianday('now') - julianday(date))` blows up to
   astronomically large values when `date` is in the future, letting
