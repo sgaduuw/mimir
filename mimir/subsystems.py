@@ -51,6 +51,17 @@ from mimir.threading import (
     _active_threads_query,
 )
 
+# Per-subsystem dashboard helpers refresh at most once per hour. The
+# underlying joins (article_files × article_lists × articles for
+# `recent_articles_in_subsystem`, recursive CTE for
+# `active_threads_in_subsystem`, trailer scan for
+# `active_reviewers_in_subsystem`) all cost seconds on hot
+# subsystems; a per-subsystem surface doesn't need the 5-minute
+# real-time feel that drives the front-page TTL. warm-cache pre-
+# builds the top-N most active subsystems per inbox at this TTL so
+# steady-state visitors hit warm cache.
+SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC = 3600  # 1 hour
+
 
 def path_matches_glob(path: str, glob: str) -> bool:
     """MAINTAINERS-flavoured glob match.
@@ -171,6 +182,9 @@ class RelatedPatch(BaseModel):
     inbox_name: str  # canonical inbox name for URL building
 
 
+cache.register("RelatedPatch", RelatedPatch)
+
+
 def recent_patches_touching(
     session: Session, paths: list[str],
     exclude_article_id: int | None = None,
@@ -245,6 +259,8 @@ def recent_patches_touching(
 
 def recent_articles_in_subsystem(
     session: Session, inbox: Inbox, subsystem: Subsystem, limit: int = 20,
+    *,
+    force: bool = False,
 ) -> list[RelatedPatch]:
     """Recent articles linked to `inbox` whose `article_files` paths
     match any of `subsystem`'s F: globs and aren't vetoed by its
@@ -261,107 +277,124 @@ def recent_articles_in_subsystem(
     skipped silently — they're a small minority of rules and add
     a full-table scan to every dashboard hit. A follow-up slice
     can fold them in once the simple-glob case is shipping.
+
+    Cached for `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC`. The query joins
+    article_files × article_lists × articles with one OR clause per
+    F: glob (large subsystems like DT-bindings have many), then a
+    Python-side X: filter walk; on a multi-million-row archive that
+    runs into double-digit seconds for the busy subsystems. Warm-
+    cache pre-builds the top-N most active subsystems per inbox so
+    most readers landing on a hot dashboard get a cache hit.
     """
-    includes = [r for r in subsystem.paths if not r.is_exclude]
-    excludes = [r.glob for r in subsystem.paths if r.is_exclude]
+    def compute() -> list[RelatedPatch]:
+        includes = [r for r in subsystem.paths if not r.is_exclude]
+        excludes = [r.glob for r in subsystem.paths if r.is_exclude]
 
-    # Build OR conditions for each supported include glob.
-    or_conds = []
-    for rule in includes:
-        g = rule.glob
-        if g.endswith("/"):
-            # Directory prefix. SQLite LIKE doesn't treat `_` and `%`
-            # as literal — escape them so a path glob containing `_`
-            # (rare but possible: `arch/x86_64/`) doesn't widen the
-            # match.
-            prefix = g.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            or_conds.append(ArticleFile.path.like(prefix + "%", escape="\\"))
-            # Also match the bare directory path (no trailing slash).
-            or_conds.append(ArticleFile.path == g[:-1])
-        elif not any(c in g for c in "*?["):
-            or_conds.append(ArticleFile.path == g)
-        # else: wildcard — skipped in slice 1
-    if not or_conds:
-        return []
+        # Build OR conditions for each supported include glob.
+        or_conds = []
+        for rule in includes:
+            g = rule.glob
+            if g.endswith("/"):
+                # Directory prefix. SQLite LIKE doesn't treat `_` and `%`
+                # as literal — escape them so a path glob containing `_`
+                # (rare but possible: `arch/x86_64/`) doesn't widen the
+                # match.
+                prefix = g.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                or_conds.append(ArticleFile.path.like(prefix + "%", escape="\\"))
+                # Also match the bare directory path (no trailing slash).
+                or_conds.append(ArticleFile.path == g[:-1])
+            elif not any(c in g for c in "*?["):
+                or_conds.append(ArticleFile.path == g)
+            # else: wildcard — skipped in slice 1
+        if not or_conds:
+            return []
 
-    # Over-fetch by a factor so the X: exclude pass below has room
-    # to filter without starving the result list.
-    overfetch = max(limit * 3, 60)
-    rows = session.execute(
-        select(Article.id, Article.message_id, Article.subject,
-               Article.author, Article.date,
-               Article.canonical_inbox_id,
-               ArticleFile.path)
-        .join(ArticleFile, ArticleFile.article_id == Article.id)
-        .join(ArticleList, ArticleList.article_id == Article.id)
-        .where(or_(*or_conds), ArticleList.inbox_id == inbox.id)
-        .order_by(Article.date.desc())
-        .limit(overfetch)
-    ).all()
+        # Over-fetch by a factor so the X: exclude pass below has room
+        # to filter without starving the result list.
+        overfetch = max(limit * 3, 60)
+        rows = session.execute(
+            select(Article.id, Article.message_id, Article.subject,
+                   Article.author, Article.date,
+                   Article.canonical_inbox_id,
+                   ArticleFile.path)
+            .join(ArticleFile, ArticleFile.article_id == Article.id)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(or_(*or_conds), ArticleList.inbox_id == inbox.id)
+            .order_by(Article.date.desc())
+            .limit(overfetch)
+        ).all()
 
-    # Group touched paths per article so the X: filter can see every
-    # path a given article touched (not just the one row that matched
-    # an include).
-    art_paths: dict[int, set[str]] = defaultdict(set)
-    art_data: dict[int, tuple] = {}
-    art_order: list[int] = []  # preserve newest-first order from SQL
-    for art_id, mid, subj, author, date, canon_id, path in rows:
-        if art_id not in art_data:
-            art_data[art_id] = (mid, subj, author, date, canon_id)
-            art_order.append(art_id)
-        art_paths[art_id].add(path)
+        # Group touched paths per article so the X: filter can see every
+        # path a given article touched (not just the one row that matched
+        # an include).
+        art_paths: dict[int, set[str]] = defaultdict(set)
+        art_data: dict[int, tuple] = {}
+        art_order: list[int] = []  # preserve newest-first order from SQL
+        for art_id, mid, subj, author, date, canon_id, path in rows:
+            if art_id not in art_data:
+                art_data[art_id] = (mid, subj, author, date, canon_id)
+                art_order.append(art_id)
+            art_paths[art_id].add(path)
 
-    # The X: pass operates over the per-article path set: a subsystem
-    # vetoes an article only if *every* matched path is excluded. If
-    # at least one path remains in-scope after applying X:, the
-    # article still belongs to the subsystem.
-    valid_ids: list[int] = []
-    for art_id in art_order:
-        in_scope = [
-            p for p in art_paths[art_id]
-            if any(
-                path_matches_glob(p, inc.glob) for inc in includes
-            ) and not any(
-                path_matches_glob(p, x) for x in excludes
-            )
-        ]
-        if in_scope:
-            valid_ids.append(art_id)
-            if len(valid_ids) >= limit:
-                break
-    if not valid_ids:
-        return []
-
-    # Resolve inbox names for the canonical-or-fallback URL building,
-    # one bulk query.
-    links = session.execute(
-        select(ArticleList.article_id, Inbox.id, Inbox.name)
-        .join(Inbox, Inbox.id == ArticleList.inbox_id)
-        .where(ArticleList.article_id.in_(valid_ids))
-    ).all()
-    links_by_article: dict[int, list[tuple[int, str]]] = defaultdict(list)
-    for art_id, ix_id, ix_name in links:
-        links_by_article[art_id].append((ix_id, ix_name))
-
-    out: list[RelatedPatch] = []
-    for art_id in valid_ids:
-        mid, subj, author, date, canon_id = art_data[art_id]
-        link_set = links_by_article.get(art_id, [])
-        canon_name: str | None = None
-        if canon_id is not None:
-            for ix_id, name in link_set:
-                if ix_id == canon_id:
-                    canon_name = name
+        # The X: pass operates over the per-article path set: a subsystem
+        # vetoes an article only if *every* matched path is excluded. If
+        # at least one path remains in-scope after applying X:, the
+        # article still belongs to the subsystem.
+        valid_ids: list[int] = []
+        for art_id in art_order:
+            in_scope = [
+                p for p in art_paths[art_id]
+                if any(
+                    path_matches_glob(p, inc.glob) for inc in includes
+                ) and not any(
+                    path_matches_glob(p, x) for x in excludes
+                )
+            ]
+            if in_scope:
+                valid_ids.append(art_id)
+                if len(valid_ids) >= limit:
                     break
-        if canon_name is None and link_set:
-            canon_name = min(name for _, name in link_set)
-        if canon_name is None:
-            continue
-        out.append(RelatedPatch(
-            article_id=art_id, message_id=mid, subject=subj,
-            author=author, date=date, inbox_name=canon_name,
-        ))
-    return out
+        if not valid_ids:
+            return []
+
+        # Resolve inbox names for the canonical-or-fallback URL building,
+        # one bulk query.
+        links = session.execute(
+            select(ArticleList.article_id, Inbox.id, Inbox.name)
+            .join(Inbox, Inbox.id == ArticleList.inbox_id)
+            .where(ArticleList.article_id.in_(valid_ids))
+        ).all()
+        links_by_article: dict[int, list[tuple[int, str]]] = defaultdict(list)
+        for art_id, ix_id, ix_name in links:
+            links_by_article[art_id].append((ix_id, ix_name))
+
+        out: list[RelatedPatch] = []
+        for art_id in valid_ids:
+            mid, subj, author, date, canon_id = art_data[art_id]
+            link_set = links_by_article.get(art_id, [])
+            canon_name: str | None = None
+            if canon_id is not None:
+                for ix_id, name in link_set:
+                    if ix_id == canon_id:
+                        canon_name = name
+                        break
+            if canon_name is None and link_set:
+                canon_name = min(name for _, name in link_set)
+            if canon_name is None:
+                continue
+            out.append(RelatedPatch(
+                article_id=art_id, message_id=mid, subject=subj,
+                author=author, date=date, inbox_name=canon_name,
+            ))
+        return out
+
+    return cache.get_or_compute(
+        session,
+        f"recent_articles_in_subsystem:{inbox.name}:{subsystem.id}:{limit}",
+        SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
 
 
 def _subsystem_path_filter_sql(
@@ -494,8 +527,11 @@ def active_threads_in_subsystem(
 
     Returns an empty list when the subsystem has no supported
     globs (slice 1/2 ignores wildcard rules). Cached per
-    `(inbox, subsystem, days, limit)` for the same TTL as the
-    global active-threads cache.
+    `(inbox, subsystem, days, limit)` at the 1h per-subsystem
+    dashboard TTL — the recursive CTE is too heavy for the 5min
+    front-page real-time feel, and visitors landing on
+    `/<inbox>/subsystem/<name>/` are reading the page, not watching
+    for live updates.
     """
     def compute() -> list[ActiveThread]:
         path_filter = _subsystem_path_filter_sql(subsystem, prefix="atss")
@@ -514,7 +550,7 @@ def active_threads_in_subsystem(
     return cache.get_or_compute(
         session,
         f"active_threads_in_subsystem:{inbox.name}:{subsystem.id}:{days}:{limit}",
-        ACTIVE_THREADS_CACHE_TTL_SEC,
+        SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
         compute,
         force=force,
     )
@@ -758,7 +794,7 @@ def active_reviewers_in_subsystem(
     return cache.get_or_compute(
         session,
         f"active_reviewers_in_subsystem:{inbox.name}:{subsystem.id}:{days}:{limit}",
-        ACTIVE_THREADS_CACHE_TTL_SEC,
+        SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
         compute,
         force=force,
     )
