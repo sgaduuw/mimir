@@ -764,19 +764,14 @@ def warm_cache_command(verbose: int) -> None:
                 # initial paint uses 10.
                 (f"{inbox.name} recent_articles ({FEED_ENTRY_LIMIT})",
                  lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT, force=True)),
-                # Per-inbox subsystem discoverability widget. 7d
-                # window + 30 hedge (top-12 displayed + headroom)
-                # matches the global helper's `limit*3` expectation
-                # so the cross-inbox aggregator reuses these rows.
-                (f"{inbox.name} most_active_subsystems_in_inbox (7d, 30)",
+                # Per-inbox subsystem discoverability widget. One
+                # warm target per inbox: the cache key is limit-less
+                # since v1.19.3, so every caller (front-page top-12,
+                # inbox dashboard top-10, cross-inbox aggregator)
+                # slices from the same cached top-100 payload.
+                (f"{inbox.name} most_active_subsystems_in_inbox (7d)",
                  lambda s, ib=inbox: most_active_subsystems_in_inbox(
-                     s, ib, days=7, limit=30, force=True,
-                 )),
-                # Per-inbox dashboard widget reads top-10. Separate
-                # cache key from limit=30 above, so warm both.
-                (f"{inbox.name} most_active_subsystems_in_inbox (7d, 10)",
-                 lambda s, ib=inbox: most_active_subsystems_in_inbox(
-                     s, ib, days=7, limit=10, force=True,
+                     s, ib, days=7, force=True,
                  )),
             ])
             for label, substr in (inbox.tracked_authors or {}).items():
@@ -797,11 +792,13 @@ def warm_cache_command(verbose: int) -> None:
         # Front-page cross-inbox subsystem teaser. After the per-
         # inbox warming above, the global aggregator just consumes
         # those cached results — cheap when the per-inbox keys are
-        # fresh, which they are after the loop just above.
+        # fresh, which they are after the loop just above. Cache
+        # key is limit-less since v1.19.3; one warm covers every
+        # consumer.
         targets.append((
-            "most_active_subsystems_global (7d, 12)",
+            "most_active_subsystems_global (7d)",
             lambda s: most_active_subsystems_global(
-                s, days=7, limit=12, force=True,
+                s, days=7, force=True,
             ),
         ))
         # Sitemap caches. Only warmed when SITE_BASE_URL is configured —
