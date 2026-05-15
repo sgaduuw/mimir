@@ -11,6 +11,18 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Single source of truth for `_coerce_dt`. `mimir.subsystems`
+  carried a near-duplicate of the helper that lived in
+  `mimir.threading`; the two diverged on None / malformed-string
+  handling (threading returned None, subsystems raised) and only
+  the subsystems copy normalised tz-naive values to aware UTC.
+  The threading version now also normalises tz (matching the
+  `_aware_utc` convention documented in CONTEXT.md), is the only
+  definition, and is imported wherever raw `text()` SQL surfaces
+  ISO-string datetime columns.
+
 ## [1.21.0] – 2026-05-15
 
 Per-subsystem dashboard latency pass. A real-world cold load on

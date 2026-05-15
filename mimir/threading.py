@@ -62,14 +62,27 @@ cache.register("ActiveThread", ActiveThread)
 
 
 def _coerce_dt(value) -> datetime | None:
-    """text() raw SQL bypasses SQLAlchemy type coercion, so DateTime columns
-    come back as ISO strings. Coerce back to datetime."""
-    if value is None or isinstance(value, datetime):
+    """`text()` raw SQL bypasses SQLAlchemy type coercion, so
+    DateTime columns come back as ISO strings. Coerce back to
+    `datetime` and normalise tz-naive values to aware UTC,
+    matching the `_aware_utc` convention documented in CONTEXT.md
+    ("tz-aware UTC normalization for Date: headers"). Returns
+    None on None input or malformed strings so callers stay free
+    to None-guard rather than catch.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
         return value
     try:
-        return datetime.fromisoformat(value)
+        dt = datetime.fromisoformat(value)
     except (TypeError, ValueError):
         return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def find_thread_root(session: Session, inbox: Inbox, message_id: str) -> str | None:

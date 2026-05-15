@@ -49,6 +49,7 @@ from mimir.threading import (
     ACTIVE_THREADS_CACHE_TTL_SEC,
     ActiveThread,
     _active_threads_query,
+    _coerce_dt,
 )
 
 # Per-subsystem dashboard helpers refresh at most once per hour. The
@@ -798,22 +799,6 @@ def active_reviewers_in_subsystem(
         compute,
         force=force,
     )
-
-
-def _coerce_dt(value) -> datetime:
-    """`text()` raw SQL returns the `articles.date` column as an ISO
-    string; SQLAlchemy bypasses its type coercion on raw queries.
-    Mirror of the `_coerce_dt` in `mimir.threading` — kept local so
-    the import surface stays one-way (subsystems → threading is
-    already the established direction)."""
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value
-    dt = datetime.fromisoformat(str(value))
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
 
 
 @dataclass

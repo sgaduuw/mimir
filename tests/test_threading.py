@@ -22,6 +22,7 @@ from mimir.threading import (
     MAX_DEPTH,
     THREADS_SINCE_MAX_DAYS,
     _active_threads_query,
+    _coerce_dt,
     active_threads,
     find_thread_root,
     get_thread,
@@ -36,6 +37,51 @@ def _inbox(seeded_db, name: str) -> Inbox:
     only read .id and .name; no need for session attachment."""
     with seeded_db() as s:
         return s.execute(select(Inbox).where(Inbox.name == name)).scalar_one()
+
+
+# _coerce_dt: single source of truth shared with mimir.subsystems and
+# mimir.dashboard. Pins the consolidated contract (tz-aware UTC,
+# None-tolerant) so the divergence the audit found can't sneak back.
+
+
+def test_coerce_dt_passes_none_through():
+    assert _coerce_dt(None) is None
+
+
+def test_coerce_dt_preserves_aware_datetime():
+    dt = datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc)
+    assert _coerce_dt(dt) is dt
+
+
+def test_coerce_dt_normalizes_naive_datetime_to_utc():
+    """The audit flagged the divergence between threading's old
+    pass-through behaviour and subsystems' tz-normalising local copy
+    (subsystems.py:803). Consolidated behaviour matches subsystems
+    and aligns with the `_aware_utc` convention documented in
+    CONTEXT.md."""
+    naive = datetime(2024, 6, 1, 12, 0)
+    out = _coerce_dt(naive)
+    assert out.tzinfo is timezone.utc
+    assert out.replace(tzinfo=None) == naive
+
+
+def test_coerce_dt_parses_iso_string_with_tz():
+    out = _coerce_dt("2024-06-01T12:00:00+00:00")
+    assert out == datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc)
+
+
+def test_coerce_dt_parses_iso_string_without_tz_as_utc():
+    """ISO strings come back from raw `text()` SQL without tz; SQLite
+    stores naive ISO. They must round-trip to aware UTC so callers
+    can compare against tz-aware bounds without TypeError."""
+    out = _coerce_dt("2024-06-01T12:00:00")
+    assert out is not None
+    assert out.tzinfo is timezone.utc
+
+
+def test_coerce_dt_returns_none_on_malformed_input():
+    assert _coerce_dt("not a date") is None
+    assert _coerce_dt("") is None
 
 
 # find_thread_root
