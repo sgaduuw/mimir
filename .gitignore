@@ -169,7 +169,7 @@ mimir.db*
 mimir-cache.pickle*
 Inboxes/
 
-# Agent docs — kept locally, not in the public repo
+# Agent docs, kept locally, not in the public repo
 CLAUDE.md
 CONTEXT.md
 MEMORY.md

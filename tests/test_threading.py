@@ -190,7 +190,7 @@ def test_find_thread_root_terminates_on_cycle(seeded_db):
     rather not have, but real-world archives have had loops before.
     The CTE caps recursion at MAX_DEPTH; without it, the walk would
     run forever. Build the cycle and assert the call returns within
-    bounded work (the test's mere completion is the assertion —
+    bounded work (the test's mere completion is the assertion  
     pytest's per-test timeout would catch a true infinite loop)."""
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
@@ -234,7 +234,7 @@ def test_max_depth_value_is_sensible():
 
 
 def test_find_thread_root_handles_out_of_order_arrival(seeded_db):
-    """Cross-epoch ingest can deliver a reply before its parent —
+    """Cross-epoch ingest can deliver a reply before its parent  
     the reply commits first, then a later ingest pass finds the
     parent. The recursive CTE must reflect the new shape on the
     next query without any backfill step (this was one of the
@@ -363,7 +363,7 @@ def test_threads_for_day_returns_only_that_days_threads(seeded_db):
     msgids = {r.message_id for r in results}
     # art1 was on 2024-01-01.
     assert "art1@example.com" in msgids
-    # art2 was on 2024-02-01, beta only — must not appear.
+    # art2 was on 2024-02-01, beta only, must not appear.
     assert "art2@example.com" not in msgids
 
 

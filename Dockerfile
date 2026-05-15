@@ -7,19 +7,19 @@
 #   gunicorn as a non-root user.
 #
 # Default volume:
-#   /data — single state directory. Holds:
-#     /data/db        — SQLite DB (DATABASE_URL=sqlite:////data/db/mimir.db)
-#     /data/Inboxes   — public-inbox mirrors. /app/Inboxes is a
+#   /data, single state directory. Holds:
+#     /data/db       , SQLite DB (DATABASE_URL=sqlite:////data/db/mimir.db)
+#     /data/Inboxes  , public-inbox mirrors. /app/Inboxes is a
 #                       symlink to this so the default relative
 #                       `INBOXES` config still resolves cleanly.
-#     /data/Mainline  — Linus's linux.git (and other configured
+#     /data/Mainline , Linus's linux.git (and other configured
 #                       upstream trees) for MAINTAINERS + Link:
 #                       trailer indexing. /app/Mainline symlinks
 #                       through so the default relative
 #                       MAINLINE_TREE_PATH resolves to here.
 #
 # Operator must `chown -R 1001:1001 <host-data-dir>` before bringing
-# the container up (rootful podman / docker — no UID remapping).
+# the container up (rootful podman / docker, no UID remapping).
 
 FROM python:3.14-slim AS builder
 
@@ -93,7 +93,7 @@ USER mimir
 
 EXPOSE 5000
 
-# Web is migration-free at startup — alembic lives in the scheduler
+# Web is migration-free at startup, alembic lives in the scheduler
 # sidecar (`deploy/scheduler.sh`) so there's a single place that
 # touches schema. Operator's compose must order the sidecar before
 # the web service (depends_on with a healthcheck-gated sidecar, or
