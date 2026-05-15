@@ -24,9 +24,8 @@ from email.utils import parseaddr
 from typing import Callable
 
 from pydantic import BaseModel
-from sqlalchemy import select
 
-from mimir.extensions import SessionLocal
+from mimir._backfill import walk_articles
 
 logger = logging.getLogger(__name__)
 
@@ -141,15 +140,34 @@ def series_key(title: str, author: str | None) -> str:
     return hashlib.sha1(payload).hexdigest()
 
 
-_BACKFILL_BATCH = 1000
-
-
 class BackfillResult(BaseModel):
     """Outcome counters for `backfill_patch_series`."""
     examined: int = 0
     indexed: int = 0      # cover letter detected, key + version written
     not_cover: int = 0    # non-cover-letter subject — no series row
     skipped: int = 0      # already had a key set (idempotent re-run)
+
+
+def _process_one(session, article, reprocess: bool) -> str:
+    """Per-article work for `backfill_patch_series`. Returns the
+    bucket name on `BackfillResult` to bump. `session` is unused
+    here (no body re-read, no related-row delete) but the walker
+    contract passes it; it stays available for a future slice
+    that wants per-revision link rows."""
+    if article.patch_series_key is not None and not reprocess:
+        return "skipped"
+    cover = parse_cover_letter(article.subject)
+    if cover is None:
+        # Reprocess: clear any prior key (the subject may have
+        # changed, or our parser may now reject something it
+        # previously accepted).
+        if reprocess and article.patch_series_key is not None:
+            article.patch_series_key = None
+            article.patch_series_version = None
+        return "not_cover"
+    article.patch_series_key = series_key(cover.title, article.author)
+    article.patch_series_version = cover.version
+    return "indexed"
 
 
 def backfill_patch_series(
@@ -163,55 +181,19 @@ def backfill_patch_series(
     Cheaper than `backfill_article_files`: only reads `Article.subject`
     and `Article.author`, no body re-parse via the git mirror. Safe
     to run on any host with the DB; doesn't need the inbox mirrors.
+    `preload_lists=False` is the saving — patches and trailers need
+    `Article.lists` for the inbox lookup; we don't.
 
     Idempotent: articles with `patch_series_key` already set are
     skipped unless `reprocess=True`. Newest-first walk so a
     bounded session covers the most-visible articles first.
     """
-    from mimir.models import Article
     result = BackfillResult()
-    examined_total = 0
-
-    with SessionLocal() as session:
-        cursor: int | None = None
-        while True:
-            q = (
-                select(Article)
-                .order_by(Article.id.desc())
-                .limit(_BACKFILL_BATCH)
-            )
-            if cursor is not None:
-                q = q.where(Article.id < cursor)
-            batch = list(session.execute(q).scalars())
-            if not batch:
-                break
-            for article in batch:
-                cursor = article.id
-                examined_total += 1
-                if limit is not None and examined_total > limit:
-                    break
-                result.examined += 1
-                if article.patch_series_key is not None and not reprocess:
-                    result.skipped += 1
-                    continue
-                cover = parse_cover_letter(article.subject)
-                if cover is None:
-                    # Reprocess: clear any prior key (the subject
-                    # may have changed, or our parser may now reject
-                    # something it previously accepted).
-                    if reprocess and article.patch_series_key is not None:
-                        article.patch_series_key = None
-                        article.patch_series_version = None
-                    result.not_cover += 1
-                    continue
-                article.patch_series_key = series_key(cover.title, article.author)
-                article.patch_series_version = cover.version
-                result.indexed += 1
-            session.commit()
-            if progress is not None:
-                progress(result)
-            if limit is not None and examined_total > limit:
-                break
+    walk_articles(
+        result, _process_one,
+        limit=limit, reprocess=reprocess, progress=progress,
+        preload_lists=False,
+    )
     return result
 
 

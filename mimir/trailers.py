@@ -22,9 +22,8 @@ from typing import Callable
 
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
-from mimir.extensions import SessionLocal
+from mimir._backfill import walk_articles
 from mimir.models import Article, ArticleTrailer, Inbox
 from mimir.store import MessageNotFound, read_message
 
@@ -94,12 +93,6 @@ def extract_trailers(body: str | None) -> list[tuple[str, str, str]]:
     return out
 
 
-# Page size for the backfill walker. Same shape and rationale as
-# `mimir.patches._BACKFILL_BATCH`; ~6M articles → 6000 batches at
-# 1000 each, Ctrl-C loses ≤1k articles of work.
-_BACKFILL_BATCH = 1000
-
-
 class BackfillResult(BaseModel):
     """Outcome counters for `backfill_article_trailers`. Each examined
     article lands in exactly one bucket. `skipped` covers articles
@@ -127,38 +120,10 @@ def backfill_article_trailers(
     subsystem reviewer surfaces (slices 2+3) gain visible coverage
     fastest from the recent end."""
     result = BackfillResult()
-    examined_total = 0
-
-    with SessionLocal() as session:
-        cursor: int | None = None
-        while True:
-            q = (
-                select(Article)
-                .options(selectinload(Article.lists))
-                .order_by(Article.id.desc())
-                .limit(_BACKFILL_BATCH)
-            )
-            if cursor is not None:
-                q = q.where(Article.id < cursor)
-            batch = list(session.execute(q).scalars())
-            if not batch:
-                break
-
-            for article in batch:
-                cursor = article.id
-                examined_total += 1
-                if limit is not None and examined_total > limit:
-                    break
-                result.examined += 1
-                processed = _process_one(session, article, reprocess=reprocess)
-                setattr(result, processed, getattr(result, processed) + 1)
-
-            session.commit()
-            if progress is not None:
-                progress(result)
-            if limit is not None and examined_total > limit:
-                break
-
+    walk_articles(
+        result, _process_one,
+        limit=limit, reprocess=reprocess, progress=progress,
+    )
     return result
 
 
