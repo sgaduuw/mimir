@@ -525,6 +525,17 @@ def _display_name_filter(author: str | None) -> str:
     return "unknown sender"
 
 
+@bp_web.app_template_filter("relative_time")
+def _relative_time_filter(then: datetime | None) -> str:
+    """Coarse "N{m,h,d} ago" rendering of a tz-aware datetime, with
+    a YYYY-MM-DD fallback past 30 days. Thin wrapper around
+    `_relative_time` so templates can spell it as a Jinja filter:
+    `{{ thing.last_activity|relative_time }}`."""
+    if then is None:
+        return ""
+    return _relative_time(then)
+
+
 @bp_web.app_template_filter("is_allowlisted_address")
 def _is_allowlisted_address_filter(address: str | None) -> bool:
     """True iff `address` is in the allowlist (static tokens

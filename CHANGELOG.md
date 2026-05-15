@@ -11,6 +11,25 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- **Enriched subsystem cards on `/`**. The front-page subsystem
+  cards now carry the top `M:` maintainer's display name
+  ("maintained by Kent Overstreet", with "et al." when MAINTAINERS
+  lists more than one M: row), a status badge in the top-right
+  corner for non-default `S:` values (`Supported`, `Orphan`,
+  `Obsolete`, `Odd Fixes`; `Maintained` is suppressed since
+  most subsystems sit at that value), a "Last activity: N{m,h,d}
+  ago" relative-time line, and a 7-day daily-volume sparkline.
+  Cards are also sized to match the inbox cards above them
+  (`minmax(18rem, 1fr)`, same padding) so the two rows share a
+  vertical rhythm rather than the prior denser layout. The
+  per-inbox dashboard "Most active subsystems" surface stays a
+  plain `<ul>` to match its surrounding sections; this is a
+  front-page polish only. Cache namespace bumped to v2 so
+  pre-existing cached rows for the old `SubsystemActivity`
+  shape don't get decoded against the new fields.
+
 ### Added
 
 - **Subsystem discoverability** across three surfaces. The per-

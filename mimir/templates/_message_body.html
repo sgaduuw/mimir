@@ -36,7 +36,7 @@
          convention since 1.18.x); display keeps the upstream
          MAINTAINERS casing. urlencode handles spaces in compound
          names (`BTRFS FILE SYSTEM`). #}
-      {% for hit in subsystem_hits %}<a href="/{{ current_inbox }}/subsystem/{{ hit.name|lower|urlencode }}/">{{ hit.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+      {% for hit in subsystem_hits %}<a href="/{{ current_inbox }}/subsystem/{{ hit.name|lower|urlencode }}/">{{ hit.name|lower }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
       {% if _maint_names %}
         &middot; <strong>Maintainer{{ '' if _maint_names|length == 1 else 's' }}:</strong>
         {{ _maint_names|join(', ') }}

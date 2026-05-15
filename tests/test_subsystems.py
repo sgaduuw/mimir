@@ -1022,3 +1022,64 @@ def test_most_active_subsystems_global_alphabetical_tiebreak_on_inbox(
     assert len(out) == 1
     # alpha < beta alphabetically, equal per-inbox count of 1.
     assert out[0].inbox_name == "alpha"
+
+
+def test_most_active_subsystems_carries_top_maintainer_and_status(
+    seeded_db,
+):
+    """SubsystemActivity rows pick up the first M: maintainer's
+    name + the subsystem's status. The R: rows don't contribute
+    to the "maintained by" decoration (that framing is M:-only)."""
+    with seeded_db() as s:
+        _add_subsystem(
+            s, "BCACHEFS", "Supported",
+            files=["fs/bcachefs/"],
+            maintainers=[
+                ("M", "Kent Overstreet", "kent@kernel.org"),
+                ("R", "Brian Foster", "bfoster@redhat.com"),
+            ],
+        )
+        _add_recent_thread_root(s, "bch@x", ["fs/bcachefs/super.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = most_active_subsystems_in_inbox(s, alpha, force=True)
+    assert len(out) == 1
+    row = out[0]
+    assert row.maintainer_name == "Kent Overstreet"
+    assert row.multiple_maintainers is False  # only one M: row
+    assert row.status == "Supported"
+
+
+def test_most_active_subsystems_marks_multiple_maintainers(seeded_db):
+    """Multiple M: rows → multiple_maintainers True so the card
+    can render the "et al." suffix."""
+    with seeded_db() as s:
+        _add_subsystem(
+            s, "NET", "Maintained",
+            files=["net/"],
+            maintainers=[
+                ("M", "Jakub Kicinski", "kuba@kernel.org"),
+                ("M", "Paolo Abeni", "pabeni@redhat.com"),
+            ],
+        )
+        _add_recent_thread_root(s, "net@x", ["net/core/dev.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = most_active_subsystems_in_inbox(s, alpha, force=True)
+    assert out[0].multiple_maintainers is True
+    # First M: by id order wins the display slot.
+    assert out[0].maintainer_name == "Jakub Kicinski"
+
+
+def test_most_active_subsystems_carries_sparkline(seeded_db):
+    """7-day daily-volume sparkline rides on the SubsystemActivity
+    row so the front-page card can render it without an extra
+    helper call per card."""
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_thread_root(s, "spark@x", ["fs/bcachefs/super.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = most_active_subsystems_in_inbox(s, alpha, force=True)
+    assert out[0].spark is not None
+    assert len(out[0].spark.days) == 7  # 7-day series
