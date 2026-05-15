@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, ForeignKey, String, Text
+from sqlalchemy import JSON, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mimir.extensions import Base
@@ -108,6 +108,15 @@ class Article(Base):
         back_populates="article", cascade="all, delete-orphan"
     )
 
+    # Review-attestation trailers extracted from the body (Reviewed-by,
+    # Acked-by, Tested-by, ...). Populated at ingest time. Empty for
+    # articles with no such trailers. Indexed for cross-reference
+    # surfaces (issue #97 slices 2+3: per-subsystem active reviewers,
+    # per-author "reviewed by this person").
+    trailers: Mapped[list["ArticleTrailer"]] = relationship(
+        back_populates="article", cascade="all, delete-orphan"
+    )
+
 
 class ArticleList(Base):
     """Per-inbox presence of an Article. (epoch, commit_sha) point at
@@ -194,6 +203,51 @@ class ArticleFile(Base):
     path: Mapped[str] = mapped_column(String, primary_key=True, index=True)
 
     article: Mapped[Article] = relationship(back_populates="files")
+
+
+class ArticleTrailer(Base):
+    """One review-attestation trailer (Reviewed-by, Acked-by, Tested-by,
+    ...) extracted from a message body. Multiple rows per article when
+    a patch carries several trailers; an own primary key (rather than a
+    composite (article_id, role, address)) because the same person can
+    appear under more than one role on the same patch (Reported-by +
+    Tested-by) and we want both rows.
+
+    `address_normalized` is the lowercased address; the original casing
+    is preserved in `address` for display fidelity. Indexed on
+    `(role, address_normalized)` so the per-author "Reviewed by this
+    person" query (slice 3) is a tight index scan, and on `article_id`
+    for the per-message lookup the cascade already implies.
+
+    Redaction is a render-time concern, not a storage one: the address
+    is stored verbatim and the allowlist is consulted only when
+    rendering. See CONTEXT.md "Redaction is a display-time decision"."""
+    __tablename__ = "article_trailers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    article_id: Mapped[int] = mapped_column(
+        ForeignKey("articles.id", ondelete="CASCADE"), index=True,
+    )
+    # Canonical capitalisation per `parser.INDEXED_TRAILER_ROLES`
+    # (e.g. "Reviewed-by"). The body's original casing is lost here;
+    # the rendered trailer in the message body keeps it.
+    role: Mapped[str] = mapped_column(String)
+    name: Mapped[str] = mapped_column(String, default="")
+    address: Mapped[str] = mapped_column(String)
+    address_normalized: Mapped[str] = mapped_column(String)
+
+    article: Mapped[Article] = relationship(back_populates="trailers")
+
+    __table_args__ = (
+        # Per-person reverse lookup ("everything Reviewed-by alice@x"):
+        # role first because slice 3 always knows the role from the URL
+        # ("/reviewers/<addr>" filters role IN (Reviewed-by, Acked-by, …)),
+        # then equality on address_normalized.
+        Index(
+            "ix_article_trailers_role_addr",
+            "role", "address_normalized",
+        ),
+    )
 
 
 class Subsystem(Base):
