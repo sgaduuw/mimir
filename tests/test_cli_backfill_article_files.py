@@ -163,6 +163,21 @@ def test_backfill_cli_honours_limit(seeded_db, tmp_path):
     assert "examined=2" in result.output
 
 
+def test_backfill_limit_boundary_pins(seeded_db, tmp_path):
+    """Pins `examined == limit` across the small-integer boundary so
+    a future refactor of the `examined_total > limit` break can't
+    silently regress to a fence-post error. The seeded-conftest
+    rows have lower IDs and a newest-first walk visits the freshly-
+    ingested rows first, so each `limit=k` is well-scoped for
+    `k <= 3`. `reprocess=True` resets per-row state between calls."""
+    _ingest_articles_without_files(
+        seeded_db, tmp_path, _PATCH_BODY, _PROSE_BODY, _PATCH_BODY,
+    )
+    assert backfill_article_files(limit=1).examined == 1
+    assert backfill_article_files(limit=2, reprocess=True).examined == 2
+    assert backfill_article_files(limit=3, reprocess=True).examined == 3
+
+
 def test_backfill_skips_articles_with_unreachable_mirror(seeded_db):
     """Seeded conftest articles have bogus SHAs in their
     ArticleList rows (the fixture never reads their bodies, so it

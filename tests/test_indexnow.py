@@ -187,6 +187,42 @@ def test_build_urls_uses_canonical_inbox(seeded_db):
     )
 
 
+def test_build_urls_falls_back_when_canonical_inbox_vanished(seeded_db):
+    """`canonical_inbox_id` FK is `ON DELETE SET NULL`, so deleting
+    an inbox between ingest and the next update tick leaves
+    cross-posted articles pointing at NULL. `build_urls` must still
+    emit a URL (using the alphabetical-first fallback that the web
+    `<link rel="canonical">` also uses) instead of dropping the
+    push. Pins the canonical-pick rule's behaviour at the FK
+    SET-NULL race boundary."""
+    from mimir.models import ArticleList, Inbox
+    with seeded_db() as s:
+        article = s.execute(
+            select(Article).where(Article.message_id == "art2@example.com")
+        ).scalar_one()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        s.add(ArticleList(
+            article_id=article.id, inbox_id=alpha.id,
+            epoch="0.git", commit_sha="x" * 40,
+        ))
+        # Simulate the FK SET NULL state: cross-posted but no
+        # canonical pin.
+        article.canonical_inbox_id = None
+        s.commit()
+        article_id = article.id
+        article_date = article.date
+
+    with seeded_db() as s:
+        urls = indexnow.build_urls(
+            s, ["art2@example.com"], base="https://example.test",
+        )
+    # Falls back to alphabetical first: alpha before beta.
+    assert urls == [
+        f"https://example.test/alpha/{article_date.year}/"
+        f"{article_date.month:02d}/{article_id}"
+    ]
+
+
 def test_build_urls_skips_unknown_message_ids(seeded_db):
     """Message IDs that don't resolve to an Article (race between
     ingest commit and update's post-pass — unlikely but possible
