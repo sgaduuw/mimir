@@ -450,7 +450,7 @@ def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
     from mimir import cache
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
-    from mimir.web import inbox_sitemap_xml
+    from mimir.seo import inbox_sitemap_xml
 
     cache.set("sitemap:inbox:alpha", "STALE", ttl=3600)
     assert cache.get("sitemap:inbox:alpha") == "STALE"
