@@ -10,13 +10,13 @@ the columns we actually query. After this revision:
   * `inboxes` table is the source-of-truth registry; bootstrapped from
     `Settings.inboxes` on app start, manageable from a future admin UI.
   * `article_lists` (join table) carries `(article_id, inbox_id,
-    epoch, commit_sha)` — cross-posted messages dedupe to one Article
+    epoch, commit_sha)`, cross-posted messages dedupe to one Article
     + N ArticleList rows.
   * `articles` drops `epoch`, `commit_sha` (now per-inbox in
     `article_lists`), `in_reply_to` (redundant with `thread_parent`),
     and `references` (only consumed at ingest time, re-derivable from
     the blob).
-  * `attachments` table is removed entirely — every render path
+  * `attachments` table is removed entirely, every render path
     re-parses the blob on demand and uses `parsed.attachments`, so
     nothing read the persisted metadata.
   * `ingest_state` PK becomes `(inbox_id, epoch)` and `last_ingested_at`
@@ -63,7 +63,7 @@ def upgrade() -> None:
     op.drop_table('attachments')
 
     # Slim articles: drop the columns we no longer query. Indexes on
-    # dropped columns must be removed inside the same batch — alembic
+    # dropped columns must be removed inside the same batch, alembic
     # otherwise tries to recreate them on the new (column-less) table.
     with op.batch_alter_table('articles') as batch:
         batch.drop_index(op.f('ix_articles_epoch'))

@@ -11,7 +11,7 @@ the two body-re-reading helpers do).
 
 Three callers across three modules clear the "second caller exists"
 threshold for sharing; the alternative would let the walker shells
-drift on every future change. Internal — not part of the public
+drift on every future change. Internal, not part of the public
 import surface (underscore-prefixed).
 """
 from typing import Any, Callable
@@ -44,7 +44,7 @@ def walk_articles(
     so long as the return strings hit them.
 
     `preload_lists=True` eager-loads `Article.lists` via selectinload
-    (needed by the body-re-reading helpers — patches and trailers —
+    (needed by the body-re-reading helpers, patches and trailers  
     so the inbox lookup doesn't N+1). `patch_series` reads only the
     `Article.subject` / `author` columns and sets `preload_lists=False`
     to save the join.
