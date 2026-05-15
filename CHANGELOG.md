@@ -13,6 +13,38 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Added
 
+- **Per-reviewer page** at `/<inbox>/reviewer/<address>` (slice
+  3 of #97). Lists every patch in the inbox where this person
+  appears on a review-attestation trailer
+  (`Reviewed-by` / `Acked-by` / `Tested-by` / `Reported-by` /
+  `Suggested-by` / `Co-developed-by` /
+  `Reported-and-tested-by`), newest-first, with role badges
+  and a per-role total in the header. Capped at 100 most-recent
+  attestations per page; a notice surfaces when the cap fires.
+  Address from the URL is lowercased to match the
+  `address_normalized` index. The route accepts any
+  well-formed address (hostile shapes 404 via a regex defense
+  on the URL parameter), but mimir only generates outbound
+  links to this surface for addresses that pass the
+  `Settings.email_allowlist` check, mirroring the redaction
+  posture used by the From line and inline DCO trailers. The
+  per-subsystem dashboard reviewer list now renders allowlisted
+  entries as clickable links to this page; non-allowlisted
+  entries continue to show as `<hidden>` with no link. Helper:
+  `mimir.subsystems.articles_reviewed_by`. Cached for 10 min
+  per `(inbox, address, limit)` key. New template filter
+  `is_allowlisted_address` exposes the allowlist check to
+  Jinja.
+
+### Out of scope (deferred)
+
+- Linkifying allowlisted reviewers in the inline body trailer
+  block (the `Reviewed-by:` lines on the message page itself).
+  The render-time path through `mimir.rendering` doesn't yet
+  consult the allowlist for outbound link decisions; that's a
+  follow-up. Cross-inbox aggregation (`/reviewer/<address>` at
+  the root) is also deferred until there's demand.
+
 - **Active reviewers** section on per-subsystem dashboards (slice
   2 of #97). New section between "Most active threads" and
   "Recent patches" lists the people who have been most active

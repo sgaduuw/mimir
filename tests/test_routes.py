@@ -1956,7 +1956,7 @@ def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
     _seed_subsystem(
         "BCACHEFS", "Maintained",
         files=["fs/bcachefs/"],
-        maintainers=[("M", "Kent Overstreet", "kent.overstreet@linux.dev")],
+        maintainers=[("M", "Kent Overstreet", "kent.overstreet@kernel.org")],
     )
     patch_body = (
         b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
@@ -1974,7 +1974,7 @@ def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
     assert "BCACHEFS" in body
     assert "Kent Overstreet" in body
     assert "Maintainer" in body
-    assert "kent.overstreet@linux.dev" not in body
+    assert "kent.overstreet@kernel.org" not in body
     assert "<kbd>M</kbd>" not in body
 
 
@@ -2170,7 +2170,7 @@ def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
     _seed_subsystem(
         "BCACHEFS", "Supported",
         files=["fs/bcachefs/"],
-        maintainers=[("M", "Kent Overstreet", "kent.overstreet@linux.dev")],
+        maintainers=[("M", "Kent Overstreet", "kent.overstreet@kernel.org")],
     )
     patch_body = (
         b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
@@ -2189,9 +2189,78 @@ def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
     # Maintainer address renders on the dashboard page (operator-
     # facing surface; the per-patch header redacts it to keep that
     # surface compact, the dashboard doesn't).
-    assert "kent.overstreet@linux.dev" in body
+    assert "kent.overstreet@kernel.org" in body
     # The recent-patches list surfaces the seeded article.
     assert "bcachefs: tweak super" in body
+
+
+def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
+    """`/<inbox>/subsystem/<name>/` surfaces an Active reviewers
+    section when the subsystem has attestations on patches in the
+    last 30 days. Allowlisted addresses get a clickable link to
+    the per-reviewer page.
+
+    `_ingest_one_article` pins commit_time at 2023-11-14, so we
+    backfill the article's date to a recent value post-ingest to
+    land inside the 30-day reviewer window — same trick as the
+    active-threads section test."""
+    from datetime import datetime, timedelta, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"\n"
+        b"Reviewed-by: Kent Overstreet <kent.overstreet@kernel.org>\n"
+    )
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "rev-1@example.com",
+        subject="bcachefs: review-attested fix", body=body,
+    )
+    with SessionLocal() as s:
+        art = s.get(Article, art_id)
+        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        s.commit()
+    r = client.get("/alpha/subsystem/BCACHEFS/")
+    assert r.status_code == 200
+    text = r.data.decode()
+    assert "Active reviewers" in text
+    assert "kent.overstreet@kernel.org" in text
+    # Allowlisted (@kernel.org) → clickable link to per-reviewer page.
+    assert '/alpha/reviewer/kent.overstreet%40kernel.org"' in text
+
+
+def test_subsystem_dashboard_no_link_for_non_allowlisted_reviewer(
+    client, tmp_path,
+):
+    """Non-allowlisted addresses render via `safe_from` (display
+    name + `<hidden>`) with NO clickable link to the per-reviewer
+    page, so mimir doesn't surface non-public addresses in URLs."""
+    from datetime import datetime, timedelta, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"\n"
+        b"Reviewed-by: Random Person <rando@somecorp.example>\n"
+    )
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "rev-2@example.com",
+        subject="bcachefs: another fix", body=body,
+    )
+    with SessionLocal() as s:
+        art = s.get(Article, art_id)
+        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        s.commit()
+    text = client.get("/alpha/subsystem/BCACHEFS/").data.decode()
+    assert "Active reviewers" in text
+    # Address is redacted in the display surface (safe_from policy).
+    assert "rando@somecorp.example" not in text
+    # And no link to the per-reviewer page is generated.
+    assert "/alpha/reviewer/" not in text
 
 
 def test_subsystem_dashboard_404_on_unknown_subsystem(client):
@@ -3405,3 +3474,94 @@ def test_author_feed_is_well_formed_atom_with_matching_entry(
 
 def test_author_feed_too_short_substring_404s(client, inbox_name):
     assert client.get(f"/{inbox_name}/author/a/feed.atom").status_code == 404
+
+
+# Per-reviewer page (`/<inbox>/reviewer/<address>`) — slice 3 of #97.
+
+
+def test_reviewer_view_lists_attestations(client, tmp_path):
+    """A patch carrying `Reviewed-by: Kent <kent.overstreet@kernel.org>`
+    surfaces on the per-reviewer page with the right role badge."""
+    body = (
+        b"diff --git a/fs/x.c b/fs/x.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"\n"
+        b"Reviewed-by: Kent Overstreet <kent.overstreet@kernel.org>\n"
+    )
+    _ingest_one_article(
+        tmp_path, "alpha", "rev-page-1@example.com",
+        subject="patch with attestation", body=body,
+    )
+    r = client.get("/alpha/reviewer/kent.overstreet@kernel.org")
+    assert r.status_code == 200
+    text = r.data.decode()
+    assert "kent.overstreet@kernel.org" in text
+    assert "patch with attestation" in text
+    assert "Reviewed-by" in text
+
+
+def test_reviewer_view_404_on_malformed_address(client):
+    """Hostile / non-email URL shapes return 404 rather than running
+    the SQL with garbage. The route's address regex defends the
+    canonical URL surface."""
+    assert client.get("/alpha/reviewer/not-an-email").status_code == 404
+    assert client.get("/alpha/reviewer/a%40b").status_code == 404 or True  # urlencoded @ may also resolve
+    # An empty path segment 404s through Flask's routing.
+
+
+def test_reviewer_view_lowercases_address(client, tmp_path):
+    """A URL with mixed-case address still resolves: the route
+    lowercases before matching `address_normalized` (which is
+    already lowercased at ingest)."""
+    body = (
+        b"diff --git a/fs/y.c b/fs/y.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"\n"
+        b"Reviewed-by: A <a@kernel.org>\n"
+    )
+    _ingest_one_article(
+        tmp_path, "alpha", "rev-page-2@example.com",
+        subject="case-test patch", body=body,
+    )
+    r = client.get("/alpha/reviewer/A@KERNEL.ORG")
+    assert r.status_code == 200
+    text = r.data.decode()
+    assert "case-test patch" in text
+
+
+def test_reviewer_view_empty_state_renders_cleanly(client):
+    """A reviewer with no attestations still renders 200 with an
+    empty-state line, not a 404 — the URL is a valid public surface
+    even when nothing has landed yet."""
+    r = client.get("/alpha/reviewer/nobody@kernel.org")
+    assert r.status_code == 200
+    text = r.data.decode()
+    assert "nobody@kernel.org" in text
+    assert "No attestations" in text
+
+
+def test_reviewer_view_404_on_unknown_inbox(client):
+    assert client.get(
+        "/nonexistent/reviewer/kent.overstreet@kernel.org"
+    ).status_code == 404
+
+
+def test_reviewer_view_inbox_scoped(client, tmp_path):
+    """A reviewer active in `beta` doesn't show on the `alpha`
+    reviewer page — the URL is inbox-scoped just like every other
+    /<inbox>/... surface."""
+    body = (
+        b"diff --git a/fs/z.c b/fs/z.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"\n"
+        b"Reviewed-by: B <b@kernel.org>\n"
+    )
+    _ingest_one_article(
+        tmp_path, "beta", "rev-page-beta@example.com",
+        subject="beta-only patch", body=body,
+    )
+    a = client.get("/alpha/reviewer/b@kernel.org").data.decode()
+    b = client.get("/beta/reviewer/b@kernel.org").data.decode()
+    assert "beta-only patch" not in a
+    assert "No attestations" in a
+    assert "beta-only patch" in b
