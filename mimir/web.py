@@ -268,15 +268,28 @@ def _site_base() -> str:
     not in the trusted set), we still upgrade the scheme. Otherwise
     canonical / og:url / og:image / JSON-LD URLs split between http and
     https on the same page when only one of those signals is wired.
+
+    Memoised on `flask.g` so a message-page render calling this from
+    the context processor, the route body, and the JSON-LD helpers
+    doesn't repeat the settings / header lookups per call. Bypasses
+    memoisation when no request context (CLI render-path tests, etc.).
     """
+    from flask import has_request_context
+    if has_request_context():
+        cached: str | None = getattr(g, "_mimir_site_base", None)
+        if cached is not None:
+            return cached
     if settings.site_base_url:
-        return settings.site_base_url.rstrip("/")
-    base = request.url_root.rstrip("/")
-    if (
-        request.headers.get("X-Forwarded-Proto") == "https"
-        and base.startswith("http://")
-    ):
-        base = "https://" + base[len("http://"):]
+        base = settings.site_base_url.rstrip("/")
+    else:
+        base = request.url_root.rstrip("/")
+        if (
+            request.headers.get("X-Forwarded-Proto") == "https"
+            and base.startswith("http://")
+        ):
+            base = "https://" + base[len("http://"):]
+    if has_request_context():
+        g._mimir_site_base = base
     return base
 
 
