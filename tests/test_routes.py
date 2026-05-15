@@ -2903,7 +2903,7 @@ def test_message_json_ld_text_truncated_at_word_boundary(client, tmp_path):
     structured-data blob stays lean across the crawl. Truncation
     falls on the last whitespace inside the cap and adds an
     ellipsis."""
-    from mimir.web import JSON_LD_TEXT_MAX
+    from mimir.seo import JSON_LD_TEXT_MAX
     # 4× the cap, all real words so collapsing whitespace doesn't
     # shrink it under the limit.
     body = (b"alpha bravo " * (JSON_LD_TEXT_MAX // 6))

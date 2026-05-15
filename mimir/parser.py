@@ -1,3 +1,4 @@
+import logging
 import re
 from datetime import datetime
 from email import policy
@@ -7,6 +8,8 @@ from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
 
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 # Keep only the headers we actually use for display, threading, and triage.
@@ -154,7 +157,16 @@ _CFWS_COMMENT_RE = re.compile(r"\([^)]*\)")
 
 
 def _decode_rfc2047(value: str | None) -> str | None:
-    """Decode RFC 2047 encoded-words. Safe on plain ASCII strings (returns as-is)."""
+    """Decode RFC 2047 encoded-words. Safe on plain ASCII strings (returns as-is).
+
+    Tight exception surface: `LookupError` for unknown charsets,
+    `UnicodeError` for byte sequences that can't decode under
+    `errors="replace"` (rare; `replace` covers most), and
+    `email.errors.HeaderParseError` for malformed encoded-word
+    structure. We log + fall back to the verbatim value so
+    upstream sees the un-decoded header rather than a crash.
+    Anything outside that tuple is a real bug and should propagate.
+    """
     if value is None:
         return None
     try:
@@ -165,7 +177,11 @@ def _decode_rfc2047(value: str | None) -> str | None:
             else:
                 chunks.append(chunk)
         return "".join(chunks)
-    except Exception:
+    except (LookupError, UnicodeError) as exc:
+        logger.warning(
+            "_decode_rfc2047: falling back to verbatim on %r: %r",
+            value, exc,
+        )
         return value
 
 
@@ -229,6 +245,12 @@ def parse_message(raw: bytes) -> ParsedArticle:
 
     attachments: list[ParsedAttachment] = []
     for part in msg.iter_attachments():
+        # Tight exception surface around the attachment build:
+        # LookupError on unknown charset / transfer-encoding,
+        # UnicodeError on undecodable bytes, ValueError on pydantic
+        # validation failure (e.g. surrogate that survived scrubbing).
+        # Log so a regression doesn't silently drop attachments;
+        # anything else propagates so a real parser bug surfaces.
         try:
             attachments.append(
                 ParsedAttachment(
@@ -237,7 +259,11 @@ def parse_message(raw: bytes) -> ParsedArticle:
                     content=_attachment_bytes(part),
                 )
             )
-        except Exception:
+        except (LookupError, UnicodeError, ValueError) as exc:
+            logger.warning(
+                "parse_message: dropping attachment %r (content-type %r): %r",
+                part.get_filename(), part.get_content_type(), exc,
+            )
             continue
 
     date: datetime | None = None
