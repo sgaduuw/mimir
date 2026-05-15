@@ -46,8 +46,10 @@ from mimir.parser import ParsedArticle
 from mimir.rendering import URL_OR_MSGID_RE, redact_trailer_addresses, render_body
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import (
+    REVIEWS_PER_PAGE_LIMIT,
     active_reviewers_in_subsystem,
     active_threads_in_subsystem,
+    articles_reviewed_by,
     daily_volume_in_subsystem,
     recent_articles_in_subsystem,
     recent_patches_touching,
@@ -124,6 +126,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.month_archive": "public, max-age=600",
     "web.search": "public, max-age=300",
     "web.author_view": "public, max-age=300",
+    "web.reviewer_view": "public, max-age=600",
     "web.inbox_feed": "public, max-age=300",
     "web.author_feed": "public, max-age=300",
     "web.robots": "public, max-age=86400",
@@ -487,6 +490,25 @@ def _display_name_filter(author: str | None) -> str:
     if name:
         return name
     return "unknown sender"
+
+
+@bp_web.app_template_filter("is_allowlisted_address")
+def _is_allowlisted_address_filter(address: str | None) -> bool:
+    """True iff `address` matches any token in `Settings.email_allowlist`.
+
+    Used by templates to decide whether to render a clickable
+    reviewer link. The reviewer page itself (`/<inbox>/reviewer/<addr>`)
+    accepts any address, but mimir only generates outbound links for
+    allowlisted addresses — this keeps non-public addresses out of
+    URL bars / browser history / scraper paths reached via mimir's
+    own navigation, matching the redaction posture of `safe_from`.
+    """
+    if not address:
+        return False
+    addr_lower = address.lower()
+    return any(
+        token.lower() in addr_lower for token in settings.email_allowlist
+    )
 
 
 def _redact_trailer_address(email: str) -> str:
@@ -1628,6 +1650,59 @@ def author_view(inbox_name: str, sub: str):
         result_cap=AUTHOR_VIEW_LIMIT,
         canonical_url=canonical_url,
         page_json_ld=_json_ld_author(base, inbox.name, sub, canonical_url),
+    )
+
+
+# Conservative pattern for the URL-side address: the same shape the
+# trailer extractor accepts (mimir/trailers.py _TRAILER_NAME_ADDR_RE).
+# Anything outside this falls to 404 — defends against hostile bytes
+# reaching the SQL parameter and keeps the canonical URL well-formed.
+_REVIEWER_ADDR_RE = re.compile(
+    r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+$"
+)
+
+
+@bp_web.route("/<inbox_name>/reviewer/<path:address>")
+def reviewer_view(inbox_name: str, address: str):
+    """Per-reviewer attestation listing: every patch in `inbox_name`
+    where `address` appears on a `Reviewed-by` / `Acked-by` /
+    `Tested-by` / `Reported-by` / `Suggested-by` /
+    `Co-developed-by` / `Reported-and-tested-by` trailer.
+
+    The address from the URL is lowercased to match the
+    `address_normalized` index column. We accept any well-formed
+    address in the URL (the route is a public navigation surface),
+    but outbound links to this surface are only generated from
+    allowlisted addresses (see `_is_allowlisted_address_filter`).
+    Non-allowlisted addresses can be navigated to directly by anyone
+    who already knows them, matching the existing posture that
+    redaction is friction, not a privacy guarantee.
+    """
+    if not _REVIEWER_ADDR_RE.match(address):
+        abort(404)
+    address_normalized = address.lower()
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        entries = articles_reviewed_by(
+            session, inbox, address_normalized,
+            limit=REVIEWS_PER_PAGE_LIMIT,
+        )
+    role_counts: dict[str, int] = {}
+    for e in entries:
+        role_counts[e.role] = role_counts.get(e.role, 0) + 1
+    base = _site_base()
+    canonical_url = f"{base}/{inbox.name}/reviewer/{quote(address_normalized, safe='@')}"
+    return render_template(
+        "reviewer.html",
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
+        address=address_normalized,
+        entries=entries,
+        role_counts=role_counts,
+        total=len(entries),
+        truncated=len(entries) >= REVIEWS_PER_PAGE_LIMIT,
+        result_cap=REVIEWS_PER_PAGE_LIMIT,
+        canonical_url=canonical_url,
     )
 
 
