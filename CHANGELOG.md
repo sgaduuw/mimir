@@ -69,6 +69,12 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   (`mimir._backfill.walk_articles`) now eager-loads
   `Article.canonical_inbox` alongside `Article.lists` so the
   per-row decision doesn't N+1.
+- `most_active_subsystems_global` now propagates `force=True`
+  through to the per-inbox `_most_active_subsystems_in_inbox_full`
+  call inside its `compute()` closure. Previously the outer cache
+  wrap bypassed correctly but the inner per-inbox cache silently
+  read stale rows, so a `warm-cache --force` recomputed the global
+  aggregator off whatever the per-inbox caches happened to hold.
 - `search_articles` cache key now case-folds the query so `Foo`
   and `foo` share one cache row instead of writing distinct
   rows for each casing. SQLite `ilike()` is case-insensitive so
