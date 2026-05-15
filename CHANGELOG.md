@@ -13,6 +13,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Security
 
+- `admin inbox remove --remove-inbox-data`: parent-directory
+  promotion is now gated on the parent's basename equalling the
+  inbox name. Previously, any `mirror_path` ending in a `git/`
+  segment (e.g. an operator-supplied `/some/dir/git`) would have
+  the parent `rm -rf`'d along with the mirror. The audit flagged
+  this as the worst data-loss vector in the codebase. Now only
+  the documented `<root>/<name>/git` layout triggers promotion;
+  every other shape removes the literal `mirror_path` only. The
+  resolved target is logged at WARNING level before deletion.
 - `sync`: enforce wall-clock timeouts on the `manifest.js.gz`
   fetch (60 s) and on `git clone` (30 min) / `git fetch` (10 min),
   plus a 16 MiB cap on the manifest body. A hostile or misbehaving
