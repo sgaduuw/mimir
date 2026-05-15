@@ -165,52 +165,129 @@
 {% endif %}
 
 {% if active_subsystems %}
-{# Front-page subsystem teaser. Cross-inbox: each chip links to
+{# Front-page subsystem teaser. Cross-inbox: each card links to
    the subsystem dashboard on whichever inbox saw the most
    activity for that subsystem in the last 7 days. Surfaces the
    subsystem-level navigation so a curious reader landing on `/`
-   has a path other than "pick an inbox first". #}
-<h2 id="subsystems">Active subsystems <small><em>(last 7 days)</em></small></h2>
-<ul class="subsystem-chips">
+   has a path other than "pick an inbox first".
+
+   Card grid (smaller cards than the inbox grid) to match the
+   visual language above. Display name is lowercased — MAINTAINERS
+   stores names upper-case ASCII which reads as shouty on a
+   browse surface; the URL canonical form is already lowercase. #}
+<h2 id="subsystems" class="active-subsystems-heading">Active subsystems <small><em>(last 7 days)</em></small></h2>
+<div class="subsystem-grid" role="list">
   {% for s in active_subsystems %}
-  <li>
-    <a class="subsystem-chip" href="/{{ s.inbox_name }}/subsystem/{{ s.name|lower|urlencode }}/">
-      <strong>{{ s.name }}</strong>
-      <small>{{ s.inbox_name }} · {{ s.message_count }}</small>
-    </a>
-  </li>
+  <a class="subsystem-card" role="listitem"
+     href="/{{ s.inbox_name }}/subsystem/{{ s.name|lower|urlencode }}/"
+     aria-label="Open {{ s.name|lower }} subsystem dashboard">
+    <div class="subsystem-card-header">
+      <strong class="subsystem-card-name">{{ s.name|lower }}</strong>
+      {# Status badge: only render for non-default values so the
+         common "Maintained" case doesn't put a meaningless pill
+         on every card. The discriminating values (`Supported`,
+         `Odd Fixes`, `Orphan`, `Obsolete`) are what's worth
+         calling attention to. #}
+      {% if s.status and s.status != "Maintained" %}
+      <span class="subsystem-card-status">{{ s.status }}</span>
+      {% endif %}
+    </div>
+    {% if s.maintainer_name %}
+    <small class="subsystem-card-maint">maintained by {{ s.maintainer_name }}{% if s.multiple_maintainers %} et al.{% endif %}</small>
+    {% endif %}
+    <small class="subsystem-card-meta">{{ s.inbox_name }} · {{ s.message_count }} msg{{ '' if s.message_count == 1 else 's' }} · {{ s.last_activity|relative_time }}</small>
+    {% if s.spark and s.spark.days %}
+    {# 7-day daily-volume sparkline scoped to this subsystem on
+       its busiest inbox. Same currentColor + opacity shape as
+       the inbox-card sparkline so the visual language is
+       consistent across the page. #}
+    <svg class="subsystem-card-spark" viewBox="0 0 84 20"
+         preserveAspectRatio="none"
+         aria-label="Daily message volume in {{ s.name|lower }}, last 7 days">
+      {% for day, count in s.spark.days %}
+        {% set h = (count / s.spark.max_count * 18) if s.spark.max_count > 0 else 0 %}
+        <rect x="{{ loop.index0 * 12 }}"
+              y="{{ 19 - h }}"
+              width="11"
+              height="{{ h if h > 0 else 1 }}"
+              fill="currentColor"
+              opacity="0.55">
+          <title>{{ day.strftime('%Y-%m-%d') }}: {{ count }} message{{ '' if count == 1 else 's' }}</title>
+        </rect>
+      {% endfor %}
+    </svg>
+    {% endif %}
+  </a>
   {% endfor %}
-</ul>
+</div>
 <style>
-  /* Same chip shape as the per-inbox dashboard's surface; defined
-     here too so the front page doesn't depend on inbox.html's
-     stylesheet being parsed. */
-  .subsystem-chips {
-    list-style: none;
-    padding: 0;
-    margin: 0 0 1.5rem;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
+  /* Breathing room between the inbox cards above and this new
+     section so the heading doesn't collide with the previous card
+     row. */
+  .active-subsystems-heading { margin-top: 2.5rem; }
+
+  /* Subsystem card grid: matches the inbox-card grid above so
+     the two rows of cards share a visual rhythm (same widths,
+     same padding, same hover affordance). Cards have less per-
+     card info than the inbox cards but they line up vertically,
+     which reads cleaner than the prior denser layout. */
+  .subsystem-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    gap: 1rem;
   }
-  .subsystem-chip {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.4rem;
-    padding: 0.3rem 0.75rem;
-    border-radius: 999px;
+  .subsystem-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 1rem 1.1rem;
     border: 1px solid var(--pico-muted-border-color);
+    border-radius: var(--pico-border-radius);
     background: var(--pico-card-background-color);
     text-decoration: none;
     color: inherit;
-    transition: border-color 0.15s ease, background 0.15s ease;
+    transition: border-color 0.15s ease, transform 0.15s ease;
   }
-  .subsystem-chip:hover,
-  .subsystem-chip:focus-visible {
+  .subsystem-card:hover,
+  .subsystem-card:focus-visible {
     border-color: var(--pico-primary);
+    transform: translateY(-1px);
     text-decoration: none;
   }
-  .subsystem-chip small { color: var(--pico-muted-color); }
+  .subsystem-card-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.1rem;
+  }
+  .subsystem-card-name {
+    color: var(--pico-primary);
+    font-weight: 700;
+    font-size: 1.05rem;
+    overflow-wrap: anywhere;
+  }
+  .subsystem-card-status {
+    /* Status pill, same shape as the inbox-card-pinned badge.
+       Only renders for non-default S: values (see template). */
+    font-size: 0.75rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    background: var(--pico-muted-background-color);
+    color: var(--pico-muted-color);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .subsystem-card-maint { color: var(--pico-color); }
+  .subsystem-card-meta { color: var(--pico-muted-color); }
+  .subsystem-card-spark {
+    /* 7-day sparkline; same height and spacing as the inbox-
+       card sparkline so the two rows share a vertical rhythm. */
+    display: block;
+    width: 100%;
+    height: 24px;
+    margin-top: 0.4rem;
+  }
 </style>
 {% endif %}
 
