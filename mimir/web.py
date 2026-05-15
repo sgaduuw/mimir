@@ -45,7 +45,8 @@ from mimir.models import (
 from mimir.parser import ParsedArticle
 from mimir.rendering import URL_OR_MSGID_RE, redact_trailer_addresses, render_body
 from mimir.store import MessageNotFound, read_message
-from mimir.subsystems import (
+from mimir.subsystems import recent_patches_touching, subsystems_for_article
+from mimir.subsystems_dashboard import (
     REVIEWS_PER_PAGE_LIMIT,
     active_reviewers_in_subsystem,
     active_threads_in_subsystem,
@@ -54,8 +55,6 @@ from mimir.subsystems import (
     most_active_subsystems_global,
     most_active_subsystems_in_inbox,
     recent_articles_in_subsystem,
-    recent_patches_touching,
-    subsystems_for_article,
 )
 from mimir.threading import (
     THREADS_SINCE_MAX_DAYS,
