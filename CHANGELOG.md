@@ -11,6 +11,17 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- `mimir.parser`: `In-Reply-To` headers carrying multiple
+  msg-ids (broken senders sometimes emit `<a@x> <b@y>`) now
+  resolve to the first msg-id rather than being stored as the
+  literal `a@x> <b@y` string that never joined to any real
+  Message-ID. `References:` and `In-Reply-To:` both also strip
+  RFC 5322 CFWS comments `(...)` before splitting, so
+  `<a@x> (comment) <b@x>` extracts `["a@x", "b@x"]` instead of
+  surfacing the comment text as a junk reference.
+
 ## [1.21.0] – 2026-05-15
 
 Per-subsystem dashboard latency pass. A real-world cold load on
