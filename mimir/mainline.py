@@ -3,7 +3,7 @@
 Walks Linus's `linux.git` (or any other tree pointed at by the
 operator) and indexes every `Link: https://lore.kernel.org/.../<msgid>`
 trailer it finds. The resulting `mainline_commits` rows let the
-patch page render "Applied as `<sha>` on <date>" — the user-visible
+patch page render "Applied as `<sha>` on <date>", the user-visible
 signal that closes the lore-archive → mainline-tree loop.
 
 Pure-ish: `extract_message_ids` is a plain function over commit-
@@ -59,7 +59,7 @@ def extract_message_ids(commit_message: bytes) -> list[str]:
     an Upstream: line that's itself a Link). Without dedup those
     duplicates land as parallel insert rows and trip the UNIQUE
     `(commit_sha, message_id)` constraint, aborting the whole
-    batch — observed against linux.git commit 9e8e8912b05f."""
+    batch, observed against linux.git commit 9e8e8912b05f."""
     text = commit_message.decode("utf-8", errors="surrogateescape")
     seen: set[str] = set()
     out: list[str] = []
@@ -83,7 +83,7 @@ class WalkResult(BaseModel):
 
 
 # Page size for batched commits. Each batch commits to SQLite and
-# resumes — a Ctrl-C mid-walk loses at most this many commits of
+# resumes, a Ctrl-C mid-walk loses at most this many commits of
 # progress but no DB corruption.
 _BATCH = 500
 
@@ -120,7 +120,7 @@ def walk_commits(
             exclude = [since.encode()]
         except KeyError:
             # Cursor points at a SHA that no longer exists in the
-            # repo (force-push, history rewrite — shouldn't happen
+            # repo (force-push, history rewrite, shouldn't happen
             # on Linus's tree, but be defensive). Re-walk from
             # scratch rather than crash.
             logger.warning(

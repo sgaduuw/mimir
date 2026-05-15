@@ -1,10 +1,10 @@
 /* Vim-style keyboard navigation controller.
  *
  * Bindings:
- *   h     left / back out — navigates to <html data-nav-up>'s URL
+ *   h     left / back out, navigates to <html data-nav-up>'s URL
  *   j     down / next message in the current thread (message page only)
  *   k     up / previous message in the current thread (message page only)
- *   l     right / drill in — navigates to <html data-nav-down>'s URL
+ *   l     right / drill in, navigates to <html data-nav-down>'s URL
  *   Esc   close help / close thread-fold
  *   ?     toggle help overlay
  *
@@ -59,7 +59,7 @@
 
   function focusedThreadItem() {
     // The active thread-list <li> is the source of truth for "current
-    // position" on the message page — thread-fold.js keeps it in sync
+    // position" on the message page, thread-fold.js keeps it in sync
     // with the rendered #msg via htmx:afterSwap.
     return document.querySelector(".thread-list li.is-active");
   }

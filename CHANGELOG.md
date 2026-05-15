@@ -5,7 +5,7 @@ All notable user-facing changes to mimir.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Entries describe behaviour, schema, config, and CLI/route shape changes —
+Entries describe behaviour, schema, config, and CLI/route shape changes  
 not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 **Removed**, **Fixed**, **Security**.
 
@@ -91,7 +91,7 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   defensive clamp is the right shape for the silent-bug surface
   the audit flagged.
 
-## [1.21.0] – 2026-05-15
+## [1.21.0], 2026-05-15
 
 Per-subsystem dashboard latency pass. A real-world cold load on
 `/linux-devicetree/subsystem/open firmware and flattened device
@@ -144,7 +144,7 @@ that hour get the cached payload.
   recursive CTE and trailer scans don't need to refresh every
   five minutes for a surface readers visit, not watch.
 
-## [1.20.0] – 2026-05-15
+## [1.20.0], 2026-05-15
 
 A focused warm-cache pass. The 1.19.3 hotfix dropped the heavy
 subsystem aggregator from three cache keys to one per inbox, but
@@ -194,7 +194,7 @@ inboxes are added.
   `contextvars.copy_context()`. Per-key `-v` lines may
   interleave; the summary line is unchanged.
 
-## [1.19.3] – 2026-05-15
+## [1.19.3], 2026-05-15
 
 Third PATCH on top of 1.19.0. The 1.19.1 and 1.19.2 hotfixes
 eliminated the two fan-out shapes inside one
@@ -217,7 +217,7 @@ identical bulk-SQL + inverted-index walks per inbox per tick.
   target, cutting the heavy subsystem work to a third of the
   previous tick.
 
-## [1.19.2] – 2026-05-15
+## [1.19.2], 2026-05-15
 
 Second PATCH on top of 1.19.0. The 1.19.1 hotfix addressed the
 per-subsystem COUNT fan-out but left a second fan-out in place:
@@ -239,7 +239,7 @@ Cold call exceeded the worker timeout again.
   span (today + 6 prior days) so the inline spark buckets line
   up with what `daily_volume_in_subsystem` would have queried.
 
-## [1.19.1] – 2026-05-15
+## [1.19.1], 2026-05-15
 
 PATCH on top of 1.19.0 fixing a fan-out blowup in the front-
 page and per-inbox subsystem surfaces. The 1.19.0 deploy
@@ -266,7 +266,7 @@ cold path on every request immediately after deploy.
   shape is unchanged (`list[SubsystemActivity]`); no schema or
   namespace bump.
 
-## [1.19.0] – 2026-05-15
+## [1.19.0], 2026-05-15
 
 MINOR release. UX-focused pass: the front page and per-inbox
 dashboards trade flat lists for a card-shaped layout, the per-
@@ -343,7 +343,7 @@ required.
   the new namespace transparently; warm-cache re-populates on
   the next 5-minute cron tick.
 
-## [1.18.0] – 2026-05-15
+## [1.18.0], 2026-05-15
 
 MINOR release. Three slices of #97 (review-attestation trailer
 indexing, per-subsystem active-reviewers section, per-reviewer
@@ -443,7 +443,7 @@ once `update-mainline` has populated `subsystem_maintainers`
   at the root, no inbox scoping). Deferred until there's
   demand.
 
-## [1.17.0] – 2026-05-15
+## [1.17.0], 2026-05-15
 
 MINOR release. Two feature batches: per-subsystem dashboards
 (#72) and message-page reader UX (#68). No schema changes;
@@ -496,7 +496,7 @@ ships as HTML/JS/CSS additions plus two new helpers in
   active-marker scaffolding stay put; the rail's inner box caps
   to viewport height and scrolls inside its own bounds.
 
-## [1.16.0] – 2026-05-14
+## [1.16.0], 2026-05-14
 
 MINOR release adding vim-style keyboard navigation. Single-feature
 release on top of the 1.15.x patch chain.
@@ -517,7 +517,7 @@ release on top of the 1.15.x patch chain.
   click; rendered on every page so the binding is universally
   available.
 
-## [1.15.4] – 2026-05-14
+## [1.15.4], 2026-05-14
 
 PATCH on top of 1.15.3 fixing an HTMX-versus-cache collision on
 the message endpoint. The endpoint returns one of two responses
@@ -544,7 +544,7 @@ visible failure modes were observed on the production deploy:
   shape can't be served to either request type. Other endpoints
   don't vary by `HX-Request` and don't carry the header.
 
-## [1.15.3] – 2026-05-14
+## [1.15.3], 2026-05-14
 
 PATCH on top of 1.15.2 fixing a second mainline-walker crash
 hit on the production `update-mainline` run. The 1.15.1 fix
@@ -573,7 +573,7 @@ root cause is in the walker, not the trailer parser.
   exercises the rewalk-over-populated-table path so a regression
   would surface in CI.
 
-## [1.15.2] – 2026-05-14
+## [1.15.2], 2026-05-14
 
 PATCH on top of 1.15.1 declaring `/data/Mainline` as a canonical
 state subdir in the Dockerfile. No code or schema change; the
@@ -594,7 +594,7 @@ makes the image self-consistent for fresh deploys where the
   parent path, but the image is now self-consistent without
   relying on that side effect.
 
-## [1.15.1] – 2026-05-14
+## [1.15.1], 2026-05-14
 
 PATCH on top of 1.15.0 fixing a mainline-walker crash hit on the
 first production `update-mainline` run against linux.git. No
@@ -616,7 +616,7 @@ multiple `Link:` URL forms.
   resumes from the cursor it had reached before the crash and
   continues cleanly.
 
-## [1.15.0] – 2026-05-14
+## [1.15.0], 2026-05-14
 
 MINOR release with five Tier-1 feature additions, three of them
 mimir-specific differentiators against lore.kernel.org:
@@ -689,7 +689,7 @@ date-range "what I missed" view.
   via a new `threads_since` helper. Cached 10 minutes per
   `(inbox, since)`.
 
-## [1.14.1] – 2026-05-14
+## [1.14.1], 2026-05-14
 
 PATCH on top of 1.14.0 surfacing successful IndexNow pushes in
 default scheduler output. UX-only; no schema, no config, no wire
@@ -706,7 +706,7 @@ contract change.
   `-v` to answer. The per-chunk INFO log inside `notify` stays
   put for operators who want the full status detail.
 
-## [1.14.0] – 2026-05-14
+## [1.14.0], 2026-05-14
 
 MINOR release adding off-by-default IndexNow push-notification
 support. The `update` scheduler tick now notifies Bing/Yandex/
@@ -733,7 +733,7 @@ won't accelerate Google discovery (separate JSON-LD fixes in 1.13
   best-effort: failures log and never break the ingest tick.
   Operator setup: see "IndexNow" section in README.
 
-## [1.13.4] – 2026-05-14
+## [1.13.4], 2026-05-14
 
 PATCH on top of 1.13.3 fixing two `DiscussionForumPosting`
 structured-data findings Google Search Console flagged against
@@ -759,7 +759,7 @@ snippet and an `author.url`.
   structured data even though they're redacted on the rendered
   page.
 
-## [1.13.3] – 2026-05-13
+## [1.13.3], 2026-05-13
 
 Dev/CI-only PATCH on top of 1.13.2. No user-visible behaviour
 change; the runtime artifact is byte-identical apart from the
@@ -784,14 +784,14 @@ Node.js 20 deprecation deadline.
   picklability), `KEPT_HEADERS` filter assertion, surrogate-
   escape range path, `replay_failures` cross-post branch,
   `_INBOX_NAMES` republish after CRUD, URL 4-tuple identity
-  (`/<inbox>/<YYYY>/<MM>/<id>` 404s on mismatch — never 301),
+  (`/<inbox>/<YYYY>/<MM>/<id>` 404s on mismatch, never 301),
   recursive-CTE cycle termination (replaces a tautology),
   out-of-order thread arrival, `init-db` end-to-end,
   `admin failures replay` happy path, pickle-pivot regression
   marker. Five LOW polish items reshaped in place so a regression
   would actually trip them.
 
-## [1.13.2] – 2026-05-13
+## [1.13.2], 2026-05-13
 
 Security PATCH addressing a stored XSS in DCO-trailer rendering
 surfaced by a test-suite audit, plus a defense-in-depth strip of
@@ -824,7 +824,7 @@ deployable as a drop-in replacement on 1.13.x.
   7230 header-line splitting) had the WSGI layer not already
   rejected the bytes. Defense in depth at the application layer.
 
-## [1.13.1] – 2026-05-13
+## [1.13.1], 2026-05-13
 
 Polish PATCH on top of 1.13.0, addressing the four nits the
 2026-05-13 launch-approval review flagged on the search and
@@ -834,7 +834,7 @@ author pages. No behavior changes; pure SEO / a11y / consistency.
 
 - `SearchResultsPage` JSON-LD on `/<inbox>/search` when the route is
   rendering actual results (skipped on no-query / too-short / zero-
-  results forms — those are bare search boxes, not results pages).
+  results forms, those are bare search boxes, not results pages).
   `url` mirrors the `<link rel="canonical">` (bare `/<inbox>/search`,
   no query string), keeping individual `?q=` URLs out of the index
   while still giving crawlers a structured-data signal that this
@@ -848,7 +848,7 @@ author pages. No behavior changes; pure SEO / a11y / consistency.
 
 ### Changed
 
-- `<h2>` on the search and author pages promoted to `<h1>` — both
+- `<h2>` on the search and author pages promoted to `<h1>`, both
   are top-level pages and accessibility / SEO consumers expect a
   single top-level heading per page. The page `<title>` is
   captured separately in `base.html` so this is purely a
@@ -861,9 +861,9 @@ author pages. No behavior changes; pure SEO / a11y / consistency.
   `urlencode` filter used by the `<link rel="alternate"
   type="application/atom+xml">` for the author-feed. Pre-fix, a
   query like `torvalds@` rendered the canonical with raw `@` and
-  the atom link with `%40` — same target, two encodings.
+  the atom link with `%40`, same target, two encodings.
 
-## [1.13.0] – 2026-05-12
+## [1.13.0], 2026-05-12
 
 Driven by the 2026-05-12 production-page re-review. User-visible
 branding on the front page and link-card previews, plus a sweep of
@@ -919,7 +919,7 @@ review and a few adjacent items the bundles surfaced.
   Both surfaces now consistently render the display name.
 - Atom feed `<author><name>` now uses display-name only, matching
   JSON-LD's `author.name`. Previously a redacted sender's byline
-  rendered as `David Woodhouse <hidden>` in feed readers — same
+  rendered as `David Woodhouse <hidden>` in feed readers, same
   broken-metadata shape the JSON-LD fix already cleaned up.
 - `_site_base()` now upgrades the URL scheme to `https` whenever
   `X-Forwarded-Proto: https` is on the request, even if `ProxyFix`
@@ -934,7 +934,7 @@ review and a few adjacent items the bundles surfaced.
   re-fetching the JS controller; with the homepage hero image
   landing in the same release, the cost would have scaled by the
   size of any new static asset. The routed Cache-Control entries
-  (favicon, og-image, sitemap, etc.) are unaffected — they're
+  (favicon, og-image, sitemap, etc.) are unaffected, they're
   applied by the `bp_web` after-request hook, which doesn't see
   `/static/*` traffic. 1-day TTL trades a small bandwidth saving
   for fast deploy-cycle propagation: a JS bug fix lands within 24
@@ -944,7 +944,7 @@ review and a few adjacent items the bundles surfaced.
   in view-source on every non-message page (the `html_data_attrs`
   block was always empty there). Cosmetic.
 
-## [1.12.3] – 2026-05-11
+## [1.12.3], 2026-05-11
 
 ### Fixed
 
@@ -960,7 +960,7 @@ review and a few adjacent items the bundles surfaced.
   connected unit. The "tree flows inline" was the original intent
   but the half-bordered look made it feel broken.
 
-## [1.12.2] – 2026-05-11
+## [1.12.2], 2026-05-11
 
 ### Fixed
 
@@ -975,7 +975,7 @@ review and a few adjacent items the bundles surfaced.
   rides on `<html>` via Jinja blocks, so the FOUC-free synchronous
   script in `<head>` still has everything it needs without inlining.
 
-## [1.12.1] – 2026-05-11
+## [1.12.1], 2026-05-11
 
 ### Fixed
 
@@ -990,7 +990,7 @@ review and a few adjacent items the bundles surfaced.
   anywhere on the toolbar (not just the summary text) opens the
   tree to `partial`.
 
-## [1.12.0] – 2026-05-11
+## [1.12.0], 2026-05-11
 
 ### Changed
 
@@ -1015,14 +1015,14 @@ review and a few adjacent items the bundles surfaced.
 - HTMX-driven intra-thread navigation. Clicking a sibling/reply in
   the thread tree fires `hx-get` against the message URL with
   `HX-Request: true`, the server returns just the `<article id="msg">`
-  partial, and the client swaps it in place — leaving the tree,
+  partial, and the client swaps it in place, leaving the tree,
   navigation, and scroll position intact. The active marker in the
   tree follows the new message via class-toggling on
   `htmx:afterSwap`; the URL updates via `hx-push-url` so back/forward
   and share-the-URL still work. Falls back to a full page load when
   JS is off.
 
-## [1.11.0] – 2026-05-11
+## [1.11.0], 2026-05-11
 
 ### Added
 
@@ -1040,14 +1040,14 @@ review and a few adjacent items the bundles surfaced.
   hour no longer pays the cold compute on the chunky per-inbox
   sitemap. Skipped silently when `SITE_BASE_URL` is unset (the
   helper has no `request.url_root` to fall back on from the CLI).
-- `warm-cache` also refreshes the atom-feed data sources —
+- `warm-cache` also refreshes the atom-feed data sources  
   `recent_articles(limit=50)` per inbox (drives
   `/<inbox>/feed.atom`) and `author_recent(..., limit=50)` per
   tracked author (drives `/<inbox>/author/<sub>/feed.atom`).
   Different cache keys from the dashboard's `limit=5/10` flavours,
   so feed polls had been paying the cold compute first-per-hour.
 
-## [1.10.0] – 2026-05-11
+## [1.10.0], 2026-05-11
 
 ### Changed
 
@@ -1058,19 +1058,19 @@ review and a few adjacent items the bundles surfaced.
   `<lastmod>`. Each per-inbox sitemap (`/<inbox>/sitemap.xml`) lists
   the dashboard, year and month archives that actually have data,
   and the inbox's 5000 most-recent article URLs. Cross-posted
-  articles appear in each linked inbox's sitemap — the canonical
+  articles appear in each linked inbox's sitemap, the canonical
   `<link>` on the page itself remains the deduplication signal.
 
 ### Added
 
-- `/meta-sitemap.xml` — one-URL sub-sitemap covering `/`. Lives
+- `/meta-sitemap.xml`, one-URL sub-sitemap covering `/`. Lives
   behind the sitemap index so the index can stay pure
   `<sitemapindex>` per the sitemaps.org schema.
-- `/<inbox>/sitemap.xml` — per-inbox sub-sitemap. Cached per inbox,
+- `/<inbox>/sitemap.xml`, per-inbox sub-sitemap. Cached per inbox,
   so an ingest into one inbox doesn't invalidate cached sitemaps
   for the others.
 
-## [1.9.0] – 2026-05-11
+## [1.9.0], 2026-05-11
 
 ### Added
 
@@ -1089,7 +1089,7 @@ review and a few adjacent items the bundles surfaced.
   dashboard (previously only message pages carried one). All routes
   now emit one via a fallback computed in a context processor.
 - `<link rel="icon" type="image/svg+xml">` pointing at a new
-  `/favicon.svg` route — squirrel-adjacent placeholder until a
+  `/favicon.svg` route, squirrel-adjacent placeholder until a
   proper logo lands. Stops browsers from 404'ing on every page load.
 - `<meta name="theme-color">` matching Pico's amber accent
   (`#ffc107`) so mobile browser chrome picks up the brand colour.
@@ -1102,11 +1102,11 @@ review and a few adjacent items the bundles surfaced.
   `DiscussionForum` + `ItemList` JSON-LD on `/<inbox>/` (most-
   active threads as list items). Tells search engines these are
   topical hubs rather than flat link lists.
-- `display_name` Jinja filter — display-name-only From line, no
+- `display_name` Jinja filter, display-name-only From line, no
   `<hidden>` placeholder. Used in `<meta name="description">`
   on message pages so search snippets and link cards don't carry
   the redaction placeholder as literal text.
-- `clean_subject` Jinja filter — collapses RFC 5322 header-folding
+- `clean_subject` Jinja filter, collapses RFC 5322 header-folding
   whitespace (`\n  ` continuation lines) into a single space.
   Applied at every subject render site; raw value stays untouched
   in the DB.
@@ -1136,12 +1136,12 @@ review and a few adjacent items the bundles surfaced.
   `Tested-by:`, `Acked-by:`, `Co-developed-by:`, `Reported-by:`,
   `Suggested-by:`, `Cc:`, `To:`, `From:`) no longer route through
   the message-ID linkifier, which had been smearing redacted email
-  addresses on these lines as `[off-list ref]` — confusingly close
+  addresses on these lines as `[off-list ref]`, confusingly close
   to broken metadata for DCO chain verification. Allowlisted
   senders surface verbatim; everyone else is replaced with the
   explicit `<redacted>` placeholder.
 
-## [1.8.1] – 2026-05-09
+## [1.8.1], 2026-05-09
 
 ### Changed
 
@@ -1152,7 +1152,7 @@ review and a few adjacent items the bundles surfaced.
   constraint patch/minor updates: markupsafe `2`→`3`, click,
   jinja2, pydantic{,-core,-settings}, urllib3, python-dotenv.
 
-## [1.8.0] – 2026-05-08
+## [1.8.0], 2026-05-08
 
 ### Changed
 
@@ -1169,7 +1169,7 @@ review and a few adjacent items the bundles surfaced.
   or run `podman exec mimir-tasks flask --app mimir warm-cache
   -v` for a one-shot without restarting.
 
-## [1.7.2] – 2026-05-08
+## [1.7.2], 2026-05-08
 
 ### Fixed
 
@@ -1181,7 +1181,7 @@ review and a few adjacent items the bundles surfaced.
   subdomains (`vger.kernel.org`, `lists.linux.dev`); those entries
   are unchanged.
 
-## [1.7.1] – 2026-05-08
+## [1.7.1], 2026-05-08
 
 ### Fixed
 
@@ -1190,7 +1190,7 @@ review and a few adjacent items the bundles surfaced.
   overflow clip. Default top placement was clipped by the box's
   top edge on the first-row trigger, making the hint unreadable.
 
-## [1.7.0] – 2026-05-08
+## [1.7.0], 2026-05-08
 
 ### Added
 
@@ -1201,7 +1201,7 @@ review and a few adjacent items the bundles surfaced.
   parent; the line stays compact, the address only appears on
   hover/focus.
 
-## [1.6.1] – 2026-05-08
+## [1.6.1], 2026-05-08
 
 ### Added
 
@@ -1221,7 +1221,7 @@ review and a few adjacent items the bundles surfaced.
   emitted by code paths that ran before alembic (typically: any
   caller that imported `mimir` first) actually surface.
 
-## [1.6.0] – 2026-05-07
+## [1.6.0], 2026-05-07
 
 ### Added
 
@@ -1243,7 +1243,7 @@ review and a few adjacent items the bundles surfaced.
   (or whatever substrings they previously had); the env var is
   silently ignored after this release.
 
-## [1.5.1] – 2026-05-07
+## [1.5.1], 2026-05-07
 
 ### Changed
 
@@ -1255,11 +1255,11 @@ review and a few adjacent items the bundles surfaced.
   with more than 12 messages get a pure-CSS expand/collapse
   toggle in the heading to drop the height cap when needed.
 
-## [1.5.0] – 2026-05-07
+## [1.5.0], 2026-05-07
 
 ### Added
 
-- Per-page `<meta name="description">` summarising the page —
+- Per-page `<meta name="description">` summarising the page  
   inbox dashboards report message count + date range, message
   pages synthesise "Message from <author> on <date> in <inbox>:
   <subject>", search results carry the query, archive/author
@@ -1307,7 +1307,7 @@ review and a few adjacent items the bundles surfaced.
   recheck schedules without affecting cached output (existing 1h
   TTL still applies).
 
-## [1.4.1] – 2026-05-07
+## [1.4.1], 2026-05-07
 
 ### Fixed
 
@@ -1317,25 +1317,25 @@ review and a few adjacent items the bundles surfaced.
   used `max(prev_ts, parsed.date)` and raised `TypeError: can't
   compare offset-naive and offset-aware datetimes` the moment a
   `-0000` message landed in the same batch as a tz-aware one,
-  rolling back the entire batch — which is why a fresh lkml ingest
+  rolling back the entire batch, which is why a fresh lkml ingest
   walked all 20 epochs but persisted only 26 articles. Now
   normalised to aware UTC at the entry point, in both `ingest_epoch`
   and `backfill_canonicals`.
 
-## [1.4.0] – 2026-05-06
+## [1.4.0], 2026-05-06
 
 ### Changed
 
 - **Schema migration ownership moves entirely to the scheduler
   sidecar.** The web container's `CMD` no longer runs
-  `alembic upgrade head` — only `mimir-tasks` does, before its
+  `alembic upgrade head`, only `mimir-tasks` does, before its
   loop starts. Single source of DDL truth, no race between two
   parallel `alembic upgrade head` invocations on cold start. The
   example `compose.yaml` now flips `depends_on` so `mimir-web`
   waits on `mimir-tasks` with `condition: service_healthy`; the
   sidecar reports healthy after touching `/data/.migrated`, so a
   fresh volume bootstraps cleanly without gunicorn ever serving
-  against an unmigrated DB. systemd deployments are unaffected —
+  against an unmigrated DB. systemd deployments are unaffected  
   `mimir.service` still has its own `ExecStartPre=alembic`.
 
 ### Added
@@ -1346,7 +1346,7 @@ review and a few adjacent items the bundles surfaced.
   - Message pages emit `<link rel="canonical" href="...">` pointing
     at the canonical inbox's URL (`/<canonical-inbox>/YYYY/MM/<id>`).
     Falls back to the alphabetically-first linked inbox when
-    `canonical_inbox_id` is NULL — stable across renders so the SEO
+    `canonical_inbox_id` is NULL, stable across renders so the SEO
     signal doesn't flicker.
   - `/sitemap.xml` now emits one `<url>` per article (the canonical
     URL) instead of per-inbox-recent-N. Walk is global, ordered by
@@ -1384,7 +1384,7 @@ review and a few adjacent items the bundles surfaced.
   linaro,linux.it,debian}.org, lists.linux.dev, alsa-project.org,
   nongnu.org, ffmpeg.org, redhat.com, kernel.org).
 
-## [1.3.0] – 2026-05-06
+## [1.3.0], 2026-05-06
 
 ### Added
 
@@ -1400,10 +1400,10 @@ review and a few adjacent items the bundles surfaced.
   released versions actually publish images. Previously `:1.0.0`,
   `:1.1.0`, `:1.1.1`, and `:1.2.0` never reached
   `ghcr.io/sgaduuw/mimir`, and `:latest` (gated on tag pushes) never
-  moved — the registry only carried `:main` and `:sha-*` from main
+  moved, the registry only carried `:main` and `:sha-*` from main
   pushes.
 
-## [1.2.0] – 2026-05-06
+## [1.2.0], 2026-05-06
 
 ### Added
 
@@ -1412,19 +1412,19 @@ review and a few adjacent items the bundles surfaced.
   rest following alphabetically. Comma-separated as an env var. Set
   to empty for pure alphabetical.
 
-## [1.1.1] – 2026-05-06
+## [1.1.1], 2026-05-06
 
 ### Added
 
 - `TRUSTED_PROXY_HOPS` setting (default `0`). When `> 0`, mimir wraps
   its WSGI app in Werkzeug's `ProxyFix` so `request.remote_addr`,
   `.scheme`, and `.host` reflect the real client through that many
-  trusted reverse-proxy hops — fixing the access log showing the
+  trusted reverse-proxy hops, fixing the access log showing the
   proxy's address instead of the client's. Off by default because
   enabling it on a directly-exposed app would let anyone spoof those
   values via a forged `X-Forwarded-For`. `compose.yaml` ships
   `TRUSTED_PROXY_HOPS=1` (replacing the earlier `FORWARDED_ALLOW_IPS`,
-  which only handled scheme detection — gunicorn doesn't rewrite
+  which only handled scheme detection, gunicorn doesn't rewrite
   `REMOTE_ADDR` on its own). systemd deployments are unaffected; set
   the env var if you stack a reverse proxy in front.
 
@@ -1433,11 +1433,11 @@ review and a few adjacent items the bundles surfaced.
 - Structured access log now records the actual `User-Agent` header.
   Previously every request logged `"ua": null` because the code
   guarded on `request.user_agent`, whose `__bool__` depends on
-  Werkzeug's UA parser recognising a known browser — non-browser
+  Werkzeug's UA parser recognising a known browser, non-browser
   values like `curl/8.20.0` (and, in this Werkzeug, even Firefox)
   evaluated falsy. Now reads the raw header directly.
 
-## [1.1.0] – 2026-05-06
+## [1.1.0], 2026-05-06
 
 ### Added
 
@@ -1448,7 +1448,7 @@ review and a few adjacent items the bundles surfaced.
   post-migration empty-table ANALYZE go stale once millions of rows
   land. Set to `0` to disable.
 
-## [1.0.0] – 2026-05-06
+## [1.0.0], 2026-05-06
 
 First production release. Live at <https://ratatoskr.run> serving
 linux-fsdevel and lkml.
@@ -1460,16 +1460,16 @@ linux-fsdevel and lkml.
   `(inbox, epoch, commit_sha)` with `error_class`, `error_message`,
   `first_seen`, `last_attempt`, `attempts`. Cleared automatically when
   a re-walk parses the commit cleanly.
-- `flask --app mimir admin failures list` — enumerate persisted failures,
+- `flask --app mimir admin failures list`, enumerate persisted failures,
   filter by `--inbox` / `--epoch` / `--error-class`.
-- `flask --app mimir admin failures replay <inbox>` — re-fetch each
+- `flask --app mimir admin failures replay <inbox>`, re-fetch each
   failure's blob, re-run the parser, insert the article (or cross-post
   link) on success, bump `attempts` on continued failure. Use after a
   parser fix.
 - Scheduled-tasks sidecar: `deploy/scheduler.sh` shipped in the image
   at `/app/scheduler.sh`. Runs `warm-cache`, `update`, `analyze`,
   `vacuum` on env-tunable cadences (`WARM_CACHE_EVERY`,
-  `UPDATE_EVERY`, `ANALYZE_EVERY`, `VACUUM_EVERY` — seconds).
+  `UPDATE_EVERY`, `ANALYZE_EVERY`, `VACUUM_EVERY`, seconds).
   `compose.yaml` adds a `mimir-tasks` service for container
   deployments, replacing the cron / systemd-timer trio for that
   shape.

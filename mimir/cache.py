@@ -11,7 +11,7 @@ the dependency stays one-way (cache knows nothing about its callers).
 
 Every key is silently prefixed with `v{NAMESPACE_VERSION}:` so a code
 change that alters cached value shapes (a query rewrite, a renamed
-dataclass field) is bumped centrally — old rows simply never match
+dataclass field) is bumped centrally, old rows simply never match
 and age out via `purge_expired`. Callers don't see the prefix.
 """
 import dataclasses
@@ -51,7 +51,7 @@ def refresh_window(seconds: float | None) -> Iterator[None]:
     """Within this scope, `get_or_compute` recomputes any cached row
     whose remaining TTL is less than `seconds`, instead of returning
     the stale-but-not-expired value. Used by warm-cache so 24h-TTL
-    keys aren't recomputed on every 5-minute cron tick — only on the
+    keys aren't recomputed on every 5-minute cron tick, only on the
     tick nearest their expiry. The contextvar is snapshotted at
     submission time when callers fan out to a `ThreadPoolExecutor`,
     via `contextvars.copy_context().run(fn, ...)`."""
@@ -163,7 +163,7 @@ def set(key: str, value: Any, ttl: int) -> None:
     SQLite write contention (scheduler ingest / vacuum overlapping a
     request) raises `OperationalError("database is locked")` once the
     `busy_timeout` window elapses. The page already rendered before
-    we got here, so a failed cache write must not propagate — it'd
+    we got here, so a failed cache write must not propagate, it'd
     500 a successful response. Log and move on; the next request
     recomputes.
     """
