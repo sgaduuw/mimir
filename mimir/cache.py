@@ -245,17 +245,28 @@ def purge_expired() -> int:
 
 def delete(key: str) -> int:
     """Drop the cache row for one key, if present. Returns rows
-    deleted (0 or 1). Used by callers that need to invalidate a
-    single computed value after upstream state changed (e.g. the
-    `update-mainline` hook clearing the maintainer-allowlist set
-    after a MAINTAINERS reload)."""
+    deleted (0 or 1, or 0 on transient-lock fallback).
+
+    Best-effort just like `set()`: SQLite write contention during
+    a long-running VACUUM raises `OperationalError("database is
+    locked")` once the connection's `busy_timeout` elapses. Admin
+    CRUD callers (`mimir.inboxes`) would otherwise 500 on a
+    successfully-completed DB change just because the cache
+    invalidation lost the lock race. Log + return 0; the cached
+    value still ages out via TTL and a successful subsequent write
+    overwrites whatever stale row survived.
+    """
     nskey = _ns(key)
-    with SessionLocal() as session:
-        result = session.execute(
-            delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
-        )
-        session.commit()
-        return result.rowcount or 0
+    try:
+        with SessionLocal() as session:
+            result = session.execute(
+                delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
+            )
+            session.commit()
+            return result.rowcount or 0
+    except OperationalError as exc:
+        logger.warning("cache delete failed for %s: %s", nskey, exc)
+        return 0
 
 
 def delete_for_inbox(inbox_name: str) -> int:
@@ -265,7 +276,8 @@ def delete_for_inbox(inbox_name: str) -> int:
     so an entry references an inbox if its key ends with `:{name}` or
     contains `:{name}:`. Called by the admin CRUD layer after a
     rename or delete so reads don't return rows pointing at a now-
-    stale (or vanished) name. Returns rows deleted.
+    stale (or vanished) name. Returns rows deleted (0 on transient-
+    lock fallback; same best-effort posture as `set()` / `delete()`).
 
     Inbox names are slug-validated (alphanumeric + hyphen) so they
     contain no LIKE-pattern metacharacters; the literal `%` and `_`
@@ -273,14 +285,20 @@ def delete_for_inbox(inbox_name: str) -> int:
     """
     suffix_pat = f"%:{inbox_name}"
     middle_pat = f"%:{inbox_name}:%"
-    with SessionLocal() as session:
-        result = session.execute(
-            delete_stmt(CacheEntry).where(
-                or_(
-                    CacheEntry.key.like(suffix_pat),
-                    CacheEntry.key.like(middle_pat),
+    try:
+        with SessionLocal() as session:
+            result = session.execute(
+                delete_stmt(CacheEntry).where(
+                    or_(
+                        CacheEntry.key.like(suffix_pat),
+                        CacheEntry.key.like(middle_pat),
+                    )
                 )
             )
+            session.commit()
+            return result.rowcount or 0
+    except OperationalError as exc:
+        logger.warning(
+            "cache delete_for_inbox failed for %s: %s", inbox_name, exc,
         )
-        session.commit()
-        return result.rowcount or 0
+        return 0
