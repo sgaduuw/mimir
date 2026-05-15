@@ -13,11 +13,23 @@ class MessageNotFound(LookupError):
 
 
 def _read_blob(epoch_path: Path, commit_sha: str) -> bytes:
-    repo = Repo(str(epoch_path))
-    commit = repo[commit_sha.encode()]
-    tree = repo[commit.tree]
-    _mode, blob_sha = tree[b"m"]
-    return repo[blob_sha].data
+    # Repo must be context-managed: dulwich keeps packfile descriptors
+    # open as long as the Repo object is alive. Without `with`, the
+    # FD lives until GC, which on the message-page hot path (every
+    # render reopens the repo) builds up an unbounded handle count.
+    # Stale `commit_sha` (mirror was rewritten / blob GC'd) makes
+    # dulwich raise KeyError; surface that as MessageNotFound so the
+    # route returns a clean 410 instead of bubbling to a 500.
+    try:
+        with Repo(str(epoch_path)) as repo:
+            commit = repo[commit_sha.encode()]
+            tree = repo[commit.tree]
+            _mode, blob_sha = tree[b"m"]
+            return repo[blob_sha].data
+    except KeyError as exc:
+        raise MessageNotFound(
+            f"blob for commit {commit_sha} not found in {epoch_path}: {exc!r}"
+        ) from exc
 
 
 def read_message(
