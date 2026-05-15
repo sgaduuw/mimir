@@ -14,16 +14,18 @@ from mimir.models import (
     SubsystemPath,
 )
 from mimir.subsystems import (
+    path_matches_glob,
+    recent_patches_touching,
+    subsystems_for_article,
+)
+from mimir.subsystems_dashboard import (
     active_reviewers_in_subsystem,
     active_threads_in_subsystem,
     articles_reviewed_by,
     daily_volume_in_subsystem,
     most_active_subsystems_global,
     most_active_subsystems_in_inbox,
-    path_matches_glob,
     recent_articles_in_subsystem,
-    recent_patches_touching,
-    subsystems_for_article,
 )
 
 

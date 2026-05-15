@@ -83,10 +83,22 @@ def is_list_address(address: str | None, suffixes: frozenset[str] = LIST_HOST_SU
 def extract_list_addresses(headers: dict[str, str]) -> list[str]:
     """Pull list-shaped addresses out of `To:` then `Cc:`, preserving
     order. Returned addresses are lowercased and deduplicated; the
-    first occurrence wins for ordering."""
+    first occurrence wins for ordering.
+
+    Header keys are matched case-insensitively. RFC 5322 says field
+    names are case-insensitive ("To" / "TO" / "to" are the same
+    header); `mimir.parser` preserves whatever casing the wire
+    delivered. Some ML re-mailers downcase headers, so a strict
+    `headers.get("To")` silently returned `None` on legitimate input
+    and broke both canonical-inbox resolution and the off-list-parent
+    hint on the message page.
+    """
+    # Build a lowercased-key view of the headers we care about so
+    # the walk can pick whichever casing the upstream sent.
+    by_lower = {k.lower(): v for k, v in headers.items()}
     raw_values: list[str] = []
-    for key in ("To", "Cc"):
-        value = headers.get(key)
+    for key in ("to", "cc"):
+        value = by_lower.get(key)
         if value:
             raw_values.append(value)
     if not raw_values:
