@@ -11,6 +11,13 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- `warm-cache --workers N` flag controls the size of the worker
+  pool that fans out the per-inbox target loop. Defaults to
+  `min(cpu_count, 8)`. Pass `--workers 1` to force the serial
+  path when debugging a slow target.
+
 ### Changed
 
 - `latest_pull_requests` and `latest_stable_releases` are now
@@ -29,6 +36,13 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   last ~7.5 min of the hour, and 24h-TTL keys (`archive_stats`)
   refresh once per day instead of 288 times. Behavior at the
   request path is unchanged.
+- `warm-cache` runs per-inbox and sitemap targets in parallel
+  across a thread pool, each worker on its own SQLAlchemy
+  session. The cross-inbox subsystem aggregator runs after a
+  barrier so it consumes the just-warmed per-inbox cache rows.
+  The `refresh_window` contextvar is propagated to workers via
+  `contextvars.copy_context()`. Per-key `-v` lines may
+  interleave; the summary line is unchanged.
 
 ## [1.19.3] – 2026-05-15
 
