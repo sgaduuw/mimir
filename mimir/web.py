@@ -951,13 +951,19 @@ def _daily_view(inbox_name: str, day: date_cls, heading: str):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         threads = threads_for_day(session, inbox, day)
+        # Compare against datetime values (matching the
+        # `dashboard.py` pattern) rather than `strftime` strings.
+        # SQLAlchemy 2.x routes datetime bind params through the
+        # column's DateTime type; the strftime form bypasses that
+        # and drops tz info on a column that's been documented as
+        # tz-aware UTC.
         total = session.scalar(
             select(func.count(Article.id))
             .join(ArticleList, ArticleList.article_id == Article.id)
             .where(
                 ArticleList.inbox_id == inbox.id,
-                Article.date >= start.strftime("%Y-%m-%d %H:%M:%S"),
-                Article.date < end.strftime("%Y-%m-%d %H:%M:%S"),
+                Article.date >= start,
+                Article.date < end,
             )
         )
     return render_template(
@@ -1005,13 +1011,14 @@ def threads_since_view(inbox_name: str, since_str: str):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         threads = threads_since(session, inbox, since)
+        # Same datetime-not-strftime treatment as `_daily_view`.
         total = session.scalar(
             select(func.count(Article.id))
             .join(ArticleList, ArticleList.article_id == Article.id)
             .where(
                 ArticleList.inbox_id == inbox.id,
-                Article.date >= start.strftime("%Y-%m-%d %H:%M:%S"),
-                Article.date < end.strftime("%Y-%m-%d %H:%M:%S"),
+                Article.date >= start,
+                Article.date < end,
             )
         )
     return render_template(
