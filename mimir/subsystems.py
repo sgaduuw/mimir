@@ -36,7 +36,7 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
-from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume
+from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume, like_escape
 from mimir.models import (
     Article,
     ArticleFile,
@@ -290,7 +290,15 @@ def recent_articles_in_subsystem(
         includes = [r for r in subsystem.paths if not r.is_exclude]
         excludes = [r.glob for r in subsystem.paths if r.is_exclude]
 
-        # Build OR conditions for each supported include glob.
+        # Build OR conditions for each supported include glob. Exact
+        # paths (the modal MAINTAINERS shape: explicit `F: drivers/
+        # foo/bar.c` lines) are collapsed into a single `path IN
+        # (...)` clause instead of one OR-equality per rule — wide
+        # subsystems can list dozens of files, and IN lets SQLite
+        # build one in-memory probe instead of walking a long OR
+        # disjunction. Directory-prefix `dir/` entries still need
+        # one LIKE per rule (each escapes its own metacharacters).
+        exact_paths: list[str] = []
         or_conds = []
         for rule in includes:
             g = rule.glob
@@ -299,13 +307,15 @@ def recent_articles_in_subsystem(
                 # as literal — escape them so a path glob containing `_`
                 # (rare but possible: `arch/x86_64/`) doesn't widen the
                 # match.
-                prefix = g.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                prefix = like_escape(g)
                 or_conds.append(ArticleFile.path.like(prefix + "%", escape="\\"))
                 # Also match the bare directory path (no trailing slash).
-                or_conds.append(ArticleFile.path == g[:-1])
+                exact_paths.append(g[:-1])
             elif not any(c in g for c in "*?["):
-                or_conds.append(ArticleFile.path == g)
+                exact_paths.append(g)
             # else: wildcard — skipped in slice 1
+        if exact_paths:
+            or_conds.append(ArticleFile.path.in_(exact_paths))
         if not or_conds:
             return []
 
@@ -430,12 +440,7 @@ def _subsystem_path_filter_sql(
                 pname_pre = f"{prefix}_{label}_pre_{i}"
                 # Escape LIKE wildcards so a glob containing `_`
                 # (e.g. `arch/x86_64/`) doesn't widen the match.
-                like_val = (
-                    g.replace("\\", "\\\\")
-                     .replace("%", "\\%")
-                     .replace("_", "\\_")
-                )
-                params[pname_pre] = like_val + "%"
+                params[pname_pre] = like_escape(g) + "%"
                 parts.append(f"path LIKE :{pname_pre} ESCAPE '\\'")
                 # Also include the bare directory path.
                 pname_eq = f"{prefix}_{label}_eq_{i}"
@@ -540,10 +545,17 @@ def active_threads_in_subsystem(
         path_sql, path_params = path_filter
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=days)
+        # Materialise the path-matched article ids once before the
+        # recursive CTE runs. Without `MATERIALIZED`, SQLite inlines
+        # the CTE and re-evaluates the `article_files` lookup per
+        # seed row — order-of-seconds on wide subsystems like
+        # "open firmware and flattened device tree bindings" with
+        # many F: globs. The temp-table form runs the lookup once.
         return _active_threads_query(
             session, inbox, start, end,
             order_by="score", limit=limit,
-            extra_seed_filter_sql=f" AND a.id IN ({path_sql})",
+            extra_ctes_sql=f"path_articles AS MATERIALIZED ({path_sql}),",
+            extra_seed_filter_sql=" AND a.id IN (SELECT article_id FROM path_articles)",
             extra_params=path_params,
         )
 
@@ -1204,7 +1216,6 @@ __all__ = [
     "ReviewerStat",
     "SubsystemActivity",
     "SubsystemHit",
-    "_subsystem_path_filter_sql",
     "active_reviewers_in_subsystem",
     "active_threads_in_subsystem",
     "articles_reviewed_by",
