@@ -1226,17 +1226,36 @@ def message_id_lookup_inbox(inbox_name: str, message_id: str):
 
 @bp_web.route("/")
 def index():
-    """Meta-index: list of configured inboxes with per-inbox stats.
-    Pinned inboxes (settings.pinned_inboxes) surface first in config
-    order; the rest follow alphabetically."""
+    """Meta-index: card grid of configured inboxes with per-inbox
+    stats. Pinned inboxes (settings.pinned_inboxes) surface first in
+    config order; the rest follow alphabetically.
+
+    Each card carries `archive_stats` (counts + date span) plus a
+    30-day `daily_volume` sparkline. Both are cached helpers; the
+    per-card cost on a warm cache is one cache row read per inbox.
+    """
     pin_rank = {name: i for i, name in enumerate(settings.pinned_inboxes)}
     with SessionLocal() as session:
         inboxes = session.execute(select(Inbox)).scalars().all()
         inboxes.sort(key=lambda ix: (pin_rank.get(ix.name, len(pin_rank)), ix.name))
-        inbox_summaries = [
-            {"name": inbox.name, "stats": archive_stats(session, inbox)}
-            for inbox in inboxes
-        ]
+        inbox_summaries = []
+        for inbox in inboxes:
+            stats = archive_stats(session, inbox)
+            inbox_summaries.append({
+                "name": inbox.name,
+                "stats": stats,
+                "pinned": inbox.name in pin_rank,
+                # Relative-time string for the visible "Last activity"
+                # line. None when the inbox has no messages yet (the
+                # template falls back to the empty-state copy).
+                "last_activity_rel": (
+                    _relative_time(stats.last_date) if stats.last_date else None
+                ),
+                # 30-day sparkline. Always renders so cards line up
+                # vertically even on dormant inboxes (zero-filled
+                # series → flat bar row).
+                "spark": daily_volume(session, inbox, days=30),
+            })
     base = _site_base()
     return render_template(
         "index.html",

@@ -32,6 +32,64 @@ def test_meta_index_has_inboxes_anchor(client):
     assert 'id="inboxes"' in r.data.decode()
 
 
+def test_meta_index_renders_cards_not_list(client):
+    """The inbox overview surfaces as a card grid: each inbox is an
+    `<a class="inbox-card">` block, not a `<li>` in a flat `<ul>`.
+    Pins the layout shape so a CSS refactor doesn't silently regress
+    back to the pre-1.19 list.
+    """
+    body = client.get("/").data.decode()
+    assert 'class="inbox-grid"' in body
+    assert 'class="inbox-card"' in body
+
+
+def test_meta_index_pinned_card_carries_badge(client, monkeypatch):
+    """Pinned inboxes render with a visible badge in addition to
+    sorting first. Pin marker supplements position-based signal so
+    the layout doesn't rely on order alone.
+
+    Assert against the rendered `<span class="inbox-card-pinned">`
+    opening tag rather than the class name on its own — the class
+    is also mentioned in the inline `<style>` block, so a substring
+    check there would pass even without the badge rendering."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "pinned_inboxes", ["beta"])
+    body = client.get("/").data.decode()
+    assert '<span class="inbox-card-pinned"' in body
+
+
+def test_meta_index_no_pin_badge_when_no_pins(client, monkeypatch):
+    """Inverse: nothing renders the pin badge when no inbox is
+    pinned. Guards against the badge accidentally surfacing for
+    everyone."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "pinned_inboxes", [])
+    body = client.get("/").data.decode()
+    assert '<span class="inbox-card-pinned"' not in body
+
+
+def test_meta_index_sparkline_renders_when_inbox_has_messages(client):
+    """Seeded inboxes have messages, so each card carries a
+    `<svg class="inbox-card-spark">` 30-day daily-volume sparkline.
+    """
+    body = client.get("/").data.decode()
+    assert 'class="inbox-card-spark"' in body
+
+
+def test_meta_index_card_link_targets_inbox_dashboard(client):
+    """Each card is wrapped in an `<a>` whose href is the per-inbox
+    dashboard. Whole-card click target."""
+    import re
+    body = client.get("/").data.decode()
+    # `<a class="inbox-card" ... href="/<name>/">` shape. Capture
+    # every card link.
+    hrefs = re.findall(
+        r'<a class="inbox-card"[^>]*href="(/[^"]+/)"', body,
+    )
+    assert "/alpha/" in hrefs
+    assert "/beta/" in hrefs
+
+
 def test_footer_includes_mimir_version(client):
     """The footer surfaces the running package version so an operator
     can confirm the deployed image matches the expected tag. Pin via
