@@ -11,6 +11,18 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- `mimir.store._read_blob`: context-manage the dulwich `Repo`
+  and surface `KeyError` from a stale commit_sha / GC'd blob as
+  `MessageNotFound`. Previously the `Repo` instance kept packfile
+  file descriptors open until GC (every message-page render
+  reopened the repo, so the FD count grew over time), and a
+  real-but-stale `article_lists.commit_sha` row would bubble out
+  as a `KeyError` 500 instead of the 404 every caller already
+  handles via `MessageNotFound`. Web / CLI / ingest call sites
+  recover transparently.
+
 ## [1.21.0] – 2026-05-15
 
 Per-subsystem dashboard latency pass. A real-world cold load on
