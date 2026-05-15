@@ -1269,6 +1269,74 @@ def test_since_title_shape(client, inbox_name):
     assert recent in title
 
 
+def test_daily_view_counts_messages_in_window(client):
+    """Pin the count-by-window behaviour on `_daily_view`: an
+    article sent today is counted, one sent yesterday is not.
+    Audit (2026-05-15) flagged the previous
+    `Article.date >= start.strftime(...)` form as brittle on
+    SQLA 2.x typing; the datetime-comparison form keeps the
+    column's DateTime type live across the round-trip."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    now = datetime.now(timezone.utc)
+    yesterday = now - timedelta(days=1)
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        # Seed two articles: one today, one yesterday. The /today
+        # view should see the today one only.
+        today_art = Article(
+            message_id="today-win@example.com",
+            subject="today",
+            author="a",
+            date=now,
+            thread_parent=None,
+            subject_normalized="today",
+        )
+        yest_art = Article(
+            message_id="yest-win@example.com",
+            subject="yesterday",
+            author="a",
+            date=yesterday,
+            thread_parent=None,
+            subject_normalized="yesterday",
+        )
+        s.add_all([today_art, yest_art])
+        s.flush()
+        s.add_all([
+            ArticleList(article_id=today_art.id, inbox_id=alpha.id,
+                        epoch="0.git", commit_sha="aa" * 20),
+            ArticleList(article_id=yest_art.id, inbox_id=alpha.id,
+                        epoch="0.git", commit_sha="bb" * 20),
+        ])
+        s.commit()
+
+    r = client.get("/alpha/today")
+    assert r.status_code == 200
+    body = r.data.decode()
+    # The total appears as "N messages across …"; pin the digit
+    # without coupling to surrounding template prose.
+    import re
+    m = re.search(r"(\d+)\s+messages? across", body)
+    assert m is not None, (
+        f"didn't find message count in rendered body:\n{body[:400]}"
+    )
+    count = int(m.group(1))
+    assert count >= 1, (
+        "today's article should be inside the window; the strftime-"
+        f"to-datetime change must keep the count correct (got {count})"
+    )
+    # Yesterday's article must NOT be counted in the /today view.
+    # If the SQL comparison silently broke and counted everything,
+    # this would be 2+.
+    assert count == 1, (
+        f"only today's seeded article should match /today; got count={count}"
+    )
+
+
 def test_message_subject_truncated_to_80(client, tmp_path):
     """Long subjects (patch series with v17 RFC 23/47 etc.) get
     truncated at 80 chars in <title> so SERPs don't overflow.

@@ -11,6 +11,16 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- `_daily_view` and `threads_since_view` now compare `Article.date`
+  against `datetime` bind parameters rather than
+  `start.strftime(...)` / `end.strftime(...)` strings. SQLite is
+  lax today, but the strftime form drops tz info on a tz-aware UTC
+  column and is brittle on SQLAlchemy 2.x typing; the helper layer
+  (`mimir.dashboard`) already uses the datetime form, so this just
+  brings the route layer in line.
+
 ## [1.21.0] – 2026-05-15
 
 Per-subsystem dashboard latency pass. A real-world cold load on
