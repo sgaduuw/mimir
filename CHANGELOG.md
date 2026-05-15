@@ -13,6 +13,16 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Security
 
+- CLI input validation at two boundaries:
+  - `reindex` rejects EPOCH arguments that don't match
+    `<N>.git` before joining onto `inbox.mirror_path`. Catches
+    typos like `0` (missing `.git`) and refuses traversal
+    shapes like `../../etc`.
+  - `dev-seed-thread --inbox <name>` validates the name against
+    the admin service's slug regex. The name flows into both a
+    filesystem path and the synthesised RFC 5322 `To:` header
+    bytes, so CR/LF in the value would inject a second header
+    line. Local-dev-only command, but the cheap guard is worth it.
 - Web tier: defense-in-depth response headers (CSP,
   X-Frame-Options, X-Content-Type-Options, Referrer-Policy,
   X-Request-Id), Cache-Control, and the structured access log
@@ -45,6 +55,14 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   wrap bypassed correctly but the inner per-inbox cache silently
   read stale rows, so a `warm-cache --force` recomputed the global
   aggregator off whatever the per-inbox caches happened to hold.
+- `mimir.parser`: `In-Reply-To` headers carrying multiple
+  msg-ids (broken senders sometimes emit `<a@x> <b@y>`) now
+  resolve to the first msg-id rather than being stored as the
+  literal `a@x> <b@y` string that never joined to any real
+  Message-ID. `References:` and `In-Reply-To:` both also strip
+  RFC 5322 CFWS comments `(...)` before splitting, so
+  `<a@x> (comment) <b@x>` extracts `["a@x", "b@x"]` instead of
+  surfacing the comment text as a junk reference.
 - `_daily_view` and `threads_since_view` now compare `Article.date`
   against `datetime` bind parameters rather than
   `start.strftime(...)` / `end.strftime(...)` strings. SQLite is

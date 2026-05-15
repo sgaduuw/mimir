@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,7 @@ from mimir.inboxes import (
     remove_tracked_author,
     set_tracked_authors,
     update_inbox,
+    validate_name,
 )
 from mimir import indexnow, maintainers, patch_series, patches, trailers
 from mimir.config import settings
@@ -76,6 +78,13 @@ from mimir.web import (
 
 
 logger = logging.getLogger(__name__)
+
+# Public-inbox epoch directory names are always `<N>.git` for
+# integer N. Operators pass this string into `reindex` and we then
+# join it onto `inbox.mirror_path`; without a shape check, a value
+# like `../../etc` would walk outside the mirror root before the
+# `.exists()` guard ever runs.
+_EPOCH_RE = re.compile(r"\d+\.git")
 
 # Refresh-window used by warm-cache. See the call site in
 # `warm_cache_command` for the calibration rationale (cron period +
@@ -218,6 +227,11 @@ def reindex_command(
     """
     _configure_logging(verbose)
 
+    if not _EPOCH_RE.fullmatch(epoch):
+        raise click.BadParameter(
+            f"epoch must be of the form 'N.git' (got {epoch!r})",
+            param_hint="EPOCH",
+        )
     inboxes = _select_inboxes(inbox_name)
     inbox = inboxes[inbox_name]
     epoch_path = Path(inbox.mirror_path) / epoch
@@ -1049,6 +1063,17 @@ def dev_seed_thread_command(
         poetry run flask --app mimir run
         # navigate to http://127.0.0.1:5000/dev-thread/
     """
+    # Validate the inbox name before it gets splatted into both the
+    # filesystem path (mirror_dir below) and the RFC 5322 To: header
+    # bytes for each synthesised message. The same slug regex the
+    # admin service layer uses catches `..`, slashes, CR/LF (which
+    # would inject a second header line), and shell metacharacters
+    # in one shot.
+    try:
+        inbox_name = validate_name(inbox_name)
+    except InboxValidationError as exc:
+        raise click.BadParameter(str(exc), param_hint="--inbox")
+
     from dulwich.objects import Blob, Commit, Tree
     from dulwich.repo import Repo
 
