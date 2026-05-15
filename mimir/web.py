@@ -1412,12 +1412,26 @@ SUBSYSTEM_RECENT_PATCHES_LIMIT = 30
 
 @bp_web.route("/<inbox_name>/subsystem/<path:name>/")
 def subsystem_dashboard(inbox_name: str, name: str):
-    """Per-subsystem dashboard. Slice 1 surfaces the section's
-    MAINTAINERS-derived header (name, status, M:/R: maintainers)
-    and a list of recent articles linked to this inbox whose
-    diff-touched paths match the subsystem's F: globs (and aren't
-    vetoed by X: globs). Future slices add active-threads and
-    daily-volume sparkline scoped to the same path set."""
+    """Per-subsystem dashboard. Surfaces the MAINTAINERS-derived
+    header (name, status, M:/R: maintainers), F:/X: paths, a 30-day
+    sparkline, recent patches, active threads, and active reviewers
+    for articles whose diff-touched paths match the subsystem's
+    globs (minus X: vetoes).
+
+    URL is lowercased by convention. MAINTAINERS stores names in
+    upper-case ASCII ("BCACHEFS"), which is fine for the operator-
+    facing dashboard heading but produces shouty URLs in bookmarks
+    and browser history. The route accepts any casing,
+    case-insensitive-matches against `subsystems.name`, and 301s
+    non-canonical (uppercase) requests to the canonical lowercase
+    form. The DB row's stored casing remains the upstream-verbatim
+    one and is what the H1 renders.
+    """
+    name_lower = name.lower()
+    if name != name_lower:
+        return redirect(
+            f"/{inbox_name}/subsystem/{name_lower}/", code=301,
+        )
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         subsystem = session.execute(
@@ -1426,7 +1440,7 @@ def subsystem_dashboard(inbox_name: str, name: str):
                 selectinload(Subsystem.maintainers),
                 selectinload(Subsystem.paths),
             )
-            .where(Subsystem.name == name)
+            .where(func.lower(Subsystem.name) == name_lower)
         ).scalar_one_or_none()
         if subsystem is None:
             abort(404)
