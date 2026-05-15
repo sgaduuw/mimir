@@ -13,6 +13,14 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Security
 
+- Web tier: defense-in-depth response headers (CSP,
+  X-Frame-Options, X-Content-Type-Options, Referrer-Policy,
+  X-Request-Id), Cache-Control, and the structured access log
+  now fire on URLs that don't match any route. The hooks moved
+  from blueprint scope (`@bp_web.before_request` /
+  `@bp_web.after_request`) to app scope (`before_app_request` /
+  `after_app_request`); previously, Flask's built-in 404 for
+  unmatched paths bypassed all of them.
 - `admin inbox remove --remove-inbox-data`: parent-directory
   promotion is now gated on the parent's basename equalling the
   inbox name. Previously, any `mirror_path` ending in a `git/`
@@ -37,6 +45,13 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   the underlying SQL would return identical results either way;
   the per-casing cache rows just wasted space and made cache
   hits less likely for the next visitor's query.
+- `_daily_view` and `threads_since_view` now compare `Article.date`
+  against `datetime` bind parameters rather than
+  `start.strftime(...)` / `end.strftime(...)` strings. SQLite is
+  lax today, but the strftime form drops tz info on a tz-aware UTC
+  column and is brittle on SQLAlchemy 2.x typing; the helper layer
+  (`mimir.dashboard`) already uses the datetime form, so this just
+  brings the route layer in line.
 - `mimir.store._read_blob`: context-manage the dulwich `Repo`
   and surface `KeyError` from a stale commit_sha / GC'd blob as
   `MessageNotFound`. Previously the `Repo` instance kept packfile
