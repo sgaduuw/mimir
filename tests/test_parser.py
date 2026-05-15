@@ -58,6 +58,29 @@ def test_references_split_and_stripped():
     assert art.references == ["a@x", "b@x", "c@x"]
 
 
+def test_decode_rfc2047_falls_back_and_logs_on_unknown_charset(caplog):
+    """The audit (2026-05-15) flagged the bare `except Exception`
+    in `_decode_rfc2047` as silencing real charset-registry / decode
+    bugs. The tightened catch now logs a warning when it falls back
+    to the verbatim header; pin both the fallback and the warning so
+    a future regression that drops the logger or widens the catch
+    surfaces."""
+    import logging
+
+    from mimir.parser import _decode_rfc2047
+
+    with caplog.at_level(logging.WARNING, logger="mimir.parser"):
+        out = _decode_rfc2047("=?totally-not-a-real-charset?Q?test?=")
+
+    # Fallback is the verbatim header value.
+    assert out == "=?totally-not-a-real-charset?Q?test?="
+    # A warning landed in the log; not silent.
+    assert any(
+        "fallback" in rec.message.lower() or "verbatim" in rec.message.lower()
+        for rec in caplog.records
+    ), f"expected a warning log; got: {[r.message for r in caplog.records]}"
+
+
 # RFC 2047 encoded-word headers
 
 
@@ -292,3 +315,86 @@ def test_at_cap_does_not_raise():
     assert len(raw) <= MAX_RAW_MESSAGE_BYTES
     art = parse_message(raw)
     assert art.message_id == "m@x"
+
+
+# Pickle round-trip
+
+
+def test_parsed_article_pickles_round_trip():
+    """`parse_message` and its return value must stay pickleable so
+    `ProcessPoolExecutor.map` can ship them between worker and parent
+    processes. The integration test exercises one happy-path run; this
+    pins the dataclass contract directly so a regression (adding an
+    unpickleable field, switching a `dict` to a generator, etc.) lands
+    at PR time instead of in the next production ingest.
+
+    Covers every field shape: scrubbed strings, tz-aware datetime,
+    `list[str]` references, `dict[str, str]` headers, and the nested
+    `attachments` list of `ParsedAttachment`."""
+    import pickle
+
+    raw = (
+        b"Message-ID: <pickle@x>\r\n"
+        b"From: A. Person <a@example.com>\r\n"
+        b"To: list@vger.kernel.org\r\n"
+        b"Subject: pickled\r\n"
+        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+        b"In-Reply-To: <parent@x>\r\n"
+        b"References: <root@x> <parent@x>\r\n"
+        b'Content-Type: multipart/mixed; boundary="bbb"\r\n\r\n'
+        b"--bbb\r\n"
+        b"Content-Type: text/plain\r\n\r\n"
+        b"body text\r\n"
+        b"--bbb\r\n"
+        b'Content-Type: application/octet-stream\r\n'
+        b'Content-Disposition: attachment; filename="x.bin"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n\r\n"
+        b"aGVsbG8=\r\n"
+        b"--bbb--\r\n"
+    )
+    art = parse_message(raw)
+    revived = pickle.loads(pickle.dumps(art))
+
+    # Pydantic BaseModel equality is field-by-field; one assertion
+    # covers the entire shape. The individual asserts below pin the
+    # critical fields so a future change that breaks one of them
+    # produces a meaningful diagnostic instead of a bare "not equal".
+    assert revived == art
+    assert revived.message_id == "pickle@x"
+    assert revived.in_reply_to == "parent@x"
+    assert revived.references == ["root@x", "parent@x"]
+    # Date must keep its tz info; a naive datetime here would mean the
+    # `_aware_utc` normalisation downstream would inject the wrong
+    # offset for `-0000`-shaped headers.
+    assert revived.date is not None and revived.date.tzinfo is not None
+    # Headers are a plain dict, not a generator or a Pydantic proxy.
+    assert isinstance(revived.headers, dict)
+    assert revived.headers["To"] == "list@vger.kernel.org"
+    # Attachments survive as a list of `ParsedAttachment`, content
+    # bytes intact.
+    assert len(revived.attachments) == 1
+    att = revived.attachments[0]
+    assert att.filename == "x.bin"
+    assert att.content_type == "application/octet-stream"
+    assert att.content == b"hello"
+
+
+def test_parsed_attachment_pickles_round_trip():
+    """`ParsedAttachment` standalone round-trip. The post-scrub state
+    of `filename` and `content_type` must survive: surrogate-scrubbed
+    strings live in the model after validation, and pickle has to
+    preserve them as-is, not re-validate."""
+    import pickle
+
+    from mimir.parser import ParsedAttachment
+
+    att = ParsedAttachment(
+        filename="report.pdf",
+        content_type="application/pdf",
+        content=b"\x00\x01\x02\x03binary",
+    )
+    revived = pickle.loads(pickle.dumps(att))
+    assert revived == att
+    assert revived.filename == "report.pdf"
+    assert revived.content_type == "application/pdf"
+    assert revived.content == b"\x00\x01\x02\x03binary"
