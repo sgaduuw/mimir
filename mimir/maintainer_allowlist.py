@@ -60,7 +60,7 @@ def maintainer_addresses() -> frozenset[str]:
     web tier through the shared cache table).
 
     Returns an empty frozenset when MAINTAINERS hasn't been parsed
-    yet — the static allowlist still applies on its own.
+    yet, the static allowlist still applies on its own.
     """
     with SessionLocal() as session:
         # Cache stores list[str] (JSON); we coerce to frozenset on
@@ -79,7 +79,7 @@ def _compute_addresses() -> list[str]:
     """Single SELECT DISTINCT over `subsystem_maintainers.address`
     with LOWER() applied so the cached list is already case-folded.
 
-    Returns a sorted list — `mimir.cache`'s JSON encoder doesn't
+    Returns a sorted list, `mimir.cache`'s JSON encoder doesn't
     accept sets, and a stable order makes the cached row's
     serialised value deterministic (helps debugging and any future
     diff-based invalidation).

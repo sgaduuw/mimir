@@ -3,16 +3,16 @@ sections that claim them.
 
 Two read-path helpers:
 
-- `subsystems_for_article(session, article_id)` — given an article,
+- `subsystems_for_article(session, article_id)`, given an article,
   return the deduplicated set of `Subsystem` rows that any of its
   `article_files` paths land in. The header on the patch page reads
   this.
-- `recent_patches_touching(session, paths, exclude_id, limit)` —
+- `recent_patches_touching(session, paths, exclude_id, limit)`  
   given a set of paths, return the most-recent articles (other than
   the current one) that share at least one path. The sidebar on the
   patch page reads this.
 
-Glob semantics intentionally simple — enough for the common
+Glob semantics intentionally simple, enough for the common
 MAINTAINERS shapes:
 
 - `dir/` matches every path under that directory (and the literal
@@ -24,7 +24,7 @@ MAINTAINERS shapes:
 `X:` (exclude) entries veto a `F:` (include) match within the same
 subsystem: if any exclude glob matches the path, that subsystem is
 **not** returned for the path. Cross-subsystem exclusions don't
-exist in MAINTAINERS — `X:` only acts on its own section.
+exist in MAINTAINERS, `X:` only acts on its own section.
 """
 import fnmatch
 from collections import defaultdict
@@ -78,7 +78,7 @@ def path_matches_glob(path: str, glob: str) -> bool:
 
 class SubsystemHit(BaseModel):
     """Compact summary of one subsystem match. Just the fields the
-    patch-page header needs — avoids carrying the entire SQLA row
+    patch-page header needs, avoids carrying the entire SQLA row
     across the cache boundary if we ever wrap this in
     `mimir.cache`.
     """
@@ -103,7 +103,7 @@ def subsystems_for_article(
     a stable header order.
 
     O(paths × globs) Python loop. For ~10 paths × ~10k globs that's
-    100k comparisons — fast in practice. If a future deploy with
+    100k comparisons, fast in practice. If a future deploy with
     much-larger MAINTAINERS makes this hot, the next move is a
     directory-prefix trie over the `F:` rules.
     """
@@ -217,7 +217,7 @@ def recent_patches_touching(
     if not rows:
         return []
 
-    # Resolve inbox names in one bulk query — avoid N+1.
+    # Resolve inbox names in one bulk query, avoid N+1.
     article_ids = [r[0] for r in rows]
     links = session.execute(
         select(ArticleList.article_id, Inbox.id, Inbox.name)
