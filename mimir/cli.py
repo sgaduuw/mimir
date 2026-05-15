@@ -94,13 +94,29 @@ WARM_TOP_SUBSYSTEMS_PER_INBOX = 20
 
 
 def _configure_logging(verbose: int) -> None:
+    """Install the CLI's stream handler on first call, then set level.
+
+    `logging.basicConfig` is a no-op once the root logger already has
+    a handler. Repeated CLI invocations sharing a Python process
+    (tests, library mode, the test runner itself) silently kept
+    whatever level the first call set, so `-vv` after a quiet call
+    never raised verbosity. Setting the level directly on the root
+    logger takes effect every time; we still install a stream
+    handler on first run so the format is consistent. Audit
+    (2026-05-15) flagged the silent re-config break.
+    """
     if verbose >= 2:
         level = logging.DEBUG
     elif verbose == 1:
         level = logging.INFO
     else:
         level = logging.WARNING
-    logging.basicConfig(level=level, format="%(levelname)s %(message)s")
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+        root.addHandler(handler)
+    root.setLevel(level)
 
 
 def _select_inboxes(only: str | None) -> dict[str, Inbox]:
