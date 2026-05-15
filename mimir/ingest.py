@@ -20,6 +20,7 @@ from mimir.models import (
     Article,
     ArticleFile,
     ArticleList,
+    ArticleTrailer,
     Inbox,
     InboxAddressObservation,
     IngestState,
@@ -28,6 +29,7 @@ from mimir.models import (
 from mimir.parser import ParsedArticle, normalize_subject, parse_message
 from mimir.patch_series import parse_cover_letter, series_key
 from mimir.patches import extract_touched_paths
+from mimir.trailers import extract_trailers
 from mimir.store import MessageNotFound, read_message
 
 logger = logging.getLogger(__name__)
@@ -196,6 +198,18 @@ def _to_article(
     # patch articles. ArticleFile rows take their article_id at flush
     # via the back-populated relationship — no manual id wiring.
     touched_paths = extract_touched_paths(parsed.body)
+    # Same shape for review-attestation trailers: pure parse over
+    # parsed.body, ArticleTrailer rows wired through the back-populated
+    # `trailers` relationship.
+    trailer_rows = [
+        ArticleTrailer(
+            role=role,
+            name=name,
+            address=address,
+            address_normalized=address.lower(),
+        )
+        for role, name, address in extract_trailers(parsed.body)
+    ]
     # Detect cover-letter shape (`[PATCH ... 0/N] <title>`) and
     # compute a stable series-identity key. Non-cover-letters
     # (every individual `1/N` patch, every prose article, every
@@ -218,6 +232,7 @@ def _to_article(
         patch_series_version=series_version,
         lists=[ArticleList(inbox_id=inbox_id, epoch=epoch, commit_sha=commit_sha)],
         files=[ArticleFile(path=p) for p in sorted(touched_paths)],
+        trailers=trailer_rows,
     )
 
 

@@ -22,7 +22,7 @@ from pygments.util import ClassNotFound
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from mimir import cache
+from mimir import cache, maintainer_allowlist
 from mimir.canonical import extract_list_addresses
 from mimir.config import settings
 from mimir.dashboard import (
@@ -46,7 +46,10 @@ from mimir.parser import ParsedArticle
 from mimir.rendering import URL_OR_MSGID_RE, redact_trailer_addresses, render_body
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import (
+    REVIEWS_PER_PAGE_LIMIT,
+    active_reviewers_in_subsystem,
     active_threads_in_subsystem,
+    articles_reviewed_by,
     daily_volume_in_subsystem,
     recent_articles_in_subsystem,
     recent_patches_touching,
@@ -123,6 +126,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.month_archive": "public, max-age=600",
     "web.search": "public, max-age=300",
     "web.author_view": "public, max-age=300",
+    "web.reviewer_view": "public, max-age=600",
     "web.inbox_feed": "public, max-age=300",
     "web.author_feed": "public, max-age=300",
     "web.robots": "public, max-age=86400",
@@ -439,18 +443,49 @@ def _is_previewable_filter(att) -> bool:
     return _is_previewable(att)
 
 
+def _is_allowlisted(address: str) -> bool:
+    """Union check: static `Settings.email_allowlist` substring tokens
+    OR exact membership in the dynamic MAINTAINERS-derived address
+    set. Both checks operate on the lowercased address.
+
+    Per-request memoised via `flask.g` so the MAINTAINERS set is
+    fetched at most once per render (the underlying DB-backed cache
+    is fast, but a long page can call this 50+ times — `g`-caching
+    skips the per-call cache lookup entirely after the first hit).
+
+    Outside a request context (CLI, tests calling the filters
+    directly without a Flask app), the per-request memo is bypassed
+    and the cache layer's own coordination handles repeats.
+    """
+    addr_lower = address.lower()
+    if any(
+        token.lower() in addr_lower for token in settings.email_allowlist
+    ):
+        return True
+    try:
+        cached = g.setdefault(
+            "_maintainer_addresses", maintainer_allowlist.maintainer_addresses(),
+        )
+    except RuntimeError:
+        # Outside a Flask request context; fall through to a direct
+        # cache call. Rare; mostly tests.
+        cached = maintainer_allowlist.maintainer_addresses()
+    return addr_lower in cached
+
+
 @bp_web.app_template_filter("safe_from")
 def _safe_from_filter(author: str | None) -> str:
-    """Return a From-line suitable for display: full address for senders in
-    `settings.email_allowlist`, otherwise display name + `<hidden>` to keep
-    casual senders' addresses out of the archive UI."""
+    """Return a From-line suitable for display: full address for senders
+    in the union of `settings.email_allowlist` (static substring tokens)
+    and the MAINTAINERS-derived address set (exact match), otherwise
+    display name + `<hidden>` to keep casual senders' addresses out of
+    the archive UI."""
     if not author:
         return ""
     name, addr = parseaddr(author)
     if not addr:
         return author  # unparseable; show as-is
-    addr_lower = addr.lower()
-    if any(token.lower() in addr_lower for token in settings.email_allowlist):
+    if _is_allowlisted(addr):
         return author
     if name:
         return f"{name} <hidden>"
@@ -488,6 +523,23 @@ def _display_name_filter(author: str | None) -> str:
     return "unknown sender"
 
 
+@bp_web.app_template_filter("is_allowlisted_address")
+def _is_allowlisted_address_filter(address: str | None) -> bool:
+    """True iff `address` is in the allowlist (static tokens
+    OR MAINTAINERS-derived set).
+
+    Used by templates to decide whether to render a clickable
+    reviewer link. The reviewer page itself (`/<inbox>/reviewer/<addr>`)
+    accepts any address, but mimir only generates outbound links for
+    allowlisted addresses — this keeps non-public addresses out of
+    URL bars / browser history / scraper paths reached via mimir's
+    own navigation, matching the redaction posture of `safe_from`.
+    """
+    if not address:
+        return False
+    return _is_allowlisted(address)
+
+
 def _redact_trailer_address(email: str) -> str:
     """Return the visible-text replacement for an email on a DCO
     trailer line. Allowlisted addresses survive verbatim so the DCO
@@ -496,11 +548,15 @@ def _redact_trailer_address(email: str) -> str:
     (unlike the prior `[off-list ref]` smear from the msgid linkifier
     when it tried to look these up as message-IDs and found nothing).
 
+    Allowlist is the union of static `Settings.email_allowlist` and
+    the dynamic MAINTAINERS-derived address set; anyone listed as a
+    maintainer or reviewer in the kernel tree's MAINTAINERS file
+    surfaces verbatim without operator config.
+
     Return value is plain text (including the literal angle brackets);
     the trailer renderer html-escapes it before splicing into output.
     """
-    addr_lower = email.lower()
-    if any(token.lower() in addr_lower for token in settings.email_allowlist):
+    if _is_allowlisted(email):
         return f"<{email}>"
     return "<redacted>"
 
@@ -1365,6 +1421,9 @@ def subsystem_dashboard(inbox_name: str, name: str):
         spark = daily_volume_in_subsystem(
             session, inbox, subsystem, days=30,
         )
+        reviewers = active_reviewers_in_subsystem(
+            session, inbox, subsystem, days=30, limit=10,
+        )
     return render_template(
         "subsystem.html",
         inbox_name=inbox.name,
@@ -1374,6 +1433,7 @@ def subsystem_dashboard(inbox_name: str, name: str):
         recent_limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
         active=active,
         spark=spark,
+        reviewers=reviewers,
     )
 
 
@@ -1623,6 +1683,59 @@ def author_view(inbox_name: str, sub: str):
         result_cap=AUTHOR_VIEW_LIMIT,
         canonical_url=canonical_url,
         page_json_ld=_json_ld_author(base, inbox.name, sub, canonical_url),
+    )
+
+
+# Conservative pattern for the URL-side address: the same shape the
+# trailer extractor accepts (mimir/trailers.py _TRAILER_NAME_ADDR_RE).
+# Anything outside this falls to 404 — defends against hostile bytes
+# reaching the SQL parameter and keeps the canonical URL well-formed.
+_REVIEWER_ADDR_RE = re.compile(
+    r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+$"
+)
+
+
+@bp_web.route("/<inbox_name>/reviewer/<path:address>")
+def reviewer_view(inbox_name: str, address: str):
+    """Per-reviewer attestation listing: every patch in `inbox_name`
+    where `address` appears on a `Reviewed-by` / `Acked-by` /
+    `Tested-by` / `Reported-by` / `Suggested-by` /
+    `Co-developed-by` / `Reported-and-tested-by` trailer.
+
+    The address from the URL is lowercased to match the
+    `address_normalized` index column. We accept any well-formed
+    address in the URL (the route is a public navigation surface),
+    but outbound links to this surface are only generated from
+    allowlisted addresses (see `_is_allowlisted_address_filter`).
+    Non-allowlisted addresses can be navigated to directly by anyone
+    who already knows them, matching the existing posture that
+    redaction is friction, not a privacy guarantee.
+    """
+    if not _REVIEWER_ADDR_RE.match(address):
+        abort(404)
+    address_normalized = address.lower()
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        entries = articles_reviewed_by(
+            session, inbox, address_normalized,
+            limit=REVIEWS_PER_PAGE_LIMIT,
+        )
+    role_counts: dict[str, int] = {}
+    for e in entries:
+        role_counts[e.role] = role_counts.get(e.role, 0) + 1
+    base = _site_base()
+    canonical_url = f"{base}/{inbox.name}/reviewer/{quote(address_normalized, safe='@')}"
+    return render_template(
+        "reviewer.html",
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
+        address=address_normalized,
+        entries=entries,
+        role_counts=role_counts,
+        total=len(entries),
+        truncated=len(entries) >= REVIEWS_PER_PAGE_LIMIT,
+        result_cap=REVIEWS_PER_PAGE_LIMIT,
+        canonical_url=canonical_url,
     )
 
 

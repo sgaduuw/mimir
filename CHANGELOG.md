@@ -11,6 +11,106 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.18.0] – 2026-05-15
+
+MINOR release. Three slices of #97 (review-attestation trailer
+indexing, per-subsystem active-reviewers section, per-reviewer
+page) plus a behaviour change: the email-redaction allowlist now
+unions in every `M:` / `R:` address parsed from MAINTAINERS, so
+recognised kernel maintainers and reviewers surface verbatim
+without operator-side config.
+
+### Added
+
+- **Index review-attestation trailers** at ingest time (slice 1
+  of #97). New `article_trailers` table records one row per
+  `Reviewed-by:`, `Acked-by:`, `Tested-by:`, `Reported-by:`,
+  `Suggested-by:`, `Co-developed-by:`, or
+  `Reported-and-tested-by:` line in a message body. Address is
+  stored verbatim plus a lowercased `address_normalized` for
+  case-insensitive lookups. Indexed on
+  `(role, address_normalized)` for the per-author lookup and on
+  `article_id` for the per-message lookup. `Signed-off-by:` is
+  deliberately not indexed (chain-of-custody, not a review
+  signal). Quoted trailer lines from a parent message are
+  skipped via the same line-start regex anchor used for diff
+  extraction. New CLI subcommand `flask --app mimir
+  backfill-article-trailers` walks historical articles to
+  populate the table; idempotent and resumable, mirrors
+  `backfill-article-files` in shape and flags.
+- **Active reviewers** section on per-subsystem dashboards
+  (slice 2 of #97). New section between "Most active threads"
+  and "Recent patches" lists the people who have been most
+  active on review-attestation trailers for patches in the
+  subsystem over the last 30 days. Each entry shows total
+  attestations, the per-role breakdown, and the date of the
+  most recent attestation. Helper:
+  `mimir.subsystems.active_reviewers_in_subsystem`. Cached for
+  5 min per `(inbox, subsystem, days, limit)` key. Wildcard-
+  only F: subsystems and 30-day windows with no attestations
+  render no section.
+- **Per-reviewer page** at `/<inbox>/reviewer/<address>` (slice
+  3 of #97). Lists every patch in the inbox where this person
+  appears on a review-attestation trailer, newest-first, with
+  role badges and a per-role total in the header. Capped at 100
+  most-recent attestations per page; a notice surfaces when
+  the cap fires. Address from the URL is lowercased to match
+  the `address_normalized` index. The route accepts any
+  well-formed address (hostile shapes 404 via a regex defense
+  on the URL parameter), but mimir only generates outbound
+  links to this surface for allowlisted addresses, mirroring
+  the redaction posture used by the From line and inline DCO
+  trailers. The per-subsystem dashboard reviewer list renders
+  allowlisted entries as clickable links to this page; non-
+  allowlisted entries continue to show as `<hidden>` with no
+  link. Helper: `mimir.subsystems.articles_reviewed_by`.
+  Cached for 10 min per `(inbox, address, limit)` key. New
+  template filter `is_allowlisted_address` exposes the
+  allowlist check to Jinja.
+
+### Changed
+
+- **Email allowlist now unions the static `email_allowlist`
+  setting with addresses parsed from `MAINTAINERS`.** Every
+  `M:` (maintainer) and `R:` (reviewer) entry contributes its
+  address to a frozenset that the redaction filters
+  (`safe_from`, `_redact_trailer_address`,
+  `is_allowlisted_address`) consult alongside the static list.
+  Net effect: anyone the kernel tree recognises as a maintainer
+  or reviewer surfaces verbatim across From lines, DCO trailer
+  rendering, and the per-subsystem reviewer list (with
+  clickable links to the per-reviewer page) without operator-
+  side config. Cached in the `cache` table for 24h with a
+  shared key; the `update-mainline` flow invalidates the cache
+  after every MAINTAINERS reload so the web tier picks up
+  changes on the next request. Degrades cleanly when MAINTAINERS
+  hasn't been parsed yet (e.g. fresh deploys without the
+  kernel tree mirrored): the dynamic set is empty and only the
+  static allowlist applies. `L:` (list) addresses are
+  deliberately excluded: they're per-subsystem list addresses,
+  not personal contact, and have a separate code path. New
+  helper module `mimir.maintainer_allowlist`. New cache
+  primitive `cache.delete(key)` for single-key invalidation.
+
+### Migration
+
+After upgrading: run `alembic upgrade head` to create
+`article_trailers`, then `flask --app mimir
+backfill-article-trailers` to populate it for existing
+articles. The dynamic-allowlist effect kicks in automatically
+once `update-mainline` has populated `subsystem_maintainers`
+(no separate step required).
+
+### Deferred (follow-ups)
+
+- Linkifying allowlisted reviewers in the inline body trailer
+  block (the `Reviewed-by:` lines on the message page itself).
+  The render-time path through `mimir.rendering` doesn't yet
+  consult the allowlist for outbound link decisions.
+- Cross-inbox per-reviewer aggregation (`/reviewer/<address>`
+  at the root, no inbox scoping). Deferred until there's
+  demand.
+
 ## [1.17.0] – 2026-05-15
 
 MINOR release. Two feature batches: per-subsystem dashboards

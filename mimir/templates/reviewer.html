@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Reviews by {{ address }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block meta_description %}All review-attestation trailers (Reviewed-by, Acked-by, Tested-by, ...) by {{ address }} on the {{ inbox_name }} archive.{% endblock %}
+{% block content %}
+<h1>Reviews by <code>{{ address }}</code>
+  <small><em>· {{ inbox_name }}</em></small>
+</h1>
+
+<p><small>
+  All review-attestation trailers
+  (<code>Reviewed-by</code> / <code>Acked-by</code> /
+  <code>Tested-by</code> / <code>Reported-by</code> /
+  <code>Suggested-by</code> / <code>Co-developed-by</code> /
+  <code>Reported-and-tested-by</code>)
+  by this address on the {{ inbox_name }} archive.
+</small></p>
+
+{% if entries %}
+<p><small>
+  <strong>{{ total }} attestation{{ '' if total == 1 else 's' }}</strong>
+  {% if truncated %} · capped at {{ result_cap }} most-recent{% endif %}.
+  {% set _parts = [] %}
+  {% for role, n in role_counts.items()|sort %}
+    {% set _ = _parts.append(n|string + ' ' + role) %}
+  {% endfor %}
+  ({{ _parts|join(', ') }})
+</small></p>
+
+<ul>
+  {% for e in entries %}
+  <li>
+    <a href="/{{ e.inbox_name }}/{{ e.date.year }}/{{ '%02d' % e.date.month }}/{{ e.article_id }}">{{ e.subject|clean_subject or '(no subject)' }}</a>
+    <br><small>{{ e.date.strftime('%Y-%m-%d') if e.date else '????-??-??' }}
+      &middot; <kbd>{{ e.role }}</kbd></small>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p><em>No attestations by this address in the {{ inbox_name }} archive.</em></p>
+{% endif %}
+{% endblock %}

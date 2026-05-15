@@ -61,6 +61,33 @@
   </ul>
   {% endif %}
 
+  {% if reviewers %}
+  <h2>Active reviewers <small><em>(last 30 days)</em></small></h2>
+  <ul>
+    {% for r in reviewers %}
+    <li>
+      {% set _label = (r.name + ' <' + r.address + '>') if r.name else ('<' + r.address + '>') %}
+      {# Only allowlisted addresses get a clickable link to the per-
+         reviewer page. Non-allowlisted addresses render as <hidden>
+         via safe_from with no outbound link, so mimir doesn't push
+         them into URLs / browser history / scraper paths. #}
+      {% if r.address|is_allowlisted_address %}
+      <strong><a href="/{{ inbox_name }}/reviewer/{{ r.address_normalized|urlencode }}">{{ _label|safe_from }}</a></strong>
+      {% else %}
+      <strong>{{ _label|safe_from }}</strong>
+      {% endif %}
+      <br><small>{{ r.total }} attestation{{ '' if r.total == 1 else 's' }}
+        {% set _parts = [] %}
+        {% for role, n in r.role_counts.items()|sort %}
+          {% set _ = _parts.append(n|string + ' ' + role) %}
+        {% endfor %}
+        ({{ _parts|join(', ') }})
+        &middot; last on {{ r.last_seen.strftime('%Y-%m-%d') }}</small>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
   <h2>Recent patches</h2>
   {% if recent %}
   <p><small>Most-recent {{ recent|length }} patch{{ '' if recent|length == 1 else 'es' }} in this subsystem on {{ inbox_name }}{% if recent|length >= recent_limit %} (capped at {{ recent_limit }}){% endif %}, ordered by date desc.</small></p>
