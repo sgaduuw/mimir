@@ -32,6 +32,28 @@ def test_explicit_version_wins_over_resend():
     assert out.version == "v3"
 
 
+def test_explicit_version_wins_over_rfc_regardless_of_order():
+    """The audit (2026-05-15) flagged the for/else version-selection
+    as accidentally-correct: it depended on `re.findall`'s left-to-
+    right ordering plus the loop's fall-through. Pin the precedence
+    in both orders so a future regex rewrite that flips findall's
+    order would surface."""
+    # RFC before v3
+    rfc_first = parse_cover_letter("[PATCH RFC v3 0/3] explore foo")
+    assert rfc_first is not None and rfc_first.version == "v3"
+    # v3 before RFC
+    v_first = parse_cover_letter("[PATCH v3 RFC 0/3] explore foo")
+    assert v_first is not None and v_first.version == "v3"
+
+
+def test_marker_fallback_when_no_explicit_v_version():
+    """No `v\\d+` token but `RFC` is present → version falls back to
+    the marker. Documents the "no v\\d+ → first marker" branch."""
+    out = parse_cover_letter("[PATCH RFC 0/3] explore foo")
+    assert out is not None
+    assert out.version == "rfc"
+
+
 def test_recognises_subsystem_tag_in_bracket():
     """`[PATCH net 0/3]` and `[PATCH net-next v2 0/3]` are common
     in net-related submissions. The subsystem tag is tolerated;
