@@ -13,6 +13,14 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Security
 
+- Web tier: defense-in-depth response headers (CSP,
+  X-Frame-Options, X-Content-Type-Options, Referrer-Policy,
+  X-Request-Id), Cache-Control, and the structured access log
+  now fire on URLs that don't match any route. The hooks moved
+  from blueprint scope (`@bp_web.before_request` /
+  `@bp_web.after_request`) to app scope (`before_app_request` /
+  `after_app_request`); previously, Flask's built-in 404 for
+  unmatched paths bypassed all of them.
 - `admin inbox remove --remove-inbox-data`: parent-directory
   promotion is now gated on the parent's basename equalling the
   inbox name. Previously, any `mirror_path` ending in a `git/`
