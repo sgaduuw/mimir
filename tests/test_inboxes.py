@@ -620,6 +620,77 @@ def test_delete_inbox_remove_inbox_data_rms_mirror_dir(
     assert tmp_path.exists()
 
 
+def test_delete_inbox_remove_inbox_data_refuses_parent_when_basename_mismatches(
+    seeded_db, tmp_path,
+):
+    """The audit (2026-05-15) flagged the unconditional `path.name ==
+    "git"` parent promotion as the worst data-loss vector in the
+    codebase: an operator setting `mirror_path=/some/dir/git` (any
+    layout that ends in a `git/` directory) would have the parent
+    directory rm-rf'd along with the mirror. The promotion is now
+    gated on the parent's basename equalling the inbox name, so only
+    the documented `<root>/<name>/git` convention triggers it.
+
+    Layout: tmp/unrelated/git/... with inbox name "alpha". The
+    parent's basename is "unrelated", which doesn't match "alpha";
+    only the literal mirror_path must be removed, leaving the
+    parent intact."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.inboxes import delete_inbox
+    from mimir.models import Inbox
+
+    unrelated = tmp_path / "unrelated"
+    git_dir = unrelated / "git"
+    (git_dir / "0.git").mkdir(parents=True)
+    sibling = unrelated / "other-files"
+    sibling.mkdir()
+    (sibling / "important.txt").write_text("must survive")
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.mirror_path = str(git_dir)
+        s.commit()
+
+    report = delete_inbox("alpha", remove_inbox_data=True)
+
+    # Removal happened, but only on the literal mirror_path — not the
+    # parent that was never the operator's intent.
+    assert report.mirror_path_deleted == str(git_dir)
+    assert not git_dir.exists()
+    # The sibling file in the parent dir survived; the parent itself
+    # is intact.
+    assert sibling.exists()
+    assert (sibling / "important.txt").read_text() == "must survive"
+    assert unrelated.exists()
+
+
+def test_delete_inbox_remove_inbox_data_no_git_segment(
+    seeded_db, tmp_path,
+):
+    """When `mirror_path` doesn't end in `git/`, no parent promotion
+    is attempted; the literal mirror_path is removed and that's it."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.inboxes import delete_inbox
+    from mimir.models import Inbox
+
+    mirror = tmp_path / "alpha-mirror"
+    mirror.mkdir()
+    (mirror / "marker").write_text("here")
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.mirror_path = str(mirror)
+        s.commit()
+
+    report = delete_inbox("alpha", remove_inbox_data=True)
+
+    assert report.mirror_path_deleted == str(mirror)
+    assert not mirror.exists()
+    assert tmp_path.exists()
+
+
 def test_delete_inbox_remove_inbox_data_handles_missing_mirror(
     seeded_db, tmp_path,
 ):
