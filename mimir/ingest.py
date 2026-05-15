@@ -411,19 +411,30 @@ def ingest_epoch(
             result.dup_batch += 1
             continue
 
-        existing_article_id = session.execute(
-            select(Article.id).where(Article.message_id == parsed.message_id)
-        ).scalar_one_or_none()
-        if existing_article_id is not None:
+        # One round-trip for "is the message known, and is it already
+        # linked to this inbox?" The LEFT JOIN means: zero rows → new
+        # article; one row with NULL `linked_id` → existing article
+        # not yet linked here (cross-post first seen elsewhere); one
+        # row with non-NULL `linked_id` → already linked (dup_db).
+        # Halves the query count on the 6M-row backfill cold path
+        # (was 1000/batch, now ~500).
+        existing_row = session.execute(
+            select(Article.id, ArticleList.article_id.label("linked_id"))
+            .select_from(Article)
+            .join(
+                ArticleList,
+                (ArticleList.article_id == Article.id)
+                & (ArticleList.inbox_id == inbox_id),
+                isouter=True,
+            )
+            .where(Article.message_id == parsed.message_id)
+        ).one_or_none()
+        if existing_row is not None:
+            existing_article_id = existing_row.id
+            already_linked = existing_row.linked_id
             # Already-known message. Either we re-ingested this inbox
             # (skip) or it's a cross-post first seen via another inbox
             # (add the link).
-            already_linked = session.execute(
-                select(ArticleList.article_id).where(
-                    ArticleList.article_id == existing_article_id,
-                    ArticleList.inbox_id == inbox_id,
-                )
-            ).scalar_one_or_none()
             if already_linked is not None:
                 logger.debug("%s/%s commit %s: skip (already linked) %s",
                              inbox_name, epoch_name, commit_sha[:12], parsed.message_id)
