@@ -12,8 +12,10 @@ both no-ops unless `settings.indexnow_key` is set. See
 `Settings.indexnow_key` for the operator-facing knobs.
 
 `build_urls` is the message-IDs-to-canonical-URLs bridge — it lives
-here, not in `cli.py`, so the CLI seam stays small and the URL-
-construction tests can exercise the same path the scheduler uses.
+here, not in `cli.py`, so the CLI seam stays small. The canonical-
+pick + URL-format helpers live in `mimir.web` (single source of
+truth for the rule that decides which inbox owns a cross-post); we
+import them here rather than re-implementing.
 """
 
 import json
@@ -27,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from mimir.config import settings
 from mimir.models import Article, ArticleList, Inbox
+from mimir.web import _canonical_url_for
 
 logger = logging.getLogger(__name__)
 
@@ -82,19 +85,13 @@ def build_urls(session: Session, message_ids: list[str], base: str) -> list[str]
         links = links_by_article.get(article.id, [])
         if not links:
             continue
-        canonical_id = article.canonical_inbox_id
-        canonical_name: str | None = None
-        if canonical_id is not None:
-            for ix_id, name in links:
-                if ix_id == canonical_id:
-                    canonical_name = name
-                    break
-        if canonical_name is None:
-            canonical_name = min(name for _, name in links)
-        urls.append(
-            f"{base}/{canonical_name}/{article.date.year}/"
-            f"{article.date.month:02d}/{article.id}"
-        )
+        # Canonical-pick + path-format lives in `mimir.web`; this
+        # call yields the same string the web route would render
+        # as `<link rel="canonical">`, so IndexNow pushes match
+        # the URL search engines see on subsequent crawls.
+        url = _canonical_url_for(article, links, base=base)
+        if url is not None:
+            urls.append(url)
     return urls
 
 
