@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from mimir.extensions import SessionLocal
+from mimir.models import Article
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,6 @@ def backfill_patch_series(
     skipped unless `reprocess=True`. Newest-first walk so a
     bounded session covers the most-visible articles first.
     """
-    from mimir.models import Article
     result = BackfillResult()
     examined_total = 0
 
