@@ -2231,6 +2231,61 @@ def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
     assert '/alpha/reviewer/kent.overstreet%40kernel.org"' in text
 
 
+def test_maintainer_listed_address_surfaces_in_from_line(
+    client, tmp_path,
+):
+    """A From-line address that isn't in the static
+    `email_allowlist` BUT is listed as M:/R: in `subsystem_maintainers`
+    surfaces verbatim. Pins the dynamic-allowlist union behaviour
+    on the From-line render path."""
+    # Seed a maintainer entry for an address outside the static
+    # allowlist (no kernel.org / torvalds@ / gregkh@ tokens).
+    from mimir import maintainer_allowlist
+    from mimir.extensions import SessionLocal
+    from mimir.models import Subsystem, SubsystemMaintainer
+    with SessionLocal() as s:
+        sub = Subsystem(name="OUTSIDE-CONTRIB", status="Maintained")
+        s.add(sub)
+        s.flush()
+        s.add(SubsystemMaintainer(
+            subsystem_id=sub.id, role="M",
+            name="Outside Contributor",
+            address="contrib@somecorp.example",
+        ))
+        s.commit()
+    maintainer_allowlist.invalidate()
+
+    # Ingest one article with that address as the sender.
+    _ingest_one_article(
+        tmp_path, "alpha", "from-test@example.com",
+        subject="patch from outside contributor",
+        author="Outside Contributor <contrib@somecorp.example>",
+    )
+    # The author surfaces on the inbox dashboard recent list.
+    body = client.get("/alpha/").data.decode()
+    assert "contrib@somecorp.example" in body, (
+        "MAINTAINERS-derived address should bypass <hidden> redaction"
+    )
+
+
+def test_non_maintainer_address_still_redacted(client, tmp_path):
+    """Inverse: an address neither in the static allowlist nor
+    MAINTAINERS still goes through the `<hidden>` placeholder.
+    Without this, the union check would be silently leaking and we
+    couldn't tell."""
+    from mimir import maintainer_allowlist
+    maintainer_allowlist.invalidate()  # ensure empty set
+    _ingest_one_article(
+        tmp_path, "alpha", "from-test-2@example.com",
+        subject="patch from random",
+        author="Random Sender <rando@somecorp.example>",
+    )
+    body = client.get("/alpha/").data.decode()
+    assert "rando@somecorp.example" not in body
+    # Display name + <hidden> placeholder is the documented shape.
+    assert "Random Sender" in body
+
+
 def test_subsystem_dashboard_no_link_for_non_allowlisted_reviewer(
     client, tmp_path,
 ):

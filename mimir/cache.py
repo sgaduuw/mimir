@@ -20,7 +20,7 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Any, Callable
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete as delete_stmt, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -191,7 +191,22 @@ def purge_expired() -> int:
     `ix_cache_expires_at`."""
     now = _now()
     with SessionLocal() as session:
-        result = session.execute(delete(CacheEntry).where(CacheEntry.expires_at < now))
+        result = session.execute(delete_stmt(CacheEntry).where(CacheEntry.expires_at < now))
+        session.commit()
+        return result.rowcount or 0
+
+
+def delete(key: str) -> int:
+    """Drop the cache row for one key, if present. Returns rows
+    deleted (0 or 1). Used by callers that need to invalidate a
+    single computed value after upstream state changed (e.g. the
+    `update-mainline` hook clearing the maintainer-allowlist set
+    after a MAINTAINERS reload)."""
+    nskey = _ns(key)
+    with SessionLocal() as session:
+        result = session.execute(
+            delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
+        )
         session.commit()
         return result.rowcount or 0
 
@@ -213,7 +228,7 @@ def delete_for_inbox(inbox_name: str) -> int:
     middle_pat = f"%:{inbox_name}:%"
     with SessionLocal() as session:
         result = session.execute(
-            delete(CacheEntry).where(
+            delete_stmt(CacheEntry).where(
                 or_(
                     CacheEntry.key.like(suffix_pat),
                     CacheEntry.key.like(middle_pat),

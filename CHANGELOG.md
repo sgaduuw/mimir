@@ -11,6 +11,30 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- **Email allowlist now unions the static `email_allowlist`
+  setting with addresses parsed from `MAINTAINERS`.** Every
+  `M:` (maintainer) and `R:` (reviewer) entry contributes its
+  address to a frozenset that the redaction filters
+  (`safe_from`, `_redact_trailer_address`,
+  `is_allowlisted_address`) consult alongside the static list.
+  Net effect: anyone the kernel tree recognises as a maintainer
+  or reviewer surfaces verbatim across From lines, DCO trailer
+  rendering, and the per-subsystem reviewer list (with
+  clickable links to the per-reviewer page) without operator-
+  side config. Cached in the `cache` table for 24h with a
+  shared key; the `update-mainline` flow invalidates the cache
+  after every MAINTAINERS reload so the web tier picks up
+  changes on the next request. Degrades cleanly when MAINTAINERS
+  hasn't been parsed yet (e.g. fresh deploys without the
+  kernel tree mirrored): the dynamic set is empty and only the
+  static allowlist applies. `L:` (list) addresses are
+  deliberately excluded: they're per-subsystem list addresses,
+  not personal contact, and have a separate code path. New
+  helper module `mimir.maintainer_allowlist`. New cache
+  primitive `cache.delete(key)` for single-key invalidation.
+
 ### Added
 
 - **Per-reviewer page** at `/<inbox>/reviewer/<address>` (slice
