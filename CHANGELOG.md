@@ -11,6 +11,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Patch-metadata backfills (`backfill-article-files`,
+  `backfill-article-trailers`) now read the body via
+  `article.canonical_inbox` before falling back to
+  `article.lists[0]`. The old behaviour was order-dependent on
+  the SQLA loader: which mirror got read for a cross-posted
+  article was non-deterministic across two runs, so on a
+  partial-mirror host (one inbox available, the other not) the
+  backfill could flip between "indexed" and "skipped" between
+  ticks. Falling back to `lists[0]` only when canonical is NULL
+  matches the render-time canonical-inbox rule.
+
 ## [1.21.0] – 2026-05-15
 
 Per-subsystem dashboard latency pass. A real-world cold load on

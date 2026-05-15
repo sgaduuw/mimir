@@ -22,7 +22,7 @@ from typing import Callable
 
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleTrailer, Inbox
@@ -134,7 +134,12 @@ def backfill_article_trailers(
         while True:
             q = (
                 select(Article)
-                .options(selectinload(Article.lists))
+                .options(
+                    selectinload(Article.lists),
+                    # See patches.py: prefer canonical_inbox; joinedload
+                    # is the right loader for a nullable many-to-one.
+                    joinedload(Article.canonical_inbox),
+                )
                 .order_by(Article.id.desc())
                 .limit(_BACKFILL_BATCH)
             )
@@ -177,9 +182,13 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
             .where(ArticleTrailer.__table__.c.article_id == article.id)
         )
 
-    if not article.lists:
-        return "skipped"
-    inbox = session.get(Inbox, article.lists[0].inbox_id)
+    # Prefer canonical_inbox over a non-deterministic article.lists[0]
+    # for cross-posted articles; see patches.py for the same pattern.
+    inbox: Inbox | None = article.canonical_inbox
+    if inbox is None:
+        if not article.lists:
+            return "skipped"
+        inbox = session.get(Inbox, article.lists[0].inbox_id)
     if inbox is None:
         return "skipped"
 

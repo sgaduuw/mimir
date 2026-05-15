@@ -27,7 +27,7 @@ from typing import Callable
 
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleFile, Inbox
@@ -122,7 +122,15 @@ def backfill_article_files(
         while True:
             q = (
                 select(Article)
-                .options(selectinload(Article.lists))
+                .options(
+                    selectinload(Article.lists),
+                    # Prefer canonical_inbox when picking which
+                    # mirror to re-read from (deterministic for
+                    # cross-posts). joinedload because it's a
+                    # nullable many-to-one — one JOIN, no extra
+                    # query, no N+1 risk on the article loop.
+                    joinedload(Article.canonical_inbox),
+                )
                 .order_by(Article.id.desc())
                 .limit(_BACKFILL_BATCH)
             )
@@ -170,13 +178,18 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
             .where(ArticleFile.__table__.c.article_id == article.id)
         )
 
-    # Pick any linked inbox to re-read the body. ArticleList rows are
-    # preloaded; if there isn't one, skip — the article exists only
-    # in a deleted-inbox state, which shouldn't be possible given
-    # the FK cascade, but be defensive.
-    if not article.lists:
-        return "skipped"
-    inbox = session.get(Inbox, article.lists[0].inbox_id)
+    # Pick the canonical inbox to re-read the body. For cross-posts
+    # this is the authoritative attribution; `article.lists[0]` is
+    # ordering-dependent on the SQLA loader and was non-deterministic
+    # for the same article across two backfills. canonical_inbox can
+    # be NULL (warm-up period, or all observations fell below the
+    # auto-promotion threshold), so fall back to the first lists
+    # entry only then.
+    inbox: Inbox | None = article.canonical_inbox
+    if inbox is None:
+        if not article.lists:
+            return "skipped"
+        inbox = session.get(Inbox, article.lists[0].inbox_id)
     if inbox is None:
         return "skipped"
 
