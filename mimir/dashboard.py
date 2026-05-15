@@ -277,10 +277,12 @@ def daily_volume(
     )
 
 
-def _like_escape(s: str) -> str:
+def like_escape(s: str) -> str:
     """Escape SQL-LIKE wildcards in a user-supplied substring so a
     query like `100%` doesn't quietly match every row. Pair with
-    `escape="\\"` on the LIKE call."""
+    `escape="\\"` on the LIKE call. Also used by `mimir.subsystems`
+    on MAINTAINERS-rule globs (an `arch/x86_64/` directory would
+    widen unless `_` is escaped)."""
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
@@ -332,7 +334,7 @@ def search_articles(
     only when the user typed something meaningful (≥2 chars).
     """
     def compute() -> list[ArticleSummary]:
-        pattern = f"%{_like_escape(query)}%"
+        pattern = f"%{like_escape(query)}%"
         rows = session.execute(
             _inbox_scoped(
                 select(Article).where(
