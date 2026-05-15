@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}{{ subsystem.name }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
-{% block meta_description %}MAINTAINERS subsystem dashboard for {{ subsystem.name }} on {{ inbox_name }}: recent patches and maintainer ownership.{% endblock %}
+{% block title %}{{ subsystem.name|lower }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block meta_description %}MAINTAINERS subsystem dashboard for {{ subsystem.name|lower }} on {{ inbox_name }}: recent patches and maintainer ownership.{% endblock %}
 {% block content %}
 <section>
-  <h1>{{ subsystem.name }}
+  <h1>{{ subsystem.name|lower }}
     {% if subsystem.status %}
     <small><em>· {{ subsystem.status }}</em></small>
     {% endif %}
@@ -32,7 +32,7 @@
   {% if spark and spark.days %}
   <h2><small>Last 30 days</small></h2>
   <svg width="186" height="28" style="vertical-align: middle;"
-       aria-label="Daily message volume in {{ subsystem.name }}, last 30 days">
+       aria-label="Daily message volume in {{ subsystem.name|lower }}, last 30 days">
     {% for day, count in spark.days %}
       {% set h = (count / spark.max_count * 26) if spark.max_count > 0 else 0 %}
       <rect x="{{ loop.index0 * 6 }}"

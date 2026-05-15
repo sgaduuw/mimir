@@ -780,17 +780,260 @@ def _coerce_dt(value) -> datetime:
     return dt
 
 
+@dataclass
+class SubsystemActivity:
+    """One row in the "most active subsystems" surface.
+
+    `inbox_name` carries the per-row inbox attribution: the inbox
+    whose `/<inbox>/subsystem/<name>/` page the row's link should
+    target. For the per-inbox helper that's always the calling
+    inbox; for the cross-inbox helper it's the inbox where this
+    subsystem saw the most activity in the window, so the user
+    lands on the busiest variant.
+
+    `name` is the stored MAINTAINERS-verbatim casing
+    (e.g. "BCACHEFS"). The dashboard route lowercases the URL
+    component on emit; the rendered chip keeps the upstream
+    casing so it matches what readers see elsewhere in the UI.
+
+    `maintainer_name` is the display name of the first `M:` row
+    in `subsystem_maintainers` for this subsystem. Empty string
+    when MAINTAINERS lists no maintainer (rare; mostly Orphan
+    sections). `multiple_maintainers` distinguishes single-name
+    from "et al." rendering on the card.
+
+    `status` is the verbatim `S:` field
+    (`Supported` / `Maintained` / `Odd Fixes` / `Orphan` /
+    `Obsolete`); the front-page card only surfaces it when it
+    differs from the default `Maintained` (most subsystems sit
+    at that value, so a badge on every card would just be noise).
+
+    `spark` is a 7-day daily-volume series for this subsystem on
+    `inbox_name`. Drives the inline sparkline on the front-page
+    card. None when the subsystem has no supported globs (the
+    `daily_volume_in_subsystem` helper still returns a zero-
+    filled series in that case but we skip it on the cards to
+    avoid rendering a flat bar row for every wildcard-only
+    subsystem).
+
+    Dataclass (not pydantic) for `mimir.cache` round-trip
+    compatibility, matching the project convention for cached
+    value types."""
+    id: int
+    name: str
+    inbox_name: str
+    message_count: int
+    last_activity: datetime
+    maintainer_name: str = ""
+    multiple_maintainers: bool = False
+    status: str | None = None
+    spark: DailyVolume | None = None
+
+
+cache.register("SubsystemActivity", SubsystemActivity)
+
+
+# Cache TTL for the "most active subsystems" surfaces. Same window
+# as `active_threads` since the visual semantics match: "what's hot
+# in the last N days". 5 min keeps the page responsive to fresh
+# ingest without recomputing the per-subsystem fan-out on every
+# request.
+MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC = 300
+
+
+def most_active_subsystems_in_inbox(
+    session: Session, inbox: Inbox,
+    days: int = 7, limit: int = 10, force: bool = False,
+) -> list[SubsystemActivity]:
+    """Top-N subsystems by message volume in `inbox` over the
+    recent window. Powers the "Most active subsystems" widget on
+    the per-inbox dashboard.
+
+    Implementation: iterate every subsystem with at least one
+    supported (non-wildcard) F: glob, run the existing
+    `_subsystem_path_filter_sql` to count matching articles in the
+    window, accumulate, sort, top-N. ~1000-2000 subsystems × one
+    cheap COUNT per cold call; cached aggressively.
+
+    Cached per `(inbox.name, days, limit)`. The warm-cache CLI
+    pre-populates it on the standard 5-minute cron.
+    """
+    def compute() -> list[SubsystemActivity]:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        subs = session.execute(
+            select(Subsystem).options(
+                selectinload(Subsystem.paths),
+                # Maintainer roster eagerly loaded so the per-row
+                # "maintained by <name>" decoration on the card
+                # doesn't trigger an N+1 fan-out across ~1000
+                # subsystems.
+                selectinload(Subsystem.maintainers),
+            )
+        ).scalars().all()
+        out: list[SubsystemActivity] = []
+        for sub in subs:
+            path_filter = _subsystem_path_filter_sql(sub, prefix="mass")
+            if path_filter is None:
+                continue
+            path_sql, path_params = path_filter
+            row = session.execute(
+                text(
+                    f"""
+                    SELECT COUNT(*) AS n, MAX(a.date) AS last_date
+                    FROM articles a
+                    JOIN article_lists al ON al.article_id = a.id
+                    WHERE al.inbox_id = :inbox_id
+                      AND a.date >= :start
+                      AND a.id IN ({path_sql})
+                    """
+                ),
+                {
+                    "inbox_id": inbox.id,
+                    "start": start.isoformat(),
+                    **path_params,
+                },
+            ).one()
+            if row.n <= 0:
+                continue
+            # Pick the first M: maintainer for the card decoration.
+            # R: reviewers don't carry the "maintained by" framing.
+            # ID-order keeps the choice stable across re-parses
+            # (MAINTAINERS rows are recreated wholesale on each
+            # update-mainline; new ids reflect the source order).
+            maintainers = sorted(
+                (m for m in sub.maintainers if m.role == "M"),
+                key=lambda m: m.id,
+            )
+            top_maintainer = maintainers[0].name if maintainers else ""
+            out.append(SubsystemActivity(
+                id=sub.id, name=sub.name,
+                inbox_name=inbox.name,
+                message_count=row.n,
+                last_activity=_coerce_dt(row.last_date),
+                maintainer_name=top_maintainer,
+                multiple_maintainers=len(maintainers) > 1,
+                status=sub.status,
+                # 7-day per-subsystem sparkline for the card. Same
+                # cached helper the per-subsystem dashboard reads,
+                # different `days` key (30d there, 7d here) so we
+                # don't share the cache row.
+                spark=daily_volume_in_subsystem(
+                    session, inbox, sub, days=7,
+                ),
+            ))
+        # Primary: message_count DESC; tiebreak: last_activity DESC
+        # so equally-active subsystems surface by freshness.
+        out.sort(key=lambda a: (-a.message_count, -a.last_activity.timestamp()))
+        return out[:limit]
+
+    return cache.get_or_compute(
+        session,
+        f"most_active_subsystems_in_inbox:{inbox.name}:{days}:{limit}",
+        MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
+def most_active_subsystems_global(
+    session: Session,
+    days: int = 7, limit: int = 10, force: bool = False,
+) -> list[SubsystemActivity]:
+    """Top-N subsystems across **all** configured inboxes over the
+    recent window. Powers the "Active subsystems" teaser on the
+    front page (`/`).
+
+    Each subsystem appears at most once; the row's `inbox_name` is
+    the inbox where this subsystem saw the most activity in the
+    window, so the chip links the reader to the busiest variant.
+    Inbox-name tie-break is alphabetical for determinism.
+
+    Implementation: walk per-inbox top-`limit*3` results from the
+    cached `most_active_subsystems_in_inbox` (so we don't redo the
+    per-subsystem fan-out work), merge by subsystem id, pick the
+    busiest inbox per subsystem, re-sort globally, take top-N. The
+    `*3` multiplier hedges against a subsystem ranking 11th on
+    every inbox but globally top-10.
+    """
+    def compute() -> list[SubsystemActivity]:
+        inboxes = session.execute(select(Inbox)).scalars().all()
+        agg: dict[int, dict] = {}
+        for inbox in inboxes:
+            for row in most_active_subsystems_in_inbox(
+                session, inbox, days=days, limit=limit * 3,
+            ):
+                entry = agg.get(row.id)
+                if entry is None:
+                    agg[row.id] = {
+                        "name": row.name,
+                        "total": row.message_count,
+                        "best_count": row.message_count,
+                        "best_inbox": row.inbox_name,
+                        "best_last_activity": row.last_activity,
+                        # Maintainer + status are subsystem-level
+                        # (not per-inbox), so first-seen wins and
+                        # later iterations don't override.
+                        "maintainer_name": row.maintainer_name,
+                        "multiple_maintainers": row.multiple_maintainers,
+                        "status": row.status,
+                        # Sparkline IS per-inbox; it follows the
+                        # best-inbox attribution below so the card
+                        # shows the sparkline for the inbox the
+                        # chip links to.
+                        "best_spark": row.spark,
+                    }
+                    continue
+                entry["total"] += row.message_count
+                if row.message_count > entry["best_count"] or (
+                    row.message_count == entry["best_count"]
+                    and row.inbox_name < entry["best_inbox"]
+                ):
+                    entry["best_count"] = row.message_count
+                    entry["best_inbox"] = row.inbox_name
+                    entry["best_last_activity"] = row.last_activity
+                    entry["best_spark"] = row.spark
+        out = [
+            SubsystemActivity(
+                id=sub_id,
+                name=e["name"],
+                inbox_name=e["best_inbox"],
+                message_count=e["total"],
+                last_activity=e["best_last_activity"],
+                maintainer_name=e["maintainer_name"],
+                multiple_maintainers=e["multiple_maintainers"],
+                status=e["status"],
+                spark=e["best_spark"],
+            )
+            for sub_id, e in agg.items()
+        ]
+        out.sort(key=lambda a: (-a.message_count, -a.last_activity.timestamp()))
+        return out[:limit]
+
+    return cache.get_or_compute(
+        session,
+        f"most_active_subsystems_global:{days}:{limit}",
+        MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
 __all__ = [
+    "MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC",
     "REVIEWS_PER_PAGE_LIMIT",
     "RelatedPatch",
     "ReviewEntry",
     "ReviewerStat",
+    "SubsystemActivity",
     "SubsystemHit",
     "_subsystem_path_filter_sql",
     "active_reviewers_in_subsystem",
     "active_threads_in_subsystem",
     "articles_reviewed_by",
     "daily_volume_in_subsystem",
+    "most_active_subsystems_global",
+    "most_active_subsystems_in_inbox",
     "path_matches_glob",
     "recent_articles_in_subsystem",
     "recent_patches_touching",
