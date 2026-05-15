@@ -2,7 +2,7 @@
 
 The module-level `settings = Settings()` instance is built at import
 time, so a misconfigured `.env` fails the app before it can serve a
-request — which is the right posture for a long-running service. The
+request, which is the right posture for a long-running service. The
 constraint that protects production from accidentally shipping a
 weak / empty Flask `secret_key` lives in a pydantic `Field(min_length=...)`
 declaration, with no separate test covering it. A future refactor
@@ -19,7 +19,7 @@ from mimir.config import Settings
 def test_settings_rejects_short_secret_key():
     """`Settings.secret_key` carries `Field(min_length=16)`. A value
     below that length must raise `ValidationError` at construction
-    time — pydantic-settings doesn't print a separate warning, it
+    time, pydantic-settings doesn't print a separate warning, it
     just throws, so the import-time failure is what protects the
     deploy from a weak session-signing key."""
     with pytest.raises(ValidationError) as exc_info:

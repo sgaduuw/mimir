@@ -81,7 +81,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     needs: [lint, test]
-    # Skip on PRs from forks — no creds, and our build is single-arch.
+    # Skip on PRs from forks, no creds, and our build is single-arch.
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
@@ -95,7 +95,7 @@ jobs:
       - name: Log in to GHCR
         # PRs don't get push creds (forks would fail anyway). Pushes
         # to main and version tags authenticate with the workflow's
-        # GITHUB_TOKEN — no extra secret needed.
+        # GITHUB_TOKEN, no extra secret needed.
         if: github.event_name == 'push'
         uses: docker/login-action@v4
         with:

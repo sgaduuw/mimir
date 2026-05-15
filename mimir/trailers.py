@@ -112,7 +112,7 @@ def backfill_article_trailers(
 ) -> BackfillResult:
     """Walk articles, extract trailers, insert ArticleTrailer rows.
     Idempotent: articles with existing rows are skipped unless
-    `reprocess=True` (which deletes existing rows first — useful
+    `reprocess=True` (which deletes existing rows first, useful
     after an extractor change).
 
     Newest-first ordering so a `--limit`-bounded session covers the
