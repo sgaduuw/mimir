@@ -1231,3 +1231,55 @@ def test_admin_inbox_remove_keep_orphans_preserves_articles(seeded_db):
     assert "art4@example.com" in ids
     assert "art2@example.com" in ids
     assert "art3@example.com" in ids
+
+
+# Structural / wire-up assertions.
+#
+# The shape of `register_cli` is load-bearing — Flask only exposes the
+# subcommands explicitly added there. A new top-level `@click.command`
+# decorator at module scope that doesn't get wired in is invisible to
+# the operator and to CI (every CLI test invokes its target directly,
+# not via `flask --app mimir <name>`), so the regression slips through.
+
+
+def test_register_cli_attaches_every_module_level_command():
+    """Every `@click.command`/`@click.group`-decorated callable at
+    `mimir.cli` module scope must be reachable through `app.cli`
+    after `register_cli(app)` runs — either added directly to
+    `app.cli` or attached to a registered group (`admin`,
+    `admin inbox`, `admin inbox trackers`, `admin failures`,
+    `admin canonicals`).
+
+    A regression here is silent: the command still imports clean,
+    every direct-invocation test in this file still passes, but
+    `flask --app mimir <name>` returns "No such command." Pin the
+    surface by traversing the registered command tree and asserting
+    no module-level Command falls outside it."""
+    import click
+    from flask import Flask
+
+    import mimir.cli as cli_mod
+
+    app = Flask(__name__)
+    cli_mod.register_cli(app)
+
+    def reachable(commands: dict) -> set:
+        out = set()
+        for cmd in commands.values():
+            out.add(cmd)
+            if isinstance(cmd, click.Group):
+                out.update(reachable(cmd.commands))
+        return out
+
+    attached = reachable(app.cli.commands)
+
+    declared = {
+        v for v in vars(cli_mod).values() if isinstance(v, click.Command)
+    }
+
+    missing = declared - attached
+    assert not missing, (
+        "module-level click.Command(s) not reachable via `app.cli` after "
+        f"`register_cli(app)`: {sorted(c.name for c in missing)}. "
+        "Either add to register_cli() or attach to an existing subgroup."
+    )
