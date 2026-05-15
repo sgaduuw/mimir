@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 
 # Keep only the headers we actually use for display, threading, and triage.
-# The big space-eaters in lore archives — Received chains, DKIM/ARC blobs,
-# X-Spam-*, Authentication-Results — are all dropped. Compared with raw,
+# The big space-eaters in lore archives, Received chains, DKIM/ARC blobs,
+# X-Spam-*, Authentication-Results, are all dropped. Compared with raw,
 # this typically cuts the headers dict by 50-70%.
 KEPT_HEADERS = frozenset({
     "subject", "from", "to", "cc", "bcc", "reply-to", "sender",
@@ -35,9 +35,9 @@ def _scrub_surrogates(s: str) -> str:
     Two layers:
     1. Lone surrogates outside the surrogate-escape range (e.g. U+DF9D from
        broken UTF-16) have no original byte to recover. Replace with U+FFFD.
-    2. Surrogate-escape codepoints (U+DC80–U+DCFF) hold the original invalid
+    2. Surrogate-escape codepoints (U+DC80 U+DCFF) hold the original invalid
        bytes from a misdecoded charset. Round-tripping through bytes recovers
-       them — pairs that happened to be valid UTF-8 (e.g. 0xC3 0xA9) come
+       them, pairs that happened to be valid UTF-8 (e.g. 0xC3 0xA9) come
        back as their proper characters; anything else becomes U+FFFD.
     """
     s = _NON_ESCAPE_SURROGATE_RE.sub("�", s)
@@ -88,9 +88,27 @@ class ParsedArticle(BaseModel):
 
 
 def _normalize_msgid(value: str | None) -> str | None:
+    """Pick the first message-id from a header value and strip its
+    angle brackets.
+
+    RFC 5322 says `In-Reply-To` and `References` each carry a list
+    of `<msg-id>` tokens. `In-Reply-To` is documented as a single
+    msg-id but broken senders (some mailers, some mailing-list
+    re-emitters) emit multiple. The audit (2026-05-15) flagged the
+    previous "whole string verbatim" handling as a silent
+    threading-break: a value like `<a@x> <b@y>` was stored as the
+    literal string `a@x> <b@y` which then never joined to any real
+    Message-ID.
+    """
     if value is None:
         return None
-    return value.strip().lstrip("<").rstrip(">").strip() or None
+    # Strip CFWS comments before splitting so a value like
+    # `(comment) <a@b>` doesn't grab the comment as the first token.
+    cleaned = _CFWS_COMMENT_RE.sub(" ", value).strip()
+    if not cleaned:
+        return None
+    first = cleaned.split()[0]
+    return first.lstrip("<").rstrip(">").strip() or None
 
 
 _SUBJECT_PREFIX_RE = re.compile(
@@ -102,7 +120,7 @@ _SUBJECT_PREFIX_RE = re.compile(
 def normalize_subject(value: str | None) -> str:
     """Strip leading reply/forward prefixes ("Re:", "Fwd:", "Aw:", ...) so
     sibling orphan threads with the same conversation subject can be
-    matched. Bracketed tags like "[PATCH v3]" are *kept* — they
+    matched. Bracketed tags like "[PATCH v3]" are *kept*, they
     distinguish patch revisions, which we want to treat as related-but-
     distinct threads. Returns lowercase, whitespace-collapsed."""
     if not value:
@@ -117,9 +135,25 @@ def normalize_subject(value: str | None) -> str:
 
 
 def _split_references(value: str | None) -> list[str]:
+    """Split a `References:` header into individual `<msg-id>` tokens,
+    discarding RFC 5322 CFWS comments. A `(comment) <a@b> <c@d>` value
+    becomes `["a@b", "c@d"]` after the comment is stripped. Without
+    the strip, the comment text surfaced as a junk reference that
+    couldn't join to anything real."""
     if not value:
         return []
-    return [r.strip().lstrip("<").rstrip(">") for r in value.split() if r.strip()]
+    cleaned = _CFWS_COMMENT_RE.sub(" ", value)
+    return [
+        r.strip().lstrip("<").rstrip(">")
+        for r in cleaned.split() if r.strip()
+    ]
+
+
+# RFC 5322 CFWS comments are `(...)` runs that may appear between
+# header tokens. The grammar allows nesting but real-world wire data
+# almost never nests; a non-greedy non-nesting strip is correct for
+# every kernel-list value the audit's review surfaced.
+_CFWS_COMMENT_RE = re.compile(r"\([^)]*\)")
 
 
 def _decode_rfc2047(value: str | None) -> str | None:

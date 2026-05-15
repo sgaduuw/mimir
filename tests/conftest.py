@@ -2,7 +2,7 @@
 
 Pointing the entire suite at a temp SQLite removes the fragile
 "swap engines mid-test" pattern: every consumer of the bound
-SessionLocal — anywhere in the app — sees the test DB by virtue of
+SessionLocal, anywhere in the app, sees the test DB by virtue of
 `DATABASE_URL` being set BEFORE any `mimir` module is imported.
 
 Fixture stack:
@@ -43,7 +43,7 @@ os.environ.setdefault("FLASK_DEBUG", "false")
 
 import pytest  # noqa: E402
 
-# Test seed constants — exposed so tests can reference them rather
+# Test seed constants, exposed so tests can reference them rather
 # than re-typing string literals.
 TEST_INBOX_PRIMARY = "alpha"
 TEST_INBOX_SECONDARY = "beta"
@@ -90,7 +90,7 @@ def _reset_db():
     with SessionLocal() as s:
         # FK ON DELETE CASCADE handles article_lists and ingest_state
         # for inbox deletes, and articles cascade-deletes article_lists
-        # for article deletes — but explicit is cheaper on a tiny DB
+        # for article deletes, but explicit is cheaper on a tiny DB
         # and immune to FK-order surprises.
         s.execute(delete(IngestState))
         s.execute(delete(ArticleFile))   # FK to articles; clear before Article

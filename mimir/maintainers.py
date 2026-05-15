@@ -37,7 +37,7 @@ from typing import Iterable
 class MaintainerEntry:
     """One maintainer or reviewer entry. `role` is `'M'` (maintainer)
     or `'R'` (reviewer); the spec also defines `L:` for lists but those
-    don't carry a person, they're list addresses — handled separately
+    don't carry a person, they're list addresses, handled separately
     on the parent Subsystem."""
     role: str
     name: str
@@ -55,7 +55,7 @@ class Subsystem:
     maintainers: list[MaintainerEntry] = field(default_factory=list)
     lists: list[str] = field(default_factory=list)
     # Include / exclude path patterns. We keep the raw MAINTAINERS-shaped
-    # strings — the caller (a future glob-matcher) decides how to interpret
+    # strings, the caller (a future glob-matcher) decides how to interpret
     # trailing-slash directory semantics, brace expansion, etc. Storing the
     # literal makes the DB row a faithful echo of the source file.
     files: list[str] = field(default_factory=list)
@@ -65,13 +65,13 @@ class Subsystem:
 # `Description of section entries:` is the literal heading at the top
 # of every MAINTAINERS file marking the end of the preamble and the
 # start of the parseable sections. Catching the exact phrase keeps the
-# parser robust to whatever wording the doc block grows over time —
+# parser robust to whatever wording the doc block grows over time  
 # we only need to know "the section list starts after this line."
 PREAMBLE_TERMINATOR = "Description of section entries:"
 
 
 # Tags we parse out of each block. Everything else (`B:`, `C:`, `P:`,
-# `T:`, `W:`, `Q:`, `K:`, `N:`, etc.) is skipped silently — they don't
+# `T:`, `W:`, `Q:`, `K:`, `N:`, etc.) is skipped silently, they don't
 # feed any current consumer and the parser shouldn't fail on unknown
 # tags. The `T:` (SCM tree URL) and `B:` (bug-tracker URL) entries are
 # the most interesting unparsed ones; revisit if a downstream surface
@@ -86,7 +86,7 @@ def _split_addr(raw: str) -> tuple[str, str] | None:
     addresses (no display name) come back as `('', addr)`; that
     matches how the upstream MAINTAINERS file occasionally writes
     list-shaped or anonymous entries. Anything that doesn't carry an
-    `<addr>` at all is rejected — the calling parser drops it rather
+    `<addr>` at all is rejected, the calling parser drops it rather
     than fabricating a half-row.
 
     Robust against trailing whitespace and against display names that
@@ -160,7 +160,7 @@ def parse(blob: bytes) -> list[Subsystem]:
             and line[0].isupper()
         ):
             if current is None:
-                # Stray tag line outside any section — usually means
+                # Stray tag line outside any section, usually means
                 # the preamble terminator wasn't where we expected.
                 # Skip silently rather than coercing into a fake
                 # section; the file's structure is the source of
@@ -181,7 +181,7 @@ def parse(blob: bytes) -> list[Subsystem]:
         current = Subsystem(name=stripped)
         subsystems.append(current)
 
-    # Drop sections that ended up with zero tag content — they're
+    # Drop sections that ended up with zero tag content, they're
     # documentation headings we couldn't distinguish from real
     # sections at line-scan time (e.g. "Maintainers List").
     return [s for s in subsystems if s.maintainers or s.files or s.lists or s.status]
@@ -220,7 +220,7 @@ def _apply_tag(sub: Subsystem, tag: str, value: str) -> None:
 
 
 def iter_subsystem_paths(subsystems: Iterable[Subsystem]) -> Iterable[tuple[Subsystem, str, bool]]:
-    """Yield `(subsystem, path_pattern, is_exclude)` triples — handy
+    """Yield `(subsystem, path_pattern, is_exclude)` triples, handy
     for bulk-inserting into the `subsystem_paths` table without each
     caller writing the same nested loop."""
     for sub in subsystems:

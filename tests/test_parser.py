@@ -1,6 +1,6 @@
 """Contract tests for `mimir.parser.parse_message`.
 
-The parser is the most error-prone code in the project — MIME, RFC
+The parser is the most error-prone code in the project, MIME, RFC
 2047, surrogate scrubbing, group addresses, the Python 3.11
 AddressHeader bug we worked around, etc. These pin the bits we'd
 notice if they regressed.
@@ -55,6 +55,38 @@ def test_references_split_and_stripped():
     art = parse_message(
         _msg(extra_headers=b"References: <a@x> <b@x>\r\n\t<c@x>\r\n")
     )
+    assert art.references == ["a@x", "b@x", "c@x"]
+
+
+def test_in_reply_to_picks_first_msgid_when_multi_token():
+    """`In-Reply-To` is documented as a single msg-id, but broken
+    senders sometimes emit multiple. The audit (2026-05-15)
+    flagged the previous "whole string verbatim" behaviour as a
+    silent threading-break: a value like `<a@x> <b@y>` was
+    stored as `a@x> <b@y` which never joined to any real
+    Message-ID. Pin: first msg-id wins."""
+    art = parse_message(_msg(
+        extra_headers=b"In-Reply-To: <first@x.com> <second@x.com>\r\n",
+    ))
+    assert art.in_reply_to == "first@x.com"
+
+
+def test_in_reply_to_strips_cfws_comment():
+    """RFC 5322 CFWS comments `(...)` can appear between tokens.
+    Real-world examples are rare but exist; the comment text must
+    not surface as the in_reply_to value."""
+    art = parse_message(_msg(
+        extra_headers=b"In-Reply-To: (some comment) <real@x.com>\r\n",
+    ))
+    assert art.in_reply_to == "real@x.com"
+
+
+def test_references_strips_cfws_comments():
+    """CFWS comments between References tokens are dropped, not
+    turned into junk reference entries that never join anywhere."""
+    art = parse_message(_msg(
+        extra_headers=b"References: <a@x> (comment) <b@x> (another) <c@x>\r\n",
+    ))
     assert art.references == ["a@x", "b@x", "c@x"]
 
 
