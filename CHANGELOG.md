@@ -11,6 +11,26 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.21.0] – 2026-05-15
+
+Per-subsystem dashboard latency pass. A real-world cold load on
+`/linux-devicetree/subsystem/open firmware and flattened device
+tree bindings/` was clocking ~10 s. Three reasons stacked up:
+`recent_articles_in_subsystem` (the article_files × article_lists
+× articles join with one OR per F: glob and a Python X: pass) was
+the only one of the four dashboard helpers without a cache wrap;
+the two trailer / threads helpers ran on a 5-min TTL that fit the
+front-page real-time feel but was overkill for a per-subsystem
+page; and the top-N most active subsystems weren't pre-warmed at
+all.
+
+This release caches the missing helper, raises the two short TTLs
+to 1 h to match the other dashboard surfaces, and warms the top-20
+most active subsystems per inbox so steady-state visitors land on
+warmed cache. Long-tail subsystems (not in any inbox's top-20)
+still eat a single cold load per hour; subsequent visitors in
+that hour get the cached payload.
+
 ### Added
 
 - `recent_articles_in_subsystem` is now cache-backed (1h TTL,
