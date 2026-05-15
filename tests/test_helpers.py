@@ -45,6 +45,43 @@ def test_read_message_missing_mirror_raises(seeded_db):
         read_message(s, alpha, "art1@example.com")
 
 
+def test_read_message_stale_commit_sha_raises(seeded_db, tmp_path):
+    """A real-but-stale commit_sha (mirror got rewritten / blob GC'd)
+    must surface as MessageNotFound, not bubble out as a KeyError
+    that 500s the message route. dulwich raises KeyError when the
+    commit isn't in the object store; _read_blob now catches and
+    converts."""
+    from dulwich.repo import Repo as DulwichRepo
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, Inbox
+
+    # Empty bare repo so the epoch_path.exists() guard passes but
+    # the commit_sha lookup inside doesn't.
+    epoch_dir = tmp_path / "0.git"
+    DulwichRepo.init_bare(str(epoch_dir), mkdir=True)
+
+    with SessionLocal() as s:
+        ix = s.execute(
+            select(Inbox).where(Inbox.name == "alpha")
+        ).scalar_one()
+        ix.mirror_path = str(tmp_path)
+        # art1 is alpha-only in the seeded DB; the seed left
+        # commit_sha = "aa" * 20, which won't be in our empty bare
+        # repo. That's the stale-row shape we want to exercise.
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.inbox_id == ix.id)
+            .values(epoch="0.git")
+        )
+        s.commit()
+
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s, pytest.raises(MessageNotFound, match="blob"):
+        read_message(s, alpha, "art1@example.com")
+
+
 # web._safe_from_filter — privacy redaction
 
 
