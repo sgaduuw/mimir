@@ -11,6 +11,17 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- **Inbox overview on `/` is now a card grid** rather than a flat
+  list. Each card shows the inbox name, a "📌 pinned" badge when
+  the inbox is in `Settings.pinned_inboxes`, the message and epoch
+  counts, the first-to-last date span, a "Last activity: N{m,h,d}
+  ago" relative-time line, and a 30-day daily-volume sparkline.
+  The whole card is the click target. CSS Grid auto-fit reflows
+  cards from N-up on wide screens to single-column on phones; no
+  breakpoint math.
+
 ## [1.18.0] – 2026-05-15
 
 MINOR release. Three slices of #97 (review-attestation trailer
