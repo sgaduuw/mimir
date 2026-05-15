@@ -859,8 +859,15 @@ def most_active_subsystems_in_inbox(
     pre-populates it on the standard 5-minute cron.
     """
     def compute() -> list[SubsystemActivity]:
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(days=days)
+        # Calendar-day window so the inline sparkline buckets line
+        # up with how `daily_volume_in_subsystem` would have queried
+        # them (today + (days-1) prior calendar days). The earlier
+        # rolling 168-hour window meant a message from 10am 7 days
+        # ago could be in the totals but the spark would render it
+        # in an off-by-one bucket.
+        today = date_cls.today()
+        start_day = today - timedelta(days=days - 1)
+        start = datetime.combine(start_day, datetime.min.time(), tzinfo=timezone.utc)
         # One SQL: every (article_id, path, date) tuple for recent
         # in-window articles linked to this inbox. The date filter
         # is selective on the production corpus (millions of rows
@@ -868,10 +875,11 @@ def most_active_subsystems_in_inbox(
         #
         # The earlier shape ran one COUNT per subsystem (~1500 on
         # lkml), which blew through gunicorn's worker timeout cold
-        # on the production deploy of 1.19.0 (filed as the 1.19.1
-        # hotfix). One bulk SQL plus a Python inverted-index walk
-        # is bounded by the recent-window article count instead of
-        # the MAINTAINERS subsystem count.
+        # on the 1.19.0 production deploy. The 1.19.1 hotfix
+        # collapsed that to one bulk SQL + Python inverted-index
+        # walk; 1.19.2 also folds the inline sparkline buckets into
+        # the same loop so the surviving top-N rows don't fan out
+        # one `daily_volume_in_subsystem` call each.
         rows = session.execute(
             text(
                 """
@@ -941,9 +949,16 @@ def most_active_subsystems_in_inbox(
         # Per-subsystem aggregation. `article_set` tracks distinct
         # article_ids so a patch touching three files in the same
         # subsystem counts once, matching the prior COUNT(*) over
-        # a deduplicated article_id IN (…) subquery.
+        # a deduplicated article_id IN (…) subquery. `day_buckets`
+        # accumulates per-day distinct article sets for the inline
+        # sparkline; building them here avoids a fan-out call to
+        # `daily_volume_in_subsystem` per surviving top-N row,
+        # which is what blew up cold in the 1.19.1 worker timeout.
         counts: dict[int, set[int]] = defaultdict(set)
         last_activity: dict[int, datetime] = {}
+        day_buckets: dict[int, dict[date_cls, set[int]]] = defaultdict(
+            lambda: defaultdict(set)
+        )
         for r in rows:
             inc = matches_for(r.path, include_prefix, include_exact)
             if not inc:
@@ -953,21 +968,38 @@ def most_active_subsystems_in_inbox(
             if not matched:
                 continue
             path_date = _coerce_dt(r.art_date)
+            day_key = path_date.date()
             for sub_id in matched:
                 counts[sub_id].add(r.article_id)
+                day_buckets[sub_id][day_key].add(r.article_id)
                 prev = last_activity.get(sub_id)
                 if prev is None or path_date > prev:
                     last_activity[sub_id] = path_date
 
-        # Sort + truncate FIRST, then fetch sparklines only for
-        # the surviving top-N. The earlier shape fetched a
-        # sparkline per matching subsystem which fanned out
-        # `daily_volume_in_subsystem` calls across hundreds of
-        # entries we'd then discard.
+        # Sort + truncate. Sparkline construction below is now
+        # in-memory (no SQL) so we no longer need to defer it for
+        # cost reasons; we still defer for clarity.
         ranked = sorted(
             counts.items(),
             key=lambda kv: (-len(kv[1]), -last_activity[kv[0]].timestamp()),
         )[:limit]
+
+        def _spark_for(sub_id: int) -> DailyVolume:
+            """Zero-filled `days`-length series in the same shape
+            `daily_volume_in_subsystem` returns. Built from the
+            already-aggregated `day_buckets` for this subsystem."""
+            buckets = day_buckets.get(sub_id, {})
+            series = [
+                (
+                    start_day + timedelta(days=i),
+                    len(buckets.get(start_day + timedelta(days=i), set())),
+                )
+                for i in range(days)
+            ]
+            return DailyVolume(
+                days=series,
+                max_count=max((c for _, c in series), default=1),
+            )
 
         out: list[SubsystemActivity] = []
         for sub_id, article_set in ranked:
@@ -985,9 +1017,7 @@ def most_active_subsystems_in_inbox(
                 maintainer_name=top_maintainer,
                 multiple_maintainers=len(maintainers) > 1,
                 status=sub.status,
-                spark=daily_volume_in_subsystem(
-                    session, inbox, sub, days=7,
-                ),
+                spark=_spark_for(sub_id),
             ))
         return out
 
