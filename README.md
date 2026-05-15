@@ -485,6 +485,13 @@ inbox. With this in place, dashboard loads come back in
 single-digit-millisecond range regardless of how big the archive
 gets.
 
+Per-key work fans out across `min(cpu_count, 8)` worker threads by
+default; pass `--workers N` to override (e.g. `--workers 1` when
+debugging a slow target). Keys whose remaining TTL exceeds the
+cron-period buffer are skipped on each tick: 5-min-TTL keys still
+refresh every run, 1-hour-TTL keys refresh on the tick nearest the
+hour boundary, and 24h-TTL keys refresh once per day.
+
 ## Reclaiming space (VACUUM)
 
 SQLite never reclaims freed pages on its own; the `.db` file grows
