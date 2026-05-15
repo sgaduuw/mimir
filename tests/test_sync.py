@@ -16,6 +16,9 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 
+import pytest
+
+import mimir.sync as sync_module
 from mimir.sync import (
     SyncResult,
     clone_epoch,
@@ -68,7 +71,7 @@ def test_fetch_manifest_sends_user_agent():
 
     captured_request = []
 
-    def _urlopen(req):
+    def _urlopen(req, **_kwargs):
         captured_request.append(req)
         return fake_response
 
@@ -78,6 +81,45 @@ def test_fetch_manifest_sends_user_agent():
     assert len(captured_request) == 1
     ua = captured_request[0].get_header("User-agent") or ""
     assert "mimir" in ua.lower()
+
+
+def test_fetch_manifest_passes_timeout_to_urlopen():
+    """A hostile or hung upstream must not stall the scheduler tick;
+    `urlopen` is invoked with the module's wall-clock cap. A regression
+    that dropped the timeout kwarg would silently restore the
+    indefinite-hang shape this hardens against."""
+    payload = {}
+    fake_response = MagicMock()
+    fake_response.read.return_value = _gzipped_json(payload)
+    fake_response.__enter__ = lambda self: fake_response
+    fake_response.__exit__ = lambda *args: False
+
+    captured_kwargs = []
+
+    def _urlopen(req, **kwargs):
+        captured_kwargs.append(kwargs)
+        return fake_response
+
+    with patch("mimir.sync.urllib.request.urlopen", side_effect=_urlopen):
+        fetch_manifest("https://lore.kernel.org/lkml")
+
+    assert captured_kwargs[0].get("timeout") == sync_module._MANIFEST_TIMEOUT_SEC
+
+
+def test_fetch_manifest_caps_oversized_response():
+    """An upstream that returns more than the cap (corrupt mirror,
+    misconfigured server, hostile actor) raises rather than buffering
+    a giant payload into memory. The trailing-byte read idiom means
+    we detect overflow via length comparison, not Content-Length."""
+    oversize = b"x" * (sync_module._MANIFEST_MAX_BYTES + 1)
+    fake_response = MagicMock()
+    fake_response.read.return_value = oversize
+    fake_response.__enter__ = lambda self: fake_response
+    fake_response.__exit__ = lambda *args: False
+
+    with patch("mimir.sync.urllib.request.urlopen", return_value=fake_response):
+        with pytest.raises(ValueError, match="exceeds"):
+            fetch_manifest("https://lore.kernel.org/lkml")
 
 
 def test_fetch_manifest_uses_manifest_js_gz_suffix():
@@ -92,7 +134,7 @@ def test_fetch_manifest_uses_manifest_js_gz_suffix():
 
     captured = []
 
-    def _urlopen(req):
+    def _urlopen(req, **_kwargs):
         captured.append(req.full_url)
         return fake_response
 
@@ -270,6 +312,16 @@ def test_clone_epoch_invokes_git_with_mirror_flag(tmp_path):
     assert sep_idx < url_idx < target_idx
 
 
+def test_clone_epoch_passes_timeout_to_subprocess(tmp_path):
+    """A hung `git clone` (dead connection, malicious smart-HTTP
+    server) must surface as TimeoutExpired rather than parking the
+    scheduler indefinitely. The kwarg is what makes that possible;
+    a regression that dropped it would silently restore the hang."""
+    with patch("mimir.sync.subprocess.run") as run:
+        clone_epoch("0", "https://example.test/lkml/git/0.git", tmp_path)
+    assert run.call_args.kwargs.get("timeout") == sync_module._GIT_CLONE_TIMEOUT_SEC
+
+
 def test_clone_epoch_creates_mirror_dir(tmp_path):
     """If the parent mirror_path doesn't exist yet (first ingest of
     a new inbox), `clone_epoch` creates it so git doesn't fail with
@@ -294,6 +346,16 @@ def test_fetch_epoch_invokes_git_fetch_in_path(tmp_path):
     assert args[:3] == ["git", "-C", str(epoch)]
     assert "fetch" in args
     assert "--prune" in args
+
+
+def test_fetch_epoch_passes_timeout_to_subprocess(tmp_path):
+    """Symmetric to the clone-timeout test: an incremental fetch
+    against a hung remote must time out rather than block."""
+    epoch = tmp_path / "0.git"
+    epoch.mkdir()
+    with patch("mimir.sync.subprocess.run") as run:
+        fetch_epoch(epoch)
+    assert run.call_args.kwargs.get("timeout") == sync_module._GIT_FETCH_TIMEOUT_SEC
 
 
 # sync_epochs -- the orchestrator that ties it all together.
@@ -361,6 +423,41 @@ def test_sync_epochs_captures_clone_failure_in_result(tmp_path):
     # never added to `local`, so it isn't.
     assert "1" in result.fetched
     assert "0" not in result.fetched
+
+
+def test_sync_epochs_captures_clone_timeout_in_result(tmp_path):
+    """A wall-clock timeout on `git clone` raises `TimeoutExpired`,
+    not `CalledProcessError`. The orchestrator must catch the
+    broader `SubprocessError` so a single hung clone goes into
+    result.failed rather than crashing the tick."""
+    remote = [("0", "https://example.test/lkml/git/0.git")]
+
+    def _clone(name, url, mirror_path):
+        raise subprocess.TimeoutExpired(["git"], timeout=1)
+
+    with patch("mimir.sync.discover_remote_epochs", return_value=remote), \
+         patch("mimir.sync.clone_epoch", side_effect=_clone), \
+         patch("mimir.sync.fetch_epoch"):
+        result = sync_epochs("https://example.test/lkml", tmp_path)
+
+    assert "0" in result.failed
+    assert result.cloned == []
+
+
+def test_sync_epochs_captures_fetch_timeout_in_result(tmp_path):
+    """Symmetric to the clone-timeout case: a hung `git fetch` must
+    be captured in result.failed rather than crashing the tick."""
+    (tmp_path / "0.git").mkdir()
+
+    def _fetch(path):
+        raise subprocess.TimeoutExpired(["git"], timeout=1)
+
+    with patch("mimir.sync.discover_remote_epochs", return_value=[]), \
+         patch("mimir.sync.clone_epoch"), \
+         patch("mimir.sync.fetch_epoch", side_effect=_fetch):
+        result = sync_epochs("https://example.test/lkml", tmp_path)
+
+    assert "0" in result.failed
 
 
 def test_sync_epochs_captures_fetch_failure_in_result(tmp_path):

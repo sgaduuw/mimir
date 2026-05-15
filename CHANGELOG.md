@@ -11,6 +11,16 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Security
+
+- `sync`: enforce wall-clock timeouts on the `manifest.js.gz`
+  fetch (60 s) and on `git clone` (30 min) / `git fetch` (10 min),
+  plus a 16 MiB cap on the manifest body. A hostile or misbehaving
+  upstream can no longer stall the scheduler tick indefinitely or
+  OOM the ingest sidecar via a giant response. `sync_epochs`
+  catches `subprocess.SubprocessError` so a timeout on one epoch
+  surfaces in `SyncResult.failed` and the tick continues.
+
 ## [1.21.0] – 2026-05-15
 
 Per-subsystem dashboard latency pass. A real-world cold load on
