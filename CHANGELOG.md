@@ -31,6 +31,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   surfaces in `SyncResult.failed` and the tick continues.
 ### Fixed
 
+- Patch-metadata backfills (`backfill-article-files`,
+  `backfill-article-trailers`) now read the body via
+  `article.canonical_inbox` before falling back to
+  `article.lists[0]`. The old behaviour was order-dependent on the
+  SQLA loader: which mirror got read for a cross-posted article
+  was non-deterministic across two runs, so on a partial-mirror
+  host (one inbox available, the other not) the backfill could
+  flip between "indexed" and "skipped" between ticks. Falling
+  back to `lists[0]` only when canonical is NULL matches the
+  render-time canonical-inbox rule. The shared walker
+  (`mimir._backfill.walk_articles`) now eager-loads
+  `Article.canonical_inbox` alongside `Article.lists` so the
+  per-row decision doesn't N+1.
 - `mimir.store._read_blob`: context-manage the dulwich `Repo`
   and surface `KeyError` from a stale commit_sha / GC'd blob as
   `MessageNotFound`. Previously the `Repo` instance kept packfile

@@ -17,7 +17,7 @@ import surface (underscore-prefixed).
 from typing import Any, Callable
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from mimir.extensions import SessionLocal
 from mimir.models import Article
@@ -63,7 +63,14 @@ def walk_articles(
                 .limit(batch_size)
             )
             if preload_lists:
-                q = q.options(selectinload(Article.lists))
+                q = q.options(
+                    selectinload(Article.lists),
+                    # Prefer canonical_inbox when picking which mirror
+                    # to re-read the body from. joinedload because it's
+                    # a nullable many-to-one, one JOIN with no N+1 on
+                    # the article loop.
+                    joinedload(Article.canonical_inbox),
+                )
             if cursor is not None:
                 q = q.where(Article.id < cursor)
             batch = list(session.execute(q).scalars())
