@@ -328,10 +328,12 @@ def search_articles(
     case-insensitive, ordered by date desc, capped at `limit`.
 
     Implementation is a straight LIKE scan with the date index
-    short-circuiting; cached per (inbox, query, limit) at the
-    listing TTL. The caller is responsible for length-bounding
-    `query` (it appears verbatim in the cache key) and for asking
-    only when the user typed something meaningful (≥2 chars).
+    short-circuiting; cached per (inbox, query.lower(), limit) at the
+    listing TTL. The cache key is case-folded so `Foo` and `foo`
+    share one row, mirroring `ilike()`'s case-insensitivity — the
+    SQL would return identical results either way. The caller is
+    responsible for length-bounding `query` and for asking only
+    when the user typed something meaningful (≥2 chars).
     """
     def compute() -> list[ArticleSummary]:
         pattern = f"%{like_escape(query)}%"
@@ -352,7 +354,7 @@ def search_articles(
 
     return cache.get_or_compute(
         session,
-        f"search:{inbox.name}:{query}:{limit}",
+        f"search:{inbox.name}:{query.lower()}:{limit}",
         LISTING_CACHE_TTL_SEC,
         compute,
         force=force,
