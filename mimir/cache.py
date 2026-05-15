@@ -17,8 +17,10 @@ and age out via `purge_expired`. Callers don't see the prefix.
 import dataclasses
 import json
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from sqlalchemy import delete as delete_stmt, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -34,6 +36,29 @@ logger = logging.getLogger(__name__)
 # field renames, encoder changes). Old rows fall through to a miss
 # and get cleaned up by `purge_expired`.
 NAMESPACE_VERSION = 2
+
+# Proactive-refresh window threaded through to `get_or_compute` via a
+# context manager. Set by warm-cache so a still-fresh row that's about
+# to expire gets recomputed before the next user request sees a cold
+# miss, without recomputing rows that are nowhere near expiry. Unset
+# (None) means standard cache-aside: only expired rows recompute.
+_refresh_within: ContextVar[float | None] = ContextVar("_refresh_within", default=None)
+
+
+@contextmanager
+def refresh_window(seconds: float | None) -> Iterator[None]:
+    """Within this scope, `get_or_compute` recomputes any cached row
+    whose remaining TTL is less than `seconds`, instead of returning
+    the stale-but-not-expired value. Used by warm-cache so 24h-TTL
+    keys aren't recomputed on every 5-minute cron tick — only on the
+    tick nearest their expiry. The contextvar is snapshotted at
+    submission time when callers fan out to a `ThreadPoolExecutor`,
+    via `contextvars.copy_context().run(fn, ...)`."""
+    token = _refresh_within.set(seconds)
+    try:
+        yield
+    finally:
+        _refresh_within.reset(token)
 
 
 def _ns(key: str) -> str:
@@ -166,7 +191,12 @@ def get_or_compute(
             select(CacheEntry.value, CacheEntry.expires_at).where(CacheEntry.key == nskey)
         ).one_or_none()
         if row is not None and row.expires_at >= _now():
-            return _decode(json.loads(row.value))
+            window = _refresh_within.get()
+            if window is None or (row.expires_at - _now()) >= window:
+                return _decode(json.loads(row.value))
+            # Inside an active refresh_window and the row is about to
+            # expire: fall through to recompute instead of serving a
+            # near-stale value that the next user request would miss.
     value = fn()
     set(key, value, ttl)
     return value
