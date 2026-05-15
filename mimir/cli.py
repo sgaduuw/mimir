@@ -55,13 +55,18 @@ from mimir.models import (
 )
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import (
+    active_reviewers_in_subsystem,
+    active_threads_in_subsystem,
+    daily_volume_in_subsystem,
     most_active_subsystems_global,
     most_active_subsystems_in_inbox,
+    recent_articles_in_subsystem,
 )
 from mimir.sync import sync_epochs
 from mimir.threading import active_threads, threads_for_day
 from mimir.web import (
     FEED_ENTRY_LIMIT,
+    SUBSYSTEM_RECENT_PATCHES_LIMIT,
     inbox_sitemap_xml,
     meta_sitemap_xml,
     sitemap_index_xml,
@@ -75,6 +80,17 @@ logger = logging.getLogger(__name__)
 # jitter buffer). A key with less remaining TTL than this gets
 # recomputed; one with more remaining TTL is left alone.
 WARM_CACHE_REFRESH_WITHIN_SEC = 450
+
+# Number of top-active subsystems whose per-subsystem dashboard
+# caches are pre-warmed per inbox. The full per-subsystem dashboard
+# fires four cache-backed helpers; on a 1500-subsystem corpus,
+# warming every subsystem × every inbox would dominate the run.
+# 20 covers the surfaces a reader most plausibly lands on (the
+# front-page subsystem teaser and the per-inbox dashboard's
+# "most active subsystems" widget both pull from the same ranked
+# list). Long-tail subsystems still hit a single cold load per
+# hour; subsequent visitors get the cached payload.
+WARM_TOP_SUBSYSTEMS_PER_INBOX = 20
 
 
 def _configure_logging(verbose: int) -> None:
@@ -717,6 +733,42 @@ def backfill_patch_series_command(
     )
 
 
+def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
+    """Pre-warm the four cache-backed helpers driving the per-subsystem
+    dashboard (`recent_articles_in_subsystem`,
+    `active_threads_in_subsystem`, `daily_volume_in_subsystem`,
+    `active_reviewers_in_subsystem`) for the top-N most active
+    subsystems in `inbox`. The four helpers' arguments must match the
+    `subsystem_dashboard` route call sites in `mimir/web.py`, or the
+    cache keys diverge and the route still does cold work."""
+    top = most_active_subsystems_in_inbox(session, inbox, days=7, limit=top_n)
+    if not top:
+        return
+    # Bulk-load the Subsystems with their paths preloaded — one query
+    # instead of N. The helpers below access `subsystem.paths` for the
+    # F:/X: glob filters.
+    sub_ids = [row.id for row in top]
+    subs = session.execute(
+        select(Subsystem)
+        .options(selectinload(Subsystem.paths))
+        .where(Subsystem.id.in_(sub_ids))
+    ).scalars().all()
+    sub_by_id = {s.id: s for s in subs}
+    for row in top:
+        sub = sub_by_id.get(row.id)
+        if sub is None:
+            continue
+        # `refresh_window` is active in the calling context; each of
+        # these falls through to a no-op when the cached row is far
+        # from expiry.
+        recent_articles_in_subsystem(
+            session, inbox, sub, limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+        )
+        active_threads_in_subsystem(session, inbox, sub, days=7, limit=10)
+        daily_volume_in_subsystem(session, inbox, sub, days=30)
+        active_reviewers_in_subsystem(session, inbox, sub, days=30, limit=10)
+
+
 @click.command("warm-cache")
 @click.option(
     "-v",
@@ -798,6 +850,14 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
             # slices from the same cached top-100 payload.
             (f"{inbox.name} most_active_subsystems_in_inbox (7d)",
              lambda s, ib=inbox: most_active_subsystems_in_inbox(s, ib, days=7)),
+            # Per-subsystem dashboard helpers, top-N most active
+            # subsystems only. Coarse-grained: one warm target per
+            # inbox covering 4 helpers × top-N subsystems internally.
+            # Long-tail subsystems pay one cold load per hour.
+            (f"{inbox.name} subsystem dashboards (top {WARM_TOP_SUBSYSTEMS_PER_INBOX})",
+             lambda s, ib=inbox: _warm_subsystem_dashboards(
+                 s, ib, WARM_TOP_SUBSYSTEMS_PER_INBOX,
+             )),
         ])
         for label, substr in (inbox.tracked_authors or {}).items():
             # Dashboard tracker tile (limit=5) AND per-author atom

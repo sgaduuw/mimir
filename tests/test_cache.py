@@ -205,6 +205,43 @@ def test_dataclass_containing_nested_dict_roundtrip():
     assert all(isinstance(it, ArticleSummary) for it in out["recent"])
 
 
+def test_pydantic_basemodel_roundtrip():
+    """Pydantic models are encoded by enumerating `model_fields` (not
+    by `model_dump()`-flattening) so nested registered types keep
+    their tags. RelatedPatch is the first BaseModel that flows through
+    the cache (per-subsystem dashboard's recent-articles surface);
+    breaking this roundtrip would silently corrupt that cache."""
+    from mimir.subsystems import RelatedPatch
+    rp = RelatedPatch(
+        article_id=42,
+        message_id="msg@example.com",
+        subject="patch subject",
+        author="A. Hacker",
+        date=datetime(2026, 5, 15, 10, 0, tzinfo=timezone.utc),
+        inbox_name="lkml",
+    )
+    out = _roundtrip(rp)
+    assert out == rp
+    # Make sure the date came back tz-aware UTC, not as a string.
+    assert out.date == rp.date
+    assert out.date.tzinfo is not None
+
+
+def test_pydantic_basemodel_with_none_fields():
+    """Subject and author are nullable on RelatedPatch; an article
+    with no extractable subject/author must still round-trip."""
+    from mimir.subsystems import RelatedPatch
+    rp = RelatedPatch(
+        article_id=1,
+        message_id="bare@example.com",
+        subject=None,
+        author=None,
+        date=None,
+        inbox_name="lkml",
+    )
+    assert _roundtrip(rp) == rp
+
+
 def test_unknown_type_raises():
     class Custom:
         pass
