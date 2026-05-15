@@ -49,6 +49,14 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   surfaces in `SyncResult.failed` and the tick continues.
 ### Fixed
 
+- `mimir.parser`: `In-Reply-To` headers carrying multiple
+  msg-ids (broken senders sometimes emit `<a@x> <b@y>`) now
+  resolve to the first msg-id rather than being stored as the
+  literal `a@x> <b@y` string that never joined to any real
+  Message-ID. `References:` and `In-Reply-To:` both also strip
+  RFC 5322 CFWS comments `(...)` before splitting, so
+  `<a@x> (comment) <b@x>` extracts `["a@x", "b@x"]` instead of
+  surfacing the comment text as a junk reference.
 - `_daily_view` and `threads_since_view` now compare `Article.date`
   against `datetime` bind parameters rather than
   `start.strftime(...)` / `end.strftime(...)` strings. SQLite is
