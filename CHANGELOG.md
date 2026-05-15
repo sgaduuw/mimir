@@ -11,6 +11,83 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.19.0] – 2026-05-15
+
+MINOR release. UX-focused pass: the front page and per-inbox
+dashboards trade flat lists for a card-shaped layout, the per-
+subsystem dashboards become navigable from every surface (front
+page, inbox dashboard, patch page), and subsystem URLs get a
+canonical lowercase form. No schema changes; no migrations
+required.
+
+### Added
+
+- **Subsystem discoverability** across three surfaces. The per-
+  subsystem dashboards (`/<inbox>/subsystem/<name>/`) were
+  previously reachable only by direct URL; mimir now exposes a
+  navigation path from every entry point a reader is likely to
+  start at.
+  - **Front page** (`/`) carries an "Active subsystems (last 7
+    days)" card grid below the inbox cards. Each card links to
+    the per-subsystem dashboard on whichever inbox saw the most
+    activity for that subsystem in the window, surfacing the
+    busiest variant. Cards carry the top `M:` maintainer's
+    display name ("maintained by Kent Overstreet", with
+    "et al." when MAINTAINERS lists more than one M: row), a
+    status badge in the top-right for non-default `S:` values
+    (`Supported`, `Orphan`, `Obsolete`, `Odd Fixes`;
+    `Maintained` is suppressed since most subsystems sit at
+    that value), a "Last activity: N{m,h,d} ago" relative-time
+    line, and a 7-day daily-volume sparkline. Sizing matches
+    the inbox cards above (same `minmax(18rem, 1fr)` grid +
+    padding) for a shared vertical rhythm.
+  - **Per-inbox dashboard** (`/<inbox>/`) carries a "Most active
+    subsystems (last 7 days)" list below "Most active threads".
+    Plain `<ul>` matches the surrounding section layouts on this
+    page; the cards are reserved for the front-page surface
+    where they have something to anchor against.
+  - **Patch pages** linkify the "Subsystem: bcachefs" header so
+    each subsystem name acts as a launch pad into the broader
+    subsystem context.
+  - New helpers in `mimir.subsystems`:
+    `most_active_subsystems_in_inbox` (per-inbox) and
+    `most_active_subsystems_global` (cross-inbox aggregator with
+    busiest-inbox attribution). Both cached for 5 min;
+    `warm-cache` pre-populates them. New `relative_time` Jinja
+    filter.
+
+### Changed
+
+- **Subsystem dashboard URLs are now lowercase**. MAINTAINERS
+  stores subsystem names in upper-case ASCII (`BCACHEFS`,
+  `BTRFS FILE SYSTEM`); the route now treats lowercase as the
+  canonical URL form. Uppercase or mixed-case requests return a
+  301 redirect to the canonical lowercase URL, consolidating
+  bookmarks and search-engine indexing on one shape. Lookup is
+  case-insensitive against the stored row. The visible
+  subsystem name is also lowercased everywhere it renders
+  (heading, patch-page header, sparkline aria-label, subsystem
+  cards): the upstream all-caps reads as shouty in body copy.
+  DB rows keep the upstream-verbatim casing; only display
+  lowercases.
+
+- **Inbox overview on `/` is now a card grid** rather than a flat
+  list. Each card shows the inbox name, a "📌 pinned" badge when
+  the inbox is in `Settings.pinned_inboxes`, the message and epoch
+  counts, the first-to-last date span, a "Last activity: N{m,h,d}
+  ago" relative-time line, and a 30-day daily-volume sparkline.
+  The whole card is the click target. CSS Grid auto-fit reflows
+  cards from N-up on wide screens to single-column on phones; no
+  breakpoint math.
+
+### Internal
+
+- `mimir.cache` `NAMESPACE_VERSION` bumped to v2 so pre-existing
+  cached rows for the prior `SubsystemActivity` shape don't get
+  decoded against the new fields. Other cached helpers ride on
+  the new namespace transparently; warm-cache re-populates on
+  the next 5-minute cron tick.
+
 ## [1.18.0] – 2026-05-15
 
 MINOR release. Three slices of #97 (review-attestation trailer

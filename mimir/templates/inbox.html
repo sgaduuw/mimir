@@ -30,6 +30,27 @@
 </section>
 {% endif %}
 
+{% if active_subsystems %}
+{# Subsystem discoverability on the inbox dashboard. Plain <ul>
+   matches the visual language of the surrounding "Most active
+   threads" / "Recent patches" lists — cards would be heavier
+   than the rest of the page warrants. The front-page surface
+   keeps the card grid because it has nothing else around it to
+   anchor against. Display name is lowercased (anti-shouty pass);
+   URL canonical form is also lowercase. #}
+<section>
+  <h2>Most active subsystems <small><em>(last 7 days)</em></small></h2>
+  <ul>
+    {% for s in active_subsystems %}
+    <li>
+      <a href="/{{ s.inbox_name }}/subsystem/{{ s.name|lower|urlencode }}/">{{ s.name|lower }}</a>
+      <br><small>{{ s.message_count }} message{{ '' if s.message_count == 1 else 's' }} in 7d</small>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 <div class="grid">
   {% if pulls %}
   <section>

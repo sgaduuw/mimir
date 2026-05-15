@@ -54,6 +54,10 @@ from mimir.models import (
     SubsystemPath,
 )
 from mimir.store import MessageNotFound, read_message
+from mimir.subsystems import (
+    most_active_subsystems_global,
+    most_active_subsystems_in_inbox,
+)
 from mimir.sync import sync_epochs
 from mimir.threading import active_threads, threads_for_day
 from mimir.web import (
@@ -760,6 +764,20 @@ def warm_cache_command(verbose: int) -> None:
                 # initial paint uses 10.
                 (f"{inbox.name} recent_articles ({FEED_ENTRY_LIMIT})",
                  lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT, force=True)),
+                # Per-inbox subsystem discoverability widget. 7d
+                # window + 30 hedge (top-12 displayed + headroom)
+                # matches the global helper's `limit*3` expectation
+                # so the cross-inbox aggregator reuses these rows.
+                (f"{inbox.name} most_active_subsystems_in_inbox (7d, 30)",
+                 lambda s, ib=inbox: most_active_subsystems_in_inbox(
+                     s, ib, days=7, limit=30, force=True,
+                 )),
+                # Per-inbox dashboard widget reads top-10. Separate
+                # cache key from limit=30 above, so warm both.
+                (f"{inbox.name} most_active_subsystems_in_inbox (7d, 10)",
+                 lambda s, ib=inbox: most_active_subsystems_in_inbox(
+                     s, ib, days=7, limit=10, force=True,
+                 )),
             ])
             for label, substr in (inbox.tracked_authors or {}).items():
                 # Dashboard tracker tile (limit=5) AND per-author atom
@@ -776,6 +794,16 @@ def warm_cache_command(verbose: int) -> None:
                         s, ib, sub, FEED_ENTRY_LIMIT, force=True
                     ),
                 ))
+        # Front-page cross-inbox subsystem teaser. After the per-
+        # inbox warming above, the global aggregator just consumes
+        # those cached results — cheap when the per-inbox keys are
+        # fresh, which they are after the loop just above.
+        targets.append((
+            "most_active_subsystems_global (7d, 12)",
+            lambda s: most_active_subsystems_global(
+                s, days=7, limit=12, force=True,
+            ),
+        ))
         # Sitemap caches. Only warmed when SITE_BASE_URL is configured —
         # without it, the helper would cache a body with relative-looking
         # URLs that wouldn't match what the route emits at request time
