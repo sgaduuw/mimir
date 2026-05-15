@@ -36,7 +36,7 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
-from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume
+from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume, like_escape
 from mimir.models import (
     Article,
     ArticleFile,
@@ -307,7 +307,7 @@ def recent_articles_in_subsystem(
                 # as literal — escape them so a path glob containing `_`
                 # (rare but possible: `arch/x86_64/`) doesn't widen the
                 # match.
-                prefix = g.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                prefix = like_escape(g)
                 or_conds.append(ArticleFile.path.like(prefix + "%", escape="\\"))
                 # Also match the bare directory path (no trailing slash).
                 exact_paths.append(g[:-1])
@@ -440,12 +440,7 @@ def _subsystem_path_filter_sql(
                 pname_pre = f"{prefix}_{label}_pre_{i}"
                 # Escape LIKE wildcards so a glob containing `_`
                 # (e.g. `arch/x86_64/`) doesn't widen the match.
-                like_val = (
-                    g.replace("\\", "\\\\")
-                     .replace("%", "\\%")
-                     .replace("_", "\\_")
-                )
-                params[pname_pre] = like_val + "%"
+                params[pname_pre] = like_escape(g) + "%"
                 parts.append(f"path LIKE :{pname_pre} ESCAPE '\\'")
                 # Also include the bare directory path.
                 pname_eq = f"{prefix}_{label}_eq_{i}"
