@@ -35,7 +35,7 @@
      because the CSP (script-src 'self') blocks inline scripts. #}
   <script src="{{ url_for('static', filename='js/thread-fold.js') }}"></script>
   {# Vim-style keyboard navigation: h/j/k/l, Esc to close fold, ? for
-     help. Deferred since nothing here needs to run before paint —
+     help. Deferred since nothing here needs to run before paint  
      contrast thread-fold.js, which must run synchronously to avoid
      FOUC. #}
   <script src="{{ url_for('static', filename='js/keyboard-nav.js') }}" defer></script>
@@ -131,7 +131,7 @@
     .highlight .cp { color: light-dark(#5a5af0, #b0b0ff); }   /* preprocessor */
     .highlight .o { color: light-dark(#666666, #c0c0c0); }    /* operators */
     .highlight .err { color: light-dark(#a00000, #f4979c); } /* lexer error */
-    /* Footer year-browse: one row per decade, plain text grouping —
+    /* Footer year-browse: one row per decade, plain text grouping  
        no bullets, no oversize spacing. Pico's default <ul> would
        indent and bullet each line; <li> with display:block + zero
        padding keeps things compact in the small-text footer. */
@@ -174,7 +174,7 @@
   </main>
   {# Keyboard-help overlay. Rendered on every page so the `?` key
      always opens it; native <dialog> handles Esc-to-dismiss and
-     focus trapping. Hidden by default — only `showModal()` (driven
+     focus trapping. Hidden by default, only `showModal()` (driven
      by keyboard-nav.js) makes it visible. #}
   <dialog id="keyboard-help" aria-labelledby="kbd-help-title">
     <article style="max-width: 28rem;">

@@ -59,7 +59,7 @@ def test_parse_single_maintained_section():
 def test_parse_multiple_maintainers_and_reviewers():
     """Both `M:` (maintainer) and `R:` (reviewer) entries land in
     `maintainers` with the corresponding `role`. Order is source-
-    file order — preserves any author-intended hierarchy."""
+    file order, preserves any author-intended hierarchy."""
     blob = _section(
         "EXAMPLE SUBSYSTEM\n"
         "M:\tA <a@example>\n"
@@ -90,8 +90,8 @@ def test_parse_handles_excludes_and_multiple_paths():
 
 def test_parse_strips_parenthesised_list_qualifier():
     """Some `L:` lines append a parenthesised qualifier like
-    `(moderated for non-subscribers)`. The canonical address — what
-    we'd match against — is the bare email."""
+    `(moderated for non-subscribers)`. The canonical address, what
+    we'd match against, is the bare email."""
     blob = _section(
         "FOO\n"
         "M:\tA <a@example>\n"
@@ -123,7 +123,7 @@ def test_parse_two_sections_separated_by_blank_line():
 
 def test_parse_ignores_unknown_tags():
     """Tags we don't model (`T:`, `W:`, `B:`, `K:`, etc.) must not
-    crash or pollute the entry. They're skipped silently — the spec
+    crash or pollute the entry. They're skipped silently, the spec
     permits unrecognised tags."""
     blob = _section(
         "FOO\n"
@@ -224,7 +224,7 @@ def test_parse_handles_non_ascii_names_via_surrogateescape():
     """Non-decodable bytes survive parsing via surrogateescape, so
     a stray non-UTF-8 byte in a contributor name doesn't crash the
     entire file. The downstream consumer can re-encode if needed."""
-    # A latin-1 byte (0xe9 = é) in a name — would normally raise
+    # A latin-1 byte (0xe9 = é) in a name, would normally raise
     # under strict UTF-8 decoding.
     blob = _section("FOO\nM:\tJos\xe9 Doe <j@example>\nS:\tMaintained\nF:\tfoo/\n")
     sub = parse(blob)[0]

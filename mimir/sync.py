@@ -5,7 +5,7 @@ available repo. We fetch that, derive the set of epoch numbers, and:
   - `git clone --mirror` any epoch we don't have locally
   - `git fetch` existing local epochs to pull new commits
 
-Both clone and fetch shell out to `git` — its smart-HTTP transport is
+Both clone and fetch shell out to `git`, its smart-HTTP transport is
 faster and more reliable than dulwich's HTTP client for large repos.
 """
 import gzip
