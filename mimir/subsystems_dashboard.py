@@ -918,8 +918,14 @@ def _most_active_subsystems_global_full(
         inboxes = session.execute(select(Inbox)).scalars().all()
         agg: dict[int, dict] = {}
         for inbox in inboxes:
+            # Propagate `force` so a `warm-cache --force` (or any
+            # other forced global refresh) actually recomputes the
+            # per-inbox rows instead of reading whatever stale value
+            # the per-inbox cache last wrote. Audit (2026-05-15)
+            # flagged this gap: the outer cache wrap bypasses, the
+            # inner one silently doesn't.
             for row in _most_active_subsystems_in_inbox_full(
-                session, inbox, days=days,
+                session, inbox, days=days, force=force,
             ):
                 entry = agg.get(row.id)
                 if entry is None:
