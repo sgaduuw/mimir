@@ -11,11 +11,13 @@ For commands that have to read real blobs (`show`, `reindex`,
 `tmp_path` via `_build_pubinbox_repo` and re-points the seeded
 inbox row at it.
 """
+from datetime import datetime, timezone
 from pathlib import Path
 
 from click.testing import CliRunner
 from dulwich.objects import Blob, Commit, Tree
 from dulwich.repo import Repo
+from sqlalchemy import select
 
 from mimir.cli import (
     admin_canonicals_backfill_command,
@@ -154,6 +156,60 @@ def test_admin_inbox_list_shows_tracker_count(seeded_db):
     beta_line = next(line for line in lines if " beta " in line)
     assert "trackers=2" in alpha_line
     assert "trackers=none" in beta_line
+
+
+def test_warm_cache_workers_one_serial_path(seeded_db):
+    """`--workers 1` forces the single-threaded path that bypasses the
+    thread pool. Behavior must match the parallel path: every key
+    still gets warmed, summary line still emits."""
+    result = CliRunner().invoke(warm_cache_command, ["--workers", "1", "-v"])
+    assert result.exit_code == 0
+    per_key_lines = [
+        line for line in result.output.splitlines()
+        if line.endswith(" ms") and "ms total" not in line
+    ]
+    assert len(per_key_lines) >= 5, result.output
+    assert "warm-cache:" in result.output and "ms total" in result.output
+
+
+def test_warm_cache_parallel_propagates_refresh_window(seeded_db):
+    """Worker threads must inherit the `refresh_window` contextvar
+    via `copy_context()`. If they don't, a fresh-but-near-expiry
+    cache row would *not* recompute under load — silently undoing
+    Phase 2's TTL-aware refresh once Phase 3 fans out across workers.
+
+    Pre-seed a near-expiry row for one warm target's key, then run
+    warm-cache. The row's `expires_at` must move forward (recompute
+    happened) instead of staying near-now (skipped)."""
+    from sqlalchemy import delete as sql_delete
+    from mimir.cache import _ns
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    # active_threads target for alpha; key matches dashboard helper.
+    key = "active_threads:alpha:7:10"
+    near_expiry = int(datetime.now(timezone.utc).timestamp()) + 30  # 30 s left
+    with SessionLocal() as s:
+        s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
+        s.add(CacheEntry(key=_ns(key), value="[]", expires_at=near_expiry))
+        s.commit()
+
+    result = CliRunner().invoke(warm_cache_command, ["--workers", "4"])
+    assert result.exit_code == 0
+
+    with SessionLocal() as s:
+        row = s.execute(
+            select(CacheEntry).where(CacheEntry.key == _ns(key))
+        ).scalar_one()
+    # If the worker thread had no refresh_window, the still-live
+    # 30s-remaining row would have short-circuited and `expires_at`
+    # would still be near `near_expiry`. Successful refresh pushes
+    # it out by the full TTL.
+    assert row.expires_at > near_expiry + 60, (
+        f"expected refresh to extend expires_at well past {near_expiry}, "
+        f"got {row.expires_at}; refresh_window contextvar may not have "
+        f"propagated to worker threads"
+    )
 
 
 def test_warm_cache_default_emits_only_summary(seeded_db):
