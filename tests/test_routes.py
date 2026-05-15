@@ -2558,6 +2558,50 @@ def test_subsystem_dashboard_404_on_unknown_inbox(client):
     assert client.get("/nonexistent/subsystem/bcachefs/").status_code == 404
 
 
+def test_subsystem_dashboard_unknown_inbox_with_uppercase_404s_directly(client):
+    """A bogus inbox plus an uppercase subsystem name must 404
+    directly, not 301 to the lowercase form first. Previously the
+    case-correction redirect fired before `_get_inbox_or_404`, so
+    crawlers hitting a bad-inbox URL paid a wasted hop. The audit
+    (2026-05-15) flagged the ordering."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    r = client.get("/nonexistent/subsystem/BCACHEFS/")
+    assert r.status_code == 404
+    # And specifically NOT a 301; a regression to the old order
+    # would surface as one of these instead.
+    assert r.status_code not in (301, 302)
+
+
+def test_subsystem_dashboard_rejects_control_chars_in_name(client):
+    """Defense-in-depth: ASCII control bytes in the subsystem name
+    fall to 404 at the URL boundary. Werkzeug already %-encodes
+    them in the Location header for the case-correction 301, so
+    this isn't patching a known injection, but it keeps the URL
+    boundary explicit. Real MAINTAINERS names are quite permissive
+    (spaces, slashes, parens), so we only reject the bytes that
+    couldn't be meaningful in a name."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    # Each of these contains an ASCII control byte. The route
+    # accepts the request (Flask routing tolerates them), but the
+    # validator rejects with 404 before doing any DB work.
+    for bad in (
+        "bcachefs\x00",  # NUL
+        "bcachefs\r\nX-Inject: 1",  # CRLF
+        "bcache\tfs",  # tab
+        "bcache\x1bfs",  # ESC
+    ):
+        from urllib.parse import quote
+        # quote(..., safe="") percent-encodes everything including
+        # the control bytes; that produces the URL a browser/bot
+        # would actually send for the literal name.
+        path = f"/alpha/subsystem/{quote(bad, safe='')}/"
+        r = client.get(path)
+        assert r.status_code == 404, (
+            f"subsystem name {bad!r} should 404 at validator, got "
+            f"{r.status_code}"
+        )
+
+
 def test_subsystem_dashboard_scopes_recent_to_inbox(client, tmp_path):
     """The dashboard URL is per-inbox; only articles linked to that
     inbox surface in the recent list."""
