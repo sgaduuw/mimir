@@ -51,6 +51,8 @@ from mimir.subsystems import (
     active_threads_in_subsystem,
     articles_reviewed_by,
     daily_volume_in_subsystem,
+    most_active_subsystems_global,
+    most_active_subsystems_in_inbox,
     recent_articles_in_subsystem,
     recent_patches_touching,
     subsystems_for_article,
@@ -521,6 +523,17 @@ def _display_name_filter(author: str | None) -> str:
     if name:
         return name
     return "unknown sender"
+
+
+@bp_web.app_template_filter("relative_time")
+def _relative_time_filter(then: datetime | None) -> str:
+    """Coarse "N{m,h,d} ago" rendering of a tz-aware datetime, with
+    a YYYY-MM-DD fallback past 30 days. Thin wrapper around
+    `_relative_time` so templates can spell it as a Jinja filter:
+    `{{ thing.last_activity|relative_time }}`."""
+    if then is None:
+        return ""
+    return _relative_time(then)
 
 
 @bp_web.app_template_filter("is_allowlisted_address")
@@ -1226,21 +1239,48 @@ def message_id_lookup_inbox(inbox_name: str, message_id: str):
 
 @bp_web.route("/")
 def index():
-    """Meta-index: list of configured inboxes with per-inbox stats.
-    Pinned inboxes (settings.pinned_inboxes) surface first in config
-    order; the rest follow alphabetically."""
+    """Meta-index: card grid of configured inboxes with per-inbox
+    stats. Pinned inboxes (settings.pinned_inboxes) surface first in
+    config order; the rest follow alphabetically.
+
+    Each card carries `archive_stats` (counts + date span) plus a
+    30-day `daily_volume` sparkline. Both are cached helpers; the
+    per-card cost on a warm cache is one cache row read per inbox.
+    """
     pin_rank = {name: i for i, name in enumerate(settings.pinned_inboxes)}
     with SessionLocal() as session:
         inboxes = session.execute(select(Inbox)).scalars().all()
         inboxes.sort(key=lambda ix: (pin_rank.get(ix.name, len(pin_rank)), ix.name))
-        inbox_summaries = [
-            {"name": inbox.name, "stats": archive_stats(session, inbox)}
-            for inbox in inboxes
-        ]
+        inbox_summaries = []
+        for inbox in inboxes:
+            stats = archive_stats(session, inbox)
+            inbox_summaries.append({
+                "name": inbox.name,
+                "stats": stats,
+                "pinned": inbox.name in pin_rank,
+                # Relative-time string for the visible "Last activity"
+                # line. None when the inbox has no messages yet (the
+                # template falls back to the empty-state copy).
+                "last_activity_rel": (
+                    _relative_time(stats.last_date) if stats.last_date else None
+                ),
+                # 30-day sparkline. Always renders so cards line up
+                # vertically even on dormant inboxes (zero-filled
+                # series → flat bar row).
+                "spark": daily_volume(session, inbox, days=30),
+            })
+        # Cross-inbox subsystem teaser. Surfaces the most active
+        # subsystems across every configured inbox so a reader on
+        # `/` can drill into a hot subsystem without first picking
+        # an inbox. Each row carries the inbox where it's busiest.
+        active_subsystems = most_active_subsystems_global(
+            session, days=7, limit=12,
+        )
     base = _site_base()
     return render_template(
         "index.html",
         inbox_summaries=inbox_summaries,
+        active_subsystems=active_subsystems,
         current_inbox=None,
         canonical_url=base + "/",
         page_json_ld=_json_ld_index(base, inboxes),
@@ -1264,6 +1304,13 @@ def inbox_dashboard(inbox_name: str):
         recent, recent_has_more = _fetch_recent(session, inbox, 0, RECENT_PAGE_SIZE)
         stats = archive_stats(session, inbox)
         spark = daily_volume(session, inbox, days=30)
+        # Subsystem discoverability: top-N most active subsystems in
+        # this inbox over the last 7 days. Cached helper, so warm-cache
+        # covers steady state. Empty list when no subsystem has
+        # supported globs (no MAINTAINERS ingest yet).
+        active_subsystems = most_active_subsystems_in_inbox(
+            session, inbox, days=7, limit=10,
+        )
     base = _site_base()
     year_decades: list[tuple[int, list[int]]] = []
     if stats and stats.first_date and stats.last_date:
@@ -1285,6 +1332,7 @@ def inbox_dashboard(inbox_name: str):
         stats=stats,
         spark=spark,
         year_decades=year_decades,
+        active_subsystems=active_subsystems,
         canonical_url=f"{base}/{inbox.name}/",
         page_json_ld=_json_ld_inbox(base, inbox, active),
     )
@@ -1393,12 +1441,26 @@ SUBSYSTEM_RECENT_PATCHES_LIMIT = 30
 
 @bp_web.route("/<inbox_name>/subsystem/<path:name>/")
 def subsystem_dashboard(inbox_name: str, name: str):
-    """Per-subsystem dashboard. Slice 1 surfaces the section's
-    MAINTAINERS-derived header (name, status, M:/R: maintainers)
-    and a list of recent articles linked to this inbox whose
-    diff-touched paths match the subsystem's F: globs (and aren't
-    vetoed by X: globs). Future slices add active-threads and
-    daily-volume sparkline scoped to the same path set."""
+    """Per-subsystem dashboard. Surfaces the MAINTAINERS-derived
+    header (name, status, M:/R: maintainers), F:/X: paths, a 30-day
+    sparkline, recent patches, active threads, and active reviewers
+    for articles whose diff-touched paths match the subsystem's
+    globs (minus X: vetoes).
+
+    URL is lowercased by convention. MAINTAINERS stores names in
+    upper-case ASCII ("BCACHEFS"), which is fine for the operator-
+    facing dashboard heading but produces shouty URLs in bookmarks
+    and browser history. The route accepts any casing,
+    case-insensitive-matches against `subsystems.name`, and 301s
+    non-canonical (uppercase) requests to the canonical lowercase
+    form. The DB row's stored casing remains the upstream-verbatim
+    one and is what the H1 renders.
+    """
+    name_lower = name.lower()
+    if name != name_lower:
+        return redirect(
+            f"/{inbox_name}/subsystem/{name_lower}/", code=301,
+        )
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         subsystem = session.execute(
@@ -1407,7 +1469,7 @@ def subsystem_dashboard(inbox_name: str, name: str):
                 selectinload(Subsystem.maintainers),
                 selectinload(Subsystem.paths),
             )
-            .where(Subsystem.name == name)
+            .where(func.lower(Subsystem.name) == name_lower)
         ).scalar_one_or_none()
         if subsystem is None:
             abort(404)
