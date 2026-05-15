@@ -11,6 +11,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- `search_articles` cache key now case-folds the query so `Foo`
+  and `foo` share one cache row instead of writing distinct
+  rows for each casing. SQLite `ilike()` is case-insensitive so
+  the underlying SQL would return identical results either way;
+  the per-casing cache rows just wasted space and made cache
+  hits less likely for the next visitor's query.
+
 ## [1.21.0] – 2026-05-15
 
 Per-subsystem dashboard latency pass. A real-world cold load on
