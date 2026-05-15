@@ -160,6 +160,7 @@ def _active_threads_query(
     *,
     order_by: str = "score",
     limit: int | None = None,
+    extra_ctes_sql: str = "",
     extra_seed_filter_sql: str = "",
     extra_params: dict | None = None,
 ) -> list[ActiveThread]:
@@ -169,17 +170,23 @@ def _active_threads_query(
     `limit`: None means unbounded (return every thread with at least one
     message in the window).
 
+    `extra_ctes_sql`: optional comma-suffixed CTE definitions injected
+    after `WITH RECURSIVE` and before `chains`. The per-subsystem
+    dashboard uses this to materialise the path-matched article ids
+    once (via `AS MATERIALIZED`) instead of re-evaluating the
+    `article_files` subquery for every seed row.
+
     `extra_seed_filter_sql`: optional SQL fragment AND-ed into the
-    seed step's WHERE clause. Used by the per-subsystem dashboard
-    to constrain the recursive walk to messages touching specific
-    paths. Caller-supplied — must reference bind parameters only
-    via the `extra_params` dict (not string-interpolated values).
+    seed step's WHERE clause. Used together with `extra_ctes_sql`
+    to reference the materialised CTE. Caller-supplied — must
+    reference bind parameters only via the `extra_params` dict
+    (not string-interpolated values).
     """
     order_sql = _ORDER_CLAUSES[order_by]
     limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
     sql = text(
         f"""
-        WITH RECURSIVE chains AS (
+        WITH RECURSIVE {extra_ctes_sql} chains AS (
             SELECT a.id AS recent_id, a.message_id AS curr, a.thread_parent,
                    a.date AS recent_date, 0 AS depth
             FROM articles a
