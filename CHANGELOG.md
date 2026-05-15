@@ -11,6 +11,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Security
+
+- CLI input validation at two boundaries:
+  - `reindex` rejects EPOCH arguments that don't match
+    `<N>.git` before joining onto `inbox.mirror_path`. Catches
+    typos like `0` (missing `.git`) and refuses traversal
+    shapes like `../../etc`.
+  - `dev-seed-thread --inbox <name>` validates the name against
+    the admin service's slug regex. The name flows into both a
+    filesystem path and the synthesised RFC 5322 `To:` header
+    bytes, so CR/LF in the value would inject a second header
+    line. Local-dev-only command, but the cheap guard is worth it.
+
 ## [1.21.0] – 2026-05-15
 
 Per-subsystem dashboard latency pass. A real-world cold load on
