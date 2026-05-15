@@ -31,6 +31,12 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   surfaces in `SyncResult.failed` and the tick continues.
 ### Fixed
 
+- `most_active_subsystems_global` now propagates `force=True`
+  through to the per-inbox `_most_active_subsystems_in_inbox_full`
+  call inside its `compute()` closure. Previously the outer cache
+  wrap bypassed correctly but the inner per-inbox cache silently
+  read stale rows, so a `warm-cache --force` recomputed the global
+  aggregator off whatever the per-inbox caches happened to hold.
 - `mimir.store._read_blob`: context-manage the dulwich `Repo`
   and surface `KeyError` from a stale commit_sha / GC'd blob as
   `MessageNotFound`. Previously the `Repo` instance kept packfile
