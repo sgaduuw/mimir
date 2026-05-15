@@ -27,13 +27,19 @@ class SyncResult(BaseModel):
     failed: list[str] = []
 
 
-_UA = "mimir-archiver/0.1 (+https://github.com/sgaduuw/mimir)"
+def _user_agent() -> str:
+    """Builds the UA string at call time so the version pinned by
+    `importlib.metadata` in `mimir.__init__` is read (instead of a
+    hardcoded `0.1` that drifts against every release). Resolved
+    lazily to dodge a circular-import edge during package init."""
+    from mimir import __version__
+    return f"mimir/{__version__} (+https://github.com/sgaduuw/mimir)"
 
 
 def fetch_manifest(upstream_url: str) -> dict:
     url = upstream_url.rstrip("/") + "/manifest.js.gz"
     logger.info("fetching manifest %s", url)
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    req = urllib.request.Request(url, headers={"User-Agent": _user_agent()})
     with urllib.request.urlopen(req) as resp:
         raw = resp.read()
     return json.loads(gzip.decompress(raw))

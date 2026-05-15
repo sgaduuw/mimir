@@ -19,6 +19,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   the underlying SQL would return identical results either way;
   the per-casing cache rows just wasted space and made cache
   hits less likely for the next visitor's query.
+- `active_threads` decay score now clamps the recency exponent at
+  zero. `pow(0.5, julianday('now') - julianday(date))` blows up to
+  astronomically large values when `date` is in the future, letting
+  a single mis-ingested or typoed row dominate the ranking. The
+  clamp (`MAX(diff, 0)`) caps a future-dated row's contribution at
+  `pow(0.5, 0) = 1.0`. `articles.date` is the public-inbox commit
+  time per CONTEXT.md so future dates shouldn't arise, but the
+  defensive clamp is the right shape for the silent-bug surface
+  the audit flagged.
 
 ## [1.21.0] – 2026-05-15
 
