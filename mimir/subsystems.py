@@ -1210,7 +1210,6 @@ __all__ = [
     "ReviewerStat",
     "SubsystemActivity",
     "SubsystemHit",
-    "_subsystem_path_filter_sql",
     "active_reviewers_in_subsystem",
     "active_threads_in_subsystem",
     "articles_reviewed_by",

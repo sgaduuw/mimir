@@ -81,6 +81,18 @@ def _get_inbox_or_404(session: Session, name: str) -> Inbox:
     return inbox
 
 
+def _abort_404_if_url_date_mismatches(article: Article, year: int, month: int) -> None:
+    """The URL date is part of the message's identity, not navigation
+    state, so a mismatched URL must 404 rather than redirect. Bumps
+    the contract from a "fuzzy lookup" to "exact identity match" so
+    a URL is either fully resolvable or fully invalid — important for
+    the age-at-a-glance property in browser history and shared links.
+    Used by the message route and the attachment routes; one helper
+    keeps the rule one-place."""
+    if article.date is None or year != article.date.year or month != article.date.month:
+        abort(404)
+
+
 @bp_web.app_context_processor
 def _inject_template_globals() -> dict:
     """Inboxes are needed by base.html for the nav. `current_inbox` is set
@@ -1933,8 +1945,7 @@ def _fetch_article_for_attachment(
     ).scalar_one_or_none()
     if linked is None:
         abort(404)
-    if article.date is None or year != article.date.year or month != article.date.month:
-        abort(404)
+    _abort_404_if_url_date_mismatches(article, year, month)
     try:
         parsed = read_message(session, inbox, article.message_id)
     except MessageNotFound:
@@ -2032,10 +2043,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         if linked is None:
             abort(404)
 
-        # The URL date is part of the message's identity; reject mismatches
-        # so URLs are a reliable age-gauge.
-        if article.date is None or year != article.date.year or month != article.date.month:
-            abort(404)
+        _abort_404_if_url_date_mismatches(article, year, month)
 
         try:
             parsed = read_message(session, inbox, article.message_id)
