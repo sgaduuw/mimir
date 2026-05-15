@@ -206,7 +206,14 @@ def _active_threads_query(
                COUNT(*) AS recent_count,
                SUM(CASE WHEN r.recent_id <> a.id THEN 1 ELSE 0 END) AS reply_count,
                MAX(r.recent_date) AS last_activity,
-               SUM(pow(0.5, julianday('now') - julianday(r.recent_date))) AS score
+               -- Clamp at 0 days: pow(0.5, -N) blows up to huge values
+               -- and lets a single future-dated row (typoed Date: 2099,
+               -- mis-ingested commit_time, anything) dominate the
+               -- ranking. articles.date is the public-inbox commit time
+               -- per CONTEXT.md so future dates shouldn't arise on the
+               -- SQL row, but the audit (2026-05-15) flagged the
+               -- missing defensive clamp as a real silent-bug surface.
+               SUM(pow(0.5, MAX(julianday('now') - julianday(r.recent_date), 0))) AS score
         FROM roots r JOIN articles a ON a.message_id = r.root_id
         GROUP BY r.root_id
         ORDER BY {order_sql}
