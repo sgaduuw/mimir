@@ -88,7 +88,7 @@ def test_notify_noop_on_empty_url_list(captured_indexnow, monkeypatch):
 
 
 def test_notify_posts_expected_payload(captured_indexnow, monkeypatch):
-    """The wire shape — exactly what IndexNow's spec requires.
+    """The wire shape, exactly what IndexNow's spec requires.
     Asserts host (from site_base_url), key, keyLocation, urlList,
     content-type, and HTTP method. Drift here would break Bing
     discovery for everyone who turns the feature on."""
@@ -225,7 +225,7 @@ def test_build_urls_falls_back_when_canonical_inbox_vanished(seeded_db):
 
 def test_build_urls_skips_unknown_message_ids(seeded_db):
     """Message IDs that don't resolve to an Article (race between
-    ingest commit and update's post-pass — unlikely but possible
+    ingest commit and update's post-pass, unlikely but possible
     if a future change deferred article visibility) just drop out
     silently. Better than emitting URLs that 404."""
     with seeded_db() as s:
@@ -263,7 +263,7 @@ def test_indexnow_key_route_serves_key_when_set(monkeypatch):
 
 def test_indexnow_key_route_only_matches_configured_key(monkeypatch):
     """The route is registered at the literal key path, so any
-    other path returns 404 — even one that ends in `.txt`. Pins
+    other path returns 404, even one that ends in `.txt`. Pins
     that we're not exposing a `/<arbitrary>.txt` catchall."""
     monkeypatch.setattr(settings, "indexnow_key", "real-key-value-here")
     from mimir import create_app
@@ -277,7 +277,7 @@ def test_indexnow_key_route_only_matches_configured_key(monkeypatch):
 def test_update_skips_push_when_above_per_tick_cap(monkeypatch, caplog):
     """Backfill guard: when `update` produces more new articles
     than `indexnow_max_per_tick`, skip the push entirely (do not
-    truncate to the cap — that's still a backfill, just slower).
+    truncate to the cap; that's still a backfill, just slower).
     The sitemap is the durable discovery path for the backlog."""
     from mimir.cli import _push_indexnow
     notify_calls = []
@@ -333,7 +333,7 @@ def test_update_echoes_one_line_on_successful_push(
     """Successful submissions surface in default scheduler output
     via click.echo, not just the INFO-level log (which is hidden at
     default verbosity). Mirrors the per-epoch `name/epoch: new=N
-    ...` lines — anything in the scheduler journal signals a real
+    ...` lines, anything in the scheduler journal signals a real
     event."""
     from mimir.cli import _push_indexnow
     monkeypatch.setattr(indexnow, "notify", lambda urls: len(urls))
@@ -342,7 +342,7 @@ def test_update_echoes_one_line_on_successful_push(
     monkeypatch.setattr(settings, "indexnow_max_per_tick", 1000)
 
     # `build_urls` runs against the test DB. The seeded fixture has
-    # `art2@example.com` in beta — use it so build_urls returns a
+    # `art2@example.com` in beta, use it so build_urls returns a
     # non-empty list and notify reports submitted > 0.
     _push_indexnow(["art2@example.com"])
     captured = capsys.readouterr()
@@ -353,7 +353,7 @@ def test_update_no_echo_when_notify_returns_zero(
     seeded_db, monkeypatch, capsys,
 ):
     """notify swallows failures and returns 0 on network/HTTP
-    errors. In that case there's no successful push to announce —
+    errors. In that case there's no successful push to announce  
     the warning log inside notify already covers the failure; we
     don't want a second misleading "pushed 0 URL(s)" line."""
     from mimir.cli import _push_indexnow

@@ -29,7 +29,7 @@ from mimir.subsystems_dashboard import (
 )
 
 
-# `path_matches_glob` unit tests — pure function, no DB.
+# `path_matches_glob` unit tests, pure function, no DB.
 
 
 def test_directory_glob_matches_paths_under_it():
@@ -63,7 +63,7 @@ def test_wildcard_glob_via_fnmatch():
     assert path_matches_glob("aN.c", "a[NM].c")
 
 
-# `subsystems_for_article` integration — uses the seeded DB and
+# `subsystems_for_article` integration, uses the seeded DB and
 # inserts MAINTAINERS-shaped fixtures inline.
 
 
@@ -181,7 +181,7 @@ def test_subsystems_for_article_exclude_only_vetoes_its_own_subsystem(
 
 def test_subsystems_for_article_no_paths_returns_empty(seeded_db):
     """A non-patch article (no ArticleFile rows) returns no
-    subsystems — the cheap-path early return matters at scale."""
+    subsystems, the cheap-path early return matters at scale."""
     with seeded_db() as s:
         _add_subsystem(s, "BTRFS", "Maintained", files=["fs/btrfs/"])
         art_id = _add_patch_article(s, "p5@x", [])
@@ -206,7 +206,7 @@ def test_recent_patches_touching_returns_others_sharing_path(seeded_db):
 
 
 def test_recent_patches_touching_orders_by_date_desc(seeded_db):
-    """Sidebar must surface the most recent activity first — that's
+    """Sidebar must surface the most recent activity first, that's
     the whole point of "recent" patches touching X."""
     with seeded_db() as s:
         from mimir.models import ArticleList
@@ -243,7 +243,7 @@ def test_recent_patches_touching_respects_limit(seeded_db):
 
 def test_recent_patches_touching_resolves_canonical_inbox(seeded_db):
     """The sidebar's `inbox_name` is the canonical inbox, not just
-    whichever inbox the article was linked to first — so cross-
+    whichever inbox the article was linked to first, so cross-
     posts surface under the right URL."""
     with seeded_db() as s:
         from mimir.models import ArticleList
@@ -268,7 +268,7 @@ def test_recent_patches_touching_resolves_canonical_inbox(seeded_db):
     assert out[0].inbox_name == "beta"
 
 
-# `recent_articles_in_subsystem` integration — slice 1 of the
+# `recent_articles_in_subsystem` integration, slice 1 of the
 # per-subsystem dashboard. Filters by inbox + by the subsystem's
 # include/exclude globs.
 
@@ -353,7 +353,7 @@ def test_recent_articles_in_subsystem_keeps_article_with_one_in_scope_path(
     seeded_db,
 ):
     """An article touching both an included and an excluded path
-    still belongs to the subsystem — the X: pass only vetoes
+    still belongs to the subsystem, the X: pass only vetoes
     articles whose paths are *all* excluded."""
     with seeded_db() as s:
         sub = _add_subsystem(
@@ -388,7 +388,7 @@ def test_recent_articles_in_subsystem_scoped_to_inbox(seeded_db):
 
 
 def test_recent_articles_in_subsystem_orders_by_date_desc(seeded_db):
-    """Newest articles first — operator wants "what's been happening
+    """Newest articles first, operator wants "what's been happening
     in this subsystem lately" at the top."""
     with seeded_db() as s:
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
@@ -441,7 +441,7 @@ def test_recent_articles_in_subsystem_wildcard_globs_skipped_silently(
 ):
     """Slice 1 doesn't index wildcard globs. A subsystem with ONLY
     wildcard rules currently returns no articles even if articles
-    would conceptually match — documented behaviour, not a crash."""
+    would conceptually match, documented behaviour, not a crash."""
     with seeded_db() as s:
         sub = _add_subsystem(s, "ARCH-CSTAR", None, files=["arch/*/cstar/"])
         _add_patch_article(s, "match@x", ["arch/x86/cstar/init.c"])
@@ -451,7 +451,7 @@ def test_recent_articles_in_subsystem_wildcard_globs_skipped_silently(
     assert out == []
 
 
-# `active_threads_in_subsystem` integration — slice 2 of the
+# `active_threads_in_subsystem` integration, slice 2 of the
 # per-subsystem dashboard. Same decay-weighted scoring as the
 # landing-page `active_threads`, but constrained to messages
 # touching the subsystem's paths.
@@ -506,7 +506,7 @@ def test_active_threads_in_subsystem_returns_threads_with_matching_path(
 
 def test_active_threads_in_subsystem_respects_excludes(seeded_db):
     """X: globs veto threads whose seed message's paths are all
-    excluded — same per-article-keep-if-one-in-scope rule as the
+    excluded, same per-article-keep-if-one-in-scope rule as the
     recent-patches surface."""
     with seeded_db() as s:
         sub = _add_subsystem(
@@ -542,7 +542,7 @@ def test_active_threads_in_subsystem_scoped_to_inbox(seeded_db):
 
 def test_active_threads_in_subsystem_empty_when_wildcard_only(seeded_db):
     """A subsystem with only wildcard F: rules has no supported
-    globs in slice 2 and returns no active threads — same
+    globs in slice 2 and returns no active threads, same
     documented behaviour as `recent_articles_in_subsystem`."""
     with seeded_db() as s:
         sub = _add_subsystem(s, "ARCH-CSTAR", None, files=["arch/*/cstar/"])
@@ -587,7 +587,7 @@ def test_daily_volume_in_subsystem_returns_zero_series_for_wildcard_only(
     seeded_db,
 ):
     """A subsystem with only wildcard F: rules has no supported
-    globs in slice 2 — the sparkline still renders, all zeros."""
+    globs in slice 2, the sparkline still renders, all zeros."""
     with seeded_db() as s:
         sub = _add_subsystem(s, "ARCH-CSTAR", None, files=["arch/*/cstar/"])
         s.commit()
@@ -597,7 +597,7 @@ def test_daily_volume_in_subsystem_returns_zero_series_for_wildcard_only(
     assert all(c == 0 for _, c in spark.days)
 
 
-# `active_reviewers_in_subsystem` integration — slice 2 of #97.
+# `active_reviewers_in_subsystem` integration, slice 2 of #97.
 # The extractor itself is exercised in tests/test_trailers.py; here
 # we pin the JOIN through article_files (subsystem path filter) +
 # the per-reviewer aggregation contract.
@@ -690,7 +690,7 @@ def test_active_reviewers_orders_by_total_then_recency(seeded_db):
             [("Reviewed-by", "Dave", "dave@kernel.org")],
             days_ago=2,
         )
-        # erin: 1 attestation, today — should rank below the two-counters
+        # erin: 1 attestation, today, should rank below the two-counters
         _add_recent_patch_with_trailers(
             s, "single@x", ["fs/bcachefs/e.c"],
             [("Reviewed-by", "Erin", "erin@kernel.org")],
@@ -706,7 +706,7 @@ def test_active_reviewers_orders_by_total_then_recency(seeded_db):
 
 def test_active_reviewers_respects_subsystem_excludes(seeded_db):
     """X: globs veto trailers on patches whose paths are all
-    excluded — same path-filter posture as the other subsystem
+    excluded, same path-filter posture as the other subsystem
     helpers."""
     with seeded_db() as s:
         sub = _add_subsystem(
@@ -770,7 +770,7 @@ def test_active_reviewers_empty_when_no_supported_globs(seeded_db):
     assert out == []
 
 
-# `articles_reviewed_by` integration — slice 3 of #97. Powers the
+# `articles_reviewed_by` integration, slice 3 of #97. Powers the
 # per-reviewer `/<inbox>/reviewer/<address>` page.
 
 
@@ -795,7 +795,7 @@ def test_articles_reviewed_by_returns_one_entry_per_attestation(seeded_db):
     assert roles == ["Reported-by", "Tested-by"]
     assert {e.message_id for e in out} == {"p1@x"}
     # Suppress unused fixture warning for `sub` (the helper resolves
-    # by address, not by subsystem — the patch happens to be in one
+    # by address, not by subsystem, the patch happens to be in one
     # for fixture-construction convenience).
     assert sub.id is not None
 
@@ -837,7 +837,7 @@ def test_articles_reviewed_by_matches_address_case_insensitively(
 
 
 def test_articles_reviewed_by_orders_by_date_desc(seeded_db):
-    """Newest attestations surface first — the page is a chronological
+    """Newest attestations surface first, the page is a chronological
     listing, freshest at the top."""
     with seeded_db() as s:
         _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
@@ -857,7 +857,7 @@ def test_articles_reviewed_by_orders_by_date_desc(seeded_db):
 
 def test_articles_reviewed_by_scoped_to_inbox(seeded_db):
     """Attestations on patches in `beta` don't bleed into `alpha`'s
-    reviewer page — the URL is inbox-scoped and the helper joins
+    reviewer page, the URL is inbox-scoped and the helper joins
     through `article_lists`."""
     with seeded_db() as s:
         _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])

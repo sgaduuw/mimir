@@ -57,7 +57,7 @@ DEFAULT_SITE_DESCRIPTION = (
 def _build_sitemap_xml(entries: list[tuple[str, str | None]]) -> str:
     """Render an XML <urlset> sitemap. Each entry is
     `(loc, lastmod | None)`; when `lastmod` is None the element is
-    omitted. Caller formats the timestamp — date-only `YYYY-MM-DD`
+    omitted. Caller formats the timestamp, date-only `YYYY-MM-DD`
     is what Google's docs recommend for crawl-scheduling and is what
     mimir emits."""
     root = Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
@@ -72,7 +72,7 @@ def _build_sitemap_xml(entries: list[tuple[str, str | None]]) -> str:
 def _build_sitemap_index_xml(entries: list[tuple[str, str | None]]) -> str:
     """Render a <sitemapindex> referencing sub-sitemaps. Same
     `(loc, lastmod)` shape as `_build_sitemap_xml`; the schema and
-    element names differ — `<sitemapindex>` of `<sitemap>` rather
+    element names differ, `<sitemapindex>` of `<sitemap>` rather
     than `<urlset>` of `<url>`."""
     root = Element(
         "sitemapindex", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
@@ -165,7 +165,7 @@ def inbox_sitemap_xml(
         entries.append((f"{base}/{inbox.name}/", inbox_latest))
 
         # Distinct (year, month) pairs that actually have data, in
-        # one round-trip. Empty months are skipped — they'd 200
+        # one round-trip. Empty months are skipped, they'd 200
         # with a "no messages" page, but the sitemap is for
         # discovery surfaces with real content.
         year_month_rows = session.execute(
@@ -187,11 +187,11 @@ def inbox_sitemap_xml(
         for y, m in sorted(year_month_rows, reverse=True):
             entries.append((f"{base}/{inbox.name}/{y}/{m}/", None))
 
-        # Recent articles in the inbox — one URL per article at
+        # Recent articles in the inbox, one URL per article at
         # the inbox's own URL. No canonical-fallback dance:
         # cross-posted articles will appear in each linked
         # inbox's sitemap, which is correct (each is a real,
-        # crawlable URL — the canonical `<link>` on the page
+        # crawlable URL, the canonical `<link>` on the page
         # itself tells search engines which to keep).
         recent = session.execute(
             select(Article.id, Article.date)
@@ -251,7 +251,7 @@ def _json_ld_index(base: str, inboxes=()) -> dict:
 
 
 def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
-    """schema.org payload for `/<inbox_name>/` — a `DiscussionForum`
+    """schema.org payload for `/<inbox_name>/`, a `DiscussionForum`
     container plus an `ItemList` of the currently-most-active threads
     so the page reads as a topical hub for crawlers. `active_threads`
     is whatever the dashboard fetched (root-level ThreadNode objects);
@@ -292,7 +292,7 @@ def _json_ld_text_snippet(body: str | None) -> str | None:
     happens at the last whitespace inside JSON_LD_TEXT_MAX so we
     don't slice mid-word, with a trailing ellipsis when we did
     truncate. Returning None lets the caller omit the field
-    entirely — emitting an empty string would re-fail Google's
+    entirely, emitting an empty string would re-fail Google's
     "either text/image/video" validator."""
     if not body:
         return None
@@ -319,11 +319,11 @@ def _json_ld_message(
     base: str,
 ) -> dict:
     """schema.org @graph carrying both DiscussionForumPosting (the
-    primary signal — eligible for Google's "Discussions and forums"
+    primary signal, eligible for Google's "Discussions and forums"
     rich-result section) and BreadcrumbList (surfaces the
     Site → Inbox → Subject chain in SERPs).
 
-    Author goes through `_display_name_filter` — display name only,
+    Author goes through `_display_name_filter`, display name only,
     no email and no `<hidden>` placeholder. The placeholder is a
     rendering decision for the visible HTML; in machine-readable
     metadata it reads as broken data and was flagged as such in the
@@ -336,13 +336,13 @@ def _json_ld_message(
 
     `text` carries a plain-text snippet of `parsed.body`, capped at
     JSON_LD_TEXT_MAX chars (truncated at the last whitespace inside
-    the cap) — Google's DiscussionForumPosting validator treats one
+    the cap), Google's DiscussionForumPosting validator treats one
     of `text` / `image` / `video` as required (critical, Search
     Console 2026-05-14). Omitted entirely when the body is missing
     or whitespace-only: an empty string would re-fail the validator.
 
     Prefers `parsed.date` (the original RFC 5322 Date header) over
-    `article.date` (the public-inbox commit time) — the message's
+    `article.date` (the public-inbox commit time), the message's
     actual send date is more meaningful to search engines."""
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring). The redaction helpers and display filter live in
@@ -363,7 +363,7 @@ def _json_ld_message(
     author: dict = {"@type": "Person", "name": author_name}
     # Per-inbox author view is a substring match on the From field;
     # the display name is exactly what'll match the author's other
-    # posts. Skip the URL when we fell back to "unknown sender" —
+    # posts. Skip the URL when we fell back to "unknown sender"  
     # that token doesn't match anyone.
     if author_name and author_name != "unknown sender":
         author["url"] = f"{base}/{inbox_name}/author/{quote(author_name, safe='')}"
@@ -381,7 +381,7 @@ def _json_ld_message(
         },
     }
     # Apply the same DCO trailer redaction the visible HTML uses
-    # before snippeting — JSON-LD `text` is yet another surface a
+    # before snippeting, JSON-LD `text` is yet another surface a
     # crawler scrapes, and CONTEXT.md's redaction invariants treat
     # every surface uniformly. Without this, non-allowlisted
     # Signed-off-by addresses would leak through the structured
@@ -434,7 +434,7 @@ def _json_ld_search(
     Emitted only when the route is rendering actual results (the
     no-query / too-short forms are just a search box, not a results
     page). `url` mirrors the canonical, which strips the query
-    string — same SEO posture as the `<link rel="canonical">`: this
+    string, same SEO posture as the `<link rel="canonical">`: this
     is the page-shape, not the result-set."""
     return {
         "@context": "https://schema.org",
@@ -455,7 +455,7 @@ def _json_ld_author(
 ) -> dict:
     """schema.org `ProfilePage` for `/<inbox_name>/author/<sub>`. The
     `mainEntity` is a `Person` whose `name` is the sender substring
-    we matched against — usually a full email or a domain like
+    we matched against, usually a full email or a domain like
     `@kernel.org`, sometimes a personal display-name fragment. We
     don't try to resolve it to a single identity (the substring may
     match many people, deliberately so for `@kernel.org`-shaped
@@ -497,7 +497,7 @@ def atom_response(
     canonical_inbox_by_article: dict[int, str] | None = None,
 ) -> Response:
     """Render an Atom 1.0 feed from a list of `ArticleSummary`. Uses
-    stdlib ElementTree — no extra dep. Emits redacted authors via the
+    stdlib ElementTree, no extra dep. Emits redacted authors via the
     same `safe_from` rule the HTML side uses, so private email
     addresses don't leak via feed readers either.
 
@@ -527,7 +527,7 @@ def atom_response(
     for a in entries:
         entry = SubElement(feed, "entry")
         # RFC 4151 tag URI. Use the canonical inbox name in the tag so
-        # cross-posted entries collapse to a single id across feeds —
+        # cross-posted entries collapse to a single id across feeds  
         # readers that key on <id> won't show duplicates.
         date_str = a.date.strftime("%Y-%m-%d") if a.date else "1970-01-01"
         canonical_inbox_name = canonical_map.get(a.id, inbox_name)
@@ -544,7 +544,7 @@ def atom_response(
         )
         if a.author:
             author_el = SubElement(entry, "author")
-            # Display name only — same posture as JSON-LD's author.name.
+            # Display name only, same posture as JSON-LD's author.name.
             # Feed readers render <author><name> as the byline; the
             # `<hidden>` placeholder reads as broken metadata there
             # exactly as it did in JSON-LD before the 2026-05-12 fix.

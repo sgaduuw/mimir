@@ -2,12 +2,12 @@
 
 A "patch series" is a maintainer-flavour grouping: the same logical
 proposal posted multiple times (v1, v2, v3, ...) as feedback rolls
-in. This module identifies *cover letters* — the `0/N` message that
-introduces each revision — and computes a stable key so multiple
+in. This module identifies *cover letters*, the `0/N` message that
+introduces each revision, and computes a stable key so multiple
 revisions of the same series can be cross-linked.
 
 Slice 1 deliberately handles cover letters only. Per-patch
-(non-cover-letter) attachment to a series is harder — subjects
+(non-cover-letter) attachment to a series is harder, subjects
 drift between revisions (1/N reorder, drop, rename), so robust
 linking needs more than the normalised-title heuristic that's
 enough here. That work lives in a future slice.
@@ -30,12 +30,12 @@ from mimir._backfill import walk_articles
 logger = logging.getLogger(__name__)
 
 
-# `^[<inside>] <title>` — only matches when the bracket starts the
+# `^[<inside>] <title>`, only matches when the bracket starts the
 # subject, so `Re: [PATCH ...]` replies don't masquerade as cover
 # letters. The original cover letter has nothing before the `[`.
 _BRACKET_RE = re.compile(r"^\[([^\]]+)\]\s*(.+)$")
 
-# `0/N` shape inside the bracket — the cover-letter discriminator.
+# `0/N` shape inside the bracket, the cover-letter discriminator.
 # `\b` boundaries so a stray `10/30` (patch ten in series of thirty)
 # can't be misread as a cover letter.
 _ZERO_OF_N_RE = re.compile(r"\b0\s*/\s*\d+\b")
@@ -46,7 +46,7 @@ _ZERO_OF_N_RE = re.compile(r"\b0\s*/\s*\d+\b")
 # version is implicit).
 _VERSION_RE = re.compile(r"\b(v\d+|RFC|RESEND)\b", re.IGNORECASE)
 
-# Bracket must literally contain the word "PATCH" — there are
+# Bracket must literally contain the word "PATCH", there are
 # `[GIT PULL]` and `[ANNOUNCE]` subjects that carry `0/N` for
 # unrelated reasons; the PATCH token disambiguates.
 _PATCH_TOKEN_RE = re.compile(r"\bPATCH\b")
@@ -55,7 +55,7 @@ _PATCH_TOKEN_RE = re.compile(r"\bPATCH\b")
 @dataclass(frozen=True)
 class CoverLetter:
     """One detected cover letter. `version` is normalised to a
-    lowercase string like `v1`, `v2`, `rfc`, `resend` — that's
+    lowercase string like `v1`, `v2`, `rfc`, `resend`, that's
     what gets stored on the Article row and rendered on the
     timeline."""
     version: str
@@ -79,9 +79,9 @@ def parse_cover_letter(subject: str | None) -> CoverLetter | None:
         [PATCH net-next v2 0/12] title  → v2
 
     Doesn't recognise:
-        Re: [PATCH v2 0/3] title        — bracket isn't at column 0
-        [PATCH 1/3] title               — not a cover letter
-        [ANNOUNCE 0/3] title            — no PATCH token
+        Re: [PATCH v2 0/3] title       , bracket isn't at column 0
+        [PATCH 1/3] title              , not a cover letter
+        [ANNOUNCE 0/3] title           , no PATCH token
     """
     if not subject:
         return None
@@ -132,7 +132,7 @@ def series_key(title: str, author: str | None) -> str:
     address = address.lower().strip()
     # Title normalisation: lowercase + whitespace collapse. We
     # don't strip bracketed tags because the cover-letter parser
-    # already chopped them off — the title arg is the post-bracket
+    # already chopped them off, the title arg is the post-bracket
     # text. Just normalise for case + whitespace drift.
     norm_title = " ".join(title.lower().split())
     payload = f"{address}|{norm_title}".encode("utf-8")
@@ -143,7 +143,7 @@ class BackfillResult(BaseModel):
     """Outcome counters for `backfill_patch_series`."""
     examined: int = 0
     indexed: int = 0      # cover letter detected, key + version written
-    not_cover: int = 0    # non-cover-letter subject — no series row
+    not_cover: int = 0    # non-cover-letter subject, no series row
     skipped: int = 0      # already had a key set (idempotent re-run)
 
 
@@ -180,7 +180,7 @@ def backfill_patch_series(
     Cheaper than `backfill_article_files`: only reads `Article.subject`
     and `Article.author`, no body re-parse via the git mirror. Safe
     to run on any host with the DB; doesn't need the inbox mirrors.
-    `preload_lists=False` is the saving — patches and trailers need
+    `preload_lists=False` is the saving, patches and trailers need
     `Article.lists` for the inbox lookup; we don't.
 
     Idempotent: articles with `patch_series_key` already set are
