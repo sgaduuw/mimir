@@ -21,7 +21,7 @@ from pygments.util import ClassNotFound
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from mimir import maintainer_allowlist
+from mimir import cache, maintainer_allowlist
 from mimir.canonical import extract_list_addresses
 from mimir.config import settings
 from mimir.dashboard import (
