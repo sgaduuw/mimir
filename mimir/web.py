@@ -22,7 +22,7 @@ from pygments.util import ClassNotFound
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from mimir import cache
+from mimir import cache, maintainer_allowlist
 from mimir.canonical import extract_list_addresses
 from mimir.config import settings
 from mimir.dashboard import (
@@ -443,18 +443,49 @@ def _is_previewable_filter(att) -> bool:
     return _is_previewable(att)
 
 
+def _is_allowlisted(address: str) -> bool:
+    """Union check: static `Settings.email_allowlist` substring tokens
+    OR exact membership in the dynamic MAINTAINERS-derived address
+    set. Both checks operate on the lowercased address.
+
+    Per-request memoised via `flask.g` so the MAINTAINERS set is
+    fetched at most once per render (the underlying DB-backed cache
+    is fast, but a long page can call this 50+ times — `g`-caching
+    skips the per-call cache lookup entirely after the first hit).
+
+    Outside a request context (CLI, tests calling the filters
+    directly without a Flask app), the per-request memo is bypassed
+    and the cache layer's own coordination handles repeats.
+    """
+    addr_lower = address.lower()
+    if any(
+        token.lower() in addr_lower for token in settings.email_allowlist
+    ):
+        return True
+    try:
+        cached = g.setdefault(
+            "_maintainer_addresses", maintainer_allowlist.maintainer_addresses(),
+        )
+    except RuntimeError:
+        # Outside a Flask request context; fall through to a direct
+        # cache call. Rare; mostly tests.
+        cached = maintainer_allowlist.maintainer_addresses()
+    return addr_lower in cached
+
+
 @bp_web.app_template_filter("safe_from")
 def _safe_from_filter(author: str | None) -> str:
-    """Return a From-line suitable for display: full address for senders in
-    `settings.email_allowlist`, otherwise display name + `<hidden>` to keep
-    casual senders' addresses out of the archive UI."""
+    """Return a From-line suitable for display: full address for senders
+    in the union of `settings.email_allowlist` (static substring tokens)
+    and the MAINTAINERS-derived address set (exact match), otherwise
+    display name + `<hidden>` to keep casual senders' addresses out of
+    the archive UI."""
     if not author:
         return ""
     name, addr = parseaddr(author)
     if not addr:
         return author  # unparseable; show as-is
-    addr_lower = addr.lower()
-    if any(token.lower() in addr_lower for token in settings.email_allowlist):
+    if _is_allowlisted(addr):
         return author
     if name:
         return f"{name} <hidden>"
@@ -494,7 +525,8 @@ def _display_name_filter(author: str | None) -> str:
 
 @bp_web.app_template_filter("is_allowlisted_address")
 def _is_allowlisted_address_filter(address: str | None) -> bool:
-    """True iff `address` matches any token in `Settings.email_allowlist`.
+    """True iff `address` is in the allowlist (static tokens
+    OR MAINTAINERS-derived set).
 
     Used by templates to decide whether to render a clickable
     reviewer link. The reviewer page itself (`/<inbox>/reviewer/<addr>`)
@@ -505,10 +537,7 @@ def _is_allowlisted_address_filter(address: str | None) -> bool:
     """
     if not address:
         return False
-    addr_lower = address.lower()
-    return any(
-        token.lower() in addr_lower for token in settings.email_allowlist
-    )
+    return _is_allowlisted(address)
 
 
 def _redact_trailer_address(email: str) -> str:
@@ -519,11 +548,15 @@ def _redact_trailer_address(email: str) -> str:
     (unlike the prior `[off-list ref]` smear from the msgid linkifier
     when it tried to look these up as message-IDs and found nothing).
 
+    Allowlist is the union of static `Settings.email_allowlist` and
+    the dynamic MAINTAINERS-derived address set; anyone listed as a
+    maintainer or reviewer in the kernel tree's MAINTAINERS file
+    surfaces verbatim without operator config.
+
     Return value is plain text (including the literal angle brackets);
     the trailer renderer html-escapes it before splicing into output.
     """
-    addr_lower = email.lower()
-    if any(token.lower() in addr_lower for token in settings.email_allowlist):
+    if _is_allowlisted(email):
         return f"<{email}>"
     return "<redacted>"
 
