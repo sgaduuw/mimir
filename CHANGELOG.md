@@ -13,6 +13,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Security
 
+- `admin inbox remove --remove-inbox-data`: parent-directory
+  promotion is now gated on the parent's basename equalling the
+  inbox name. Previously, any `mirror_path` ending in a `git/`
+  segment (e.g. an operator-supplied `/some/dir/git`) would have
+  the parent `rm -rf`'d along with the mirror. The audit flagged
+  this as the worst data-loss vector in the codebase. Now only
+  the documented `<root>/<name>/git` layout triggers promotion;
+  every other shape removes the literal `mirror_path` only. The
+  resolved target is logged at WARNING level before deletion.
 - `sync`: enforce wall-clock timeouts on the `manifest.js.gz`
   fetch (60 s) and on `git clone` (30 min) / `git fetch` (10 min),
   plus a 16 MiB cap on the manifest body. A hostile or misbehaving
@@ -30,6 +39,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   RFC 5322 CFWS comments `(...)` before splitting, so
   `<a@x> (comment) <b@x>` extracts `["a@x", "b@x"]` instead of
   surfacing the comment text as a junk reference.
+- `mimir.store._read_blob`: context-manage the dulwich `Repo`
+  and surface `KeyError` from a stale commit_sha / GC'd blob as
+  `MessageNotFound`. Previously the `Repo` instance kept packfile
+  file descriptors open until GC (every message-page render
+  reopened the repo, so the FD count grew over time), and a
+  real-but-stale `article_lists.commit_sha` row would bubble out
+  as a `KeyError` 500 instead of the 404 every caller already
+  handles via `MessageNotFound`. Web / CLI / ingest call sites
+  recover transparently.
 - Canonical-inbox resolution and the off-list-parent hint now
   read `To:` / `Cc:` headers case-insensitively. RFC 5322 field
   names are case-insensitive and `mimir.parser` preserves the
