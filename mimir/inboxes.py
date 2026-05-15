@@ -20,6 +20,7 @@ The CRUD service functions (`create_inbox`, `update_inbox`,
 are shared between the CLI admin commands and the future Flask admin
 UI — keeps validation in one place.
 """
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -33,6 +34,8 @@ from mimir import cache
 from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox, IngestState
+
+logger = logging.getLogger(__name__)
 
 # Slug constraint: name flows into URL paths and cache-key fragments,
 # so it must be URL-safe and `:`-free. Lowercase, alphanumeric +
@@ -355,11 +358,25 @@ def delete_inbox(
         # Resolve relative to project root if not absolute, the same
         # way the rest of the code does.
         path = Path(mirror_path_str)
-        # Prefer a parent that contains the per-inbox root, e.g.
-        # `Inboxes/<name>/git` → remove `Inboxes/<name>` so the empty
-        # wrapper directory doesn't linger. Fall back to mirror_path
-        # itself if it doesn't match the convention.
-        target = path.parent if path.name == "git" else path
+        # Promote to the parent ONLY when the layout exactly matches
+        # the bootstrap convention: `<anything>/<name>/git`. Then the
+        # parent's basename is the inbox name, and removing the wrapper
+        # `<name>/` directory is the right "leave no empty husk behind"
+        # behaviour. Any other shape (operator-supplied
+        # `mirror_path=/some/dir/git`, custom layouts, etc.) stays on
+        # the literal mirror_path — promoting to the parent there would
+        # rm-rf an unrelated directory that the operator never asked us
+        # to touch. The audit on 2026-05-15 flagged the unconditional
+        # `path.name == "git"` promotion as the worst data-loss vector
+        # in the codebase.
+        target = path
+        if path.name == "git" and path.parent.name == name:
+            target = path.parent
+        logger.warning(
+            "delete_inbox(%s): rmtree target resolved to %s "
+            "(from mirror_path=%s)",
+            name, target, mirror_path_str,
+        )
         if target.exists():
             shutil.rmtree(target)
             report.mirror_path_deleted = str(target)
