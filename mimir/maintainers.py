@@ -148,7 +148,7 @@ def parse(blob: bytes) -> list[Subsystem]:
         # positive in one rule: doc-table examples (`    M: ...`),
         # the `Maintainers List` heading's underline, and any future
         # indented prose.
-        if line and (line[0] == " " or line[0] == "\t"):
+        if line.startswith((" ", "\t")):
             continue
 
         # Tag lines look like `M:\tName <addr>`, anchored at column 0
