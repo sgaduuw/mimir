@@ -584,6 +584,37 @@ def test_security_headers_present(client):
         assert r.headers.get(h), f"missing header {h}"
 
 
+def test_security_headers_present_on_unmatched_404(client):
+    """The audit (2026-05-15) flagged that `@bp_web.after_request`
+    only fires for routes that matched the blueprint -- URLs with no
+    matching pattern at all (Flask's built-in 404) bypassed CSP,
+    X-Frame-Options, X-Content-Type-Options, and the structured
+    access-log line. Hooks moved to `before_app_request` /
+    `after_app_request` so they fire on every request the app sees.
+
+    A URL with 5+ path segments doesn't match any current route
+    (the deepest patterns are 4-segment `<inbox>/<yyyy>/<mm>/<id>`),
+    so Flask responds 404 before any blueprint endpoint is picked."""
+    r = client.get("/no/such/route/exists/here")
+    assert r.status_code == 404
+    for h in (
+        "Content-Security-Policy",
+        "Referrer-Policy",
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+    ):
+        assert r.headers.get(h), (
+            f"missing header {h} on unmatched 404 -- "
+            "before_app_request/after_app_request hooks regressed"
+        )
+    # X-Request-Id is populated by the before_app_request hook;
+    # absence (or the "-" placeholder) means the hook didn't fire.
+    rid = r.headers.get("X-Request-Id")
+    assert rid and rid != "-", (
+        f"X-Request-Id={rid!r}; before_app_request didn't run"
+    )
+
+
 def _parse_csp(csp: str) -> dict[str, list[str]]:
     """Parse a CSP header into a {directive: [sources, ...]} map.
     Robust to whitespace, directive order, and the `script-src` vs
@@ -1267,6 +1298,74 @@ def test_since_title_shape(client, inbox_name):
     title = _title_of(client.get(f"/{inbox_name}/since/{recent}").data.decode())
     assert title.endswith(f" | {inbox_name} | mimir")
     assert recent in title
+
+
+def test_daily_view_counts_messages_in_window(client):
+    """Pin the count-by-window behaviour on `_daily_view`: an
+    article sent today is counted, one sent yesterday is not.
+    Audit (2026-05-15) flagged the previous
+    `Article.date >= start.strftime(...)` form as brittle on
+    SQLA 2.x typing; the datetime-comparison form keeps the
+    column's DateTime type live across the round-trip."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    now = datetime.now(timezone.utc)
+    yesterday = now - timedelta(days=1)
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        # Seed two articles: one today, one yesterday. The /today
+        # view should see the today one only.
+        today_art = Article(
+            message_id="today-win@example.com",
+            subject="today",
+            author="a",
+            date=now,
+            thread_parent=None,
+            subject_normalized="today",
+        )
+        yest_art = Article(
+            message_id="yest-win@example.com",
+            subject="yesterday",
+            author="a",
+            date=yesterday,
+            thread_parent=None,
+            subject_normalized="yesterday",
+        )
+        s.add_all([today_art, yest_art])
+        s.flush()
+        s.add_all([
+            ArticleList(article_id=today_art.id, inbox_id=alpha.id,
+                        epoch="0.git", commit_sha="aa" * 20),
+            ArticleList(article_id=yest_art.id, inbox_id=alpha.id,
+                        epoch="0.git", commit_sha="bb" * 20),
+        ])
+        s.commit()
+
+    r = client.get("/alpha/today")
+    assert r.status_code == 200
+    body = r.data.decode()
+    # The total appears as "N messages across …"; pin the digit
+    # without coupling to surrounding template prose.
+    import re
+    m = re.search(r"(\d+)\s+messages? across", body)
+    assert m is not None, (
+        f"didn't find message count in rendered body:\n{body[:400]}"
+    )
+    count = int(m.group(1))
+    assert count >= 1, (
+        "today's article should be inside the window; the strftime-"
+        f"to-datetime change must keep the count correct (got {count})"
+    )
+    # Yesterday's article must NOT be counted in the /today view.
+    # If the SQL comparison silently broke and counted everything,
+    # this would be 2+.
+    assert count == 1, (
+        f"only today's seeded article should match /today; got count={count}"
+    )
 
 
 def test_message_subject_truncated_to_80(client, tmp_path):
