@@ -564,6 +564,105 @@ class ReviewerStat:
 cache.register("ReviewerStat", ReviewerStat)
 
 
+@dataclass
+class ReviewEntry:
+    """One attestation by a specific reviewer on a specific article.
+
+    Same person under two roles on one article (Reported-by +
+    Tested-by) shows as two entries — that's accurate to the source
+    trailer block and useful for the per-reviewer page reading.
+
+    `inbox_name` is the canonical inbox for the article (resolved
+    via Article.canonical_inbox or falling back to any linked inbox);
+    used to construct the message URL. The reviewer page itself is
+    inbox-scoped, but cross-posted articles still get the right
+    canonical link.
+    """
+    article_id: int
+    message_id: str
+    subject: str | None
+    date: datetime | None
+    role: str
+    inbox_name: str
+
+
+cache.register("ReviewEntry", ReviewEntry)
+
+
+# Cap on per-reviewer attestation listings. 100 covers a year of
+# heavy maintainer activity (Greg KH, Linus Torvalds, etc.) without
+# the page growing unbounded; the cap surfaces in the truncation
+# notice on the reviewer template.
+REVIEWS_PER_PAGE_LIMIT = 100
+
+
+def articles_reviewed_by(
+    session: Session, inbox: Inbox, address_normalized: str,
+    limit: int = REVIEWS_PER_PAGE_LIMIT, force: bool = False,
+) -> list[ReviewEntry]:
+    """All attestations by `address_normalized` on articles linked
+    to `inbox`, newest-first.
+
+    `address_normalized` is matched exactly against
+    `article_trailers.address_normalized` (already lowercased at
+    ingest); callers should `.lower()` before passing if the input
+    came from a URL or untrusted source.
+
+    Cached per `(inbox.name, address, limit)` for the same TTL as
+    the threads helper. Cache key uses the address verbatim — it's
+    already lowercased so casing collisions are impossible.
+    """
+    def compute() -> list[ReviewEntry]:
+        rows = session.execute(
+            text(
+                """
+                SELECT a.id AS article_id, a.message_id, a.subject,
+                       a.date AS art_date, t.role,
+                       COALESCE(canon.name, fb.name) AS inbox_name
+                FROM article_trailers t
+                JOIN articles a ON a.id = t.article_id
+                JOIN article_lists al ON al.article_id = a.id
+                LEFT JOIN inboxes canon
+                    ON canon.id = a.canonical_inbox_id
+                LEFT JOIN (
+                    SELECT al2.article_id, MIN(i.name) AS name
+                    FROM article_lists al2
+                    JOIN inboxes i ON i.id = al2.inbox_id
+                    GROUP BY al2.article_id
+                ) fb ON fb.article_id = a.id
+                WHERE al.inbox_id = :inbox_id
+                  AND t.address_normalized = :addr
+                ORDER BY a.date DESC
+                LIMIT :limit
+                """
+            ),
+            {
+                "inbox_id": inbox.id,
+                "addr": address_normalized,
+                "limit": limit,
+            },
+        ).all()
+        return [
+            ReviewEntry(
+                article_id=r.article_id,
+                message_id=r.message_id,
+                subject=r.subject,
+                date=_coerce_dt(r.art_date) if r.art_date else None,
+                role=r.role,
+                inbox_name=r.inbox_name,
+            )
+            for r in rows
+        ]
+
+    return cache.get_or_compute(
+        session,
+        f"articles_reviewed_by:{inbox.name}:{address_normalized}:{limit}",
+        ACTIVE_THREADS_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
 def active_reviewers_in_subsystem(
     session: Session, inbox: Inbox, subsystem: Subsystem,
     days: int = 30, limit: int = 10, force: bool = False,
@@ -682,12 +781,15 @@ def _coerce_dt(value) -> datetime:
 
 
 __all__ = [
+    "REVIEWS_PER_PAGE_LIMIT",
     "RelatedPatch",
+    "ReviewEntry",
     "ReviewerStat",
     "SubsystemHit",
     "_subsystem_path_filter_sql",
     "active_reviewers_in_subsystem",
     "active_threads_in_subsystem",
+    "articles_reviewed_by",
     "daily_volume_in_subsystem",
     "path_matches_glob",
     "recent_articles_in_subsystem",

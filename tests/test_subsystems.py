@@ -16,6 +16,7 @@ from mimir.models import (
 from mimir.subsystems import (
     active_reviewers_in_subsystem,
     active_threads_in_subsystem,
+    articles_reviewed_by,
     daily_volume_in_subsystem,
     path_matches_glob,
     recent_articles_in_subsystem,
@@ -720,6 +721,170 @@ def test_active_reviewers_empty_when_no_supported_globs(seeded_db):
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         out = active_reviewers_in_subsystem(s, alpha, sub, force=True)
     assert out == []
+
+
+# `articles_reviewed_by` integration — slice 3 of #97. Powers the
+# per-reviewer `/<inbox>/reviewer/<address>` page.
+
+
+def test_articles_reviewed_by_returns_one_entry_per_attestation(seeded_db):
+    """Same person under two roles on one patch (Reported-by +
+    Tested-by) shows as two ReviewEntry rows. Accurate to the source
+    trailer block; the per-reviewer page exists to surface every
+    attestation this person made."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_patch_with_trailers(
+            s, "p1@x", ["fs/bcachefs/super.c"],
+            [
+                ("Reported-by", "Alice", "alice@kernel.org"),
+                ("Tested-by", "Alice", "alice@kernel.org"),
+            ],
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = articles_reviewed_by(s, alpha, "alice@kernel.org", force=True)
+    roles = sorted(e.role for e in out)
+    assert roles == ["Reported-by", "Tested-by"]
+    assert {e.message_id for e in out} == {"p1@x"}
+    # Suppress unused fixture warning for `sub` (the helper resolves
+    # by address, not by subsystem — the patch happens to be in one
+    # for fixture-construction convenience).
+    assert sub.id is not None
+
+
+def test_articles_reviewed_by_matches_address_case_insensitively(
+    seeded_db,
+):
+    """Address comes through `address_normalized` (lowercased at
+    ingest); the helper takes the lowercased URL value. Verify that
+    a mixed-case stored address still matches when queried with the
+    normalized form."""
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        # Address stored with original-casing as it landed in the
+        # trailer; address_normalized is lowercased.
+        from mimir.models import ArticleList, ArticleTrailer
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        art = Article(
+            message_id="case@x",
+            subject="case-test",
+            author="a@example",
+            date=datetime.now(timezone.utc),
+            thread_parent=None,
+            subject_normalized="case-test",
+            canonical_inbox_id=inbox.id,
+            lists=[ArticleList(inbox_id=inbox.id, epoch="0.git",
+                               commit_sha="f" * 40)],
+            files=[ArticleFile(path="fs/bcachefs/x.c")],
+            trailers=[ArticleTrailer(
+                role="Reviewed-by", name="Mixed",
+                address="Mixed@KerneL.OrG",
+                address_normalized="mixed@kernel.org",
+            )],
+        )
+        s.add(art); s.commit()
+        out = articles_reviewed_by(s, inbox, "mixed@kernel.org", force=True)
+    assert {e.message_id for e in out} == {"case@x"}
+
+
+def test_articles_reviewed_by_orders_by_date_desc(seeded_db):
+    """Newest attestations surface first — the page is a chronological
+    listing, freshest at the top."""
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_patch_with_trailers(
+            s, "old@x", ["fs/bcachefs/a.c"],
+            [("Reviewed-by", "A", "a@kernel.org")], days_ago=10,
+        )
+        _add_recent_patch_with_trailers(
+            s, "new@x", ["fs/bcachefs/b.c"],
+            [("Reviewed-by", "A", "a@kernel.org")], days_ago=0,
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = articles_reviewed_by(s, alpha, "a@kernel.org", force=True)
+    assert [e.message_id for e in out] == ["new@x", "old@x"]
+
+
+def test_articles_reviewed_by_scoped_to_inbox(seeded_db):
+    """Attestations on patches in `beta` don't bleed into `alpha`'s
+    reviewer page — the URL is inbox-scoped and the helper joins
+    through `article_lists`."""
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_patch_with_trailers(
+            s, "a-side@x", ["fs/bcachefs/x.c"],
+            [("Reviewed-by", "A", "a@kernel.org")],
+            inbox_name="alpha",
+        )
+        _add_recent_patch_with_trailers(
+            s, "b-side@x", ["fs/bcachefs/y.c"],
+            [("Reviewed-by", "A", "a@kernel.org")],
+            inbox_name="beta",
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        out_alpha = articles_reviewed_by(s, alpha, "a@kernel.org", force=True)
+        out_beta = articles_reviewed_by(s, beta, "a@kernel.org", force=True)
+    assert {e.message_id for e in out_alpha} == {"a-side@x"}
+    assert {e.message_id for e in out_beta} == {"b-side@x"}
+
+
+def test_articles_reviewed_by_respects_limit(seeded_db):
+    """The cap prevents per-reviewer pages from growing unbounded."""
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        for i in range(5):
+            _add_recent_patch_with_trailers(
+                s, f"p{i}@x", ["fs/bcachefs/x.c"],
+                [("Reviewed-by", "A", "a@kernel.org")],
+                days_ago=i,
+            )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = articles_reviewed_by(s, alpha, "a@kernel.org", limit=3, force=True)
+    assert len(out) == 3
+    # Newest 3 (days_ago = 0, 1, 2).
+    assert [e.message_id for e in out] == ["p0@x", "p1@x", "p2@x"]
+
+
+def test_articles_reviewed_by_resolves_canonical_inbox(seeded_db):
+    """Cross-posted articles get the canonical inbox name on each
+    ReviewEntry, so the message URL constructed in the template
+    points at the right inbox even when the URL is reached via a
+    different inbox's reviewer page."""
+    from mimir.models import ArticleList, ArticleTrailer
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        # Cross-posted: belongs to both alpha and beta; canonical = beta.
+        art = Article(
+            message_id="xpost@x",
+            subject="cross-post",
+            author="a@example",
+            date=datetime.now(timezone.utc),
+            thread_parent=None,
+            subject_normalized="cross-post",
+            canonical_inbox_id=beta.id,
+            lists=[
+                ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="a" * 40),
+                ArticleList(inbox_id=beta.id, epoch="0.git", commit_sha="b" * 40),
+            ],
+            files=[ArticleFile(path="fs/bcachefs/x.c")],
+            trailers=[ArticleTrailer(
+                role="Reviewed-by", name="A", address="a@kernel.org",
+                address_normalized="a@kernel.org",
+            )],
+        )
+        s.add(art); s.commit()
+        # Query the per-reviewer page from alpha; entry should still
+        # carry beta as the inbox_name (where the canonical URL lives).
+        out = articles_reviewed_by(s, alpha, "a@kernel.org", force=True)
+    assert len(out) == 1
+    assert out[0].inbox_name == "beta"
 
 
 def test_active_reviewers_keeps_latest_display_name_per_address(seeded_db):
