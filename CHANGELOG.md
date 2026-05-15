@@ -11,6 +11,17 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Security
+
+- Web tier: defense-in-depth response headers (CSP,
+  X-Frame-Options, X-Content-Type-Options, Referrer-Policy,
+  X-Request-Id), Cache-Control, and the structured access log
+  now fire on URLs that don't match any route. The hooks moved
+  from blueprint scope (`@bp_web.before_request` /
+  `@bp_web.after_request`) to app scope (`before_app_request` /
+  `after_app_request`); previously, Flask's built-in 404 for
+  unmatched paths bypassed all of them.
+
 ## [1.21.0] – 2026-05-15
 
 Per-subsystem dashboard latency pass. A real-world cold load on
