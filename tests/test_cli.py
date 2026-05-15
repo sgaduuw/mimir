@@ -845,6 +845,52 @@ def test_reindex_missing_epoch_repo_clickexception(seeded_db, tmp_path):
     assert "epoch repo not found" in result.output
 
 
+def test_reindex_rejects_malformed_epoch_shape(seeded_db, tmp_path):
+    """The epoch argument is joined onto inbox.mirror_path. Without
+    a shape check, an operator typo or hostile input like
+    `../../etc` would walk outside the mirror root before the
+    `.exists()` guard ever runs. The regex pins the public-inbox
+    convention (`<N>.git`) at the CLI boundary."""
+    _repoint_inbox("alpha", tmp_path / "alpha-mirror")
+    for bad in ("..", "../../etc", "/etc", "0.gitX", "0", "abc", "0.git/.."):
+        result = CliRunner().invoke(reindex_command, ["alpha", bad])
+        assert result.exit_code != 0, (
+            f"epoch {bad!r} should be rejected, got exit_code=0\n"
+            f"output: {result.output}"
+        )
+        assert "epoch" in result.output.lower()
+
+
+def test_dev_seed_thread_rejects_invalid_inbox_name(seeded_db, tmp_path):
+    """The dev-seed-thread inbox_name flows into both the
+    filesystem path (`<mirror_root>/<inbox_name>/git`) and the
+    RFC 5322 To: header bytes for each synthesised message.
+    Validation via the same slug regex the admin service uses
+    catches `..`, slashes, CR/LF, uppercase, and shell metachars
+    in one shot."""
+    for bad in (
+        "../escape",     # path traversal
+        "Inbox",         # uppercase (slug must be lowercase)
+        "inbox/sub",     # slash
+        "inbox\r\nTo:",  # CRLF header-injection vector
+        "-leading",      # validator forbids hyphen at edges
+        "",              # empty
+    ):
+        result = CliRunner().invoke(
+            dev_seed_thread_command,
+            ["--inbox", bad, "--mirror-root", str(tmp_path)],
+        )
+        assert result.exit_code != 0, (
+            f"inbox_name {bad!r} should be rejected, "
+            f"got exit_code=0\noutput: {result.output}"
+        )
+        # No mirror dir for the rejected name should have been
+        # created -- the validation has to happen before any side
+        # effect.
+        if bad and "/" not in bad and "\r" not in bad and "\n" not in bad:
+            assert not (tmp_path / bad).exists()
+
+
 # `show` -- one-article inspect, with the three ClickException branches.
 
 
