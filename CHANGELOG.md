@@ -11,6 +11,28 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.19.2] – 2026-05-15
+
+Second PATCH on top of 1.19.0. The 1.19.1 hotfix addressed the
+per-subsystem COUNT fan-out but left a second fan-out in place:
+the front-page subsystem cards still called
+`daily_volume_in_subsystem` per surviving top-N entry for the
+inline sparkline. On prod that meant `limit*3 = 36` calls per
+inbox cold (the global aggregator pulls the top-30 plus a hedge
+to get a clean global top-10), each running its own per-
+subsystem path-scoped GROUP BY against the articles table.
+Cold call exceeded the worker timeout again.
+
+### Fixed
+
+- Inline sparkline buckets are now built in-memory from the
+  same `(article_id, path, date)` tuples the bulk SQL already
+  fetches for the activity ranking; no per-subsystem fan-out
+  remains in `most_active_subsystems_in_inbox`. The window
+  also switches from rolling 168 hours to a calendar 7-day
+  span (today + 6 prior days) so the inline spark buckets line
+  up with what `daily_volume_in_subsystem` would have queried.
+
 ## [1.19.1] – 2026-05-15
 
 PATCH on top of 1.19.0 fixing a fan-out blowup in the front-
