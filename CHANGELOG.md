@@ -11,6 +11,30 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- **Subsystem discoverability** across three surfaces. The per-
+  subsystem dashboards (`/<inbox>/subsystem/<name>/`) were
+  previously reachable only by direct URL; mimir now exposes a
+  navigation path from every entry point a reader is likely to
+  start at.
+  - **Front page** (`/`) carries an "Active subsystems (last 7
+    days)" chip cloud below the inbox cards. Each chip links to
+    the per-subsystem dashboard on whichever inbox saw the most
+    activity for that subsystem in the window, surfacing the
+    busiest variant.
+  - **Per-inbox dashboard** (`/<inbox>/`) carries a "Most active
+    subsystems (last 7 days)" chip cloud below the "Most active
+    threads" section.
+  - **Patch pages** linkify the "Subsystem: BCACHEFS" header so
+    each subsystem name acts as a launch pad into the broader
+    subsystem context.
+  - Two new helpers in `mimir.subsystems`:
+    `most_active_subsystems_in_inbox` (per-inbox) and
+    `most_active_subsystems_global` (cross-inbox aggregator with
+    busiest-inbox attribution). Both cached for 5 min;
+    `warm-cache` pre-populates them.
+
 ### Changed
 
 - **Subsystem dashboard URLs are now lowercase**. MAINTAINERS

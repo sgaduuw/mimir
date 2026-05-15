@@ -90,6 +90,42 @@ def test_meta_index_card_link_targets_inbox_dashboard(client):
     assert "/beta/" in hrefs
 
 
+def test_meta_index_renders_subsystem_chips_with_activity(client, tmp_path):
+    """Front page surfaces an "Active subsystems" teaser when one
+    or more subsystems have recent messages. Chips link to the
+    busiest inbox's per-subsystem dashboard (lowercased URL).
+    """
+    from datetime import datetime, timedelta, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "bch-front@example.com",
+        subject="bcachefs front-page test", body=body,
+    )
+    with SessionLocal() as s:
+        art = s.get(Article, art_id)
+        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        s.commit()
+    text = client.get("/").data.decode()
+    assert "Active subsystems" in text
+    assert "BCACHEFS" in text
+    # URL is the lowercased canonical form.
+    assert "/alpha/subsystem/bcachefs/" in text
+
+
+def test_meta_index_no_subsystem_section_when_no_activity(client):
+    """Inverse: with no recent in-window articles the section is
+    skipped entirely rather than rendering a stub."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    text = client.get("/").data.decode()
+    assert "Active subsystems" not in text
+
+
 def test_footer_includes_mimir_version(client):
     """The footer surfaces the running package version so an operator
     can confirm the deployed image matches the expected tag. Pin via
@@ -3033,6 +3069,51 @@ def test_inbox_dashboard_with_trackers_renders_tile(client, inbox_name):
     set_tracked_authors(inbox_name, {"Carol Tracked": "carol@kernel.org"})
     body = client.get(f"/{inbox_name}/").data.decode()
     assert "Latest from Carol Tracked" in body
+
+
+def test_inbox_dashboard_renders_subsystem_chips_with_activity(
+    client, tmp_path,
+):
+    """Inbox dashboard surfaces "Most active subsystems" chips when
+    a subsystem has recent in-window messages on that inbox. Chip
+    link is the lowercased per-subsystem dashboard URL."""
+    from datetime import datetime, timedelta, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "bch-inbox@example.com",
+        subject="bcachefs inbox-dashboard test", body=body,
+    )
+    with SessionLocal() as s:
+        art = s.get(Article, art_id)
+        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        s.commit()
+    text = client.get("/alpha/").data.decode()
+    assert "Most active subsystems" in text
+    assert "/alpha/subsystem/bcachefs/" in text
+
+
+def test_message_page_subsystem_header_is_clickable(client, tmp_path):
+    """The subsystem name on a patch page links to the per-subsystem
+    dashboard so a reader can navigate into the broader context.
+    URL takes the lowercased form; display keeps upstream casing."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "bch-link@example.com",
+        subject="bcachefs link test", body=body,
+    )
+    text = client.get(url).data.decode()
+    # Link present with lowercased URL and uppercased display.
+    assert '<a href="/alpha/subsystem/bcachefs/">BCACHEFS</a>' in text
 
 
 def test_off_list_parent_hint_surfaces_unindexed_list(client, tmp_path):

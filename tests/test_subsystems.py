@@ -18,6 +18,8 @@ from mimir.subsystems import (
     active_threads_in_subsystem,
     articles_reviewed_by,
     daily_volume_in_subsystem,
+    most_active_subsystems_global,
+    most_active_subsystems_in_inbox,
     path_matches_glob,
     recent_articles_in_subsystem,
     recent_patches_touching,
@@ -912,3 +914,111 @@ def test_active_reviewers_keeps_latest_display_name_per_address(seeded_db):
     assert len(out) == 1
     assert out[0].name == "New Name"
     assert out[0].total == 2
+
+
+# `most_active_subsystems_in_inbox` + `most_active_subsystems_global`
+# integration tests. Powers the subsystem discoverability surfaces
+# on the inbox dashboard and the front page.
+
+
+def test_most_active_subsystems_in_inbox_counts_and_sorts(seeded_db):
+    """Two subsystems with different recent message counts surface
+    in descending order. Subsystem with no recent activity is
+    excluded entirely."""
+    with seeded_db() as s:
+        hot = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        warm = _add_subsystem(s, "BTRFS-MAIN", "Maintained", files=["fs/btrfs/"])
+        _add_subsystem(s, "DORMANT", None, files=["drivers/dormant/"])
+        # 3 hot, 1 warm, 0 dormant.
+        _add_recent_thread_root(s, "h1@x", ["fs/bcachefs/a.c"])
+        _add_recent_thread_root(s, "h2@x", ["fs/bcachefs/b.c"])
+        _add_recent_thread_root(s, "h3@x", ["fs/bcachefs/c.c"])
+        _add_recent_thread_root(s, "w1@x", ["fs/btrfs/extent.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = most_active_subsystems_in_inbox(
+            s, alpha, days=7, limit=10, force=True,
+        )
+    names = [a.name for a in out]
+    counts = [a.message_count for a in out]
+    assert names == ["BCACHEFS", "BTRFS-MAIN"]
+    assert counts == [3, 1]
+    # `DORMANT` doesn't appear at all (no in-window articles).
+    assert hot.id in {a.id for a in out}
+    assert warm.id in {a.id for a in out}
+
+
+def test_most_active_subsystems_in_inbox_inbox_scoped(seeded_db):
+    """A subsystem's count on `alpha` doesn't bleed into `beta`'s
+    list."""
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_thread_root(s, "alpha-1@x", ["fs/bcachefs/a.c"],
+                                inbox_name="alpha")
+        _add_recent_thread_root(s, "alpha-2@x", ["fs/bcachefs/b.c"],
+                                inbox_name="alpha")
+        _add_recent_thread_root(s, "beta-1@x", ["fs/bcachefs/c.c"],
+                                inbox_name="beta")
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        out_a = most_active_subsystems_in_inbox(s, alpha, force=True)
+        out_b = most_active_subsystems_in_inbox(s, beta, force=True)
+    assert out_a[0].message_count == 2
+    assert out_a[0].inbox_name == "alpha"
+    assert out_b[0].message_count == 1
+    assert out_b[0].inbox_name == "beta"
+
+
+def test_most_active_subsystems_in_inbox_empty_when_no_supported_globs(
+    seeded_db,
+):
+    """Wildcard-only F: rules → no supported globs → not included.
+    Matches the documented contract of the other path-filtered
+    helpers."""
+    with seeded_db() as s:
+        _add_subsystem(s, "ARCH-CSTAR", None, files=["arch/*/cstar/"])
+        _add_recent_thread_root(s, "wild@x", ["arch/x86/cstar/init.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = most_active_subsystems_in_inbox(s, alpha, force=True)
+    assert out == []
+
+
+def test_most_active_subsystems_global_aggregates_across_inboxes(
+    seeded_db,
+):
+    """A subsystem active in both inboxes shows once with a total
+    count summed across them, attributed to the busiest inbox."""
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        # alpha: 3 messages
+        _add_recent_thread_root(s, "a1@x", ["fs/bcachefs/a.c"], inbox_name="alpha")
+        _add_recent_thread_root(s, "a2@x", ["fs/bcachefs/b.c"], inbox_name="alpha")
+        _add_recent_thread_root(s, "a3@x", ["fs/bcachefs/c.c"], inbox_name="alpha")
+        # beta: 1 message
+        _add_recent_thread_root(s, "b1@x", ["fs/bcachefs/d.c"], inbox_name="beta")
+        s.commit()
+        out = most_active_subsystems_global(s, days=7, limit=10, force=True)
+    assert len(out) == 1
+    assert out[0].name == "BCACHEFS"
+    # Total = 3 + 1 = 4. Attribution = alpha (3 > 1).
+    assert out[0].message_count == 4
+    assert out[0].inbox_name == "alpha"
+
+
+def test_most_active_subsystems_global_alphabetical_tiebreak_on_inbox(
+    seeded_db,
+):
+    """Equal per-inbox counts → attribute to the alphabetically-
+    earlier inbox name. Deterministic ordering matters for stable
+    URL generation."""
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_thread_root(s, "a-tie@x", ["fs/bcachefs/a.c"], inbox_name="alpha")
+        _add_recent_thread_root(s, "b-tie@x", ["fs/bcachefs/b.c"], inbox_name="beta")
+        s.commit()
+        out = most_active_subsystems_global(s, days=7, limit=10, force=True)
+    assert len(out) == 1
+    # alpha < beta alphabetically, equal per-inbox count of 1.
+    assert out[0].inbox_name == "alpha"

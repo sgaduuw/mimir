@@ -30,6 +30,59 @@
 </section>
 {% endif %}
 
+{% if active_subsystems %}
+{# Subsystem discoverability. Without this, the per-subsystem
+   dashboards are reachable only by direct URL — most casual
+   readers will never find them. Chip cloud links each to its
+   /<inbox>/subsystem/<name|lower>/ dashboard, sorted by recent
+   activity, capped at 10. #}
+<section>
+  <h2>Most active subsystems <small><em>(last 7 days)</em></small></h2>
+  <ul class="subsystem-chips">
+    {% for s in active_subsystems %}
+    <li>
+      <a class="subsystem-chip" href="/{{ s.inbox_name }}/subsystem/{{ s.name|lower|urlencode }}/">
+        <strong>{{ s.name }}</strong>
+        <small>{{ s.message_count }}</small>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+<style>
+  /* Subsystem chip list: flex-wrap row of pill-shaped links so
+     readers can scan many at once without scroll. message_count
+     surfaces in a faded small to signal activity intensity
+     without dominating the chip. */
+  .subsystem-chips {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .subsystem-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    padding: 0.25rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid var(--pico-muted-border-color);
+    background: var(--pico-card-background-color);
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .subsystem-chip:hover,
+  .subsystem-chip:focus-visible {
+    border-color: var(--pico-primary);
+    text-decoration: none;
+  }
+  .subsystem-chip small { color: var(--pico-muted-color); }
+</style>
+{% endif %}
+
 <div class="grid">
   {% if pulls %}
   <section>

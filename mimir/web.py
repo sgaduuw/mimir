@@ -51,6 +51,8 @@ from mimir.subsystems import (
     active_threads_in_subsystem,
     articles_reviewed_by,
     daily_volume_in_subsystem,
+    most_active_subsystems_global,
+    most_active_subsystems_in_inbox,
     recent_articles_in_subsystem,
     recent_patches_touching,
     subsystems_for_article,
@@ -1256,10 +1258,18 @@ def index():
                 # series → flat bar row).
                 "spark": daily_volume(session, inbox, days=30),
             })
+        # Cross-inbox subsystem teaser. Surfaces the most active
+        # subsystems across every configured inbox so a reader on
+        # `/` can drill into a hot subsystem without first picking
+        # an inbox. Each row carries the inbox where it's busiest.
+        active_subsystems = most_active_subsystems_global(
+            session, days=7, limit=12,
+        )
     base = _site_base()
     return render_template(
         "index.html",
         inbox_summaries=inbox_summaries,
+        active_subsystems=active_subsystems,
         current_inbox=None,
         canonical_url=base + "/",
         page_json_ld=_json_ld_index(base, inboxes),
@@ -1283,6 +1293,13 @@ def inbox_dashboard(inbox_name: str):
         recent, recent_has_more = _fetch_recent(session, inbox, 0, RECENT_PAGE_SIZE)
         stats = archive_stats(session, inbox)
         spark = daily_volume(session, inbox, days=30)
+        # Subsystem discoverability: top-N most active subsystems in
+        # this inbox over the last 7 days. Cached helper, so warm-cache
+        # covers steady state. Empty list when no subsystem has
+        # supported globs (no MAINTAINERS ingest yet).
+        active_subsystems = most_active_subsystems_in_inbox(
+            session, inbox, days=7, limit=10,
+        )
     base = _site_base()
     year_decades: list[tuple[int, list[int]]] = []
     if stats and stats.first_date and stats.last_date:
@@ -1304,6 +1321,7 @@ def inbox_dashboard(inbox_name: str):
         stats=stats,
         spark=spark,
         year_decades=year_decades,
+        active_subsystems=active_subsystems,
         canonical_url=f"{base}/{inbox.name}/",
         page_json_ld=_json_ld_inbox(base, inbox, active),
     )

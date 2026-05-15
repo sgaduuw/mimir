@@ -164,4 +164,54 @@
 <p><em>No inboxes configured. Add entries to <code>Settings.inboxes</code> in <code>mimir/config.py</code>.</em></p>
 {% endif %}
 
+{% if active_subsystems %}
+{# Front-page subsystem teaser. Cross-inbox: each chip links to
+   the subsystem dashboard on whichever inbox saw the most
+   activity for that subsystem in the last 7 days. Surfaces the
+   subsystem-level navigation so a curious reader landing on `/`
+   has a path other than "pick an inbox first". #}
+<h2 id="subsystems">Active subsystems <small><em>(last 7 days)</em></small></h2>
+<ul class="subsystem-chips">
+  {% for s in active_subsystems %}
+  <li>
+    <a class="subsystem-chip" href="/{{ s.inbox_name }}/subsystem/{{ s.name|lower|urlencode }}/">
+      <strong>{{ s.name }}</strong>
+      <small>{{ s.inbox_name }} · {{ s.message_count }}</small>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+<style>
+  /* Same chip shape as the per-inbox dashboard's surface; defined
+     here too so the front page doesn't depend on inbox.html's
+     stylesheet being parsed. */
+  .subsystem-chips {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 1.5rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .subsystem-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    padding: 0.3rem 0.75rem;
+    border-radius: 999px;
+    border: 1px solid var(--pico-muted-border-color);
+    background: var(--pico-card-background-color);
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .subsystem-chip:hover,
+  .subsystem-chip:focus-visible {
+    border-color: var(--pico-primary);
+    text-decoration: none;
+  }
+  .subsystem-chip small { color: var(--pico-muted-color); }
+</style>
+{% endif %}
+
 {% endblock %}
