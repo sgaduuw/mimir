@@ -61,6 +61,25 @@
   </ul>
   {% endif %}
 
+  {% if reviewers %}
+  <h2>Active reviewers <small><em>(last 30 days)</em></small></h2>
+  <ul>
+    {% for r in reviewers %}
+    <li>
+      {% set _label = (r.name + ' <' + r.address + '>') if r.name else ('<' + r.address + '>') %}
+      <strong>{{ _label|safe_from }}</strong>
+      <br><small>{{ r.total }} attestation{{ '' if r.total == 1 else 's' }}
+        {% set _parts = [] %}
+        {% for role, n in r.role_counts.items()|sort %}
+          {% set _ = _parts.append(n|string + ' ' + role) %}
+        {% endfor %}
+        ({{ _parts|join(', ') }})
+        &middot; last on {{ r.last_seen.strftime('%Y-%m-%d') }}</small>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
   <h2>Recent patches</h2>
   {% if recent %}
   <p><small>Most-recent {{ recent|length }} patch{{ '' if recent|length == 1 else 'es' }} in this subsystem on {{ inbox_name }}{% if recent|length >= recent_limit %} (capped at {{ recent_limit }}){% endif %}, ordered by date desc.</small></p>

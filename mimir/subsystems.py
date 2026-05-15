@@ -28,6 +28,7 @@ exist in MAINTAINERS — `X:` only acts on its own section.
 """
 import fnmatch
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date as date_cls, datetime, timedelta, timezone
 
 from pydantic import BaseModel
@@ -519,10 +520,173 @@ def active_threads_in_subsystem(
     )
 
 
+@dataclass
+class ReviewerStat:
+    """One reviewer's activity in a subsystem over the recent window.
+
+    `name` is the display name from the most-recent trailer the
+    reviewer authored (the address is the stable identity; the name
+    can drift across messages, and "their latest" is least-surprising
+    for the visible label).
+
+    `address` is the verbatim address from the most-recent trailer —
+    same rationale as `name`. The render-time redaction policy
+    (see `_redact_trailer_address` in `mimir.web`) consumes this and
+    decides whether to show it or substitute `<hidden>` based on the
+    allowlist.
+
+    `address_normalized` is the lowercased address used for grouping
+    and as the stable per-author identity (slice 3 will key URLs off
+    it).
+
+    `role_counts` is `{role: n}` summed across the window, e.g.
+    `{"Reviewed-by": 12, "Acked-by": 4, "Tested-by": 1}`. `total`
+    is the sum, kept separately so the template doesn't need a
+    Jinja `sum` over the dict.
+
+    `last_seen` is the most recent article date carrying any
+    attestation by this reviewer, used as the secondary sort key
+    (after `total`) so equally-active reviewers are ordered by
+    freshness.
+
+    Dataclass (not pydantic) for cache-encoder compatibility — see
+    `mimir.cache` which round-trips registered types via
+    `dataclasses.fields`.
+    """
+    name: str
+    address: str
+    address_normalized: str
+    role_counts: dict[str, int]
+    total: int
+    last_seen: datetime
+
+
+cache.register("ReviewerStat", ReviewerStat)
+
+
+def active_reviewers_in_subsystem(
+    session: Session, inbox: Inbox, subsystem: Subsystem,
+    days: int = 30, limit: int = 10, force: bool = False,
+) -> list[ReviewerStat]:
+    """Most-active reviewers in `inbox` over the last `days` days
+    among messages whose paths match `subsystem`'s F: globs (minus
+    X: vetoes).
+
+    "Reviewer" here is anyone whose address appears on an indexed
+    review-attestation trailer (`Reviewed-by` / `Acked-by` /
+    `Tested-by` / `Reported-by` / `Suggested-by` /
+    `Co-developed-by` / `Reported-and-tested-by`). Each trailer row
+    is one attestation, counted once per role per article.
+
+    Why a 30-day window (not 7d like `active_threads_in_subsystem`):
+    review cadence is slower than discussion cadence — a maintainer
+    who reviews two patches a week would render zero or one entries
+    in a 7-day window, which is too lossy to rank usefully. 30 days
+    is roughly one release-cycle's worth of activity.
+
+    Returns an empty list when the subsystem has no supported globs
+    (slice 1/2 ignores wildcard rules) or the window has no
+    attestations. Cached per `(inbox, subsystem, days, limit)` for
+    the same TTL as the threads helper.
+    """
+    def compute() -> list[ReviewerStat]:
+        path_filter = _subsystem_path_filter_sql(subsystem, prefix="arss")
+        if path_filter is None:
+            return []
+        path_sql, path_params = path_filter
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        # Pull every matching trailer row for the window. ORDER BY
+        # date DESC so the in-Python aggregator sees the freshest
+        # attestation per reviewer first; that's the row whose
+        # `name` / `address` we keep as the display surface.
+        rows = session.execute(
+            text(
+                f"""
+                SELECT t.role, t.name, t.address, t.address_normalized,
+                       a.date AS art_date
+                FROM article_trailers t
+                JOIN articles a ON a.id = t.article_id
+                JOIN article_lists al ON al.article_id = a.id
+                WHERE al.inbox_id = :inbox_id
+                  AND a.date >= :start
+                  AND a.id IN ({path_sql})
+                ORDER BY a.date DESC
+                """
+            ),
+            {
+                "inbox_id": inbox.id,
+                "start": start.isoformat(),
+                **path_params,
+            },
+        ).all()
+
+        agg: dict[str, dict] = {}
+        for r in rows:
+            key = r.address_normalized
+            entry = agg.get(key)
+            if entry is None:
+                # First (= most recent) row for this reviewer wins
+                # the display name and verbatim address.
+                entry = {
+                    "name": r.name or "",
+                    "address": r.address,
+                    "address_normalized": key,
+                    "role_counts": defaultdict(int),
+                    "last_seen": _coerce_dt(r.art_date),
+                }
+                agg[key] = entry
+            entry["role_counts"][r.role] += 1
+            # Older rows can't lift `last_seen` (we sorted DESC) so
+            # only the first-seen value matters; no max() needed.
+
+        stats = [
+            ReviewerStat(
+                name=e["name"],
+                address=e["address"],
+                address_normalized=e["address_normalized"],
+                role_counts=dict(e["role_counts"]),
+                total=sum(e["role_counts"].values()),
+                last_seen=e["last_seen"],
+            )
+            for e in agg.values()
+        ]
+        # Primary: total attestations DESC; tiebreak: last_seen DESC
+        # so equally-active reviewers are ordered by freshness.
+        stats.sort(key=lambda s: (-s.total, -s.last_seen.timestamp()))
+        return stats[:limit]
+
+    return cache.get_or_compute(
+        session,
+        f"active_reviewers_in_subsystem:{inbox.name}:{subsystem.id}:{days}:{limit}",
+        ACTIVE_THREADS_CACHE_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
+def _coerce_dt(value) -> datetime:
+    """`text()` raw SQL returns the `articles.date` column as an ISO
+    string; SQLAlchemy bypasses its type coercion on raw queries.
+    Mirror of the `_coerce_dt` in `mimir.threading` — kept local so
+    the import surface stays one-way (subsystems → threading is
+    already the established direction)."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    dt = datetime.fromisoformat(str(value))
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 __all__ = [
     "RelatedPatch",
+    "ReviewerStat",
     "SubsystemHit",
     "_subsystem_path_filter_sql",
+    "active_reviewers_in_subsystem",
     "active_threads_in_subsystem",
     "daily_volume_in_subsystem",
     "path_matches_glob",
