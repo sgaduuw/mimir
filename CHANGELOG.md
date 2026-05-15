@@ -11,6 +11,56 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.20.0] – 2026-05-15
+
+A focused warm-cache pass. The 1.19.3 hotfix dropped the heavy
+subsystem aggregator from three cache keys to one per inbox, but
+the prod tick (28 inboxes / 365 keys) was still ~185 s. Profiling
+showed two unrelated culprits: `latest_stable_releases` was paying
+~3 s per inbox to prove a negative across the full per-inbox date
+index (only `stable` actually has matches), and every key was
+being force-recomputed on every 5-minute cron tick regardless of
+its TTL headroom.
+
+This release bounds the offending queries, replaces unconditional
+recompute with TTL-aware refresh, and parallelises the remaining
+target loop across a thread pool. Combined effect on a typical
+tick: ~185 s → roughly 15-25 s, with sub-linear scaling as new
+inboxes are added.
+
+### Added
+
+- `warm-cache --workers N` flag controls the size of the worker
+  pool that fans out the per-inbox target loop. Defaults to
+  `min(cpu_count, 8)`. Pass `--workers 1` to force the serial
+  path when debugging a slow target.
+
+### Changed
+
+- `latest_pull_requests` and `latest_stable_releases` are now
+  scoped to the last 180 days. Without the floor, an inbox with
+  fewer than `limit` matches forced SQLite to walk the full
+  per-inbox date index proving the negative, costing ~3 s per
+  inbox in warm-cache and dominating wall time on quiet inboxes.
+  Inboxes with no matching activity in the window render an
+  empty panel.
+- `warm-cache` no longer force-recomputes every key on every
+  tick. A new `cache.refresh_window(...)` context manager makes
+  `get_or_compute` recompute only rows whose remaining TTL is
+  below the window. With the cron firing every 5 minutes and a
+  window of 450 s, 5-min-TTL keys still refresh every tick (no
+  change), 1-hour-TTL keys refresh on the tick that lands in the
+  last ~7.5 min of the hour, and 24h-TTL keys (`archive_stats`)
+  refresh once per day instead of 288 times. Behavior at the
+  request path is unchanged.
+- `warm-cache` runs per-inbox and sitemap targets in parallel
+  across a thread pool, each worker on its own SQLAlchemy
+  session. The cross-inbox subsystem aggregator runs after a
+  barrier so it consumes the just-warmed per-inbox cache rows.
+  The `refresh_window` contextvar is propagated to workers via
+  `contextvars.copy_context()`. Per-key `-v` lines may
+  interleave; the summary line is unchanged.
+
 ## [1.19.3] – 2026-05-15
 
 Third PATCH on top of 1.19.0. The 1.19.1 and 1.19.2 hotfixes
