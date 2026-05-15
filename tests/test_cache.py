@@ -255,6 +255,45 @@ def test_unknown_tag_raises():
         _decode({"__t": "DoesNotExist", "v": {}})
 
 
+def test_set_propagates_encoder_typeerror():
+    """`set()`'s swallow window is exactly `OperationalError` from
+    DB write contention (see CONTEXT.md "Cross-process cache"). An
+    encoder error (`TypeError` from `_encode` on an unregistered
+    type) is a programming bug: a forgotten `register()` call, a
+    typo in the tag, a refactor that dropped a dataclass from the
+    registry. Swallowing those would leave the cache silently empty
+    — every page recomputes forever, the dev sees nothing in logs,
+    the bug ships.
+
+    Pin the boundary: an unregistered class fed to `cache.set` must
+    propagate `TypeError` to the caller, and the no-cache-row
+    invariant must hold (failed write didn't half-commit anything
+    via a different path)."""
+    class Unregistered:
+        pass
+
+    key = "xtest-encoder-typeerror-key"
+    with pytest.raises(TypeError, match="don't know how to encode"):
+        cache.set(key, Unregistered(), ttl=60)
+
+    # No row was written: `_encode` raised before the DB call.
+    assert cache.get(key) is None
+
+
+def test_set_propagates_value_inside_collection():
+    """An unregistered class buried inside a list/dict still raises,
+    because `_encode` recurses through containers. Pins that the
+    raise-loudly contract applies to nested values too, not just to
+    bare unregistered objects."""
+    class Unregistered:
+        pass
+
+    key = "xtest-encoder-nested-key"
+    with pytest.raises(TypeError, match="don't know how to encode"):
+        cache.set(key, {"items": [1, 2, Unregistered()]}, ttl=60)
+    assert cache.get(key) is None
+
+
 def test_set_swallows_operational_error_on_lock(monkeypatch):
     """Unit-level: a locked DB during a cache write must not propagate
     — the request has already rendered. `set()` logs at warning and
