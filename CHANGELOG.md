@@ -13,6 +13,23 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Added
 
+- **Active reviewers** section on per-subsystem dashboards (slice
+  2 of #97). New section between "Most active threads" and
+  "Recent patches" lists the people who have been most active
+  on review-attestation trailers (`Reviewed-by`, `Acked-by`,
+  `Tested-by`, `Reported-by`, `Suggested-by`,
+  `Co-developed-by`, `Reported-and-tested-by`) for patches in
+  this subsystem over the last 30 days. Each entry shows total
+  attestations, the per-role breakdown, and the date of the
+  most recent attestation. Addresses go through the same
+  allowlist-based redaction as the From line and DCO trailers
+  (kernel.org and other well-known maintainer hosts surface
+  verbatim; everyone else renders as `<hidden>`). Helper:
+  `mimir.subsystems.active_reviewers_in_subsystem`. Cached for
+  5 min per `(inbox, subsystem, days, limit)` key. Wildcard-
+  only F: subsystems and 30-day windows with no attestations
+  render no section.
+
 - **Index review-attestation trailers** at ingest time (slice 1
   of #97). New `article_trailers` table records one row per
   `Reviewed-by:`, `Acked-by:`, `Tested-by:`, `Reported-by:`,

@@ -46,6 +46,7 @@ from mimir.parser import ParsedArticle
 from mimir.rendering import URL_OR_MSGID_RE, redact_trailer_addresses, render_body
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import (
+    active_reviewers_in_subsystem,
     active_threads_in_subsystem,
     daily_volume_in_subsystem,
     recent_articles_in_subsystem,
@@ -1365,6 +1366,9 @@ def subsystem_dashboard(inbox_name: str, name: str):
         spark = daily_volume_in_subsystem(
             session, inbox, subsystem, days=30,
         )
+        reviewers = active_reviewers_in_subsystem(
+            session, inbox, subsystem, days=30, limit=10,
+        )
     return render_template(
         "subsystem.html",
         inbox_name=inbox.name,
@@ -1374,6 +1378,7 @@ def subsystem_dashboard(inbox_name: str, name: str):
         recent_limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
         active=active,
         spark=spark,
+        reviewers=reviewers,
     )
 
 
