@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
@@ -9,6 +10,7 @@ from flask import Flask
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import selectinload
 
+from mimir import cache
 from mimir.dashboard import (
     archive_stats,
     author_recent,
@@ -816,15 +818,12 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
 
         */5 * * * * cd ~/Projects/python/mimir && poetry run flask --app mimir warm-cache
     """
-    import os
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from contextvars import copy_context
-    from mimir.config import settings as _settings
-    from mimir import cache as _cache
     today = datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
     inboxes = bootstrap_inboxes()
-    sitemap_base = (_settings.site_base_url or "").rstrip("/")
+    sitemap_base = (settings.site_base_url or "").rstrip("/")
     worker_count = workers if workers is not None else min(os.cpu_count() or 1, 8)
     total_start = time.perf_counter()
 
@@ -938,7 +937,7 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
     # and 24h-TTL keys (archive_stats) refresh on the tick nearest
     # their daily expiry. Previously every key was force-recomputed
     # on every tick regardless of TTL headroom.
-    with _cache.refresh_window(WARM_CACHE_REFRESH_WITHIN_SEC):
+    with cache.refresh_window(WARM_CACHE_REFRESH_WITHIN_SEC):
         if worker_count <= 1:
             # Single-worker mode: the main-thread context already has
             # refresh_window set; no need to snapshot.
@@ -981,7 +980,7 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
     # Drop expired rows so the cache table doesn't grow monotonically
     # as search keys, dated `threads_for_day:...:YYYY-MM-DD` keys, and
     # `monthly_volume:<inbox>:<year>` keys for past years accumulate.
-    purged = _cache.purge_expired()
+    purged = cache.purge_expired()
     if purged:
         click.echo(f"purged {purged} expired cache row{'' if purged == 1 else 's'}")
 
@@ -1050,7 +1049,6 @@ def dev_seed_thread_command(
         poetry run flask --app mimir run
         # navigate to http://127.0.0.1:5000/dev-thread/
     """
-    from datetime import datetime, timedelta, timezone
     from dulwich.objects import Blob, Commit, Tree
     from dulwich.repo import Repo
 
