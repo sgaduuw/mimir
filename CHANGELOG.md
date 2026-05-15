@@ -11,6 +11,23 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.20.0] – 2026-05-15
+
+A focused warm-cache pass. The 1.19.3 hotfix dropped the heavy
+subsystem aggregator from three cache keys to one per inbox, but
+the prod tick (28 inboxes / 365 keys) was still ~185 s. Profiling
+showed two unrelated culprits: `latest_stable_releases` was paying
+~3 s per inbox to prove a negative across the full per-inbox date
+index (only `stable` actually has matches), and every key was
+being force-recomputed on every 5-minute cron tick regardless of
+its TTL headroom.
+
+This release bounds the offending queries, replaces unconditional
+recompute with TTL-aware refresh, and parallelises the remaining
+target loop across a thread pool. Combined effect on a typical
+tick: ~185 s → roughly 15-25 s, with sub-linear scaling as new
+inboxes are added.
+
 ### Added
 
 - `warm-cache --workers N` flag controls the size of the worker
