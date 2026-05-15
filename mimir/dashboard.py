@@ -23,13 +23,13 @@ from mimir.threading import _coerce_dt
 
 STATS_CACHE_TTL_SEC = 86400  # 1 day
 DAILY_VOLUME_CACHE_TTL_SEC = 3600  # 1 hour
-LISTING_CACHE_TTL_SEC = 300  # 5 minutes — trackers, pulls, stable, history
+LISTING_CACHE_TTL_SEC = 300  # 5 minutes, trackers, pulls, stable, history
 
 # Recency floor for `latest_pull_requests` / `latest_stable_releases`.
 # Without it, an inbox that has fewer than `limit` matches forces SQLite
 # to walk the entire per-inbox date index proving the negative, which
 # warm-cache was paying ~3 s per inbox for. Pull requests happen on
-# every merge window (~8–10 weeks); stable releases are weekly. 180 d
+# every merge window (~8 10 weeks); stable releases are weekly. 180 d
 # covers ~2 merge cycles and ~25 stable releases, comfortably above
 # what the LIMIT-5 widgets surface. An inbox with no matches in this
 # window renders an empty panel, which is the truthful answer.
@@ -93,7 +93,7 @@ def _inbox_scoped(stmt, inbox: Inbox):
 
     SQLite's planner mis-prices the parameterized `JOIN article_lists
     ON ... WHERE inbox_id = ?` shape and picks a scan-and-sort over
-    the entire `article_lists` table — order-of-seconds on a multi-
+    the entire `article_lists` table, order-of-seconds on a multi-
     million-row inbox. The EXISTS form makes "walk articles in the
     relevant order, probe `article_lists` via composite PK" the
     natural plan, matching what literal binds would have produced.
@@ -293,10 +293,10 @@ def recent_articles(
     force: bool = False,
 ) -> list[ArticleSummary]:
     """Most-recent `limit` articles in `inbox`, ordered by date desc.
-    Cached at the listing TTL — feeds polling on 30 min+ intervals
+    Cached at the listing TTL, feeds polling on 30 min+ intervals
     always pay zero compute, since warm-cache keeps it hot.
 
-    No offset — pagination lives in `web._fetch_recent` which serves
+    No offset, pagination lives in `web._fetch_recent` which serves
     the dashboard's "Load more" pattern; this helper is the
     feed/Atom data source.
     """
@@ -365,7 +365,7 @@ def monthly_volume(
     session: Session, inbox: Inbox, year: int, force: bool = False
 ) -> MonthlyVolume:
     """Per-month counts for `year` in `inbox`, zero-filled. Cached
-    per (inbox, year) for 1 hour — current-year counts evolve, past
+    per (inbox, year) for 1 hour, current-year counts evolve, past
     years are immutable.
 
     Past years could in principle be cached forever, but the constant

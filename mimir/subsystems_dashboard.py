@@ -66,7 +66,7 @@ def recent_articles_in_subsystem(
     Glob handling in this slice covers the two MAINTAINERS shapes
     that dominate the file: trailing-slash directory prefixes and
     exact paths. Wildcard globs (`fs/*/file.c` and friends) are
-    skipped silently — they're a small minority of rules and add
+    skipped silently, they're a small minority of rules and add
     a full-table scan to every dashboard hit. A follow-up slice
     can fold them in once the simple-glob case is shipping.
 
@@ -85,7 +85,7 @@ def recent_articles_in_subsystem(
         # Build OR conditions for each supported include glob. Exact
         # paths (the modal MAINTAINERS shape: explicit `F: drivers/
         # foo/bar.c` lines) are collapsed into a single `path IN
-        # (...)` clause instead of one OR-equality per rule — wide
+        # (...)` clause instead of one OR-equality per rule, wide
         # subsystems can list dozens of files, and IN lets SQLite
         # build one in-memory probe instead of walking a long OR
         # disjunction. Directory-prefix `dir/` entries still need
@@ -96,7 +96,7 @@ def recent_articles_in_subsystem(
             g = rule.glob
             if g.endswith("/"):
                 # Directory prefix. SQLite LIKE doesn't treat `_` and `%`
-                # as literal — escape them so a path glob containing `_`
+                # as literal, escape them so a path glob containing `_`
                 # (rare but possible: `arch/x86_64/`) doesn't widen the
                 # match.
                 prefix = like_escape(g)
@@ -105,7 +105,7 @@ def recent_articles_in_subsystem(
                 exact_paths.append(g[:-1])
             elif not any(c in g for c in "*?["):
                 exact_paths.append(g)
-            # else: wildcard — skipped in slice 1
+            # else: wildcard, skipped in slice 1
         if exact_paths:
             or_conds.append(ArticleFile.path.in_(exact_paths))
         if not or_conds:
@@ -214,7 +214,7 @@ def _subsystem_path_filter_sql(
     pass in `recent_articles_in_subsystem`.
 
     Returns `None` when the subsystem has no supported (non-
-    wildcard) include rules — caller should treat that as "no
+    wildcard) include rules, caller should treat that as "no
     articles" rather than running an unfiltered query. Wildcard
     F: rules (`fs/*/file.c`-style) are skipped silently in this
     slice for the same reason they're skipped in
@@ -325,7 +325,7 @@ def active_threads_in_subsystem(
     Returns an empty list when the subsystem has no supported
     globs (slice 1/2 ignores wildcard rules). Cached per
     `(inbox, subsystem, days, limit)` at the 1h per-subsystem
-    dashboard TTL — the recursive CTE is too heavy for the 5min
+    dashboard TTL, the recursive CTE is too heavy for the 5min
     front-page real-time feel, and visitors landing on
     `/<inbox>/subsystem/<name>/` are reading the page, not watching
     for live updates.
@@ -340,7 +340,7 @@ def active_threads_in_subsystem(
         # Materialise the path-matched article ids once before the
         # recursive CTE runs. Without `MATERIALIZED`, SQLite inlines
         # the CTE and re-evaluates the `article_files` lookup per
-        # seed row — order-of-seconds on wide subsystems like
+        # seed row, order-of-seconds on wide subsystems like
         # "open firmware and flattened device tree bindings" with
         # many F: globs. The temp-table form runs the lookup once.
         return _active_threads_query(
@@ -369,7 +369,7 @@ class ReviewerStat:
     can drift across messages, and "their latest" is least-surprising
     for the visible label).
 
-    `address` is the verbatim address from the most-recent trailer —
+    `address` is the verbatim address from the most-recent trailer  
     same rationale as `name`. The render-time redaction policy
     (see `_redact_trailer_address` in `mimir.web`) consumes this and
     decides whether to show it or substitute `<hidden>` based on the
@@ -389,7 +389,7 @@ class ReviewerStat:
     (after `total`) so equally-active reviewers are ordered by
     freshness.
 
-    Dataclass (not pydantic) for cache-encoder compatibility — see
+    Dataclass (not pydantic) for cache-encoder compatibility, see
     `mimir.cache` which round-trips registered types via
     `dataclasses.fields`.
     """
@@ -409,7 +409,7 @@ class ReviewEntry:
     """One attestation by a specific reviewer on a specific article.
 
     Same person under two roles on one article (Reported-by +
-    Tested-by) shows as two entries — that's accurate to the source
+    Tested-by) shows as two entries; that's accurate to the source
     trailer block and useful for the per-reviewer page reading.
 
     `inbox_name` is the canonical inbox for the article (resolved
@@ -449,7 +449,7 @@ def articles_reviewed_by(
     came from a URL or untrusted source.
 
     Cached per `(inbox.name, address, limit)` for the same TTL as
-    the threads helper. Cache key uses the address verbatim — it's
+    the threads helper. Cache key uses the address verbatim, it's
     already lowercased so casing collisions are impossible.
     """
     def compute() -> list[ReviewEntry]:
@@ -518,7 +518,7 @@ def active_reviewers_in_subsystem(
     is one attestation, counted once per role per article.
 
     Why a 30-day window (not 7d like `active_threads_in_subsystem`):
-    review cadence is slower than discussion cadence — a maintainer
+    review cadence is slower than discussion cadence, a maintainer
     who reviews two patches a week would render zero or one entries
     in a 7-day window, which is too lossy to rank usefully. 30 days
     is roughly one release-cycle's worth of activity.
@@ -669,7 +669,7 @@ MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC = 300
 # pass any `limit` ≤ this and slice from the cached list. 100 covers
 # every current surface (front-page top-12, inbox dashboard top-10,
 # the global aggregator's `limit*3` hedge) without recomputing per
-# caller — which was the v1.19.2 warm-cache hot spot: each inbox was
+# caller, which was the v1.19.2 warm-cache hot spot: each inbox was
 # computing the same expensive aggregation three times for three
 # distinct limit suffixes (10, 30, 36).
 MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP = 100
@@ -687,7 +687,7 @@ def most_active_subsystems_in_inbox(
     cached list is internally capped at
     `MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP`; every caller slices from
     that one cached payload regardless of `limit`. The cache key is
-    therefore `(inbox.name, days)` only — adding `limit` to the key
+    therefore `(inbox.name, days)` only, adding `limit` to the key
     was the v1.19.2 cold-path waste (three caches for one
     aggregation).
     """
@@ -910,7 +910,7 @@ def _most_active_subsystems_global_full(
     determinism.
 
     Implementation: consume each inbox's already-cached full ranked
-    list (no `limit*3` hedge needed — we have the whole top-100 per
+    list (no `limit*3` hedge needed, we have the whole top-100 per
     inbox), merge by subsystem id, pick the busiest inbox per
     subsystem, re-sort globally, truncate to the internal cap.
     """
