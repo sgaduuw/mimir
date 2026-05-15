@@ -2,7 +2,7 @@
 
 Counts / aggregations / wildcard escaping live in
 `mimir.dashboard`. The route smoke tests touch every endpoint, but
-they don't sanity-check the actual numbers — these do, against the
+they don't sanity-check the actual numbers, these do, against the
 conftest seed.
 
 Seed recap (from conftest.py):
@@ -239,7 +239,7 @@ def test_monthly_volume_year_boundary(seeded_db):
     )
 
 
-# search_articles — including the LIKE-wildcard escape
+# search_articles, including the LIKE-wildcard escape
 
 
 def test_search_articles_subject_substring(seeded_db):
@@ -283,7 +283,7 @@ def test_search_articles_no_match(seeded_db):
 
 def test_search_articles_inbox_scoped(seeded_db):
     """`hello` matches both art1 ("hello alpha") and art2 ("hello
-    beta") — but only art1 (and friends) live in alpha."""
+    beta"), but only art1 (and friends) live in alpha."""
     alpha = _inbox(seeded_db, "alpha")
     ids = _ids_by_message_id(seeded_db)
     with seeded_db() as s:
@@ -323,7 +323,7 @@ def test_search_articles_escapes_underscore_wildcard(seeded_db):
     with underscore matches only literal underscores."""
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
-        # The seed has art1 "hello alpha" — without escape, a query
+        # The seed has art1 "hello alpha", without escape, a query
         # of "h_llo" would match. With escape it must not.
         results = search_articles(s, alpha, "h_llo", force=True)
     assert results == []
@@ -523,7 +523,7 @@ def test_recent_articles_returns_summaries(seeded_db):
     ids = _ids_by_message_id(seeded_db)
     with seeded_db() as s:
         results = recent_articles(s, alpha, limit=10, force=True)
-    # alpha has art1, art3, art4 — date-desc → art3 (Mar), art4 (Jan 2), art1 (Jan 1).
+    # alpha has art1, art3, art4, date-desc → art3 (Mar), art4 (Jan 2), art1 (Jan 1).
     assert [r.id for r in results] == [
         ids["art3@example.com"],
         ids["art4@example.com"],

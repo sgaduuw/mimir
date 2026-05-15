@@ -25,7 +25,7 @@ ExecStart=/opt/mimir/.venv/bin/gunicorn 'mimir:create_app()' \
 Restart=on-failure
 RestartSec=5s
 
-# Hardening — mimir reads from public-inbox mirrors and writes to a
+# Hardening, mimir reads from public-inbox mirrors and writes to a
 # single SQLite file; everything else is off-limits.
 NoNewPrivileges=yes
 ProtectSystem=strict

@@ -1,6 +1,6 @@
 """Contract tests for `mimir.parser.parse_message`.
 
-The parser is the most error-prone code in the project — MIME, RFC
+The parser is the most error-prone code in the project, MIME, RFC
 2047, surrogate scrubbing, group addresses, the Python 3.11
 AddressHeader bug we worked around, etc. These pin the bits we'd
 notice if they regressed.

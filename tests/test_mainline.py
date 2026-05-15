@@ -1,4 +1,4 @@
-"""Tests for `mimir.mainline` — Link-trailer extraction +
+"""Tests for `mimir.mainline`, Link-trailer extraction +
 the dulwich-driven commit walker.
 
 Real-world Link trailers (sampled from the upstream Linus tree) are
@@ -16,7 +16,7 @@ from mimir.mainline import extract_message_ids, walk_commits
 from mimir.models import MainlineCommit, MainlineState
 
 
-# extract_message_ids — pure function, no DB.
+# extract_message_ids, pure function, no DB.
 
 
 def test_extract_short_form_link():
@@ -35,7 +35,7 @@ def test_extract_no_slug():
 
 def test_extract_with_list_slug_and_trailing_slash():
     """`Link: https://lore.kernel.org/all/<msgid>/` (list-named
-    slug, trailing slash) — common when the committer pasted the
+    slug, trailing slash), common when the committer pasted the
     URL from a browser."""
     msg = b"Link: https://lore.kernel.org/all/175824455687.45175.3734166065458520748.stgit@devnote2/\n"
     assert extract_message_ids(msg) == [
@@ -44,7 +44,7 @@ def test_extract_with_list_slug_and_trailing_slash():
 
 
 def test_extract_multiple_links():
-    """A commit referencing multiple lore threads — rare but
+    """A commit referencing multiple lore threads, rare but
     legal. Each Link: trailer adds a row."""
     msg = (
         b"Subject.\n\n"
@@ -57,7 +57,7 @@ def test_extract_multiple_links():
 
 def test_extract_ignores_non_lore_links():
     """Many commits carry `Link:` trailers to GitHub, Reddit, etc.
-    Those reference issues, not lore msgids — must be ignored so
+    Those reference issues, not lore msgids, must be ignored so
     we don't pollute the table with non-message-id strings."""
     msg = (
         b"Link: https://github.com/koverstreet/bcachefs/issues/1045\n"
@@ -90,7 +90,7 @@ def test_extract_dedupes_same_msgid_across_link_variants():
 
 def test_extract_dedupe_preserves_order_of_distinct_msgids():
     """Dedup keeps the first occurrence of each msgid and preserves
-    insertion order — order is what we'd want if a renderer ever
+    insertion order, order is what we'd want if a renderer ever
     sorts by appearance."""
     msg = (
         b"Link: https://lore.kernel.org/r/a@x\n"
@@ -102,7 +102,7 @@ def test_extract_dedupe_preserves_order_of_distinct_msgids():
 
 
 def test_extract_handles_non_decodable_bytes_via_surrogateescape():
-    """A stray non-UTF-8 byte must not crash the extractor — those
+    """A stray non-UTF-8 byte must not crash the extractor, those
     appear occasionally in older commits with contributor names
     in legacy encodings."""
     # 0xff is invalid UTF-8 but the regex doesn't care about that
@@ -112,14 +112,14 @@ def test_extract_handles_non_decodable_bytes_via_surrogateescape():
 
 
 def test_extract_quoted_link_in_body_still_matches():
-    """The MULTILINE anchor is `^Link:` — quoted variants like
+    """The MULTILINE anchor is `^Link:`, quoted variants like
     `> Link:` don't match (good; that's a re-quote, not the
     commit's own trailer)."""
     msg = b"Subject.\n\n> Link: https://lore.kernel.org/r/not-mine@x\nLink: https://lore.kernel.org/r/mine@x\n"
     assert extract_message_ids(msg) == ["mine@x"]
 
 
-# walk_commits — integration with dulwich + DB.
+# walk_commits, integration with dulwich + DB.
 
 
 def _build_commit(
@@ -176,7 +176,7 @@ def test_walk_commits_inserts_rows_for_link_trailers(
 
 def test_walk_commits_resumes_from_cursor(seeded_db, tmp_path):
     """Second walk only sees the commits added since the prior
-    cursor — that's the steady-state cheap path."""
+    cursor; that's the steady-state cheap path."""
     repo_path = tmp_path / "tree.git"
     repo = _bare_repo(repo_path)
     c1 = _build_commit(repo, b"first\n\nLink: https://lore.kernel.org/r/m1@x\n")
@@ -211,7 +211,7 @@ def test_walk_commits_noop_when_head_unchanged(seeded_db, tmp_path):
 
 
 def test_walk_commits_skips_commits_without_link(seeded_db, tmp_path):
-    """Most kernel commits don't carry a lore `Link:` — those
+    """Most kernel commits don't carry a lore `Link:`, those
     consume a `commits_seen` slot but produce no rows. Pins the
     counter shape so the operator can see "walked N, linked K"
     progress."""
@@ -227,7 +227,7 @@ def test_walk_commits_skips_commits_without_link(seeded_db, tmp_path):
 
 
 def test_walk_commits_records_commit_time(seeded_db, tmp_path):
-    """`committed_at` carries the commit's timestamp — that's what
+    """`committed_at` carries the commit's timestamp; that's what
     the patch-page surface renders as "on <date>"."""
     repo = _bare_repo(tmp_path / "tree.git")
     # 2024-06-01 00:00:00 UTC
@@ -267,7 +267,7 @@ def test_walk_commits_advances_state_cursor(seeded_db, tmp_path):
 def test_walk_commits_rewalks_when_cursor_missing(seeded_db, tmp_path):
     """If the cursor points at a SHA no longer in the repo (history
     rewrite, shallow re-clone), the walker re-walks from scratch
-    rather than crashing. Defensive — Linus's tree shouldn't
+    rather than crashing. Defensive, Linus's tree shouldn't
     history-rewrite, but stable trees occasionally do."""
     repo = _bare_repo(tmp_path / "tree.git")
     _build_commit(repo, b"x\n\nLink: https://lore.kernel.org/r/m@x\n")
@@ -289,7 +289,7 @@ def test_walk_commits_full_rewalk_is_idempotent_via_on_conflict(
     seeded_db, tmp_path,
 ):
     """A full rewalk over an already-populated table must not
-    crash on the `(commit_sha, message_id)` UNIQUE constraint —
+    crash on the `(commit_sha, message_id)` UNIQUE constraint  
     the INSERT runs with `ON CONFLICT DO NOTHING`. Hit on the
     1.15.0 / 1.15.1 production runs against linux.git, where
     dulwich's reverse-walker re-emitted some commits across batch

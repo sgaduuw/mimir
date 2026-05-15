@@ -212,7 +212,7 @@ def reindex_command(
 ) -> None:
     """Re-walk a single epoch in INBOX from the beginning.
 
-    By default, picks up messages that previously failed to parse — the
+    By default, picks up messages that previously failed to parse, the
     in-DB dedup skips already-saved Message-IDs so only the new/recovered
     ones are written. Pass --from-scratch for a destructive rebuild.
     """
@@ -387,7 +387,7 @@ def update_command(
 
     # Default verbosity prints only lines that signal a state change.
     # Steady-state ticks on a settled archive (sync: 0/0/0 across the
-    # board, ingest: dup_batch/dup_db only) become silent — anything
+    # board, ingest: dup_batch/dup_db only) become silent, anything
     # in the log then means something actually happened. -v restores
     # the per-inbox / per-epoch lines unconditionally.
     for name, inbox in inboxes.items():
@@ -425,7 +425,7 @@ def _push_indexnow(message_ids: list[str]) -> None:
     """Best-effort IndexNow push for an update tick. No-op when the
     feature isn't configured; skip-with-warning when the per-tick
     count exceeds `indexnow_max_per_tick` (fresh-deploy or post-
-    outage catch-up shouldn't act like a backfill — the sitemap
+    outage catch-up shouldn't act like a backfill, the sitemap
     handles the backlog naturally on Bing's regular crawl)."""
     if not message_ids or not settings.indexnow_key:
         return
@@ -433,14 +433,14 @@ def _push_indexnow(message_ids: list[str]) -> None:
     if len(message_ids) > cap:
         logger.warning(
             "indexnow: %d new URLs this tick exceeds INDEXNOW_MAX_PER_TICK=%d "
-            "— skipping push, relying on sitemap",
+            "  skipping push, relying on sitemap",
             len(message_ids), cap,
         )
         return
     base = (settings.site_base_url or "").rstrip("/")
     if not base:
         logger.warning(
-            "indexnow: key set but SITE_BASE_URL empty, cannot build URLs — "
+            "indexnow: key set but SITE_BASE_URL empty, cannot build URLs, "
             "skipping push"
         )
         return
@@ -449,7 +449,7 @@ def _push_indexnow(message_ids: list[str]) -> None:
     submitted = indexnow.notify(urls)
     # State-change line at default verbosity: the per-epoch
     # `name/epoch: new=N ...` lines emit via click.echo at the same
-    # level for the same reason — "anything in the scheduler log
+    # level for the same reason, "anything in the scheduler log
     # signals a real event." The INFO log inside `notify` stays put
     # for `-v` operators who want the per-chunk status detail.
     if submitted:
@@ -730,7 +730,7 @@ def backfill_patch_series_command(
 
     Cheaper than the article-files backfill: only reads
     subject + author, no body re-parse via git mirror.
-    Idempotent — articles whose key is set are skipped unless
+    Idempotent, articles whose key is set are skipped unless
     `--reprocess`. Newest-first walk.
     """
     _configure_logging(verbose)
@@ -762,7 +762,7 @@ def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
     top = most_active_subsystems_in_inbox(session, inbox, days=7, limit=top_n)
     if not top:
         return
-    # Bulk-load the Subsystems with their paths preloaded — one query
+    # Bulk-load the Subsystems with their paths preloaded, one query
     # instead of N. The helpers below access `subsystem.paths` for the
     # F:/X: glob filters.
     sub_ids = [row.id for row in top]
@@ -854,7 +854,7 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
              lambda s, ib=inbox: this_day_in_history(s, ib, years_ago=5, limit=3)),
             # Atom feed source. Different cache key from the
             # dashboard "Recent messages" loader because the limit
-            # is the cache key — feeds need 50, the dashboard's
+            # is the cache key, feeds need 50, the dashboard's
             # initial paint uses 10.
             (f"{inbox.name} recent_articles ({FEED_ENTRY_LIMIT})",
              lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT)),
@@ -898,7 +898,7 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
         "most_active_subsystems_global (7d)",
         lambda s: most_active_subsystems_global(s, days=7),
     ))
-    # Sitemap caches. Only warmed when SITE_BASE_URL is configured —
+    # Sitemap caches. Only warmed when SITE_BASE_URL is configured  
     # without it, the helper would cache a body with relative-looking
     # URLs that wouldn't match what the route emits at request time
     # (where `request.url_root` supplies the base). Production sets
@@ -964,7 +964,7 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
                     lbl, ms = fut.result()
                     if verbose:
                         click.echo(f"{lbl}: {ms:.0f} ms")
-            # Phase B serially on the main thread — its targets depend
+            # Phase B serially on the main thread, its targets depend
             # on Phase A completion, and there's only one of them today.
             for label, fn in phase_b:
                 lbl, ms = _run_target(label, fn)
@@ -1002,7 +1002,7 @@ def analyze_command() -> None:
     Stale `sqlite_stat1` makes the planner pick bad plans (we hit
     this once when the migration's ANALYZE ran on empty tables and
     later ingest left the stats wrong by orders of magnitude). Run
-    after a big ingest delta — daily or weekly via cron is plenty.
+    after a big ingest delta, daily or weekly via cron is plenty.
 
     Example crontab (4:30am, after the daily VACUUM):
 
@@ -1185,7 +1185,7 @@ def vacuum_command() -> None:
     `PRAGMA wal_checkpoint(TRUNCATE)` (collapses the WAL).
 
     VACUUM holds an exclusive lock for the duration and needs ~2× the
-    on-disk size of free space. Run it during a quiet window — typical
+    on-disk size of free space. Run it during a quiet window, typical
     cadence is daily or weekly via cron, while ingest isn't active.
 
     Example crontab:
@@ -1211,7 +1211,7 @@ def vacuum_command() -> None:
     )
 
     # `wal_checkpoint(TRUNCATE)` only succeeds when there are no
-    # other readers — SQLAlchemy's connection pool keeps idle
+    # other readers, SQLAlchemy's connection pool keeps idle
     # connections that block it. Dispose the pool and run on a fresh
     # raw sqlite3 connection so we own the only handle. Any other
     # process that has the DB open (web server, warm-cache cron) will
@@ -1310,7 +1310,7 @@ def admin_inbox_show_command(name: str) -> None:
             head = s.last_commit_sha or "<beginning>"
             click.echo(f"  {s.epoch}: {head}")
     else:
-        click.echo("ingest cursors: (none — never ingested)")
+        click.echo("ingest cursors: (none, never ingested)")
 
 
 @admin_inbox_group.command("add")
@@ -1345,7 +1345,7 @@ def admin_inbox_update_command(
     """Modify an existing inbox. Only the supplied fields are touched."""
     if mirror_path is None and upstream_url is None and new_name is None:
         raise click.ClickException(
-            "nothing to update — pass at least one of "
+            "nothing to update, pass at least one of "
             "--mirror-path / --upstream-url / --rename"
         )
     try:
@@ -1376,7 +1376,7 @@ def admin_inbox_update_command(
     "--remove-inbox-data",
     is_flag=True,
     help="Also delete the on-disk public-inbox mirror at <mirror_path>. "
-         "Permanent — re-cloning takes hours and ~20 GB for lkml. Prompts "
+         "Permanent, re-cloning takes hours and ~20 GB for lkml. Prompts "
          "for confirmation.",
 )
 @click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")

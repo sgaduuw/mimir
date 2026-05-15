@@ -93,7 +93,7 @@ def _abort_404_if_url_date_mismatches(article: Article, year: int, month: int) -
     """The URL date is part of the message's identity, not navigation
     state, so a mismatched URL must 404 rather than redirect. Bumps
     the contract from a "fuzzy lookup" to "exact identity match" so
-    a URL is either fully resolvable or fully invalid — important for
+    a URL is either fully resolvable or fully invalid, important for
     the age-at-a-glance property in browser history and shared links.
     Used by the message route and the attachment routes; one helper
     keeps the rule one-place."""
@@ -105,7 +105,7 @@ def _abort_404_if_url_date_mismatches(article: Article, year: int, month: int) -
 def _inject_template_globals() -> dict:
     """Inboxes are needed by base.html for the nav. `current_inbox` is set
     per-view (None on the meta-index `/`). Names come from the cached
-    list populated at bootstrap — no per-request DB hit. `site_name` is
+    list populated at bootstrap, no per-request DB hit. `site_name` is
     the configurable brand; "mimir" stays as the page generator.
 
     `default_canonical_url` is the https-safe fallback for og:url on
@@ -219,7 +219,7 @@ def _start_request_timer():
 @bp_web.after_request
 def _add_cache_headers(response):
     # 200 OK and 301/302 redirects (Message-ID lookup) are cacheable;
-    # honor their dict entries. 4xx/5xx skip — error responses
+    # honor their dict entries. 4xx/5xx skip, error responses
     # shouldn't be pinned in upstream caches.
     if response.status_code in (200, 301, 302):
         rule = _CACHE_CONTROL_BY_ENDPOINT.get(request.endpoint)
@@ -236,7 +236,7 @@ def _add_cache_headers(response):
         response.headers["Vary"] = "HX-Request"
     for k, v in _SECURITY_HEADERS.items():
         response.headers.setdefault(k, v)
-    # HSTS only when we know the request came in over HTTPS — set
+    # HSTS only when we know the request came in over HTTPS, set
     # behind a reverse proxy that forwards X-Forwarded-Proto. Otherwise
     # an http://localhost dev session would tell the browser "force
     # https on this host forever," which would break the dev workflow.
@@ -267,8 +267,8 @@ def _log_request(response):
         # Read the header directly: Werkzeug's request.user_agent is a
         # UserAgent wrapper whose __bool__ depends on the bundled UA
         # parser detecting a known browser, which makes legitimate
-        # values like "curl/8.20.0" — and, with this Werkzeug, plain
-        # Firefox — evaluate falsy and silently turn into null. The
+        # values like "curl/8.20.0", and, with this Werkzeug, plain
+        # Firefox, evaluate falsy and silently turn into null. The
         # raw header is what we actually want to log.
         "ua": request.headers.get("User-Agent"),
         "referrer": request.referrer,
@@ -279,7 +279,7 @@ def _log_request(response):
 def _site_base() -> str:
     """Return the absolute base URL for emitted links, no trailing slash.
 
-    Prefers the explicit `SITE_BASE_URL` setting when set — that's the
+    Prefers the explicit `SITE_BASE_URL` setting when set; that's the
     deterministic override for production where ProxyFix may or may
     not be wired correctly across the Tailscale Funnel + Caddy chain.
     Falls back to `request.url_root` for local-dev and any deployment
@@ -330,7 +330,7 @@ def _canonical_inbox_name(
     """Pick the canonical inbox name for `article` from the list of
     `(inbox_id, inbox_name)` tuples it's linked to. Uses
     `article.canonical_inbox_id` when set; falls back to the
-    alphabetically-first link — stable across renders so the SEO
+    alphabetically-first link, stable across renders so the SEO
     signal doesn't flicker between equivalent cross-posts. Returns
     None only when `links` is empty (a corrupt row; should never
     happen given FK cascades)."""
@@ -485,7 +485,7 @@ def _is_allowlisted(address: str) -> bool:
 
     Per-request memoised via `flask.g` so the MAINTAINERS set is
     fetched at most once per render (the underlying DB-backed cache
-    is fast, but a long page can call this 50+ times — `g`-caching
+    is fast, but a long page can call this 50+ times, `g`-caching
     skips the per-call cache lookup entirely after the first hit).
 
     Outside a request context (CLI, tests calling the filters
@@ -546,7 +546,7 @@ def _clean_subject_filter(subject: str | None) -> str:
 def _display_name_filter(author: str | None) -> str:
     """Display name only, for contexts (meta-description, link cards)
     where the `<hidden>` placeholder reads as broken metadata in search
-    snippets. Allowlisted senders also surface just their display name —
+    snippets. Allowlisted senders also surface just their display name  
     consistency over leaking addresses into descriptions. Falls back to
     'unknown sender' so the snippet doesn't render with an awkward
     trailing punctuation hole."""
@@ -577,7 +577,7 @@ def _is_allowlisted_address_filter(address: str | None) -> bool:
     Used by templates to decide whether to render a clickable
     reviewer link. The reviewer page itself (`/<inbox>/reviewer/<addr>`)
     accepts any address, but mimir only generates outbound links for
-    allowlisted addresses — this keeps non-public addresses out of
+    allowlisted addresses, this keeps non-public addresses out of
     URL bars / browser history / scraper paths reached via mimir's
     own navigation, matching the redaction posture of `safe_from`.
     """
@@ -590,7 +590,7 @@ def _redact_trailer_address(email: str) -> str:
     """Return the visible-text replacement for an email on a DCO
     trailer line. Allowlisted addresses survive verbatim so the DCO
     chain stays verifiable for known maintainers; everyone else gets
-    `<redacted>` — a placeholder that obviously isn't broken metadata
+    `<redacted>`, a placeholder that obviously isn't broken metadata
     (unlike the prior `[off-list ref]` smear from the msgid linkifier
     when it tried to look these up as message-IDs and found nothing).
 
@@ -641,7 +641,7 @@ def _fetch_recent(session: Session, inbox: Inbox, offset: int, limit: int):
 
 @bp_web.route("/healthz")
 def healthz():
-    """Cheap liveness probe — confirms the app factory ran. No DB
+    """Cheap liveness probe, confirms the app factory ran. No DB
     work; load balancers / orchestrators can hit this on the seconds-
     cadence they want."""
     return Response("ok\n", mimetype="text/plain", headers={"Cache-Control": "no-store"})
@@ -649,7 +649,7 @@ def healthz():
 
 @bp_web.route("/readyz")
 def readyz():
-    """Readiness probe — also confirms the DB is reachable via a
+    """Readiness probe, also confirms the DB is reachable via a
     `SELECT 1`. Slightly more expensive than /healthz; use for the
     'serving traffic' decision, not for liveness restarts."""
     try:
@@ -667,7 +667,7 @@ def readyz():
 
 @bp_web.route("/robots.txt")
 def robots():
-    """Static robots.txt — disallows attachment downloads (saves bot
+    """Static robots.txt, disallows attachment downloads (saves bot
     bandwidth on binaries) and points crawlers at the sitemap."""
     sitemap_url = _site_base() + "/sitemap.xml"
     body = render_template("robots.txt", sitemap_url=sitemap_url)
@@ -675,7 +675,7 @@ def robots():
 
 
 # Placeholder squirrel-adjacent emoji until a proper logo lands
-# (tracked in CONTEXT.md "Roadmap — Favicon / logo"). Inline SVG keeps
+# (tracked in CONTEXT.md "Roadmap, Favicon / logo"). Inline SVG keeps
 # the file at a couple of hundred bytes and avoids a static-folder
 # dependency. Browsers cache the response aggressively per the
 # `_CACHE_CONTROL_BY_ENDPOINT` map.
@@ -719,7 +719,7 @@ def og_image_png():
 @bp_web.route("/security.txt")
 @bp_web.route("/.well-known/security.txt")
 def security_txt():
-    """RFC 9116 security.txt. 404 unless `SECURITY_CONTACT` is set —
+    """RFC 9116 security.txt. 404 unless `SECURITY_CONTACT` is set  
     don't ship a contact-less file. The Expires field is computed at
     request time as `now + 1 year` so it never falls into the past."""
     if not settings.security_contact:
@@ -747,7 +747,7 @@ def sitemap():
     The split (issue #10) replaced a single monolithic sitemap with
     one global URL cap (1000) and a COALESCE join to pick the
     canonical inbox per cross-posted article. Per-inbox sitemaps
-    don't need either — each one lists its own URLs."""
+    don't need either, each one lists its own URLs."""
     with SessionLocal() as session:
         body = sitemap_index_xml(session, _site_base())
     return Response(body, mimetype="application/xml; charset=utf-8")
@@ -792,7 +792,7 @@ def message_id_lookup(message_id: str):
     (article.canonical_inbox_id; alphabetically-first linked inbox
     when canonical is unset). The message page's "Also in:" line
     surfaces the other inboxes from there. 301 because the target
-    is stable for the article's lifetime — transfers link equity
+    is stable for the article's lifetime, transfers link equity
     to the canonical destination.
     """
     with SessionLocal() as session:
@@ -1154,7 +1154,7 @@ def month_archive(inbox_name: str, year: int, month: int):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         threads = threads_for_month(session, inbox, year, month, limit=MONTH_THREAD_CAP)
-        # Reuse the cached `monthly_volume` count — keeps the warm-
+        # Reuse the cached `monthly_volume` count, keeps the warm-
         # path off the COUNT(*) over the month's article rows.
         volume = monthly_volume(session, inbox, year)
         total = next((c for m, c in volume.months if m == month), 0)
@@ -1208,10 +1208,10 @@ def search(inbox_name: str):
 
     # SearchResultsPage only when we're actually rendering results.
     # The no-query and too-short shapes are a bare search form, not a
-    # "results page" — emitting the type would give crawlers a wrong
+    # "results page", emitting the type would give crawlers a wrong
     # signal. Canonical URL is `_site_base() + /<inbox>/search` (no
     # query), matching the <link rel="canonical"> the context
-    # processor emits — keeps individual ?q= URLs out of the index.
+    # processor emits, keeps individual ?q= URLs out of the index.
     page_json_ld = None
     if results:
         canonical_url = _site_base() + f"/{inbox.name}/search"
@@ -1274,7 +1274,7 @@ def author_view(inbox_name: str, sub: str):
 
 # Conservative pattern for the URL-side address: the same shape the
 # trailer extractor accepts (mimir/trailers.py _TRAILER_NAME_ADDR_RE).
-# Anything outside this falls to 404 — defends against hostile bytes
+# Anything outside this falls to 404, defends against hostile bytes
 # reaching the SQL parameter and keeps the canonical URL well-formed.
 _REVIEWER_ADDR_RE = re.compile(
     r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+$"
@@ -1380,7 +1380,7 @@ def inbox_feed(inbox_name: str):
 @bp_web.route("/<inbox_name>/author/<sub>/feed.atom")
 def author_feed(inbox_name: str, sub: str):
     """Atom feed of recent messages from one author. `sub` is a
-    substring of From — same shape the dashboard tracker uses, scoped
+    substring of From, same shape the dashboard tracker uses, scoped
     to one inbox."""
     sub = sub.strip()[:SEARCH_QUERY_MAX_LEN]
     if len(sub) < SEARCH_QUERY_MIN_LEN:
@@ -1466,7 +1466,7 @@ def _content_disposition(filename: str | None) -> str:
     carrying CR/LF would otherwise inject extra HTTP response
     headers (RFC 7230 header-line splitting). Defense in depth on
     top of whatever the WSGI layer rejects. The percent-encoded
-    `filename*` form is unaffected — `quote()` already escapes
+    `filename*` form is unaffected, `quote()` already escapes
     them as `%0D`/`%0A`/etc.
     """
     if not filename:
@@ -1573,7 +1573,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 parent_off_list = thread[0].thread_parent
 
         # When the parent is off-list, surface To/Cc list-shaped addresses
-        # that don't map to any configured inbox as a "hint" — those are
+        # that don't map to any configured inbox as a "hint", those are
         # candidate mailing lists the operator might want to add to mimir
         # to recover the missing parent. Strictly a hint: the parent could
         # also simply predate the indexed window. Capped at 3 to avoid a
@@ -1618,7 +1618,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         }
 
         # Resolve in-body <Message-ID> references to canonical URLs.
-        # Restrict to this inbox — cross-list refs render as plain text.
+        # Restrict to this inbox, cross-list refs render as plain text.
         msgid_urls: dict[str, str] = {}
         if parsed.body:
             candidates = {
@@ -1650,7 +1650,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         base = _site_base()
         canonical_url = _canonical_url_for(article, all_links, base=base)
         # Canonical inbox is what JSON-LD's isPartOf and the breadcrumb
-        # should reflect — not necessarily the current URL's inbox.
+        # should reflect, not necessarily the current URL's inbox.
         canonical_inbox_name = (
             _canonical_inbox_name(article, all_links) or inbox.name
         )
@@ -1660,7 +1660,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
 
         # Subsystem header + related patches + mainline applications +
         # patch-series timeline. Inlined into the route's main session
-        # so a single connection covers the whole render — opening a
+        # so a single connection covers the whole render, opening a
         # second SessionLocal here previously cost an extra connect /
         # WAL-snapshot acquire per message page.
         subsystem_hits = subsystems_for_article(session, article.id)
@@ -1711,7 +1711,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         parent_url = thread_urls[article.thread_parent]
 
     # Long threads switch to a right-rail tree layout on wide
-    # viewports — see LONG_THREAD_SIDEBAR_THRESHOLD. Narrow
+    # viewports, see LONG_THREAD_SIDEBAR_THRESHOLD. Narrow
     # viewports stack regardless via the CSS media query.
     long_thread = len(thread) >= LONG_THREAD_SIDEBAR_THRESHOLD
 

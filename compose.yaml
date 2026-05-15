@@ -12,8 +12,8 @@ services:
       - "5000:5000"
     volumes:
       # Single state volume. Layout (created at build time):
-      #   ./data/db/        — SQLite DB + WAL files
-      #   ./data/Inboxes/   — per-inbox public-inbox git mirrors
+      #   ./data/db/       , SQLite DB + WAL files
+      #   ./data/Inboxes/  , per-inbox public-inbox git mirrors
       # Pre-flight: `mkdir -p data/db data/Inboxes && chown -R 1001:1001 data`.
       - ./data:/data
     environment:
@@ -24,7 +24,7 @@ services:
       # the real client through Caddy (or whatever reverse proxy fronts
       # the container). 1 = trust the last hop. Bump only if you stack
       # additional proxies in front of Caddy. Leave unset if you publish
-      # port 5000 directly — anyone could otherwise spoof these values
+      # port 5000 directly, anyone could otherwise spoof these values
       # via a forged X-Forwarded-For.
       TRUSTED_PROXY_HOPS: "1"
       # Optional:
@@ -52,7 +52,7 @@ services:
   # analyze, vacuum. Replaces cron / systemd timers. Shares the same
   # /data volume; no port exposure. See deploy/scheduler.sh for the
   # loop body and the env-overridable cadence knobs (WARM_CACHE_EVERY,
-  # UPDATE_EVERY, ANALYZE_EVERY, VACUUM_EVERY — all in seconds).
+  # UPDATE_EVERY, ANALYZE_EVERY, VACUUM_EVERY, all in seconds).
   #
   # Owns `alembic upgrade head` (single source of DDL truth). The
   # healthcheck reports healthy once the sentinel `/data/.migrated`
