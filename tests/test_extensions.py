@@ -1,7 +1,7 @@
 """SQLite pragma contract for `mimir.extensions`.
 
 The `connect` listener at `mimir/extensions.py` sets four pragmas on
-every connection — WAL journaling, NORMAL sync, FK enforcement, and
+every connection, WAL journaling, NORMAL sync, FK enforcement, and
 the configured `busy_timeout`. These are load-bearing:
 
 - WAL is what makes readers non-blocking during ingest writes.
@@ -63,7 +63,7 @@ def test_pragmas_apply_per_connection():
     """The listener must fire on *every* new connection, not just the
     first. SQLAlchemy's connection pool keeps connections warm, but
     a fresh open (whether cold or after pool churn) must still get
-    the pragmas — otherwise the contract degrades to "whichever
+    the pragmas, otherwise the contract degrades to "whichever
     connection the engine happened to hand out first." Open two
     fresh connections and verify both."""
     for _ in range(2):

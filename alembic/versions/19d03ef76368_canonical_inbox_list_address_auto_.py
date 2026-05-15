@@ -30,7 +30,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('inbox_id', 'address'),
     )
 
-    # SQLite doesn't support ALTER TABLE ADD CONSTRAINT — use batch
+    # SQLite doesn't support ALTER TABLE ADD CONSTRAINT, use batch
     # mode (copy + move) to add the FK alongside the new column.
     with op.batch_alter_table('articles') as batch_op:
         batch_op.add_column(
