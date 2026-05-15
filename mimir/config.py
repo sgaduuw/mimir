@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Project root: <root>/mimir/config.py → parent → parent. Resolving
 # follows symlinks so a container running mimir from a bind-mounted
 # read-only volume still gets a sane absolute path. NB: this assumes a
-# checked-out source tree — under `pip install .` mimir lives in
+# checked-out source tree, under `pip install .` mimir lives in
 # site-packages and PROJECT_ROOT becomes meaningless. Set DATABASE_URL
 # explicitly in any deployment that doesn't ship the tree as-is.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # slash. When set, used verbatim for every emitted absolute URL
     # (canonical link, og:url, JSON-LD `url`, sitemap). When empty,
     # `request.url_root` is used, which depends on ProxyFix being
-    # wired correctly — typically right in production but a footgun
+    # wired correctly, typically right in production but a footgun
     # when the proxy chain is wrong. The 2026-05-11 external review
     # saw `http://` leaking into og:url + JSON-LD on a production
     # page; set `SITE_BASE_URL=https://ratatoskr.run` to force-
@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     site_base_url: str = ""
 
     # Default: <project_root>/mimir.db, so cwd doesn't matter (systemd,
-    # container, anywhere). Override with DATABASE_URL=... — typically
+    # container, anywhere). Override with DATABASE_URL=..., typically
     # `sqlite:////data/mimir.db` for a container with a persistent
     # volume mount.
     database_url: str = f"sqlite:///{PROJECT_ROOT / 'mimir.db'}"
@@ -89,7 +89,7 @@ class Settings(BaseSettings):
 
     # Number of trusted reverse-proxy hops in front of the app. When
     # > 0, Werkzeug's ProxyFix is wired up so the last N entries of
-    # X-Forwarded-{For,Proto,Host} are honoured — request.remote_addr
+    # X-Forwarded-{For,Proto,Host} are honoured, request.remote_addr
     # then reflects the real client IP instead of the proxy's address,
     # request.scheme is correct under HTTPS-terminating proxies, etc.
     # Leave at 0 if the app is reachable directly, otherwise anyone
@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     # raising `SQLITE_BUSY`. Default 0 turns transient contention
     # (scheduler ingest / analyze / vacuum overlapping a web cache
     # write) into hard 500s; 5s rides out normal contention windows.
-    # VACUUM on the full archive can outlast this — that's intentional,
+    # VACUUM on the full archive can outlast this; that's intentional,
     # we'd rather surface a true VACUUM-vs-write conflict than mask
     # it with a multi-minute hang. Override via SQLITE_BUSY_TIMEOUT_MS.
     sqlite_busy_timeout_ms: int = 5000
@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     analyze_after_ingest_rows: int = 10000
 
     # Mainline tree (Linus's `linux.git`). Mirrored locally so the
-    # `update-mainline` CLI can read MAINTAINERS — and, in a later
+    # `update-mainline` CLI can read MAINTAINERS, and, in a later
     # slice, walk commit-message `Link:` trailers for the patch-page
     # "applied as <sha>" surface.
     #
@@ -132,7 +132,7 @@ class Settings(BaseSettings):
 
     # IndexNow (https://www.indexnow.org/). Push-notification protocol
     # for new URLs, consumed by Bing/Yandex/Naver/Seznam/Yep. Google
-    # is *not* a consumer as of this writing — set this expecting Bing
+    # is *not* a consumer as of this writing, set this expecting Bing
     # to discover new posts faster, not Google.
     #
     # Setting `indexnow_key` enables the feature: the `update` CLI
@@ -143,7 +143,7 @@ class Settings(BaseSettings):
     # set INDEXNOW_KEY in the env. Unset = feature disabled, no calls
     # made, key-verification route not registered.
     #
-    # `site_base_url` MUST also be set for IndexNow to work — the
+    # `site_base_url` MUST also be set for IndexNow to work, the
     # protocol needs an absolute host and the keyLocation URL.
     #
     # `indexnow_max_per_tick` is the "looks like a backfill, skip the

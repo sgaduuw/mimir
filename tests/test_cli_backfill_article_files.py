@@ -123,7 +123,7 @@ def test_backfill_is_idempotent_on_rerun(seeded_db, tmp_path):
 
     with seeded_db() as s:
         paths = [r.path for r in s.execute(select(ArticleFile)).scalars()]
-    # Exactly one row — re-run didn't duplicate.
+    # Exactly one row, re-run didn't duplicate.
     assert paths == ["fs/foo/a.c"]
 
 
@@ -182,7 +182,7 @@ def test_backfill_skips_articles_with_unreachable_mirror(seeded_db):
     """Seeded conftest articles have bogus SHAs in their
     ArticleList rows (the fixture never reads their bodies, so it
     didn't need real ones). The backfill must treat those as
-    `skipped`, not `failed` — they're a mirror-state condition,
+    `skipped`, not `failed`, they're a mirror-state condition,
     not an extractor regression. Pins the dulwich-KeyError →
     skipped path."""
     result = backfill_article_files()
