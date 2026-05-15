@@ -795,6 +795,78 @@ def test_replay_failures_skips_when_mirror_missing(seeded_db, tmp_path, monkeypa
         ).scalar_one() == 1
 
 
+def test_replay_failures_closes_cached_repos(seeded_db, tmp_path, monkeypatch):
+    """`replay_failures` caches one dulwich `Repo` per epoch to avoid
+    re-opening pack files for back-to-back rows in the same epoch.
+    `Repo` holds FDs on object packs, refs, and the loose-object dir
+    and has no `__del__`, so without an explicit teardown the FDs
+    leak until the function-scoped dict is GC'd. On long replays
+    spanning many epochs this is observable as FD exhaustion.
+
+    Seed failure rows in two epochs so the cache actually fills with
+    more than one entry, then patch `mimir.ingest.Repo` to track
+    `close()` invocations. Both cached repos must be closed before
+    `replay_failures` returns."""
+    import datetime as _dt
+
+    import mimir.ingest as ingest_mod
+    import mimir.parser
+
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "alpha-fd"
+    mirror_root.mkdir()
+
+    bad = b"From: a@b.example\r\nSubject: no msgid\r\n\r\nbody"
+    _build_pubinbox_repo(mirror_root / "0.git", [bad])
+    _build_pubinbox_repo(mirror_root / "1.git", [bad])
+    sha0 = Repo(str(mirror_root / "0.git")).head().decode()
+    sha1 = Repo(str(mirror_root / "1.git")).head().decode()
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        now = _dt.datetime.now(_dt.timezone.utc)
+        for epoch, sha in [("0.git", sha0), ("1.git", sha1)]:
+            s.add(ParseFailure(
+                inbox_id=ix.id,
+                epoch=epoch,
+                commit_sha=sha,
+                error_class="ValueError",
+                error_message="seeded",
+                attempts=1,
+                first_seen=now,
+                last_attempt=now,
+            ))
+        s.commit()
+
+    closed: list[str] = []
+    original_repo = ingest_mod.Repo
+
+    class TrackedRepo(original_repo):
+        def close(self):
+            closed.append(str(self.path))
+            return super().close()
+
+    monkeypatch.setattr(ingest_mod, "Repo", TrackedRepo)
+    # Parser still raises on the seeded blob (no Message-ID), so
+    # both rows stay in the still_failed bucket. The point is to
+    # exercise the repo_cache cleanup path, not the recovery path.
+    _ = mimir.parser  # ensure import order matches sibling tests
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    result = replay_failures(ix)
+    assert result.attempted == 2
+    assert result.still_failed == 2
+
+    assert len(closed) == 2, (
+        f"expected 2 Repo.close() calls (one per cached epoch); got {len(closed)}: "
+        f"{closed!r}"
+    )
+    closed_basenames = {Path(p).name for p in closed}
+    assert closed_basenames == {"0.git", "1.git"}
+
+
 # Auto-ANALYZE on threshold-crossing ingest
 
 
@@ -1492,6 +1564,102 @@ def test_ingest_with_multiple_workers_succeeds(seeded_db, tmp_path):
 
     assert result.new == 4
     assert result.failed == 0
+
+
+def test_ingest_parser_failure_mid_worker_batch_preserves_order_and_resumes(
+    seeded_db, tmp_path,
+):
+    """A parser-raising message buried inside a multi-chunk
+    `ProcessPoolExecutor.map` run must not derail surrounding commits.
+
+    `_parse_iter` relies on `pool.map`'s in-input-order contract;
+    a regression that batched results out of order would assign the
+    wrong `commit_time` (and therefore `Article.date`) to surviving
+    commits on either side of the failure. The pre-existing
+    `test_ingest_with_multiple_workers_succeeds` covered four clean
+    messages in one PARSE_CHUNKSIZE chunk and missed this.
+
+    Setup: 100 sequential commits with the 50th holding a Message-ID-
+    less blob (parse_message raises ValueError). With
+    `PARSE_CHUNKSIZE=50` and `workers=2`, the failure lands inside
+    chunk 2 — both workers actually run, and the failure is mid-
+    chunk in input order.
+
+    Assertions: (a) the 99 surviving articles' message-ids match the
+    seeded order when read back by `date`; (b) exactly one
+    `parse_failures` row exists with the failing commit's SHA;
+    (c) a second `ingest_epoch` walks zero commits because the walker
+    excludes via `IngestState.last_commit_sha = HEAD`."""
+    bad_idx = 50
+    messages = [_rfc5322(f"m{i:03d}@example.com") for i in range(100)]
+    messages[bad_idx] = b"From: a@b.example\r\nSubject: no msgid\r\n\r\nbody"
+
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "alpha-mid-chunk"
+    mirror_root.mkdir()
+    _build_pubinbox_repo(mirror_root / "0.git", messages)
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        s.commit()
+        result = ingest_epoch(s, ix, "0.git", mirror_root / "0.git", workers=2)
+
+    assert result.new == 99
+    assert result.failed == 1
+
+    # (a) Order-preservation. Commit_time = 1700000000 + i in
+    # _build_pubinbox_repo, so ordering articles by date recovers the
+    # seeded sequence (minus the failing index). Filter to the
+    # corpus message-ids we just inserted so pre-existing fixture
+    # rows don't leak into the assertion.
+    expected = [f"m{i:03d}@example.com" for i in range(100) if i != bad_idx]
+    with seeded_db() as s:
+        got = list(s.execute(
+            select(Article.message_id)
+            .where(Article.message_id.like("m%@example.com"))
+            .order_by(Article.date)
+        ).scalars())
+    assert got == expected, (
+        f"pool.map order-preservation broken; head={got[:5]} tail={got[-5:]}"
+    )
+
+    # (b) Exactly one parse_failures row, pointing at the failing
+    # commit. Walk the linear chain forward from root to find the
+    # idx-th commit's SHA — the seeded repo has no branching.
+    repo = Repo(str(mirror_root / "0.git"))
+    chain: list[str] = []
+    cur = repo.head()
+    while cur is not None:
+        chain.append(cur.decode())
+        commit = repo[cur]
+        cur = commit.parents[0] if commit.parents else None
+    chain.reverse()
+    bad_sha = chain[bad_idx]
+
+    with seeded_db() as s:
+        fails = list(s.execute(
+            select(ParseFailure).where(ParseFailure.inbox_id == alpha.id)
+        ).scalars())
+    assert len(fails) == 1
+    assert fails[0].commit_sha == bad_sha
+    assert fails[0].error_class == "ValueError"
+
+    # (c) Resume cleanly: IngestState.last_commit_sha is at HEAD, so
+    # a re-walk yields nothing.
+    head = chain[-1]
+    with seeded_db() as s:
+        state = s.execute(
+            select(IngestState).where(
+                IngestState.inbox_id == alpha.id,
+                IngestState.epoch == "0.git",
+            )
+        ).scalar_one()
+        assert state.last_commit_sha == head
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        second = ingest_epoch(s, ix, "0.git", mirror_root / "0.git", workers=2)
+    assert second.new == 0
+    assert second.failed == 0
 
 
 # --------------------------------------------------------------------------
