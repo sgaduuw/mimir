@@ -43,7 +43,7 @@ def create_app() -> Flask:
 
     # Honour X-Forwarded-* headers when running behind a known number of
     # trusted reverse-proxy hops, so request.remote_addr / .scheme /
-    # .host reflect the real client. Off by default — enabling this when
+    # .host reflect the real client. Off by default, enabling this when
     # the app is reachable directly would let anyone spoof those values
     # via a forged XFF header.
     if settings.trusted_proxy_hops > 0:
@@ -60,7 +60,7 @@ def create_app() -> Flask:
 def _register_indexnow_key_route(app: Flask) -> None:
     """Serve the IndexNow ownership-verification file at /<key>.txt
     when (and only when) `settings.indexnow_key` is set. The path
-    contains the literal key value — that's how IndexNow proves the
+    contains the literal key value; that's how IndexNow proves the
     submitter owns the host. Registered dynamically because the URL
     is config-dependent; an unconfigured deploy doesn't expose the
     endpoint at all."""

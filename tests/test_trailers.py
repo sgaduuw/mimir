@@ -1,4 +1,4 @@
-"""Unit tests for `mimir.trailers.extract_trailers` — the
+"""Unit tests for `mimir.trailers.extract_trailers`, the
 review-attestation extractor used at ingest and by the backfill CLI.
 """
 from mimir.trailers import extract_trailers
@@ -71,7 +71,7 @@ def test_extract_address_casing_preserved_verbatim():
 
 
 def test_extract_bare_address_no_display_name():
-    """Some trailers carry only an address — name is the empty string."""
+    """Some trailers carry only an address, name is the empty string."""
     body = "Acked-by: <terse@example.com>\n"
     assert extract_trailers(body) == [
         ("Acked-by", "", "terse@example.com"),
@@ -85,7 +85,7 @@ def test_extract_bare_address_no_display_name():
 def test_extract_ignores_quoted_trailers_in_replies():
     """Reviewers replying often quote the previous patch's trailer
     block. Line-start regex anchor means `> Reviewed-by: …` doesn't
-    match — those attestations belong to the parent message and were
+    match, those attestations belong to the parent message and were
     already indexed there."""
     body = (
         "On Mon, A wrote:\n"
@@ -98,7 +98,7 @@ def test_extract_ignores_quoted_trailers_in_replies():
 
 
 def test_extract_skips_address_with_html_metacharacters():
-    """The address regex is conservative — addresses carrying HTML
+    """The address regex is conservative, addresses carrying HTML
     metacharacters fall through (silently skipped). Defense in depth
     for any future render path that touches the indexed value."""
     body = 'Reviewed-by: A <"weird"@example.com>\n'
