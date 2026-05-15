@@ -540,10 +540,17 @@ def active_threads_in_subsystem(
         path_sql, path_params = path_filter
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=days)
+        # Materialise the path-matched article ids once before the
+        # recursive CTE runs. Without `MATERIALIZED`, SQLite inlines
+        # the CTE and re-evaluates the `article_files` lookup per
+        # seed row — order-of-seconds on wide subsystems like
+        # "open firmware and flattened device tree bindings" with
+        # many F: globs. The temp-table form runs the lookup once.
         return _active_threads_query(
             session, inbox, start, end,
             order_by="score", limit=limit,
-            extra_seed_filter_sql=f" AND a.id IN ({path_sql})",
+            extra_ctes_sql=f"path_articles AS MATERIALIZED ({path_sql}),",
+            extra_seed_filter_sql=" AND a.id IN (SELECT article_id FROM path_articles)",
             extra_params=path_params,
         )
 
