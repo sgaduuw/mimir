@@ -330,6 +330,85 @@ def test_set_swallows_operational_error_on_lock(monkeypatch):
     )
 
 
+def test_delete_swallows_operational_error_on_lock(monkeypatch):
+    """`cache.delete` matches `cache.set`'s best-effort posture: an
+    `OperationalError` (database is locked, VACUUM, etc.) is swallowed
+    + logged, returns 0. Admin CRUD callers must not 500 on a
+    successfully-completed DB change just because the cache
+    invalidation lost the lock race. Audit (2026-05-15) flagged the
+    asymmetry."""
+    class _LockedSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def execute(self, _stmt):
+            return None
+        def commit(self):
+            raise OperationalError("DELETE", None, Exception("database is locked"))
+
+    monkeypatch.setattr(cache, "SessionLocal", lambda: _LockedSession())
+
+    captured: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record)
+
+    handler = _Capture(level=logging.WARNING)
+    logger = logging.getLogger("mimir.cache")
+    logger.addHandler(handler)
+    try:
+        result = cache.delete("xtest-locked-delete-key")  # must not raise
+    finally:
+        logger.removeHandler(handler)
+
+    assert result == 0
+    assert any("cache delete failed" in r.getMessage() for r in captured), (
+        f"expected a 'cache delete failed' warning, got "
+        f"{[r.getMessage() for r in captured]}"
+    )
+
+
+def test_delete_for_inbox_swallows_operational_error_on_lock(monkeypatch):
+    """Symmetric to `test_delete_swallows_operational_error_on_lock`
+    for the bulk delete_for_inbox path that runs on every inbox
+    rename / delete."""
+    class _LockedSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def execute(self, _stmt):
+            return None
+        def commit(self):
+            raise OperationalError("DELETE", None, Exception("database is locked"))
+
+    monkeypatch.setattr(cache, "SessionLocal", lambda: _LockedSession())
+
+    captured: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record)
+
+    handler = _Capture(level=logging.WARNING)
+    logger = logging.getLogger("mimir.cache")
+    logger.addHandler(handler)
+    try:
+        result = cache.delete_for_inbox("some-inbox")  # must not raise
+    finally:
+        logger.removeHandler(handler)
+
+    assert result == 0
+    assert any(
+        "cache delete_for_inbox failed" in r.getMessage() for r in captured
+    ), (
+        f"expected a 'cache delete_for_inbox failed' warning, got "
+        f"{[r.getMessage() for r in captured]}"
+    )
+
+
 def test_set_swallows_real_sqlite_lock_with_busy_timeout_zero():
     """Integration-level companion to the mocked swallow test: open a
     separate SQLite connection, hold an EXCLUSIVE transaction, then

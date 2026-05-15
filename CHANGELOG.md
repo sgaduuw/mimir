@@ -49,6 +49,14 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   surfaces in `SyncResult.failed` and the tick continues.
 ### Fixed
 
+- `mimir.cache.delete` and `cache.delete_for_inbox` now swallow
+  `OperationalError("database is locked")` and log a warning,
+  matching `cache.set`'s best-effort posture. Admin CRUD callers
+  (inbox rename / delete) would otherwise 500 on a successfully-
+  completed DB change because the cache invalidation lost the
+  lock race against a long-running VACUUM. Cached values still
+  age out via TTL, so a missed invalidation is recoverable
+  without operator intervention.
 - `mimir.parser`: `In-Reply-To` headers carrying multiple
   msg-ids (broken senders sometimes emit `<a@x> <b@y>`) now
   resolve to the first msg-id rather than being stored as the
