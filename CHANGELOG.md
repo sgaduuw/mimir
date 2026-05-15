@@ -11,6 +11,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- `most_active_subsystems_global` now propagates `force=True`
+  through to the per-inbox `_most_active_subsystems_in_inbox_full`
+  call inside its `compute()` closure. Previously the outer cache
+  wrap bypassed correctly but the inner per-inbox cache silently
+  read stale rows, so a `warm-cache --force` recomputed the global
+  aggregator off whatever the per-inbox caches happened to hold.
+
 ## [1.21.0] – 2026-05-15
 
 Per-subsystem dashboard latency pass. A real-world cold load on
