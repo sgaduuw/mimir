@@ -667,7 +667,16 @@ def backfill_canonicals(
         if limit is not None:
             q = q.limit(limit)
 
-        articles = list(session.execute(q).scalars())
+        # Stream the eligible-articles result rather than materialising
+        # all rows. `--reprocess` and the unfiltered-inbox path can hit
+        # the full 6M-row prod corpus; materialising peaks at multi-GB.
+        # `yield_per` rides on top of the existing `promote_every`
+        # commit cadence; commits expire the iterated articles, which
+        # we never re-touch (each iteration only reads the freshly-
+        # yielded one).
+        articles = session.execute(
+            q.execution_options(stream_results=True, yield_per=1000)
+        ).scalars()
         for article in articles:
             out.examined += 1
 
