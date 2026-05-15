@@ -1052,6 +1052,17 @@ LONG_THREAD_SIDEBAR_THRESHOLD = 20
 SUBSYSTEM_RECENT_PATCHES_LIMIT = 30
 
 
+# Real MAINTAINERS subsystem names are quite permissive (spaces,
+# slashes, parens, ampersands, commas, dots — see "ARM/AT91 SOC
+# SUPPORT", "LINUX FOR POWERPC (32-BIT AND 64-BIT)"). The conservative
+# guard here just rejects ASCII control bytes — NUL, CR, LF, tab, and
+# every C0/C1 control codepoint. Werkzeug already %-encodes those in
+# the Location header, so this is defense-in-depth rather than a
+# patch for a known injection. Anything else falls to the DB lookup
+# below and naturally 404s if no row matches.
+_SUBSYSTEM_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f]+\Z")
+
+
 @bp_web.route("/<inbox_name>/subsystem/<path:name>/")
 def subsystem_dashboard(inbox_name: str, name: str):
     """Per-subsystem dashboard. Surfaces the MAINTAINERS-derived
@@ -1069,13 +1080,19 @@ def subsystem_dashboard(inbox_name: str, name: str):
     form. The DB row's stored casing remains the upstream-verbatim
     one and is what the H1 renders.
     """
-    name_lower = name.lower()
-    if name != name_lower:
-        return redirect(
-            f"/{inbox_name}/subsystem/{name_lower}/", code=301,
-        )
+    if not _SUBSYSTEM_NAME_RE.match(name):
+        abort(404)
     with SessionLocal() as session:
+        # Resolve the inbox before the case-correction redirect so a
+        # request to /unknown-inbox/subsystem/UPPER/ 404s directly
+        # rather than 301'ing to the lowercase form first. Saves the
+        # crawler / bookmarked-URL hop on bad inbox slugs.
         inbox = _get_inbox_or_404(session, inbox_name)
+        name_lower = name.lower()
+        if name != name_lower:
+            return redirect(
+                f"/{inbox.name}/subsystem/{name_lower}/", code=301,
+            )
         subsystem = session.execute(
             select(Subsystem)
             .options(
