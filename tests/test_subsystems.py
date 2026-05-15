@@ -7,12 +7,14 @@ from sqlalchemy import select
 from mimir.models import (
     Article,
     ArticleFile,
+    ArticleTrailer,
     Inbox,
     Subsystem,
     SubsystemMaintainer,
     SubsystemPath,
 )
 from mimir.subsystems import (
+    active_reviewers_in_subsystem,
     active_threads_in_subsystem,
     daily_volume_in_subsystem,
     path_matches_glob,
@@ -545,3 +547,201 @@ def test_daily_volume_in_subsystem_returns_zero_series_for_wildcard_only(
         spark = daily_volume_in_subsystem(s, alpha, sub, days=10, force=True)
     assert len(spark.days) == 10
     assert all(c == 0 for _, c in spark.days)
+
+
+# `active_reviewers_in_subsystem` integration — slice 2 of #97.
+# The extractor itself is exercised in tests/test_trailers.py; here
+# we pin the JOIN through article_files (subsystem path filter) +
+# the per-reviewer aggregation contract.
+
+
+def _add_recent_patch_with_trailers(
+    session, msgid, paths, trailers, inbox_name="alpha", days_ago=0,
+):
+    """Insert a recent article with ArticleFile rows + ArticleTrailer
+    rows. `trailers` is a list of (role, name, address) tuples."""
+    from mimir.models import ArticleList
+    inbox = session.execute(
+        select(Inbox).where(Inbox.name == inbox_name)
+    ).scalar_one()
+    art = Article(
+        message_id=msgid,
+        subject=f"patch {msgid}",
+        author="a@example",
+        date=datetime.now(timezone.utc) - timedelta(days=days_ago, hours=1),
+        thread_parent=None,
+        subject_normalized=f"patch {msgid}",
+        canonical_inbox_id=inbox.id,
+        lists=[ArticleList(inbox_id=inbox.id, epoch="0.git",
+                           commit_sha="f" * 40)],
+        files=[ArticleFile(path=p) for p in paths],
+        trailers=[
+            ArticleTrailer(
+                role=role, name=name,
+                address=addr, address_normalized=addr.lower(),
+            )
+            for role, name, addr in trailers
+        ],
+    )
+    session.add(art)
+    session.flush()
+    return art
+
+
+def test_active_reviewers_groups_attestations_by_address(seeded_db):
+    """One reviewer who appears on multiple patches collapses to a
+    single ReviewerStat with summed counts."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_patch_with_trailers(
+            s, "p1@x", ["fs/bcachefs/super.c"],
+            [("Reviewed-by", "Alice", "alice@kernel.org")],
+        )
+        _add_recent_patch_with_trailers(
+            s, "p2@x", ["fs/bcachefs/io.c"],
+            [
+                ("Reviewed-by", "Alice", "alice@kernel.org"),
+                ("Acked-by", "Bob", "bob@kernel.org"),
+            ],
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = active_reviewers_in_subsystem(s, alpha, sub, force=True)
+
+    by_addr = {r.address_normalized: r for r in out}
+    assert set(by_addr) == {"alice@kernel.org", "bob@kernel.org"}
+    assert by_addr["alice@kernel.org"].role_counts == {"Reviewed-by": 2}
+    assert by_addr["alice@kernel.org"].total == 2
+    assert by_addr["bob@kernel.org"].role_counts == {"Acked-by": 1}
+
+
+def test_active_reviewers_orders_by_total_then_recency(seeded_db):
+    """Primary sort: total desc. Tiebreak: last_seen desc so equally-
+    active reviewers surface freshest-first."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        # carol: 2 attestations, oldest activity 2 days ago
+        _add_recent_patch_with_trailers(
+            s, "old1@x", ["fs/bcachefs/a.c"],
+            [("Reviewed-by", "Carol", "carol@kernel.org")],
+            days_ago=2,
+        )
+        _add_recent_patch_with_trailers(
+            s, "old2@x", ["fs/bcachefs/b.c"],
+            [("Reviewed-by", "Carol", "carol@kernel.org")],
+            days_ago=2,
+        )
+        # dave: 2 attestations, latest activity today
+        _add_recent_patch_with_trailers(
+            s, "new1@x", ["fs/bcachefs/c.c"],
+            [("Reviewed-by", "Dave", "dave@kernel.org")],
+            days_ago=0,
+        )
+        _add_recent_patch_with_trailers(
+            s, "new2@x", ["fs/bcachefs/d.c"],
+            [("Reviewed-by", "Dave", "dave@kernel.org")],
+            days_ago=2,
+        )
+        # erin: 1 attestation, today — should rank below the two-counters
+        _add_recent_patch_with_trailers(
+            s, "single@x", ["fs/bcachefs/e.c"],
+            [("Reviewed-by", "Erin", "erin@kernel.org")],
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = active_reviewers_in_subsystem(s, alpha, sub, force=True)
+
+    addrs = [r.address_normalized for r in out]
+    # dave (2 today) > carol (2 two-days-ago) > erin (1 today).
+    assert addrs == ["dave@kernel.org", "carol@kernel.org", "erin@kernel.org"]
+
+
+def test_active_reviewers_respects_subsystem_excludes(seeded_db):
+    """X: globs veto trailers on patches whose paths are all
+    excluded — same path-filter posture as the other subsystem
+    helpers."""
+    with seeded_db() as s:
+        sub = _add_subsystem(
+            s, "BTRFS-MAIN", "Maintained",
+            files=["fs/btrfs/"], excludes=["fs/btrfs/tests/"],
+        )
+        _add_recent_patch_with_trailers(
+            s, "main@x", ["fs/btrfs/extent.c"],
+            [("Reviewed-by", "Alice", "alice@kernel.org")],
+        )
+        _add_recent_patch_with_trailers(
+            s, "tests@x", ["fs/btrfs/tests/runner.c"],
+            [("Reviewed-by", "Bob", "bob@kernel.org")],
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = active_reviewers_in_subsystem(s, alpha, sub, force=True)
+
+    addrs = {r.address_normalized for r in out}
+    assert addrs == {"alice@kernel.org"}
+
+
+def test_active_reviewers_scoped_to_inbox(seeded_db):
+    """A reviewer active on the same paths in a different inbox
+    doesn't bleed into this inbox's surface."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_patch_with_trailers(
+            s, "a@x", ["fs/bcachefs/x.c"],
+            [("Reviewed-by", "Alpha-only", "ao@kernel.org")],
+            inbox_name="alpha",
+        )
+        _add_recent_patch_with_trailers(
+            s, "b@x", ["fs/bcachefs/y.c"],
+            [("Reviewed-by", "Beta-only", "bo@kernel.org")],
+            inbox_name="beta",
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        out_alpha = active_reviewers_in_subsystem(s, alpha, sub, force=True)
+        out_beta = active_reviewers_in_subsystem(s, beta, sub, force=True)
+
+    assert {r.address_normalized for r in out_alpha} == {"ao@kernel.org"}
+    assert {r.address_normalized for r in out_beta} == {"bo@kernel.org"}
+
+
+def test_active_reviewers_empty_when_no_supported_globs(seeded_db):
+    """Wildcard-only F: rules → no supported globs → empty list,
+    matching the documented contract of the other path-filtered
+    helpers."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "ARCH-CSTAR", None, files=["arch/*/cstar/"])
+        _add_recent_patch_with_trailers(
+            s, "wild@x", ["arch/x86/cstar/init.c"],
+            [("Reviewed-by", "Anyone", "any@kernel.org")],
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = active_reviewers_in_subsystem(s, alpha, sub, force=True)
+    assert out == []
+
+
+def test_active_reviewers_keeps_latest_display_name_per_address(seeded_db):
+    """When the same address appears under different display names
+    across patches (people change `Name` in their git config), the
+    most-recent attestation's name wins. Address is the stable
+    identity."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_patch_with_trailers(
+            s, "old@x", ["fs/bcachefs/a.c"],
+            [("Reviewed-by", "Old Name", "person@kernel.org")],
+            days_ago=2,
+        )
+        _add_recent_patch_with_trailers(
+            s, "new@x", ["fs/bcachefs/b.c"],
+            [("Reviewed-by", "New Name", "person@kernel.org")],
+            days_ago=0,
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = active_reviewers_in_subsystem(s, alpha, sub, force=True)
+    assert len(out) == 1
+    assert out[0].name == "New Name"
+    assert out[0].total == 2
