@@ -1052,6 +1052,46 @@ def test_most_active_subsystems_global_aggregates_across_inboxes(
     assert out[0].inbox_name == "alpha"
 
 
+def test_most_active_subsystems_global_force_propagates_to_inner(
+    seeded_db, monkeypatch,
+):
+    """The outer `most_active_subsystems_global` wraps its compute
+    in `cache.get_or_compute`, and the inner per-inbox helper has
+    its own cache. Without `force=force` plumbed through, a
+    `warm-cache --force` (or any caller passing `force=True`)
+    recomputes the global aggregator from stale per-inbox rows.
+    Audit (2026-05-15) flagged it: outer bypasses, inner silently
+    doesn't.
+
+    The test patches the inner helper to record the `force` kwarg
+    every call gets, then drives the public surface with
+    `force=True` and asserts every inner invocation saw `True`."""
+    from mimir import subsystems_dashboard as subs_mod
+
+    seen_force: list[bool] = []
+    real_inner = subs_mod._most_active_subsystems_in_inbox_full
+
+    def _spy(session, inbox, *, days=7, force=False):
+        seen_force.append(force)
+        return real_inner(session, inbox, days=days, force=force)
+
+    monkeypatch.setattr(
+        subs_mod, "_most_active_subsystems_in_inbox_full", _spy,
+    )
+
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_thread_root(s, "force-a@x", ["fs/bcachefs/a.c"], inbox_name="alpha")
+        s.commit()
+        most_active_subsystems_global(s, days=7, limit=10, force=True)
+
+    assert seen_force, "inner helper was never called, test setup broke"
+    assert all(seen_force), (
+        f"force=True must propagate through to the per-inbox helper; "
+        f"got {seen_force!r}"
+    )
+
+
 def test_most_active_subsystems_global_alphabetical_tiebreak_on_inbox(
     seeded_db,
 ):
