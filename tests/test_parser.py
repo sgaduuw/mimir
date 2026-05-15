@@ -58,6 +58,29 @@ def test_references_split_and_stripped():
     assert art.references == ["a@x", "b@x", "c@x"]
 
 
+def test_decode_rfc2047_falls_back_and_logs_on_unknown_charset(caplog):
+    """The audit (2026-05-15) flagged the bare `except Exception`
+    in `_decode_rfc2047` as silencing real charset-registry / decode
+    bugs. The tightened catch now logs a warning when it falls back
+    to the verbatim header; pin both the fallback and the warning so
+    a future regression that drops the logger or widens the catch
+    surfaces."""
+    import logging
+
+    from mimir.parser import _decode_rfc2047
+
+    with caplog.at_level(logging.WARNING, logger="mimir.parser"):
+        out = _decode_rfc2047("=?totally-not-a-real-charset?Q?test?=")
+
+    # Fallback is the verbatim header value.
+    assert out == "=?totally-not-a-real-charset?Q?test?="
+    # A warning landed in the log; not silent.
+    assert any(
+        "fallback" in rec.message.lower() or "verbatim" in rec.message.lower()
+        for rec in caplog.records
+    ), f"expected a warning log; got: {[r.message for r in caplog.records]}"
+
+
 # RFC 2047 encoded-word headers
 
 
