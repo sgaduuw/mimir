@@ -34,7 +34,12 @@ from mimir.store import MessageNotFound, read_message
 
 logger = logging.getLogger(__name__)
 
-PROGRESS_EVERY = 100
+# Log a progress line every PROGRESS_EVERY rows during a backfill.
+# Set to 1000 so a first-run full-mirror ingest (~6M rows on lkml)
+# emits ~6k progress lines rather than 60k; -v steady-state ticks
+# are short enough that one line per batch is fine without further
+# subsampling.
+PROGRESS_EVERY = 1000
 COMMIT_EVERY = 500
 DEFAULT_WORKERS = os.cpu_count() or 1
 PARSE_CHUNKSIZE = 50
@@ -630,7 +635,8 @@ def backfill_canonicals(
         ix = inbox_cache.get(inbox_id)
         if ix is None:
             ix = session.get(Inbox, inbox_id)
-            assert ix is not None, f"missing inbox row for id={inbox_id}"
+            if ix is None:
+                raise RuntimeError(f"missing inbox row for id={inbox_id}")
             inbox_cache[inbox_id] = ix
         return ix
 
