@@ -46,6 +46,35 @@ from mimir.cli import (
 from mimir.inboxes import get_inbox, set_tracked_authors
 
 
+def test_configure_logging_actually_changes_level_on_re_invocation():
+    """`logging.basicConfig` is a no-op after the first call. The CLI
+    used to call it on every invocation, so a quiet first run pinned
+    the level for the whole process and subsequent `-vv` runs silently
+    kept WARNING. Pin the level-flip contract: two calls with
+    different verbose values must produce different effective levels.
+    Audit (2026-05-15)."""
+    import logging
+
+    from mimir.cli import _configure_logging
+
+    root = logging.getLogger()
+    original_level = root.level
+    try:
+        _configure_logging(0)  # WARNING
+        first = root.level
+        _configure_logging(2)  # DEBUG
+        second = root.level
+
+        assert first == logging.WARNING
+        assert second == logging.DEBUG
+        assert first != second, (
+            "second _configure_logging call didn't change the root "
+            "level -- basicConfig idempotency regressed"
+        )
+    finally:
+        root.setLevel(original_level)
+
+
 def test_trackers_show_no_trackers(seeded_db):
     result = CliRunner().invoke(admin_inbox_trackers_show_command, ["alpha"])
     assert result.exit_code == 0
