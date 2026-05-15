@@ -274,6 +274,22 @@ def test_search_articles_case_insensitive(seeded_db):
     assert {r.id for r in upper} == {r.id for r in lower}
 
 
+def test_search_articles_cache_key_case_folds(seeded_db):
+    """`Foo` and `foo` are identical to SQLite `ilike()` so they
+    must collapse to one cache row. Without the case-fold in the
+    cache key, each distinct casing would write its own row,
+    burning cache space proportional to user-typed variation."""
+    from mimir import cache
+    alpha = _inbox(seeded_db, "alpha")
+    with seeded_db() as s:
+        # First call (capitalised) writes the cache row.
+        search_articles(s, alpha, "Hello", force=True)
+        # Second call (lowercase) hits the row written by the first.
+        search_articles(s, alpha, "hello")
+    keys = [k for k in cache.keys() if k.startswith("search:alpha:")]
+    assert keys == ["search:alpha:hello:100"]
+
+
 def test_search_articles_no_match(seeded_db):
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
