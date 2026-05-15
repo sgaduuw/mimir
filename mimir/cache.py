@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Bump when cached value shapes change (query rewrites, dataclass
 # field renames, encoder changes). Old rows fall through to a miss
 # and get cleaned up by `purge_expired`.
-NAMESPACE_VERSION = 1
+NAMESPACE_VERSION = 2
 
 
 def _ns(key: str) -> str:

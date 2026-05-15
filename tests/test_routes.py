@@ -90,6 +90,140 @@ def test_meta_index_card_link_targets_inbox_dashboard(client):
     assert "/beta/" in hrefs
 
 
+def test_meta_index_renders_subsystem_chips_with_activity(client, tmp_path):
+    """Front page surfaces an "Active subsystems" teaser when one
+    or more subsystems have recent messages. Chips link to the
+    busiest inbox's per-subsystem dashboard (lowercased URL).
+    """
+    from datetime import datetime, timedelta, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "bch-front@example.com",
+        subject="bcachefs front-page test", body=body,
+    )
+    with SessionLocal() as s:
+        art = s.get(Article, art_id)
+        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        s.commit()
+    text = client.get("/").data.decode()
+    assert "Active subsystems" in text
+    # Display name is lowercased on the chip; URL is also lowercase
+    # (subsystem URL canonicalisation since #110). The stored DB
+    # row keeps the upstream MAINTAINERS uppercase casing.
+    assert "bcachefs" in text
+    assert "/alpha/subsystem/bcachefs/" in text
+
+
+def test_meta_index_no_subsystem_section_when_no_activity(client):
+    """Inverse: with no recent in-window articles the section is
+    skipped entirely rather than rendering a stub."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    text = client.get("/").data.decode()
+    assert "Active subsystems" not in text
+
+
+def test_meta_index_subsystem_card_shows_maintainer_and_sparkline(
+    client, tmp_path,
+):
+    """Front-page subsystem cards carry the top M: maintainer's
+    name and a 7-day per-subsystem sparkline so they read as
+    real cards rather than just name + count."""
+    from datetime import datetime, timedelta, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    _seed_subsystem(
+        "BCACHEFS", "Supported", files=["fs/bcachefs/"],
+        maintainers=[("M", "Kent Overstreet", "kent@kernel.org")],
+    )
+    body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "bch-card@example.com",
+        subject="bcachefs card test", body=body,
+    )
+    with SessionLocal() as s:
+        art = s.get(Article, art_id)
+        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        s.commit()
+    text = client.get("/").data.decode()
+    # Maintainer line.
+    assert "maintained by Kent Overstreet" in text
+    # Per-card sparkline svg.
+    assert 'class="subsystem-card-spark"' in text
+
+
+def test_meta_index_subsystem_card_status_badge_when_non_default(
+    client, tmp_path,
+):
+    """The Supported status surfaces as a corner badge; the default
+    "Maintained" doesn't (would render on every card → noise)."""
+    from datetime import datetime, timedelta, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    _seed_subsystem(
+        "BCACHEFS", "Supported", files=["fs/bcachefs/"],
+        maintainers=[("M", "Kent Overstreet", "kent@kernel.org")],
+    )
+    body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "bch-status-card@example.com",
+        subject="status badge", body=body,
+    )
+    with SessionLocal() as s:
+        art = s.get(Article, art_id)
+        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        s.commit()
+    text = client.get("/").data.decode()
+    # `class="subsystem-card-status">Supported<` shape — the class
+    # is also referenced in the inline <style>, so anchor on the
+    # opening tag with the status value to confirm it renders.
+    assert '<span class="subsystem-card-status">Supported</span>' in text
+
+
+def test_meta_index_subsystem_card_no_status_badge_for_default(
+    client, tmp_path,
+):
+    """`Maintained` is the upstream default — most subsystems sit
+    at that value, so a badge on every card would be noise. Pin
+    the suppression so a future change doesn't accidentally
+    introduce that visual clutter."""
+    from datetime import datetime, timedelta, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    _seed_subsystem(
+        "BTRFS FILE SYSTEM", "Maintained", files=["fs/btrfs/"],
+        maintainers=[("M", "Chris Mason", "clm@fb.com")],
+    )
+    body = (
+        b"diff --git a/fs/btrfs/extent.c b/fs/btrfs/extent.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "btrfs-card@example.com",
+        subject="default status", body=body,
+    )
+    with SessionLocal() as s:
+        art = s.get(Article, art_id)
+        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        s.commit()
+    text = client.get("/").data.decode()
+    # Card present, but no rendered status badge for the
+    # Maintained value.
+    assert "btrfs file system" in text
+    assert '<span class="subsystem-card-status">' not in text
+
+
 def test_footer_includes_mimir_version(client):
     """The footer surfaces the running package version so an operator
     can confirm the deployed image matches the expected tag. Pin via
@@ -2029,7 +2163,8 @@ def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
     # Maintainer name shown, no address, no role tag. Detail moved
     # to MAINTAINERS-driven per-subsystem dashboards (issue #72).
     assert "<strong>Subsystem:</strong>" in body
-    assert "BCACHEFS" in body
+    # Display lowercased (anti-shouty) since the post-1.18 UI pass.
+    assert "bcachefs" in body
     assert "Kent Overstreet" in body
     assert "Maintainer" in body
     assert "kent.overstreet@kernel.org" not in body
@@ -2241,7 +2376,8 @@ def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
     r = client.get("/alpha/subsystem/bcachefs/")
     assert r.status_code == 200
     body = r.data.decode()
-    assert "BCACHEFS" in body
+    # H1 lowercases the upstream MAINTAINERS-verbatim name.
+    assert "bcachefs" in body
     assert "Supported" in body
     assert "Kent Overstreet" in body
     # Maintainer address renders on the dashboard page (operator-
@@ -2412,8 +2548,9 @@ def test_subsystem_dashboard_lookup_case_insensitive(client):
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
     r = client.get("/alpha/subsystem/bcachefs/")
     assert r.status_code == 200
-    # H1 still renders the upstream-verbatim casing.
-    assert "BCACHEFS" in r.data.decode()
+    # Lookup matched the uppercase DB row via func.lower(); the
+    # rendered H1 lowercases the display name (anti-shouty pass).
+    assert "bcachefs" in r.data.decode()
 
 
 def test_subsystem_dashboard_404_on_unknown_inbox(client):
@@ -2454,7 +2591,7 @@ def test_subsystem_dashboard_empty_when_no_matches(client):
     r = client.get("/alpha/subsystem/bcachefs/")
     assert r.status_code == 200
     body = r.data.decode()
-    assert "BCACHEFS" in body
+    assert "bcachefs" in body
     assert "No patches touching" in body
 
 
@@ -2466,8 +2603,8 @@ def test_subsystem_dashboard_renders_sparkline(client):
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
     body = client.get("/alpha/subsystem/bcachefs/").data.decode()
     assert "<svg" in body
-    # The SVG carries an aria-label naming the subsystem.
-    assert "BCACHEFS, last 30 days" in body
+    # The SVG carries an aria-label naming the subsystem (lowercased).
+    assert "bcachefs, last 30 days" in body
 
 
 def test_subsystem_dashboard_renders_active_threads_section(
@@ -3033,6 +3170,54 @@ def test_inbox_dashboard_with_trackers_renders_tile(client, inbox_name):
     set_tracked_authors(inbox_name, {"Carol Tracked": "carol@kernel.org"})
     body = client.get(f"/{inbox_name}/").data.decode()
     assert "Latest from Carol Tracked" in body
+
+
+def test_inbox_dashboard_renders_subsystem_list_with_activity(
+    client, tmp_path,
+):
+    """Inbox dashboard surfaces a "Most active subsystems" list
+    when a subsystem has recent in-window messages on that inbox.
+    Plain `<ul>` matches the surrounding sections' visual
+    language; the front-page surface keeps a card grid. Link is
+    the lowercased per-subsystem dashboard URL."""
+    from datetime import datetime, timedelta, timezone
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "bch-inbox@example.com",
+        subject="bcachefs inbox-dashboard test", body=body,
+    )
+    with SessionLocal() as s:
+        art = s.get(Article, art_id)
+        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        s.commit()
+    text = client.get("/alpha/").data.decode()
+    assert "Most active subsystems" in text
+    assert "/alpha/subsystem/bcachefs/" in text
+
+
+def test_message_page_subsystem_header_is_clickable(client, tmp_path):
+    """The subsystem name on a patch page links to the per-subsystem
+    dashboard so a reader can navigate into the broader context.
+    URL takes the lowercased form; display keeps upstream casing."""
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    body = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "bch-link@example.com",
+        subject="bcachefs link test", body=body,
+    )
+    text = client.get(url).data.decode()
+    # Link present with lowercased URL AND lowercased display
+    # (anti-shouty pass — display takes the lowercase form too).
+    assert '<a href="/alpha/subsystem/bcachefs/">bcachefs</a>' in text
 
 
 def test_off_list_parent_hint_surfaces_unindexed_list(client, tmp_path):
