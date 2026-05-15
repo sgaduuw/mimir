@@ -27,7 +27,13 @@ class SyncResult(BaseModel):
     failed: list[str] = []
 
 
-_UA = "mimir-archiver/0.1 (+https://github.com/sgaduuw/mimir)"
+def _user_agent() -> str:
+    """Builds the UA string at call time so the version pinned by
+    `importlib.metadata` in `mimir.__init__` is read (instead of a
+    hardcoded `0.1` that drifts against every release). Resolved
+    lazily to dodge a circular-import edge during package init."""
+    from mimir import __version__
+    return f"mimir/{__version__} (+https://github.com/sgaduuw/mimir)"
 
 
 # Wall-clock caps on the manifest fetch and the two git operations.
@@ -51,7 +57,7 @@ _MANIFEST_MAX_BYTES = 16 * 1024 * 1024
 def fetch_manifest(upstream_url: str) -> dict:
     url = upstream_url.rstrip("/") + "/manifest.js.gz"
     logger.info("fetching manifest %s", url)
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    req = urllib.request.Request(url, headers={"User-Agent": _user_agent()})
     with urllib.request.urlopen(req, timeout=_MANIFEST_TIMEOUT_SEC) as resp:
         # Read one byte past the cap so we can distinguish "fits"
         # from "blew the cap". The trailing-byte form is the standard
