@@ -99,17 +99,16 @@ def parse_cover_letter(subject: str | None) -> CoverLetter | None:
     except (ValueError, IndexError):
         return None
     # Prefer the most specific version marker: explicit v\d+ over
-    # RFC/RESEND. A subject like `[PATCH RESEND v3 0/3]` is a
-    # resent v3, not RFC-shaped.
+    # RFC/RESEND. A subject like `[PATCH RESEND v3 0/3]` is a resent
+    # v3, not RFC-shaped. The old for/else form happened to work
+    # because of `findall`'s ordering, but the precedence wasn't
+    # explicit. `next()` with a v\d+ filter + a marker fallback +
+    # the "v1" default makes the precedence read off the line.
     versions = _VERSION_RE.findall(inside)
-    version = "v1"
-    for v in versions:
-        if v.lower().startswith("v"):
-            version = v.lower()
-            break
-    else:
-        if versions:
-            version = versions[0].lower()
+    version = next(
+        (v.lower() for v in versions if v.lower().startswith("v")),
+        versions[0].lower() if versions else "v1",
+    )
     return CoverLetter(version=version, total=total, title=title)
 
 
