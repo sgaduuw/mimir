@@ -30,7 +30,13 @@
         {% endfor %}
       {% endfor %}
       <br><strong>Subsystem:</strong>
-      {% for hit in subsystem_hits %}{{ hit.name }}{% if not loop.last %}, {% endif %}{% endfor %}
+      {# Linkify each subsystem name to its dashboard so the patch
+         page acts as a launch pad into the broader subsystem
+         context. URL takes the lowercased form (subsystem URL
+         convention since 1.18.x); display keeps the upstream
+         MAINTAINERS casing. urlencode handles spaces in compound
+         names (`BTRFS FILE SYSTEM`). #}
+      {% for hit in subsystem_hits %}<a href="/{{ current_inbox }}/subsystem/{{ hit.name|lower|urlencode }}/">{{ hit.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
       {% if _maint_names %}
         &middot; <strong>Maintainer{{ '' if _maint_names|length == 1 else 's' }}:</strong>
         {{ _maint_names|join(', ') }}
