@@ -11,6 +11,29 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.19.3] – 2026-05-15
+
+Third PATCH on top of 1.19.0. The 1.19.1 and 1.19.2 hotfixes
+eliminated the two fan-out shapes inside one
+`most_active_subsystems_in_inbox` call; the warm-cache tick on
+prod (28 inboxes / 393 keys) was still spending ~210 s, because
+each inbox warmed three distinct cache keys for the same
+aggregation (`limit=10` for the inbox dashboard, `limit=30` for
+the cross-inbox aggregator's hedge, plus the global helper's
+`limit*3=36` cold-miss path against an unwarmed key). Three
+identical bulk-SQL + inverted-index walks per inbox per tick.
+
+### Fixed
+
+- `most_active_subsystems_in_inbox` and `most_active_subsystems_global`
+  now cache a single limit-less full ranked list (internally
+  capped at 100) per `(inbox, days)` resp. `(days)`, and callers
+  slice from there for their specific `limit`. The public
+  function signatures are unchanged; the cache key drops `:limit`.
+  Warm-cache collapses to one target per inbox plus one global
+  target, cutting the heavy subsystem work to a third of the
+  previous tick.
+
 ## [1.19.2] – 2026-05-15
 
 Second PATCH on top of 1.19.0. The 1.19.1 hotfix addressed the
