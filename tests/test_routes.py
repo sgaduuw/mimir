@@ -584,6 +584,37 @@ def test_security_headers_present(client):
         assert r.headers.get(h), f"missing header {h}"
 
 
+def test_security_headers_present_on_unmatched_404(client):
+    """The audit (2026-05-15) flagged that `@bp_web.after_request`
+    only fires for routes that matched the blueprint -- URLs with no
+    matching pattern at all (Flask's built-in 404) bypassed CSP,
+    X-Frame-Options, X-Content-Type-Options, and the structured
+    access-log line. Hooks moved to `before_app_request` /
+    `after_app_request` so they fire on every request the app sees.
+
+    A URL with 5+ path segments doesn't match any current route
+    (the deepest patterns are 4-segment `<inbox>/<yyyy>/<mm>/<id>`),
+    so Flask responds 404 before any blueprint endpoint is picked."""
+    r = client.get("/no/such/route/exists/here")
+    assert r.status_code == 404
+    for h in (
+        "Content-Security-Policy",
+        "Referrer-Policy",
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+    ):
+        assert r.headers.get(h), (
+            f"missing header {h} on unmatched 404 -- "
+            "before_app_request/after_app_request hooks regressed"
+        )
+    # X-Request-Id is populated by the before_app_request hook;
+    # absence (or the "-" placeholder) means the hook didn't fire.
+    rid = r.headers.get("X-Request-Id")
+    assert rid and rid != "-", (
+        f"X-Request-Id={rid!r}; before_app_request didn't run"
+    )
+
+
 def _parse_csp(csp: str) -> dict[str, list[str]]:
     """Parse a CSP header into a {directive: [sources, ...]} map.
     Robust to whitespace, directive order, and the `script-src` vs
