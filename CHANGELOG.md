@@ -11,6 +11,16 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Security
+
+- `/<inbox>/subsystem/<name>/`: control bytes in `<name>` (NUL,
+  CR, LF, tab, every C0/C1 byte) now 404 at the URL boundary
+  rather than being percent-encoded into the case-correction
+  Location header. Also: the route now resolves the inbox via
+  `_get_inbox_or_404` before the lowercase-correction 301, so a
+  request for `/<bogus>/subsystem/UPPER/` 404s directly instead
+  of wasting a 301 hop on the case fix first.
+
 ## [1.21.0] – 2026-05-15
 
 Per-subsystem dashboard latency pass. A real-world cold load on
