@@ -257,6 +257,80 @@ def test_warm_cache_verbose_keeps_per_key_timings(seeded_db):
     assert "warm-cache:" in result.output and "ms total" in result.output
 
 
+def test_warm_cache_includes_subsystem_dashboard_targets(seeded_db):
+    """Per-subsystem dashboard helpers (recent_articles_in_subsystem +
+    three siblings) drive the slowest cold-load page. warm-cache must
+    iterate the top-N subsystems per inbox so the second visitor lands
+    on a warmed cache."""
+    result = CliRunner().invoke(warm_cache_command, ["-v"])
+    assert result.exit_code == 0
+    assert "alpha subsystem dashboards (top 20)" in result.output
+    assert "beta subsystem dashboards (top 20)" in result.output
+
+
+def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
+    """When an inbox has at least one most-active subsystem, the warm
+    target writes cache rows for all four per-subsystem helpers. A
+    silent regression in the helper composition (one helper dropped,
+    wrong argument shape) wouldn't fail the timing-line assertion
+    above but would leave a cold page; this asserts the actual rows."""
+    from sqlalchemy import select as sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import (
+        Article, ArticleFile, ArticleList, CacheEntry, Inbox, Subsystem,
+        SubsystemPath,
+    )
+
+    # Seed: one subsystem with one matching article, in 'alpha'.
+    with SessionLocal() as s:
+        sub = Subsystem(name="BCACHEFS", status="Supported")
+        s.add(sub)
+        s.flush()
+        s.add(SubsystemPath(subsystem_id=sub.id, glob="fs/bcachefs/", is_exclude=False))
+        art = Article(
+            message_id="warm-sub@x", subject="patch", author="A",
+            date=datetime(2026, 5, 14, tzinfo=timezone.utc),
+            thread_parent=None, subject_normalized="patch",
+        )
+        s.add(art)
+        s.flush()
+        alpha = s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        s.add(ArticleFile(article_id=art.id, path="fs/bcachefs/super.c"))
+        s.add(ArticleList(
+            article_id=art.id, inbox_id=alpha.id, epoch="0.git",
+            commit_sha="ab" * 20,
+        ))
+        s.commit()
+        sub_id = sub.id
+
+    result = CliRunner().invoke(warm_cache_command, [])
+    assert result.exit_code == 0
+
+    # All four per-subsystem dashboard helpers must have cached a row
+    # for this subsystem.
+    expected_keys = [
+        f"recent_articles_in_subsystem:alpha:{sub_id}:30",
+        f"active_threads_in_subsystem:alpha:{sub_id}:7:10",
+        f"daily_volume_in_subsystem:alpha:{sub_id}:30",
+        f"active_reviewers_in_subsystem:alpha:{sub_id}:30:10",
+    ]
+    from mimir.cache import _ns
+    with SessionLocal() as s:
+        present = {
+            row.key for row in s.execute(
+                sa_select(CacheEntry).where(
+                    CacheEntry.key.in_([_ns(k) for k in expected_keys])
+                )
+            ).scalars().all()
+        }
+    for k in expected_keys:
+        assert _ns(k) in present, (
+            f"warm-cache did not populate {k}; per-subsystem dashboard "
+            f"will be cold on first visit"
+        )
+
+
 def test_warm_cache_includes_atom_feed_sources(seeded_db):
     """The atom routes use `recent_articles(limit=FEED_ENTRY_LIMIT)`
     and `author_recent(..., limit=FEED_ENTRY_LIMIT)` — a different
