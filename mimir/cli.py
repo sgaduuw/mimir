@@ -545,6 +545,15 @@ def _load_maintainers(tree_path: Path, tree_name: str, force: bool) -> None:
         state.last_commit_sha = head_sha
         session.commit()
 
+    # Invalidate the dynamic-allowlist cache so the web tier picks
+    # up the refreshed M:/R: address set on the next request rather
+    # than serving stale redaction decisions for up to the cache
+    # TTL. The cache table is shared across processes, so this
+    # delete from the scheduler sidecar reaches the web container
+    # too.
+    from mimir import maintainer_allowlist
+    maintainer_allowlist.invalidate()
+
     click.echo(
         f"update-mainline: loaded {len(parsed)} subsystems "
         f"from {tree_name}@{head_sha[:12]}"
