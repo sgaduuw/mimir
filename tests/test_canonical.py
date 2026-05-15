@@ -116,6 +116,29 @@ def test_extract_no_headers_returns_empty():
     assert extract_list_addresses({"To": "", "Cc": ""}) == []
 
 
+def test_extract_header_keys_case_insensitive():
+    """RFC 5322 field names are case-insensitive; `mimir.parser`
+    preserves whatever casing the wire delivered. Some ML re-mailers
+    downcase headers, so a strict `headers.get("To")` silently
+    returned `None` and broke canonical-inbox resolution plus the
+    off-list-parent hint. Audit (2026-05-15) called it the silent
+    canonical-break."""
+    for to_key, cc_key in (
+        ("to", "cc"),         # all lowercase (the regression case)
+        ("TO", "CC"),         # all uppercase
+        ("To", "cc"),         # mixed
+        ("tO", "Cc"),         # weird mixed
+    ):
+        headers = {
+            to_key: "linux-fsdevel@vger.kernel.org",
+            cc_key: "linux-kernel@vger.kernel.org",
+        }
+        assert extract_list_addresses(headers) == [
+            "linux-fsdevel@vger.kernel.org",
+            "linux-kernel@vger.kernel.org",
+        ], f"failed on keys ({to_key!r}, {cc_key!r})"
+
+
 def test_extract_malformed_addresses_ignored():
     headers = {"To": "this is garbage, linux-fsdevel@vger.kernel.org"}
     # The non-address junk falls out of getaddresses cleanly; the real
