@@ -56,7 +56,7 @@ from mimir.models import (
     SubsystemPath,
 )
 from mimir.store import MessageNotFound, read_message
-from mimir.subsystems import (
+from mimir.subsystems_dashboard import (
     active_reviewers_in_subsystem,
     active_threads_in_subsystem,
     daily_volume_in_subsystem,
