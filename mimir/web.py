@@ -185,8 +185,16 @@ if not _request_logger.handlers:
     _request_logger.setLevel(logging.INFO)
 
 
-@bp_web.before_request
+@bp_web.before_app_request
 def _start_request_timer():
+    # `before_app_request` (not `before_request`) so this fires for
+    # EVERY request the app handles, not just routes that matched
+    # this blueprint. A URL with no matching pattern (Flask's
+    # built-in 404) still needs `g._request_id` populated for the
+    # access-log line and for `_add_cache_headers` to set
+    # `X-Request-Id` on the response. The audit (2026-05-15) flagged
+    # the blueprint-scoped form as letting unmatched-route 404s
+    # bypass security headers, cache rules, and the structured log.
     g._request_t0 = time.perf_counter()
     # Honor an upstream-supplied request id (typical reverse-proxy
     # pattern) so multi-hop traces stay correlatable; otherwise mint
@@ -196,7 +204,7 @@ def _start_request_timer():
     )
 
 
-@bp_web.after_request
+@bp_web.after_app_request
 def _add_cache_headers(response):
     # 200 OK and 301/302 redirects (Message-ID lookup) are cacheable;
     # honor their dict entries. 4xx/5xx skip — error responses
@@ -229,7 +237,7 @@ def _add_cache_headers(response):
     return response
 
 
-@bp_web.after_request
+@bp_web.after_app_request
 def _log_request(response):
     """Emit one JSON-line access record per request. Runs after the
     cache + security headers are set so duration covers the full
