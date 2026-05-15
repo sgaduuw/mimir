@@ -31,6 +31,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   surfaces in `SyncResult.failed` and the tick continues.
 ### Fixed
 
+- `mimir.store._read_blob`: context-manage the dulwich `Repo`
+  and surface `KeyError` from a stale commit_sha / GC'd blob as
+  `MessageNotFound`. Previously the `Repo` instance kept packfile
+  file descriptors open until GC (every message-page render
+  reopened the repo, so the FD count grew over time), and a
+  real-but-stale `article_lists.commit_sha` row would bubble out
+  as a `KeyError` 500 instead of the 404 every caller already
+  handles via `MessageNotFound`. Web / CLI / ingest call sites
+  recover transparently.
 - Canonical-inbox resolution and the off-list-parent hint now
   read `To:` / `Cc:` headers case-insensitively. RFC 5322 field
   names are case-insensitive and `mimir.parser` preserves the
