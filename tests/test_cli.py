@@ -476,9 +476,10 @@ def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
 
 def test_update_default_silent_on_no_op(seeded_db, monkeypatch):
     """No-op ticks (no upstream changes, no new commits to ingest)
-    must not emit per-inbox / per-epoch lines at default verbosity  
+    must not emit per-inbox / per-epoch lines at default verbosity
     that's what makes the scheduler log readable as inbox count grows."""
-    from mimir import cli, sync as sync_mod
+    from mimir import sync as sync_mod
+    from mimir.cli import ingest as cli
     from mimir.ingest import IngestResult
 
     def _fake_sync(*_a, **_kw):
@@ -502,7 +503,8 @@ def test_update_default_silent_on_no_op(seeded_db, monkeypatch):
 
 def test_update_verbose_prints_no_op_lines(seeded_db, monkeypatch):
     """-v restores per-inbox / per-epoch lines even when nothing changed."""
-    from mimir import cli, sync as sync_mod
+    from mimir import sync as sync_mod
+    from mimir.cli import ingest as cli
     from mimir.ingest import IngestResult
 
     monkeypatch.setattr(
@@ -1209,7 +1211,7 @@ def test_init_db_command_runs_and_creates_schema(tmp_path, monkeypatch):
     import sqlalchemy
     from mimir.extensions import Base
     from mimir import extensions as ext_module
-    from mimir import cli as cli_module
+    from mimir.cli import initdb as cli_module
 
     fresh_db = tmp_path / "fresh-init-db.sqlite"
     fresh_url = f"sqlite:///{fresh_db}"
