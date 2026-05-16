@@ -11,6 +11,24 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- Message page (`/<inbox>/<year>/<month>/<id>`) now uses ETag-based
+  conditional revalidation instead of a 60-second `max-age` window.
+  The route emits an ETag computed from `(article.id,
+  mimir.__version__, max(thread node date), HX-Request flag)` and
+  returns `304 Not Modified` when `If-None-Match` matches. The
+  Cache-Control header flips from `public, max-age=60` to
+  `public, no-cache`, which directs browsers and edges to always
+  revalidate. Matched ETags resolve as a tiny 304 (no body), so the
+  bandwidth cost is small; the within-window stale-after-deploy
+  problem (a code change leaving cached pages mis-rendered up to a
+  minute after release) is eliminated entirely. The thread walk
+  moved before the body fetch so 304 responses skip the git-mirror
+  read and the template render. HTMX intra-thread swaps get a
+  distinct ETag so browsers don't confuse the partial response with
+  the full page.
+
 ### Added
 
 - New route `/<inbox>/series/<patch_series_key>/diff?from=<vN>&to=<vM>&pos=<pos>`
