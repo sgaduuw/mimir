@@ -800,6 +800,90 @@ def test_active_reviewers_empty_when_no_supported_globs(seeded_db):
 # per-reviewer `/<inbox>/reviewer/<address>` page.
 
 
+def test_articles_reviewed_by_plan_drops_materialize(seeded_db):
+    """The query must NOT materialise an unfiltered per-article view of
+    every inbox-link in the archive. Earlier shape JOINed against a
+    derived table that did exactly that, blowing past gunicorn's worker
+    timeout on the prod corpus for prolific reviewers (#194). Pin the
+    plan so the regression is caught at PR time instead of in
+    production cold misses."""
+    from sqlalchemy import text
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        # Mirror the exact SQL `articles_reviewed_by` builds, the
+        # cache helper closes over `inbox`/`address_normalized`/`limit`,
+        # so we reproduce the bind shape rather than calling through
+        # the cached entry point (which would skip the plan we want
+        # to inspect).
+        plan_rows = s.execute(
+            text(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT a.id, a.message_id, a.subject, a.date, t.role,
+                       COALESCE(
+                           canon.name,
+                           (SELECT MIN(i.name)
+                            FROM article_lists al2
+                            JOIN inboxes i ON i.id = al2.inbox_id
+                            WHERE al2.article_id = a.id)
+                       ) AS inbox_name
+                FROM article_trailers t
+                JOIN articles a ON a.id = t.article_id
+                JOIN article_lists al ON al.article_id = a.id
+                LEFT JOIN inboxes canon ON canon.id = a.canonical_inbox_id
+                WHERE al.inbox_id = :inbox_id
+                  AND t.address_normalized = :addr
+                ORDER BY a.date DESC LIMIT :limit
+                """
+            ),
+            {"inbox_id": alpha.id, "addr": "x@y", "limit": 100},
+        ).all()
+    plan = "\n".join(r[-1] for r in plan_rows)
+    assert "MATERIALIZE" not in plan, (
+        f"unfiltered MATERIALIZE crept back into the reviewer query plan:\n{plan}"
+    )
+
+
+def test_articles_reviewed_by_canonical_null_uses_alphabetical_fallback(
+    seeded_db,
+):
+    """Cross-posted article with canonical_inbox_id = NULL: the
+    fallback inbox name must be the alphabetically-first linked
+    inbox (matches `_canonical_inbox_name` in mimir.web.urls), not
+    the inbox we happen to be querying from. Pinned because the
+    #194 query rewrite touched this code path."""
+    from mimir.models import ArticleList, ArticleTrailer
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        art = Article(
+            message_id="null-canon@x",
+            subject="cross-post, no canonical pinned",
+            author="a@example",
+            date=datetime.now(timezone.utc),
+            thread_parent=None,
+            subject_normalized="cross-post no canonical pinned",
+            canonical_inbox_id=None,
+            lists=[
+                ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="a" * 40),
+                ArticleList(inbox_id=beta.id, epoch="0.git", commit_sha="b" * 40),
+            ],
+            files=[ArticleFile(path="fs/bcachefs/x.c")],
+            trailers=[ArticleTrailer(
+                role="Reviewed-by", name="A", address="a@kernel.org",
+                address_normalized="a@kernel.org",
+            )],
+        )
+        s.add(art)
+        s.commit()
+        # Query from beta; fallback should still resolve to alpha
+        # (the alphabetically-first linked inbox), not beta.
+        out = articles_reviewed_by(s, beta, "a@kernel.org", force=True)
+    assert len(out) == 1
+    assert out[0].inbox_name == "alpha"
+
+
 def test_articles_reviewed_by_returns_one_entry_per_attestation(seeded_db):
     """Same person under two roles on one patch (Reported-by +
     Tested-by) shows as two ReviewEntry rows. Accurate to the source
