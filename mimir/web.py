@@ -1053,9 +1053,9 @@ SUBSYSTEM_RECENT_PATCHES_LIMIT = 30
 
 
 # Real MAINTAINERS subsystem names are quite permissive (spaces,
-# slashes, parens, ampersands, commas, dots — see "ARM/AT91 SOC
+# slashes, parens, ampersands, commas, dots, see "ARM/AT91 SOC
 # SUPPORT", "LINUX FOR POWERPC (32-BIT AND 64-BIT)"). The conservative
-# guard here just rejects ASCII control bytes — NUL, CR, LF, tab, and
+# guard here just rejects ASCII control bytes, NUL, CR, LF, tab, and
 # every C0/C1 control codepoint. Werkzeug already %-encodes those in
 # the Location header, so this is defense-in-depth rather than a
 # patch for a known injection. Anything else falls to the DB lookup
