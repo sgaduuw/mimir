@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.21.3] - 2026-05-16
+
 ### Fixed
 
 - Scheduled `ANALYZE` and `VACUUM` in `deploy/scheduler.sh` no longer
