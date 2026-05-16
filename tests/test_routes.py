@@ -68,6 +68,25 @@ def test_meta_index_no_pin_badge_when_no_pins(client, monkeypatch):
     assert '<span class="inbox-card-pinned"' not in body
 
 
+def test_meta_index_hero_image_has_substantive_alt(client):
+    """The Ratatoskr hero image identifies the brand and isn't pure
+    decoration; an empty alt leaves a screen-reader user without
+    context. og:image alt only reaches link-card previews (crawler
+    side), never the live page; the footer credit covers
+    attribution, not what the image depicts. External review
+    2026-05-16."""
+    import re
+    body = client.get("/").data.decode()
+    m = re.search(
+        r'<img[^>]*src="[^"]*ratatoskr[^"]*"[^>]*alt="([^"]*)"',
+        body,
+    )
+    assert m, "front-page ratatoskr <img> not found"
+    assert m.group(1).strip(), (
+        f"hero image alt must not be empty; got {m.group(1)!r}"
+    )
+
+
 def test_meta_index_sparkline_renders_when_inbox_has_messages(client):
     """Seeded inboxes have messages, so each card carries a
     `<svg class="inbox-card-spark">` 30-day daily-volume sparkline.
@@ -1251,9 +1270,13 @@ def _ingest_one_article(
         return art.id, url
 
 
-def test_meta_index_title_is_just_site_name(client):
+def test_meta_index_title_follows_page_then_site_pattern(client):
+    # The front page is the only one without an inbox in scope, so
+    # the per-page-pattern collapses to `<page-specific> | <site>`.
+    # External review 2026-05-16 flagged the prior bare-site-name
+    # title as too short to be useful in SERPs.
     title = _title_of(client.get("/").data.decode())
-    assert title == "mimir"
+    assert title == "indexed mailing list archives | mimir"
 
 
 def test_inbox_dashboard_title(client, inbox_name):
@@ -1619,7 +1642,7 @@ def test_og_tags_on_index_match_expected_values(client):
         "Indexed mailing-list archives, served from local "
         "public-inbox v2 mirrors."
     )
-    assert _meta_value(html, "og:title") == "mimir"
+    assert _meta_value(html, "og:title") == "indexed mailing list archives | mimir"
     assert _meta_value(html, "og:type") == "website"
     assert _meta_value(html, "og:site_name") == "mimir"
     assert _meta_value(html, "og:url") == "http://localhost/"

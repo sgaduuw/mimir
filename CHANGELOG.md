@@ -56,6 +56,22 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   surfaces in `SyncResult.failed` and the tick continues.
 ### Fixed
 
+- Front page (`/`): `<title>` now follows the established
+  `<page-specific> | <site>` pattern as
+  `indexed mailing list archives | ratatoskr.run` instead of just
+  the site name. Bare site name was too short to be useful in
+  SERPs and didn't tell crawlers / shared-link previews what the
+  page is about. Cascades through `og:title` and `twitter:title`
+  via the captured-block plumbing in `base.html`. External review
+  2026-05-16.
+- Front page (`/`): the Ratatoskr hero image now carries a
+  substantive `alt` (`Ratatoskr, the messenger squirrel of Norse
+  mythology`) instead of the previous empty alt. The squirrel is
+  the brand identity beside the wordmark, not pure decoration;
+  the prior rationale (rely on `og:image:alt` + footer credit)
+  doesn't help, og:image:alt only reaches link-card crawlers and
+  the footer credit covers attribution, not what the image
+  depicts. External review 2026-05-16.
 - `daily_volume` and `this_day_in_history` now derive 'today' from
   `datetime.now(timezone.utc).date()` instead of `date.today()`.
   `Article.date` stores public-inbox commit times in UTC; using
