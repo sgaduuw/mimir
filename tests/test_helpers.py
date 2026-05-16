@@ -10,7 +10,12 @@ import pytest
 
 from mimir.models import Inbox
 from mimir.store import MessageNotFound, read_message
-from mimir.web import _content_disposition, _redact_trailer_address, _safe_from_filter
+from mimir.web import (
+    _canonical_inbox_names_for,
+    _content_disposition,
+    _redact_trailer_address,
+    _safe_from_filter,
+)
 
 
 def _alpha(seeded_db) -> Inbox:
@@ -188,6 +193,62 @@ def test_redact_trailer_address_non_allowlisted_returns_redacted():
     template's escaping pass."""
     out = _redact_trailer_address("random@example.com")
     assert out == "<redacted>"
+
+
+def test_canonical_inbox_names_falls_back_to_alphabetical_when_null(seeded_db):
+    """`_canonical_inbox_names_for` resolves articles to their canonical
+    inbox name; when `canonical_inbox_id` is NULL (the warm-up window
+    before `admin canonicals backfill` has pinned one), it must fall
+    back to the alphabetically-first inbox the article is linked to.
+
+    The seeded conftest leaves all four articles with NULL canonical
+    pins. art1 is alpha-only -> 'alpha'; art2 is beta-only -> 'beta';
+    art3 is cross-posted to alpha + beta -> 'alpha' (alphabetical
+    fallback)."""
+    from mimir.models import Article
+
+    with seeded_db() as s:
+        ids = {
+            row.message_id: row.id
+            for row in s.execute(select(Article)).scalars().all()
+        }
+        names = _canonical_inbox_names_for(s, list(ids.values()))
+
+    assert names[ids["art1@example.com"]] == "alpha"
+    assert names[ids["art2@example.com"]] == "beta"
+    assert names[ids["art3@example.com"]] == "alpha"
+
+
+def test_canonical_inbox_names_prefers_pinned_canonical_over_fallback(seeded_db):
+    """If `canonical_inbox_id` is pinned, that beats the alphabetical
+    fallback. Pin art3's canonical to beta and confirm the resolver
+    returns 'beta' (not the alphabetically-first 'alpha')."""
+    from sqlalchemy import update
+    from mimir.models import Article, Inbox
+
+    with seeded_db() as s:
+        beta_id = s.execute(
+            select(Inbox.id).where(Inbox.name == "beta")
+        ).scalar_one()
+        art3_id = s.execute(
+            select(Article.id).where(Article.message_id == "art3@example.com")
+        ).scalar_one()
+        s.execute(
+            update(Article)
+            .where(Article.id == art3_id)
+            .values(canonical_inbox_id=beta_id)
+        )
+        s.commit()
+        names = _canonical_inbox_names_for(s, [art3_id])
+
+    assert names[art3_id] == "beta"
+
+
+def test_canonical_inbox_names_empty_input_returns_empty(seeded_db):
+    """Defensive: an empty article_ids list returns {} without
+    issuing a query (cli.py:1367-1368 fast-exit)."""
+    with seeded_db() as s:
+        assert _canonical_inbox_names_for(s, []) == {}
 
 
 def test_redact_trailer_address_substring_match_is_intentionally_loose(monkeypatch):
