@@ -4419,3 +4419,140 @@ def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
     assert "from=v1" in sidebar
     assert "to=v2" in sidebar
     assert "pos=cover" in sidebar
+
+
+# --- Message-page ETag / conditional revalidation -----------------------------
+
+
+def test_message_page_sends_etag_and_no_cache(client, tmp_path):
+    """The message route emits a strong ETag and `Cache-Control:
+    public, no-cache`. Pairs with the route-level conditional check
+    that returns 304 when If-None-Match matches; together they
+    eliminate the within-cache-window stale-after-deploy problem
+    while keeping repeated loads cheap via 304s."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "etag-headers@example.com",
+        subject="basic article",
+    )
+    resp = client.get(url)
+    assert resp.status_code == 200
+    assert resp.headers.get("ETag"), "message page must emit ETag"
+    assert resp.headers.get("Cache-Control") == "public, no-cache"
+    # Vary on HX-Request was already set; pin it stays set so a future
+    # refactor doesn't drop it (browsers would otherwise confuse the
+    # full-page response with the HTMX partial under the same URL).
+    assert "HX-Request" in resp.headers.get("Vary", "")
+
+
+def test_message_page_returns_304_on_matching_if_none_match(client, tmp_path):
+    """Repeating the request with `If-None-Match` set to the ETag from
+    the first response returns 304 with no body. The 304 must still
+    carry Cache-Control (RFC 7232) so the client knows when to
+    revalidate next."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "etag-304@example.com",
+        subject="basic article",
+    )
+    first = client.get(url)
+    etag = first.headers.get("ETag")
+    assert etag, "must have ETag on the first response"
+    second = client.get(url, headers={"If-None-Match": etag})
+    assert second.status_code == 304
+    assert second.data == b""
+    # 304 echoes ETag and Cache-Control per RFC.
+    assert second.headers.get("ETag") == etag
+    assert second.headers.get("Cache-Control") == "public, no-cache"
+
+
+def test_message_page_returns_200_when_if_none_match_does_not_match(client, tmp_path):
+    """A stale or unrelated If-None-Match value gets a full 200
+    response, not a misleading 304. Pins that the matcher does an
+    actual comparison rather than blindly 304-ing."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "etag-mismatch@example.com",
+        subject="basic article",
+    )
+    resp = client.get(url, headers={"If-None-Match": '"deadbeef"'})
+    assert resp.status_code == 200
+    assert resp.data  # body present
+
+
+def test_message_page_etag_changes_when_thread_gains_a_reply(client, tmp_path):
+    """The ETag includes `max(thread node date)`; adding a reply to
+    the thread must change the value so the browser's previously
+    cached version is no longer "still good" and a fresh render
+    surfaces the new reply in the thread tree.
+
+    Implementation note: the reply is inserted directly into the DB
+    rather than via `_ingest_one_article`, because that helper
+    re-points the inbox's `mirror_path` per call and the second
+    invocation would render the root article's blob unreachable
+    (the route's body fetch would then 404, never getting to the
+    ETag check). Direct DB insert is enough; the ETag only reads
+    the date column."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import delete as _delete
+    from sqlalchemy import select as _select
+    from mimir.extensions import SessionLocal as _SL
+    from mimir.models import (
+        Article as _Article,
+        ArticleList as _ArticleList,
+        CacheEntry as _CacheEntry,
+        Inbox as _Inbox,
+    )
+
+    root_id, root_url = _ingest_one_article(
+        tmp_path, "alpha", "etag-thread-root@example.com",
+        subject="root subject",
+    )
+    first = client.get(root_url)
+    assert first.status_code == 200, first.data[:200]
+    first_etag = first.headers["ETag"]
+
+    # Insert a reply pointing at the root via thread_parent. Reply
+    # date is later so the thread's max date moves forward. Doesn't
+    # need a blob in the mirror (the message page being rendered is
+    # the root, not the reply; the reply just shows up in the
+    # thread-tree sidebar).
+    with _SL() as s:
+        alpha = s.execute(_select(_Inbox).where(_Inbox.name == "alpha")).scalar_one()
+        root_date = s.get(_Article, root_id).date
+        reply = _Article(
+            message_id="etag-thread-reply@example.com",
+            subject="Re: root subject",
+            author="r@b.example",
+            date=(root_date or datetime.now(timezone.utc)) + timedelta(hours=1),
+            thread_parent="etag-thread-root@example.com",
+            subject_normalized="root subject",
+            lists=[_ArticleList(
+                inbox_id=alpha.id, epoch="0.git", commit_sha="ee" * 20,
+            )],
+        )
+        s.add(reply)
+        # Bust the threading-helper cache so the next render reflects
+        # the new reply (cache TTL is 5 min; the test would otherwise
+        # see the pre-reply thread and the ETag wouldn't change).
+        s.execute(_delete(_CacheEntry))
+        s.commit()
+
+    second = client.get(root_url)
+    assert second.status_code == 200, second.data[:200]
+    second_etag = second.headers["ETag"]
+    assert second_etag != first_etag, (
+        f"ETag must change when the thread gains a reply; "
+        f"first={first_etag} second={second_etag}"
+    )
+
+
+def test_message_page_hx_request_has_distinct_etag(client, tmp_path):
+    """The full-page response and the HTMX intra-thread-swap partial
+    are different bodies for the same URL; they must have distinct
+    ETags so a browser that cached one can't reuse the cache entry
+    for the other on a subsequent request of the opposite type."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "etag-hx@example.com",
+        subject="basic article",
+    )
+    full = client.get(url)
+    partial = client.get(url, headers={"HX-Request": "true"})
+    assert full.headers["ETag"] != partial.headers["ETag"]
