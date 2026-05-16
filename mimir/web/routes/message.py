@@ -208,9 +208,17 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         ).scalars())
         patch_series_revisions: list[tuple[Article, str]] = []
         if article.patch_series_key:
+            # Chain the eager-load through ArticleList → Inbox so the
+            # per-revision `al.inbox.name` walk below doesn't trigger a
+            # lazy fetch per inbox the series touches. SQLAlchemy's
+            # identity map dedupes within the session (worst case is
+            # one fetch per distinct inbox, not per `al`), but a
+            # chained selectinload turns the worst case into zero
+            # extra round-trips. Cover-letter pages render this on
+            # every load.
             revisions = list(session.execute(
                 select(Article)
-                .options(selectinload(Article.lists))
+                .options(selectinload(Article.lists).selectinload(ArticleList.inbox))
                 .where(Article.patch_series_key == article.patch_series_key)
                 .order_by(Article.date.asc().nulls_last())
             ).scalars())
