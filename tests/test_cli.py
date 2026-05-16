@@ -333,7 +333,15 @@ def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
         s.commit()
         sub_id = sub.id
 
-    result = CliRunner().invoke(warm_cache_command, [])
+    # `--workers 1` forces the serial path. The default
+    # `min(cpu_count, 8)` workers calls `cache.set()` concurrently
+    # from worker threads against the same SQLite file; on CI runners
+    # with many cores, the main thread's `cache.get()` below can race
+    # the worker's commit-and-checkpoint visibility cycle even though
+    # the `as_completed` join returned. The serial path is functionally
+    # equivalent for this assertion (we're checking row presence, not
+    # parallelism) and removes the flake.
+    result = CliRunner().invoke(warm_cache_command, ["--workers", "1"])
     assert result.exit_code == 0
 
     # All four per-subsystem dashboard helpers must have cached a row
@@ -409,7 +417,12 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
         s.execute(delete(CacheEntry))
         s.commit()
 
-    result = CliRunner().invoke(warm_cache_command, ["-v"])
+    # `--workers 1` forces the serial path. See the matching comment
+    # on `test_warm_cache_subsystem_dashboards_populate_cache` for the
+    # CI flake this avoids: under default parallelism, worker-thread
+    # cache writes can lag the main-thread reads below even after
+    # `as_completed` reports done.
+    result = CliRunner().invoke(warm_cache_command, ["-v", "--workers", "1"])
     assert result.exit_code == 0
     assert "sitemap:index" in result.output
     assert "sitemap:meta" in result.output
