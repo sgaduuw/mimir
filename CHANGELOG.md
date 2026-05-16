@@ -56,6 +56,16 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   surfaces in `SyncResult.failed` and the tick continues.
 ### Fixed
 
+- `daily_volume` and `this_day_in_history` now derive 'today' from
+  `datetime.now(timezone.utc).date()` instead of `date.today()`.
+  `Article.date` stores public-inbox commit times in UTC; using
+  the local date slid the window by the server's UTC offset (on
+  Coruscant: CEST = 2 hours), slipping edge messages in/out
+  around UTC midnight. The `this_day_in_history` cache key was
+  also keyed on the local date while the SQL window was UTC, so
+  the same request hit a stale key inside the offset window. The
+  result is visible on the landing-page daily-volume sparkline
+  and the "this day, 5 years ago" tile.
 - Patch-metadata backfills (`backfill-article-files`,
   `backfill-article-trailers`) now read the body via
   `article.canonical_inbox` before falling back to
