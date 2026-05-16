@@ -4169,3 +4169,253 @@ def test_message_page_patch_series_revisions_does_not_n1_inbox(client, tmp_path)
         "the selectinload chain through ArticleList.inbox broke:\n"
         + "\n---\n".join(lazy)
     )
+
+
+# --- Series-diff route (#210) -------------------------------------------------
+
+
+def _build_pubinbox_epoch(epoch_dir, messages):
+    """Build a chained-commit bare git repo simulating a public-inbox
+    epoch with multiple messages. Each tuple is
+    `(message_id, subject, in_reply_to, body, author)`; in_reply_to and
+    body may be None / b"". Returns nothing; the caller arranges
+    `Inbox.mirror_path` to point at the parent dir before ingesting.
+    """
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+
+    repo = Repo.init_bare(str(epoch_dir), mkdir=True)
+    parent = None
+    last_commit_id = None
+    for msgid, subject, in_reply_to, body, author in messages:
+        extra = b""
+        if in_reply_to:
+            extra += b"In-Reply-To: <" + in_reply_to.encode() + b">\r\n"
+        raw = (
+            b"Message-ID: <" + msgid.encode() + b">\r\n"
+            b"From: " + author.encode() + b"\r\n"
+            b"Subject: " + subject.encode() + b"\r\n"
+            b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+            + extra + b"\r\n" + (body or b"")
+        )
+        blob = Blob.from_string(raw)
+        repo.object_store.add_object(blob)
+        tree = Tree()
+        tree.add(b"m", 0o100644, blob.id)
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.parents = [parent] if parent else []
+        commit.author = commit.committer = b"test <t@x>"
+        commit.commit_time = commit.author_time = 1700000000
+        commit.commit_timezone = commit.author_timezone = 0
+        commit.encoding = b"UTF-8"
+        commit.message = f"add {msgid}".encode()
+        repo.object_store.add_object(commit)
+        parent = commit.id
+        last_commit_id = commit.id
+    repo.refs[b"HEAD"] = last_commit_id
+
+
+def _ingest_series_pair(tmp_path, inbox_name, v1_messages, v2_messages):
+    """Build v1 and v2 epochs in `tmp_path/0.git` and `tmp_path/1.git`,
+    repoint `inbox_name.mirror_path` to `tmp_path`, ingest both.
+    Returns the cover letter's `patch_series_key` (the same for both
+    revisions by construction)."""
+    from sqlalchemy import select as _sa_select
+    from mimir.extensions import SessionLocal
+    from mimir.ingest import ingest_epoch
+    from mimir.models import Article, Inbox
+
+    _build_pubinbox_epoch(tmp_path / "0.git", v1_messages)
+    _build_pubinbox_epoch(tmp_path / "1.git", v2_messages)
+    with SessionLocal() as s:
+        ix = s.execute(_sa_select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        ix.mirror_path = str(tmp_path)
+        s.commit()
+        ingest_epoch(s, ix, "0.git", tmp_path / "0.git", workers=1)
+        ingest_epoch(s, ix, "1.git", tmp_path / "1.git", workers=1)
+        s.commit()
+        v1_cover_msgid = v1_messages[0][0]
+        cover = s.execute(
+            _sa_select(Article).where(Article.message_id == v1_cover_msgid)
+        ).scalar_one()
+        assert cover.patch_series_key is not None
+        return cover.patch_series_key
+
+
+def test_series_diff_cover_letter_renders(client, tmp_path):
+    """Happy path: two cover letters with the same patch_series_key,
+    `pos=cover` diffs their bodies. The diff appears in the rendered
+    HTML wrapped in Pygments markup."""
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[
+            ("v1-cv@x", "[PATCH 0/3] improve foo handling", None,
+             b"original cover letter explanation\n", author),
+        ],
+        v2_messages=[
+            ("v2-cv@x", "[PATCH v2 0/3] improve foo handling", None,
+             b"revised cover letter explanation\nadded a Fixes line\n", author),
+        ],
+    )
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v2&pos=cover"
+    )
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    # Pygments-wrapped diff content: both sides appear in the HTML.
+    assert "original cover letter explanation" in body
+    assert "revised cover letter explanation" in body
+    assert "added a Fixes line" in body
+    # Sanity: the page is the series-diff template, not a generic 404.
+    assert "Inter-revision diff" in body
+
+
+def test_series_diff_identical_cover_letters(client, tmp_path):
+    """When v1 and v2 bodies are byte-identical, render the
+    "no changes" message rather than an empty diff."""
+    author = "Alice <a@example>"
+    body = b"identical cover\nbyte for byte\n"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[("c1@x", "[PATCH 0/2] series", None, body, author)],
+        v2_messages=[("c2@x", "[PATCH v2 0/2] series", None, body, author)],
+    )
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v2&pos=cover"
+    )
+    assert resp.status_code == 200
+    out = resp.data.decode()
+    assert "No changes between v1 and v2" in out
+
+
+def test_series_diff_per_patch_match_by_subject(client, tmp_path):
+    """In-series patch (pos=1): matches v1's [PATCH 1/2] subject to
+    v2's [PATCH v2 1/2] subject; diffs the patch bodies."""
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[
+            ("v1-cv@x", "[PATCH 0/2] series title", None, b"cover\n", author),
+            ("v1-p1@x", "[PATCH 1/2] foo: do bar", "v1-cv@x",
+             b"v1 commit message\n---\n diff --git a/fs/foo.c b/fs/foo.c\n@@\n+old\n", author),
+            ("v1-p2@x", "[PATCH 2/2] baz: fix", "v1-cv@x",
+             b"v1 baz commit\n", author),
+        ],
+        v2_messages=[
+            ("v2-cv@x", "[PATCH v2 0/2] series title", None, b"cover v2\n", author),
+            ("v2-p1@x", "[PATCH v2 1/2] foo: do bar", "v2-cv@x",
+             b"v2 commit message updated\n---\n diff --git a/fs/foo.c b/fs/foo.c\n@@\n+new\n", author),
+            ("v2-p2@x", "[PATCH v2 2/2] baz: fix", "v2-cv@x",
+             b"v2 baz commit\n", author),
+        ],
+    )
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v2&pos=1"
+    )
+    assert resp.status_code == 200
+    out = resp.data.decode()
+    # Both patch bodies' distinctive content surfaces in the diff.
+    assert "v1 commit message" in out
+    assert "v2 commit message updated" in out
+    assert "patch 1" in out  # position_label rendering
+
+
+def test_series_diff_no_match_404(client, tmp_path):
+    """When v1 has pos=3 and v2 has no plausible counterpart (different
+    subjects, no file overlap), 404 with an actionable message."""
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[
+            ("v1-cv@x", "[PATCH 0/3] series", None, b"cover\n", author),
+            ("v1-p1@x", "[PATCH 1/3] foo: do A", "v1-cv@x", b"v1 A\n", author),
+            ("v1-p2@x", "[PATCH 2/3] bar: do B", "v1-cv@x", b"v1 B\n", author),
+            ("v1-p3@x", "[PATCH 3/3] baz: do C", "v1-cv@x", b"v1 C\n", author),
+        ],
+        # v2 dropped patch 3 entirely; no subject match, no file overlap.
+        v2_messages=[
+            ("v2-cv@x", "[PATCH v2 0/3] series", None, b"cover v2\n", author),
+            ("v2-p1@x", "[PATCH v2 1/2] foo: do A", "v2-cv@x", b"v2 A\n", author),
+            ("v2-p2@x", "[PATCH v2 2/2] bar: do B", "v2-cv@x", b"v2 B\n", author),
+        ],
+    )
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v2&pos=3"
+    )
+    assert resp.status_code == 404
+
+
+def test_series_diff_unknown_version_404(client, tmp_path):
+    """Asking for a version that doesn't exist returns 404. The
+    available revisions are surfaced in the 404 description for
+    debuggability."""
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[("c1@x", "[PATCH 0/1] series", None, b"v1\n", author)],
+        v2_messages=[("c2@x", "[PATCH v2 0/1] series", None, b"v2\n", author)],
+    )
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v9&pos=cover"
+    )
+    assert resp.status_code == 404
+
+
+def test_series_diff_self_diff_404(client, tmp_path):
+    """`from=v1&to=v1` is meaningless; reject as 404 rather than
+    rendering an empty diff page."""
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[("c1@x", "[PATCH 0/1] series", None, b"v1\n", author)],
+        v2_messages=[("c2@x", "[PATCH v2 0/1] series", None, b"v2\n", author)],
+    )
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v1&pos=cover"
+    )
+    assert resp.status_code == 404
+
+
+def test_series_diff_unknown_series_key_404(client, tmp_path):
+    """A `series_key` that doesn't exist in the DB returns plain 404,
+    not the "available revisions" message."""
+    resp = client.get("/alpha/series/deadbeef/diff?from=v1&to=v2&pos=cover")
+    assert resp.status_code == 404
+
+
+def test_series_diff_missing_inbox_404(client, tmp_path):
+    """Unknown inbox slug 404s (the inbox guard runs before any
+    series resolution)."""
+    resp = client.get("/no-such-inbox/series/deadbeef/diff?from=v1&to=v2&pos=cover")
+    assert resp.status_code == 404
+
+
+def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
+    """Viewing a cover letter that has revisions, the patch-series
+    sidebar renders a `diff vs current` link per non-current revision
+    pointing at the new route."""
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[("v1-cv@x", "[PATCH 0/2] series title", None, b"v1 cover\n", author)],
+        v2_messages=[("v2-cv@x", "[PATCH v2 0/2] series title", None, b"v2 cover\n", author)],
+    )
+    # Viewing v2 cover, the sidebar should link a diff from v1 to v2.
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from sqlalchemy import select as _sa_select
+    with SessionLocal() as s:
+        v2_art = s.execute(
+            _sa_select(Article).where(Article.message_id == "v2-cv@x")
+        ).scalar_one()
+        v2_url = f"/alpha/{v2_art.date.year}/{v2_art.date.month:02d}/{v2_art.id}"
+    body = client.get(v2_url).data.decode()
+    sidebar = body.split('class="patch-series"')[1].split("</aside>")[0]
+    assert "diff vs current" in sidebar
+    assert f"/alpha/series/{series_key}/diff" in sidebar
+    assert "from=v1" in sidebar
+    assert "to=v2" in sidebar
+    assert "pos=cover" in sidebar

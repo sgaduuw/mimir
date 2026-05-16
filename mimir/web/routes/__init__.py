@@ -12,6 +12,7 @@ from mimir.web.routes import health  # noqa: F401
 from mimir.web.routes import message as message_route  # noqa: F401
 from mimir.web.routes import message_id  # noqa: F401
 from mimir.web.routes import search  # noqa: F401
+from mimir.web.routes import series_diff  # noqa: F401
 from mimir.web.routes import sitemaps  # noqa: F401
 from mimir.web.routes import static_meta  # noqa: F401
 from mimir.web.routes import timeviews  # noqa: F401

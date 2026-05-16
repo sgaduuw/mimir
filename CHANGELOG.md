@@ -11,6 +11,25 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- New route `/<inbox>/series/<patch_series_key>/diff?from=<vN>&to=<vM>&pos=<pos>`
+  surfaces the diff between two revisions of a patch series. `pos=cover`
+  diffs the cover-letter bodies (changelog evolution); `pos=N` diffs the
+  N-th in-series patch's body across revisions, surfacing both commit-
+  message and patch-hunk changes in one view. The cover-letter sidebar
+  on `[PATCH 0/N]` message pages gains a `[diff vs current]` link next
+  to each non-current revision pointing at the new route. Scope is
+  cover-letter+request-time-resolved-in-series-patches: in-series
+  patches don't have `patch_series_key` set today, so the resolver
+  walks each cover letter's thread children at request time and matches
+  positions across revisions by canonical-subject equality with file-
+  overlap fallback. Refuses to guess on ambiguous matches (returns a
+  "couldn't pick" 404 rather than picking wrong on a review surface).
+  Diffs cached 24h, source emails being immutable in the public-inbox
+  mirror. Follow-up (#212) will persist `patch_series_position` to
+  in-series patches, simplifying the resolver into an indexed lookup.
+
 ### Fixed
 
 - Cover-letter patch-series sidebar (`/<inbox>/.../msg/<id>` on a
