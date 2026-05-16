@@ -11,6 +11,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- `warm-cache` now pre-warms the per-reviewer pages each pre-warmed
+  per-subsystem dashboard surfaces. The dashboard's "Active reviewers"
+  list links to `/<inbox>/reviewer/<address>`; previously that page
+  paid a cold-miss on first click. The warm pass collects addresses
+  from `active_reviewers_in_subsystem` across the top-N most-active
+  subsystems, dedups (Greg KH, david@kernel.org, etc. show up across
+  many subsystems), and warms `articles_reviewed_by` for each. TTL-
+  aware refresh window is already in scope from the parent call, so
+  this composes with the cron cadence cleanly. Companion to the
+  `articles_reviewed_by` query rewrite below.
+
 ### Fixed
 
 - Per-reviewer page (`/<inbox>/reviewer/<address>`) cold-miss latency:
