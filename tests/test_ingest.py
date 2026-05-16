@@ -809,7 +809,7 @@ def test_replay_failures_closes_cached_repos(seeded_db, tmp_path, monkeypatch):
     `replay_failures` returns."""
     import datetime as _dt
 
-    import mimir.ingest as ingest_mod
+    from mimir.ingest import replay as ingest_mod
     import mimir.parser
 
     alpha = _alpha(seeded_db)
@@ -885,7 +885,7 @@ def _setup_alpha_with_messages(seeded_db, tmp_path, n: int) -> Inbox:
 
 
 def _spy_text(monkeypatch) -> list[str]:
-    from mimir import ingest as ingest_mod
+    from mimir.ingest import orchestrate as ingest_mod
     seen: list[str] = []
     real_text = ingest_mod.text
     def _spy(stmt):
