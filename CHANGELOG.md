@@ -11,6 +11,22 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Per-reviewer page (`/<inbox>/reviewer/<address>`) cold-miss latency:
+  `articles_reviewed_by` no longer JOINs against an unfiltered
+  MATERIALIZE'd derived table to compute the canonical-NULL fallback
+  inbox name. The old shape scanned every `article_lists` row in the
+  archive (millions) just to provide `MIN(inbox.name)` per article;
+  on the prod corpus that blew past gunicorn's worker timeout for
+  prolific reviewers (e.g. `david@kernel.org` on `linux-mm`).
+  Replaced with a correlated subquery inside the COALESCE that fires
+  only when `canon.name` is NULL and only for the (≤100) result
+  rows. Same alphabetical-first fallback as before; the cache TTL is
+  unchanged. Verified via `EXPLAIN QUERY PLAN`; pinned in
+  `test_articles_reviewed_by_plan_drops_materialize`. External
+  report 2026-05-16.
+
 ## [1.21.1] - 2026-05-16
 
 ### Security
