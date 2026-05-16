@@ -2828,38 +2828,43 @@ def _seed_mainline_commit(message_id, commit_sha="abc1234567890def" + "0" * 24,
 def test_message_page_shows_applied_as_when_mainline_commit_matches(
     client, tmp_path,
 ):
-    """An article whose Message-ID matches a `mainline_commits` row
-    surfaces an "Applied as <sha>" line above the message body.
-    Pins the issue-66 happy path: walker → DB → render."""
+    """A patch whose Message-ID matches a `mainline_commits` row
+    surfaces a "Landed:" line on the state card. Pins the
+    issue-66 happy path: walker -> DB -> render.
+
+    Card-gated on `is_patch`, so a non-patch article with a
+    mainline_commits row would NOT render here. The mainline
+    walker's Link: trailers point at actual patches in practice,
+    so this is the realistic scenario."""
     _, url = _ingest_one_article(
         tmp_path, "alpha", "applied-msg@example.com",
+        subject="[PATCH 1/2] foo: do bar",
     )
     _seed_mainline_commit(
         message_id="applied-msg@example.com",
         commit_sha="abc1234567890def1234567890abcdef12345678",
     )
     body = client.get(url).data.decode()
-    assert 'class="mainline-applications"' in body
-    assert "Applied as" in body
+    assert 'class="patch-state"' in body
+    assert "Landed:" in body
     # SHA truncated to first 12 chars on display.
     assert "<code>abc123456789</code>" in body
     assert "<code>linus</code>" in body
-    # The tree-name is disambiguated with the word "tree" so the
-    # short identifier doesn't read as a person's first name.
-    assert "tree" in body
 
 
 def test_message_page_no_applied_as_when_no_commit_matches(
     client, tmp_path,
 ):
-    """Articles without a mainline-commit reference render without
-    the aside. Absence is non-informative (may simply not be
-    indexed yet); the surface is opt-in."""
+    """Articles without a mainline-commit reference render no
+    "Landed:" line in the state card. Absence is non-informative
+    (may simply not be indexed yet); the row is opt-in."""
     _, url = _ingest_one_article(
         tmp_path, "alpha", "unapplied@example.com",
+        subject="[PATCH 1/2] foo: in flight",
     )
     body = client.get(url).data.decode()
-    assert 'class="mainline-applications"' not in body
+    assert "Landed:" not in body
+    # Old wording from the pre-#208 standalone aside; must not regress.
     assert "Applied as" not in body
 
 
@@ -2868,12 +2873,13 @@ def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_lin
 ):
     """When a commit references the article via two `Link:` trailers
     (rare), or when two distinct commits apply the same patch (less
-    rare on backports), every mainline_commits row gets a line.
+    rare on backports), every mainline_commits row gets surfaced.
     Ordered by committed_at asc, the first application is the
     primary one."""
     from datetime import datetime, timezone
     _, url = _ingest_one_article(
         tmp_path, "alpha", "multi-app@example.com",
+        subject="[PATCH 1/2] foo: backported",
     )
     _seed_mainline_commit(
         message_id="multi-app@example.com",
@@ -2894,9 +2900,10 @@ def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_lin
 
 def test_message_page_renders_patch_series_timeline(client, tmp_path):
     """When two cover letters share a `patch_series_key`, viewing
-    one renders a `<aside class="patch-series">` with both
-    versions: the current one as plain text (`<strong>v2</strong>`),
-    the other as a link. Pins the issue-65 happy path."""
+    one renders the state card (`<aside class="patch-state">`)
+    with a Series-revisions row carrying both versions: the current
+    one as plain text (`<strong>v2</strong>`), the other as a link.
+    Pins the issue-65 happy path through the #208 card."""
     # Two cover-letter subjects, same author, same title → same
     # series. mkdir each subdir first; `_ingest_one_article`
     # creates `0.git` inside but doesn't make the parent.
@@ -2914,29 +2921,29 @@ def test_message_page_renders_patch_series_timeline(client, tmp_path):
         author=common_author,
     )
     body = client.get(v2_url).data.decode()
-    assert 'class="patch-series"' in body
+    assert 'class="patch-state"' in body
     assert "Series revisions:" in body
     # The current revision (v2) is rendered as bold, not as a link.
     assert "<strong>v2</strong>" in body
     # The prior revision (v1) is rendered as a link.
-    assert "<a href=" in body.split('class="patch-series"')[1].split("</aside>")[0]
-    assert ">v1</a>" in body.split('class="patch-series"')[1].split("</aside>")[0]
+    card = body.split('class="patch-state"')[1].split("</aside>")[0]
+    assert "<a href=" in card
+    assert ">v1</a>" in card
     # Arrow between revisions.
-    assert "→" in body.split('class="patch-series"')[1].split("</aside>")[0]
+    assert "→" in card
 
 
 def test_message_page_no_series_timeline_for_individual_patch(
     client, tmp_path,
 ):
     """A `[PATCH v2 1/3]` subject is an individual patch, not a
-    cover letter. The series block doesn't render on those pages
-    in slice 1."""
+    cover letter. The state card still renders (it's a patch) but
+    the Series-revisions row is omitted in slice 1."""
     _, url = _ingest_one_article(
         tmp_path, "alpha", "patch-1of3@example.com",
         subject="[PATCH v2 1/3] foo: add bar",
     )
     body = client.get(url).data.decode()
-    assert 'class="patch-series"' not in body
     assert "Series revisions:" not in body
 
 
@@ -2944,16 +2951,178 @@ def test_message_page_no_series_timeline_for_solo_cover_letter(
     client, tmp_path,
 ):
     """A cover letter with no other revisions in the DB (only
-    v1, no v2 yet) still gets the `patch_series_key` set but
-    renders no timeline, the timeline needs ≥2 revisions to be
-    useful, and one row on its own would just say "v1 (this)"
-    which is visual clutter."""
+    v1, no v2 yet) still gets the `patch_series_key` set but the
+    Series-revisions row stays hidden, the timeline needs ≥2
+    revisions to be useful, and one row on its own would just say
+    "v1 (this)" which is visual clutter."""
     _, url = _ingest_one_article(
         tmp_path, "alpha", "lonely-v1@example.com",
         subject="[PATCH 0/3] something nobody resent",
     )
     body = client.get(url).data.decode()
-    assert 'class="patch-series"' not in body
+    assert "Series revisions:" not in body
+
+
+# --- #208 patch-state card integration ---------------------------------------
+
+
+def test_patch_state_card_renders_on_patch_subject(client, tmp_path):
+    """A `[PATCH …]` subject opts the message page into the
+    consolidated state card. With no extra inputs, only the
+    Activity row renders ("No replies") and the rest are
+    silently skipped, the card scales from minimal to full."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "bare-patch@example.com",
+        subject="[PATCH 1/2] foo: add bar",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="patch-state"' in body
+    # Bare patch → only Activity. The other rows are absent.
+    assert "Activity:" in body
+    assert "No replies" in body
+    assert "Trailers:" not in body
+    assert "Landed:" not in body
+    assert "Series revisions:" not in body
+
+
+def test_patch_state_card_absent_on_non_patch_subject(client, tmp_path):
+    """A plain message (no `[PATCH …]` bracketing) gets no card at
+    all. Pins the `is_patch` gate, the card is patch-only by design
+    so non-patch articles don't ship an empty shell."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "prose@example.com",
+        subject="thoughts on memory model wording",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="patch-state"' not in body
+    assert "Activity:" not in body
+
+
+def test_patch_state_card_absent_on_git_pull(client, tmp_path):
+    """`[GIT PULL]` looks bracketed but isn't a patch in the sense
+    we're indexing, the bracket-token guard in `_is_patch_subject`
+    keys on the literal `PATCH` word."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "pull@example.com",
+        subject="[GIT PULL] urgent fixes for 6.13",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="patch-state"' not in body
+
+
+def test_patch_state_trailers_row_aggregates_by_role(client, tmp_path):
+    """Trailers in the patch body group by canonical role, each
+    role rendered with its total count. Pins the per-role
+    aggregation: two Reviewed-by + one Acked-by yields the
+    bucketed shape "2 Reviewed-by, 1 Acked-by" rather than three
+    separate entries."""
+    body_bytes = (
+        b"diff --git a/file b/file\n@@ -1 +1 @@\n-x\n+y\n\n"
+        b"Reviewed-by: Reviewer One <r1@example.com>\n"
+        b"Reviewed-by: Reviewer Two <r2@example.com>\n"
+        b"Acked-by: Acker <a@example.com>\n"
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "trailers@example.com",
+        subject="[PATCH] foo: do bar",
+        body=body_bytes,
+    )
+    body = client.get(url).data.decode()
+    assert "Trailers:" in body
+    assert "2 Reviewed-by" in body
+    assert "1 Acked-by" in body
+
+
+def test_patch_state_trailers_row_marks_maintainer_attestation(
+    client, tmp_path,
+):
+    """A trailer whose address matches an M:/R: row on a subsystem
+    this patch touches is counted into the maintainer subset; the
+    rendered chip reads "(N maintainer)". Pins the per-role
+    maintainer aggregation against the subsystem-maintainer
+    lookup."""
+    _seed_subsystem(
+        "BCACHEFS", "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[("M", "Kent Overstreet", "kent.overstreet@kernel.org")],
+    )
+    body_bytes = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n\n"
+        b"Reviewed-by: Kent Overstreet <kent.overstreet@kernel.org>\n"
+        b"Reviewed-by: Random Reviewer <random@elsewhere.example>\n"
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "maintainer-trailer@example.com",
+        subject="[PATCH] bcachefs: tweak super",
+        body=body_bytes,
+    )
+    body = client.get(url).data.decode()
+    assert "Trailers:" in body
+    # Two reviewers total, one of whom is a recognised maintainer.
+    assert "2 Reviewed-by (1 maintainer)" in body
+
+
+def test_patch_state_activity_row_shows_days_since_last_reply(
+    client, tmp_path,
+):
+    """When the article has a reply that's older than today, the
+    Activity row reports a non-zero day count. The reply is
+    inserted directly into the DB (date in the past) so we can
+    control the activity surface without depending on time."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    art_id, url = _ingest_one_article(
+        tmp_path, "alpha", "with-reply@example.com",
+        subject="[PATCH] foo: trigger reply",
+    )
+    # Anchor reply N days in the past; days_since_last_reply caps
+    # at >=0 so this is robust to clock skew.
+    reply_at = datetime.now(timezone.utc) - timedelta(days=3)
+    with SessionLocal() as s:
+        ix = s.execute(
+            select(Inbox).where(Inbox.name == "alpha")
+        ).scalar_one()
+        reply = Article(
+            message_id="reply-3d-old@example.com",
+            subject="Re: [PATCH] foo: trigger reply",
+            author="r@example.com",
+            date=reply_at,
+            thread_parent="with-reply@example.com",
+        )
+        s.add(reply)
+        s.flush()
+        s.add(ArticleList(
+            article_id=reply.id, inbox_id=ix.id,
+            epoch="0.git", commit_sha="deadbeef",
+        ))
+        s.commit()
+    body = client.get(url).data.decode()
+    assert "Activity:" in body
+    # Exact day count depends on rounding; either "3 days ago" or
+    # "2 days ago" depending on the now() boundary.
+    assert "Last reply" in body
+    assert "days ago" in body
+
+
+def test_patch_state_card_skips_empty_rows(client, tmp_path):
+    """A bare cover-letter render with no trailers, no landing, no
+    sibling revisions, no replies skips every optional row, only
+    Activity ("No replies") remains. Pins the row-skipping logic so
+    the card doesn't degrade into a wall of empty labels."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "lone-cover@example.com",
+        subject="[PATCH 0/2] new feature",
+    )
+    body = client.get(url).data.decode()
+    card = body.split('class="patch-state"')[1].split("</aside>")[0]
+    assert "Trailers:" not in card
+    assert "Landed:" not in card
+    assert "Series revisions:" not in card
+    assert "Activity:" in card
+    assert "No replies" in card
 
 
 def test_message_page_emits_breadcrumb_list(client, tmp_path):
@@ -4394,16 +4563,16 @@ def test_series_diff_missing_inbox_404(client, tmp_path):
 
 
 def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
-    """Viewing a cover letter that has revisions, the patch-series
-    sidebar renders a `diff vs current` link per non-current revision
-    pointing at the new route."""
+    """Viewing a cover letter that has revisions, the patch-state
+    card's Series-revisions row renders a `diff vs current` link
+    per non-current revision pointing at the new route."""
     author = "Alice <a@example>"
     series_key = _ingest_series_pair(
         tmp_path, "alpha",
         v1_messages=[("v1-cv@x", "[PATCH 0/2] series title", None, b"v1 cover\n", author)],
         v2_messages=[("v2-cv@x", "[PATCH v2 0/2] series title", None, b"v2 cover\n", author)],
     )
-    # Viewing v2 cover, the sidebar should link a diff from v1 to v2.
+    # Viewing v2 cover, the card should link a diff from v1 to v2.
     from mimir.extensions import SessionLocal
     from mimir.models import Article
     from sqlalchemy import select as _sa_select
@@ -4413,12 +4582,12 @@ def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
         ).scalar_one()
         v2_url = f"/alpha/{v2_art.date.year}/{v2_art.date.month:02d}/{v2_art.id}"
     body = client.get(v2_url).data.decode()
-    sidebar = body.split('class="patch-series"')[1].split("</aside>")[0]
-    assert "diff vs current" in sidebar
-    assert f"/alpha/series/{series_key}/diff" in sidebar
-    assert "from=v1" in sidebar
-    assert "to=v2" in sidebar
-    assert "pos=cover" in sidebar
+    card = body.split('class="patch-state"')[1].split("</aside>")[0]
+    assert "diff vs current" in card
+    assert f"/alpha/series/{series_key}/diff" in card
+    assert "from=v1" in card
+    assert "to=v2" in card
+    assert "pos=cover" in card
 
 
 # --- Message-page ETag / conditional revalidation -----------------------------
