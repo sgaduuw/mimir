@@ -11,6 +11,56 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.21.2] - 2026-05-16
+
+### Added
+
+- `warm-cache` now pre-warms the per-reviewer pages each pre-warmed
+  per-subsystem dashboard surfaces. The dashboard's "Active reviewers"
+  list links to `/<inbox>/reviewer/<address>`; previously that page
+  paid a cold-miss on first click. The warm pass collects addresses
+  from `active_reviewers_in_subsystem` across the top-N most-active
+  subsystems, dedups (Greg KH, david@kernel.org, etc. show up across
+  many subsystems), and warms `articles_reviewed_by` for each. TTL-
+  aware refresh window is already in scope from the parent call, so
+  this composes with the cron cadence cleanly. Companion to the
+  `articles_reviewed_by` query rewrite below.
+
+### Fixed
+
+- Per-subsystem dashboard (`/<inbox>/subsystem/<name>/`) cold-miss
+  latency: the shared `_subsystem_path_filter_sql` builder (used by
+  `recent_articles_in_subsystem`, `daily_volume_in_subsystem`,
+  `active_threads_in_subsystem`, `active_reviewers_in_subsystem`) no
+  longer emits `path LIKE :prefix ESCAPE '\'` for directory-prefix
+  globs. SQLite disables its LIKE-to-range-scan optimisation when
+  `ESCAPE` is present, so every prefix branch fell back to a full
+  scan of `article_files` (7M rows on prod); on `lkml` with
+  NETWORKING [GENERAL] that produced ~10 s cold misses for
+  `recent_articles_in_subsystem` and ~9.5 s for
+  `active_reviewers_in_subsystem`. Replaced with UNION-of-seeks
+  shaped as `path >= lo AND path < hi` per branch, each independently
+  sargable against `ix_article_files_path`. Cold misses drop ~10-25×;
+  warmer subsystems collapse to sub-100 ms. The literal `_` in
+  globs like `arch/x86_64/` is handled correctly by the range
+  comparison (no escape machinery needed). `recent_articles_in_subsystem`
+  also drops its overfetch + Python X-filter pass since the SQL-side
+  X: predicate has the same per-row semantics. Plan pinned in
+  `test_subsystem_path_filter_uses_index_seeks`.
+- Per-reviewer page (`/<inbox>/reviewer/<address>`) cold-miss latency:
+  `articles_reviewed_by` no longer JOINs against an unfiltered
+  MATERIALIZE'd derived table to compute the canonical-NULL fallback
+  inbox name. The old shape scanned every `article_lists` row in the
+  archive (millions) just to provide `MIN(inbox.name)` per article;
+  on the prod corpus that blew past gunicorn's worker timeout for
+  prolific reviewers (e.g. `david@kernel.org` on `linux-mm`).
+  Replaced with a correlated subquery inside the COALESCE that fires
+  only when `canon.name` is NULL and only for the (≤100) result
+  rows. Same alphabetical-first fallback as before; the cache TTL is
+  unchanged. Verified via `EXPLAIN QUERY PLAN`; pinned in
+  `test_articles_reviewed_by_plan_drops_materialize`. External
+  report 2026-05-16.
+
 ## [1.21.1] - 2026-05-16
 
 ### Security
