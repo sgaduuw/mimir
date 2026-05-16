@@ -368,6 +368,77 @@ def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
         )
 
 
+def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
+    seeded_db,
+):
+    """Per-reviewer page (`/<inbox>/reviewer/<addr>`) is reached via
+    each per-subsystem dashboard's "Active reviewers" list. warm-cache
+    must collect those addresses across the top-N subsystems it
+    warms, dedup, and pre-warm `articles_reviewed_by` for each so
+    the page is instant on first click. #195. Arguments must match
+    the route's `articles_reviewed_by` call site
+    (limit=REVIEWS_PER_PAGE_LIMIT = 100) or the cache key diverges."""
+    from sqlalchemy import select as sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import (
+        Article, ArticleFile, ArticleList, ArticleTrailer, CacheEntry,
+        Inbox, Subsystem, SubsystemPath,
+    )
+
+    # Seed: one subsystem, one recent in-subsystem article with one
+    # review trailer. The address is what active_reviewers_in_subsystem
+    # will surface and what we expect warm-cache to look up via
+    # articles_reviewed_by.
+    with SessionLocal() as s:
+        sub = Subsystem(name="BCACHEFS", status="Supported")
+        s.add(sub)
+        s.flush()
+        s.add(SubsystemPath(
+            subsystem_id=sub.id, glob="fs/bcachefs/", is_exclude=False,
+        ))
+        alpha = s.execute(
+            sa_select(Inbox).where(Inbox.name == "alpha")
+        ).scalar_one()
+        art = Article(
+            message_id="reviewer-warm@x",
+            subject="patch with reviewer",
+            author="A",
+            date=datetime(2026, 5, 14, tzinfo=timezone.utc),
+            thread_parent=None,
+            subject_normalized="patch with reviewer",
+        )
+        s.add(art)
+        s.flush()
+        s.add(ArticleFile(article_id=art.id, path="fs/bcachefs/super.c"))
+        s.add(ArticleList(
+            article_id=art.id, inbox_id=alpha.id, epoch="0.git",
+            commit_sha="cd" * 20,
+        ))
+        s.add(ArticleTrailer(
+            article_id=art.id, role="Reviewed-by",
+            name="David Reviewer", address="david@kernel.org",
+            address_normalized="david@kernel.org",
+        ))
+        s.commit()
+
+    # `--workers 1` for the same reason the sibling test uses it (avoid
+    # the parallel-commit-visibility race against the assertion below).
+    result = CliRunner().invoke(warm_cache_command, ["--workers", "1"])
+    assert result.exit_code == 0
+
+    from mimir.cache import _ns
+    expected_key = "articles_reviewed_by:alpha:david@kernel.org:100"
+    with SessionLocal() as s:
+        present = s.execute(
+            sa_select(CacheEntry).where(CacheEntry.key == _ns(expected_key))
+        ).scalar_one_or_none()
+    assert present is not None, (
+        f"warm-cache did not populate {expected_key}; the reviewer page "
+        f"will be cold on first visit"
+    )
+
+
 def test_warm_cache_includes_atom_feed_sources(seeded_db):
     """The atom routes use `recent_articles(limit=FEED_ENTRY_LIMIT)`
     and `author_recent(..., limit=FEED_ENTRY_LIMIT)`, a different
