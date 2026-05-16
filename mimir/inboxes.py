@@ -1,24 +1,33 @@
-"""Inbox bootstrap + admin service layer.
+"""Manage the Inbox entity's lifecycle: bootstrap from env, mutate
+via admin, expose via the nav-name cache.
 
-`Settings.inboxes` is the *bootstrap* source: each entry guarantees an
-`Inbox` row exists in the DB on first startup. After that, env entries
-never overwrite the row, admin edits to mirror_path / upstream_url
-are preserved across restarts. To rotate a value via env, drop the row
-through `delete_inbox()` first.
+Three sub-areas, one concern (the `Inbox` row, end to end):
 
-Insert is `ON CONFLICT(name) DO NOTHING` so two workers cold-starting
-in parallel can't trip the UNIQUE(name) constraint.
+- **Bootstrap.** `Settings.inboxes` is the bootstrap source:
+  each entry guarantees an `Inbox` row exists in the DB on first
+  startup. After that, env entries never overwrite the row, admin
+  edits to mirror_path / upstream_url are preserved across
+  restarts. To rotate a value via env, drop the row through
+  `delete_inbox()` first. Insert is `ON CONFLICT(name) DO NOTHING`
+  so two workers cold-starting in parallel can't trip the
+  `UNIQUE(name)` constraint.
+- **Mutate.** The CRUD service functions (`create_inbox`,
+  `update_inbox`, `delete_inbox`) and the per-inbox tracker
+  mutators (`set_tracked_authors`, `add_tracked_author`,
+  `remove_tracked_author`, `clear_tracked_authors`) are shared
+  between the CLI admin commands and the future Flask admin UI.
+  Keeps validation in one place.
+- **Observe.** A module-level `_INBOX_NAMES` cache avoids hitting
+  the DB on every request just to render the nav. Repopulated by
+  `bootstrap_inboxes` on every startup; every mutator above calls
+  `_publish_names()` so the cache stays consistent with the DB
+  after every change.
 
-A module-level `_INBOX_NAMES` cache avoids hitting the DB on every
-request just to render the nav. It's repopulated by `bootstrap_inboxes`
-on every startup; CRUD ops in this module call `_publish_names()` so
-the cache is consistent with the DB after every change.
-
-The CRUD service functions (`create_inbox`, `update_inbox`,
-`delete_inbox`) and the per-inbox tracker mutators (`set_tracked_authors`,
-`add_tracked_author`, `remove_tracked_author`, `clear_tracked_authors`)
-are shared between the CLI admin commands and the future Flask admin
-UI, keeps validation in one place.
+Validators (`validate_name`, `validate_upstream_url`,
+`validate_mirror_path`, `validate_tracked_authors`) are pure and
+shared by all three sub-areas, splitting them out would scatter
+tightly-coupled state for no real win. See #187 for the won't-split
+reasoning.
 """
 import logging
 import re
