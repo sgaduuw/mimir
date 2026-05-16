@@ -210,7 +210,12 @@ def this_day_in_history(
     """A few messages from the same calendar day N years ago in `inbox`,
     most recent on that day first. (Was previously `ORDER BY RANDOM()`,
     which forced a full materialize of the day's rows.)"""
-    today = date.today()
+    # UTC date so the cache key advances at UTC midnight, matching the
+    # compute window below (which derives `target` from `datetime.now(utc)`).
+    # `date.today()` would advance at *local* midnight, so on a non-UTC
+    # server the same request would hit a stale cache key for the wrong
+    # day inside the offset window.
+    today = datetime.now(timezone.utc).date()
 
     def compute() -> list[ArticleSummary]:
         target = datetime.now(timezone.utc) - timedelta(days=365 * years_ago)
@@ -244,7 +249,11 @@ def daily_volume(
     """Daily message counts in `inbox` for the last `days` days,
     zero-filled. Cached per (inbox, days) key for 1 hour."""
     def compute() -> DailyVolume:
-        today = date.today()
+        # UTC date to match `Article.date`, which stores the public-inbox
+        # commit time in UTC. `date.today()` would use the local date and
+        # the window would slide by the server's UTC offset, slipping
+        # edge messages in/out around UTC midnight.
+        today = datetime.now(timezone.utc).date()
         start = today - timedelta(days=days - 1)
         rows = session.execute(
             text(
