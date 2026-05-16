@@ -142,9 +142,14 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
             .where(ArticleTrailer.__table__.c.article_id == article.id)
         )
 
-    if not article.lists:
-        return "skipped"
-    inbox = session.get(Inbox, article.lists[0].inbox_id)
+    # Prefer canonical_inbox (deterministic for cross-posts) over
+    # the SQLA-load-ordering-dependent `article.lists[0]`. See the
+    # matching helper in `mimir.patches` for the rationale.
+    inbox: Inbox | None = article.canonical_inbox
+    if inbox is None:
+        if not article.lists:
+            return "skipped"
+        inbox = session.get(Inbox, article.lists[0].inbox_id)
     if inbox is None:
         return "skipped"
 
