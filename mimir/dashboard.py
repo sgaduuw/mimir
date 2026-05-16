@@ -330,7 +330,7 @@ def search_articles(
     Implementation is a straight LIKE scan with the date index
     short-circuiting; cached per (inbox, query.lower(), limit) at the
     listing TTL. The cache key is case-folded so `Foo` and `foo`
-    share one row, mirroring `ilike()`'s case-insensitivity — the
+    share one row, mirroring `ilike()`'s case-insensitivity, the
     SQL would return identical results either way. The caller is
     responsible for length-bounding `query` and for asking only
     when the user typed something meaningful (≥2 chars).
