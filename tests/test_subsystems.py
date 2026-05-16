@@ -1092,7 +1092,7 @@ def test_most_active_subsystems_global_force_propagates_to_inner(
     The test patches the inner helper to record the `force` kwarg
     every call gets, then drives the public surface with
     `force=True` and asserts every inner invocation saw `True`."""
-    from mimir import subsystems_dashboard as subs_mod
+    from mimir.subsystems_dashboard import activity as subs_mod
 
     seen_force: list[bool] = []
     real_inner = subs_mod._most_active_subsystems_in_inbox_full
