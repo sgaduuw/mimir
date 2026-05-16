@@ -23,13 +23,13 @@ from mimir.threading import _coerce_dt
 
 STATS_CACHE_TTL_SEC = 86400  # 1 day
 DAILY_VOLUME_CACHE_TTL_SEC = 3600  # 1 hour
-LISTING_CACHE_TTL_SEC = 300  # 5 minutes — trackers, pulls, stable, history
+LISTING_CACHE_TTL_SEC = 300  # 5 minutes, trackers, pulls, stable, history
 
 # Recency floor for `latest_pull_requests` / `latest_stable_releases`.
 # Without it, an inbox that has fewer than `limit` matches forces SQLite
 # to walk the entire per-inbox date index proving the negative, which
 # warm-cache was paying ~3 s per inbox for. Pull requests happen on
-# every merge window (~8–10 weeks); stable releases are weekly. 180 d
+# every merge window (~8 10 weeks); stable releases are weekly. 180 d
 # covers ~2 merge cycles and ~25 stable releases, comfortably above
 # what the LIMIT-5 widgets surface. An inbox with no matches in this
 # window renders an empty panel, which is the truthful answer.
@@ -93,7 +93,7 @@ def _inbox_scoped(stmt, inbox: Inbox):
 
     SQLite's planner mis-prices the parameterized `JOIN article_lists
     ON ... WHERE inbox_id = ?` shape and picks a scan-and-sort over
-    the entire `article_lists` table — order-of-seconds on a multi-
+    the entire `article_lists` table, order-of-seconds on a multi-
     million-row inbox. The EXISTS form makes "walk articles in the
     relevant order, probe `article_lists` via composite PK" the
     natural plan, matching what literal binds would have produced.
@@ -210,7 +210,12 @@ def this_day_in_history(
     """A few messages from the same calendar day N years ago in `inbox`,
     most recent on that day first. (Was previously `ORDER BY RANDOM()`,
     which forced a full materialize of the day's rows.)"""
-    today = date.today()
+    # UTC date so the cache key advances at UTC midnight, matching the
+    # compute window below (which derives `target` from `datetime.now(utc)`).
+    # `date.today()` would advance at *local* midnight, so on a non-UTC
+    # server the same request would hit a stale cache key for the wrong
+    # day inside the offset window.
+    today = datetime.now(timezone.utc).date()
 
     def compute() -> list[ArticleSummary]:
         target = datetime.now(timezone.utc) - timedelta(days=365 * years_ago)
@@ -244,7 +249,11 @@ def daily_volume(
     """Daily message counts in `inbox` for the last `days` days,
     zero-filled. Cached per (inbox, days) key for 1 hour."""
     def compute() -> DailyVolume:
-        today = date.today()
+        # UTC date to match `Article.date`, which stores the public-inbox
+        # commit time in UTC. `date.today()` would use the local date and
+        # the window would slide by the server's UTC offset, slipping
+        # edge messages in/out around UTC midnight.
+        today = datetime.now(timezone.utc).date()
         start = today - timedelta(days=days - 1)
         rows = session.execute(
             text(
@@ -277,10 +286,12 @@ def daily_volume(
     )
 
 
-def _like_escape(s: str) -> str:
+def like_escape(s: str) -> str:
     """Escape SQL-LIKE wildcards in a user-supplied substring so a
     query like `100%` doesn't quietly match every row. Pair with
-    `escape="\\"` on the LIKE call."""
+    `escape="\\"` on the LIKE call. Also used by `mimir.subsystems`
+    on MAINTAINERS-rule globs (an `arch/x86_64/` directory would
+    widen unless `_` is escaped)."""
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
@@ -291,10 +302,10 @@ def recent_articles(
     force: bool = False,
 ) -> list[ArticleSummary]:
     """Most-recent `limit` articles in `inbox`, ordered by date desc.
-    Cached at the listing TTL — feeds polling on 30 min+ intervals
+    Cached at the listing TTL, feeds polling on 30 min+ intervals
     always pay zero compute, since warm-cache keeps it hot.
 
-    No offset — pagination lives in `web._fetch_recent` which serves
+    No offset, pagination lives in `web._fetch_recent` which serves
     the dashboard's "Load more" pattern; this helper is the
     feed/Atom data source.
     """
@@ -326,13 +337,15 @@ def search_articles(
     case-insensitive, ordered by date desc, capped at `limit`.
 
     Implementation is a straight LIKE scan with the date index
-    short-circuiting; cached per (inbox, query, limit) at the
-    listing TTL. The caller is responsible for length-bounding
-    `query` (it appears verbatim in the cache key) and for asking
-    only when the user typed something meaningful (≥2 chars).
+    short-circuiting; cached per (inbox, query.lower(), limit) at the
+    listing TTL. The cache key is case-folded so `Foo` and `foo`
+    share one row, mirroring `ilike()`'s case-insensitivity, the
+    SQL would return identical results either way. The caller is
+    responsible for length-bounding `query` and for asking only
+    when the user typed something meaningful (≥2 chars).
     """
     def compute() -> list[ArticleSummary]:
-        pattern = f"%{_like_escape(query)}%"
+        pattern = f"%{like_escape(query)}%"
         rows = session.execute(
             _inbox_scoped(
                 select(Article).where(
@@ -350,7 +363,7 @@ def search_articles(
 
     return cache.get_or_compute(
         session,
-        f"search:{inbox.name}:{query}:{limit}",
+        f"search:{inbox.name}:{query.lower()}:{limit}",
         LISTING_CACHE_TTL_SEC,
         compute,
         force=force,
@@ -361,7 +374,7 @@ def monthly_volume(
     session: Session, inbox: Inbox, year: int, force: bool = False
 ) -> MonthlyVolume:
     """Per-month counts for `year` in `inbox`, zero-filled. Cached
-    per (inbox, year) for 1 hour — current-year counts evolve, past
+    per (inbox, year) for 1 hour, current-year counts evolve, past
     years are immutable.
 
     Past years could in principle be cached forever, but the constant

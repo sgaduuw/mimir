@@ -1,5 +1,5 @@
 """Pure-logic tests for `mimir.canonical`. Hits the heuristic, the
-header-extraction, and the canonical-pick — no DB."""
+header-extraction, and the canonical-pick, no DB."""
 from mimir.canonical import (
     LIST_HOST_SUFFIXES,
     extract_list_addresses,
@@ -37,7 +37,7 @@ def test_is_list_address_bare_kernel_org_rejected():
 
 
 def test_is_list_address_subdomain_match_accepted():
-    # foo.vger.kernel.org should still count (defensive — covers
+    # foo.vger.kernel.org should still count (defensive, covers
     # whatever future relay shenanigans the kernel infra invents).
     assert is_list_address("listname@subdomain.vger.kernel.org") is True
 
@@ -114,6 +114,29 @@ def test_extract_handles_display_names():
 def test_extract_no_headers_returns_empty():
     assert extract_list_addresses({}) == []
     assert extract_list_addresses({"To": "", "Cc": ""}) == []
+
+
+def test_extract_header_keys_case_insensitive():
+    """RFC 5322 field names are case-insensitive; `mimir.parser`
+    preserves whatever casing the wire delivered. Some ML re-mailers
+    downcase headers, so a strict `headers.get("To")` silently
+    returned `None` and broke canonical-inbox resolution plus the
+    off-list-parent hint. Audit (2026-05-15) called it the silent
+    canonical-break."""
+    for to_key, cc_key in (
+        ("to", "cc"),         # all lowercase (the regression case)
+        ("TO", "CC"),         # all uppercase
+        ("To", "cc"),         # mixed
+        ("tO", "Cc"),         # weird mixed
+    ):
+        headers = {
+            to_key: "linux-fsdevel@vger.kernel.org",
+            cc_key: "linux-kernel@vger.kernel.org",
+        }
+        assert extract_list_addresses(headers) == [
+            "linux-fsdevel@vger.kernel.org",
+            "linux-kernel@vger.kernel.org",
+        ], f"failed on keys ({to_key!r}, {cc_key!r})"
 
 
 def test_extract_malformed_addresses_ignored():

@@ -2,7 +2,7 @@
 
 Pointing the entire suite at a temp SQLite removes the fragile
 "swap engines mid-test" pattern: every consumer of the bound
-SessionLocal — anywhere in the app — sees the test DB by virtue of
+SessionLocal, anywhere in the app, sees the test DB by virtue of
 `DATABASE_URL` being set BEFORE any `mimir` module is imported.
 
 Fixture stack:
@@ -43,7 +43,7 @@ os.environ.setdefault("FLASK_DEBUG", "false")
 
 import pytest  # noqa: E402
 
-# Test seed constants — exposed so tests can reference them rather
+# Test seed constants, exposed so tests can reference them rather
 # than re-typing string literals.
 TEST_INBOX_PRIMARY = "alpha"
 TEST_INBOX_SECONDARY = "beta"
@@ -59,6 +59,13 @@ def _migrate_db():
     cfg.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
     command.upgrade(cfg, "head")
     yield
+    # Dispose pooled connections explicitly so ResourceWarnings
+    # don't surface at process exit (SQLAlchemy's pool holds idle
+    # sqlite3 connections; without dispose() they get GC'd after
+    # the interpreter starts tearing down, which the cpython
+    # sqlite3 module reports as "unclosed database").
+    from mimir.extensions import engine
+    engine.dispose()
     # Tempdir is left for the OS to reap; no need to teardown.
 
 
@@ -90,7 +97,7 @@ def _reset_db():
     with SessionLocal() as s:
         # FK ON DELETE CASCADE handles article_lists and ingest_state
         # for inbox deletes, and articles cascade-deletes article_lists
-        # for article deletes — but explicit is cheaper on a tiny DB
+        # for article deletes, but explicit is cheaper on a tiny DB
         # and immune to FK-order surprises.
         s.execute(delete(IngestState))
         s.execute(delete(ArticleFile))   # FK to articles; clear before Article
@@ -194,3 +201,26 @@ def inbox_name():
     module-scoped fixture; lets the Message-ID lookup tests find a
     real article in the test DB."""
     return TEST_INBOX_PRIMARY
+
+
+# Pinned mid-day UTC moment, well clear of any midnight boundary
+# so a frozen-window test can compute "today" / "yesterday" / etc.
+# from it without straddling a date rollover. The 12:00 picks the
+# middle of the day; the date is arbitrary but stable.
+FROZEN_NOW = "2024-06-15 12:00:00"
+
+
+@pytest.fixture
+def frozen_clock():
+    """Freeze `datetime.now()` / `date.today()` at a deterministic
+    mid-day UTC moment. Use for any test that compares a value derived
+    from wall-clock `now()` on the test side against a value the
+    handler / helper derives independently from its own `now()` -- if
+    the two calls straddle UTC midnight the strings won't match.
+
+    Yields the freezegun controller so tests that want to move time
+    forward (e.g. cache-expiry checks) can `frozen_clock.move_to(...)`.
+    """
+    from freezegun import freeze_time
+    with freeze_time(FROZEN_NOW) as ft:
+        yield ft

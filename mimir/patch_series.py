@@ -2,12 +2,12 @@
 
 A "patch series" is a maintainer-flavour grouping: the same logical
 proposal posted multiple times (v1, v2, v3, ...) as feedback rolls
-in. This module identifies *cover letters* — the `0/N` message that
-introduces each revision — and computes a stable key so multiple
+in. This module identifies *cover letters*, the `0/N` message that
+introduces each revision, and computes a stable key so multiple
 revisions of the same series can be cross-linked.
 
 Slice 1 deliberately handles cover letters only. Per-patch
-(non-cover-letter) attachment to a series is harder — subjects
+(non-cover-letter) attachment to a series is harder, subjects
 drift between revisions (1/N reorder, drop, rename), so robust
 linking needs more than the normalised-title heuristic that's
 enough here. That work lives in a future slice.
@@ -24,19 +24,18 @@ from email.utils import parseaddr
 from typing import Callable
 
 from pydantic import BaseModel
-from sqlalchemy import select
 
-from mimir.extensions import SessionLocal
+from mimir._backfill import walk_articles
 
 logger = logging.getLogger(__name__)
 
 
-# `^[<inside>] <title>` — only matches when the bracket starts the
+# `^[<inside>] <title>`, only matches when the bracket starts the
 # subject, so `Re: [PATCH ...]` replies don't masquerade as cover
 # letters. The original cover letter has nothing before the `[`.
 _BRACKET_RE = re.compile(r"^\[([^\]]+)\]\s*(.+)$")
 
-# `0/N` shape inside the bracket — the cover-letter discriminator.
+# `0/N` shape inside the bracket, the cover-letter discriminator.
 # `\b` boundaries so a stray `10/30` (patch ten in series of thirty)
 # can't be misread as a cover letter.
 _ZERO_OF_N_RE = re.compile(r"\b0\s*/\s*\d+\b")
@@ -47,7 +46,7 @@ _ZERO_OF_N_RE = re.compile(r"\b0\s*/\s*\d+\b")
 # version is implicit).
 _VERSION_RE = re.compile(r"\b(v\d+|RFC|RESEND)\b", re.IGNORECASE)
 
-# Bracket must literally contain the word "PATCH" — there are
+# Bracket must literally contain the word "PATCH", there are
 # `[GIT PULL]` and `[ANNOUNCE]` subjects that carry `0/N` for
 # unrelated reasons; the PATCH token disambiguates.
 _PATCH_TOKEN_RE = re.compile(r"\bPATCH\b")
@@ -56,7 +55,7 @@ _PATCH_TOKEN_RE = re.compile(r"\bPATCH\b")
 @dataclass(frozen=True)
 class CoverLetter:
     """One detected cover letter. `version` is normalised to a
-    lowercase string like `v1`, `v2`, `rfc`, `resend` — that's
+    lowercase string like `v1`, `v2`, `rfc`, `resend`, that's
     what gets stored on the Article row and rendered on the
     timeline."""
     version: str
@@ -80,9 +79,9 @@ def parse_cover_letter(subject: str | None) -> CoverLetter | None:
         [PATCH net-next v2 0/12] title  → v2
 
     Doesn't recognise:
-        Re: [PATCH v2 0/3] title        — bracket isn't at column 0
-        [PATCH 1/3] title               — not a cover letter
-        [ANNOUNCE 0/3] title            — no PATCH token
+        Re: [PATCH v2 0/3] title       , bracket isn't at column 0
+        [PATCH 1/3] title              , not a cover letter
+        [ANNOUNCE 0/3] title           , no PATCH token
     """
     if not subject:
         return None
@@ -100,17 +99,16 @@ def parse_cover_letter(subject: str | None) -> CoverLetter | None:
     except (ValueError, IndexError):
         return None
     # Prefer the most specific version marker: explicit v\d+ over
-    # RFC/RESEND. A subject like `[PATCH RESEND v3 0/3]` is a
-    # resent v3, not RFC-shaped.
+    # RFC/RESEND. A subject like `[PATCH RESEND v3 0/3]` is a resent
+    # v3, not RFC-shaped. The old for/else form happened to work
+    # because of `findall`'s ordering, but the precedence wasn't
+    # explicit. `next()` with a v\d+ filter + a marker fallback +
+    # the "v1" default makes the precedence read off the line.
     versions = _VERSION_RE.findall(inside)
-    version = "v1"
-    for v in versions:
-        if v.lower().startswith("v"):
-            version = v.lower()
-            break
-    else:
-        if versions:
-            version = versions[0].lower()
+    version = next(
+        (v.lower() for v in versions if v.lower().startswith("v")),
+        versions[0].lower() if versions else "v1",
+    )
     return CoverLetter(version=version, total=total, title=title)
 
 
@@ -134,22 +132,41 @@ def series_key(title: str, author: str | None) -> str:
     address = address.lower().strip()
     # Title normalisation: lowercase + whitespace collapse. We
     # don't strip bracketed tags because the cover-letter parser
-    # already chopped them off — the title arg is the post-bracket
+    # already chopped them off, the title arg is the post-bracket
     # text. Just normalise for case + whitespace drift.
     norm_title = " ".join(title.lower().split())
     payload = f"{address}|{norm_title}".encode("utf-8")
     return hashlib.sha1(payload).hexdigest()
 
 
-_BACKFILL_BATCH = 1000
-
-
 class BackfillResult(BaseModel):
     """Outcome counters for `backfill_patch_series`."""
     examined: int = 0
     indexed: int = 0      # cover letter detected, key + version written
-    not_cover: int = 0    # non-cover-letter subject — no series row
+    not_cover: int = 0    # non-cover-letter subject, no series row
     skipped: int = 0      # already had a key set (idempotent re-run)
+
+
+def _process_one(session, article, reprocess: bool) -> str:
+    """Per-article work for `backfill_patch_series`. Returns the
+    bucket name on `BackfillResult` to bump. `session` is unused
+    here (no body re-read, no related-row delete) but the walker
+    contract passes it; it stays available for a future slice
+    that wants per-revision link rows."""
+    if article.patch_series_key is not None and not reprocess:
+        return "skipped"
+    cover = parse_cover_letter(article.subject)
+    if cover is None:
+        # Reprocess: clear any prior key (the subject may have
+        # changed, or our parser may now reject something it
+        # previously accepted).
+        if reprocess and article.patch_series_key is not None:
+            article.patch_series_key = None
+            article.patch_series_version = None
+        return "not_cover"
+    article.patch_series_key = series_key(cover.title, article.author)
+    article.patch_series_version = cover.version
+    return "indexed"
 
 
 def backfill_patch_series(
@@ -163,55 +180,19 @@ def backfill_patch_series(
     Cheaper than `backfill_article_files`: only reads `Article.subject`
     and `Article.author`, no body re-parse via the git mirror. Safe
     to run on any host with the DB; doesn't need the inbox mirrors.
+    `preload_lists=False` is the saving, patches and trailers need
+    `Article.lists` for the inbox lookup; we don't.
 
     Idempotent: articles with `patch_series_key` already set are
     skipped unless `reprocess=True`. Newest-first walk so a
     bounded session covers the most-visible articles first.
     """
-    from mimir.models import Article
     result = BackfillResult()
-    examined_total = 0
-
-    with SessionLocal() as session:
-        cursor: int | None = None
-        while True:
-            q = (
-                select(Article)
-                .order_by(Article.id.desc())
-                .limit(_BACKFILL_BATCH)
-            )
-            if cursor is not None:
-                q = q.where(Article.id < cursor)
-            batch = list(session.execute(q).scalars())
-            if not batch:
-                break
-            for article in batch:
-                cursor = article.id
-                examined_total += 1
-                if limit is not None and examined_total > limit:
-                    break
-                result.examined += 1
-                if article.patch_series_key is not None and not reprocess:
-                    result.skipped += 1
-                    continue
-                cover = parse_cover_letter(article.subject)
-                if cover is None:
-                    # Reprocess: clear any prior key (the subject
-                    # may have changed, or our parser may now reject
-                    # something it previously accepted).
-                    if reprocess and article.patch_series_key is not None:
-                        article.patch_series_key = None
-                        article.patch_series_version = None
-                    result.not_cover += 1
-                    continue
-                article.patch_series_key = series_key(cover.title, article.author)
-                article.patch_series_version = cover.version
-                result.indexed += 1
-            session.commit()
-            if progress is not None:
-                progress(result)
-            if limit is not None and examined_total > limit:
-                break
+    walk_articles(
+        result, _process_one,
+        limit=limit, reprocess=reprocess, progress=progress,
+        preload_lists=False,
+    )
     return result
 
 

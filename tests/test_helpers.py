@@ -10,7 +10,12 @@ import pytest
 
 from mimir.models import Inbox
 from mimir.store import MessageNotFound, read_message
-from mimir.web import _content_disposition, _redact_trailer_address, _safe_from_filter
+from mimir.web import (
+    _canonical_inbox_names_for,
+    _content_disposition,
+    _redact_trailer_address,
+    _safe_from_filter,
+)
 
 
 def _alpha(seeded_db) -> Inbox:
@@ -18,7 +23,7 @@ def _alpha(seeded_db) -> Inbox:
         return s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
 
 
-# store.read_message — error paths
+# store.read_message, error paths
 
 
 def test_read_message_unknown_message_id_raises(seeded_db):
@@ -28,7 +33,7 @@ def test_read_message_unknown_message_id_raises(seeded_db):
 
 
 def test_read_message_message_in_other_inbox_raises(seeded_db):
-    """art2 is beta-only. Asking alpha for it must 404 — even
+    """art2 is beta-only. Asking alpha for it must 404, even
     though the Message-ID exists in DB."""
     alpha = _alpha(seeded_db)
     with seeded_db() as s, pytest.raises(MessageNotFound):
@@ -45,12 +50,49 @@ def test_read_message_missing_mirror_raises(seeded_db):
         read_message(s, alpha, "art1@example.com")
 
 
-# web._safe_from_filter — privacy redaction
+def test_read_message_stale_commit_sha_raises(seeded_db, tmp_path):
+    """A real-but-stale commit_sha (mirror got rewritten / blob GC'd)
+    must surface as MessageNotFound, not bubble out as a KeyError
+    that 500s the message route. dulwich raises KeyError when the
+    commit isn't in the object store; _read_blob now catches and
+    converts."""
+    from dulwich.repo import Repo as DulwichRepo
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, Inbox
+
+    # Empty bare repo so the epoch_path.exists() guard passes but
+    # the commit_sha lookup inside doesn't.
+    epoch_dir = tmp_path / "0.git"
+    DulwichRepo.init_bare(str(epoch_dir), mkdir=True)
+
+    with SessionLocal() as s:
+        ix = s.execute(
+            select(Inbox).where(Inbox.name == "alpha")
+        ).scalar_one()
+        ix.mirror_path = str(tmp_path)
+        # art1 is alpha-only in the seeded DB; the seed left
+        # commit_sha = "aa" * 20, which won't be in our empty bare
+        # repo. That's the stale-row shape we want to exercise.
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.inbox_id == ix.id)
+            .values(epoch="0.git")
+        )
+        s.commit()
+
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s, pytest.raises(MessageNotFound, match="blob"):
+        read_message(s, alpha, "art1@example.com")
+
+
+# web._safe_from_filter, privacy redaction
 
 
 def test_safe_from_kernel_org_address_surfaces_in_full():
     out = _safe_from_filter("Linus Torvalds <torvalds@linux-foundation.org>")
-    # Default email_allowlist contains "torvalds@" — full surfaces.
+    # Default email_allowlist contains "torvalds@", full surfaces.
     assert "torvalds@linux-foundation.org" in out
 
 
@@ -78,7 +120,7 @@ def test_safe_from_empty_returns_empty_string():
     assert _safe_from_filter("") == ""
 
 
-# web._content_disposition — RFC 6266
+# web._content_disposition, RFC 6266
 
 
 def test_content_disposition_no_filename():
@@ -122,7 +164,7 @@ def test_content_disposition_strips_control_bytes_from_ascii_form():
     extra HTTP response headers (RFC 7230 header-line splitting).
     Defense in depth on top of whatever the WSGI layer rejects: strip
     them before they reach the header value. The percent-encoded
-    `filename*` form is unaffected — quote() already escapes them."""
+    `filename*` form is unaffected, quote() already escapes them."""
     cd = _content_disposition("evil\r\nX-Injected: yes.txt")
     assert "\r" not in cd
     assert "\n" not in cd
@@ -133,12 +175,12 @@ def test_content_disposition_strips_control_bytes_from_ascii_form():
     assert "%0A" in cd
 
 
-# web._redact_trailer_address — DCO trailer redaction
+# web._redact_trailer_address, DCO trailer redaction
 
 
 def test_redact_trailer_address_allowlisted_returns_visible_angle_form():
     """Allowlisted addresses surface inside literal angle brackets so the
-    rendered output reads `<addr@kernel.org>` — the renderer escapes the
+    rendered output reads `<addr@kernel.org>`, the renderer escapes the
     return value, so the redactor returns plain text with raw angle
     brackets and the browser sees them as visible characters."""
     out = _redact_trailer_address("torvalds@kernel.org")
@@ -147,19 +189,75 @@ def test_redact_trailer_address_allowlisted_returns_visible_angle_form():
 
 def test_redact_trailer_address_non_allowlisted_returns_redacted():
     """Non-allowlisted addresses collapse to a single `<redacted>` token
-    — plain text, again rendered as visible characters after the
+   , plain text, again rendered as visible characters after the
     template's escaping pass."""
     out = _redact_trailer_address("random@example.com")
     assert out == "<redacted>"
 
 
+def test_canonical_inbox_names_falls_back_to_alphabetical_when_null(seeded_db):
+    """`_canonical_inbox_names_for` resolves articles to their canonical
+    inbox name; when `canonical_inbox_id` is NULL (the warm-up window
+    before `admin canonicals backfill` has pinned one), it must fall
+    back to the alphabetically-first inbox the article is linked to.
+
+    The seeded conftest leaves all four articles with NULL canonical
+    pins. art1 is alpha-only -> 'alpha'; art2 is beta-only -> 'beta';
+    art3 is cross-posted to alpha + beta -> 'alpha' (alphabetical
+    fallback)."""
+    from mimir.models import Article
+
+    with seeded_db() as s:
+        ids = {
+            row.message_id: row.id
+            for row in s.execute(select(Article)).scalars().all()
+        }
+        names = _canonical_inbox_names_for(s, list(ids.values()))
+
+    assert names[ids["art1@example.com"]] == "alpha"
+    assert names[ids["art2@example.com"]] == "beta"
+    assert names[ids["art3@example.com"]] == "alpha"
+
+
+def test_canonical_inbox_names_prefers_pinned_canonical_over_fallback(seeded_db):
+    """If `canonical_inbox_id` is pinned, that beats the alphabetical
+    fallback. Pin art3's canonical to beta and confirm the resolver
+    returns 'beta' (not the alphabetically-first 'alpha')."""
+    from sqlalchemy import update
+    from mimir.models import Article, Inbox
+
+    with seeded_db() as s:
+        beta_id = s.execute(
+            select(Inbox.id).where(Inbox.name == "beta")
+        ).scalar_one()
+        art3_id = s.execute(
+            select(Article.id).where(Article.message_id == "art3@example.com")
+        ).scalar_one()
+        s.execute(
+            update(Article)
+            .where(Article.id == art3_id)
+            .values(canonical_inbox_id=beta_id)
+        )
+        s.commit()
+        names = _canonical_inbox_names_for(s, [art3_id])
+
+    assert names[art3_id] == "beta"
+
+
+def test_canonical_inbox_names_empty_input_returns_empty(seeded_db):
+    """Defensive: an empty article_ids list returns {} without
+    issuing a query (cli.py:1367-1368 fast-exit)."""
+    with seeded_db() as s:
+        assert _canonical_inbox_names_for(s, []) == {}
+
+
 def test_redact_trailer_address_substring_match_is_intentionally_loose(monkeypatch):
     """The allowlist uses substring matching, by design (see CONTEXT.md
-    — an allowlist token matches any address containing that substring).
+   , an allowlist token matches any address containing that substring).
     This is intentional looseness for ergonomics; pin it here so a
     future tightening is a conscious decision, not a silent drift."""
     from mimir.config import settings
-    # Set an explicit token to make the assertion deterministic — the
+    # Set an explicit token to make the assertion deterministic, the
     # default allowlist contains the same token but pinning it here
     # keeps the test independent of the default's evolution.
     monkeypatch.setattr(settings, "email_allowlist", ["@kernel.org"])

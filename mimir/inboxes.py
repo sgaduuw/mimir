@@ -1,25 +1,35 @@
-"""Inbox bootstrap + admin service layer.
+"""Manage the Inbox entity's lifecycle: bootstrap from env, mutate
+via admin, expose via the nav-name cache.
 
-`Settings.inboxes` is the *bootstrap* source: each entry guarantees an
-`Inbox` row exists in the DB on first startup. After that, env entries
-never overwrite the row — admin edits to mirror_path / upstream_url
-are preserved across restarts. To rotate a value via env, drop the row
-through `delete_inbox()` first.
+Three sub-areas, one concern (the `Inbox` row, end to end):
 
-Insert is `ON CONFLICT(name) DO NOTHING` so two workers cold-starting
-in parallel can't trip the UNIQUE(name) constraint.
+- **Bootstrap.** `Settings.inboxes` is the bootstrap source:
+  each entry guarantees an `Inbox` row exists in the DB on first
+  startup. After that, env entries never overwrite the row, admin
+  edits to mirror_path / upstream_url are preserved across
+  restarts. To rotate a value via env, drop the row through
+  `delete_inbox()` first. Insert is `ON CONFLICT(name) DO NOTHING`
+  so two workers cold-starting in parallel can't trip the
+  `UNIQUE(name)` constraint.
+- **Mutate.** The CRUD service functions (`create_inbox`,
+  `update_inbox`, `delete_inbox`) and the per-inbox tracker
+  mutators (`set_tracked_authors`, `add_tracked_author`,
+  `remove_tracked_author`, `clear_tracked_authors`) are shared
+  between the CLI admin commands and the future Flask admin UI.
+  Keeps validation in one place.
+- **Observe.** A module-level `_INBOX_NAMES` cache avoids hitting
+  the DB on every request just to render the nav. Repopulated by
+  `bootstrap_inboxes` on every startup; every mutator above calls
+  `_publish_names()` so the cache stays consistent with the DB
+  after every change.
 
-A module-level `_INBOX_NAMES` cache avoids hitting the DB on every
-request just to render the nav. It's repopulated by `bootstrap_inboxes`
-on every startup; CRUD ops in this module call `_publish_names()` so
-the cache is consistent with the DB after every change.
-
-The CRUD service functions (`create_inbox`, `update_inbox`,
-`delete_inbox`) and the per-inbox tracker mutators (`set_tracked_authors`,
-`add_tracked_author`, `remove_tracked_author`, `clear_tracked_authors`)
-are shared between the CLI admin commands and the future Flask admin
-UI — keeps validation in one place.
+Validators (`validate_name`, `validate_upstream_url`,
+`validate_mirror_path`, `validate_tracked_authors`) are pure and
+shared by all three sub-areas, splitting them out would scatter
+tightly-coupled state for no real win. See #187 for the won't-split
+reasoning.
 """
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -33,6 +43,8 @@ from mimir import cache
 from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox, IngestState
+
+logger = logging.getLogger(__name__)
 
 # Slug constraint: name flows into URL paths and cache-key fragments,
 # so it must be URL-safe and `:`-free. Lowercase, alphanumeric +
@@ -62,7 +74,7 @@ def validate_name(name: str) -> str:
     if not _NAME_RE.fullmatch(name):
         raise InboxValidationError(
             f"name {name!r} must be lowercase alphanumeric/hyphen, "
-            "1–64 chars, not starting or ending with a hyphen"
+            "1 64 chars, not starting or ending with a hyphen"
         )
     return name
 
@@ -91,7 +103,7 @@ def validate_tracked_authors(
     authors: dict[str, str] | None,
 ) -> dict[str, str] | None:
     """Validate a tracked-authors dict. Returns the (stripped) dict, or
-    None if input was None or empty (the two states collapse — both
+    None if input was None or empty (the two states collapse, both
     mean "no tracker tiles for this inbox"). Raises
     InboxValidationError on bad input."""
     if authors is None:
@@ -128,7 +140,7 @@ def validate_tracked_authors(
 def validate_mirror_path(mirror_path: str) -> str:
     """Validate a mirror_path string. Returns the stripped value.
 
-    No filesystem checks here — the directory is allowed to not exist
+    No filesystem checks here, the directory is allowed to not exist
     yet; `flask --app mimir update` will create it on first clone.
     Path-traversal validation belongs at the web-input boundary
     (deferred admin-UI task) where the value is untrusted.
@@ -156,7 +168,7 @@ def refresh_inbox_names() -> list[str]:
 
 
 def inbox_names() -> list[str]:
-    """The current set of inbox slugs, for nav rendering. Cheap — no DB hit."""
+    """The current set of inbox slugs, for nav rendering. Cheap, no DB hit."""
     return list(_INBOX_NAMES)
 
 
@@ -196,7 +208,7 @@ def bootstrap_inboxes() -> dict[str, Inbox]:
 
 def list_inboxes() -> list[Inbox]:
     """Every inbox in the DB, ordered by name. Detached from the
-    transient session — pass through `session.merge()` if needed."""
+    transient session, pass through `session.merge()` if needed."""
     with SessionLocal() as session:
         return list(
             session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
@@ -309,7 +321,7 @@ def delete_inbox(
     The FKs cascade-delete `article_lists` and `ingest_state` rows.
     By default, also deletes any `articles` left without remaining
     `article_lists` rows (orphans). Pass `keep_orphan_articles=True`
-    to keep them in place — useful if you plan to re-add the inbox.
+    to keep them in place, useful if you plan to re-add the inbox.
 
     `remove_inbox_data=True` additionally `rm -rf`s the on-disk
     public-inbox mirror at `mirror_path`. The caller is responsible
@@ -355,11 +367,25 @@ def delete_inbox(
         # Resolve relative to project root if not absolute, the same
         # way the rest of the code does.
         path = Path(mirror_path_str)
-        # Prefer a parent that contains the per-inbox root, e.g.
-        # `Inboxes/<name>/git` → remove `Inboxes/<name>` so the empty
-        # wrapper directory doesn't linger. Fall back to mirror_path
-        # itself if it doesn't match the convention.
-        target = path.parent if path.name == "git" else path
+        # Promote to the parent ONLY when the layout exactly matches
+        # the bootstrap convention: `<anything>/<name>/git`. Then the
+        # parent's basename is the inbox name, and removing the wrapper
+        # `<name>/` directory is the right "leave no empty husk behind"
+        # behaviour. Any other shape (operator-supplied
+        # `mirror_path=/some/dir/git`, custom layouts, etc.) stays on
+        # the literal mirror_path, promoting to the parent there would
+        # rm-rf an unrelated directory that the operator never asked us
+        # to touch. The audit on 2026-05-15 flagged the unconditional
+        # `path.name == "git"` promotion as the worst data-loss vector
+        # in the codebase.
+        target = path
+        if path.name == "git" and path.parent.name == name:
+            target = path.parent
+        logger.warning(
+            "delete_inbox(%s): rmtree target resolved to %s "
+            "(from mirror_path=%s)",
+            name, target, mirror_path_str,
+        )
         if target.exists():
             shutil.rmtree(target)
             report.mirror_path_deleted = str(target)
@@ -371,13 +397,13 @@ def set_tracked_authors(
     name: str, authors: dict[str, str] | None,
 ) -> Inbox:
     """Replace an inbox's tracked-authors dict. `authors=None` (or an
-    empty dict) writes NULL — the dashboard renders no tracker tiles
+    empty dict) writes NULL, the dashboard renders no tracker tiles
     for that inbox. Raises InboxNotFound / InboxValidationError as
     appropriate.
 
     No cache invalidation: `author_recent` cache keys embed the email
     substring, not the label, so adding/removing a tracker doesn't
-    invalidate any existing key — orphan rows age out via TTL.
+    invalidate any existing key, orphan rows age out via TTL.
     """
     cleaned = validate_tracked_authors(authors)
     with SessionLocal() as session:

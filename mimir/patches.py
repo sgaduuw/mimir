@@ -9,12 +9,12 @@ turning the returned set into `ArticleFile` rows.
 
 Strong signal only: we match `diff --git a/<old> b/<new>` headers,
 which are machine-generated and unambiguous. Prose-shaped mentions
-("we should touch fs/foo/") are deliberately ignored — high-noise
+("we should touch fs/foo/") are deliberately ignored, high-noise
 and lousy precision. The cost is missing discussion-only threads in
 the per-path reverse lookup; the win is that every match is a real
 patch hunk.
 
-The returned set carries the **`b/` path** — the post-rename
+The returned set carries the **`b/` path**, the post-rename
 destination when the patch renames a file, the only path when it
 doesn't. This matches what reviewers and `MAINTAINERS` globs expect:
 the new location of the code. The `a/` path is recoverable from the
@@ -27,9 +27,8 @@ from typing import Callable
 
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
-from mimir.extensions import SessionLocal
+from mimir._backfill import walk_articles
 from mimir.models import Article, ArticleFile, Inbox
 from mimir.store import MessageNotFound, read_message
 
@@ -45,7 +44,7 @@ logger = logging.getLogger(__name__)
 # quoted bodies sometimes carry `diff --git` lines from earlier in
 # a thread (a reviewer pasting a hunk). Anchoring at line-start in
 # the body's own context catches the patch author's diffs and
-# misses re-quoted snippets — which is the right precision trade
+# misses re-quoted snippets, which is the right precision trade
 # (a reviewer's quoted diff doesn't represent "files this patch
 # touches").
 #
@@ -68,7 +67,7 @@ def extract_touched_paths(body: str | None) -> set[str]:
       (the regex anchors at column 0; quoted lines start with `>`
       and don't match)
 
-    Quoted-block detection is intentionally simplistic — we let the
+    Quoted-block detection is intentionally simplistic, we let the
     line-start anchor do the work. A reviewer who unquotes a hunk
     when responding (rare; git-send-email doesn't quote diffs the
     way mailers quote prose) will have those lines treated as fresh
@@ -77,13 +76,6 @@ def extract_touched_paths(body: str | None) -> set[str]:
     if not body:
         return set()
     return {m.group("new") for m in _DIFF_GIT_RE.finditer(body)}
-
-
-# Page size for the backfill walker. ~6M articles on lkml-scale →
-# 6000 batches at 1000 each; small enough that a Ctrl-C loses ≤1k
-# articles of work but big enough that the per-batch overhead
-# (transaction, query planning) amortises.
-_BACKFILL_BATCH = 1000
 
 
 class BackfillResult(BaseModel):
@@ -106,49 +98,16 @@ def backfill_article_files(
     """Walk articles, extract diff-touched paths, insert ArticleFile
     rows. Idempotent: articles with existing rows are skipped unless
     `reprocess=True` (which deletes existing rows before re-extracting
-    — useful after an extractor change).
+   , useful after an extractor change).
 
     Newest-first ordering so a `--limit`-bounded session covers the
     most-recently-active articles first; that's where the
     subsystem-header surface is most visible to a user."""
     result = BackfillResult()
-    examined_total = 0
-
-    with SessionLocal() as session:
-        # ID-based pagination via `WHERE id < cursor` so we don't
-        # re-scan rows we already finished. Newest = highest id, so
-        # walk descending.
-        cursor: int | None = None
-        while True:
-            q = (
-                select(Article)
-                .options(selectinload(Article.lists))
-                .order_by(Article.id.desc())
-                .limit(_BACKFILL_BATCH)
-            )
-            if cursor is not None:
-                q = q.where(Article.id < cursor)
-            batch = list(session.execute(q).scalars())
-            if not batch:
-                break
-
-            for article in batch:
-                cursor = article.id
-                examined_total += 1
-                if limit is not None and examined_total > limit:
-                    break
-                result.examined += 1
-                processed = _process_one(session, article, reprocess=reprocess)
-                # `_process_one` returns one of: "indexed", "no_diff",
-                # "skipped", "failed". Bump the matching counter.
-                setattr(result, processed, getattr(result, processed) + 1)
-
-            session.commit()
-            if progress is not None:
-                progress(result)
-            if limit is not None and examined_total > limit:
-                break
-
+    walk_articles(
+        result, _process_one,
+        limit=limit, reprocess=reprocess, progress=progress,
+    )
     return result
 
 
@@ -170,13 +129,18 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
             .where(ArticleFile.__table__.c.article_id == article.id)
         )
 
-    # Pick any linked inbox to re-read the body. ArticleList rows are
-    # preloaded; if there isn't one, skip — the article exists only
-    # in a deleted-inbox state, which shouldn't be possible given
-    # the FK cascade, but be defensive.
-    if not article.lists:
-        return "skipped"
-    inbox = session.get(Inbox, article.lists[0].inbox_id)
+    # Pick the canonical inbox to re-read the body. For cross-posts
+    # this is the authoritative attribution; `article.lists[0]` is
+    # ordering-dependent on the SQLA loader and was non-deterministic
+    # for the same article across two backfills. canonical_inbox can
+    # be NULL (warm-up period, or all observations fell below the
+    # auto-promotion threshold), so fall back to the first lists
+    # entry only then.
+    inbox: Inbox | None = article.canonical_inbox
+    if inbox is None:
+        if not article.lists:
+            return "skipped"
+        inbox = session.get(Inbox, article.lists[0].inbox_id)
     if inbox is None:
         return "skipped"
 
@@ -186,7 +150,7 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
         # Mirror unreachable on this host, or the recorded SHA isn't
         # in the local repo (dulwich raises bare KeyError for that).
         # Common in dev and after a partial-mirror rebuild; defer
-        # the work rather than fail loudly — a re-run from a host
+        # the work rather than fail loudly, a re-run from a host
         # with the full mirror picks the article up.
         return "skipped"
     except Exception as exc:

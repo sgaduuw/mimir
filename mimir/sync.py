@@ -5,7 +5,7 @@ available repo. We fetch that, derive the set of epoch numbers, and:
   - `git clone --mirror` any epoch we don't have locally
   - `git fetch` existing local epochs to pull new commits
 
-Both clone and fetch shell out to `git` — its smart-HTTP transport is
+Both clone and fetch shell out to `git`, its smart-HTTP transport is
 faster and more reliable than dulwich's HTTP client for large repos.
 """
 import gzip
@@ -27,15 +27,47 @@ class SyncResult(BaseModel):
     failed: list[str] = []
 
 
-_UA = "mimir-archiver/0.1 (+https://github.com/sgaduuw/mimir)"
+def _user_agent() -> str:
+    """Builds the UA string at call time so the version pinned by
+    `importlib.metadata` in `mimir.__init__` is read (instead of a
+    hardcoded `0.1` that drifts against every release). Resolved
+    lazily to dodge a circular-import edge during package init."""
+    from mimir import __version__
+    return f"mimir/{__version__} (+https://github.com/sgaduuw/mimir)"
+
+
+# Wall-clock caps on the manifest fetch and the two git operations.
+# Without these, a hostile or misbehaving upstream stalls the
+# scheduler tick indefinitely. The git numbers are generous because
+# the first lkml clone is ~1.7 GB and routinely takes several
+# minutes over a residential link; incremental fetch on a settled
+# archive is fast, so its cap is tighter.
+_MANIFEST_TIMEOUT_SEC = 60
+_GIT_CLONE_TIMEOUT_SEC = 1800
+_GIT_FETCH_TIMEOUT_SEC = 600
+
+
+# Size cap on the manifest body. Public-inbox `manifest.js.gz` for
+# lkml is ~70 KiB compressed today; 16 MiB leaves room for growth
+# across all linux-* inboxes while preventing a malicious or
+# corrupt response from OOMing the scheduler.
+_MANIFEST_MAX_BYTES = 16 * 1024 * 1024
 
 
 def fetch_manifest(upstream_url: str) -> dict:
     url = upstream_url.rstrip("/") + "/manifest.js.gz"
     logger.info("fetching manifest %s", url)
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
-    with urllib.request.urlopen(req) as resp:
-        raw = resp.read()
+    req = urllib.request.Request(url, headers={"User-Agent": _user_agent()})
+    with urllib.request.urlopen(req, timeout=_MANIFEST_TIMEOUT_SEC) as resp:
+        # Read one byte past the cap so we can distinguish "fits"
+        # from "blew the cap". The trailing-byte form is the standard
+        # idiom; a separate Content-Length check would lie when the
+        # server omits the header.
+        raw = resp.read(_MANIFEST_MAX_BYTES + 1)
+    if len(raw) > _MANIFEST_MAX_BYTES:
+        raise ValueError(
+            f"manifest body exceeds {_MANIFEST_MAX_BYTES} byte cap"
+        )
     return json.loads(gzip.decompress(raw))
 
 
@@ -102,6 +134,7 @@ def clone_epoch(name: str, clone_url: str, mirror_path: Path) -> Path:
     subprocess.run(
         ["git", "clone", "--mirror", "--", clone_url, str(target)],
         check=True,
+        timeout=_GIT_CLONE_TIMEOUT_SEC,
     )
     return target
 
@@ -111,6 +144,7 @@ def fetch_epoch(epoch_path: Path) -> None:
     subprocess.run(
         ["git", "-C", str(epoch_path), "fetch", "--quiet", "--prune"],
         check=True,
+        timeout=_GIT_FETCH_TIMEOUT_SEC,
     )
 
 
@@ -137,7 +171,12 @@ def sync_epochs(
             clone_epoch(name, clone_url, mirror_path)
             result.cloned.append(name)
             local.add(name)
-        except subprocess.CalledProcessError as exc:
+        except subprocess.SubprocessError as exc:
+            # SubprocessError covers both CalledProcessError (git
+            # itself exited non-zero) and TimeoutExpired (the
+            # wall-clock cap kicked in). Either way the orchestrator
+            # keeps going so a single hung or failed epoch doesn't
+            # block the rest of the tick.
             logger.error("clone of epoch %s failed: %r", name, exc)
             result.failed.append(name)
 
@@ -149,7 +188,7 @@ def sync_epochs(
             try:
                 fetch_epoch(path)
                 result.fetched.append(name)
-            except subprocess.CalledProcessError as exc:
+            except subprocess.SubprocessError as exc:
                 logger.error("fetch of epoch %s failed: %r", name, exc)
                 result.failed.append(name)
 

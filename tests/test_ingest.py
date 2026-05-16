@@ -106,7 +106,7 @@ def test_ingest_new_message_creates_article(seeded_db, tmp_path):
     assert result.dup_batch == 0
     assert result.dup_db == 0
     assert result.failed == 0
-    # IndexNow feeds off this list — must match the `new` bucket exactly.
+    # IndexNow feeds off this list, must match the `new` bucket exactly.
     assert result.new_message_ids == ["fresh@example.com"]
 
     with seeded_db() as s:
@@ -126,7 +126,7 @@ def test_ingest_new_message_ids_only_tracks_new_bucket(seeded_db, tmp_path):
     """`new_message_ids` is the IndexNow feed: only freshly-created
     Articles (the `new` bucket) belong in it. `linked` rows (cross-
     post: the Article already existed, just got a new ArticleList
-    row) and `dup_*` rows must not appear — IndexNow would otherwise
+    row) and `dup_*` rows must not appear, IndexNow would otherwise
     push URLs that didn't actually become discoverable this tick."""
     alpha = _alpha(seeded_db)
     _build_pubinbox_repo(tmp_path / "0.git", [
@@ -150,7 +150,7 @@ def test_ingest_extracts_diff_touched_paths_for_patch_body(
     seeded_db, tmp_path,
 ):
     """Patch bodies get one ArticleFile row per `diff --git`
-    header. The b/ side is stored — that's the path reviewers and
+    header. The b/ side is stored; that's the path reviewers and
     MAINTAINERS globs look at."""
     alpha = _alpha(seeded_db)
     patch_body = (
@@ -261,7 +261,7 @@ def test_ingest_linked_cross_post_does_not_double_add_files(
     seeded_db, tmp_path,
 ):
     """When a message gets `linked` (already in another inbox),
-    the existing Article retains its ArticleFile rows — the linked
+    the existing Article retains its ArticleFile rows, the linked
     row doesn't trigger re-extraction. Otherwise a cross-posted
     patch would accumulate duplicate rows per linked inbox."""
     alpha = _alpha(seeded_db)
@@ -296,7 +296,7 @@ def test_ingest_linked_cross_post_does_not_double_add_files(
                 select(ArticleFile).where(ArticleFile.article_id == art.id)
             ).scalars()
         ]
-    # Exactly one row — not duplicated across the two linked inboxes.
+    # Exactly one row, not duplicated across the two linked inboxes.
     assert paths == ["fs/x/file.c"]
 
 
@@ -380,7 +380,7 @@ def test_ingest_groups_v1_and_v2_under_same_series_key(seeded_db, tmp_path):
 
 def test_ingest_linked_when_message_id_already_in_other_inbox(seeded_db, tmp_path):
     """art2@example.com is in beta (seeded). Ingesting it into alpha
-    must reuse the existing Article and add an article_lists row —
+    must reuse the existing Article and add an article_lists row  
     that's the `linked` bucket."""
     alpha = _alpha(seeded_db)
     _build_pubinbox_repo(tmp_path / "0.git", [_rfc5322("art2@example.com")])
@@ -571,7 +571,7 @@ def test_failed_parse_persists_parse_failures_row(seeded_db, tmp_path):
     assert row.commit_sha == head
     assert row.epoch == "0.git"
     assert row.attempts == 1
-    assert row.error_class  # whatever parser raises — class name pinned
+    assert row.error_class  # whatever parser raises, class name pinned
     assert row.first_seen == row.last_attempt
 
 
@@ -795,6 +795,78 @@ def test_replay_failures_skips_when_mirror_missing(seeded_db, tmp_path, monkeypa
         ).scalar_one() == 1
 
 
+def test_replay_failures_closes_cached_repos(seeded_db, tmp_path, monkeypatch):
+    """`replay_failures` caches one dulwich `Repo` per epoch to avoid
+    re-opening pack files for back-to-back rows in the same epoch.
+    `Repo` holds FDs on object packs, refs, and the loose-object dir
+    and has no `__del__`, so without an explicit teardown the FDs
+    leak until the function-scoped dict is GC'd. On long replays
+    spanning many epochs this is observable as FD exhaustion.
+
+    Seed failure rows in two epochs so the cache actually fills with
+    more than one entry, then patch `mimir.ingest.Repo` to track
+    `close()` invocations. Both cached repos must be closed before
+    `replay_failures` returns."""
+    import datetime as _dt
+
+    from mimir.ingest import replay as ingest_mod
+    import mimir.parser
+
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "alpha-fd"
+    mirror_root.mkdir()
+
+    bad = b"From: a@b.example\r\nSubject: no msgid\r\n\r\nbody"
+    _build_pubinbox_repo(mirror_root / "0.git", [bad])
+    _build_pubinbox_repo(mirror_root / "1.git", [bad])
+    sha0 = Repo(str(mirror_root / "0.git")).head().decode()
+    sha1 = Repo(str(mirror_root / "1.git")).head().decode()
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        now = _dt.datetime.now(_dt.timezone.utc)
+        for epoch, sha in [("0.git", sha0), ("1.git", sha1)]:
+            s.add(ParseFailure(
+                inbox_id=ix.id,
+                epoch=epoch,
+                commit_sha=sha,
+                error_class="ValueError",
+                error_message="seeded",
+                attempts=1,
+                first_seen=now,
+                last_attempt=now,
+            ))
+        s.commit()
+
+    closed: list[str] = []
+    original_repo = ingest_mod.Repo
+
+    class TrackedRepo(original_repo):
+        def close(self):
+            closed.append(str(self.path))
+            return super().close()
+
+    monkeypatch.setattr(ingest_mod, "Repo", TrackedRepo)
+    # Parser still raises on the seeded blob (no Message-ID), so
+    # both rows stay in the still_failed bucket. The point is to
+    # exercise the repo_cache cleanup path, not the recovery path.
+    _ = mimir.parser  # ensure import order matches sibling tests
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    result = replay_failures(ix)
+    assert result.attempted == 2
+    assert result.still_failed == 2
+
+    assert len(closed) == 2, (
+        f"expected 2 Repo.close() calls (one per cached epoch); got {len(closed)}: "
+        f"{closed!r}"
+    )
+    closed_basenames = {Path(p).name for p in closed}
+    assert closed_basenames == {"0.git", "1.git"}
+
+
 # Auto-ANALYZE on threshold-crossing ingest
 
 
@@ -813,7 +885,7 @@ def _setup_alpha_with_messages(seeded_db, tmp_path, n: int) -> Inbox:
 
 
 def _spy_text(monkeypatch) -> list[str]:
-    from mimir import ingest as ingest_mod
+    from mimir.ingest import orchestrate as ingest_mod
     seen: list[str] = []
     real_text = ingest_mod.text
     def _spy(stmt):
@@ -979,7 +1051,7 @@ def test_ingest_canonical_null_when_no_known_address_matches(seeded_db, tmp_path
 
 def test_promote_list_address_below_threshold_skips(seeded_db):
     """Below MIN_PROMOTE_OBSERVATIONS samples, promotion stays its
-    hand — even with a clear modal address."""
+    hand, even with a clear modal address."""
     alpha = _alpha(seeded_db)
     with seeded_db() as s:
         s.add(InboxAddressObservation(
@@ -1292,7 +1364,7 @@ def test_backfill_records_observations(seeded_db, tmp_path):
 # Regression: RFC 5322 dates with `-0000` come back tz-naive from
 # email.utils.parsedate_to_datetime. Mixing those into max() with
 # tz-aware dates raised TypeError mid-ingest and rolled back the
-# whole batch — production lkml ingest crashed after walking 6M
+# whole batch, production lkml ingest crashed after walking 6M
 # commits with only 26 articles persisting.
 
 
@@ -1494,6 +1566,102 @@ def test_ingest_with_multiple_workers_succeeds(seeded_db, tmp_path):
     assert result.failed == 0
 
 
+def test_ingest_parser_failure_mid_worker_batch_preserves_order_and_resumes(
+    seeded_db, tmp_path,
+):
+    """A parser-raising message buried inside a multi-chunk
+    `ProcessPoolExecutor.map` run must not derail surrounding commits.
+
+    `_parse_iter` relies on `pool.map`'s in-input-order contract;
+    a regression that batched results out of order would assign the
+    wrong `commit_time` (and therefore `Article.date`) to surviving
+    commits on either side of the failure. The pre-existing
+    `test_ingest_with_multiple_workers_succeeds` covered four clean
+    messages in one PARSE_CHUNKSIZE chunk and missed this.
+
+    Setup: 100 sequential commits with the 50th holding a Message-ID-
+    less blob (parse_message raises ValueError). With
+    `PARSE_CHUNKSIZE=50` and `workers=2`, the failure lands inside
+    chunk 2, both workers actually run, and the failure is mid-
+    chunk in input order.
+
+    Assertions: (a) the 99 surviving articles' message-ids match the
+    seeded order when read back by `date`; (b) exactly one
+    `parse_failures` row exists with the failing commit's SHA;
+    (c) a second `ingest_epoch` walks zero commits because the walker
+    excludes via `IngestState.last_commit_sha = HEAD`."""
+    bad_idx = 50
+    messages = [_rfc5322(f"m{i:03d}@example.com") for i in range(100)]
+    messages[bad_idx] = b"From: a@b.example\r\nSubject: no msgid\r\n\r\nbody"
+
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "alpha-mid-chunk"
+    mirror_root.mkdir()
+    _build_pubinbox_repo(mirror_root / "0.git", messages)
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        s.commit()
+        result = ingest_epoch(s, ix, "0.git", mirror_root / "0.git", workers=2)
+
+    assert result.new == 99
+    assert result.failed == 1
+
+    # (a) Order-preservation. Commit_time = 1700000000 + i in
+    # _build_pubinbox_repo, so ordering articles by date recovers the
+    # seeded sequence (minus the failing index). Filter to the
+    # corpus message-ids we just inserted so pre-existing fixture
+    # rows don't leak into the assertion.
+    expected = [f"m{i:03d}@example.com" for i in range(100) if i != bad_idx]
+    with seeded_db() as s:
+        got = list(s.execute(
+            select(Article.message_id)
+            .where(Article.message_id.like("m%@example.com"))
+            .order_by(Article.date)
+        ).scalars())
+    assert got == expected, (
+        f"pool.map order-preservation broken; head={got[:5]} tail={got[-5:]}"
+    )
+
+    # (b) Exactly one parse_failures row, pointing at the failing
+    # commit. Walk the linear chain forward from root to find the
+    # idx-th commit's SHA, the seeded repo has no branching.
+    repo = Repo(str(mirror_root / "0.git"))
+    chain: list[str] = []
+    cur = repo.head()
+    while cur is not None:
+        chain.append(cur.decode())
+        commit = repo[cur]
+        cur = commit.parents[0] if commit.parents else None
+    chain.reverse()
+    bad_sha = chain[bad_idx]
+
+    with seeded_db() as s:
+        fails = list(s.execute(
+            select(ParseFailure).where(ParseFailure.inbox_id == alpha.id)
+        ).scalars())
+    assert len(fails) == 1
+    assert fails[0].commit_sha == bad_sha
+    assert fails[0].error_class == "ValueError"
+
+    # (c) Resume cleanly: IngestState.last_commit_sha is at HEAD, so
+    # a re-walk yields nothing.
+    head = chain[-1]
+    with seeded_db() as s:
+        state = s.execute(
+            select(IngestState).where(
+                IngestState.inbox_id == alpha.id,
+                IngestState.epoch == "0.git",
+            )
+        ).scalar_one()
+        assert state.last_commit_sha == head
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        second = ingest_epoch(s, ix, "0.git", mirror_root / "0.git", workers=2)
+    assert second.new == 0
+    assert second.failed == 0
+
+
 # --------------------------------------------------------------------------
 # KEPT_HEADERS filter.
 #
@@ -1560,7 +1728,7 @@ def test_kept_headers_filter_drops_received_dkim_spam(seeded_db, tmp_path):
 # --------------------------------------------------------------------------
 # replay_failures cross-post branch.
 #
-# Existing tests cover replay_failures' three primary buckets — recovered
+# Existing tests cover replay_failures' three primary buckets, recovered
 # (new article), still_failed (parser still rejects), skipped (mirror
 # gone). The cross-post branch at ingest.py:506-518 (article already
 # exists in another inbox, missing only the article_lists row for
@@ -1618,7 +1786,7 @@ def test_replay_failures_cross_post_links_existing_article(
         ).scalar_one_or_none()
         assert alpha_link is None
 
-    # Read the SHA out of alpha's epoch — replay needs a real blob to parse.
+    # Read the SHA out of alpha's epoch, replay needs a real blob to parse.
     from dulwich.repo import Repo as DulwichRepo
 
     repo = DulwichRepo(str(alpha_mirror / "0.git"))

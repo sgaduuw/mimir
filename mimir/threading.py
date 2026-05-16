@@ -44,7 +44,7 @@ class ActiveThread:
 
     `recent_count` counts every message in the window (including the root
     if it was sent during the window). `reply_count` is the same minus
-    the root — so a brand-new thread posted today with no responses yet
+    the root, so a brand-new thread posted today with no responses yet
     shows reply_count=0, recent_count=1.
     """
     id: int
@@ -160,6 +160,7 @@ def _active_threads_query(
     *,
     order_by: str = "score",
     limit: int | None = None,
+    extra_ctes_sql: str = "",
     extra_seed_filter_sql: str = "",
     extra_params: dict | None = None,
 ) -> list[ActiveThread]:
@@ -169,17 +170,23 @@ def _active_threads_query(
     `limit`: None means unbounded (return every thread with at least one
     message in the window).
 
+    `extra_ctes_sql`: optional comma-suffixed CTE definitions injected
+    after `WITH RECURSIVE` and before `chains`. The per-subsystem
+    dashboard uses this to materialise the path-matched article ids
+    once (via `AS MATERIALIZED`) instead of re-evaluating the
+    `article_files` subquery for every seed row.
+
     `extra_seed_filter_sql`: optional SQL fragment AND-ed into the
-    seed step's WHERE clause. Used by the per-subsystem dashboard
-    to constrain the recursive walk to messages touching specific
-    paths. Caller-supplied — must reference bind parameters only
-    via the `extra_params` dict (not string-interpolated values).
+    seed step's WHERE clause. Used together with `extra_ctes_sql`
+    to reference the materialised CTE. Caller-supplied, must
+    reference bind parameters only via the `extra_params` dict
+    (not string-interpolated values).
     """
     order_sql = _ORDER_CLAUSES[order_by]
     limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
     sql = text(
         f"""
-        WITH RECURSIVE chains AS (
+        WITH RECURSIVE {extra_ctes_sql} chains AS (
             SELECT a.id AS recent_id, a.message_id AS curr, a.thread_parent,
                    a.date AS recent_date, 0 AS depth
             FROM articles a
@@ -206,7 +213,14 @@ def _active_threads_query(
                COUNT(*) AS recent_count,
                SUM(CASE WHEN r.recent_id <> a.id THEN 1 ELSE 0 END) AS reply_count,
                MAX(r.recent_date) AS last_activity,
-               SUM(pow(0.5, julianday('now') - julianday(r.recent_date))) AS score
+               -- Clamp at 0 days: pow(0.5, -N) blows up to huge values
+               -- and lets a single future-dated row (typoed Date: 2099,
+               -- mis-ingested commit_time, anything) dominate the
+               -- ranking. articles.date is the public-inbox commit time
+               -- per CONTEXT.md so future dates shouldn't arise on the
+               -- SQL row, but the audit (2026-05-15) flagged the
+               -- missing defensive clamp as a real silent-bug surface.
+               SUM(pow(0.5, MAX(julianday('now') - julianday(r.recent_date), 0))) AS score
         FROM roots r JOIN articles a ON a.message_id = r.root_id
         GROUP BY r.root_id
         ORDER BY {order_sql}
@@ -288,7 +302,7 @@ def threads_for_day(
     )
 
 
-# Cap on the "what I missed" window — keeps the recursive CTE
+# Cap on the "what I missed" window, keeps the recursive CTE
 # bounded for a UI surface that anyone can hit. Operators returning
 # from a holiday longer than this see "showing last 90 days" rather
 # than a 30-second query.

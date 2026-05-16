@@ -11,9 +11,11 @@ Off-by-default: `notify` and the route registration in `web.py` are
 both no-ops unless `settings.indexnow_key` is set. See
 `Settings.indexnow_key` for the operator-facing knobs.
 
-`build_urls` is the message-IDs-to-canonical-URLs bridge — it lives
-here, not in `cli.py`, so the CLI seam stays small and the URL-
-construction tests can exercise the same path the scheduler uses.
+`build_urls` is the message-IDs-to-canonical-URLs bridge, it lives
+here, not in `cli.py`, so the CLI seam stays small. The canonical-
+pick + URL-format helpers live in `mimir.web` (single source of
+truth for the rule that decides which inbox owns a cross-post); we
+import them here rather than re-implementing.
 """
 
 import json
@@ -27,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from mimir.config import settings
 from mimir.models import Article, ArticleList, Inbox
+from mimir.web import _canonical_url_for
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +52,12 @@ def build_urls(session: Session, message_ids: list[str], base: str) -> list[str]
     `Article.canonical_inbox_id`, falling back to the alphabetically-
     first linked inbox) and composes `<base>/<inbox>/<YYYY>/<MM>/<id>`.
     Articles with no linked inbox (corrupt rows, shouldn't happen) or
-    no date are skipped silently — the alternative is a dangling URL
+    no date are skipped silently, the alternative is a dangling URL
     in the push, which is worse than a missed notification.
 
     Two queries: one for Articles, one for their ArticleList joins.
     Both bounded by len(message_ids), which is capped above by the
-    `update` caller — no risk of pulling the full archive.
+    `update` caller, no risk of pulling the full archive.
     """
     if not message_ids:
         return []
@@ -82,26 +85,20 @@ def build_urls(session: Session, message_ids: list[str], base: str) -> list[str]
         links = links_by_article.get(article.id, [])
         if not links:
             continue
-        canonical_id = article.canonical_inbox_id
-        canonical_name: str | None = None
-        if canonical_id is not None:
-            for ix_id, name in links:
-                if ix_id == canonical_id:
-                    canonical_name = name
-                    break
-        if canonical_name is None:
-            canonical_name = min(name for _, name in links)
-        urls.append(
-            f"{base}/{canonical_name}/{article.date.year}/"
-            f"{article.date.month:02d}/{article.id}"
-        )
+        # Canonical-pick + path-format lives in `mimir.web`; this
+        # call yields the same string the web route would render
+        # as `<link rel="canonical">`, so IndexNow pushes match
+        # the URL search engines see on subsequent crawls.
+        url = _canonical_url_for(article, links, base=base)
+        if url is not None:
+            urls.append(url)
     return urls
 
 
 def notify(urls: list[str]) -> int:
     """POST `urls` to IndexNow. Returns the number of URLs that were
     submitted (0 on no-op, no key, no base URL, no URLs, or any
-    network/HTTP failure — we never raise to the caller).
+    network/HTTP failure, we never raise to the caller).
 
     No-ops silently when `settings.indexnow_key` or
     `settings.site_base_url` is unset, so the scheduler can call
@@ -123,7 +120,7 @@ def notify(urls: list[str]) -> int:
         if urls and not base:
             logger.warning(
                 "indexnow: key set but site_base_url empty, cannot build "
-                "keyLocation — skipping push"
+                "keyLocation, skipping push"
             )
         return 0
 
@@ -170,7 +167,7 @@ def notify(urls: list[str]) -> int:
                 len(chunk), exc,
             )
         except Exception as exc:
-            # Any other surprise (JSON encoding, socket weirdness) —
+            # Any other surprise (JSON encoding, socket weirdness)  
             # log and keep going. The whole feature is best-effort;
             # the sitemap is the durable discovery path.
             logger.warning(
