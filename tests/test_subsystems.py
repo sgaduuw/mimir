@@ -1294,7 +1294,7 @@ def test_subsystem_path_filter_uses_index_seeks(seeded_db):
     Uses both a directory-prefix include and an exclude so the test
     covers the UNION branches and the per-row NOT(exclude) tail."""
     from sqlalchemy import text
-    from mimir.subsystems_dashboard.reads import _subsystem_path_filter_sql
+    from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
 
     with seeded_db() as s:
         sub = _add_subsystem(
