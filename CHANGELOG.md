@@ -11,6 +11,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Cover-letter patch-series sidebar (`/<inbox>/.../msg/<id>` on a
+  `[PATCH 0/N]` view) no longer lazy-loads the inbox row for each
+  cross-post inbox the series has touched. The handler eager-loads
+  `Article.lists` but the chain stopped there; per-revision
+  `al.inbox.name` traversal fell back to lazy fetches, deduped by
+  the identity map to one query per distinct inbox above the
+  eager-load. Chained the selectinload through `ArticleList.inbox`
+  so the worst case is zero extra round-trips. Regression test pins
+  that no `WHERE inboxes.id = ?` (per-id lazy form) fires during a
+  cross-posted series render.
+
 ## [1.21.3] - 2026-05-16
 
 ### Fixed

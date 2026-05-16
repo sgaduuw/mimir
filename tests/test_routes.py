@@ -4088,3 +4088,84 @@ def test_reviewer_view_inbox_scoped(client, tmp_path):
     assert "beta-only patch" not in a
     assert "No attestations" in a
     assert "beta-only patch" in b
+
+
+def test_message_page_patch_series_revisions_does_not_n1_inbox(client, tmp_path):
+    """The cover-letter patch-series sidebar (issue 65) iterates each
+    revision's `lists` and reads `al.inbox.name` per `ArticleList`. The
+    handler eager-loads the `Article.lists` collection, but until #198
+    the eager-load did not chain through to `ArticleList.inbox`, so
+    each per-revision `al.inbox.name` traversal triggered a lazy fetch
+    per distinct inbox the series had touched.
+
+    SQLAlchemy's identity map dedupes within the session so the worst
+    case scaled with distinct-inbox-count rather than `len(revisions)
+    * len(lists)`, but for a cross-posted series the per-render cost
+    was still bounded by (extra-inboxes-in-series + 1) round-trips
+    above the eager-load. Cover letters render on every load.
+
+    The fix chained `.selectinload(Article.lists).selectinload(
+    ArticleList.inbox)`. Pin that by counting `FROM inboxes` queries
+    fired during the render: with the fix the only inbox SELECTs are
+    the URL-resolution lookup (1) and the bulk selectinload (1).
+    Without the fix a third per-id SELECT would fire for the
+    cross-post inbox the identity map hasn't cached yet."""
+    from sqlalchemy import event
+    from mimir.extensions import SessionLocal, engine
+    from mimir.models import Article, ArticleList, Inbox
+    from sqlalchemy import select as _sa_select
+
+    # Two cover-letter revisions, same author + title so they share a
+    # `patch_series_key`. Ingest both into alpha via the public helper.
+    (tmp_path / "v1").mkdir()
+    (tmp_path / "v2").mkdir()
+    common_author = "Alice <a@example>"
+    _, v1_url = _ingest_one_article(
+        tmp_path / "v1", "alpha", "n1-v1-cover@example.com",
+        subject="[PATCH 0/3] eager-load chain",
+        author=common_author,
+    )
+    _, v2_url = _ingest_one_article(
+        tmp_path / "v2", "alpha", "n1-v2-cover@example.com",
+        subject="[PATCH v2 0/3] eager-load chain",
+        author=common_author,
+    )
+    # Cross-post both revisions to beta so each `Article.lists` has
+    # two `ArticleList` rows pointing at distinct inboxes; that's the
+    # shape the lazy load fell over on.
+    with SessionLocal() as s:
+        beta = s.execute(_sa_select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        for mid in ("n1-v1-cover@example.com", "n1-v2-cover@example.com"):
+            art = s.execute(
+                _sa_select(Article).where(Article.message_id == mid)
+            ).scalar_one()
+            s.add(ArticleList(
+                article_id=art.id, inbox_id=beta.id,
+                epoch="0.git", commit_sha="ee" * 20,
+            ))
+        s.commit()
+
+    inbox_selects: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _grab(conn, cursor, statement, parameters, context, executemany):
+        if "FROM inboxes" in statement:
+            inbox_selects.append(statement)
+
+    try:
+        resp = client.get(v2_url)
+    finally:
+        event.remove(engine, "before_cursor_execute", _grab)
+    assert resp.status_code == 200
+    # Three `FROM inboxes` SELECTs are expected, all batched: the URL
+    # inbox-name resolution (`WHERE inboxes.name = ?`), the `all_links`
+    # bulk fetch (`JOIN article_lists WHERE al.article_id = ?`), and
+    # the chained selectinload for the patch-series revisions (`WHERE
+    # inboxes.id IN (...)`). Any per-id `WHERE inboxes.id = ?` is the
+    # lazy-load signature and means the chain broke.
+    lazy = [s for s in inbox_selects if "inboxes.id = ?" in s]
+    assert not lazy, (
+        f"patch-series render lazy-loaded {len(lazy)} inbox row(s); "
+        "the selectinload chain through ArticleList.inbox broke:\n"
+        + "\n---\n".join(lazy)
+    )
