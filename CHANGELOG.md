@@ -13,6 +13,25 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Changed
 
+- Message pages on patch articles now render a consolidated
+  per-patch state card at the top of the body, replacing the
+  previous standalone "Applied as" line and "Patch series"
+  sidebar. The card has four rows, each rendered only when it has
+  data: **Trailers** (per-role tally across `Reviewed-by`,
+  `Acked-by`, `Tested-by`, `Reported-by`, `Suggested-by`,
+  `Co-developed-by`, `Reported-and-tested-by`, with a
+  `(N maintainer)` chip marking the subset attested by an
+  M:/R: address on a subsystem this patch touches);
+  **Landed** (mainline-commit landings via `Link:`-trailer
+  reverse lookup, same surface as the old "Applied as" aside);
+  **Series revisions** (cover-letter timeline with
+  `[diff vs current]` links per non-current revision, carried
+  over from the inter-revision diff route added under #210);
+  **Activity** (days since the last reply in the thread). The
+  card is gated on the subject reading as `[PATCH …]` so prose
+  and `[GIT PULL]` / `[ANNOUNCE]` brackets get no card at all.
+  Result round-trips through the existing 5-min cache so the
+  render stays cheap on repeated views.
 - Message page (`/<inbox>/<year>/<month>/<id>`) now uses ETag-based
   conditional revalidation instead of a 60-second `max-age` window.
   The route emits an ETag computed from `(article.id,

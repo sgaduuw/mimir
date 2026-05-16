@@ -235,60 +235,47 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    controller needs. #}
 {% endif %}
 <div class="message-page-main">
-{# Mainline application(s): if this article's Message-ID is
-   referenced by a `Link:` trailer in a Linus-tree commit, surface
-   the commit SHA + date. The patch-page reader's "did this land?"
-   question is the highest-value differentiator on the issue-67/
-   issue-66 cluster, so it gets rendered prominently, above the
-   message body, not folded behind a <details>. Skipped silently
-   when there's no recorded application; the absence isn't
-   informative (the data may simply not be indexed, or the commit
-   may not have carried a `Link:` trailer). #}
-{% if mainline_applications %}
-<aside class="mainline-applications" style="margin-block: 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--pico-primary); background: var(--pico-muted-background-color);">
-  {% for app in mainline_applications %}
-  <small>
-    <strong>Applied as</strong>
-    <code>{{ app.commit_sha[:12] }}</code>
-    in the <code>{{ app.tree_name }}</code> tree
-    on {{ app.committed_at.strftime('%Y-%m-%d') if app.committed_at else 'unknown' }}
-  </small>
-  {% if not loop.last %}<br>{% endif %}
-  {% endfor %}
-</aside>
-{% endif %}
-{# Patch-series timeline: when this article is a cover letter
-   (patch_series_key populated at ingest), surface the v1 → v2 →
-   v3 timeline pointing at each revision. The current article is
-   highlighted; others are links. The arrow notation reads left-
-   to-right oldest-to-newest. Skipped silently when there's no
-   series, most articles. #}
-{% if patch_series_revisions and patch_series_revisions|length > 1 %}
-{# `current_version` is the version-string of the article being viewed;
-   used to wire the "diff vs current" links to the right `to=` target
-   without needing the current article's URL recomputed per row. #}
-{% set current_version = article.patch_series_version %}
-<aside class="patch-series" style="margin-block: 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--pico-primary); background: var(--pico-muted-background-color);">
-  <small>
-    <strong>Series revisions:</strong>
-    {% for rev, url in patch_series_revisions %}
-      {% if rev.id == article.id %}
-      <strong>{{ rev.patch_series_version }}</strong>
-      ({{ rev.date.strftime('%Y-%m-%d') if rev.date else '?' }})
-      {% else %}
-      <a href="{{ url }}">{{ rev.patch_series_version }}</a>
-      ({{ rev.date.strftime('%Y-%m-%d') if rev.date else '?' }})
-      {# Inline "diff vs current" link per non-current revision; pos=cover
-         because the sidebar only renders on cover-letter pages today
-         (in-series patches don't carry `patch_series_key` yet, see #212).
-         The diff route 404s gracefully on a missing counterpart, so a
-         broken series state surfaces an actionable message instead of a
-         dead page. #}
-      <a href="/{{ inbox_name }}/series/{{ article.patch_series_key }}/diff?from={{ rev.patch_series_version }}&amp;to={{ current_version }}&amp;pos=cover"
-         title="show what changed between {{ rev.patch_series_version }} and {{ current_version }} of the cover letter">[diff vs current]</a>
-      {% endif %}
-      {% if not loop.last %} → {% endif %}
-    {% endfor %}
+{# Patch state card (#208). Consolidates trailer roll-up, mainline-
+   landing status, patch-series timeline (with per-revision diff
+   links, carried over from #210), and thread activity into one
+   surface near the top of the message body. Hidden on non-patch
+   articles. Individual rows skipped when their data is empty so
+   the card scales from one-line minimal to four-line full. #}
+{% if patch_state and patch_state.is_patch %}
+<aside class="patch-state" style="margin-block: 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--pico-primary); background: var(--pico-muted-background-color);">
+  {% if patch_state.trailers %}
+  <small><strong>Trailers:</strong>
+    {% for t in patch_state.trailers -%}
+      {{ t.total }} {{ t.role }}{% if t.maintainer_count %} ({{ t.maintainer_count }} maintainer){% endif %}{% if not loop.last %}, {% endif %}
+    {%- endfor %}
+  </small><br>
+  {% endif %}
+  {% if patch_state.mainline_landings %}
+  <small><strong>Landed:</strong>
+    {% for app in patch_state.mainline_landings -%}
+      <code>{{ app.commit_sha[:12] }}</code> in <code>{{ app.tree_name }}</code>{% if app.committed_at %} on {{ app.committed_at.strftime('%Y-%m-%d') }}{% endif %}{% if not loop.last %}, {% endif %}
+    {%- endfor %}
+  </small><br>
+  {% endif %}
+  {% if patch_state.series %}
+  <small><strong>Series revisions:</strong>
+    {% for entry in patch_state.series -%}
+      {% if entry.is_current %}<strong>{{ entry.version }}</strong>{% else %}<a href="{{ entry.url }}">{{ entry.version }}</a>{% endif %}
+      ({{ entry.date.strftime('%Y-%m-%d') if entry.date else '?' }}){% if entry.diff_url %}
+      <a href="{{ entry.diff_url }}" title="show what changed between {{ entry.version }} and the current revision">[diff vs current]</a>{% endif %}{% if not loop.last %} → {% endif %}
+    {%- endfor %}
+  </small><br>
+  {% endif %}
+  <small><strong>Activity:</strong>
+    {% if patch_state.days_since_last_reply is none %}
+      No replies
+    {% elif patch_state.days_since_last_reply == 0 %}
+      Last reply today
+    {% elif patch_state.days_since_last_reply == 1 %}
+      Last reply 1 day ago
+    {% else %}
+      Last reply {{ patch_state.days_since_last_reply }} days ago
+    {% endif %}
   </small>
 </aside>
 {% endif %}
