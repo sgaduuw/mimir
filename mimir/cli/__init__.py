@@ -54,9 +54,9 @@ from mimir.cli.ingest import (
     ingest_command,
     reindex_command,
     update_command,
-    update_mainline_command,
 )
 from mimir.cli.initdb import init_db_command
+from mimir.cli.mainline import update_mainline_command
 from mimir.cli.maintenance import analyze_command, vacuum_command
 from mimir.cli.show import show_command
 
