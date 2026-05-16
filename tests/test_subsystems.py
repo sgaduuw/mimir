@@ -597,6 +597,32 @@ def test_daily_volume_in_subsystem_returns_zero_series_for_wildcard_only(
     assert all(c == 0 for _, c in spark.days)
 
 
+def test_daily_volume_in_subsystem_returns_zero_series_for_zero_paths(
+    seeded_db,
+):
+    """A subsystem with no path rules at all (no F:, no X:) hits the
+    `inc_sql == ""` short-circuit in `_subsystem_path_filter_sql`, which
+    returns None and the helper falls back to the zero-filled series
+    without running an unfiltered SQL scan over `article_files`. Pin
+    that here: a regression that ran the query unfiltered would either
+    return non-zero counts (any article would match) or crash on an
+    empty WHERE clause."""
+    from mimir.subsystems_dashboard import recent_articles_in_subsystem
+
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NOPATHS", "Supported", files=[])
+        # Seed an article that would match anything to prove the
+        # filter is in effect: the helper must NOT pick this up.
+        _add_recent_thread_root(s, "noisy@x", ["any/path/here.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        spark = daily_volume_in_subsystem(s, alpha, sub, days=5, force=True)
+        recents = recent_articles_in_subsystem(s, alpha, sub, limit=10, force=True)
+    assert len(spark.days) == 5
+    assert all(c == 0 for _, c in spark.days)
+    assert recents == []
+
+
 # `active_reviewers_in_subsystem` integration, slice 2 of #97.
 # The extractor itself is exercised in tests/test_trailers.py; here
 # we pin the JOIN through article_files (subsystem path filter) +

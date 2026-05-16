@@ -1134,6 +1134,59 @@ def test_admin_failures_replay_happy_path_recovers_and_clears(
     assert remaining == 0
 
 
+def test_admin_failures_replay_epoch_filter_isolates_one_epoch(seeded_db):
+    """`--epoch N.git` restricts the replay to that epoch's failure
+    rows; rows in other epochs must not be `attempted` (covers
+    cli.py + ingest.py:511-512 selective-replay branch).
+
+    Operators reach for `--epoch` when a parser fix only affects one
+    epoch's corpus shape (e.g. a multipart variant only present in
+    the lkml 2020-era epoch), wanting to keep newer epochs out of
+    scope. A regression that ignored the filter would silently
+    replay everything."""
+    import datetime as _dt
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox, ParseFailure
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        s.add_all([
+            ParseFailure(
+                inbox_id=ix.id, epoch="0.git", commit_sha="aa" * 20,
+                error_class="X", error_message="x", first_seen=now,
+                last_attempt=now, attempts=1,
+            ),
+            ParseFailure(
+                inbox_id=ix.id, epoch="1.git", commit_sha="bb" * 20,
+                error_class="X", error_message="x", first_seen=now,
+                last_attempt=now, attempts=1,
+            ),
+        ])
+        s.commit()
+
+    result = CliRunner().invoke(
+        admin_failures_replay_command, ["alpha", "--epoch", "0.git"],
+    )
+    assert result.exit_code == 0, result.output
+    # Mirror is absent, so 0.git's row gets `skipped`, not `recovered`.
+    # The filter assertion is on `attempted=1`: only the 0.git row
+    # entered the loop. Without the filter `attempted` would be 2.
+    assert "attempted=1" in result.output
+    assert "skipped=1" in result.output
+
+    # Both rows remain in the DB: 0.git was skipped (mirror absent,
+    # continue without delete) and 1.git was filtered out entirely.
+    # The filter assertion is the `attempted=1` count above; this
+    # secondary check pins that no row was silently consumed.
+    with SessionLocal() as s:
+        epochs = set(s.execute(
+            select(ParseFailure.epoch).select_from(ParseFailure)
+        ).scalars().all())
+    assert epochs == {"0.git", "1.git"}
+
+
 # `init-db` -- bootstrap helper; documented in CLAUDE.md as a quick
 # local-dev path that the operator falls back to when alembic isn't
 # applicable. Untested historically because alembic is the real
@@ -1295,6 +1348,59 @@ def test_admin_inbox_remove_yes_drops_inbox_and_orphans(seeded_db):
     assert "art4@example.com" not in ids_after
     assert "art2@example.com" in ids_after
     assert "art3@example.com" in ids_after
+
+
+def test_admin_inbox_update_unknown_clickexception(seeded_db):
+    """update on a non-existent inbox surfaces InboxNotFound as a
+    ClickException (covers cli.py:1383-1384)."""
+    result = CliRunner().invoke(admin_inbox_update_command, [
+        "no-such-inbox", "--mirror-path", "/tmp/anywhere",
+    ])
+    assert result.exit_code != 0
+    assert "no-such-inbox" in result.output
+
+
+def test_admin_inbox_update_invalid_value_clickexception(seeded_db):
+    """update with an invalid upstream_url surfaces InboxValidationError
+    as a ClickException (covers cli.py:1385-1386)."""
+    result = CliRunner().invoke(admin_inbox_update_command, [
+        "alpha", "--upstream-url", "not-a-url",
+    ])
+    assert result.exit_code != 0
+
+
+def test_admin_inbox_remove_unknown_clickexception(seeded_db):
+    """remove on a non-existent inbox raises ClickException via the
+    pre-flight get_inbox call (covers cli.py:1422-1423)."""
+    result = CliRunner().invoke(admin_inbox_remove_command, [
+        "no-such-inbox", "--yes",
+    ])
+    assert result.exit_code != 0
+    assert "no-such-inbox" in result.output
+
+
+def test_admin_inbox_remove_inbox_data_skips_when_mirror_absent(
+    seeded_db, tmp_path,
+):
+    """--remove-inbox-data announces the rm target but skips the
+    confirm prompt when the path doesn't exist on disk (covers
+    cli.py:1426-1428). The seeded `alpha` inbox uses `/tmp/alpha`
+    which is absent in CI."""
+    # Point alpha at a path that definitely doesn't exist.
+    absent = tmp_path / "definitely-not-a-mirror"
+    result = CliRunner().invoke(admin_inbox_update_command, [
+        "alpha", "--mirror-path", str(absent),
+    ])
+    assert result.exit_code == 0, result.output
+
+    result = CliRunner().invoke(admin_inbox_remove_command, [
+        "alpha", "--yes", "--remove-inbox-data",
+    ])
+    assert result.exit_code == 0, result.output
+    # Announcement happens regardless of existence.
+    assert "--remove-inbox-data set" in result.output
+    # No "removed on-disk mirror" line because the path was absent.
+    assert "removed on-disk mirror" not in result.output
 
 
 def test_admin_inbox_remove_keep_orphans_preserves_articles(seeded_db):

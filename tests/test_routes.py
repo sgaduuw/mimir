@@ -331,7 +331,7 @@ def test_inbox_dashboard_content(client, inbox_name):
     )
 
 
-def test_inbox_today_route_renders_today_label(client, inbox_name):
+def test_inbox_today_route_renders_today_label(client, inbox_name, frozen_clock):
     """`/today` heading must reference the current date (UTC). A
     template change that hardcoded a static label would pass the
     smoke status check but mislabel every daily view."""
@@ -341,14 +341,14 @@ def test_inbox_today_route_renders_today_label(client, inbox_name):
     assert today in body, f"today's date {today!r} missing from /today body"
 
 
-def test_inbox_yesterday_route_renders_yesterday_label(client, inbox_name):
+def test_inbox_yesterday_route_renders_yesterday_label(client, inbox_name, frozen_clock):
     from datetime import datetime, timedelta, timezone
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     body = client.get(f"/{inbox_name}/yesterday").data.decode()
     assert yesterday in body
 
 
-def test_inbox_since_smoke_recent(client, inbox_name):
+def test_inbox_since_smoke_recent(client, inbox_name, frozen_clock):
     """`/since/<recent-date>` resolves and renders without the cap
     notice; the seeded archive is older than 90d so the body just
     says 'no messages in this window' but the route still 200s."""
@@ -361,7 +361,7 @@ def test_inbox_since_smoke_recent(client, inbox_name):
     assert recent in body
 
 
-def test_inbox_since_caps_window_with_notice(client, inbox_name):
+def test_inbox_since_caps_window_with_notice(client, inbox_name, frozen_clock):
     """A since-date older than 90 days clamps the window to the
     90-day floor and the template surfaces a notice so the operator
     sees why the window starts where it does."""
@@ -382,7 +382,7 @@ def test_inbox_since_malformed_date_404(client, inbox_name):
     assert client.get(f"/{inbox_name}/since/2024-02-30").status_code == 404
 
 
-def test_inbox_since_future_date_404(client, inbox_name):
+def test_inbox_since_future_date_404(client, inbox_name, frozen_clock):
     from datetime import datetime, timedelta, timezone
     future = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d")
     assert client.get(f"/{inbox_name}/since/{future}").status_code == 404
@@ -1292,7 +1292,7 @@ def test_daily_today_title(client, inbox_name):
     assert title.endswith(f" | {inbox_name} | mimir")
 
 
-def test_since_title_shape(client, inbox_name):
+def test_since_title_shape(client, inbox_name, frozen_clock):
     from datetime import datetime, timedelta, timezone
     recent = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
     title = _title_of(client.get(f"/{inbox_name}/since/{recent}").data.decode())
@@ -1300,7 +1300,7 @@ def test_since_title_shape(client, inbox_name):
     assert recent in title
 
 
-def test_daily_view_counts_messages_in_window(client):
+def test_daily_view_counts_messages_in_window(client, frozen_clock):
     """Pin the count-by-window behaviour on `_daily_view`: an
     article sent today is counted, one sent yesterday is not.
     Audit (2026-05-15) flagged the previous
@@ -1710,7 +1710,7 @@ def test_index_emits_website_json_ld(client):
     )
 
 
-def test_thread_summary_helper_counts_and_relative_time():
+def test_thread_summary_helper_counts_and_relative_time(frozen_clock):
     """`_thread_summary` returns author_count (deduped by email) and a
     coarse relative-time string for the most-recent message. Drives
     the closed-state fold one-liner ('23 messages, 5 authors, 2h ago')."""
@@ -3771,6 +3771,29 @@ def test_attachment_index_out_of_range_returns_404(client, tmp_path):
     )
     assert client.get(f"{url}/attachment/99").status_code == 404
     assert client.get(f"{url}/attachment/99/preview").status_code == 404
+
+
+def test_attachment_404_when_blob_unreachable_via_read_message(client, seeded_db):
+    """The attachment route fetches via `read_message`, which raises
+    `MessageNotFound` if the git blob is missing (mirror pruned, ref
+    rewound, mirror disk vanished). The route must 404, not 500
+    (covers web.py:1481-1482).
+
+    The seeded `alpha` inbox points at `/tmp/alpha` which doesn't
+    exist on disk in the test environment, so any read of a seeded
+    article fails inside `_read_blob` and surfaces as MessageNotFound
+    -- the exact race-condition shape this branch defends against."""
+    from sqlalchemy import select
+    from mimir.models import Article
+
+    with seeded_db() as s:
+        art_id = s.execute(
+            select(Article.id).where(Article.message_id == "art1@example.com")
+        ).scalar_one()
+
+    # Both download and preview routes go through `_fetch_article_for_attachment`.
+    assert client.get(f"/alpha/2024/01/{art_id}/attachment/0").status_code == 404
+    assert client.get(f"/alpha/2024/01/{art_id}/attachment/0/preview").status_code == 404
 
 
 def test_attachment_preview_pygmentizes_text(client, tmp_path):
