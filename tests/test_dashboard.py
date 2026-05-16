@@ -171,6 +171,40 @@ def test_daily_volume_max_count(seeded_db):
     assert counts.count(0) == len(counts) - 1
 
 
+def test_dashboard_today_helpers_use_utc_not_local_date(seeded_db, monkeypatch):
+    """Regression: `daily_volume` and `this_day_in_history` must derive
+    'today' from `datetime.now(utc).date()`, not `date.today()`.
+
+    `Article.date` stores public-inbox commit times in UTC (CONTEXT.md).
+    `date.today()` returns the *local* date; on a non-UTC server (e.g.
+    Coruscant runs CEST = UTC+2) the SQL window slides by the offset,
+    slipping edge messages in/out at UTC midnight. Both cache keys also
+    must advance at UTC midnight so two requests on the same UTC day
+    hit the same key regardless of the server's TZ.
+
+    The test monkey-patches `mimir.dashboard.date` so its `.today()`
+    raises if called. The helpers must use `datetime.now(utc).date()`
+    instead, which goes through a `datetime` instance method and does
+    NOT route through the patched classmethod."""
+    import mimir.dashboard as dm
+
+    class _UTCOnlyDate(dm.date):
+        @classmethod
+        def today(cls):
+            raise AssertionError(
+                "dashboard helpers must derive 'today' from "
+                "datetime.now(timezone.utc).date(), not date.today()"
+            )
+
+    monkeypatch.setattr(dm, "date", _UTCOnlyDate)
+
+    alpha = _inbox(seeded_db, "alpha")
+    with seeded_db() as s:
+        # Both helpers must complete without tripping the assertion.
+        daily_volume(s, alpha, days=30, force=True)
+        this_day_in_history(s, alpha, years_ago=5, limit=5, force=True)
+
+
 def test_monthly_volume_groups_by_month(seeded_db):
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
