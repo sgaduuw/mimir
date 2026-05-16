@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.21.2] - 2026-05-16
+
 ### Added
 
 - `warm-cache` now pre-warms the per-reviewer pages each pre-warmed
