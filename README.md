@@ -338,25 +338,54 @@ Models are defined as SQLAlchemy 2.0 typed `Mapped[]` classes in
 
 ```
 mimir/
-  __init__.py    Flask app factory; bootstraps inboxes from env
-  cli.py         Click commands: init-db, ingest, update, reindex, show, warm-cache
-  config.py      pydantic-settings Settings class + PROJECT_ROOT
-  extensions.py  SQLAlchemy engine + WAL pragmas, sessionmaker, Base
-  inboxes.py     bootstrap_inboxes() + nav-name cache
-  ingest.py      dulwich walker + per-epoch upsert loop, cross-post linking
-  models.py      Inbox, Article, ArticleList, IngestState, CacheEntry
-  parser.py      pydantic DTOs + BytesParser-based MIME extraction
-  rendering.py   body→HTML pipeline (text/quote/diff blocks)
-  store.py       read_message(): SQL lookup + dulwich fetch + parse
-  sync.py        public-inbox manifest discovery + git clone/fetch
-  threading.py   recursive CTEs for thread reconstruction + active threads
-  dashboard.py   landing-page aggregations (trackers, pulls, stats, sparkline)
-  cache.py       DB-backed cache with JSON encode/decode + a type registry
-  web.py         Flask blueprint, view functions, template filters
-  templates/     Jinja2 (base, index, inbox, daily, message, attachment_preview, _recent_items)
-alembic/         migrations
-tests/           pytest
-Inboxes/         default mirror root (per-inbox subdirs; gitignored)
+  __init__.py            Flask app factory; bootstraps inboxes from env
+  cli/                   Click commands, one submodule per concern group:
+                         initdb, ingest, mainline, backfill, show, cache,
+                         maintenance, devseed, admin/{inbox,failures,canonicals}.
+                         register_cli(app) wires them onto Flask's cli.
+  config.py              pydantic-settings Settings class + PROJECT_ROOT
+  extensions.py          SQLAlchemy engine + WAL pragmas, sessionmaker, Base
+  inboxes.py             Inbox lifecycle: bootstrap from env, mutate via admin,
+                         expose via nav-name cache; shared validators.
+  ingest/                Ingest pipeline split by flow: epoch (hot per-epoch
+                         walk + shared helpers), replay (parse-failures
+                         re-walk), backfill (canonical-inbox resolution),
+                         orchestrate (per-inbox + cross-inbox drivers).
+  models.py              All ORM tables (Inbox, Article, ArticleList,
+                         IngestState, Subsystem, MainlineCommit, etc.).
+  parser.py              pydantic DTOs + BytesParser-based MIME extraction
+  rendering.py           body→HTML pipeline (text/quote/diff blocks)
+  store.py               read_message(): SQL lookup + dulwich fetch + parse
+  sync.py                public-inbox manifest discovery + git clone/fetch
+  threading.py           recursive CTEs for thread reconstruction + active threads
+  dashboard.py           landing-page aggregations (trackers, pulls, stats, sparkline)
+  cache.py               DB-backed cache with JSON encode/decode + a type registry
+  canonical.py           canonical-inbox resolution from To/Cc headers
+  patches.py,            patch path / trailer / patch-series extractors;
+  trailers.py,           shared backfill walker shell in _backfill.py.
+  patch_series.py,
+  _backfill.py
+  subsystems.py          article-level path-matching primitives over MAINTAINERS
+  subsystems_dashboard/  per-subsystem dashboard surfaces split by concern:
+                         reads (per-subsystem fan-outs), reviewers
+                         (attestation surfaces), activity (cross-inbox
+                         "most active subsystems").
+  maintainers.py         MAINTAINERS file parser (no DB)
+  maintainer_allowlist.py  dynamic email allowlist sourced from MAINTAINERS
+  mainline.py            Linus-tree commit walker for Link: trailers
+  indexnow.py            IndexNow push-notification client
+  seo/                   SEO output split by format: sitemaps (XML),
+                         json_ld (schema.org payloads), atom (Atom 1.0 feeds).
+  web/                   Flask blueprint package: routes (one submodule per
+                         URL family), filters (template filters), hooks
+                         (request/response hooks + context processor),
+                         urls (URL composition + site-base memo).
+  templates/             Jinja2 (base, index, inbox, daily, since, year,
+                         month, search, author, reviewer, subsystem,
+                         message, attachment_preview, _recent_items)
+alembic/                 migrations
+tests/                   pytest
+Inboxes/                 default mirror root (per-inbox subdirs; gitignored)
 ```
 
 ## Web UI

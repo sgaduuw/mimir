@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.21.1] - 2026-05-16
+
 ### Security
 
 - `/<inbox>/subsystem/<name>/`: control bytes in `<name>` (NUL,
