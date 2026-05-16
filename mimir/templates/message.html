@@ -264,6 +264,10 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    to-right oldest-to-newest. Skipped silently when there's no
    series, most articles. #}
 {% if patch_series_revisions and patch_series_revisions|length > 1 %}
+{# `current_version` is the version-string of the article being viewed;
+   used to wire the "diff vs current" links to the right `to=` target
+   without needing the current article's URL recomputed per row. #}
+{% set current_version = article.patch_series_version %}
 <aside class="patch-series" style="margin-block: 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--pico-primary); background: var(--pico-muted-background-color);">
   <small>
     <strong>Series revisions:</strong>
@@ -274,6 +278,14 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
       {% else %}
       <a href="{{ url }}">{{ rev.patch_series_version }}</a>
       ({{ rev.date.strftime('%Y-%m-%d') if rev.date else '?' }})
+      {# Inline "diff vs current" link per non-current revision; pos=cover
+         because the sidebar only renders on cover-letter pages today
+         (in-series patches don't carry `patch_series_key` yet, see #212).
+         The diff route 404s gracefully on a missing counterpart, so a
+         broken series state surfaces an actionable message instead of a
+         dead page. #}
+      <a href="/{{ inbox_name }}/series/{{ article.patch_series_key }}/diff?from={{ rev.patch_series_version }}&amp;to={{ current_version }}&amp;pos=cover"
+         title="show what changed between {{ rev.patch_series_version }} and {{ current_version }} of the cover letter">[diff vs current]</a>
       {% endif %}
       {% if not loop.last %} → {% endif %}
     {% endfor %}
