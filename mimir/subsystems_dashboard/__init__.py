@@ -4,12 +4,12 @@ Pulled out of `mimir.subsystems` to keep that module focused on
 the article-level path-matching primitives (which inbox lookups
 need: `subsystems_for_article`, `recent_patches_touching`,
 `path_matches_glob`). This package owns the heavier read-side
-fan-out, split across three submodules:
+fan-out, split across three public submodules plus one shared
+infrastructure module:
 
 - `reads`: the per-subsystem read fan-outs
   (`recent_articles_in_subsystem`, `daily_volume_in_subsystem`,
-  `active_threads_in_subsystem`) and the shared
-  `_subsystem_path_filter_sql` builder.
+  `active_threads_in_subsystem`).
 - `reviewers`: the reviewer surfaces (`articles_reviewed_by`,
   `active_reviewers_in_subsystem`) and their `ReviewerStat` /
   `ReviewEntry` dataclasses.
@@ -17,6 +17,9 @@ fan-out, split across three submodules:
   aggregations (`most_active_subsystems_in_inbox`,
   `most_active_subsystems_global`, and the `_full` cached
   payload helpers they slice).
+- `_path_filter` (underscore-prefixed): the shared
+  `_subsystem_path_filter_sql` builder, imported by `reads` and
+  `reviewers`. Infrastructure, not a public surface.
 
 `RelatedPatch` and `path_matches_glob` live in `mimir.subsystems`
 (small, no-fan-out neighbours of the message-page header helper);
