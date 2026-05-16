@@ -48,14 +48,22 @@ different `command:`.
 | `ANALYZE_EVERY`    | `86400` (s)     | Refresh `sqlite_stat1`                |
 | `VACUUM_EVERY`     | `604800` (s)    | Compact DB + collapse WAL             |
 
-Timing is relative to container start, not wall-clock. A task that
-overruns its slot is logged but the loop continues; cadences use
-absolute timestamps so they don't drift.
+Timing is wall-clock, persisted across container restarts via
+`/data/.last_<task>` sentinel files. Without persistence a release
+rollover at a cadence shorter than the slowest task (weekly VACUUM,
+daily ANALYZE) would reset the timer on every restart and the task
+would never fire (#202); reading the sentinel mtime on boot means
+the cadence intent survives. A task that overruns its slot is logged
+but the loop continues; sentinels are only touched on successful
+runs so a failure doesn't push the next retry out by a full cadence.
 
 The sidecar owns schema: `alembic upgrade head` runs once on start
-(before the loop) and is the single place that touches DDL. After
-a successful migration, scheduler.sh touches `/data/.migrated`,
-which the sidecar's healthcheck looks for. The web container's
+(before the loop) and is the single place that touches DDL. A
+post-migrate `ANALYZE` runs immediately after the upgrade and
+before the `/data/.migrated` healthcheck sentinel is touched, so
+any new index introduced by the just-applied migration starts life
+with `sqlite_stat1` entries rather than being invisible to the
+planner until the next scheduled ANALYZE pass. The web container's
 `depends_on: { mimir-tasks: { condition: service_healthy } }` then
 gates gunicorn on that sentinel, so a fresh `/data` volume migrates
 before serving any requests. systemd deployments are unaffected  
