@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ site_name }}{% endblock %}
+{% block title %}indexed mailing list archives | {{ site_name }}{% endblock %}
 {% block content %}
 <style>
   /* Manuscript-marginalia layout: small squirrel left of the wordmark.
@@ -100,9 +100,13 @@
 </style>
 <section class="index-hero">
   <figure>
-    {# Decorative; the screen-reader caption lives in the global footer
-       credit + the og:image alt, so empty alt here is correct. #}
-    <img src="{{ url_for('static', filename='img/ratatoskr.png') }}" alt="">
+    {# Substantive alt: the squirrel IS the brand identity beside the
+       wordmark, not pure decoration. og:image alt is for link-card
+       previews (crawler-side), it never reaches a screen-reader user
+       on the live page; the footer credit covers attribution, not
+       what the image depicts. External review 2026-05-16. #}
+    <img src="{{ url_for('static', filename='img/ratatoskr.png') }}"
+         alt="Ratatoskr, the messenger squirrel of Norse mythology">
   </figure>
   <hgroup>
     <h1>{{ site_name }}</h1>
@@ -172,7 +176,7 @@
    has a path other than "pick an inbox first".
 
    Card grid (smaller cards than the inbox grid) to match the
-   visual language above. Display name is lowercased — MAINTAINERS
+   visual language above. Display name is lowercased, MAINTAINERS
    stores names upper-case ASCII which reads as shouty on a
    browse surface; the URL canonical form is already lowercase. #}
 <h2 id="subsystems" class="active-subsystems-heading">Active subsystems <small><em>(last 7 days)</em></small></h2>

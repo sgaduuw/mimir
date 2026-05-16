@@ -14,23 +14,23 @@ docker compose up --build
 
 The image:
 - Multi-stage build; final ~slim runtime, runs as `mimir:1001`.
-- `CMD` is just `gunicorn` with `${WORKERS:-2}` workers — schema
+- `CMD` is just `gunicorn` with `${WORKERS:-2}` workers, schema
   migration is the sidecar's job (see below). Order the sidecar
   ahead of the web service in `compose.yaml` so the first run
   doesn't serve requests against an unmigrated DB.
 - Volume mount: `/data` is the single stateful path.
-  - `/data/db/mimir.db` — SQLite DB + WAL files
+  - `/data/db/mimir.db`, SQLite DB + WAL files
     (`DATABASE_URL=sqlite:////data/db/mimir.db` baked in).
-  - `/data/Inboxes/<name>/git/` — public-inbox mirrors.
+  - `/data/Inboxes/<name>/git/`, public-inbox mirrors.
     `/app/Inboxes` is a symlink to this so the default
     relative `INBOXES` config resolves correctly.
   - Pre-flight on the host:
     `mkdir -p data/db data/Inboxes && chown -R 1001:1001 data`.
-- `EXPOSE 5000` — proxy from your reverse proxy of choice.
+- `EXPOSE 5000`, proxy from your reverse proxy of choice.
 - Container healthcheck pings `/healthz`.
 
 Bumping worker count: set `WORKERS` in the env / compose file.
-Going much past 4 isn't useful for this workload — the SQLite
+Going much past 4 isn't useful for this workload, the SQLite
 write lock serializes anyway.
 
 ### Scheduled-tasks sidecar
@@ -58,7 +58,7 @@ a successful migration, scheduler.sh touches `/data/.migrated`,
 which the sidecar's healthcheck looks for. The web container's
 `depends_on: { mimir-tasks: { condition: service_healthy } }` then
 gates gunicorn on that sentinel, so a fresh `/data` volume migrates
-before serving any requests. systemd deployments are unaffected —
+before serving any requests. systemd deployments are unaffected  
 `mimir.service` runs its own `ExecStartPre=alembic upgrade head`.
 
 ## systemd
@@ -103,7 +103,7 @@ SQLite write back; if you move the DB elsewhere, add that path too.
 
 VACUUM needs an exclusive lock for the post-VACUUM
 `wal_checkpoint(TRUNCATE)` to actually collapse the WAL. The unit
-does *not* stop `mimir.service` automatically — systemd refuses
+does *not* stop `mimir.service` automatically, systemd refuses
 transactions that simultaneously stop and start the same unit. If
 you care about the WAL truncate landing fully, run vacuum during a
 brief planned window:
@@ -115,7 +115,7 @@ sudo systemctl start mimir.service
 ```
 
 Or let the weekly timer fire as-is and accept that the WAL truncate
-is best-effort while the web is serving — the VACUUM rebuild
+is best-effort while the web is serving, the VACUUM rebuild
 itself still succeeds.
 
 ## Reverse proxy
@@ -125,11 +125,11 @@ the number of trusted proxies in front. mimir then wraps its WSGI app
 in Werkzeug's `ProxyFix` so `request.remote_addr` (and `.scheme` /
 `.host`) reflect the real client instead of the proxy's address. The
 canonical `compose.yaml` ships `TRUSTED_PROXY_HOPS=1` for the typical
-"Caddy → mimir" shape. Leave at `0` if mimir is reachable directly —
+"Caddy → mimir" shape. Leave at `0` if mimir is reachable directly  
 otherwise anyone could spoof those values via a forged
 `X-Forwarded-For`.
 
-### Caddy (preferred — automatic HTTPS)
+### Caddy (preferred, automatic HTTPS)
 
 ```caddy
 mimir.example.com {

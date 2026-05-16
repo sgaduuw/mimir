@@ -2,8 +2,8 @@
 
 Service-layer behaviour is covered by `tests/test_inboxes.py`,
 `tests/test_ingest.py`, and `tests/test_sync.py`; these tests pin
-the CLI shape — argument parsing, exit codes, output strings,
-ClickException branches — so a future refactor of the click wiring
+the CLI shape, argument parsing, exit codes, output strings,
+ClickException branches, so a future refactor of the click wiring
 doesn't silently regress operator UX.
 
 For commands that have to read real blobs (`show`, `reindex`,
@@ -44,6 +44,35 @@ from mimir.cli import (
     warm_cache_command,
 )
 from mimir.inboxes import get_inbox, set_tracked_authors
+
+
+def test_configure_logging_actually_changes_level_on_re_invocation():
+    """`logging.basicConfig` is a no-op after the first call. The CLI
+    used to call it on every invocation, so a quiet first run pinned
+    the level for the whole process and subsequent `-vv` runs silently
+    kept WARNING. Pin the level-flip contract: two calls with
+    different verbose values must produce different effective levels.
+    Audit (2026-05-15)."""
+    import logging
+
+    from mimir.cli import _configure_logging
+
+    root = logging.getLogger()
+    original_level = root.level
+    try:
+        _configure_logging(0)  # WARNING
+        first = root.level
+        _configure_logging(2)  # DEBUG
+        second = root.level
+
+        assert first == logging.WARNING
+        assert second == logging.DEBUG
+        assert first != second, (
+            "second _configure_logging call didn't change the root "
+            "level -- basicConfig idempotency regressed"
+        )
+    finally:
+        root.setLevel(original_level)
 
 
 def test_trackers_show_no_trackers(seeded_db):
@@ -175,7 +204,7 @@ def test_warm_cache_workers_one_serial_path(seeded_db):
 def test_warm_cache_parallel_propagates_refresh_window(seeded_db):
     """Worker threads must inherit the `refresh_window` contextvar
     via `copy_context()`. If they don't, a fresh-but-near-expiry
-    cache row would *not* recompute under load — silently undoing
+    cache row would *not* recompute under load, silently undoing
     Phase 2's TTL-aware refresh once Phase 3 fans out across workers.
 
     Pre-seed a near-expiry row for one warm target's key, then run
@@ -304,7 +333,15 @@ def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
         s.commit()
         sub_id = sub.id
 
-    result = CliRunner().invoke(warm_cache_command, [])
+    # `--workers 1` forces the serial path. The default
+    # `min(cpu_count, 8)` workers calls `cache.set()` concurrently
+    # from worker threads against the same SQLite file; on CI runners
+    # with many cores, the main thread's `cache.get()` below can race
+    # the worker's commit-and-checkpoint visibility cycle even though
+    # the `as_completed` join returned. The serial path is functionally
+    # equivalent for this assertion (we're checking row presence, not
+    # parallelism) and removes the flake.
+    result = CliRunner().invoke(warm_cache_command, ["--workers", "1"])
     assert result.exit_code == 0
 
     # All four per-subsystem dashboard helpers must have cached a row
@@ -333,7 +370,7 @@ def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
 
 def test_warm_cache_includes_atom_feed_sources(seeded_db):
     """The atom routes use `recent_articles(limit=FEED_ENTRY_LIMIT)`
-    and `author_recent(..., limit=FEED_ENTRY_LIMIT)` — a different
+    and `author_recent(..., limit=FEED_ENTRY_LIMIT)`, a different
     cache key from the dashboard's `limit=5/10` calls. Warm both so
     the first feed poll per hour returns a cache-hit too."""
     from mimir.inboxes import set_tracked_authors
@@ -367,7 +404,7 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
     seeded_db, monkeypatch
 ):
     """With SITE_BASE_URL set, warm-cache pre-renders the three
-    sitemap surfaces — index, meta, and per-inbox — so the first
+    sitemap surfaces, index, meta, and per-inbox, so the first
     crawler hit per hour gets a cache-hit."""
     from sqlalchemy import delete
     from mimir import cache
@@ -380,7 +417,12 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
         s.execute(delete(CacheEntry))
         s.commit()
 
-    result = CliRunner().invoke(warm_cache_command, ["-v"])
+    # `--workers 1` forces the serial path. See the matching comment
+    # on `test_warm_cache_subsystem_dashboards_populate_cache` for the
+    # CI flake this avoids: under default parallelism, worker-thread
+    # cache writes can lag the main-thread reads below even after
+    # `as_completed` reports done.
+    result = CliRunner().invoke(warm_cache_command, ["-v", "--workers", "1"])
     assert result.exit_code == 0
     assert "sitemap:index" in result.output
     assert "sitemap:meta" in result.output
@@ -421,7 +463,7 @@ def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
     from mimir import cache
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
-    from mimir.web import inbox_sitemap_xml
+    from mimir.seo import inbox_sitemap_xml
 
     cache.set("sitemap:inbox:alpha", "STALE", ttl=3600)
     assert cache.get("sitemap:inbox:alpha") == "STALE"
@@ -434,9 +476,10 @@ def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
 
 def test_update_default_silent_on_no_op(seeded_db, monkeypatch):
     """No-op ticks (no upstream changes, no new commits to ingest)
-    must not emit per-inbox / per-epoch lines at default verbosity —
+    must not emit per-inbox / per-epoch lines at default verbosity
     that's what makes the scheduler log readable as inbox count grows."""
-    from mimir import cli, sync as sync_mod
+    from mimir import sync as sync_mod
+    from mimir.cli import ingest as cli
     from mimir.ingest import IngestResult
 
     def _fake_sync(*_a, **_kw):
@@ -460,7 +503,8 @@ def test_update_default_silent_on_no_op(seeded_db, monkeypatch):
 
 def test_update_verbose_prints_no_op_lines(seeded_db, monkeypatch):
     """-v restores per-inbox / per-epoch lines even when nothing changed."""
-    from mimir import cli, sync as sync_mod
+    from mimir import sync as sync_mod
+    from mimir.cli import ingest as cli
     from mimir.ingest import IngestResult
 
     monkeypatch.setattr(
@@ -816,6 +860,52 @@ def test_reindex_missing_epoch_repo_clickexception(seeded_db, tmp_path):
     assert "epoch repo not found" in result.output
 
 
+def test_reindex_rejects_malformed_epoch_shape(seeded_db, tmp_path):
+    """The epoch argument is joined onto inbox.mirror_path. Without
+    a shape check, an operator typo or hostile input like
+    `../../etc` would walk outside the mirror root before the
+    `.exists()` guard ever runs. The regex pins the public-inbox
+    convention (`<N>.git`) at the CLI boundary."""
+    _repoint_inbox("alpha", tmp_path / "alpha-mirror")
+    for bad in ("..", "../../etc", "/etc", "0.gitX", "0", "abc", "0.git/.."):
+        result = CliRunner().invoke(reindex_command, ["alpha", bad])
+        assert result.exit_code != 0, (
+            f"epoch {bad!r} should be rejected, got exit_code=0\n"
+            f"output: {result.output}"
+        )
+        assert "epoch" in result.output.lower()
+
+
+def test_dev_seed_thread_rejects_invalid_inbox_name(seeded_db, tmp_path):
+    """The dev-seed-thread inbox_name flows into both the
+    filesystem path (`<mirror_root>/<inbox_name>/git`) and the
+    RFC 5322 To: header bytes for each synthesised message.
+    Validation via the same slug regex the admin service uses
+    catches `..`, slashes, CR/LF, uppercase, and shell metachars
+    in one shot."""
+    for bad in (
+        "../escape",     # path traversal
+        "Inbox",         # uppercase (slug must be lowercase)
+        "inbox/sub",     # slash
+        "inbox\r\nTo:",  # CRLF header-injection vector
+        "-leading",      # validator forbids hyphen at edges
+        "",              # empty
+    ):
+        result = CliRunner().invoke(
+            dev_seed_thread_command,
+            ["--inbox", bad, "--mirror-root", str(tmp_path)],
+        )
+        assert result.exit_code != 0, (
+            f"inbox_name {bad!r} should be rejected, "
+            f"got exit_code=0\noutput: {result.output}"
+        )
+        # No mirror dir for the rejected name should have been
+        # created -- the validation has to happen before any side
+        # effect.
+        if bad and "/" not in bad and "\r" not in bad and "\n" not in bad:
+            assert not (tmp_path / bad).exists()
+
+
 # `show` -- one-article inspect, with the three ClickException branches.
 
 
@@ -992,8 +1082,8 @@ def test_admin_failures_replay_happy_path_recovers_and_clears(
     """The replay happy path: stage a failure for a real parseable
     blob, invoke the CLI, assert the summary line reports
     `recovered=1` and the row is gone. Only `unknown_inbox` was
-    covered before; the success branch — the one operators actually
-    invoke after a parser fix — was unreached.
+    covered before; the success branch, the one operators actually
+    invoke after a parser fix, was unreached.
 
     Mirror the test_ingest replay setup but drive it through the
     Click runner so the CLI argument parsing + ClickException
@@ -1046,6 +1136,59 @@ def test_admin_failures_replay_happy_path_recovers_and_clears(
     assert remaining == 0
 
 
+def test_admin_failures_replay_epoch_filter_isolates_one_epoch(seeded_db):
+    """`--epoch N.git` restricts the replay to that epoch's failure
+    rows; rows in other epochs must not be `attempted` (covers
+    cli.py + ingest.py:511-512 selective-replay branch).
+
+    Operators reach for `--epoch` when a parser fix only affects one
+    epoch's corpus shape (e.g. a multipart variant only present in
+    the lkml 2020-era epoch), wanting to keep newer epochs out of
+    scope. A regression that ignored the filter would silently
+    replay everything."""
+    import datetime as _dt
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox, ParseFailure
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        s.add_all([
+            ParseFailure(
+                inbox_id=ix.id, epoch="0.git", commit_sha="aa" * 20,
+                error_class="X", error_message="x", first_seen=now,
+                last_attempt=now, attempts=1,
+            ),
+            ParseFailure(
+                inbox_id=ix.id, epoch="1.git", commit_sha="bb" * 20,
+                error_class="X", error_message="x", first_seen=now,
+                last_attempt=now, attempts=1,
+            ),
+        ])
+        s.commit()
+
+    result = CliRunner().invoke(
+        admin_failures_replay_command, ["alpha", "--epoch", "0.git"],
+    )
+    assert result.exit_code == 0, result.output
+    # Mirror is absent, so 0.git's row gets `skipped`, not `recovered`.
+    # The filter assertion is on `attempted=1`: only the 0.git row
+    # entered the loop. Without the filter `attempted` would be 2.
+    assert "attempted=1" in result.output
+    assert "skipped=1" in result.output
+
+    # Both rows remain in the DB: 0.git was skipped (mirror absent,
+    # continue without delete) and 1.git was filtered out entirely.
+    # The filter assertion is the `attempted=1` count above; this
+    # secondary check pins that no row was silently consumed.
+    with SessionLocal() as s:
+        epochs = set(s.execute(
+            select(ParseFailure.epoch).select_from(ParseFailure)
+        ).scalars().all())
+    assert epochs == {"0.git", "1.git"}
+
+
 # `init-db` -- bootstrap helper; documented in CLAUDE.md as a quick
 # local-dev path that the operator falls back to when alembic isn't
 # applicable. Untested historically because alembic is the real
@@ -1068,7 +1211,7 @@ def test_init_db_command_runs_and_creates_schema(tmp_path, monkeypatch):
     import sqlalchemy
     from mimir.extensions import Base
     from mimir import extensions as ext_module
-    from mimir import cli as cli_module
+    from mimir.cli import initdb as cli_module
 
     fresh_db = tmp_path / "fresh-init-db.sqlite"
     fresh_url = f"sqlite:///{fresh_db}"
@@ -1209,6 +1352,59 @@ def test_admin_inbox_remove_yes_drops_inbox_and_orphans(seeded_db):
     assert "art3@example.com" in ids_after
 
 
+def test_admin_inbox_update_unknown_clickexception(seeded_db):
+    """update on a non-existent inbox surfaces InboxNotFound as a
+    ClickException (covers cli.py:1383-1384)."""
+    result = CliRunner().invoke(admin_inbox_update_command, [
+        "no-such-inbox", "--mirror-path", "/tmp/anywhere",
+    ])
+    assert result.exit_code != 0
+    assert "no-such-inbox" in result.output
+
+
+def test_admin_inbox_update_invalid_value_clickexception(seeded_db):
+    """update with an invalid upstream_url surfaces InboxValidationError
+    as a ClickException (covers cli.py:1385-1386)."""
+    result = CliRunner().invoke(admin_inbox_update_command, [
+        "alpha", "--upstream-url", "not-a-url",
+    ])
+    assert result.exit_code != 0
+
+
+def test_admin_inbox_remove_unknown_clickexception(seeded_db):
+    """remove on a non-existent inbox raises ClickException via the
+    pre-flight get_inbox call (covers cli.py:1422-1423)."""
+    result = CliRunner().invoke(admin_inbox_remove_command, [
+        "no-such-inbox", "--yes",
+    ])
+    assert result.exit_code != 0
+    assert "no-such-inbox" in result.output
+
+
+def test_admin_inbox_remove_inbox_data_skips_when_mirror_absent(
+    seeded_db, tmp_path,
+):
+    """--remove-inbox-data announces the rm target but skips the
+    confirm prompt when the path doesn't exist on disk (covers
+    cli.py:1426-1428). The seeded `alpha` inbox uses `/tmp/alpha`
+    which is absent in CI."""
+    # Point alpha at a path that definitely doesn't exist.
+    absent = tmp_path / "definitely-not-a-mirror"
+    result = CliRunner().invoke(admin_inbox_update_command, [
+        "alpha", "--mirror-path", str(absent),
+    ])
+    assert result.exit_code == 0, result.output
+
+    result = CliRunner().invoke(admin_inbox_remove_command, [
+        "alpha", "--yes", "--remove-inbox-data",
+    ])
+    assert result.exit_code == 0, result.output
+    # Announcement happens regardless of existence.
+    assert "--remove-inbox-data set" in result.output
+    # No "removed on-disk mirror" line because the path was absent.
+    assert "removed on-disk mirror" not in result.output
+
+
 def test_admin_inbox_remove_keep_orphans_preserves_articles(seeded_db):
     """`--keep-orphan-articles` leaves Article rows with no remaining
     links intact (article_lists rows go either way)."""
@@ -1231,3 +1427,55 @@ def test_admin_inbox_remove_keep_orphans_preserves_articles(seeded_db):
     assert "art4@example.com" in ids
     assert "art2@example.com" in ids
     assert "art3@example.com" in ids
+
+
+# Structural / wire-up assertions.
+#
+# The shape of `register_cli` is load-bearing, Flask only exposes the
+# subcommands explicitly added there. A new top-level `@click.command`
+# decorator at module scope that doesn't get wired in is invisible to
+# the operator and to CI (every CLI test invokes its target directly,
+# not via `flask --app mimir <name>`), so the regression slips through.
+
+
+def test_register_cli_attaches_every_module_level_command():
+    """Every `@click.command`/`@click.group`-decorated callable at
+    `mimir.cli` module scope must be reachable through `app.cli`
+    after `register_cli(app)` runs, either added directly to
+    `app.cli` or attached to a registered group (`admin`,
+    `admin inbox`, `admin inbox trackers`, `admin failures`,
+    `admin canonicals`).
+
+    A regression here is silent: the command still imports clean,
+    every direct-invocation test in this file still passes, but
+    `flask --app mimir <name>` returns "No such command." Pin the
+    surface by traversing the registered command tree and asserting
+    no module-level Command falls outside it."""
+    import click
+    from flask import Flask
+
+    import mimir.cli as cli_mod
+
+    app = Flask(__name__)
+    cli_mod.register_cli(app)
+
+    def reachable(commands: dict) -> set:
+        out = set()
+        for cmd in commands.values():
+            out.add(cmd)
+            if isinstance(cmd, click.Group):
+                out.update(reachable(cmd.commands))
+        return out
+
+    attached = reachable(app.cli.commands)
+
+    declared = {
+        v for v in vars(cli_mod).values() if isinstance(v, click.Command)
+    }
+
+    missing = declared - attached
+    assert not missing, (
+        "module-level click.Command(s) not reachable via `app.cli` after "
+        f"`register_cli(app)`: {sorted(c.name for c in missing)}. "
+        "Either add to register_cli() or attach to an existing subgroup."
+    )

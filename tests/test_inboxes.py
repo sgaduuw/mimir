@@ -2,7 +2,7 @@
 
 Validators (pure functions, no DB) plus CRUD ops that gate the
 admin CLI today and will gate the future admin web UI (#10). Cache
-invalidation on rename / delete is also pinned here — that's the
+invalidation on rename / delete is also pinned here; that's the
 crossover with `cache.delete_for_inbox`.
 """
 import pytest
@@ -17,7 +17,7 @@ from mimir.inboxes import (
 )
 
 
-# Pure-function validators — no DB needed.
+# Pure-function validators, no DB needed.
 
 
 @pytest.mark.parametrize("name", [
@@ -44,8 +44,8 @@ def test_validate_name_accepts(name):
     "foo-",                   # trailing hyphen
     "Foo",                    # uppercase
     "FOO",
-    "a:b",                    # colon — cache-key separator
-    "a/b",                    # slash — URL separator
+    "a:b",                    # colon, cache-key separator
+    "a/b",                    # slash, URL separator
     "a b",                    # whitespace
     "a@b",                    # @
     "a.b",                    # period
@@ -209,8 +209,8 @@ def test_delete_inbox_cascades_article_lists(seeded_db):
 
 
 def test_delete_inbox_removes_orphan_articles(seeded_db):
-    """art1 and art4 are alpha-only — deleting alpha should drop
-    them. art3 is cross-posted, art2 is beta-only — both survive."""
+    """art1 and art4 are alpha-only, deleting alpha should drop
+    them. art3 is cross-posted, art2 is beta-only, both survive."""
     from sqlalchemy import select
 
     from mimir.inboxes import delete_inbox
@@ -294,7 +294,7 @@ def test_update_inbox_no_rename_keeps_cache(seeded_db):
     assert "archive_stats:alpha" in set(cache.keys())
 
 
-# Tracked authors — validators, mutators, NULL/dict round-trip.
+# Tracked authors, validators, mutators, NULL/dict round-trip.
 
 
 def test_validate_tracked_authors_accepts_dict():
@@ -345,7 +345,7 @@ def test_set_tracked_authors_none_writes_null(seeded_db):
 
 
 def test_set_tracked_authors_empty_dict_writes_null(seeded_db):
-    """Empty dict and NULL collapse — both mean "no tracker tiles"."""
+    """Empty dict and NULL collapse, both mean "no tracker tiles"."""
     from mimir.inboxes import get_inbox, set_tracked_authors
     set_tracked_authors("alpha", {"Linus": "torvalds@"})
     set_tracked_authors("alpha", {})
@@ -620,6 +620,77 @@ def test_delete_inbox_remove_inbox_data_rms_mirror_dir(
     assert tmp_path.exists()
 
 
+def test_delete_inbox_remove_inbox_data_refuses_parent_when_basename_mismatches(
+    seeded_db, tmp_path,
+):
+    """The audit (2026-05-15) flagged the unconditional `path.name ==
+    "git"` parent promotion as the worst data-loss vector in the
+    codebase: an operator setting `mirror_path=/some/dir/git` (any
+    layout that ends in a `git/` directory) would have the parent
+    directory rm-rf'd along with the mirror. The promotion is now
+    gated on the parent's basename equalling the inbox name, so only
+    the documented `<root>/<name>/git` convention triggers it.
+
+    Layout: tmp/unrelated/git/... with inbox name "alpha". The
+    parent's basename is "unrelated", which doesn't match "alpha";
+    only the literal mirror_path must be removed, leaving the
+    parent intact."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.inboxes import delete_inbox
+    from mimir.models import Inbox
+
+    unrelated = tmp_path / "unrelated"
+    git_dir = unrelated / "git"
+    (git_dir / "0.git").mkdir(parents=True)
+    sibling = unrelated / "other-files"
+    sibling.mkdir()
+    (sibling / "important.txt").write_text("must survive")
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.mirror_path = str(git_dir)
+        s.commit()
+
+    report = delete_inbox("alpha", remove_inbox_data=True)
+
+    # Removal happened, but only on the literal mirror_path, not the
+    # parent that was never the operator's intent.
+    assert report.mirror_path_deleted == str(git_dir)
+    assert not git_dir.exists()
+    # The sibling file in the parent dir survived; the parent itself
+    # is intact.
+    assert sibling.exists()
+    assert (sibling / "important.txt").read_text() == "must survive"
+    assert unrelated.exists()
+
+
+def test_delete_inbox_remove_inbox_data_no_git_segment(
+    seeded_db, tmp_path,
+):
+    """When `mirror_path` doesn't end in `git/`, no parent promotion
+    is attempted; the literal mirror_path is removed and that's it."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.inboxes import delete_inbox
+    from mimir.models import Inbox
+
+    mirror = tmp_path / "alpha-mirror"
+    mirror.mkdir()
+    (mirror / "marker").write_text("here")
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.mirror_path = str(mirror)
+        s.commit()
+
+    report = delete_inbox("alpha", remove_inbox_data=True)
+
+    assert report.mirror_path_deleted == str(mirror)
+    assert not mirror.exists()
+    assert tmp_path.exists()
+
+
 def test_delete_inbox_remove_inbox_data_handles_missing_mirror(
     seeded_db, tmp_path,
 ):
@@ -649,7 +720,7 @@ def test_delete_inbox_remove_inbox_data_handles_missing_mirror(
 # --------------------------------------------------------------------------
 # _INBOX_NAMES module cache: republish after every CRUD op.
 #
-# `inbox_names()` is what nav rendering reads — cheap (no DB hit).
+# `inbox_names()` is what nav rendering reads, cheap (no DB hit).
 # Every CRUD function in `mimir.inboxes` calls `_publish_names()` to
 # keep it fresh. Existing tests all go through DB-backed reads
 # (`list_inboxes`, `get_inbox`), which means a regression where
@@ -672,7 +743,7 @@ def test_inbox_names_cache_refreshes_after_create_update_delete(seeded_db):
         f"seed should publish alpha+beta into the name cache; got {baseline}"
     )
 
-    # CREATE — cache picks up the new name.
+    # CREATE, cache picks up the new name.
     create_inbox(
         name="xtest-cache-refresh",
         upstream_url="https://example.com/xtest",
@@ -680,12 +751,12 @@ def test_inbox_names_cache_refreshes_after_create_update_delete(seeded_db):
     )
     assert "xtest-cache-refresh" in inbox_names()
 
-    # UPDATE (rename) — old name out, new name in.
+    # UPDATE (rename), old name out, new name in.
     update_inbox("xtest-cache-refresh", new_name="xtest-cache-renamed")
     names = inbox_names()
     assert "xtest-cache-refresh" not in names
     assert "xtest-cache-renamed" in names
 
-    # DELETE — name leaves the cache.
+    # DELETE, name leaves the cache.
     delete_inbox("xtest-cache-renamed")
     assert "xtest-cache-renamed" not in inbox_names()

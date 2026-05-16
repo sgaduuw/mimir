@@ -11,7 +11,7 @@ the dependency stays one-way (cache knows nothing about its callers).
 
 Every key is silently prefixed with `v{NAMESPACE_VERSION}:` so a code
 change that alters cached value shapes (a query rewrite, a renamed
-dataclass field) is bumped centrally — old rows simply never match
+dataclass field) is bumped centrally, old rows simply never match
 and age out via `purge_expired`. Callers don't see the prefix.
 """
 import dataclasses
@@ -51,7 +51,7 @@ def refresh_window(seconds: float | None) -> Iterator[None]:
     """Within this scope, `get_or_compute` recomputes any cached row
     whose remaining TTL is less than `seconds`, instead of returning
     the stale-but-not-expired value. Used by warm-cache so 24h-TTL
-    keys aren't recomputed on every 5-minute cron tick — only on the
+    keys aren't recomputed on every 5-minute cron tick, only on the
     tick nearest their expiry. The contextvar is snapshotted at
     submission time when callers fan out to a `ThreadPoolExecutor`,
     via `contextvars.copy_context().run(fn, ...)`."""
@@ -163,7 +163,7 @@ def set(key: str, value: Any, ttl: int) -> None:
     SQLite write contention (scheduler ingest / vacuum overlapping a
     request) raises `OperationalError("database is locked")` once the
     `busy_timeout` window elapses. The page already rendered before
-    we got here, so a failed cache write must not propagate — it'd
+    we got here, so a failed cache write must not propagate, it'd
     500 a successful response. Log and move on; the next request
     recomputes.
     """
@@ -245,17 +245,28 @@ def purge_expired() -> int:
 
 def delete(key: str) -> int:
     """Drop the cache row for one key, if present. Returns rows
-    deleted (0 or 1). Used by callers that need to invalidate a
-    single computed value after upstream state changed (e.g. the
-    `update-mainline` hook clearing the maintainer-allowlist set
-    after a MAINTAINERS reload)."""
+    deleted (0 or 1, or 0 on transient-lock fallback).
+
+    Best-effort just like `set()`: SQLite write contention during
+    a long-running VACUUM raises `OperationalError("database is
+    locked")` once the connection's `busy_timeout` elapses. Admin
+    CRUD callers (`mimir.inboxes`) would otherwise 500 on a
+    successfully-completed DB change just because the cache
+    invalidation lost the lock race. Log + return 0; the cached
+    value still ages out via TTL and a successful subsequent write
+    overwrites whatever stale row survived.
+    """
     nskey = _ns(key)
-    with SessionLocal() as session:
-        result = session.execute(
-            delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
-        )
-        session.commit()
-        return result.rowcount or 0
+    try:
+        with SessionLocal() as session:
+            result = session.execute(
+                delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
+            )
+            session.commit()
+            return result.rowcount or 0
+    except OperationalError as exc:
+        logger.warning("cache delete failed for %s: %s", nskey, exc)
+        return 0
 
 
 def delete_for_inbox(inbox_name: str) -> int:
@@ -265,7 +276,8 @@ def delete_for_inbox(inbox_name: str) -> int:
     so an entry references an inbox if its key ends with `:{name}` or
     contains `:{name}:`. Called by the admin CRUD layer after a
     rename or delete so reads don't return rows pointing at a now-
-    stale (or vanished) name. Returns rows deleted.
+    stale (or vanished) name. Returns rows deleted (0 on transient-
+    lock fallback; same best-effort posture as `set()` / `delete()`).
 
     Inbox names are slug-validated (alphanumeric + hyphen) so they
     contain no LIKE-pattern metacharacters; the literal `%` and `_`
@@ -273,14 +285,20 @@ def delete_for_inbox(inbox_name: str) -> int:
     """
     suffix_pat = f"%:{inbox_name}"
     middle_pat = f"%:{inbox_name}:%"
-    with SessionLocal() as session:
-        result = session.execute(
-            delete_stmt(CacheEntry).where(
-                or_(
-                    CacheEntry.key.like(suffix_pat),
-                    CacheEntry.key.like(middle_pat),
+    try:
+        with SessionLocal() as session:
+            result = session.execute(
+                delete_stmt(CacheEntry).where(
+                    or_(
+                        CacheEntry.key.like(suffix_pat),
+                        CacheEntry.key.like(middle_pat),
+                    )
                 )
             )
+            session.commit()
+            return result.rowcount or 0
+    except OperationalError as exc:
+        logger.warning(
+            "cache delete_for_inbox failed for %s: %s", inbox_name, exc,
         )
-        session.commit()
-        return result.rowcount or 0
+        return 0

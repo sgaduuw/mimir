@@ -255,9 +255,48 @@ def test_unknown_tag_raises():
         _decode({"__t": "DoesNotExist", "v": {}})
 
 
+def test_set_propagates_encoder_typeerror():
+    """`set()`'s swallow window is exactly `OperationalError` from
+    DB write contention (see CONTEXT.md "Cross-process cache"). An
+    encoder error (`TypeError` from `_encode` on an unregistered
+    type) is a programming bug: a forgotten `register()` call, a
+    typo in the tag, a refactor that dropped a dataclass from the
+    registry. Swallowing those would leave the cache silently empty
+   , every page recomputes forever, the dev sees nothing in logs,
+    the bug ships.
+
+    Pin the boundary: an unregistered class fed to `cache.set` must
+    propagate `TypeError` to the caller, and the no-cache-row
+    invariant must hold (failed write didn't half-commit anything
+    via a different path)."""
+    class Unregistered:
+        pass
+
+    key = "xtest-encoder-typeerror-key"
+    with pytest.raises(TypeError, match="don't know how to encode"):
+        cache.set(key, Unregistered(), ttl=60)
+
+    # No row was written: `_encode` raised before the DB call.
+    assert cache.get(key) is None
+
+
+def test_set_propagates_value_inside_collection():
+    """An unregistered class buried inside a list/dict still raises,
+    because `_encode` recurses through containers. Pins that the
+    raise-loudly contract applies to nested values too, not just to
+    bare unregistered objects."""
+    class Unregistered:
+        pass
+
+    key = "xtest-encoder-nested-key"
+    with pytest.raises(TypeError, match="don't know how to encode"):
+        cache.set(key, {"items": [1, 2, Unregistered()]}, ttl=60)
+    assert cache.get(key) is None
+
+
 def test_set_swallows_operational_error_on_lock(monkeypatch):
     """Unit-level: a locked DB during a cache write must not propagate
-    — the request has already rendered. `set()` logs at warning and
+   , the request has already rendered. `set()` logs at warning and
     returns. Mocked SessionLocal pins the swallow + log code path
     without depending on real SQLite contention timing."""
     class _LockedSession:
@@ -288,6 +327,85 @@ def test_set_swallows_operational_error_on_lock(monkeypatch):
 
     assert any("cache write failed" in r.getMessage() for r in captured), (
         f"expected a 'cache write failed' warning, got {[r.getMessage() for r in captured]}"
+    )
+
+
+def test_delete_swallows_operational_error_on_lock(monkeypatch):
+    """`cache.delete` matches `cache.set`'s best-effort posture: an
+    `OperationalError` (database is locked, VACUUM, etc.) is swallowed
+    + logged, returns 0. Admin CRUD callers must not 500 on a
+    successfully-completed DB change just because the cache
+    invalidation lost the lock race. Audit (2026-05-15) flagged the
+    asymmetry."""
+    class _LockedSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def execute(self, _stmt):
+            return None
+        def commit(self):
+            raise OperationalError("DELETE", None, Exception("database is locked"))
+
+    monkeypatch.setattr(cache, "SessionLocal", lambda: _LockedSession())
+
+    captured: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record)
+
+    handler = _Capture(level=logging.WARNING)
+    logger = logging.getLogger("mimir.cache")
+    logger.addHandler(handler)
+    try:
+        result = cache.delete("xtest-locked-delete-key")  # must not raise
+    finally:
+        logger.removeHandler(handler)
+
+    assert result == 0
+    assert any("cache delete failed" in r.getMessage() for r in captured), (
+        f"expected a 'cache delete failed' warning, got "
+        f"{[r.getMessage() for r in captured]}"
+    )
+
+
+def test_delete_for_inbox_swallows_operational_error_on_lock(monkeypatch):
+    """Symmetric to `test_delete_swallows_operational_error_on_lock`
+    for the bulk delete_for_inbox path that runs on every inbox
+    rename / delete."""
+    class _LockedSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def execute(self, _stmt):
+            return None
+        def commit(self):
+            raise OperationalError("DELETE", None, Exception("database is locked"))
+
+    monkeypatch.setattr(cache, "SessionLocal", lambda: _LockedSession())
+
+    captured: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record)
+
+    handler = _Capture(level=logging.WARNING)
+    logger = logging.getLogger("mimir.cache")
+    logger.addHandler(handler)
+    try:
+        result = cache.delete_for_inbox("some-inbox")  # must not raise
+    finally:
+        logger.removeHandler(handler)
+
+    assert result == 0
+    assert any(
+        "cache delete_for_inbox failed" in r.getMessage() for r in captured
+    ), (
+        f"expected a 'cache delete_for_inbox failed' warning, got "
+        f"{[r.getMessage() for r in captured]}"
     )
 
 
@@ -525,7 +643,7 @@ def test_purge_expired_returns_zero_when_nothing_to_drop():
     returns 0 without raising. Build the meaningful case: at least
     one *live* row exists, none are expired; assert the call returns
     0 AND the live row survives. The older shape ("delete every row
-    first, then call purge") was tautological — nothing was there
+    first, then call purge") was tautological, nothing was there
     to drop because the test had just emptied the table."""
     from sqlalchemy import delete as sql_delete, select
     from mimir.cache import _ns, purge_expired
@@ -672,7 +790,7 @@ def test_refresh_window_recomputes_when_near_expiry():
     with SessionLocal() as s:
         s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
         # 60 s of TTL remaining, but the window asks for "anything
-        # within 300 s of expiry" — so recompute.
+        # within 300 s of expiry", so recompute.
         s.add(CacheEntry(
             key=_ns(key), value='"stale"', expires_at=_seconds_from_now(60),
         ))
@@ -709,7 +827,7 @@ def test_refresh_window_skips_when_plenty_of_ttl_left():
     key = "xtest-refresh-far-from-expiry"
     with SessionLocal() as s:
         s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
-        # 1 hour of TTL remaining; window is 5 min — skip recompute.
+        # 1 hour of TTL remaining; window is 5 min, skip recompute.
         s.add(CacheEntry(
             key=_ns(key), value='"stale-but-fresh-enough"',
             expires_at=_seconds_from_now(3600),
@@ -777,7 +895,7 @@ def test_get_or_compute_expired_row_treated_as_miss():
 # The `_roundtrip` helper above goes encoder → json text → decoder; the
 # tests below go through the *real* `cache.set` → SQLite TEXT column →
 # `cache.get` path. The two paths diverge whenever a value survives
-# `json.dumps`/`json.loads` but trips up SQLite's TEXT encoding —
+# `json.dumps`/`json.loads` but trips up SQLite's TEXT encoding  
 # surrogates being the obvious case. A registered dataclass that
 # round-trips via `_roundtrip` but fails the real path would silently
 # break dashboard caching in production.
@@ -850,7 +968,7 @@ def test_real_path_roundtrip_daily_volume():
     try:
         out = _real_path_roundtrip(key, value)
         assert out == value
-        # Inner items must come back as tuples, not lists — DailyVolume
+        # Inner items must come back as tuples, not lists, DailyVolume
         # ships them through `tuple(...)` and templates index by attr.
         assert all(isinstance(d, tuple) for d in out.days)
     finally:

@@ -3,7 +3,7 @@
 A single message can land in multiple inboxes (lkml + linux-fsdevel,
 say). Search engines treat the same content at multiple URLs as a
 duplication signal and dilute ranking, so each article needs one
-*canonical* URL — the one we tell search engines is the real source.
+*canonical* URL, the one we tell search engines is the real source.
 
 Strategy: read the author's intent from the RFC 5322 `To:` / `Cc:`
 headers. The first list-shaped address there is what they actually
@@ -13,7 +13,7 @@ linux-fsdevel is canonical.
 
 To avoid false positives (people's personal addresses in Cc, vendor
 auto-replies, etc.), "list-shaped" is a conservative suffix-based
-filter — we only consider addresses on known mailing-list hosts.
+filter, we only consider addresses on known mailing-list hosts.
 Operator can extend via env if a host we don't yet know is in their
 archive."""
 from __future__ import annotations
@@ -30,7 +30,7 @@ LIST_HOST_SUFFIXES: frozenset[str] = frozenset({
     # kernel.org-hosted (covers most lkml/* via vger relay)
     "vger.kernel.org",
     "lists.linux.dev",
-    # NB: bare `kernel.org` is intentionally NOT here — it's primarily
+    # NB: bare `kernel.org` is intentionally NOT here, it's primarily
     # a personal-address domain (gregkh@, torvalds@, cve@, etc.), so
     # including it produces false positives. List subdomains (vger,
     # subspace, lists.linux.dev) carry the actual list traffic.
@@ -83,10 +83,22 @@ def is_list_address(address: str | None, suffixes: frozenset[str] = LIST_HOST_SU
 def extract_list_addresses(headers: dict[str, str]) -> list[str]:
     """Pull list-shaped addresses out of `To:` then `Cc:`, preserving
     order. Returned addresses are lowercased and deduplicated; the
-    first occurrence wins for ordering."""
+    first occurrence wins for ordering.
+
+    Header keys are matched case-insensitively. RFC 5322 says field
+    names are case-insensitive ("To" / "TO" / "to" are the same
+    header); `mimir.parser` preserves whatever casing the wire
+    delivered. Some ML re-mailers downcase headers, so a strict
+    `headers.get("To")` silently returned `None` on legitimate input
+    and broke both canonical-inbox resolution and the off-list-parent
+    hint on the message page.
+    """
+    # Build a lowercased-key view of the headers we care about so
+    # the walk can pick whichever casing the upstream sent.
+    by_lower = {k.lower(): v for k, v in headers.items()}
     raw_values: list[str] = []
-    for key in ("To", "Cc"):
-        value = headers.get(key)
+    for key in ("to", "cc"):
+        value = by_lower.get(key)
         if value:
             raw_values.append(value)
     if not raw_values:
@@ -115,7 +127,7 @@ def pick_canonical_inbox_id(
 ) -> int | None:
     """Walk `addresses` (already in To-then-Cc order) and return the
     inbox_id of the first address that maps to a known inbox. None if
-    no address matches — caller falls back to the alphabetical-first
+    no address matches, caller falls back to the alphabetical-first
     rule at render time."""
     for addr in addresses:
         inbox_id = address_to_inbox_id.get(addr)

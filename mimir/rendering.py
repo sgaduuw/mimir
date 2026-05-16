@@ -38,7 +38,7 @@ DIFF_HEADER_RE = re.compile(
 # `git format-patch` ends every patch with `-- \n<version>\n`. The
 # "-- " line (two dashes + trailing space) is the email signature
 # delimiter, and everything after it (the git version, typically one
-# line) is part of the canonical patch payload — copy-paste-to-patch
+# line) is part of the canonical patch payload, copy-paste-to-patch
 # expects it. Once we see this line inside a diff block, swallow the
 # rest of the message into the same block.
 DIFF_TRAILER_LINE = "-- "
@@ -49,7 +49,7 @@ URL_OR_MSGID_RE = re.compile(
 # DCO trailers are process attestations, not contact info. We still
 # redact addresses that aren't allowlisted, but we don't want the
 # msgid linkifier to mistake the address for a missing message-ID
-# and emit `[off-list ref]` — that actively looks like broken
+# and emit `[off-list ref]`, that actively looks like broken
 # metadata and breaks DCO chain verification on display.
 TRAILER_KEYS = (
     "Signed-off-by",
@@ -85,11 +85,11 @@ _DIFF_FORMATTER = HtmlFormatter(noclasses=False, nobackground=True, cssclass="hi
 
 # Fenced-code-block detection. Markdown-style triple-backtick fence
 # with an optional info string identifying the language:
-#   ```           — opens a fence; language defaults to C (kernel
+#   ```          , opens a fence; language defaults to C (kernel
 #                   list discussions are overwhelmingly C-shaped)
-#   ```c          — opens a C fence
-#   ```python     — opens a Python fence
-#   ```           — closes whichever fence is open
+#   ```c         , opens a C fence
+#   ```python    , opens a Python fence
+#   ```          , closes whichever fence is open
 #
 # Why fences only (not indent-based detection): high precision.
 # Markdown's 4-space-indent code blocks would false-positive on any
@@ -165,7 +165,7 @@ def parse_blocks(text: str) -> list[_Block]:
 
     for raw_line in text.splitlines():
         # Code-fence handling takes precedence over everything else
-        # once we're inside a fence — quotes, diffs, and prose all
+        # once we're inside a fence, quotes, diffs, and prose all
         # stop being meaningful until the closing fence.
         fence = _FENCE_RE.match(raw_line)
         if in_code:
@@ -180,7 +180,7 @@ def parse_blocks(text: str) -> list[_Block]:
         if fence is not None:
             # Opening fence. The info-string lets the renderer pick
             # a lexer. We deliberately do NOT emit the delimiter as
-            # part of the code block — the delimiter is the
+            # part of the code block, the delimiter is the
             # markdown wrapper, not the code.
             in_code = True
             code_info = fence.group(1).lower()
@@ -233,7 +233,7 @@ def linkify(
 ) -> str:
     """Escape `text` and replace URLs and `<Message-IDs>` with anchor tags.
 
-    Message-IDs are *not* rendered verbatim — they're email-shaped (often
+    Message-IDs are *not* rendered verbatim, they're email-shaped (often
     with @host, sometimes with the literal local-part), and rendering
     them in body text would re-leak the address info we already
     de-leaked from URLs. Instead they collapse to a neutral placeholder:
@@ -243,7 +243,7 @@ def linkify(
     `address_redactor` is an optional callable ``(email_str) -> str``
     applied to ``<email>`` patterns on DCO trailer lines
     (``Signed-off-by:``, ``Reviewed-by:``, etc.). The callable returns
-    *plain text* — typically ``<addr@dom>`` for allowlisted senders
+    *plain text*, typically ``<addr@dom>`` for allowlisted senders
     and ``<redacted>`` otherwise; the renderer html-escapes the
     return value before splicing into output, so the redactor cannot
     smuggle live HTML regardless of what it returns. Without a
@@ -291,7 +291,7 @@ def _render_trailer_line(line: str, redactor) -> str:
     patterns via `redactor` instead of msgid-linkifying them. URLs
     elsewhere on the line still get the normal URL treatment.
 
-    The redactor returns *plain text* — including the literal angle
+    The redactor returns *plain text*, including the literal angle
     brackets it wants visible. This renderer html-escapes the return
     value before splicing into output, so a redactor cannot smuggle
     live HTML through this code path regardless of what the email

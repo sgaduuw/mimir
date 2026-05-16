@@ -33,7 +33,7 @@
 {% if active_subsystems %}
 {# Subsystem discoverability on the inbox dashboard. Plain <ul>
    matches the visual language of the surrounding "Most active
-   threads" / "Recent patches" lists — cards would be heavier
+   threads" / "Recent patches" lists, cards would be heavier
    than the rest of the page warrants. The front-page surface
    keeps the card grid because it has nothing else around it to
    anchor against. Display name is lowercased (anti-shouty pass);
@@ -140,7 +140,7 @@
 {% block footer_extra %}
   {% if spark and spark.days %}
   <small>Last 30 days:</small>
-  <svg width="186" height="28" style="vertical-align: middle;"
+  <svg width="180" height="28" style="vertical-align: middle;"
        aria-label="Daily message volume, last 30 days">
     {% for day, count in spark.days %}
       {% set h = (count / spark.max_count * 26) if spark.max_count > 0 else 0 %}

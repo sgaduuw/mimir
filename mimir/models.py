@@ -35,7 +35,7 @@ class Inbox(Base):
     )
 
     # IngestState rows are tiny (one per epoch, ≤50 total per inbox);
-    # safe to lazy-load. ArticleList rows are millions per inbox — no
+    # safe to lazy-load. ArticleList rows are millions per inbox, no
     # reverse collection on purpose; admin queries should COUNT(*) by
     # inbox_id directly.
     ingest_states: Mapped[list["IngestState"]] = relationship(
@@ -61,10 +61,10 @@ class Article(Base):
 
     # Patch-series identity for cover letters (`[PATCH ... 0/N]`
     # subjects). NULL on every non-cover-letter article. Indexed
-    # so the timeline render — "v1 (date) → v2 (date) → v3 (this)"
-    # — can fetch siblings in one query.
+    # so the timeline render, "v1 (date) → v2 (date) → v3 (this)"
+    #, can fetch siblings in one query.
     # `patch_series_key` is a SHA-1 hex digest over
-    # (author-address, normalised-title) — opaque on purpose so a
+    # (author-address, normalised-title), opaque on purpose so a
     # query or log line doesn't leak the author's email. See
     # `mimir.patch_series.series_key`.
     # `patch_series_version` is a short marker like `v1`, `v2`,
@@ -82,7 +82,7 @@ class Article(Base):
 
     # Author's intended primary list, derived from the first list-shaped
     # address in `To:` (then `Cc:`) at ingest time. NULL when no
-    # list-shaped address matched a known inbox — render-time falls back
+    # list-shaped address matched a known inbox, render-time falls back
     # to the alphabetically-first inbox among `lists`. SET NULL on inbox
     # delete so removing an inbox doesn't strand or drop articles.
     canonical_inbox_id: Mapped[int | None] = mapped_column(
@@ -120,7 +120,7 @@ class Article(Base):
 
 class ArticleList(Base):
     """Per-inbox presence of an Article. (epoch, commit_sha) point at
-    the blob in *this* inbox's mirror — different mirrors commit the
+    the blob in *this* inbox's mirror, different mirrors commit the
     same message under different SHAs."""
     __tablename__ = "article_lists"
 
@@ -151,7 +151,7 @@ class IngestState(Base):
 
 class CacheEntry(Base):
     """Cross-process cache for slow dashboard queries. JSON values
-    only — see `mimir.cache` for the encoder/decoder."""
+    only, see `mimir.cache` for the encoder/decoder."""
     __tablename__ = "cache"
 
     key: Mapped[str] = mapped_column(String, primary_key=True)
@@ -163,7 +163,7 @@ class InboxAddressObservation(Base):
     """Per-(inbox, address) tally of list-shaped addresses observed in
     To/Cc of messages archived in this inbox. Used to auto-promote
     `Inbox.list_address` once an inbox accumulates a clear modal
-    address — bootstraps canonical resolution without hardcoding
+    address, bootstraps canonical resolution without hardcoding
     name→address mappings.
 
     Conservative filter (`canonical.is_list_address`) keeps personal
@@ -190,7 +190,7 @@ class ArticleFile(Base):
     whereas prose-shaped mentions like "we should touch fs/foo/" are
     high-noise. The cost of missing those is that the "other
     patches touching X" sidebar under-represents discussion-only
-    threads — acceptable trade for high-precision matches."""
+    threads, acceptable trade for high-precision matches."""
     __tablename__ = "article_files"
 
     article_id: Mapped[int] = mapped_column(
@@ -252,7 +252,7 @@ class ArticleTrailer(Base):
 
 class Subsystem(Base):
     """One MAINTAINERS section (e.g. "BCACHEFS"). Replaced wholesale
-    on every `update-mainline` tick — the upstream file is the
+    on every `update-mainline` tick, the upstream file is the
     source of truth, mimir's table is a cached projection. The CLI
     runs `DELETE FROM subsystems` (cascades to paths + maintainers)
     then re-inserts; idempotent and avoids drift if the upstream file
@@ -279,7 +279,7 @@ class Subsystem(Base):
 class SubsystemPath(Base):
     """One `F:` (include) or `X:` (exclude) glob from a MAINTAINERS
     section. The literal MAINTAINERS-shaped string is stored
-    (trailing slash, brace expansion, etc.) — interpretation lives
+    (trailing slash, brace expansion, etc.), interpretation lives
     in the future glob-matcher, not in the schema."""
     __tablename__ = "subsystem_paths"
 
@@ -296,7 +296,7 @@ class SubsystemPath(Base):
 
 class SubsystemMaintainer(Base):
     """One `M:` (maintainer) or `R:` (reviewer) entry. The list
-    address (MAINTAINERS' `L:` field) lives elsewhere — it's per-
+    address (MAINTAINERS' `L:` field) lives elsewhere, it's per-
     subsystem, not per-person, and is captured as
     `Subsystem.lists` in the parser dataclass. (Decided not to
     schema it separately for slice 1; revisit if a downstream
@@ -325,9 +325,9 @@ class MainlineState(Base):
     linux-next) without a migration.
 
     Two independent cursors:
-    - `last_commit_sha` — HEAD at the last MAINTAINERS load. Lets
+    - `last_commit_sha`, HEAD at the last MAINTAINERS load. Lets
       `update-mainline` skip the parse step when HEAD hasn't moved.
-    - `commits_walked_to_sha` — the most recent commit the
+    - `commits_walked_to_sha`, the most recent commit the
       `Link:`-trailer walker has processed. Independent of the
       MAINTAINERS cursor because MAINTAINERS only changes when
       that one file does, but the commit walker has new work on
@@ -349,15 +349,15 @@ class MainlineCommit(Base):
     mainline-tree commit message.
 
     Composite PK so a commit can carry multiple `Link:` trailers
-    (rare but legal — a fix referencing two prior reports, say).
+    (rare but legal, a fix referencing two prior reports, say).
     `message_id` is indexed because the patch-page lookup is "given
     this article's message_id, do we have any commits that applied
-    it?" — the read of record.
+    it?", the read of record.
 
     `tree_name` is indexed so the future stable / next surfaces can
     filter cheaply. For now there's one tree (`linus`).
 
-    `committed_at` is the commit's commit-time in UTC — what we
+    `committed_at` is the commit's commit-time in UTC, what we
     render as "Applied as <sha> on <date>" on the patch page.
     """
     __tablename__ = "mainline_commits"

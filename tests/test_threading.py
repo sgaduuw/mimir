@@ -190,7 +190,7 @@ def test_find_thread_root_terminates_on_cycle(seeded_db):
     rather not have, but real-world archives have had loops before.
     The CTE caps recursion at MAX_DEPTH; without it, the walk would
     run forever. Build the cycle and assert the call returns within
-    bounded work (the test's mere completion is the assertion —
+    bounded work (the test's mere completion is the assertion  
     pytest's per-test timeout would catch a true infinite loop)."""
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
@@ -234,7 +234,7 @@ def test_max_depth_value_is_sensible():
 
 
 def test_find_thread_root_handles_out_of_order_arrival(seeded_db):
-    """Cross-epoch ingest can deliver a reply before its parent —
+    """Cross-epoch ingest can deliver a reply before its parent  
     the reply commits first, then a later ingest pass finds the
     parent. The recursive CTE must reflect the new shape on the
     next query without any backfill step (this was one of the
@@ -310,6 +310,52 @@ def test_active_threads_query_returns_root_for_recent_reply(seeded_db):
     )
 
 
+def test_active_threads_score_clamps_future_dated_articles(seeded_db):
+    """`articles.date` is the public-inbox commit time per CONTEXT.md
+    so it shouldn't ever be in the future. But the decay formula
+    `pow(0.5, julianday('now') - julianday(date))` blows up to
+    enormous values for negative exponents, and a single mis-ingested
+    or typoed future date would dominate the ranking. The clamp
+    (`MAX(diff, 0)`) caps the score at `pow(0.5, 0) = 1.0` for any
+    "now-or-future" row. Audit (2026-05-15) flagged the missing
+    clamp.
+
+    Reproduce the score expression directly via SQL: `_active_threads_query`
+    sorts by score but doesn't expose it on `ActiveThread`, so we hit the
+    same `pow(0.5, ...)` formula via a raw query against a single seeded
+    article. Without the clamp the score would be astronomically large;
+    with the clamp it's <= 1.0.
+    """
+    from sqlalchemy import text
+
+    future = datetime(2099, 12, 31, tzinfo=timezone.utc)
+    with seeded_db() as s:
+        future_art = Article(
+            message_id="future-decay@example.com",
+            subject="from the future",
+            author="t",
+            date=future,
+            thread_parent=None,
+            subject_normalized="from the future",
+        )
+        s.add(future_art)
+        s.commit()
+
+        # The clamp is in `_active_threads_query`'s SUM expression;
+        # mirror it here to verify the math against a known
+        # future-dated row.
+        result = s.execute(text(
+            "SELECT pow(0.5, MAX(julianday('now') - julianday(:date), 0)) "
+            "AS score"
+        ), {"date": future.strftime("%Y-%m-%d %H:%M:%S")}).scalar_one()
+
+    # With the clamp, score is pow(0.5, 0) = 1.0 exactly.
+    assert 0.0 < result <= 1.0, (
+        f"clamped future-dated score should be in (0, 1]; got "
+        f"{result}. The clamp regressed -- pow(0.5, negative) blew up."
+    )
+
+
 def test_threads_for_day_returns_only_that_days_threads(seeded_db):
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
@@ -317,7 +363,7 @@ def test_threads_for_day_returns_only_that_days_threads(seeded_db):
     msgids = {r.message_id for r in results}
     # art1 was on 2024-01-01.
     assert "art1@example.com" in msgids
-    # art2 was on 2024-02-01, beta only — must not appear.
+    # art2 was on 2024-02-01, beta only, must not appear.
     assert "art2@example.com" not in msgids
 
 

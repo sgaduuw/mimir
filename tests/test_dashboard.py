@@ -2,7 +2,7 @@
 
 Counts / aggregations / wildcard escaping live in
 `mimir.dashboard`. The route smoke tests touch every endpoint, but
-they don't sanity-check the actual numbers — these do, against the
+they don't sanity-check the actual numbers, these do, against the
 conftest seed.
 
 Seed recap (from conftest.py):
@@ -171,6 +171,68 @@ def test_daily_volume_max_count(seeded_db):
     assert counts.count(0) == len(counts) - 1
 
 
+def test_dashboard_today_helpers_use_utc_not_local_date(seeded_db, monkeypatch):
+    """Regression: `daily_volume` and `this_day_in_history` must derive
+    'today' from `datetime.now(timezone.utc).date()`, not from any
+    local-clock source.
+
+    `Article.date` stores public-inbox commit times in UTC (CONTEXT.md).
+    Local-clock sources slide the SQL window by the server's UTC offset
+    (Coruscant runs CEST = UTC+2), slipping edge messages in/out at UTC
+    midnight; the cache keys derived from the same source then advance
+    at local midnight, so two requests on the same UTC day hit two
+    different keys.
+
+    The guard patches both `dm.date` and `dm.datetime` so any of the
+    following bad paths raise:
+
+      * `date.today()`                       (local)
+      * `datetime.today()`                   (alias for `now()` w/o tz)
+      * `datetime.now()`                     (naive, local)
+      * `datetime.now(tz=<non-utc>)`         (different local)
+
+    The good path -- `datetime.now(timezone.utc).date()` -- still works
+    because the patched `now()` accepts `tz=timezone.utc` and returns a
+    real aware datetime; the `.date()` then returns a plain builtin
+    `date` instance, never hitting the patched classmethod on the
+    `date` subclass."""
+    import mimir.dashboard as dm
+
+    class _UTCOnlyDate(dm.date):
+        @classmethod
+        def today(cls):
+            raise AssertionError(
+                "dashboard helpers must derive 'today' from "
+                "datetime.now(timezone.utc).date(), not date.today()"
+            )
+
+    class _UTCOnlyDatetime(dm.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz != timezone.utc:
+                raise AssertionError(
+                    "dashboard helpers must call datetime.now(timezone.utc); "
+                    f"got tz={tz!r}"
+                )
+            return super().now(tz)
+
+        @classmethod
+        def today(cls):
+            raise AssertionError(
+                "dashboard helpers must not call datetime.today() "
+                "(alias for naive local datetime)"
+            )
+
+    monkeypatch.setattr(dm, "date", _UTCOnlyDate)
+    monkeypatch.setattr(dm, "datetime", _UTCOnlyDatetime)
+
+    alpha = _inbox(seeded_db, "alpha")
+    with seeded_db() as s:
+        # Both helpers must complete without tripping the assertion.
+        daily_volume(s, alpha, days=30, force=True)
+        this_day_in_history(s, alpha, years_ago=5, limit=5, force=True)
+
+
 def test_monthly_volume_groups_by_month(seeded_db):
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
@@ -239,7 +301,7 @@ def test_monthly_volume_year_boundary(seeded_db):
     )
 
 
-# search_articles — including the LIKE-wildcard escape
+# search_articles, including the LIKE-wildcard escape
 
 
 def test_search_articles_subject_substring(seeded_db):
@@ -274,6 +336,22 @@ def test_search_articles_case_insensitive(seeded_db):
     assert {r.id for r in upper} == {r.id for r in lower}
 
 
+def test_search_articles_cache_key_case_folds(seeded_db):
+    """`Foo` and `foo` are identical to SQLite `ilike()` so they
+    must collapse to one cache row. Without the case-fold in the
+    cache key, each distinct casing would write its own row,
+    burning cache space proportional to user-typed variation."""
+    from mimir import cache
+    alpha = _inbox(seeded_db, "alpha")
+    with seeded_db() as s:
+        # First call (capitalised) writes the cache row.
+        search_articles(s, alpha, "Hello", force=True)
+        # Second call (lowercase) hits the row written by the first.
+        search_articles(s, alpha, "hello")
+    keys = [k for k in cache.keys() if k.startswith("search:alpha:")]
+    assert keys == ["search:alpha:hello:100"]
+
+
 def test_search_articles_no_match(seeded_db):
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
@@ -283,7 +361,7 @@ def test_search_articles_no_match(seeded_db):
 
 def test_search_articles_inbox_scoped(seeded_db):
     """`hello` matches both art1 ("hello alpha") and art2 ("hello
-    beta") — but only art1 (and friends) live in alpha."""
+    beta"), but only art1 (and friends) live in alpha."""
     alpha = _inbox(seeded_db, "alpha")
     ids = _ids_by_message_id(seeded_db)
     with seeded_db() as s:
@@ -323,7 +401,7 @@ def test_search_articles_escapes_underscore_wildcard(seeded_db):
     with underscore matches only literal underscores."""
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
-        # The seed has art1 "hello alpha" — without escape, a query
+        # The seed has art1 "hello alpha", without escape, a query
         # of "h_llo" would match. With escape it must not.
         results = search_articles(s, alpha, "h_llo", force=True)
     assert results == []
@@ -443,7 +521,7 @@ def test_latest_stable_releases_recency_floor_excludes_old(seeded_db):
 # this_day_in_history
 
 
-def test_this_day_in_history_returns_articles_summary(seeded_db):
+def test_this_day_in_history_returns_articles_summary(seeded_db, frozen_clock):
     """The shape contract: returns a list of ArticleSummary. Also pin
     the date-filter behaviour: an article dated exactly `years_ago`
     ago from today's date must appear in the result.
@@ -523,7 +601,7 @@ def test_recent_articles_returns_summaries(seeded_db):
     ids = _ids_by_message_id(seeded_db)
     with seeded_db() as s:
         results = recent_articles(s, alpha, limit=10, force=True)
-    # alpha has art1, art3, art4 — date-desc → art3 (Mar), art4 (Jan 2), art1 (Jan 1).
+    # alpha has art1, art3, art4, date-desc → art3 (Mar), art4 (Jan 2), art1 (Jan 1).
     assert [r.id for r in results] == [
         ids["art3@example.com"],
         ids["art4@example.com"],
