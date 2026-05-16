@@ -11,6 +11,30 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Scheduled `ANALYZE` and `VACUUM` in `deploy/scheduler.sh` no longer
+  reset their cadence clock on every sidecar restart. The previous
+  shape initialised `last_analyze`/`last_vacuum` to container start
+  time, so a release rollover (or any restart) at a cadence shorter
+  than the task's interval pushed the next firing out by another
+  full interval. With recent release cadence the daily ANALYZE had
+  effectively never run since the `article_files` / `article_trailers`
+  indexes were added; `sqlite_stat1` on the prod corpus had zero
+  entries for either table, leaving the planner blind for any query
+  shape that depended on those indexes for cost estimation (#202).
+  Each task's last-run timestamp is now persisted to
+  `/data/.last_<task>` and read off the sentinel mtime at boot, so
+  the cadence intent survives restarts. Sentinels are only touched
+  on successful runs so a transient failure doesn't push the next
+  retry out by a full cadence.
+- `deploy/scheduler.sh` now runs `ANALYZE` immediately after
+  `alembic upgrade head`, before touching the `/data/.migrated`
+  healthcheck sentinel. Any new index introduced by the
+  just-applied migration starts life with planner stats instead of
+  being invisible to the optimiser until the next scheduled
+  ANALYZE pass (or, prior to the scheduling fix above, never).
+
 ## [1.21.2] - 2026-05-16
 
 ### Added
