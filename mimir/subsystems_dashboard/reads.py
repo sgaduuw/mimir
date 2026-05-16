@@ -10,14 +10,12 @@ imports it from here.
 from collections import defaultdict
 from datetime import date as date_cls, datetime, timedelta, timezone
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
-from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume, like_escape
+from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume
 from mimir.models import (
-    Article,
-    ArticleFile,
     ArticleList,
     Inbox,
     Subsystem,
@@ -25,9 +23,8 @@ from mimir.models import (
 from mimir.subsystems import (
     RelatedPatch,
     SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
-    path_matches_glob,
 )
-from mimir.threading import ActiveThread, _active_threads_query
+from mimir.threading import ActiveThread, _active_threads_query, _coerce_dt
 
 
 def recent_articles_in_subsystem(
@@ -51,97 +48,44 @@ def recent_articles_in_subsystem(
     a full-table scan to every dashboard hit. A follow-up slice
     can fold them in once the simple-glob case is shipping.
 
-    Cached for `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC`. The query joins
-    article_files × article_lists × articles with one OR clause per
-    F: glob (large subsystems like DT-bindings have many), then a
-    Python-side X: filter walk; on a multi-million-row archive that
-    runs into double-digit seconds for the busy subsystems. Warm-
-    cache pre-builds the top-N most active subsystems per inbox so
-    most readers landing on a hot dashboard get a cache hit.
+    Cached for `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC`. The path filter
+    delegates to `_subsystem_path_filter_sql` so the SQL-side X:
+    semantics ("at least one path is included and not excluded")
+    do the work without a Python overfetch + post-filter pass; the
+    earlier shape ran tens of seconds cold on busy subsystems like
+    NETWORKING (#198).
     """
     def compute() -> list[RelatedPatch]:
-        includes = [r for r in subsystem.paths if not r.is_exclude]
-        excludes = [r.glob for r in subsystem.paths if r.is_exclude]
-
-        # Build OR conditions for each supported include glob. Exact
-        # paths (the modal MAINTAINERS shape: explicit `F: drivers/
-        # foo/bar.c` lines) are collapsed into a single `path IN
-        # (...)` clause instead of one OR-equality per rule, wide
-        # subsystems can list dozens of files, and IN lets SQLite
-        # build one in-memory probe instead of walking a long OR
-        # disjunction. Directory-prefix `dir/` entries still need
-        # one LIKE per rule (each escapes its own metacharacters).
-        exact_paths: list[str] = []
-        or_conds = []
-        for rule in includes:
-            g = rule.glob
-            if g.endswith("/"):
-                # Directory prefix. SQLite LIKE doesn't treat `_` and `%`
-                # as literal, escape them so a path glob containing `_`
-                # (rare but possible: `arch/x86_64/`) doesn't widen the
-                # match.
-                prefix = like_escape(g)
-                or_conds.append(ArticleFile.path.like(prefix + "%", escape="\\"))
-                # Also match the bare directory path (no trailing slash).
-                exact_paths.append(g[:-1])
-            elif not any(c in g for c in "*?["):
-                exact_paths.append(g)
-            # else: wildcard, skipped in slice 1
-        if exact_paths:
-            or_conds.append(ArticleFile.path.in_(exact_paths))
-        if not or_conds:
+        path_filter = _subsystem_path_filter_sql(subsystem, prefix="rasf")
+        if path_filter is None:
             return []
-
-        # Over-fetch by a factor so the X: exclude pass below has room
-        # to filter without starving the result list.
-        overfetch = max(limit * 3, 60)
+        path_sql, path_params = path_filter
         rows = session.execute(
-            select(Article.id, Article.message_id, Article.subject,
-                   Article.author, Article.date,
-                   Article.canonical_inbox_id,
-                   ArticleFile.path)
-            .join(ArticleFile, ArticleFile.article_id == Article.id)
-            .join(ArticleList, ArticleList.article_id == Article.id)
-            .where(or_(*or_conds), ArticleList.inbox_id == inbox.id)
-            .order_by(Article.date.desc())
-            .limit(overfetch)
+            text(
+                f"""
+                SELECT a.id AS article_id, a.message_id, a.subject,
+                       a.author, a.date AS art_date,
+                       a.canonical_inbox_id
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                WHERE al.inbox_id = :inbox_id
+                  AND a.id IN ({path_sql})
+                ORDER BY a.date DESC
+                LIMIT :limit
+                """
+            ),
+            {
+                "inbox_id": inbox.id,
+                "limit": limit,
+                **path_params,
+            },
         ).all()
-
-        # Group touched paths per article so the X: filter can see every
-        # path a given article touched (not just the one row that matched
-        # an include).
-        art_paths: dict[int, set[str]] = defaultdict(set)
-        art_data: dict[int, tuple] = {}
-        art_order: list[int] = []  # preserve newest-first order from SQL
-        for art_id, mid, subj, author, date, canon_id, path in rows:
-            if art_id not in art_data:
-                art_data[art_id] = (mid, subj, author, date, canon_id)
-                art_order.append(art_id)
-            art_paths[art_id].add(path)
-
-        # The X: pass operates over the per-article path set: a subsystem
-        # vetoes an article only if *every* matched path is excluded. If
-        # at least one path remains in-scope after applying X:, the
-        # article still belongs to the subsystem.
-        valid_ids: list[int] = []
-        for art_id in art_order:
-            in_scope = [
-                p for p in art_paths[art_id]
-                if any(
-                    path_matches_glob(p, inc.glob) for inc in includes
-                ) and not any(
-                    path_matches_glob(p, x) for x in excludes
-                )
-            ]
-            if in_scope:
-                valid_ids.append(art_id)
-                if len(valid_ids) >= limit:
-                    break
-        if not valid_ids:
+        if not rows:
             return []
 
         # Resolve inbox names for the canonical-or-fallback URL building,
         # one bulk query.
+        valid_ids = [r.article_id for r in rows]
         links = session.execute(
             select(ArticleList.article_id, Inbox.id, Inbox.name)
             .join(Inbox, Inbox.id == ArticleList.inbox_id)
@@ -152,13 +96,12 @@ def recent_articles_in_subsystem(
             links_by_article[art_id].append((ix_id, ix_name))
 
         out: list[RelatedPatch] = []
-        for art_id in valid_ids:
-            mid, subj, author, date, canon_id = art_data[art_id]
-            link_set = links_by_article.get(art_id, [])
+        for r in rows:
+            link_set = links_by_article.get(r.article_id, [])
             canon_name: str | None = None
-            if canon_id is not None:
+            if r.canonical_inbox_id is not None:
                 for ix_id, name in link_set:
-                    if ix_id == canon_id:
+                    if ix_id == r.canonical_inbox_id:
                         canon_name = name
                         break
             if canon_name is None and link_set:
@@ -166,8 +109,12 @@ def recent_articles_in_subsystem(
             if canon_name is None:
                 continue
             out.append(RelatedPatch(
-                article_id=art_id, message_id=mid, subject=subj,
-                author=author, date=date, inbox_name=canon_name,
+                article_id=r.article_id,
+                message_id=r.message_id,
+                subject=r.subject,
+                author=r.author,
+                date=_coerce_dt(r.art_date),
+                inbox_name=canon_name,
             ))
         return out
 
@@ -183,16 +130,28 @@ def recent_articles_in_subsystem(
 def _subsystem_path_filter_sql(
     subsystem: Subsystem, prefix: str = "ssp",
 ) -> tuple[str, dict] | None:
-    """Return `(sql, params)` where `sql` is a
-    `SELECT article_id FROM article_files WHERE ...` clause that
-    enumerates article IDs matching the subsystem's F: globs and
-    not vetoed by its X: globs. `params` is the bind-parameter
-    dict to pass to `text()`.
+    """Return `(sql, params)` where `sql` is a SELECT that enumerates
+    article IDs matching the subsystem's F: globs and not vetoed by
+    its X: globs. `params` is the bind-parameter dict to pass to
+    `text()`.
 
     Per-path semantics: an article belongs to the subsystem if at
     least one of its `article_files.path` rows is matched by an
-    include and not by any exclude. Same rule as the in-memory
-    pass in `recent_articles_in_subsystem`.
+    include and not by any exclude. The SQL realises that as a
+    UNION of independent index seeks, one per F: rule, each AND-ed
+    with a per-row NOT-any-exclude predicate.
+
+    Why UNION-of-seeks and not OR-of-LIKEs: SQLite's LIKE→range-scan
+    optimisation is disabled whenever ESCAPE is present, and the
+    earlier shape needed ESCAPE so a glob containing `_` (e.g.
+    `arch/x86_64/`) wouldn't widen the match. Every prefix-LIKE
+    branch therefore fell back to a full scan of `article_files`
+    (millions of rows) per dashboard render, NETWORKING [GENERAL]
+    on lkml ran ~10 s cold (#198). Range comparisons (`path >= lo
+    AND path < hi`) treat `_` as the literal byte it is and let each
+    branch use `ix_article_files_path` as a sargable seek; the
+    NETWORKING cold miss drops to ~400 ms. Plan pinned in
+    test_subsystem_path_filter_uses_index_seeks.
 
     Returns `None` when the subsystem has no supported (non-
     wildcard) include rules, caller should treat that as "no
@@ -203,37 +162,67 @@ def _subsystem_path_filter_sql(
     """
     includes = [r.glob for r in subsystem.paths if not r.is_exclude]
     excludes = [r.glob for r in subsystem.paths if r.is_exclude]
-
     params: dict[str, str] = {}
 
-    def build(globs: list[str], label: str) -> str:
-        parts: list[str] = []
-        for i, g in enumerate(globs):
-            if g.endswith("/"):
-                pname_pre = f"{prefix}_{label}_pre_{i}"
-                # Escape LIKE wildcards so a glob containing `_`
-                # (e.g. `arch/x86_64/`) doesn't widen the match.
-                params[pname_pre] = like_escape(g) + "%"
-                parts.append(f"path LIKE :{pname_pre} ESCAPE '\\'")
-                # Also include the bare directory path.
-                pname_eq = f"{prefix}_{label}_eq_{i}"
-                params[pname_eq] = g[:-1]
-                parts.append(f"path = :{pname_eq}")
-            elif not any(c in g for c in "*?["):
-                pname = f"{prefix}_{label}_eq_{i}"
-                params[pname] = g
-                parts.append(f"path = :{pname}")
-            # else: wildcard skipped (slice 1/2)
-        return " OR ".join(parts)
+    def _add(name: str, value: str) -> str:
+        params[name] = value
+        return name
 
-    inc_sql = build(includes, "inc")
-    if not inc_sql:
+    def _prefix_bounds(g: str) -> tuple[str, str]:
+        """Half-open `[lo, hi)` byte range covering every path that
+        starts with the directory prefix `g` (e.g. `arch/x86_64/`).
+        Bumping the trailing byte by one is sufficient because SQLite
+        compares TEXT as BLOB-style byte sequences."""
+        return g, g[:-1] + chr(ord(g[-1]) + 1)
+
+    # Per-row NOT(exclude) predicate AND-ed into every UNION branch.
+    # Small disjunction, only evaluated on rows already matched by an
+    # include seek, so cost is bounded by the include result size
+    # rather than the size of article_files.
+    exc_parts: list[str] = []
+    for i, g in enumerate(excludes):
+        if g.endswith("/"):
+            lo, hi = _prefix_bounds(g)
+            pname_lo = _add(f"{prefix}_exc_lo_{i}", lo)
+            pname_hi = _add(f"{prefix}_exc_hi_{i}", hi)
+            exc_parts.append(f"(path >= :{pname_lo} AND path < :{pname_hi})")
+            pname_eq = _add(f"{prefix}_exc_eq_{i}", g[:-1])
+            exc_parts.append(f"path = :{pname_eq}")
+        elif not any(c in g for c in "*?["):
+            pname = _add(f"{prefix}_exc_eq_{i}", g)
+            exc_parts.append(f"path = :{pname}")
+        # else: wildcard skipped (slice 1/2)
+    exc_clause = (
+        " AND NOT (" + " OR ".join(exc_parts) + ")" if exc_parts else ""
+    )
+
+    branches: list[str] = []
+    for i, g in enumerate(includes):
+        if g.endswith("/"):
+            lo, hi = _prefix_bounds(g)
+            pname_lo = _add(f"{prefix}_inc_lo_{i}", lo)
+            pname_hi = _add(f"{prefix}_inc_hi_{i}", hi)
+            branches.append(
+                "SELECT article_id FROM article_files "
+                f"WHERE path >= :{pname_lo} AND path < :{pname_hi}{exc_clause}"
+            )
+            # Also match the bare directory path (no trailing slash).
+            pname_eq = _add(f"{prefix}_inc_eq_{i}", g[:-1])
+            branches.append(
+                "SELECT article_id FROM article_files "
+                f"WHERE path = :{pname_eq}{exc_clause}"
+            )
+        elif not any(c in g for c in "*?["):
+            pname = _add(f"{prefix}_inc_eq_{i}", g)
+            branches.append(
+                "SELECT article_id FROM article_files "
+                f"WHERE path = :{pname}{exc_clause}"
+            )
+        # else: wildcard skipped (slice 1/2)
+
+    if not branches:
         return None
-    sql = f"SELECT article_id FROM article_files WHERE ({inc_sql})"
-    exc_sql = build(excludes, "exc")
-    if exc_sql:
-        sql += f" AND NOT ({exc_sql})"
-    return sql, params
+    return " UNION ".join(branches), params
 
 
 def daily_volume_in_subsystem(

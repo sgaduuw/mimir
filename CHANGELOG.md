@@ -26,6 +26,25 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Fixed
 
+- Per-subsystem dashboard (`/<inbox>/subsystem/<name>/`) cold-miss
+  latency: the shared `_subsystem_path_filter_sql` builder (used by
+  `recent_articles_in_subsystem`, `daily_volume_in_subsystem`,
+  `active_threads_in_subsystem`, `active_reviewers_in_subsystem`) no
+  longer emits `path LIKE :prefix ESCAPE '\'` for directory-prefix
+  globs. SQLite disables its LIKE-to-range-scan optimisation when
+  `ESCAPE` is present, so every prefix branch fell back to a full
+  scan of `article_files` (7M rows on prod); on `lkml` with
+  NETWORKING [GENERAL] that produced ~10 s cold misses for
+  `recent_articles_in_subsystem` and ~9.5 s for
+  `active_reviewers_in_subsystem`. Replaced with UNION-of-seeks
+  shaped as `path >= lo AND path < hi` per branch, each independently
+  sargable against `ix_article_files_path`. Cold misses drop ~10-25×;
+  warmer subsystems collapse to sub-100 ms. The literal `_` in
+  globs like `arch/x86_64/` is handled correctly by the range
+  comparison (no escape machinery needed). `recent_articles_in_subsystem`
+  also drops its overfetch + Python X-filter pass since the SQL-side
+  X: predicate has the same per-row semantics. Plan pinned in
+  `test_subsystem_path_filter_uses_index_seeks`.
 - Per-reviewer page (`/<inbox>/reviewer/<address>`) cold-miss latency:
   `articles_reviewed_by` no longer JOINs against an unfiltered
   MATERIALIZE'd derived table to compute the canonical-NULL fallback
