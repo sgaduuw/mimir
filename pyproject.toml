@@ -21,6 +21,8 @@ gunicorn = "^26.0.0"
 ruff = "^0.15.12"
 pytest = "^9.0.3"
 pillow = "^12.2.0"
+pytest-cov = "^7.1.0"
+freezegun = "^1.5.5"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

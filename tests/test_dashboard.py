@@ -173,19 +173,29 @@ def test_daily_volume_max_count(seeded_db):
 
 def test_dashboard_today_helpers_use_utc_not_local_date(seeded_db, monkeypatch):
     """Regression: `daily_volume` and `this_day_in_history` must derive
-    'today' from `datetime.now(utc).date()`, not `date.today()`.
+    'today' from `datetime.now(timezone.utc).date()`, not from any
+    local-clock source.
 
     `Article.date` stores public-inbox commit times in UTC (CONTEXT.md).
-    `date.today()` returns the *local* date; on a non-UTC server (e.g.
-    Coruscant runs CEST = UTC+2) the SQL window slides by the offset,
-    slipping edge messages in/out at UTC midnight. Both cache keys also
-    must advance at UTC midnight so two requests on the same UTC day
-    hit the same key regardless of the server's TZ.
+    Local-clock sources slide the SQL window by the server's UTC offset
+    (Coruscant runs CEST = UTC+2), slipping edge messages in/out at UTC
+    midnight; the cache keys derived from the same source then advance
+    at local midnight, so two requests on the same UTC day hit two
+    different keys.
 
-    The test monkey-patches `mimir.dashboard.date` so its `.today()`
-    raises if called. The helpers must use `datetime.now(utc).date()`
-    instead, which goes through a `datetime` instance method and does
-    NOT route through the patched classmethod."""
+    The guard patches both `dm.date` and `dm.datetime` so any of the
+    following bad paths raise:
+
+      * `date.today()`                       (local)
+      * `datetime.today()`                   (alias for `now()` w/o tz)
+      * `datetime.now()`                     (naive, local)
+      * `datetime.now(tz=<non-utc>)`         (different local)
+
+    The good path -- `datetime.now(timezone.utc).date()` -- still works
+    because the patched `now()` accepts `tz=timezone.utc` and returns a
+    real aware datetime; the `.date()` then returns a plain builtin
+    `date` instance, never hitting the patched classmethod on the
+    `date` subclass."""
     import mimir.dashboard as dm
 
     class _UTCOnlyDate(dm.date):
@@ -196,7 +206,25 @@ def test_dashboard_today_helpers_use_utc_not_local_date(seeded_db, monkeypatch):
                 "datetime.now(timezone.utc).date(), not date.today()"
             )
 
+    class _UTCOnlyDatetime(dm.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz != timezone.utc:
+                raise AssertionError(
+                    "dashboard helpers must call datetime.now(timezone.utc); "
+                    f"got tz={tz!r}"
+                )
+            return super().now(tz)
+
+        @classmethod
+        def today(cls):
+            raise AssertionError(
+                "dashboard helpers must not call datetime.today() "
+                "(alias for naive local datetime)"
+            )
+
     monkeypatch.setattr(dm, "date", _UTCOnlyDate)
+    monkeypatch.setattr(dm, "datetime", _UTCOnlyDatetime)
 
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
@@ -493,7 +521,7 @@ def test_latest_stable_releases_recency_floor_excludes_old(seeded_db):
 # this_day_in_history
 
 
-def test_this_day_in_history_returns_articles_summary(seeded_db):
+def test_this_day_in_history_returns_articles_summary(seeded_db, frozen_clock):
     """The shape contract: returns a list of ArticleSummary. Also pin
     the date-filter behaviour: an article dated exactly `years_ago`
     ago from today's date must appear in the result.
