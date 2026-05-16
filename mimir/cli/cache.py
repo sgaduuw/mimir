@@ -30,8 +30,10 @@ from mimir.config import settings
 from mimir.inboxes import bootstrap_inboxes
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems_dashboard import (
+    REVIEWS_PER_PAGE_LIMIT,
     active_reviewers_in_subsystem,
     active_threads_in_subsystem,
+    articles_reviewed_by,
     daily_volume_in_subsystem,
     most_active_subsystems_global,
     most_active_subsystems_in_inbox,
@@ -66,13 +68,26 @@ WARM_TOP_SUBSYSTEMS_PER_INBOX = 20
 
 
 def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
-    """Pre-warm the four cache-backed helpers driving the per-subsystem
-    dashboard (`recent_articles_in_subsystem`,
-    `active_threads_in_subsystem`, `daily_volume_in_subsystem`,
-    `active_reviewers_in_subsystem`) for the top-N most active
-    subsystems in `inbox`. The four helpers' arguments must match the
-    `subsystem_dashboard` route call sites in `mimir/web.py`, or the
-    cache keys diverge and the route still does cold work."""
+    """Pre-warm the per-subsystem dashboard helpers AND the per-reviewer
+    pages each one surfaces, for the top-N most active subsystems in
+    `inbox`.
+
+    Per subsystem we fire the four dashboard helpers
+    (`recent_articles_in_subsystem`, `active_threads_in_subsystem`,
+    `daily_volume_in_subsystem`, `active_reviewers_in_subsystem`); the
+    helpers' arguments must match the `subsystem_dashboard` route call
+    sites in `mimir/web/routes/dashboards.py`, or the cache keys
+    diverge and the route still does cold work.
+
+    On top of that, we capture the reviewer addresses surfaced by
+    `active_reviewers_in_subsystem` across all top-N subsystems,
+    dedup, and warm `articles_reviewed_by` for each. Prolific
+    reviewers (Greg KH, david@kernel.org, etc.) appear under many
+    subsystems so the dedup cuts the warm count roughly in half;
+    typical bound is ~50-100 unique addresses per inbox. Pays the
+    heavy `articles_reviewed_by` query on the warm-cache sidecar
+    instead of the request path. External report 2026-05-16 (#195).
+    """
     top = most_active_subsystems_in_inbox(session, inbox, days=7, limit=top_n)
     if not top:
         return
@@ -86,6 +101,7 @@ def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
         .where(Subsystem.id.in_(sub_ids))
     ).scalars().all()
     sub_by_id = {s.id: s for s in subs}
+    reviewer_addrs: set[str] = set()
     for row in top:
         sub = sub_by_id.get(row.id)
         if sub is None:
@@ -98,7 +114,20 @@ def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
         )
         active_threads_in_subsystem(session, inbox, sub, days=7, limit=10)
         daily_volume_in_subsystem(session, inbox, sub, days=30)
-        active_reviewers_in_subsystem(session, inbox, sub, days=30, limit=10)
+        # Collect addresses so we can warm the per-reviewer page each
+        # one links to from this subsystem's "Active reviewers" list.
+        for r in active_reviewers_in_subsystem(
+            session, inbox, sub, days=30, limit=10,
+        ):
+            reviewer_addrs.add(r.address_normalized)
+    # Warm articles_reviewed_by for each unique reviewer surfaced
+    # above. Arguments must match the `reviewer_view` route call site
+    # in `mimir/web/routes/search.py` (limit = REVIEWS_PER_PAGE_LIMIT)
+    # or the cache key diverges and the warmed row never hits.
+    for addr in reviewer_addrs:
+        articles_reviewed_by(
+            session, inbox, addr, limit=REVIEWS_PER_PAGE_LIMIT,
+        )
 
 
 @click.command("warm-cache")
