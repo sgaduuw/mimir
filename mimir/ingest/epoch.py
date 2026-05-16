@@ -1,3 +1,15 @@
+"""Core per-epoch ingest walk + the small helpers it shares with the
+replay and backfill flows.
+
+`ingest_epoch` is the hot path: walk a public-inbox epoch's git log
+from the last-seen commit forward, parse messages (sequentially or via
+a process pool), bucket each outcome (new / linked / dup_batch /
+dup_db / failed), and persist a per-epoch resume cursor.
+
+The shared helpers (`_aware_utc`, `_to_article`, `_flush_observations`,
+`_maybe_promote_list_address`) and the `IngestResult` model are also
+imported by `.replay`, `.backfill`, and `.orchestrate`.
+"""
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor
@@ -6,16 +18,13 @@ from itertools import islice
 from pathlib import Path
 from typing import Iterable, Iterator
 
-from dulwich.errors import NotGitRepository
 from dulwich.repo import Repo
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from mimir.canonical import extract_list_addresses, pick_canonical_inbox_id
-from mimir.config import settings
-from mimir.extensions import SessionLocal, engine
 from mimir.models import (
     Article,
     ArticleFile,
@@ -30,7 +39,6 @@ from mimir.parser import ParsedArticle, normalize_subject, parse_message
 from mimir.patch_series import parse_cover_letter, series_key
 from mimir.patches import extract_touched_paths
 from mimir.trailers import extract_trailers
-from mimir.store import MessageNotFound, read_message
 
 logger = logging.getLogger(__name__)
 
@@ -482,363 +490,3 @@ def ingest_epoch(
 
     result.last_commit_sha = last_seen
     return result
-
-
-class ReplayResult(BaseModel):
-    """Outcome of replaying persisted parse failures for one inbox."""
-    attempted: int = 0
-    recovered: int = 0   # parsed cleanly; row deleted, article inserted/linked.
-    still_failed: int = 0  # parse still raises; row's last_attempt + attempts updated.
-    skipped: int = 0     # blob couldn't be fetched (mirror missing, ref pruned).
-
-
-def replay_failures(
-    inbox: Inbox,
-    epoch_filter: str | None = None,
-    limit: int | None = None,
-) -> ReplayResult:
-    """Re-parse persisted parse_failures rows for `inbox`.
-
-    On success: insert the Article (or cross-post link) and delete the
-    failure row. On failure: bump attempts/last_attempt and refresh the
-    error fields. Sequential by design, replay is a low-volume admin
-    op, not the hot ingest path.
-    """
-    out = ReplayResult()
-    with SessionLocal() as session:
-        attached = session.merge(inbox)
-        q = select(ParseFailure).where(ParseFailure.inbox_id == attached.id)
-        if epoch_filter is not None:
-            q = q.where(ParseFailure.epoch == epoch_filter)
-        q = q.order_by(ParseFailure.epoch, ParseFailure.commit_sha)
-        if limit is not None:
-            q = q.limit(limit)
-        rows = list(session.execute(q).scalars())
-
-        # Group by epoch so we open each dulwich repo once. Close
-        # each cached repo before returning: dulwich's `Repo` holds
-        # FDs on pack files, refs, and the loose-object dir, and has
-        # no `__del__`, so the FDs leak until the dict gets GC'd.
-        repo_cache: dict[str, Repo] = {}
-        try:
-            for row in rows:
-                out.attempted += 1
-                repo_path = Path(attached.mirror_path) / row.epoch
-                repo = repo_cache.get(row.epoch)
-                if repo is None:
-                    try:
-                        repo = Repo(str(repo_path))
-                    except (NotGitRepository, FileNotFoundError):
-                        out.skipped += 1
-                        continue
-                    repo_cache[row.epoch] = repo
-
-                try:
-                    commit = repo[row.commit_sha.encode()]
-                    tree = repo[commit.tree]
-                    _mode, blob_sha = tree[b"m"]
-                    raw = repo[blob_sha].data
-                    commit_time = datetime.fromtimestamp(commit.commit_time, timezone.utc)
-                except KeyError:
-                    # Commit or `m` blob missing, mirror was pruned or
-                    # rewound. Leave the row in place; surface to operator.
-                    out.skipped += 1
-                    continue
-
-                try:
-                    parsed = parse_message(raw)
-                except Exception as exc:
-                    row.last_attempt = datetime.now(timezone.utc)
-                    row.attempts += 1
-                    row.error_class = type(exc).__name__
-                    row.error_message = str(exc)[:1000]
-                    out.still_failed += 1
-                    continue
-
-                existing_id = session.execute(
-                    select(Article.id).where(Article.message_id == parsed.message_id)
-                ).scalar_one_or_none()
-                if existing_id is None:
-                    session.add(_to_article(
-                        parsed, inbox_id=attached.id, epoch=row.epoch,
-                        commit_sha=row.commit_sha, date=commit_time,
-                    ))
-                else:
-                    # Cross-post: link if not already linked. We only ever
-                    # have a failure row for a SHA whose article wasn't
-                    # successfully ingested in *this* inbox, but be defensive
-                    # against the (rare) case where another path inserted it.
-                    already_linked = session.execute(
-                        select(ArticleList.article_id).where(
-                            ArticleList.article_id == existing_id,
-                            ArticleList.inbox_id == attached.id,
-                        )
-                    ).scalar_one_or_none()
-                    if already_linked is None:
-                        session.add(ArticleList(
-                            article_id=existing_id,
-                            inbox_id=attached.id,
-                            epoch=row.epoch,
-                            commit_sha=row.commit_sha,
-                        ))
-                session.delete(row)
-                out.recovered += 1
-            session.commit()
-        finally:
-            for repo in repo_cache.values():
-                repo.close()
-    return out
-
-
-class BackfillResult(BaseModel):
-    """Outcome counters for `backfill_canonicals`. Each examined article
-    lands in exactly one of resolved/unresolved/skipped (resolved =
-    `canonical_inbox_id` was set or updated; unresolved = parsed cleanly
-    but no list address matched; skipped = blob couldn't be read)."""
-    examined: int = 0
-    resolved: int = 0
-    unresolved: int = 0
-    skipped: int = 0
-
-
-def backfill_canonicals(
-    inbox_filter: str | None = None,
-    limit: int | None = None,
-    reprocess: bool = False,
-    promote_every: int = 200,
-    progress_every: int = 1000,
-    progress: callable = None,  # type: ignore[valid-type]
-) -> BackfillResult:
-    """Walk historical articles newest-first, record per-inbox address
-    observations and resolve `canonical_inbox_id` from the original
-    To/Cc headers. Idempotent + resumable: by default skips articles
-    that already have a canonical set (the `WHERE canonical_inbox_id IS
-    NULL` filter naturally picks up where a previous run left off).
-
-    Mid-walk, every `promote_every` articles we re-run
-    `_maybe_promote_list_address` for inboxes still at NULL, that way
-    auto-promotion fires early in the pass (after the first ~50 newest
-    messages per inbox accumulate observations) and the bulk of the
-    walk resolves canonicals against a settled list_address map.
-
-    `--reprocess` re-examines articles whose canonical is already set
-    (use after operator updates a list_address or when chasing the
-    bootstrap region from an earlier pass). `--inbox` restricts the
-    walk to articles linked to a single inbox. `--limit` caps the
-    session for "do an hour's worth tonight."
-    """
-    out = BackfillResult()
-    address_to_inbox_id: dict[str, int] = {}
-    pending_obs: dict[int, dict[str, tuple[int, datetime]]] = {}
-    inbox_cache: dict[int, Inbox] = {}
-
-    def refresh_address_map(session: Session) -> None:
-        nonlocal address_to_inbox_id
-        address_to_inbox_id = dict(session.execute(
-            select(Inbox.list_address, Inbox.id).where(Inbox.list_address.isnot(None))
-        ).all())
-
-    def get_inbox(session: Session, inbox_id: int) -> Inbox:
-        ix = inbox_cache.get(inbox_id)
-        if ix is None:
-            ix = session.get(Inbox, inbox_id)
-            if ix is None:
-                raise RuntimeError(f"missing inbox row for id={inbox_id}")
-            inbox_cache[inbox_id] = ix
-        return ix
-
-    def flush_pending(session: Session) -> None:
-        for inbox_id, obs in pending_obs.items():
-            if obs:
-                _flush_observations(session, inbox_id, obs)
-        pending_obs.clear()
-
-    def maybe_promote_all(session: Session) -> bool:
-        """Run promotion for every inbox that's still NULL. Returns True
-        if any inbox got promoted (caller refreshes the address map)."""
-        promoted = False
-        for ix in session.execute(
-            select(Inbox).where(Inbox.list_address.is_(None))
-        ).scalars():
-            if _maybe_promote_list_address(session, ix.id) is not None:
-                promoted = True
-        return promoted
-
-    with SessionLocal() as session:
-        refresh_address_map(session)
-
-        # Build the article query. Newest-first so the most-indexed
-        # articles get correct canonicals first AND auto-promotion has
-        # the freshest observations to work with.
-        q = select(Article).order_by(Article.date.desc().nullslast())
-        if not reprocess:
-            q = q.where(Article.canonical_inbox_id.is_(None))
-        if inbox_filter is not None:
-            q = q.join(ArticleList, ArticleList.article_id == Article.id) \
-                 .join(Inbox, Inbox.id == ArticleList.inbox_id) \
-                 .where(Inbox.name == inbox_filter)
-        if limit is not None:
-            q = q.limit(limit)
-
-        # Stream the eligible-articles result rather than materialising
-        # all rows. `--reprocess` and the unfiltered-inbox path can hit
-        # the full 6M-row prod corpus; materialising peaks at multi-GB.
-        # `yield_per` rides on top of the existing `promote_every`
-        # commit cadence; commits expire the iterated articles, which
-        # we never re-touch (each iteration only reads the freshly-
-        # yielded one).
-        articles = session.execute(
-            q.execution_options(stream_results=True, yield_per=1000)
-        ).scalars()
-        for article in articles:
-            out.examined += 1
-
-            # Pick a linked inbox to read the blob from. Cross-posts
-            # have one ArticleList row per inbox, all pointing at the
-            # same logical message; first try the lowest-id inbox.
-            links = list(session.execute(
-                select(ArticleList.inbox_id)
-                .where(ArticleList.article_id == article.id)
-                .order_by(ArticleList.inbox_id)
-            ).scalars())
-
-            parsed = None
-            for inbox_id in links:
-                ix = get_inbox(session, inbox_id)
-                try:
-                    parsed = read_message(session, ix, article.message_id)
-                    break
-                except MessageNotFound as exc:
-                    logger.debug(
-                        "backfill: %s blob not in %s: %s",
-                        article.message_id, ix.name, exc,
-                    )
-                    continue
-                except Exception as exc:
-                    logger.warning(
-                        "backfill: parse failed for %s in %s: %r",
-                        article.message_id, ix.name, exc,
-                    )
-                    continue
-            if parsed is None:
-                out.skipped += 1
-                continue
-
-            list_addrs = extract_list_addresses(parsed.headers)
-            if list_addrs:
-                obs_time = _aware_utc(
-                    parsed.date or article.date or datetime.now(timezone.utc)
-                )
-                for inbox_id in links:
-                    bucket = pending_obs.setdefault(inbox_id, {})
-                    for addr in list_addrs:
-                        prev = bucket.get(addr)
-                        if prev is None:
-                            bucket[addr] = (1, obs_time)
-                        else:
-                            cnt, ts = prev
-                            bucket[addr] = (cnt + 1, max(ts, obs_time))
-
-            new_canonical = pick_canonical_inbox_id(list_addrs, address_to_inbox_id)
-            if new_canonical != article.canonical_inbox_id:
-                article.canonical_inbox_id = new_canonical
-                out.resolved += 1
-            else:
-                out.unresolved += 1
-
-            if out.examined % promote_every == 0:
-                flush_pending(session)
-                session.commit()
-                if maybe_promote_all(session):
-                    refresh_address_map(session)
-                    session.commit()
-
-            if progress is not None and out.examined % progress_every == 0:
-                progress(out)
-
-        flush_pending(session)
-        maybe_promote_all(session)
-        session.commit()
-
-    return out
-
-
-def discover_epochs(mirror_path: Path) -> list[Path]:
-    epochs = []
-    for child in sorted(mirror_path.iterdir()):
-        if not child.is_dir():
-            continue
-        try:
-            Repo(str(child))
-        except NotGitRepository:
-            continue
-        epochs.append(child)
-    return epochs
-
-
-def ingest_inbox(
-    inbox: Inbox,
-    limit: int | None = None,
-    workers: int = DEFAULT_WORKERS,
-) -> list[IngestResult]:
-    """Ingest every epoch under one inbox's mirror path."""
-    results: list[IngestResult] = []
-    remaining = limit
-    with SessionLocal() as session:
-        # Re-attach the Inbox to this session so .id reads work after
-        # the caller's session was closed.
-        attached = session.merge(inbox)
-        for epoch_path in discover_epochs(Path(attached.mirror_path)):
-            if remaining is not None and remaining <= 0:
-                break
-            r = ingest_epoch(
-                session, attached, epoch_path.name, epoch_path,
-                limit=remaining, workers=workers,
-            )
-            results.append(r)
-            if remaining is not None:
-                remaining -= r.new + r.linked + r.dup_batch + r.dup_db + r.failed
-
-    # Promote `Inbox.list_address` if we now have enough observations.
-    # Cheap: at most two rows queried, one update if it fires.
-    with SessionLocal() as session:
-        _maybe_promote_list_address(session, inbox.id)
-        session.commit()
-
-    # Refresh planner stats when we've moved enough rows that prior
-    # `sqlite_stat1` can no longer be trusted, most importantly the
-    # first ingest of a freshly-added inbox, which lands a whole archive
-    # in one go and would otherwise leave the planner blind until the
-    # next scheduled ANALYZE.
-    threshold = settings.analyze_after_ingest_rows
-    if threshold > 0:
-        moved = sum(r.new + r.linked for r in results)
-        if moved >= threshold:
-            logger.info("auto-ANALYZE after %s/%d rows ingested", inbox.name, moved)
-            with engine.begin() as conn:
-                conn.execute(text("ANALYZE"))
-
-    return results
-
-
-def ingest_all(
-    inboxes: dict[str, Inbox] | None = None,
-    limit: int | None = None,
-    workers: int = DEFAULT_WORKERS,
-) -> dict[str, list[IngestResult]]:
-    """Ingest every supplied inbox. Returns {inbox_name: [IngestResult, ...]}."""
-    if inboxes is None:
-        from mimir.inboxes import bootstrap_inboxes
-        inboxes = bootstrap_inboxes()
-
-    out: dict[str, list[IngestResult]] = {}
-    remaining = limit
-    for name, inbox in inboxes.items():
-        if remaining is not None and remaining <= 0:
-            break
-        rs = ingest_inbox(inbox, limit=remaining, workers=workers)
-        out[name] = rs
-        if remaining is not None:
-            for r in rs:
-                remaining -= r.new + r.linked + r.dup_batch + r.dup_db + r.failed
-    return out
