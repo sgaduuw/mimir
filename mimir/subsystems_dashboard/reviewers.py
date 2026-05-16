@@ -114,23 +114,38 @@ def articles_reviewed_by(
     already lowercased so casing collisions are impossible.
     """
     def compute() -> list[ReviewEntry]:
+        # Earlier shape JOINed against a MATERIALIZE'd derived table
+        # that computed MIN(inbox.name) per article across the *entire*
+        # archive just to provide a fallback name when canonical_inbox_id
+        # was NULL. That scanned millions of rows on a cold miss before
+        # producing any output (verified via EXPLAIN QUERY PLAN).
+        #
+        # Replace the materialised view with a correlated subquery in
+        # the COALESCE: it fires per result row, bounded by LIMIT, and
+        # only matters when canon.name is NULL (which the cache miss
+        # tells us is the minority case once the canonical backfill has
+        # run). Each firing is a tight index lookup keyed on
+        # article_lists.article_id (composite PK prefix). Preserves the
+        # same alphabetical-first fallback the rest of the codebase
+        # uses (see `_canonical_inbox_name` in mimir.web.urls). Plan
+        # pinned in test_articles_reviewed_by_plan_drops_materialize.
         rows = session.execute(
             text(
                 """
                 SELECT a.id AS article_id, a.message_id, a.subject,
                        a.date AS art_date, t.role,
-                       COALESCE(canon.name, fb.name) AS inbox_name
+                       COALESCE(
+                           canon.name,
+                           (SELECT MIN(i.name)
+                            FROM article_lists al2
+                            JOIN inboxes i ON i.id = al2.inbox_id
+                            WHERE al2.article_id = a.id)
+                       ) AS inbox_name
                 FROM article_trailers t
                 JOIN articles a ON a.id = t.article_id
                 JOIN article_lists al ON al.article_id = a.id
                 LEFT JOIN inboxes canon
                     ON canon.id = a.canonical_inbox_id
-                LEFT JOIN (
-                    SELECT al2.article_id, MIN(i.name) AS name
-                    FROM article_lists al2
-                    JOIN inboxes i ON i.id = al2.inbox_id
-                    GROUP BY al2.article_id
-                ) fb ON fb.article_id = a.id
                 WHERE al.inbox_id = :inbox_id
                   AND t.address_normalized = :addr
                 ORDER BY a.date DESC
