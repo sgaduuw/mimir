@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from mimir import cache
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
-from mimir.subsystems_dashboard.reads import _subsystem_path_filter_sql
+from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
 from mimir.threading import ACTIVE_THREADS_CACHE_TTL_SEC, _coerce_dt
 
 
