@@ -188,3 +188,62 @@ def test_backfill_skips_articles_with_unreachable_mirror(seeded_db):
     result = backfill_article_files()
     assert result.failed == 0
     assert result.skipped > 0
+
+
+def test_backfill_prefers_canonical_inbox_for_crossposts(seeded_db, tmp_path):
+    """A cross-posted article has multiple ArticleList rows; the old
+    behaviour picked `article.lists[0]` whose order depends on the
+    SQLA loader. The fix is to read the canonical_inbox first and
+    fall back to lists[0] only when canonical is NULL.
+
+    Build the message in beta's mirror, point alpha at a non-mirror
+    path, set canonical_inbox_id=beta, and add ArticleList rows for
+    both. If canonical_inbox is preferred the backfill indexes the
+    file; if it falls back to lists[0] (which might be alpha first)
+    the read fails and the article skips."""
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList
+
+    beta_mirror = tmp_path / "beta-canonical"
+    beta_mirror.mkdir()
+    epoch_path = beta_mirror / "0.git"
+    raw = _rfc5322("xpost-canon@example.com", _PATCH_BODY)
+    _build_pubinbox_repo(epoch_path, [raw])
+
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        beta.mirror_path = str(beta_mirror)
+        s.commit()
+        ingest_epoch(s, beta, "0.git", epoch_path, workers=1)
+        s.query(ArticleFile).delete()
+        s.commit()
+
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        article = s.execute(
+            select(Article).where(Article.message_id == "xpost-canon@example.com")
+        ).scalar_one()
+        article.canonical_inbox_id = beta.id
+        s.add(ArticleList(
+            article_id=article.id, inbox_id=alpha.id,
+            epoch="0.git", commit_sha="de" * 20,
+        ))
+        s.commit()
+
+    result = backfill_article_files(limit=1)
+    assert result.examined == 1
+    assert result.indexed == 1, (
+        f"backfill should follow canonical_inbox (beta) and find the "
+        f"file; got result={result!r}"
+    )
+
+    with SessionLocal() as s:
+        files = [
+            f.path for f in s.execute(
+                select(ArticleFile)
+                .join(Article, Article.id == ArticleFile.article_id)
+                .where(Article.message_id == "xpost-canon@example.com")
+            ).scalars()
+        ]
+    assert files == ["fs/foo/a.c"]
