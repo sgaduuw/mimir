@@ -12,15 +12,15 @@ import hashlib
 
 from flask import Response, abort, make_response, render_template, request
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 import mimir
 from mimir import cache
 from mimir.canonical import extract_list_addresses
 from mimir.extensions import SessionLocal
 from mimir.models import (
-    Article, ArticleFile, ArticleList, Inbox, MainlineCommit,
+    Article, ArticleFile, ArticleList, Inbox,
 )
+from mimir.patch_state import patch_state_for_article
 from mimir.rendering import URL_OR_MSGID_RE
 from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
@@ -238,31 +238,19 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 exclude_article_id=article.id, limit=5,
             ),
         ) if touched_paths else []
-        mainline_applications = list(session.execute(
-            select(MainlineCommit)
-            .where(MainlineCommit.message_id == article.message_id)
-            .order_by(MainlineCommit.committed_at.asc())
-        ).scalars())
-        patch_series_revisions: list[tuple[Article, str]] = []
-        if article.patch_series_key:
-            # Chain the eager-load through ArticleList → Inbox so the
-            # per-revision `al.inbox.name` walk below doesn't trigger a
-            # lazy fetch per inbox the series touches. SQLAlchemy's
-            # identity map dedupes within the session (worst case is
-            # one fetch per distinct inbox, not per `al`), but a
-            # chained selectinload turns the worst case into zero
-            # extra round-trips. Cover-letter pages render this on
-            # every load.
-            revisions = list(session.execute(
-                select(Article)
-                .options(selectinload(Article.lists).selectinload(ArticleList.inbox))
-                .where(Article.patch_series_key == article.patch_series_key)
-                .order_by(Article.date.asc().nulls_last())
-            ).scalars())
-            for rev in revisions:
-                link_set = [(al.inbox_id, al.inbox.name) for al in rev.lists]
-                url = _canonical_url_for(rev, link_set, base="") or ""
-                patch_series_revisions.append((rev, url))
+        # Per-patch state card (#208): consolidates trailer roll-up,
+        # mainline-landing record, patch-series timeline + per-revision
+        # diff links, and thread-activity summary into one card. The
+        # helper subsumes the prior `mainline_applications` query and
+        # the `patch_series_revisions` block; both `mainline_commits`
+        # and the chained-selectinload `patch_series_key` query now
+        # live in `mimir.patch_state` for one-place ownership.
+        patch_state = patch_state_for_article(
+            session, article,
+            thread_dates=[n.date for n in thread],
+            subsystem_ids=[s.id for s in subsystem_hits],
+            inbox_name=inbox.name,
+        )
 
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
     thread_summary = _thread_summary(thread)
@@ -305,8 +293,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         page_json_ld=page_json_ld,
         subsystem_hits=subsystem_hits,
         related_patches=related_patches,
-        mainline_applications=mainline_applications,
-        patch_series_revisions=patch_series_revisions,
+        patch_state=patch_state,
         long_thread=long_thread,
     ))
     response.set_etag(etag)
