@@ -11,6 +11,20 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Front-page "Last activity" string per inbox card no longer lags
+  behind ingest by up to 24 hours. The value previously rode the
+  same cache row as `archive_stats`'s `COUNT(*)` (24 h TTL,
+  justified by the ~6 s COUNT pass on a 6M-row inbox), so a fresh
+  ingest landed but the dashboard stayed pinned to whatever
+  `MAX(date)` was when the cache was last refreshed. Materialised
+  `Inbox.last_article_date` (bumped on every successful ingest
+  commit, including cross-post links) and made `archive_stats`
+  overlay it on the cached row at read time. Schema migration adds
+  the column and backfills existing inboxes via correlated
+  `MAX(a.date)` per row. (#216)
+
 ### Changed
 
 - Message pages on patch articles now render a consolidated
