@@ -810,32 +810,32 @@ def test_csp_script_src_pins_specific_htmx_version(client):
     `base.html` MUST update the CSP in lockstep; the bare origin
     would silently allow any unpkg package or version to load.
 
-    Pins via an anchored regex (`^https://unpkg\\.com/htmx\\.org@
-    <X.Y.Z>/$`) rather than substring checks, so a future htmx
-    version bump is fine but a "loosen back to bare origin"
-    regression isn't, and CodeQL's `py/incomplete-url-substring-
-    sanitization` rule has nothing to flag on a strict-match check.
+    Pinned via a positive allowlist over every source token: each
+    must be either `'self'` or match the anchored htmx-version
+    regex. Any other shape (a stray `unpkg.com` bare origin,
+    `cdn.example.com`, …) fails the pin. Anchored-regex checks
+    avoid CodeQL's `py/incomplete-url-substring-sanitization`
+    rule, which flags substring / startswith / endswith URL
+    comparisons indiscriminately.
     """
     import re
     r = client.get("/")
     directives = _parse_csp(r.headers.get("Content-Security-Policy", ""))
     script_src = directives.get("script-src", [])
-    pinned = re.compile(r"^https://unpkg\.com/htmx\.org@\d+\.\d+\.\d+/$")
-    matched = [s for s in script_src if pinned.match(s)]
-    assert matched, (
-        "script-src must carry exactly one source matching "
-        f"`{pinned.pattern}`; full script-src was {script_src!r}"
-    )
-    # And nothing else on unpkg.com: a stray `https://unpkg.com`
-    # bare-origin entry alongside the pinned one would still allow
-    # any package, defeating the lockstep contract.
-    other_unpkg = [
-        s for s in script_src
-        if s.endswith("unpkg.com") or s.endswith("unpkg.com/")
-    ]
-    assert not other_unpkg, (
-        f"bare unpkg.com origin must not appear on script-src, "
-        f"got: {other_unpkg}"
+    htmx_pin = re.compile(r"^https://unpkg\.com/htmx\.org@\d+\.\d+\.\d+/$")
+    allowed = re.compile(r"^'self'$")
+    for src in script_src:
+        ok = bool(allowed.match(src) or htmx_pin.match(src))
+        assert ok, (
+            f"script-src source {src!r} does not match the pinned "
+            f"allowlist (`'self'` or `{htmx_pin.pattern}`); full "
+            f"script-src was {script_src!r}"
+        )
+    # And the pinned htmx source must actually be present, not just
+    # be allowed.
+    assert any(htmx_pin.match(s) for s in script_src), (
+        "script-src missing the version-pinned htmx source matching "
+        f"`{htmx_pin.pattern}`; full script-src was {script_src!r}"
     )
 
 
