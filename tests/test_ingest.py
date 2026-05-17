@@ -1460,7 +1460,7 @@ def test_ingest_handles_minus_0000_naive_date_in_observations(seeded_db, tmp_pat
     the batch.
 
     Verify both messages land, AND that the observation row's
-    `last_seen` is tz-aware UTC (the `_aware_utc` normalisation must
+    `last_seen` is tz-aware UTC (the `aware_utc` normalisation must
     apply). A regression that rolled back the batch would leave
     `count == 0` or no observation row at all."""
     alpha = _alpha(seeded_db)

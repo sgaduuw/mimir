@@ -396,7 +396,7 @@ def test_parsed_article_pickles_round_trip():
     assert revived.in_reply_to == "parent@x"
     assert revived.references == ["root@x", "parent@x"]
     # Date must keep its tz info; a naive datetime here would mean the
-    # `_aware_utc` normalisation downstream would inject the wrong
+    # `aware_utc` normalisation downstream would inject the wrong
     # offset for `-0000`-shaped headers.
     assert revived.date is not None and revived.date.tzinfo is not None
     # Headers are a plain dict, not a generator or a Pydantic proxy.

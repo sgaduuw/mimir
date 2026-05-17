@@ -2,8 +2,10 @@
 
 - `epoch`: the hot per-epoch walk (`ingest_epoch`), the `IngestResult`
   model, and the shared helpers that `replay` / `backfill` / `orchestrate`
-  reuse (`_to_article`, `_flush_observations`, `_maybe_promote_list_address`,
-  `_aware_utc`).
+  reuse (`_to_article`, `_flush_observations`, `_maybe_promote_list_address`).
+  The tz-coercion helper (`aware_utc`) moved out of this package into
+  `mimir.datetime_utils` once a non-ingest caller (`patch_state.py`)
+  needed the same shape.
 - `replay`: re-walking persisted `parse_failures` rows after a parser fix
   (`replay_failures` + `ReplayResult`).
 - `backfill`: historical re-walk to populate `canonical_inbox_id`
