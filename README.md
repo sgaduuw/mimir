@@ -358,7 +358,11 @@ mimir/
   models.py              All ORM tables (Inbox, Article, ArticleList,
                          IngestState, Subsystem, MainlineCommit, etc.).
   parser.py              pydantic DTOs + BytesParser-based MIME extraction
-  rendering.py           body→HTML pipeline (text/quote/diff blocks)
+  rendering/             body→HTML pipeline split by concern: blocks
+                         (segmentation), diff (per-hunk anchors +
+                         per-language Pygments overlay), linkify
+                         (URL / Message-ID + DCO trailer redaction),
+                         body (orchestrator + render_body entry).
   store.py               read_message(): SQL lookup + dulwich fetch + parse
   sync.py                public-inbox manifest discovery + git clone/fetch
   threading.py           recursive CTEs for thread reconstruction + active threads
@@ -482,7 +486,7 @@ Routes:
 - `GET /security.txt` and `GET /.well-known/security.txt`  
   RFC 9116 contact info. 404 unless `SECURITY_CONTACT` is set.
 
-The body rendering pipeline (`mimir/rendering.py`) walks the body
+The body rendering pipeline (`mimir/rendering/`) walks the body
 line by line, segments it into runs of *text*, *quote*, and *diff*,
 and emits HTML accordingly:
 

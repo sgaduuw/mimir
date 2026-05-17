@@ -36,6 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
+from mimir.datetime_utils import aware_utc
 from mimir.models import (
     Article,
     ArticleList,
@@ -279,15 +280,6 @@ def _series_timeline(
     return out
 
 
-def _aware_utc(dt: datetime) -> datetime:
-    """Same shape as `mimir.ingest._aware_utc`: SQLite's TEXT-stored
-    datetimes come back naive through the threading CTE (`_coerce_dt`
-    is `fromisoformat` without TZ recovery), but `datetime.now(...)`
-    is tz-aware. Assume naive values are UTC, consistent with how
-    every other naive datetime in this codebase is treated."""
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-
-
 def _days_since_last_reply(
     article: Article, thread_dates: Iterable[datetime | None],
 ) -> int | None:
@@ -296,10 +288,10 @@ def _days_since_last_reply(
     yet. Capped at >=0 to keep the template safe against future-
     dated outliers (same defensive clamp as the active-threads
     score in `threading._active_threads_query`)."""
-    article_date = _aware_utc(article.date) if article.date else None
+    article_date = aware_utc(article.date) if article.date else None
     later_dates = [
-        _aware_utc(d) for d in thread_dates
-        if d is not None and (article_date is None or _aware_utc(d) > article_date)
+        aware_utc(d) for d in thread_dates
+        if d is not None and (article_date is None or aware_utc(d) > article_date)
     ]
     if not later_dates:
         return None

@@ -11,7 +11,7 @@
 
   {% if subsystem.maintainers %}
   <h2><small>Maintainers</small></h2>
-  <ul style="margin: 0; padding-inline-start: 1rem;">
+  <ul class="subsystem-paths-list">
     {% for m in subsystem.maintainers %}
     <li><small><kbd>{{ m.role }}</kbd>
       {{ m.name }}{% if m.name %} {% endif %}&lt;{{ m.address }}&gt;</small></li>
@@ -21,7 +21,7 @@
 
   {% if subsystem.paths %}
   <h2><small>Paths</small></h2>
-  <ul style="margin: 0; padding-inline-start: 1rem; columns: 2; column-gap: 2rem;">
+  <ul class="subsystem-paths-list subsystem-paths-list--columns">
     {% for p in subsystem.paths %}
     <li><small>{% if p.is_exclude %}<kbd>X</kbd>{% else %}<kbd>F</kbd>{% endif %}
       <code>{{ p.glob }}</code></small></li>
@@ -31,7 +31,7 @@
 
   {% if spark and spark.days %}
   <h2><small>Last 30 days</small></h2>
-  <svg width="186" height="28" style="vertical-align: middle;"
+  <svg width="186" height="28" class="dashboard-sparkline-svg"
        aria-label="Daily message volume in {{ subsystem.name|lower }}, last 30 days">
     {% for day, count in spark.days %}
       {% set h = (count / spark.max_count * 26) if spark.max_count > 0 else 0 %}
