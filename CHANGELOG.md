@@ -13,6 +13,18 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ### Fixed
 
+- `parse_message` no longer drops the body when the message
+  declares a charset Python's codec registry can't resolve (RFC
+  1428's `unknown-8bit`, malformed encoded-word charsets, etc.).
+  Previously the `LookupError`/`UnicodeDecodeError` catch on
+  `body_part.get_content()` silently set `body = None` and the
+  message rendered as `(no body)` even though the git blob held
+  real text. Now falls back to
+  `body_part.get_payload(decode=True).decode("latin-1", errors="replace")`,
+  RFC 1428's recommended interpretation, latin-1 is bijective on
+  bytes so high-bit content shows as mojibake but structure
+  (ASCII tokens, addresses, patch markers) survives. Symmetric
+  with the attachment-side recovery introduced in PR #258 / #262.
 - `parse_message` now keeps leaf attachments whose declared
   Content-Type IS handled by the stdlib's content manager (e.g.
   `text/plain`) but whose declared charset isn't in Python's codec
