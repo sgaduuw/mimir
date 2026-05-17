@@ -11,6 +11,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.25.0], 2026-05-17
+
+### Added
+
+- Branded 4xx/5xx error pages. Werkzeug's default plaintext error
+  bodies are replaced with `mimir/templates/error.html` extending
+  `base.html`, so 404 / 410 / 500 responses now carry the site
+  shell (nav, footer, favicon, kbd-help dialog) and the same
+  response headers as every other route. Error pages emit
+  `<meta name="robots" content="noindex">` and skip the
+  `<link rel="canonical">` so crawlers don't index typo URLs or
+  treat the error URL as authoritative. (#237)
+
 ### Changed
 
 - Page CSS now ships as a single external stylesheet at
@@ -20,6 +33,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   `SEND_FILE_MAX_AGE_DEFAULT = 86400` 1-day window); a `?v=`
   query string keyed to `mimir.__version__` busts the cache on
   every release. (#228)
+- Dependency refresh: `click 8.3.3 -> 8.4.0`, `ruff 0.15.12 ->
+  0.15.13`. Both are minor / patch bumps that pyproject.toml's
+  caret constraints already accept; lock-file only. (#236)
+
+### Fixed
+
+- `/readyz` no longer leaks the SQLAlchemy / driver exception
+  repr in the 503 body when the DB is unreachable. Connection-
+  string fragments, driver type, and any embedded credential leak
+  in the URL were previously visible to any unauthenticated
+  probe; the body is now a fixed `db unreachable` string and the
+  exception goes to the structured access log via
+  `logger.exception(...)`. (#233)
 
 ### Security
 
@@ -36,25 +62,29 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   of inline `style="color:..."` per span. A future regression
   that re-introduces inline styles now fails CSP and the page
   refuses to render the offending element, instead of silently
-  widening the XSS blast radius.
+  widening the XSS blast radius. (#230)
 - CSP `script-src` pins the specific htmx version path
   (`https://unpkg.com/htmx.org@1.9.12/`) instead of the bare
   `https://unpkg.com` origin. An htmx bump in `base.html` must
   update the CSP entry in lockstep; the bare-origin form would
-  have allowed any unpkg package or version to load.
+  have allowed any unpkg package or version to load. (#230)
 - Added `Permissions-Policy` response header denying every
   powerful feature mimir doesn't use (camera, microphone,
   geolocation, payment, USB, MIDI, magnetometer, accelerometer,
   and the broader set, with empty allowlists `()`). Caps what an
   injected `<iframe>` / `<embed>` could activate under a future
-  XSS-gated bug.
+  XSS-gated bug. (#230)
 - HSTS now carries the `preload` directive. The site is
   HTTPS-only behind Caddy + Tailscale Funnel, so opting into the
   browser-bundled HSTS preload list (after submission via
   hstspreload.org) is consistent with the current posture. The
   directive alone doesn't auto-submit; it signals readiness.
   Removing it would walk back the security ratchet without an
-  explicit code signal.
+  explicit code signal. (#230)
+- CI workflow's `GITHUB_TOKEN` is now scoped to `contents: read`
+  at workflow level (the docker job's `packages: write` override
+  for GHCR push still wins). Narrows the blast radius if a
+  workflow step is ever compromised. (#233)
 
 ## [1.24.0], 2026-05-17
 
