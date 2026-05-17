@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.28.1], 2026-05-18
+
 ### Fixed
 
 - `parse_message` no longer drops the body when the message
