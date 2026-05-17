@@ -18,9 +18,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mimir.canonical import extract_list_addresses, pick_canonical_inbox_id
+from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
 from mimir.ingest.epoch import (
-    _aware_utc,
     _flush_observations,
     _maybe_promote_list_address,
 )
@@ -166,7 +166,7 @@ def backfill_canonicals(
 
             list_addrs = extract_list_addresses(parsed.headers)
             if list_addrs:
-                obs_time = _aware_utc(
+                obs_time = aware_utc(
                     parsed.date or article.date or datetime.now(timezone.utc)
                 )
                 for inbox_id in links:
