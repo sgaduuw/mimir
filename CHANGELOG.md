@@ -19,12 +19,42 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   the sheet across pages (subject to the existing
   `SEND_FILE_MAX_AGE_DEFAULT = 86400` 1-day window); a `?v=`
   query string keyed to `mimir.__version__` busts the cache on
-  every release. The `style-src 'unsafe-inline'` grant in the CSP
-  stays for now: per-element `style="..."` attributes on a
-  handful of templates (thread-tree per-node indent depth, year-
-  archive month tiles, dialog max-width) still need it. Sweeping
-  those into CSS classes or a CSP3 `'unsafe-hashes'` allowlist is
-  a follow-up that would let `'unsafe-inline'` go entirely. (#228)
+  every release. (#228)
+
+### Security
+
+- CSP `style-src` no longer carries `'unsafe-inline'`. Every
+  remaining per-element `style="..."` attribute (thread-tree
+  depth indent, year-archive month tiles, patch-state aside,
+  keyboard-help dialog, subsystem path lists, sparkline SVGs,
+  body-text block) moved to a CSS class in `mimir.css`. The
+  thread-tree depth case uses a finite `data-depth="N"` ladder
+  enumerated 0..20 in the stylesheet; the template clamps deeper
+  threads to 20. Pygments output on the attachment-preview route
+  switched from `noclasses=True` to `noclasses=False` so token
+  theming comes from the existing `.highlight .X` rules instead
+  of inline `style="color:..."` per span. A future regression
+  that re-introduces inline styles now fails CSP and the page
+  refuses to render the offending element, instead of silently
+  widening the XSS blast radius.
+- CSP `script-src` pins the specific htmx version path
+  (`https://unpkg.com/htmx.org@1.9.12/`) instead of the bare
+  `https://unpkg.com` origin. An htmx bump in `base.html` must
+  update the CSP entry in lockstep; the bare-origin form would
+  have allowed any unpkg package or version to load.
+- Added `Permissions-Policy` response header denying every
+  powerful feature mimir doesn't use (camera, microphone,
+  geolocation, payment, USB, MIDI, magnetometer, accelerometer,
+  and the broader set, with empty allowlists `()`). Caps what an
+  injected `<iframe>` / `<embed>` could activate under a future
+  XSS-gated bug.
+- HSTS now carries the `preload` directive. The site is
+  HTTPS-only behind Caddy + Tailscale Funnel, so opting into the
+  browser-bundled HSTS preload list (after submission via
+  hstspreload.org) is consistent with the current posture. The
+  directive alone doesn't auto-submit; it signals readiness.
+  Removing it would walk back the security ratchet without an
+  explicit code signal.
 
 ## [1.24.0], 2026-05-17
 

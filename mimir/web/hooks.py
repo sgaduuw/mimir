@@ -102,14 +102,26 @@ _CACHE_CONTROL_BY_ENDPOINT = {
 #
 # CSP: HTML escaping is correct, but a CSP narrows the blast radius of
 #   any future bug. `default-src 'self'` plus the two CDNs we SRI-pin.
-#   `style-src 'unsafe-inline'` stays for the per-element `style="..."`
-#   attributes a handful of templates still use (thread-tree per-node
-#   indent depth, year-archive month tiles, dialog max-width). The
-#   bulk of the inline CSS moved into `mimir/static/css/mimir.css`
-#   under #228; dropping `'unsafe-inline'` entirely is gated on
-#   sweeping the remaining `style="..."` attrs into either CSS classes
-#   or a CSP3 `'unsafe-hashes'` allowlist. Pygments is configured
-#   `noclasses=False` so it does NOT emit inline styles.
+#   `style-src` no longer carries `'unsafe-inline'`: every inline
+#   `<style>` block moved to `mimir/static/css/mimir.css` under #228,
+#   and every per-element `style="..."` attribute moved to a CSS class
+#   in the security pass (the thread-tree depth ladder is enumerated
+#   as `data-depth="N"` rules so a dynamic value still works). Any
+#   regression that re-introduces inline styles will fail to render
+#   instead of silently widening the attack surface.
+#   `script-src` is pinned to the specific htmx version path
+#   (`unpkg.com/htmx.org@1.9.12/`); an htmx bump in `base.html` must
+#   update this CSP entry in lockstep, the test
+#   `test_csp_script_src_pins_specific_htmx_version` enforces that.
+#   Pygments is configured `noclasses=False` (both inline-renderer in
+#   `mimir/rendering.py` and attachment-preview in
+#   `mimir/web/routes/attachments.py`) so it emits class names, not
+#   inline `style="color:..."`.
+# Permissions-Policy: deny every powerful feature mimir doesn't use,
+#   the page is a read-only archive browser, none of the listed
+#   features have a legitimate use case here. Empty allowlist `()`
+#   on every directive means "deny in both this document and any
+#   embedded subframe."
 # Referrer-Policy: don't leak full URLs (which include Message-IDs and
 #   inbox names) to outbound links.
 # X-Content-Type-Options: forces browsers to honor the Content-Type we
@@ -119,11 +131,36 @@ _CACHE_CONTROL_BY_ENDPOINT = {
 _SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; "
-        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-        "script-src 'self' https://unpkg.com; "
+        "style-src 'self' https://cdn.jsdelivr.net; "
+        "script-src 'self' https://unpkg.com/htmx.org@1.9.12/; "
         "img-src 'self' data:; "
         "frame-ancestors 'none'; "
         "base-uri 'self'"
+    ),
+    "Permissions-Policy": (
+        "accelerometer=(), "
+        "ambient-light-sensor=(), "
+        "autoplay=(), "
+        "battery=(), "
+        "camera=(), "
+        "display-capture=(), "
+        "document-domain=(), "
+        "encrypted-media=(), "
+        "fullscreen=(), "
+        "geolocation=(), "
+        "gyroscope=(), "
+        "keyboard-map=(), "
+        "magnetometer=(), "
+        "microphone=(), "
+        "midi=(), "
+        "payment=(), "
+        "picture-in-picture=(), "
+        "publickey-credentials-get=(), "
+        "screen-wake-lock=(), "
+        "sync-xhr=(), "
+        "usb=(), "
+        "web-share=(), "
+        "xr-spatial-tracking=()"
     ),
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "X-Content-Type-Options": "nosniff",
@@ -187,10 +224,16 @@ def _add_cache_headers(response):
     # behind a reverse proxy that forwards X-Forwarded-Proto. Otherwise
     # an http://localhost dev session would tell the browser "force
     # https on this host forever," which would break the dev workflow.
+    # `preload` opts the site into the browser-bundled HSTS preload
+    # list once submitted via hstspreload.org; submission is a one-way
+    # door (un-preloading takes months), and the site is HTTPS-only
+    # via Caddy + Tailscale Funnel so the commitment is consistent
+    # with the current posture. The directive alone doesn't auto-
+    # submit; it signals readiness.
     if request.headers.get("X-Forwarded-Proto") == "https":
         response.headers.setdefault(
             "Strict-Transport-Security",
-            "max-age=31536000; includeSubDomains",
+            "max-age=31536000; includeSubDomains; preload",
         )
     response.headers.setdefault("X-Request-Id", getattr(g, "_request_id", "-"))
     return response
