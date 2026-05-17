@@ -86,6 +86,90 @@ def test_linkify_message_id_not_in_archive_is_neutral_text():
     assert "<a href" not in out
 
 
+def test_linkify_lore_url_appends_local_when_in_archive():
+    """A `lore.kernel.org/<slug>/<msgid>` URL whose msgid mimir
+    indexed should keep the lore anchor verbatim AND gain a trailing
+    ` (<a>local</a>)` link routed to the canonical mimir URL. The
+    caller asked to add, not replace."""
+    lore_mirror_urls = {"abc@example.com": "/lkml/2024/01/123"}
+    out = linkify(
+        "see https://lore.kernel.org/lkml/abc@example.com/",
+        lore_mirror_urls=lore_mirror_urls,
+    )
+    assert 'href="https://lore.kernel.org/lkml/abc@example.com/"' in out
+    assert '(<a href="/lkml/2024/01/123">local</a>)' in out
+
+
+def test_linkify_lore_url_not_in_archive_unchanged():
+    """A lore URL whose msgid isn't in `lore_mirror_urls` renders as
+    the bare external anchor, no `(local)` suffix."""
+    out = linkify(
+        "see https://lore.kernel.org/lkml/missing@example.com/",
+        lore_mirror_urls={"other@example.com": "/lkml/2024/01/9"},
+    )
+    assert 'href="https://lore.kernel.org/lkml/missing@example.com/"' in out
+    assert "(local)" not in out
+    assert "local</a>" not in out
+
+
+def test_linkify_non_lore_url_no_local_suffix():
+    """A non-lore URL never gets the `(local)` treatment, even if its
+    last path segment happens to look like a msgid."""
+    out = linkify(
+        "see https://example.com/lkml/abc@example.com/",
+        lore_mirror_urls={"abc@example.com": "/lkml/2024/01/123"},
+    )
+    assert 'href="https://example.com/lkml/abc@example.com/"' in out
+    assert "(local)" not in out
+
+
+def test_linkify_lore_url_slug_variants_resolve():
+    """The lore URL shape varies: no-slug, `/r/`, `/all/`, with or
+    without trailing slash. All extract the same msgid and pick up
+    the mirror suffix."""
+    lore_mirror_urls = {"abc@x.invalid": "/lkml/2024/01/7"}
+    for url in (
+        "https://lore.kernel.org/abc@x.invalid",
+        "https://lore.kernel.org/abc@x.invalid/",
+        "https://lore.kernel.org/r/abc@x.invalid",
+        "https://lore.kernel.org/all/abc@x.invalid/",
+        "https://lore.kernel.org/lkml/abc@x.invalid/T/",
+        "https://lore.kernel.org/lkml/abc@x.invalid/raw",
+    ):
+        out = linkify(f"see {url} here", lore_mirror_urls=lore_mirror_urls)
+        assert "local</a>" in out, f"missed mirror on {url!r}: {out!r}"
+
+
+def test_linkify_lore_url_mirror_href_is_html_escaped():
+    """If a mirror URL contains HTML metacharacters (defensive; the
+    real composer doesn't emit them), they're html-escaped before
+    splicing into the anchor `href`."""
+    lore_mirror_urls = {"abc@x.invalid": "/lkml/2024/01/9?x=<script>"}
+    out = linkify(
+        "see https://lore.kernel.org/lkml/abc@x.invalid/",
+        lore_mirror_urls=lore_mirror_urls,
+    )
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
+
+
+def test_linkify_lore_url_trailing_punctuation_outside_anchor():
+    """When a lore URL is followed by sentence punctuation (`.`,
+    `,`, etc.), the existing URL trimmer pulls it off the href; the
+    `(local)` suffix sits between the anchor and the punctuation so
+    the trailing dot still reads as part of the surrounding text."""
+    lore_mirror_urls = {"abc@x.invalid": "/lkml/2024/01/9"}
+    out = linkify(
+        "see https://lore.kernel.org/lkml/abc@x.invalid/. so what",
+        lore_mirror_urls=lore_mirror_urls,
+    )
+    assert 'href="https://lore.kernel.org/lkml/abc@x.invalid/"' in out
+    # Anchor closes BEFORE `(local)`, which itself closes before the
+    # bare `.` reappears in the surrounding text.
+    assert out.index("</a>") < out.index("(<a")
+    assert out.index("local</a>)") < out.index(". so what")
+
+
 def test_url_or_msgid_regex_matches_msgid_only_with_brackets():
     """A bare email-shaped string in body text without angle brackets
     must NOT match the msgid group; otherwise the privacy-redaction

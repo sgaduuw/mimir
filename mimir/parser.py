@@ -200,7 +200,20 @@ def _raw_header(msg: EmailMessage, name: str) -> str | None:
 
 
 def _attachment_bytes(part) -> bytes:
-    content = part.get_content()
+    try:
+        content = part.get_content()
+    except KeyError:
+        # The stdlib content manager raises KeyError when no handler
+        # is registered for the part's content-type, opaque MIME
+        # types we see in practice include `chemical/x-mopac-input`,
+        # `application/x-perl`, etc. There's nothing to "decode" for
+        # these in the structured sense, so fall back to the raw
+        # transfer-decoded payload, which is what the operator wants
+        # for an opaque binary attachment anyway. `decode=True` undoes
+        # Content-Transfer-Encoding (base64/quoted-printable) but
+        # leaves the payload bytes untouched.
+        payload = part.get_payload(decode=True)
+        return payload if isinstance(payload, bytes) else b""
     if isinstance(content, EmailMessage):
         return content.as_bytes()
     if isinstance(content, str):
@@ -245,6 +258,17 @@ def parse_message(raw: bytes) -> ParsedArticle:
 
     attachments: list[ParsedAttachment] = []
     for part in msg.iter_attachments():
+        # multipart/* containers (e.g. multipart/signed, multipart/mixed)
+        # come back from iter_attachments() when a non-body branch of
+        # the message tree is itself a wrapper, alongside the
+        # multipart/alternative that holds the body. They have no leaf
+        # content to extract; the stdlib's content manager has no
+        # decoder for them by design. Skip them outright rather than
+        # round-trip through a KeyError-then-warn path that produced a
+        # flood of log noise on multi-list ingest with no real
+        # attachment loss (the wrappers were already getting dropped).
+        if part.is_multipart():
+            continue
         # Tight exception surface around the attachment build:
         # LookupError on unknown charset / transfer-encoding,
         # UnicodeError on undecodable bytes, ValueError on pydantic

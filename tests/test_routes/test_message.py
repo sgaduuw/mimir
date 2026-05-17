@@ -577,6 +577,63 @@ def test_message_page_shows_related_patches_touching_same_file(
     assert "second touching shared" not in related_section
 
 
+def test_message_page_lore_url_in_body_gets_local_mirror_link(
+    client, tmp_path,
+):
+    """When a message body links to lore.kernel.org/<slug>/<msgid>
+    and mimir has that msgid in *any* indexed inbox, the route
+    builds `lore_mirror_urls` and the renderer appends a
+    `(local)` link routed to the canonical mimir URL alongside
+    the original lore anchor. Lore link stays present (we add,
+    don't replace)."""
+    # First ingest the referenced article so mimir has it indexed.
+    (tmp_path / "ref").mkdir()
+    (tmp_path / "view").mkdir()
+    referenced_msgid = "referenced@x.invalid"
+    _, ref_url = _ingest_one_article(
+        tmp_path / "ref", "alpha", referenced_msgid,
+        subject="the referenced one",
+    )
+    # Then ingest the message whose body links out to lore for the
+    # referenced one. `_ingest_one_article` repoints the inbox's
+    # mirror_path, so this second message is the one the view can
+    # re-parse via `read_message`.
+    body_bytes = (
+        f"see https://lore.kernel.org/alpha/{referenced_msgid}/ for context"
+    ).encode()
+    _, view_url = _ingest_one_article(
+        tmp_path / "view", "alpha", "viewer@x.invalid",
+        body=body_bytes, subject="referrer",
+    )
+    page = client.get(view_url).data.decode()
+    # The lore anchor survives verbatim.
+    assert (
+        f'href="https://lore.kernel.org/alpha/{referenced_msgid}/"'
+        in page
+    )
+    # The local mirror anchor is appended, routed to the referenced
+    # article's per-inbox URL.
+    assert f'href="{ref_url}">local</a>' in page
+
+
+def test_message_page_lore_url_unknown_msgid_no_mirror_link(
+    client, tmp_path,
+):
+    """Inverse: a lore URL pointing at a msgid mimir doesn't have
+    renders as the bare external anchor, no `(local)` suffix."""
+    _, view_url = _ingest_one_article(
+        tmp_path, "alpha", "lone@x.invalid",
+        body=b"see https://lore.kernel.org/alpha/never-ingested@x.invalid/ here",
+        subject="solo with lore link",
+    )
+    page = client.get(view_url).data.decode()
+    assert (
+        'href="https://lore.kernel.org/alpha/never-ingested@x.invalid/"'
+        in page
+    )
+    assert "local</a>" not in page
+
+
 def test_message_page_short_thread_does_not_get_sidebar_class(client, tmp_path):
     """Short threads (below LONG_THREAD_SIDEBAR_THRESHOLD) keep the
     above-body layout, the sidebar modifier class is absent so the

@@ -59,7 +59,7 @@
   {% endif %}
 
   <div class="message-body">
-    {% if parsed.body %}{{ parsed.body|render_body(msgid_urls, parent_url) }}{% else %}<em>(no body)</em>{% endif %}
+    {% if parsed.body %}{{ parsed.body|render_body(msgid_urls, parent_url, lore_mirror_urls) }}{% else %}<em>(no body)</em>{% endif %}
   </div>
 
   {% if parsed.attachments %}

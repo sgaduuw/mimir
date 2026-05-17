@@ -11,6 +11,37 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.28.0], 2026-05-18
+
+### Added
+
+- Message bodies linking to `lore.kernel.org/<slug>/<msgid>/...` now
+  surface a trailing ` (local)` link routed to the canonical mimir
+  URL when mimir has the referenced message indexed in any inbox.
+  The lore URL itself is preserved (add, don't replace), readers
+  can stay on-site without losing the external reference. Resolved
+  globally (cross-inbox), routed via canonical-inbox just like the
+  bare-Message-ID redirect at `/m/<id>`. The DCO-trailer renderer
+  applies the same suffix when a trailer line carries a lore URL.
+
+### Fixed
+
+- `parse_message` no longer emits a flood of
+  `dropping attachment ... (content-type 'multipart/mixed'): KeyError(...)`
+  warnings when a message's non-body branch is itself a multipart
+  wrapper (e.g. `multipart/signed` alongside `multipart/alternative`).
+  Wrappers are containers, not attachments; skip them outright
+  rather than round-trip through a KeyError-then-drop path. Pure
+  noise reduction, no real attachment was being lost.
+- `parse_message` now keeps leaf attachments whose Content-Type is
+  unrecognized by the stdlib's content manager (e.g.
+  `chemical/x-mopac-input` carrying an `hcidump.dat`, observed in
+  the wild on `linux-bluetooth`). Previously a `KeyError` from
+  `EmailMessage.get_content()` caused the attachment to be silently
+  dropped with a warning; now we fall back to the raw transfer-
+  decoded payload (base64/quoted-printable undone, bytes preserved
+  verbatim) for any content-type the registry doesn't recognize.
+
 ## [1.27.0], 2026-05-18
 
 ### Changed
