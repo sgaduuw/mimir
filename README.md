@@ -438,11 +438,27 @@ Routes:
   the message exists but isn't in the named inbox.
 - `GET /<inbox>/<YYYY>/<MM>/<article-id>`, single message:
   headers, full thread tree with the current message highlighted,
-  body, attachment list. When the thread root has an off-list
-  parent, also shows a "Possibly related" surface of other archived
-  messages with the same normalized subject (JWZ subject-based
-  grouping). The year/month must match the article's archived date;
-  mismatches return 404.
+  body, attachment list. Patch articles also render a per-patch
+  state card above the body summarising trailers (with maintainer
+  attestation chips), mainline-landing record, cross-revision
+  series timeline (with `[diff vs current]` links), and thread
+  activity. When the thread root has an off-list parent, also
+  shows a "Possibly related" surface of other archived messages
+  with the same normalized subject (JWZ subject-based grouping).
+  The year/month must match the article's archived date;
+  mismatches return 404. ETag-based conditional revalidation:
+  responses carry `Cache-Control: public, no-cache` and a strong
+  ETag, repeat requests resolve as 304 with no body. The HTMX
+  intra-thread swap (click a tree link) returns just the
+  `_message_body.html` partial, leaving the tree + chrome on
+  the client.
+- `GET /<inbox>/series/<patch_series_key>/diff?from=<vN>&to=<vM>&pos=<pos>`  
+  Inter-revision diff for a single patch-series position.
+  `pos=cover` (or `pos=0`) diffs the cover-letter bodies between
+  two revisions; `pos=N` diffs the N-th in-series patch's body
+  across revisions. The body diff covers both commit message and
+  patch hunks. 24h cached, source emails are immutable in the
+  mirror. Linked from the state card's "Series revisions" row.
 - `GET /<inbox>/<YYYY>/<MM>/<article-id>/attachment/<n>`, binary
   download of the n-th attachment, served from the dulwich-fetched
   blob.
@@ -625,9 +641,10 @@ never see a half-loaded subsystems table.
    `Link: https://lore.kernel.org/.../<msgid>` trailers and
    inserts `mainline_commits` rows. Resumable; the first run
    walks the full history (~1.5M commits on Linus's tree, a few
-   minutes). The patch page renders an "Applied as `<sha>` on
-   YYYY-MM-DD" line whenever an article's Message-ID matches a
-   recorded commit. `--skip-commits` disables this pass.
+   minutes). The patch page's state card surfaces these as a
+   "Landed: `<sha>` in `<tree>` on YYYY-MM-DD" row whenever an
+   article's Message-ID matches one or more recorded commits.
+   `--skip-commits` disables this pass.
 
 ### Backfilling `article_files`
 
@@ -647,17 +664,24 @@ exist (use after an extractor change).
 
 ### Backfilling patch-series detection
 
-Cover-letter subjects (`[PATCH ... 0/N] <title>`) are tagged with
-a stable series key + version at ingest. For articles ingested
-before that landed:
+Cover-letter subjects (`[PATCH ... 0/N] <title>`) and in-series
+patches (`[PATCH ... M/T] <title>`) are tagged with
+`patch_series_key + patch_series_version + patch_series_position`
+at ingest (in-series patches inherit key + version from the cover
+via their thread parent). For articles ingested before that
+landed:
 
 ```sh
 poetry run flask --app mimir backfill-patch-series [-v]
 ```
 
 Cheaper than the article-files backfill, only reads
-subject + author, no body re-parse via git mirror. Idempotent;
-`--limit N` and `--reprocess` work the same way.
+subject + author + thread_parent, no body re-parse via git mirror.
+Idempotent; `--limit N` and `--reprocess` work the same way.
+Output buckets: `indexed` (covers), `in_series_indexed`
+(in-series patches linked to a cover), `in_series_orphan`
+(in-series patch with position set but cover not yet known,
+re-attempted on the next run), `not_cover`, `skipped`.
 
 ## IndexNow (Bing / Yandex push notifications)
 
