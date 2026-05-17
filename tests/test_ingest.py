@@ -7,7 +7,7 @@ This file pins each bucket via a tiny ephemeral public-inbox-shaped
 git repo built with dulwich, then drives `ingest_epoch` against it
 with workers=1 (deterministic, stays in-process).
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dulwich.objects import Blob, Commit, Tree
@@ -337,7 +337,80 @@ def test_ingest_records_patch_series_key_for_cover_letter(
         ).scalar_one()
     assert cover.patch_series_key is not None
     assert cover.patch_series_version == "v2"
-    # Non-cover-letter (1/3) → NULL columns.
+    assert cover.patch_series_position == 0
+    # In-series patch without an In-Reply-To header doesn't reach
+    # its cover via the thread-parent walk at ingest, key + version
+    # stay NULL until the backfill command links it (#212). Position
+    # is set unconditionally from the subject parser.
+    assert patch.patch_series_key is None
+    assert patch.patch_series_version is None
+    assert patch.patch_series_position == 1
+
+
+def test_ingest_inseries_with_inreplyto_links_to_cover(seeded_db, tmp_path):
+    """In-series patch carrying `In-Reply-To: <cover>` and ingested
+    in the same walk as the cover (cover commits first → walked
+    first → in DB when the patch is processed) inherits the cover's
+    `patch_series_key + patch_series_version` and gets its own
+    `patch_series_position`. The modal `git send-email --thread`
+    shape goes through this path."""
+    alpha = _alpha(seeded_db)
+    msgs = [
+        _rfc5322("cover-v1@example.com", body=b"x").replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH 0/2] thread title\r\n",
+        ),
+        # Direct reply to the cover, the standard send-email shape.
+        _rfc5322("patch-1of2@example.com", body=b"x").replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH 1/2] thread title: first patch\r\n",
+        ).replace(
+            b"From: a@b.example\r\n",
+            b"From: a@b.example\r\nIn-Reply-To: <cover-v1@example.com>\r\n",
+        ),
+    ]
+    _build_pubinbox_repo(tmp_path / "0.git", msgs)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+        cover, patch = s.execute(
+            select(Article).where(Article.message_id.in_([
+                "cover-v1@example.com", "patch-1of2@example.com",
+            ])).order_by(Article.patch_series_position.asc())
+        ).scalars().all()
+    assert cover.patch_series_position == 0
+    assert patch.patch_series_position == 1
+    # Patch inherits the cover's series identity at ingest time.
+    assert patch.patch_series_key is not None
+    assert patch.patch_series_key == cover.patch_series_key
+    assert patch.patch_series_version == cover.patch_series_version
+
+
+def test_ingest_inseries_orphan_when_cover_not_yet_ingested(
+    seeded_db, tmp_path,
+):
+    """An in-series patch arriving before its cover (rare across
+    epoch boundaries, or when ingesting one epoch at a time) has
+    no parent to look up, position is set, key + version stay NULL.
+    Backfill closes the gap on a later pass."""
+    alpha = _alpha(seeded_db)
+    msgs = [
+        # Only the patch, the cover stays missing. In-Reply-To points
+        # at a Message-ID we have no row for.
+        _rfc5322("patch-1of2-orphan@example.com", body=b"x").replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH 1/2] thread title: first patch\r\n",
+        ).replace(
+            b"From: a@b.example\r\n",
+            b"From: a@b.example\r\nIn-Reply-To: <not-in-db@example.com>\r\n",
+        ),
+    ]
+    _build_pubinbox_repo(tmp_path / "0.git", msgs)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+        patch = s.execute(
+            select(Article).where(Article.message_id == "patch-1of2-orphan@example.com")
+        ).scalar_one()
+    assert patch.patch_series_position == 1
     assert patch.patch_series_key is None
     assert patch.patch_series_version is None
 
@@ -1930,6 +2003,43 @@ def test_migration_backfill_sql_populates_last_article_date(seeded_db):
     by_name = {n: d for n, d in rows}
     assert _naive_utc(by_name["alpha"]) == datetime(2024, 3, 1, 12, 0)
     assert _naive_utc(by_name["beta"]) == datetime(2024, 3, 1, 12, 0)
+
+
+def test_migration_backfill_sets_position_zero_on_keyed_covers(seeded_db):
+    """The #212 alembic backfill statement marks every article that
+    already has `patch_series_key` set as `patch_series_position=0`
+    (Slice 1 only keyed covers). Pins the upgrade-against-populated-DB
+    path without re-running alembic."""
+    from sqlalchemy import text
+    with seeded_db() as s:
+        # Seed a "pre-#212" cover: key set, position NULL.
+        cover = Article(
+            message_id="legacy-cv@x",
+            subject="[PATCH 0/2] legacy",
+            author="A <a@x>",
+            date=datetime(2024, 5, 1, tzinfo=timezone.utc),
+            thread_parent=None,
+            subject_normalized="legacy",
+            patch_series_key="legacy",
+            patch_series_version="v1",
+            patch_series_position=None,
+        )
+        s.add(cover)
+        s.commit()
+        # Verbatim from alembic/versions/...patch_series_position.py
+        s.execute(text(
+            """
+            UPDATE articles
+            SET patch_series_position = 0
+            WHERE patch_series_key IS NOT NULL
+            """
+        ))
+        s.commit()
+    with seeded_db() as s:
+        reloaded = s.execute(
+            select(Article).where(Article.message_id == "legacy-cv@x")
+        ).scalar_one()
+    assert reloaded.patch_series_position == 0
 
 
 def test_ingest_last_article_date_bumps_on_cross_post_link(

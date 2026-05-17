@@ -4631,6 +4631,74 @@ def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
     assert "pos=cover" in card
 
 
+def test_series_diff_uses_indexed_lookup_without_thread_parent(
+    client, tmp_path,
+):
+    """#212: the diff route's indexed-lookup path resolves
+    `(key, version, position)` directly, without needing thread
+    structure between cover and in-series patches. Seed two
+    in-series patches with `patch_series_*` columns set but
+    `thread_parent=None`, the heuristic resolver from #210 would
+    fail (no children to walk), the indexed path succeeds."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    # Two cover letters (needed for the 404-availability lookup the
+    # route does upfront) plus two in-series patches with no thread
+    # linkage. Build a minimal mirror so `read_message` finds the
+    # patch bodies.
+    author = "Alice <a@example>"
+    msgs_v1 = [
+        ("v1-cv@x", "[PATCH 0/2] series", None, b"cover v1\n", author),
+        ("v1-p1@x", "[PATCH 1/2] foo: do bar", None,  # NO thread parent
+         b"v1 patch body\n", author),
+    ]
+    msgs_v2 = [
+        ("v2-cv@x", "[PATCH v2 0/2] series", None, b"cover v2\n", author),
+        ("v2-p1@x", "[PATCH v2 1/2] foo: do bar", None,  # NO thread parent
+         b"v2 patch body updated\n", author),
+    ]
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=msgs_v1, v2_messages=msgs_v2,
+    )
+    # Verify the seeded state matches the test premise: the in-series
+    # patches have the indexed columns set even without thread linkage.
+    with SessionLocal() as s:
+        v1_p1 = s.execute(
+            select(Article).where(Article.message_id == "v1-p1@x")
+        ).scalar_one()
+        v2_p1 = s.execute(
+            select(Article).where(Article.message_id == "v2-p1@x")
+        ).scalar_one()
+    # Without a thread parent, ingest can't link the patch to its
+    # cover, so key/version stay NULL here. Backfill them inline
+    # to mirror the post-`backfill-patch-series` state and exercise
+    # the indexed resolver.
+    with SessionLocal() as s:
+        v1_cover = s.execute(
+            select(Article).where(Article.message_id == "v1-cv@x")
+        ).scalar_one()
+        v2_cover = s.execute(
+            select(Article).where(Article.message_id == "v2-cv@x")
+        ).scalar_one()
+        for patch, cover in [(v1_p1, v1_cover), (v2_p1, v2_cover)]:
+            p = s.get(Article, patch.id)
+            p.patch_series_key = cover.patch_series_key
+            p.patch_series_version = cover.patch_series_version
+            # position already 1 from ingest's parser-only path.
+        s.commit()
+
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v2&pos=1"
+    )
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "v1 patch body" in body
+    assert "v2 patch body updated" in body
+
+
 # --- Message-page ETag / conditional revalidation -----------------------------
 
 
