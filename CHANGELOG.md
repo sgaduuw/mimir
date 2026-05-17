@@ -11,6 +11,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.24.0], 2026-05-17
+
+### Changed
+
+- Footer now links "mimir" to its source repository and credits
+  the author with a `rel="me"` link to the author's personal site.
+- `<meta name="generator">` now carries the running version
+  (`mimir X.Y.Z`) instead of a bare `mimir`.
+
 ## [1.23.0], 2026-05-17
 
 ### Added
