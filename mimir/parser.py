@@ -270,7 +270,22 @@ def parse_message(raw: bytes) -> ParsedArticle:
         try:
             body = body_part.get_content()
         except (LookupError, UnicodeDecodeError):
-            body = None
+            # Same lookup-family failures the attachment path handles:
+            # unregistered charset (RFC 1428 `unknown-8bit`, malformed
+            # encoded-word charsets) or bytes that don't decode under
+            # the declared charset. Without a fallback the message
+            # renders as `(no body)` even though the git blob carries
+            # real text. Latin-1 is RFC 1428's recommended fallback
+            # interpretation for `unknown-8bit` (and is bijective on
+            # bytes, so no further decode errors are possible);
+            # high-bit content becomes mojibake but structure
+            # (whitespace, ASCII tokens, addresses, patch markers)
+            # survives.
+            payload = body_part.get_payload(decode=True)
+            if isinstance(payload, bytes):
+                body = payload.decode("latin-1", errors="replace")
+            else:
+                body = None
         body_content_type = body_part.get_content_type()
 
     attachments: list[ParsedAttachment] = []
