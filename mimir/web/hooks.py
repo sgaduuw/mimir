@@ -53,6 +53,13 @@ def _inject_template_globals() -> dict:
         "site_base": site_base,
         "default_canonical_url": default_canonical,
         "og_image_alt": OG_IMAGE_ALT,
+        # `noindex` is True on error pages so base.html suppresses
+        # the canonical link + emits a `<meta name="robots"
+        # content="noindex">` (a canonical pointing at the error URL
+        # would tell search engines "this 404 is authoritative,"
+        # which is exactly the wrong signal). Default False keeps
+        # every other route's canonical contract unchanged.
+        "noindex": False,
     }
 
 
