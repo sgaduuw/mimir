@@ -1836,3 +1836,127 @@ def test_replay_failures_cross_post_links_existing_article(
             select(func.count()).select_from(ParseFailure)
             .where(ParseFailure.inbox_id == alpha.id)
         ).scalar_one() == 0
+
+
+# Inbox.last_article_date (#216): bumped at ingest-commit time so the
+# front-page "Last activity" string doesn't ride the 24h
+# `archive_stats` cache window.
+
+
+def _naive_utc(dt):
+    """SQLite stores DateTime as TEXT without tz; round-trip strips
+    tzinfo. Compare on the naive form for in-DB assertions."""
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
+def test_ingest_bumps_inbox_last_article_date_on_new(
+    seeded_db, tmp_path,
+):
+    """A fresh `new` ingest pushes `Inbox.last_article_date` to the
+    commit time of the just-ingested message. Conftest seeds alpha at
+    2024-03-01; the synthetic repo here uses `commit_time =
+    1700000000 + i` (2023-11-14 onwards), so the bump only happens if
+    the helper picks the max-of-batch and overrides only when newer."""
+    from datetime import datetime
+    alpha = _alpha(seeded_db)
+    # Reset the seeded value so we observe a clean bump-from-nothing.
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.last_article_date = None
+        s.commit()
+    _build_pubinbox_repo(tmp_path / "0.git", [_rfc5322("bumper@example.com")])
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    # 1700000000 epoch = 2023-11-14 22:13:20 UTC; SQLite returns naive.
+    assert _naive_utc(ix.last_article_date) == datetime(2023, 11, 14, 22, 13, 20)
+
+
+def test_ingest_last_article_date_is_monotonic(seeded_db, tmp_path):
+    """A later ingest of an older-dated message doesn't push the
+    field backward. Public-inbox commit times are monotonically
+    increasing within an epoch, but re-walks, replays, and
+    edge-case backfills could ingest out-of-order, the field's
+    contract is "max seen ever", not "last seen"."""
+    from datetime import datetime, timezone
+    alpha = _alpha(seeded_db)
+    future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.last_article_date = future
+        s.commit()
+    _build_pubinbox_repo(tmp_path / "0.git", [_rfc5322("older@example.com")])
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    assert _naive_utc(ix.last_article_date) == _naive_utc(future)
+
+
+def test_migration_backfill_sql_populates_last_article_date(seeded_db):
+    """The alembic backfill statement (correlated MAX(date) per inbox)
+    populates `Inbox.last_article_date` from existing articles +
+    article_lists. Pins the upgrade-against-populated-DB path without
+    re-running alembic, the conftest seed is a stand-in for a populated
+    prod row set.
+
+    Conftest seeds alpha with art1/art3/art4 (max 2024-03-01) and
+    beta with art2/art3 (max 2024-03-01). Wipe the column first to
+    simulate the pre-upgrade state, then run the migration's backfill
+    SQL inline and verify both inboxes pick up the right max."""
+    from datetime import datetime
+    from sqlalchemy import text
+    with seeded_db() as s:
+        # Simulate the pre-upgrade state.
+        s.execute(text("UPDATE inboxes SET last_article_date = NULL"))
+        # Verbatim from alembic/versions/...
+        s.execute(text(
+            """
+            UPDATE inboxes
+            SET last_article_date = (
+                SELECT MAX(a.date)
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                WHERE al.inbox_id = inboxes.id
+            )
+            """
+        ))
+        s.commit()
+    with seeded_db() as s:
+        rows = s.execute(
+            select(Inbox.name, Inbox.last_article_date)
+        ).all()
+    by_name = {n: d for n, d in rows}
+    assert _naive_utc(by_name["alpha"]) == datetime(2024, 3, 1, 12, 0)
+    assert _naive_utc(by_name["beta"]) == datetime(2024, 3, 1, 12, 0)
+
+
+def test_ingest_last_article_date_bumps_on_cross_post_link(
+    seeded_db, tmp_path,
+):
+    """A cross-posted message that first landed in `beta` now landing
+    in `alpha` bumps `alpha.last_article_date` too, using the
+    existing article's date. The two inboxes track their own
+    "last activity" independently: linking a cross-post is real
+    activity for the destination inbox, even though no new Article
+    row is created."""
+    alpha = _alpha(seeded_db)
+    # `art2@example.com` is in beta only (per conftest seed) with
+    # date 2024-02-01. Wipe alpha's last_article_date so the bump is
+    # observable from None to 2024-02-01.
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.last_article_date = None
+        s.commit()
+    _build_pubinbox_repo(tmp_path / "0.git", [_rfc5322("art2@example.com")])
+    with seeded_db() as s:
+        result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+    assert result.linked == 1
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    assert ix.last_article_date is not None
+    assert (
+        ix.last_article_date.year, ix.last_article_date.month,
+        ix.last_article_date.day,
+    ) == (2024, 2, 1)

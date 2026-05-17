@@ -118,15 +118,22 @@ def _reset_db():
     mimir.inboxes._INBOX_NAMES[:] = []
 
     with SessionLocal() as s:
+        # `last_article_date` mirrors what real ingest would set, so
+        # `archive_stats.last_date` (which now overlays this column
+        # at request time, see #216) matches the seeded MAX(date).
+        # alpha: max(art1=2024-01-01, art3=2024-03-01, art4=2024-01-02);
+        # beta:  max(art2=2024-02-01, art3=2024-03-01).
         alpha = Inbox(
             name=TEST_INBOX_PRIMARY,
             mirror_path="/tmp/alpha",
             upstream_url="https://example.com/alpha",
+            last_article_date=datetime(2024, 3, 1, 12, 0, tzinfo=timezone.utc),
         )
         beta = Inbox(
             name=TEST_INBOX_SECONDARY,
             mirror_path="/tmp/beta",
             upstream_url="https://example.com/beta",
+            last_article_date=datetime(2024, 3, 1, 12, 0, tzinfo=timezone.utc),
         )
         s.add_all([alpha, beta])
         s.flush()

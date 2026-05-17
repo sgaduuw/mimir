@@ -360,15 +360,33 @@ def ingest_epoch(
     # write per message.
     pending_obs: dict[str, tuple[int, datetime]] = {}
 
+    # Max article date seen this batch (across `new` AND `linked`
+    # outcomes, so cross-posts first seen elsewhere still bump the
+    # destination inbox's "Last activity"). Flushed to
+    # `Inbox.last_article_date` on each commit so the front-page card
+    # doesn't ride the 24h `archive_stats` cache. See #216.
+    pending_max_date: datetime | None = None
+
     logger.info(
         "%s/%s: starting from %s (workers=%d)",
         inbox_name, epoch_name, last_sha or "<beginning>", workers,
     )
 
     def flush_batch() -> None:
+        nonlocal pending_max_date
         if pending_obs:
             _flush_observations(session, inbox_id, pending_obs)
             pending_obs.clear()
+        if pending_max_date is not None:
+            # `inbox` may be detached (callers sometimes pass an Inbox
+            # fetched in another session); re-fetch by id so the mutation
+            # lands on a session-attached row that SQLAlchemy will flush.
+            ib = session.get(Inbox, inbox_id)
+            if ib is not None:
+                current = ib.last_article_date
+                if current is None or _aware_utc(current) < pending_max_date:
+                    ib.last_article_date = pending_max_date
+            pending_max_date = None
         state.last_commit_sha = last_seen
         session.commit()
         seen_in_batch.clear()
@@ -430,9 +448,14 @@ def ingest_epoch(
         # not yet linked here (cross-post first seen elsewhere); one
         # row with non-NULL `linked_id` → already linked (dup_db).
         # Halves the query count on the 6M-row backfill cold path
-        # (was 1000/batch, now ~500).
+        # (was 1000/batch, now ~500). `Article.date` rides along to
+        # bump `Inbox.last_article_date` for cross-posts; the column
+        # is on the same row so no extra cost.
         existing_row = session.execute(
-            select(Article.id, ArticleList.article_id.label("linked_id"))
+            select(
+                Article.id, Article.date,
+                ArticleList.article_id.label("linked_id"),
+            )
             .select_from(Article)
             .join(
                 ArticleList,
@@ -461,6 +484,13 @@ def ingest_epoch(
                 ))
                 seen_in_batch.add(parsed.message_id)
                 result.linked += 1
+                # Cross-post: bump activity using the existing article's
+                # date (the link is new to *this* inbox but the article
+                # already carries a real date from its first ingest).
+                if existing_row.date is not None:
+                    link_date = _aware_utc(existing_row.date)
+                    if pending_max_date is None or link_date > pending_max_date:
+                        pending_max_date = link_date
                 logger.debug("%s/%s commit %s: linked (cross-post) %s",
                              inbox_name, epoch_name, commit_sha[:12], parsed.message_id)
             continue
@@ -474,6 +504,10 @@ def ingest_epoch(
         seen_in_batch.add(parsed.message_id)
         result.new += 1
         result.new_message_ids.append(parsed.message_id)
+        # `commit_time` is already aware-UTC from `_walk_epoch`; same
+        # value `_to_article` just persisted to `Article.date`.
+        if pending_max_date is None or commit_time > pending_max_date:
+            pending_max_date = commit_time
         logger.debug("%s/%s commit %s: new %s", inbox_name, epoch_name, commit_sha[:12], parsed.message_id)
 
         if processed % PROGRESS_EVERY == 0:
