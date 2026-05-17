@@ -24,6 +24,11 @@ pillow = "^12.2.0"
 pytest-cov = "^7.1.0"
 freezegun = "^1.5.5"
 
+[tool.poetry.scripts]
+# Standalone CLI entry point (#221). Same backing as
+# `flask --app mimir <cmd>` via `FlaskGroup`; both stay supported.
+mimir = "mimir.cli:mimir"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
