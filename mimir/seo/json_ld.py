@@ -135,16 +135,20 @@ def _json_ld_message(
     rich-result section) and BreadcrumbList (surfaces the
     Site → Inbox → Subject chain in SERPs).
 
-    Author goes through `_display_name_filter`, display name only,
-    no email and no `<hidden>` placeholder. The placeholder is a
-    rendering decision for the visible HTML; in machine-readable
+    Author goes through `_display_name_filter` for `Person.name`,
+    display name only and no `<hidden>` placeholder. The placeholder
+    is a rendering decision for the visible HTML; in machine-readable
     metadata it reads as broken data and was flagged as such in the
-    2026-05-12 review. `author.url` points at the per-inbox author
-    view so the Person has a stable target for "more posts by this
-    author"; required-by-Google for the Discussions rich-result
-    eligibility (non-critical, Search Console 2026-05-14).
-    `dateModified` mirrors `datePublished` because mimir doesn't
-    track edits.
+    2026-05-12 review. `Person.email` is conditionally added via
+    `_allowlisted_email`: present iff the sender is in the allowlist
+    union (and therefore already on the rendered page in full),
+    omitted otherwise. Matches the redaction posture of
+    `_safe_from_filter` on the HTML side. `author.url` points at the
+    per-inbox author view so the Person has a stable target for
+    "more posts by this author"; required-by-Google for the
+    Discussions rich-result eligibility (non-critical, Search
+    Console 2026-05-14). `dateModified` mirrors `datePublished`
+    because mimir doesn't track edits.
 
     `text` carries a plain-text snippet of `parsed.body`, capped at
     JSON_LD_TEXT_MAX chars (truncated at the last whitespace inside
@@ -159,7 +163,11 @@ def _json_ld_message(
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring). The redaction helpers and display filter live in
     # web.py with the rest of the visible-HTML pipeline.
-    from mimir.web import _display_name_filter, _redact_trailer_address
+    from mimir.web import (
+        _allowlisted_email,
+        _display_name_filter,
+        _redact_trailer_address,
+    )
     raw_date = parsed.date or article.date
     if raw_date is not None and raw_date.tzinfo is None:
         # `-0000` Date headers come back tz-naive from
@@ -173,6 +181,9 @@ def _json_ld_message(
     breadcrumb_subject = subject if len(subject) <= 80 else subject[:77] + "..."
     author_name = _display_name_filter(parsed.author)
     author: dict = {"@type": "Person", "name": author_name}
+    author_email = _allowlisted_email(parsed.author)
+    if author_email:
+        author["email"] = author_email
     # Per-inbox author view is a substring match on the From field;
     # the display name is exactly what'll match the author's other
     # posts. Skip the URL when we fell back to "unknown sender"

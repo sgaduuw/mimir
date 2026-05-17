@@ -1120,14 +1120,14 @@ def test_message_json_ld_author_no_email_leak_for_bare_address(
     assert "@" not in posting["author"]["name"]
 
 
-def test_message_json_ld_author_strips_email_even_when_allowlisted(
+def test_message_json_ld_author_includes_email_when_allowlisted(
     client, tmp_path, monkeypatch,
 ):
-    """Allowlisted senders surface their full From-line in the visible
-    HTML (institutional kernel.org accounts), but JSON-LD's
-    author.name is still display-name only, schema.org consumers
-    don't need the email and crawlers should treat both author
-    surfaces consistently."""
+    """Allowlisted senders surface their full From-line in the
+    visible HTML (institutional kernel.org accounts, MAINTAINERS-
+    listed maintainers). JSON-LD's `Person.email` mirrors that:
+    present iff the address is already on the rendered page, omitted
+    otherwise. `name` stays display-name only across both surfaces."""
     from mimir.config import settings
     monkeypatch.setattr(settings, "email_allowlist", ["@b.example"])
     _, url = _ingest_one_article(
@@ -1138,6 +1138,25 @@ def test_message_json_ld_author_strips_email_even_when_allowlisted(
     posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
     assert posting["author"]["name"] == "Allowed Person"
     assert "@b.example" not in posting["author"]["name"]
+    assert posting["author"]["email"] == "allowed@b.example"
+
+
+def test_message_json_ld_author_omits_email_when_not_allowlisted(
+    client, tmp_path, monkeypatch,
+):
+    """Non-allowlisted senders: visible HTML hides the address and
+    `Person.email` is absent. Crawlers see the same redaction state
+    on both surfaces."""
+    from mimir.config import settings
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "jsonld-hide@example.com",
+        author="Casual Sender <casual@example.org>",
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    assert "email" not in posting["author"]
+    assert posting["author"]["name"] == "Casual Sender"
 
 
 def test_message_json_ld_includes_text_snippet(client, tmp_path):
