@@ -7,7 +7,7 @@ imports it from here.
 """
 import re
 
-from flask import abort, redirect, render_template
+from flask import abort, redirect, render_template, url_for
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -219,8 +219,19 @@ def subsystem_dashboard(inbox_name: str, name: str):
         inbox = _get_inbox_or_404(session, inbox_name)
         name_lower = name.lower()
         if name != name_lower:
+            # `url_for` rather than f-string interpolation: `inbox.name`
+            # is validated by `mimir.inboxes` on insert and `name_lower`
+            # is regex-matched above, but routing the redirect target
+            # through Flask's URL builder is what CodeQL recognises as
+            # safe (clears alert #14, `py/url-redirection`) and reads
+            # cleaner than the manual string interpolation.
             return redirect(
-                f"/{inbox.name}/subsystem/{name_lower}/", code=301,
+                url_for(
+                    "web.subsystem_dashboard",
+                    inbox_name=inbox.name,
+                    name=name_lower,
+                ),
+                code=301,
             )
         subsystem = session.execute(
             select(Subsystem)
