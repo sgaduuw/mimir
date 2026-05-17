@@ -188,6 +188,27 @@ def _display_name_filter(author: str | None) -> str:
     return "unknown sender"
 
 
+def _allowlisted_email(author: str | None) -> str | None:
+    """Return the From-line address iff the sender is allowlisted,
+    else None. The metadata side of the same allowlist gate
+    `_safe_from_filter` uses for visible HTML: structured surfaces
+    (JSON-LD `Person.email`, Atom `<author><email>`) mirror what the
+    rendered page would have shown, no more and no less. For
+    non-allowlisted senders the visible HTML hid the address and
+    metadata does the same; for allowlisted senders the address is
+    already on the rendered page and in the public git blob, so
+    omitting it from metadata under-attributes the only set of
+    senders we don't otherwise redact."""
+    if not author:
+        return None
+    _, addr = parseaddr(author)
+    if not addr:
+        return None
+    if _is_allowlisted(addr):
+        return addr
+    return None
+
+
 @bp_web.app_template_filter("relative_time")
 def _relative_time_filter(then: datetime | None) -> str:
     """Coarse "N{m,h,d} ago" rendering of a tz-aware datetime, with
