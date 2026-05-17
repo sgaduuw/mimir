@@ -17,6 +17,7 @@ from mimir.web._blueprint import bp_web
 from mimir.web import filters  # noqa: F401  (template filters)
 from mimir.web import hooks  # noqa: F401  (context processor + request hooks)
 from mimir.web import routes  # noqa: F401  (route handlers via the routes subpackage)
+from mimir.web import errors  # noqa: F401  (branded 4xx/5xx handlers)
 
 # Re-exports for backward-compatible imports from `mimir.web`.
 # Routes / helpers callers have historically imported from this

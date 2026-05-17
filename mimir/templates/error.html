@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}{{ status }} {{ title }} | {{ site_name }}{% endblock %}
+{% block meta_description %}{{ detail }}{% endblock %}
+{% block content %}
+<section class="error-page">
+  <hgroup>
+    <h1>{{ status }} {{ title }}</h1>
+    <p><small><em>{{ detail }}</em></small></p>
+  </hgroup>
+  <p>
+    <a href="{{ url_for('web.index') }}">← Back to {{ site_name }}</a>
+  </p>
+</section>
+{% endblock %}
