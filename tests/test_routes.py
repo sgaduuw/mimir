@@ -29,9 +29,8 @@ def test_pages_use_external_stylesheet_not_inline_style_blocks(client):
     targeted, and the form whose presence would force CSP to keep
     `'unsafe-inline'` on `style-src`).
 
-    Per-element `style="..."` attributes are out of scope for this
-    pin, the issue explicitly leaves them in place; the assertion
-    here is specifically on `<style>` *blocks*."""
+    Per-element `style="..."` attributes are pinned separately by
+    `test_pages_emit_no_inline_style_attributes`."""
     import re as _re
     # Sample a handful of routes covering every base template path
     # the inline blocks used to live in (index.html, message.html
@@ -50,6 +49,42 @@ def test_pages_use_external_stylesheet_not_inline_style_blocks(client):
         )
         assert link_re.search(body), (
             f"`{path}` missing the external mimir.css link tag"
+        )
+
+
+def test_pages_emit_no_inline_style_attributes(client, tmp_path):
+    """Security pass: no rendered page carries a `style="..."` attr.
+    Inline styles would force CSP `style-src` to keep `'unsafe-inline'`,
+    which widens the XSS blast radius (an attacker who finds an HTML-
+    escape gap can land a `<span style="...">` payload that runs CSS
+    expressions / leaks data via CSS exfil tricks).
+
+    Sweeps every template that historically carried inline styles:
+    `/` (index hero + cards), `/<inbox>/` (dashboard sparkline),
+    `/<inbox>/<year>/` (month tiles), `/<inbox>/<year>/<mm>/<id>`
+    (thread tree depth, patch-state aside, body-text block,
+    keyboard-help dialog from base.html on every page).
+    """
+    _, msg_url = _ingest_one_article(
+        tmp_path, "alpha", "inline-style-sweep@example.com",
+    )
+    routes = [
+        "/",
+        "/alpha/",
+        "/alpha/today",
+        "/alpha/yesterday",
+        "/alpha/2024/",
+        "/alpha/2024/01/",
+        msg_url,
+    ]
+    for path in routes:
+        body = client.get(path).data.decode()
+        assert 'style="' not in body, (
+            f"`{path}` carries an inline style attribute, "
+            "which forces CSP to keep `'unsafe-inline'` on "
+            "`style-src`:\n"
+            + body[max(0, body.index('style="') - 80):
+                   body.index('style="') + 200]
         )
 
 
@@ -668,6 +703,7 @@ def test_security_headers_present(client):
     r = client.get("/")
     for h in (
         "Content-Security-Policy",
+        "Permissions-Policy",
         "Referrer-Policy",
         "X-Content-Type-Options",
         "X-Frame-Options",
@@ -690,6 +726,7 @@ def test_security_headers_present_on_unmatched_404(client):
     assert r.status_code == 404
     for h in (
         "Content-Security-Policy",
+        "Permissions-Policy",
         "Referrer-Policy",
         "X-Content-Type-Options",
         "X-Frame-Options",
@@ -744,6 +781,18 @@ def test_security_headers_values_pin_csp_contract(client):
     # may smuggle it in via, e.g., script-src-elem).
     assert all("'unsafe-eval'" not in srcs for srcs in directives.values())
 
+    # style-src: the security pass dropped `'unsafe-inline'`. The
+    # negative pin guards against a regression that re-introduces an
+    # inline `<style>` block or `style="..."` attr and "fixes" it
+    # the wrong way by re-allowing inline styles.
+    style_src = directives.get("style-src", [])
+    assert style_src, "style-src directive missing"
+    assert "'unsafe-inline'" not in style_src, (
+        "style-src must not allow 'unsafe-inline'; the security pass "
+        "dropped it after sweeping the inline `style=`/`<style>` "
+        "usage into `mimir/static/css/mimir.css`."
+    )
+
     # Other crucial directives that block embed/iframe abuse.
     assert directives.get("frame-ancestors") == ["'none'"]
     assert directives.get("base-uri") == ["'self'"]
@@ -754,13 +803,79 @@ def test_security_headers_values_pin_csp_contract(client):
     assert r.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
 
 
+def test_csp_script_src_pins_specific_htmx_version(client):
+    """`script-src` carries a version-pinned unpkg path
+    (`https://unpkg.com/htmx.org@<X.Y.Z>/`), not the bare unpkg.com
+    origin. The version-pinned form means an htmx bump in
+    `base.html` MUST update the CSP in lockstep; the bare origin
+    would silently allow any unpkg package or version to load.
+
+    Asserts the shape (`unpkg.com/htmx.org@<digits>.<digits>.<digits>/`)
+    so a future htmx version bump is fine but a "loosen back to bare
+    origin" regression isn't."""
+    import re
+    r = client.get("/")
+    directives = _parse_csp(r.headers.get("Content-Security-Policy", ""))
+    script_src = directives.get("script-src", [])
+    htmx_sources = [
+        s for s in script_src if "unpkg.com" in s
+    ]
+    assert htmx_sources, "no unpkg.com source on script-src"
+    pinned = re.compile(r"^https://unpkg\.com/htmx\.org@\d+\.\d+\.\d+/$")
+    assert all(pinned.match(s) for s in htmx_sources), (
+        f"unpkg sources must be path-pinned to a specific htmx version, "
+        f"got: {htmx_sources}"
+    )
+
+
+def test_permissions_policy_denies_powerful_features(client):
+    """mimir is a read-only archive; none of the powerful features
+    (camera, microphone, geolocation, payment, etc.) have a use
+    case here. Permissions-Policy must explicitly deny them with
+    empty allowlists `()`, both in the document and any embedded
+    subframe.
+
+    Pin the set of denies that would matter under a future XSS-
+    gated bug: an injected `<iframe>` or `<embed>` that tries to
+    activate camera/mic/geolocation must be blocked by policy, not
+    just by `frame-ancestors`-style assumptions."""
+    r = client.get("/")
+    pp = r.headers.get("Permissions-Policy", "")
+    assert pp, "Permissions-Policy header missing"
+    # Parse `directive=(allowlist)` pairs; the directive name is what
+    # we pin, the `()` empty allowlist is the deny shape.
+    by_directive = {}
+    for chunk in pp.split(","):
+        chunk = chunk.strip()
+        if "=" in chunk:
+            name, val = chunk.split("=", 1)
+            by_directive[name.strip()] = val.strip()
+    # The high-impact features that an XSS would otherwise abuse.
+    must_deny = [
+        "camera",
+        "microphone",
+        "geolocation",
+        "payment",
+        "usb",
+        "midi",
+        "magnetometer",
+        "accelerometer",
+    ]
+    for feature in must_deny:
+        assert by_directive.get(feature) == "()", (
+            f"Permissions-Policy must deny `{feature}` with an empty "
+            f"allowlist `()`; got {by_directive.get(feature)!r}"
+        )
+
+
 def test_hsts_emitted_only_on_https_requests(client):
     """HSTS is the one pin-the-browser-forever header in the bundle.
     It must NOT emit on plain-HTTP dev sessions (where it would brick
     the local workflow) and MUST emit on requests forwarded with
-    X-Forwarded-Proto: https. max-age and the includeSubDomains
-    directive are part of the contract; a refactor that drops either
-    would silently weaken the production posture."""
+    X-Forwarded-Proto: https. max-age, includeSubDomains, and the
+    `preload` directive are part of the contract; a refactor that
+    drops any of them would silently weaken the production posture.
+    """
     # Without the proxy header: no HSTS.
     r_plain = client.get("/")
     assert "Strict-Transport-Security" not in r_plain.headers
@@ -771,12 +886,20 @@ def test_hsts_emitted_only_on_https_requests(client):
     assert hsts, "HSTS must emit when X-Forwarded-Proto=https"
     assert "max-age=" in hsts
     # max-age must be >= 6 months (15768000s); under that, browsers
-    # treat the policy as advisory rather than enforced.
+    # treat the policy as advisory rather than enforced. The
+    # hstspreload.org submission requirement is >= 1 year (31536000s).
     import re
     m = re.search(r"max-age=(\d+)", hsts)
     assert m is not None
-    assert int(m.group(1)) >= 15_768_000
+    assert int(m.group(1)) >= 31_536_000, (
+        "max-age must be >= 1y to satisfy hstspreload.org submission"
+    )
     assert "includeSubDomains" in hsts
+    # `preload` opts the site into the browser-bundled HSTS preload
+    # list. Removing this would walk back the security pass's
+    # ratchet (un-preloading takes months) without an explicit code
+    # signal; the assertion forces a deliberate edit if dropped.
+    assert "preload" in hsts
 
 
 def test_author_page_autodiscovery_link(client, inbox_name):
@@ -2101,6 +2224,49 @@ def test_message_page_thread_fold_active_marker_on_current_li(
     # leak email-shaped tokens"; carrying them in data-message-id
     # silently undid that. Belt-and-braces check.
     assert nested_mid not in _data_attr_values(body)
+
+
+def test_message_page_thread_tree_uses_data_depth_not_inline_style(
+    client, tmp_path,
+):
+    """Thread-tree depth used to be encoded as
+    `<li style="padding-left: {N*1.5}rem">`; the security pass moved
+    it to `<li data-depth="N">` so the static CSS ladder in
+    `mimir.css` can apply `padding-left` without an inline style.
+    The ladder is enumerated 0..20 in the stylesheet; values beyond
+    20 are clamped in the template so they still match a rule.
+
+    The 3-message thread `_seed_three_message_thread` yields depths
+    0, 1, 2 -- inside the ladder. Pins (a) the new attribute is
+    present on every tree `<li>`, (b) no `<li>` in the tree carries
+    an inline `style="..."` attr, (c) the depths attached match the
+    thread shape (0/1/2 in this fixture).
+    """
+    import re
+    msgs = _seed_three_message_thread(tmp_path, "alpha")
+    body = client.get(msgs["root"][1]).data.decode()
+
+    ul_start = body.index('<ul class="thread-list"')
+    ul_end = body.index("</ul>", ul_start)
+    list_block = body[ul_start:ul_end]
+
+    lis = re.findall(r"<li[^>]*>", list_block)
+    assert len(lis) == 3, f"expected 3 tree <li>, got {len(lis)}"
+    # Each <li> carries data-depth=, none carries an inline style.
+    for li in lis:
+        assert "data-depth=" in li, (
+            f"thread-tree <li> missing data-depth attr: {li!r}"
+        )
+        assert "style=" not in li, (
+            f"thread-tree <li> still carries inline style: {li!r}"
+        )
+    # Depths attached should be exactly {0, 1, 2} for this fixture.
+    depths = sorted(
+        int(d) for d in re.findall(r'data-depth="(\d+)"', list_block)
+    )
+    assert depths == [0, 1, 2], (
+        f"expected depths [0,1,2] for the 3-msg thread, got {depths}"
+    )
 
 
 def test_message_page_thread_fold_toolbar_summary_counts_match(
@@ -4075,8 +4241,12 @@ def test_attachment_preview_pygmentizes_text(client, tmp_path):
     r = client.get(f"{url}/attachment/0/preview")
     assert r.status_code == 200
     body = r.data.decode()
-    # Pygments noclasses=True emits inline style="..." spans.
+    # Pygments noclasses=False emits class-named spans (e.g.
+    # `<span class="k">def</span>`); the inline `style="color:..."`
+    # form was dropped in the security pass so CSP can deny
+    # `'unsafe-inline'` on `style-src`.
     assert "<span" in body
+    assert 'style="color' not in body
     # Source content survives the highlight.
     assert "hello" in body
     assert "world" in body

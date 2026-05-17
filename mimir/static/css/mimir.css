@@ -394,3 +394,96 @@ html[data-thread-fold="expanded"] .thread-context .thread-box {
   max-height: none;
   overflow-y: visible;
 }
+
+
+/* --- Per-element style="..." attribute sweep (security pass).
+   Each rule below replaces an inline `style="..."` attribute so CSP
+   `style-src` can drop `'unsafe-inline'` without losing presentation.
+   The dynamic case (thread-tree depth) uses a finite ladder of
+   `data-depth` rules; the template clamps the value to the ladder. */
+
+/* Body-text fallback block in `rendering.py`: every non-quote /
+   non-diff / non-code text block lands in a wrap-friendly <pre>. */
+pre.body-text-block {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  margin: 0;
+}
+
+/* Off-list ancestor row in the thread tree: a single dimmed line at
+   the top, flush left, signalling "no real entry in the archive." */
+.thread-context .thread-list li.thread-off-list-row {
+  padding-left: 0;
+  opacity: 0.6;
+}
+
+/* Thread-tree depth ladder. `data-depth` is set per-li by the
+   template; padding is `depth * 1.5rem`. Real lkml threads rarely
+   exceed ~50 deep (per `threading.py`), but beyond ~20 levels the
+   visual indent stops adding orientation, so the template clamps
+   anything above 20 to the 20-level rule. */
+.thread-context .thread-list li[data-depth="0"]  { padding-left: 0; }
+.thread-context .thread-list li[data-depth="1"]  { padding-left: 1.5rem; }
+.thread-context .thread-list li[data-depth="2"]  { padding-left: 3rem; }
+.thread-context .thread-list li[data-depth="3"]  { padding-left: 4.5rem; }
+.thread-context .thread-list li[data-depth="4"]  { padding-left: 6rem; }
+.thread-context .thread-list li[data-depth="5"]  { padding-left: 7.5rem; }
+.thread-context .thread-list li[data-depth="6"]  { padding-left: 9rem; }
+.thread-context .thread-list li[data-depth="7"]  { padding-left: 10.5rem; }
+.thread-context .thread-list li[data-depth="8"]  { padding-left: 12rem; }
+.thread-context .thread-list li[data-depth="9"]  { padding-left: 13.5rem; }
+.thread-context .thread-list li[data-depth="10"] { padding-left: 15rem; }
+.thread-context .thread-list li[data-depth="11"] { padding-left: 16.5rem; }
+.thread-context .thread-list li[data-depth="12"] { padding-left: 18rem; }
+.thread-context .thread-list li[data-depth="13"] { padding-left: 19.5rem; }
+.thread-context .thread-list li[data-depth="14"] { padding-left: 21rem; }
+.thread-context .thread-list li[data-depth="15"] { padding-left: 22.5rem; }
+.thread-context .thread-list li[data-depth="16"] { padding-left: 24rem; }
+.thread-context .thread-list li[data-depth="17"] { padding-left: 25.5rem; }
+.thread-context .thread-list li[data-depth="18"] { padding-left: 27rem; }
+.thread-context .thread-list li[data-depth="19"] { padding-left: 28.5rem; }
+.thread-context .thread-list li[data-depth="20"] { padding-left: 30rem; }
+
+/* Patch-state aside (#208) and related-patches section beneath it on
+   message pages. `.patch-state` was already used as the class hook
+   alongside the inline style; the rule now carries the full
+   presentation. */
+.patch-state {
+  margin-block: 1rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--pico-primary);
+  background: var(--pico-muted-background-color);
+}
+.related-patches { margin-block: 1rem; }
+
+/* MAINTAINERS-derived lists on the subsystem dashboard. Maintainer
+   block is a tight list; paths block reflows into two columns to
+   absorb tall subsystems without scrolling. */
+.subsystem-paths-list {
+  margin: 0;
+  padding-inline-start: 1rem;
+}
+.subsystem-paths-list--columns {
+  columns: 2;
+  column-gap: 2rem;
+}
+
+/* Dashboard / per-subsystem sparkline SVGs. Each is sized via
+   width/height attributes; `vertical-align: middle` keeps the
+   baseline aligned with the surrounding "Last 30 days:" label. */
+.dashboard-sparkline-svg { vertical-align: middle; }
+
+/* Keyboard-help dialog (rendered on every page via `base.html`,
+   opened with `?`). The cap stops the help text spanning a wide
+   viewport; header/footer rules space the table block away from
+   them. */
+.keyboard-help-article { max-width: 28rem; }
+.keyboard-help-header  { margin-bottom: 0.75rem; }
+.keyboard-help-footer  { margin-top: 0.75rem; }
+
+/* Year-archive month tiles: each is a Pico `<article>` inside the
+   `.grid` row of 12. Empty months dim to half opacity so the eye
+   skips them while scanning for activity. */
+.year-month-tile { text-align: center; }
+.year-month-tile--empty { opacity: 0.5; }
+.year-month-name { margin-bottom: 0.25rem; }
