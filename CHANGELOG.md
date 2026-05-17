@@ -11,6 +11,37 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Security
+
+- SSRF hardening on the three operator-supplied outbound URL
+  knobs (`Inbox.upstream_url`, `Settings.mainline_tree_url`,
+  `Settings.indexnow_endpoint`). A new shared
+  `validate_outbound_url` (in `mimir/_outbound.py`) rejects any
+  IP literal in loopback (`127.0.0.0/8`, `::1`), link-local
+  (`169.254.0.0/16` incl. cloud-metadata `169.254.169.254`,
+  `fe80::/10`), RFC 1918 (`10/8`, `172.16/12`, `192.168/16`),
+  IPv6 ULA (`fc00::/7`), unspecified / multicast / reserved,
+  plus the `localhost` hostname. IPv4-mapped IPv6 addresses
+  (`::ffff:127.0.0.1`) are unwrapped before the check so the
+  IPv4 deny list isn't trivially bypassed. Scheme allowlist is
+  `https` only (previously `mainline_tree_url` and
+  `indexnow_endpoint` had no validator at all, accepting
+  `http://`, `file://`, `git://`). Pydantic `field_validator`s
+  on the two `Settings` fields and `InboxConfig.upstream_url`
+  fail fast at config-load; `mimir.inboxes.validate_upstream_url`
+  delegates to the shared helper for the admin-CLI surface.
+- The two `urlopen` outbound call sites (manifest fetch in
+  `mimir/sync.py`, IndexNow POST in `mimir/indexnow.py`) now go
+  through a shared `OUTBOUND_OPENER` whose `NoRedirectHandler`
+  refuses to follow any 3xx. The stdlib default follows up to
+  10 redirects across hosts and schemes with no per-target
+  inspection; a compromised upstream could 302 fetches into
+  internal-only URLs, and for the IndexNow POST the same
+  redirect path would exfiltrate the request body (carrying the
+  operator's IndexNow key) to attacker hosts. Known limitation,
+  not addressed: DNS rebinding (host resolves to an allowed IP
+  at validation and to a denied IP at fetch). (#250)
+
 ## [1.25.1], 2026-05-17
 
 ### Fixed
