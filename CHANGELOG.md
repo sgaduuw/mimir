@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.28.0], 2026-05-18
+
 ### Added
 
 - Message bodies linking to `lore.kernel.org/<slug>/<msgid>/...` now
