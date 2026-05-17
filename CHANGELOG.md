@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.26.0], 2026-05-17
+
 ### Changed
 
 - `mimir admin inbox add <name>` now defaults `--mirror-path` to
