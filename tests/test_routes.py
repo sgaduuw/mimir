@@ -109,6 +109,47 @@ def test_meta_index_card_link_targets_inbox_dashboard(client):
     assert "/beta/" in hrefs
 
 
+def test_meta_index_last_activity_reads_from_inbox_column(client):
+    """Front-page "Last activity" line reads `Inbox.last_article_date`
+    each render, not the 24h-cached `archive_stats` bundle. Pins #216:
+    seeding (or warming) the `archive_stats:<inbox>` cache row should
+    not lock the front-page string to the snapshot's max-date if
+    `Inbox.last_article_date` has since moved forward.
+
+    Strategy: prime the `archive_stats` cache by hitting the page
+    once, then bump `Inbox.last_article_date` to a near-now value and
+    re-request. The visible relative-time string should reflect the
+    new value (a recent "m"/"h ago" stamp), not the conftest seed's
+    14-month-old date."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    # First request warms the archive_stats cache row for both inboxes.
+    body_before = client.get("/").data.decode()
+    # Sanity check: conftest seed of 2024-03-01 surfaces as an absolute
+    # date in the visible card (>30d ago → `_relative_time` switches
+    # from "Nd ago" to "YYYY-MM-DD"), not a recent stamp.
+    assert "Last activity: 2024-03-01" in body_before
+
+    # Bump alpha to "5 minutes ago" without touching the cache.
+    five_min_ago = datetime.now(timezone.utc) - timedelta(minutes=5)
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.last_article_date = five_min_ago
+        s.commit()
+
+    body_after = client.get("/").data.decode()
+    # alpha's card now reports a fresh activity stamp (5m ago); beta's
+    # is unchanged.
+    assert "Last activity: 5m ago" in body_after
+    # alpha's old date string is gone from alpha's card. (beta still
+    # carries it, so this asserts disappearance in alpha's region.)
+    alpha_card = body_after.split('href="/alpha/"')[1].split("</a>")[0]
+    assert "2024-03-01" not in alpha_card
+
+
 def test_meta_index_renders_subsystem_chips_with_activity(client, tmp_path):
     """Front page surfaces an "Active subsystems" teaser when one
     or more subsystems have recent messages. Chips link to the

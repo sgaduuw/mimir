@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mimir.extensions import Base
@@ -32,6 +32,17 @@ class Inbox(Base):
     # tile per entry. Managed via `admin inbox trackers`.
     tracked_authors: Mapped[dict[str, str] | None] = mapped_column(
         JSON, nullable=True,
+    )
+
+    # Cached "max article date in this inbox", bumped on every
+    # successful ingest commit. Exists so the front-page "Last
+    # activity" string doesn't ride the 24h `archive_stats` cache
+    # row (the slow COUNT(*) is what justifies that TTL; MAX(date)
+    # rode along and inherited the same staleness window, see #216).
+    # NULL on inboxes that haven't ingested anything yet; otherwise
+    # monotonic non-decreasing.
+    last_article_date: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True,
     )
 
     # IngestState rows are tiny (one per epoch, ≤50 total per inbox);
