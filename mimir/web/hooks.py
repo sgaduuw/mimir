@@ -101,9 +101,15 @@ _CACHE_CONTROL_BY_ENDPOINT = {
 # and error pages also get them.
 #
 # CSP: HTML escaping is correct, but a CSP narrows the blast radius of
-#   any future bug. `default-src 'self'` plus the two CDNs we SRI-pin;
-#   inline styles allowed because Pico CSS uses them and Pygments
-#   emits inline `style=` for highlighted code.
+#   any future bug. `default-src 'self'` plus the two CDNs we SRI-pin.
+#   `style-src 'unsafe-inline'` stays for the per-element `style="..."`
+#   attributes a handful of templates still use (thread-tree per-node
+#   indent depth, year-archive month tiles, dialog max-width). The
+#   bulk of the inline CSS moved into `mimir/static/css/mimir.css`
+#   under #228; dropping `'unsafe-inline'` entirely is gated on
+#   sweeping the remaining `style="..."` attrs into either CSS classes
+#   or a CSP3 `'unsafe-hashes'` allowlist. Pygments is configured
+#   `noclasses=False` so it does NOT emit inline styles.
 # Referrer-Policy: don't leak full URLs (which include Message-IDs and
 #   inbox names) to outbound links.
 # X-Content-Type-Options: forces browsers to honor the Content-Type we
