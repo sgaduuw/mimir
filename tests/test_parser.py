@@ -311,6 +311,86 @@ def test_attachment_extracted():
     assert att.content == b"hello"
 
 
+def test_multipart_wrapper_not_treated_as_attachment(caplog):
+    """When a non-body branch of the message tree is itself a
+    multipart wrapper (e.g. multipart/signed alongside the
+    multipart/alternative holding the body), `iter_attachments`
+    yields the wrapper. The stdlib content manager has no decoder
+    for multipart/*; we used to log a KeyError-and-drop warning for
+    each such wrapper, which became dozens of lines per multi-list
+    ingest. Skip wrappers outright: no attachment, no warning."""
+    import logging
+    raw = (
+        b"Message-ID: <multipart-wrap@x>\r\n"
+        b"From: a@b\r\n"
+        b"Subject: t\r\n"
+        b'Content-Type: multipart/mixed; boundary="outer"\r\n\r\n'
+        b"--outer\r\n"
+        b'Content-Type: multipart/alternative; boundary="inner"\r\n\r\n'
+        b"--inner\r\n"
+        b"Content-Type: text/plain\r\n\r\n"
+        b"hello body\r\n"
+        b"--inner\r\n"
+        b"Content-Type: text/html\r\n\r\n"
+        b"<p>hello body</p>\r\n"
+        b"--inner--\r\n"
+        b"--outer\r\n"
+        b'Content-Type: multipart/signed; boundary="sig"; '
+        b'protocol="application/pgp-signature"\r\n\r\n'
+        b"--sig\r\n"
+        b"Content-Type: text/plain\r\n\r\n"
+        b"signed payload\r\n"
+        b"--sig\r\n"
+        b"Content-Type: application/pgp-signature\r\n\r\n"
+        b"-----BEGIN PGP SIGNATURE-----\r\n...\r\n"
+        b"-----END PGP SIGNATURE-----\r\n"
+        b"--sig--\r\n"
+        b"--outer--\r\n"
+    )
+    with caplog.at_level(logging.WARNING, logger="mimir.parser"):
+        art = parse_message(raw)
+    assert "hello body" in (art.body or "")
+    # The wrapper isn't an attachment; its leaves aren't surfaced
+    # either (deliberate; recursing into multipart/signed is its own
+    # design conversation). What matters here: no false-positive
+    # "dropping attachment" warning for the wrapper.
+    assert all(
+        "dropping attachment" not in rec.getMessage()
+        for rec in caplog.records
+    ), caplog.text
+    assert all(a.content_type != "multipart/signed" for a in art.attachments)
+    assert all(a.content_type != "multipart/mixed" for a in art.attachments)
+
+
+def test_attachment_with_opaque_content_type_survives():
+    """Leaf attachments whose content-type isn't in the stdlib's
+    content-manager registry (e.g. `chemical/x-mopac-input`,
+    `application/x-perl`) used to KeyError out of `get_content()`
+    and get dropped with a warning. Fall back to the raw transfer-
+    decoded payload so the operator keeps the bytes."""
+    raw = (
+        b"Message-ID: <opaque@x>\r\n"
+        b"From: a@b\r\n"
+        b"Subject: t\r\n"
+        b'Content-Type: multipart/mixed; boundary="bbb"\r\n\r\n'
+        b"--bbb\r\n"
+        b"Content-Type: text/plain\r\n\r\n"
+        b"body\r\n"
+        b"--bbb\r\n"
+        b"Content-Type: chemical/x-mopac-input\r\n"
+        b'Content-Disposition: attachment; filename="hcidump.dat"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n\r\n"
+        b"aGNpZHVtcA==\r\n"
+        b"--bbb--\r\n"
+    )
+    art = parse_message(raw)
+    assert len(art.attachments) == 1
+    att = art.attachments[0]
+    assert att.filename == "hcidump.dat"
+    assert att.content_type == "chemical/x-mopac-input"
+    assert att.content == b"hcidump"
+
+
 # Subject normalization
 
 
