@@ -1,7 +1,7 @@
 #!/bin/sh
 # Scheduled-tasks loop. Run as a sidecar container alongside the web
 # container, sharing the /data volume. Each subcommand is invoked via
-# `flask --app mimir`, opens its own DB session, and exits cleanly
+# `mimir`, opens its own DB session, and exits cleanly
 # so a crash in one task doesn't take the loop down.
 #
 # Cadences (env-overridable, all in seconds):
@@ -40,7 +40,7 @@ VACUUM_EVERY=${VACUUM_EVERY:-604800}
 # stays silent on no-op ticks. Set to "-v" (or "-vv" for ingest
 # detail) in compose env when troubleshooting; restart the sidecar
 # to apply. For ad-hoc inspection without restarting:
-#   podman exec mimir-tasks flask --app mimir warm-cache -v
+#   podman exec mimir-tasks mimir warm-cache -v
 SCHEDULER_VERBOSE=${SCHEDULER_VERBOSE:-}
 
 log() { echo "[scheduler $(date -Iseconds)] $*"; }
@@ -87,7 +87,7 @@ fi
 # sqlite_stat1 has no entry for it and the planner picks shapes
 # blind (#202). Cheap on a multi-million-row corpus (tens of
 # seconds), idempotent on subsequent restarts.
-run "analyze (post-migrate)" /data/.last_analyze flask --app mimir analyze
+run "analyze (post-migrate)" /data/.last_analyze mimir analyze
 
 # Healthcheck sentinel: the web container's depends_on uses
 # condition: service_healthy and a `test -f /data/.migrated` test,
@@ -97,10 +97,10 @@ touch /data/.migrated
 # Initial update so a fresh deployment has data to render before the
 # first UPDATE_EVERY tick.
 # shellcheck disable=SC2086  # SCHEDULER_VERBOSE is a flag string, intentionally unquoted to splat empty -> nothing.
-run "update (initial)" /data/.last_update flask --app mimir update $SCHEDULER_VERBOSE
+run "update (initial)" /data/.last_update mimir update $SCHEDULER_VERBOSE
 
 # shellcheck disable=SC2086
-run "warm-cache (initial)" /data/.last_warm flask --app mimir warm-cache $SCHEDULER_VERBOSE
+run "warm-cache (initial)" /data/.last_warm mimir warm-cache $SCHEDULER_VERBOSE
 
 # Persisted-mtime initialisation: read each sentinel's last-touch
 # time off /data. Missing file → 0 → the next tick fires immediately
@@ -120,23 +120,23 @@ while true; do
 
     if [ $((now - last_warm)) -ge "$WARM_CACHE_EVERY" ]; then
         # shellcheck disable=SC2086
-        run "warm-cache" /data/.last_warm flask --app mimir warm-cache $SCHEDULER_VERBOSE
+        run "warm-cache" /data/.last_warm mimir warm-cache $SCHEDULER_VERBOSE
         last_warm=$(date +%s)
     fi
 
     if [ $((now - last_update)) -ge "$UPDATE_EVERY" ]; then
         # shellcheck disable=SC2086
-        run "update" /data/.last_update flask --app mimir update $SCHEDULER_VERBOSE
+        run "update" /data/.last_update mimir update $SCHEDULER_VERBOSE
         last_update=$(date +%s)
     fi
 
     if [ $((now - last_analyze)) -ge "$ANALYZE_EVERY" ]; then
-        run "analyze" /data/.last_analyze flask --app mimir analyze
+        run "analyze" /data/.last_analyze mimir analyze
         last_analyze=$(date +%s)
     fi
 
     if [ $((now - last_vacuum)) -ge "$VACUUM_EVERY" ]; then
-        run "vacuum" /data/.last_vacuum flask --app mimir vacuum
+        run "vacuum" /data/.last_vacuum mimir vacuum
         last_vacuum=$(date +%s)
     fi
 
