@@ -12,6 +12,16 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Default GITHUB_TOKEN permissions for every job in this workflow.
+# GitHub's default grants `contents: write`, `issues: write`,
+# `packages: write`, etc.; the lint + test jobs only need to read the
+# repo, so the workflow-wide default narrows the blast radius if a
+# step is ever compromised. The docker job opts back in to
+# `packages: write` for GHCR push via its own `permissions:` block.
+# Clears CodeQL `actions/missing-workflow-permissions` (alerts #2, #10).
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
