@@ -617,7 +617,7 @@ def _render_block(
 
     text = "\n".join(block.lines)
     return (
-        '<pre style="white-space: pre-wrap; word-wrap: break-word; margin: 0;">'
+        '<pre class="body-text-block">'
         f"{linkify(text, msgid_urls, address_redactor)}</pre>"
     )
 

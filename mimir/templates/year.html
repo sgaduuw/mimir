@@ -30,15 +30,15 @@
 <div class="grid">
   {% for month_num, count in volume.months %}
     {% if count > 0 %}
-    <article style="text-align: center;">
-      <h4 style="margin-bottom: 0.25rem;">
+    <article class="year-month-tile">
+      <h4 class="year-month-name">
         <a href="/{{ inbox_name }}/{{ year }}/{{ '%02d' % month_num }}/">{{ month_names[month_num - 1] }}</a>
       </h4>
       <small>{{ '{:,}'.format(count) }} message{{ '' if count == 1 else 's' }}</small>
     </article>
     {% else %}
-    <article style="text-align: center; opacity: 0.5;">
-      <h4 style="margin-bottom: 0.25rem;">{{ month_names[month_num - 1] }}</h4>
+    <article class="year-month-tile year-month-tile--empty">
+      <h4 class="year-month-name">{{ month_names[month_num - 1] }}</h4>
       <small><em>no messages</em></small>
     </article>
     {% endif %}
