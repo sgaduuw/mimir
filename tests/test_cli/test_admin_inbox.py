@@ -150,6 +150,32 @@ def test_admin_inbox_add_creates_inbox(seeded_db):
     assert get_inbox("gamma").upstream_url == "https://example.com/gamma"
 
 
+def test_admin_inbox_add_defaults_to_lore_layout(seeded_db):
+    """With only NAME, mirror_path and upstream_url default to the
+    conventional lore.kernel.org public-inbox shape."""
+    result = CliRunner().invoke(admin_inbox_add_command, ["linux-arm-kernel"])
+    assert result.exit_code == 0, result.output
+    inbox = get_inbox("linux-arm-kernel")
+    assert inbox.mirror_path == "Inboxes/linux-arm-kernel/git"
+    assert inbox.upstream_url == "https://lore.kernel.org/linux-arm-kernel"
+    # Resolved values are echoed so the operator sees what got stored.
+    assert "Inboxes/linux-arm-kernel/git" in result.output
+    assert "https://lore.kernel.org/linux-arm-kernel" in result.output
+
+
+def test_admin_inbox_add_partial_override(seeded_db):
+    """Either flag can override independently; the other still
+    falls back to the default."""
+    result = CliRunner().invoke(admin_inbox_add_command, [
+        "linux-fsdevel-mirror",
+        "--mirror-path", "/srv/custom/fsdevel/git",
+    ])
+    assert result.exit_code == 0, result.output
+    inbox = get_inbox("linux-fsdevel-mirror")
+    assert inbox.mirror_path == "/srv/custom/fsdevel/git"
+    assert inbox.upstream_url == "https://lore.kernel.org/linux-fsdevel-mirror"
+
+
 def test_admin_inbox_add_invalid_url_clickexception(seeded_db):
     """`upstream_url` must be `https://...`; the validator raises
     InboxValidationError, which the CLI surfaces as a ClickException."""

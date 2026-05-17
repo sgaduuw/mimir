@@ -92,16 +92,41 @@ def admin_inbox_show_command(name: str) -> None:
 
 @admin_inbox_group.command("add")
 @click.argument("name")
-@click.option("--mirror-path", required=True, help="Filesystem path to the public-inbox mirror root.")
-@click.option("--upstream-url", required=True, help="Upstream public-inbox URL (https://...).")
-def admin_inbox_add_command(name: str, mirror_path: str, upstream_url: str) -> None:
-    """Insert a new inbox. Run `flask --app mimir update --inbox <name>`
-    afterwards to clone the upstream mirror and ingest."""
+@click.option(
+    "--mirror-path",
+    default=None,
+    help="Filesystem path to the public-inbox mirror root. "
+         "Defaults to Inboxes/<name>/git.",
+)
+@click.option(
+    "--upstream-url",
+    default=None,
+    help="Upstream public-inbox URL (https://...). "
+         "Defaults to https://lore.kernel.org/<name>.",
+)
+def admin_inbox_add_command(
+    name: str, mirror_path: str | None, upstream_url: str | None,
+) -> None:
+    """Insert a new inbox.
+
+    With only NAME, defaults to `Inboxes/<name>/git` on disk and
+    `https://lore.kernel.org/<name>` upstream, matching the conventional
+    lore.kernel.org public-inbox layout. Pass --mirror-path /
+    --upstream-url to override either independently. Run
+    `flask --app mimir update --inbox <name>` afterwards to clone the
+    upstream mirror and ingest.
+    """
+    if mirror_path is None:
+        mirror_path = f"Inboxes/{name}/git"
+    if upstream_url is None:
+        upstream_url = f"https://lore.kernel.org/{name}"
     try:
         inbox = create_inbox(name, mirror_path=mirror_path, upstream_url=upstream_url)
     except InboxValidationError as exc:
         raise click.ClickException(str(exc))
     click.echo(f"created inbox {inbox.name!r} (id={inbox.id})")
+    click.echo(f"  mirror_path:  {inbox.mirror_path}")
+    click.echo(f"  upstream_url: {inbox.upstream_url}")
     click.echo(
         f"next: poetry run flask --app mimir update --inbox {inbox.name}"
     )
