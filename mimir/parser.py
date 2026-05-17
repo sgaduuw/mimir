@@ -166,6 +166,14 @@ def _decode_rfc2047(value: str | None) -> str | None:
     structure. We log + fall back to the verbatim value so
     upstream sees the un-decoded header rather than a crash.
     Anything outside that tuple is a real bug and should propagate.
+
+    The log line is at DEBUG, not WARN: the fallback IS the
+    canonical handling for buggy-mailer encoded-words (`=?UNKNOWN?...`,
+    `=?unknown-8bit?...`, single-letter or whitespace charset names,
+    etc.), and the verbatim string carries the same signal as the
+    log line, the rendered subject/author shows the literal
+    `=?UNKNOWN?B?...?=` which is itself the "broken sender mailer"
+    cue. The WARN volume on multi-list ingest swamped real signal.
     """
     if value is None:
         return None
@@ -178,7 +186,7 @@ def _decode_rfc2047(value: str | None) -> str | None:
                 chunks.append(chunk)
         return "".join(chunks)
     except (LookupError, UnicodeError) as exc:
-        logger.warning(
+        logger.debug(
             "_decode_rfc2047: falling back to verbatim on %r: %r",
             value, exc,
         )
@@ -202,16 +210,25 @@ def _raw_header(msg: EmailMessage, name: str) -> str | None:
 def _attachment_bytes(part) -> bytes:
     try:
         content = part.get_content()
-    except KeyError:
-        # The stdlib content manager raises KeyError when no handler
-        # is registered for the part's content-type, opaque MIME
-        # types we see in practice include `chemical/x-mopac-input`,
-        # `application/x-perl`, etc. There's nothing to "decode" for
-        # these in the structured sense, so fall back to the raw
-        # transfer-decoded payload, which is what the operator wants
-        # for an opaque binary attachment anyway. `decode=True` undoes
-        # Content-Transfer-Encoding (base64/quoted-printable) but
-        # leaves the payload bytes untouched.
+    except (LookupError, UnicodeError):
+        # Two distinct stdlib lookup-family failures land here, both
+        # recoverable by handing back the raw transfer-decoded payload:
+        #
+        # 1. KeyError (a LookupError subclass) when the content
+        #    manager has no handler for the part's content-type
+        #    (opaque MIME types we see in practice: `chemical/x-mopac-input`,
+        #    `application/x-perl`, etc.).
+        # 2. LookupError when the content-type IS handled (e.g.
+        #    `text/plain`) but the declared charset isn't in Python's
+        #    codec registry (RFC 1428 `unknown-8bit`, malformed
+        #    encoded-word charsets, etc., observed on real
+        #    `r8169-getstats.patch` and `putty.log` attachments in
+        #    older list archives).
+        # `UnicodeError` covers the symmetric case where the charset
+        # IS registered but the bytes don't decode under it. In every
+        # case, `decode=True` undoes Content-Transfer-Encoding
+        # (base64/quoted-printable) without touching the payload bytes,
+        # so the operator keeps the attachment.
         payload = part.get_payload(decode=True)
         return payload if isinstance(payload, bytes) else b""
     if isinstance(content, EmailMessage):

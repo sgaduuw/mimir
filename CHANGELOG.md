@@ -11,6 +11,28 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- `parse_message` now keeps leaf attachments whose declared
+  Content-Type IS handled by the stdlib's content manager (e.g.
+  `text/plain`) but whose declared charset isn't in Python's codec
+  registry (RFC 1428's `unknown-8bit`, malformed encoded-word
+  charsets, etc.). PR #258's catch in `_attachment_bytes` covered
+  only `KeyError` (the content-type-registry miss); `LookupError`
+  from a `codecs.lookup(charset)` failure on the text-content path
+  is a *sibling* of `KeyError` in the stdlib's lookup hierarchy,
+  not the parent, so attachments like `r8169-getstats.patch` and
+  `putty.log` from older list archives kept getting dropped.
+  Catch widened to `(LookupError, UnicodeError)`; same fallback to
+  raw transfer-decoded payload.
+- `_decode_rfc2047` now logs the fallback path at DEBUG instead of
+  WARNING. The fallback is the canonical handling for buggy-mailer
+  encoded-words (`=?UNKNOWN?...`, `=?unknown-8bit?...`, whitespace
+  charset names, single-letter charsets) and the rendered subject /
+  author already carries the verbatim `=?UNKNOWN?B?...?=` string as
+  the "broken sender mailer" cue. On multi-list ingest the WARN
+  volume swamped real signal.
+
 ## [1.28.0], 2026-05-18
 
 ### Added
