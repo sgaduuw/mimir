@@ -11,6 +11,17 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- Message bodies linking to `lore.kernel.org/<slug>/<msgid>/...` now
+  surface a trailing ` (local)` link routed to the canonical mimir
+  URL when mimir has the referenced message indexed in any inbox.
+  The lore URL itself is preserved (add, don't replace), readers
+  can stay on-site without losing the external reference. Resolved
+  globally (cross-inbox), routed via canonical-inbox just like the
+  bare-Message-ID redirect at `/m/<id>`. The DCO-trailer renderer
+  applies the same suffix when a trailer line carries a lore URL.
+
 ### Fixed
 
 - `parse_message` no longer emits a flood of

@@ -58,13 +58,17 @@ def _render_block(
     address_redactor=None,
     depth: int = 0,
     parent_url: str | None = None,
+    lore_mirror_urls: dict[str, str] | None = None,
 ) -> str:
     if block.kind == "quote":
         stripped = [_strip_one_quote_level(line) for line in block.lines]
         inner = "\n".join(stripped)
         inner_blocks = parse_blocks(inner)
         inner_html = "".join(
-            _render_block(b, msgid_urls, address_redactor, depth + 1, parent_url)
+            _render_block(
+                b, msgid_urls, address_redactor, depth + 1, parent_url,
+                lore_mirror_urls,
+            )
             for b in inner_blocks
         )
         # A first-level quote containing a diff is the patch-review
@@ -113,7 +117,7 @@ def _render_block(
     text = "\n".join(block.lines)
     return (
         '<pre class="body-text-block">'
-        f"{linkify(text, msgid_urls, address_redactor)}</pre>"
+        f"{linkify(text, msgid_urls, address_redactor, lore_mirror_urls)}</pre>"
     )
 
 
@@ -122,6 +126,7 @@ def render_body(
     msgid_urls: dict[str, str] | None = None,
     address_redactor=None,
     parent_url: str | None = None,
+    lore_mirror_urls: dict[str, str] | None = None,
 ) -> Markup:
     """Render `body` to HTML.
 
@@ -130,13 +135,21 @@ def render_body(
     `<details>` with a "↗ jump to hunk" link pointing here. Pass
     the URL of the message being replied to (typically resolved
     from `article.thread_parent` via the thread's URL map).
+
+    `lore_mirror_urls`: optional `{msgid: mimir_url}` dict. Body
+    text linking out to `lore.kernel.org/<slug>/<msgid>/...` gets a
+    `(local)` mirror suffix when the embedded msgid is in the dict,
+    so the reader can stay on-site without losing the original lore
+    URL. The caller resolves msgids globally (any inbox, routed to
+    the canonical URL), see `mimir.web.routes.message`.
     """
     if not body:
         return Markup("")
     return Markup(
         "".join(
             _render_block(b, msgid_urls or {}, address_redactor,
-                          parent_url=parent_url)
+                          parent_url=parent_url,
+                          lore_mirror_urls=lore_mirror_urls)
             for b in parse_blocks(body)
         )
     )
