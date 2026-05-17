@@ -6,7 +6,7 @@ from the last-seen commit forward, parse messages (sequentially or via
 a process pool), bucket each outcome (new / linked / dup_batch /
 dup_db / failed), and persist a per-epoch resume cursor.
 
-The shared helpers (`_aware_utc`, `_to_article`, `_flush_observations`,
+The shared helpers (`_to_article`, `_flush_observations`,
 `_maybe_promote_list_address`) and the `IngestResult` model are also
 imported by `.replay`, `.backfill`, and `.orchestrate`.
 """
@@ -25,6 +25,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from mimir.canonical import extract_list_addresses, pick_canonical_inbox_id
+from mimir.datetime_utils import aware_utc
 from mimir.models import (
     Article,
     ArticleFile,
@@ -52,17 +53,6 @@ PROGRESS_EVERY = 1000
 COMMIT_EVERY = 500
 DEFAULT_WORKERS = os.cpu_count() or 1
 PARSE_CHUNKSIZE = 50
-
-def _aware_utc(dt: datetime) -> datetime:
-    """Return `dt` as a tz-aware UTC datetime. RFC 5322 dates with
-    `-0000` come back from `email.utils.parsedate_to_datetime` as
-    naive, mixing those into a max() with tz-aware dates raises
-    TypeError, which would crash an entire ingest batch the moment
-    one such message landed. Cheap normalisation at every entry
-    keeps the tally rows uniformly comparable."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
 
 
 # Auto-promotion of `Inbox.list_address`: an inbox needs at least
@@ -438,7 +428,7 @@ def ingest_epoch(
             ib = session.get(Inbox, inbox_id)
             if ib is not None:
                 current = ib.last_article_date
-                if current is None or _aware_utc(current) < pending_max_date:
+                if current is None or aware_utc(current) < pending_max_date:
                     ib.last_article_date = pending_max_date
             pending_max_date = None
         state.last_commit_sha = last_seen
@@ -482,7 +472,7 @@ def ingest_epoch(
         # inbox surfaces correctly).
         list_addrs = extract_list_addresses(parsed.headers)
         if list_addrs:
-            obs_time = _aware_utc(parsed.date or commit_time)
+            obs_time = aware_utc(parsed.date or commit_time)
             for addr in list_addrs:
                 prev = pending_obs.get(addr)
                 if prev is None:
@@ -542,7 +532,7 @@ def ingest_epoch(
                 # date (the link is new to *this* inbox but the article
                 # already carries a real date from its first ingest).
                 if existing_row.date is not None:
-                    link_date = _aware_utc(existing_row.date)
+                    link_date = aware_utc(existing_row.date)
                     if pending_max_date is None or link_date > pending_max_date:
                         pending_max_date = link_date
                 logger.debug("%s/%s commit %s: linked (cross-post) %s",

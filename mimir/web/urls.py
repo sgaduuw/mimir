@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from mimir.config import settings
+from mimir.datetime_utils import aware_utc
 from mimir.models import Article, ArticleList, Inbox
 
 
@@ -151,8 +152,7 @@ def _relative_time(then: datetime, now: datetime | None = None) -> str:
     that, since "47d ago" is harder to parse than the date itself."""
     if now is None:
         now = datetime.now(timezone.utc)
-    if then.tzinfo is None:
-        then = then.replace(tzinfo=timezone.utc)
+    then = aware_utc(then)
     delta = now - then
     secs = int(delta.total_seconds())
     if secs < 60:
