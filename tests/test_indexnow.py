@@ -3,8 +3,9 @@
 These tests pin the wire shape (host, key, keyLocation, urlList),
 the off-by-default behaviour (no key → no call, no base URL → no
 call), and the message-IDs-to-URLs bridge that the `update` CLI
-uses. The HTTP transport is monkeypatched at `urllib.request.urlopen`
-so no real network traffic flies during tests.
+uses. The HTTP transport is monkeypatched at
+`mimir._outbound.OUTBOUND_OPENER.open` (the hardened opener used by
+the production caller) so no real network traffic flies during tests.
 """
 import json
 
@@ -33,12 +34,13 @@ class _StubResponse:
 
 @pytest.fixture
 def captured_indexnow(monkeypatch):
-    """Replaces `urllib.request.urlopen` (as imported into
-    `mimir.indexnow`) with a recorder. Returns the captured-calls
-    list so tests can introspect host, payload, headers."""
+    """Replaces the `.open` method on `mimir.indexnow.OUTBOUND_OPENER`
+    (the hardened opener used by the production caller) with a
+    recorder. Returns the captured-calls list so tests can
+    introspect host, payload, headers."""
     calls: list[dict] = []
 
-    def _fake_urlopen(req, timeout=None):
+    def _fake_open(req, timeout=None):
         body = req.data
         payload = json.loads(body.decode("utf-8")) if body else None
         calls.append({
@@ -50,7 +52,7 @@ def captured_indexnow(monkeypatch):
         })
         return _StubResponse(status=200)
 
-    monkeypatch.setattr(indexnow, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(indexnow.OUTBOUND_OPENER, "open", _fake_open)
     return calls
 
 
@@ -146,7 +148,7 @@ def test_notify_swallows_network_errors(monkeypatch, caplog):
     def _raises(req, timeout=None):
         raise URLError("connection refused")
 
-    monkeypatch.setattr(indexnow, "urlopen", _raises)
+    monkeypatch.setattr(indexnow.OUTBOUND_OPENER, "open", _raises)
     with caplog.at_level("WARNING", logger="mimir.indexnow"):
         submitted = indexnow.notify(["https://example.test/x"])
     assert submitted == 0

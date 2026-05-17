@@ -33,13 +33,13 @@ import logging
 import re
 import shutil
 from pathlib import Path
-from urllib.parse import urlparse
 
 from sqlalchemy import delete, exists, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from mimir import cache
+from mimir._outbound import OutboundUrlError, validate_outbound_url
 from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox, IngestState
@@ -81,18 +81,19 @@ def validate_name(name: str) -> str:
 
 def validate_upstream_url(url: str) -> str:
     """Validate an upstream public-inbox URL. Returns the (stripped)
-    URL. Raises InboxValidationError on bad input."""
-    if not isinstance(url, str):
-        raise InboxValidationError("upstream_url must be a string")
-    url = url.strip()
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
-        raise InboxValidationError(
-            f"upstream_url must use https:// (got {parsed.scheme!r})"
-        )
-    if not parsed.netloc:
-        raise InboxValidationError("upstream_url must include a host")
-    return url
+    URL. Raises InboxValidationError on bad input.
+
+    Delegates to `mimir._outbound.validate_outbound_url` for the
+    scheme + host + IP-literal checks (loopback, link-local incl.
+    cloud-metadata, RFC 1918, etc.) so the admin surface, the
+    Settings field, and the fetch path share one validation
+    definition. We re-raise OutboundUrlError as InboxValidationError
+    so existing admin-CLI handlers keep working unchanged.
+    """
+    try:
+        return validate_outbound_url(url, allow_http=False)
+    except OutboundUrlError as exc:
+        raise InboxValidationError(f"upstream_url: {exc}") from exc
 
 
 _TRACKER_LABEL_MAX = 64
