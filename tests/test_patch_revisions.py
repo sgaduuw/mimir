@@ -82,6 +82,37 @@ def test_parse_in_series_patch_subject_rejects_empty_or_none():
     assert parse_in_series_patch_subject("") is None
 
 
+def test_parse_in_series_patch_subject_handles_zero_padded():
+    """`git format-patch --numbered` column-aligns positions when
+    the series has >=10 patches: `01/27`, `09/27`, `27/27`. The
+    leading zeros must not defeat the matcher and the captured
+    position must be the actual integer (1, 9), not the padded
+    string. Regression for #247."""
+    p = parse_in_series_patch_subject("[PATCH v3 01/27] foo: do bar")
+    assert p is not None
+    assert (p.position, p.total) == (1, 27)
+    p = parse_in_series_patch_subject("[PATCH v3 09/27] foo: do bar")
+    assert p is not None
+    assert (p.position, p.total) == (9, 27)
+    # Two-digit position still works (no leading zero needed).
+    p = parse_in_series_patch_subject("[PATCH v3 12/27] foo: do bar")
+    assert p is not None
+    assert (p.position, p.total) == (12, 27)
+    # Three-digit padding (rare but valid; >=100-patch series).
+    p = parse_in_series_patch_subject("[PATCH v2 007/100] foo: do bar")
+    assert p is not None
+    assert (p.position, p.total) == (7, 100)
+
+
+def test_parse_in_series_patch_subject_zero_padded_cover_still_rejected():
+    """A zero-padded cover letter shape (`00/N`, `000/N`) still
+    isn't an in-series patch; that's `parse_cover_letter`'s job.
+    Regression for #247: keep the rejection contract while we relax
+    the leading-zero rule on the matcher side."""
+    assert parse_in_series_patch_subject("[PATCH v3 00/27] cover") is None
+    assert parse_in_series_patch_subject("[PATCH v2 000/100] cover") is None
+
+
 # --- match_revision_position (DB-free; constructs InSeriesPatch directly) ---
 
 
