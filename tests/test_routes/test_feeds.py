@@ -95,16 +95,14 @@ def test_atom_feed_well_formed(client, inbox_name):
         )
 
 
-def test_atom_feed_author_strips_placeholder_and_email(
+def test_atom_feed_author_name_is_display_name_only(
     client, tmp_path, monkeypatch,
 ):
-    """Atom <author><name> is the display name only -- same posture
-    as JSON-LD's author.name. Feed readers render <name> as the
-    byline, where the `<hidden>` placeholder reads as broken
-    metadata exactly as it did in JSON-LD before the 2026-05-12
-    fix. Allowlisted senders also surface display-name only -- the
-    visible HTML still shows their full address, but the structured
-    surfaces stay symmetric across feed readers and search engines."""
+    """Atom <author><name> is always the display name only -- the
+    `<hidden>` placeholder reads as broken metadata in feed readers
+    exactly as it did in JSON-LD before the 2026-05-12 fix. The
+    address rides along separately in <author><email>, gated on the
+    allowlist (see test_atom_feed_author_includes_email_when_allowlisted)."""
     import xml.etree.ElementTree as ET
     from mimir.config import settings
 
@@ -124,12 +122,66 @@ def test_atom_feed_author_strips_placeholder_and_email(
     target = next(n for n in names if "David Woodhouse" in n)
     assert target == "David Woodhouse"
     # Belt-and-braces: across all entries, no placeholder, no `@`
-    # in any byline. The seeded `a@b.example` corpus has no display
-    # name and falls through to the neutral fallback rather than
-    # leaking the bare address.
+    # in any byline (<name> is name-only; addresses ride in <email>).
+    # The seeded `a@b.example` corpus has no display name and falls
+    # through to the neutral fallback rather than leaking the bare
+    # address.
     for n in names:
         assert "<hidden>" not in n
         assert "@" not in n
+
+
+def test_atom_feed_author_includes_email_when_allowlisted(
+    client, tmp_path, monkeypatch,
+):
+    """Atom <author><email> is present iff the sender is in the
+    allowlist union (same gate `_safe_from_filter` uses on the
+    visible HTML side). The address is already on the rendered
+    page and in the public git blob, omitting it from the feed
+    under-attributes the only set of senders we don't redact."""
+    import xml.etree.ElementTree as ET
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "email_allowlist", ["@b.example"])
+    _ingest_one_article(
+        tmp_path, "alpha", "atom-allow@example.com",
+        author="Allowed Person <allowed@b.example>",
+    )
+    r = client.get("/alpha/feed.atom")
+    assert r.status_code == 200
+    root = ET.fromstring(r.get_data())
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    entry = next(
+        e for e in root.findall("a:entry", ns)
+        if e.findtext("a:author/a:name", default="", namespaces=ns)
+        == "Allowed Person"
+    )
+    assert entry.findtext("a:author/a:email", namespaces=ns) == "allowed@b.example"
+
+
+def test_atom_feed_author_omits_email_when_not_allowlisted(
+    client, tmp_path, monkeypatch,
+):
+    """Inverse: a non-allowlisted sender's address stays out of the
+    feed entirely, matching the visible HTML's `<hidden>` redaction."""
+    import xml.etree.ElementTree as ET
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    _ingest_one_article(
+        tmp_path, "alpha", "atom-hide@example.com",
+        author="Casual Sender <casual@example.org>",
+    )
+    r = client.get("/alpha/feed.atom")
+    assert r.status_code == 200
+    root = ET.fromstring(r.get_data())
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    entry = next(
+        e for e in root.findall("a:entry", ns)
+        if e.findtext("a:author/a:name", default="", namespaces=ns)
+        == "Casual Sender"
+    )
+    assert entry.find("a:author/a:email", namespaces=ns) is None
 
 
 # robots.txt / security.txt / sitemap.xml
