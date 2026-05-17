@@ -21,7 +21,11 @@
   <meta name="generator" content="mimir {{ mimir_version }}">
   <meta name="theme-color" content="#ffc107">
   <link rel="icon" type="image/svg+xml" href="{{ url_for('web.favicon_svg') }}">
+  {% if noindex %}
+  <meta name="robots" content="noindex">
+  {% else %}
   <link rel="canonical" href="{{ canonical_url or default_canonical_url }}">
+  {% endif %}
   {% if current_inbox %}
   <link rel="alternate" type="application/atom+xml"
         title="{{ current_inbox }} feed"
