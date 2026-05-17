@@ -29,6 +29,7 @@ from mimir.seo import (
     sitemap_index_xml,
 )
 from mimir.web.filters import (
+    _allowlisted_email,
     _clean_subject_filter,
     _display_name_filter,
     _is_allowlisted,
@@ -101,6 +102,7 @@ __all__ = [
     "SEARCH_QUERY_MIN_LEN",
     "SEARCH_RESULT_CAP",
     "SUBSYSTEM_RECENT_PATCHES_LIMIT",
+    "_allowlisted_email",
     "_canonical_inbox_name",
     "_canonical_inbox_names_for",
     "_canonical_url_for",

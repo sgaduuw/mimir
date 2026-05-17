@@ -1,8 +1,11 @@
 """Atom 1.0 feed renderer.
 
 Uses stdlib ElementTree, no extra dep. Emits redacted authors via the
-same display-name filter the HTML side uses so private email addresses
-don't leak via feed readers either. The `<id>` tag URI uses the
+same allowlist gate the HTML side uses so private email addresses
+don't leak via feed readers: `<author><name>` is always the display
+name, and `<author><email>` is added only for senders whose address
+is already visible on the rendered HTML page (see CONTEXT.md
+"Redaction is a display-time decision"). The `<id>` tag URI uses the
 canonical inbox name so cross-posted entries collapse to a single id
 across feeds (readers that key on `<id>` won't show duplicates).
 
@@ -45,7 +48,7 @@ def atom_response(
     as one entry, not two)."""
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring).
-    from mimir.web import _display_name_filter, _msg_url
+    from mimir.web import _allowlisted_email, _display_name_filter, _msg_url
     feed_updated = (
         max((e.date for e in entries if e.date), default=None)
         or datetime.now(timezone.utc)
@@ -81,11 +84,17 @@ def atom_response(
         )
         if a.author:
             author_el = SubElement(entry, "author")
-            # Display name only, same posture as JSON-LD's author.name.
-            # Feed readers render <author><name> as the byline; the
-            # `<hidden>` placeholder reads as broken metadata there
+            # `<name>` is always display-name only; the `<hidden>`
+            # placeholder reads as broken metadata in feed readers
             # exactly as it did in JSON-LD before the 2026-05-12 fix.
             SubElement(author_el, "name").text = _display_name_filter(a.author)
+            # `<email>` rides along only for allowlisted senders,
+            # whose address is already on the rendered HTML page and
+            # in the public git blob. Same gate as `_safe_from_filter`
+            # on the visible side.
+            author_email = _allowlisted_email(a.author)
+            if author_email:
+                SubElement(author_el, "email").text = author_email
 
     body = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
