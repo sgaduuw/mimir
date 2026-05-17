@@ -303,6 +303,61 @@ def test_patch_state_series_timeline_with_diff_links(seeded_db):
     assert "pos=cover" in v1_entry.diff_url
 
 
+def test_patch_state_series_timeline_renders_on_in_series_patch(seeded_db):
+    """#212: series row renders on `[PATCH N/M]` pages too, not
+    just covers. Same-position filter narrows to revisions of THIS
+    patch position (1/3 across v1 and v2), not every patch in
+    every revision."""
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        # Two revisions of `[PATCH 1/3]` plus a sibling `[PATCH 2/3]`
+        # under each rev. The timeline for 1/3 must contain only the
+        # 1/3 rows, not the 2/3 siblings.
+        rows = [
+            Article(
+                message_id=mid, subject=subj, author="A <a@x>",
+                date=datetime(2024, 6, day, tzinfo=timezone.utc),
+                thread_parent=None,
+                subject_normalized=subj.lower(),
+                patch_series_key="sk",
+                patch_series_version=ver,
+                patch_series_position=pos,
+                lists=[ArticleList(
+                    inbox_id=alpha.id, epoch="0.git",
+                    commit_sha=str(day).zfill(2) * 20,
+                )],
+            )
+            for mid, subj, ver, pos, day in [
+                ("v1-1of3@x", "[PATCH 1/3] foo: A", "v1", 1, 1),
+                ("v1-2of3@x", "[PATCH 2/3] foo: B", "v1", 2, 1),
+                ("v2-1of3@x", "[PATCH v2 1/3] foo: A", "v2", 1, 15),
+                ("v2-2of3@x", "[PATCH v2 2/3] foo: B", "v2", 2, 15),
+            ]
+        ]
+        s.add_all(rows)
+        s.commit()
+        v2_1of3 = next(r for r in rows if r.message_id == "v2-1of3@x")
+        state = patch_state_for_article(
+            s, v2_1of3,
+            thread_dates=[v2_1of3.date],
+            subsystem_ids=[], inbox_name="alpha",
+            force=True,
+        )
+    # Two entries: v1 and v2 of position 1/3. The 2/3 siblings are
+    # excluded by the same-position filter.
+    assert [e.version for e in state.series] == ["v1", "v2"]
+    article_ids = {e.article_id for e in state.series}
+    assert article_ids == {
+        next(r.id for r in rows if r.message_id == "v1-1of3@x"),
+        next(r.id for r in rows if r.message_id == "v2-1of3@x"),
+    }
+    # Diff URL uses `pos=1` for in-series patches (not `pos=cover`).
+    v1_entry = next(e for e in state.series if e.version == "v1")
+    assert v1_entry.diff_url is not None
+    assert "pos=1" in v1_entry.diff_url
+    assert "pos=cover" not in v1_entry.diff_url
+
+
 def test_patch_state_series_empty_for_solo_revision(seeded_db):
     """A cover letter that's the only revision of its series renders
     no timeline (the row would just say `v1` which is noise)."""

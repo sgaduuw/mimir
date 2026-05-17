@@ -215,30 +215,47 @@ def _series_timeline(
     article: Article,
     inbox_name: str,
 ) -> list[StateSeriesEntry]:
-    """Build the cover-letter revision timeline + per-revision
-    `[diff vs current]` links. Returns an empty list when the
-    article isn't a cover letter (only cover letters carry
-    `patch_series_key` today; #212 will extend to in-series
-    patches).
+    """Build the revision timeline + per-revision `[diff vs current]`
+    links for the current article's series position. Returns an
+    empty list when the article isn't a series patch (NULL
+    `patch_series_key`).
 
-    Mirrors the existing `patch_series_revisions` query in
-    `web/routes/message.py` (post-#206 selectinload chain through
-    `Article.lists.inbox`) so the consolidation is byte-equivalent
-    on the data side; the diff-vs-current link wiring previously
-    lived in `message.html` and moves here so the template stays
-    presentation-only.
+    Same-position filter (`patch_series_position`) is essential
+    after #212: in-series patches now also carry `patch_series_key`,
+    so a plain `key`-only filter would return every patch in every
+    revision. The position filter narrows to "every revision of THIS
+    patch" (e.g. all `[PATCH N/M v*] foo: add bar` rows across v1,
+    v2, v3). Cover letters get `position = 0` and the same filter
+    surfaces their cross-revision timeline as before.
+
+    `diff_url` carries `pos=cover` for the cover row and `pos=N`
+    for in-series patches, matching the `series_diff` route's
+    request shape (see `mimir/web/routes/series_diff.py`).
     """
     if not article.patch_series_key:
         return []
     revisions = list(session.execute(
         select(Article)
         .options(selectinload(Article.lists).selectinload(ArticleList.inbox))
-        .where(Article.patch_series_key == article.patch_series_key)
+        .where(
+            Article.patch_series_key == article.patch_series_key,
+            # Same-position filter, see docstring.
+            Article.patch_series_position == article.patch_series_position,
+        )
         .order_by(Article.date.asc().nulls_last())
     ).scalars())
     if len(revisions) < 2:
         return []
     current_version = article.patch_series_version
+    # `pos=cover` vs `pos=N` matches the `series_diff` route's
+    # accepted shape; covers have position 0 and the route accepts
+    # both `cover` and `0`, we use the friendlier alias. Defensive
+    # `None` mapping to "cover": pre-#212 rows had key set on covers
+    # only with NULL position; the migration backfills those to 0,
+    # but a partially-rolled-out deploy could observe the NULL state
+    # briefly.
+    pos = article.patch_series_position
+    pos_param = "cover" if pos in (None, 0) else str(pos)
     out: list[StateSeriesEntry] = []
     for rev in revisions:
         link_set = [(al.inbox_id, al.inbox.name) for al in rev.lists]
@@ -246,12 +263,10 @@ def _series_timeline(
         is_current = rev.id == article.id
         diff_url: str | None = None
         if not is_current and rev.patch_series_version and current_version:
-            # `pos=cover` because the sidebar only renders on cover-
-            # letter pages today; in-series patches are #212's scope.
             diff_url = (
                 f"/{inbox_name}/series/{article.patch_series_key}"
                 f"/diff?from={rev.patch_series_version}"
-                f"&to={current_version}&pos=cover"
+                f"&to={current_version}&pos={pos_param}"
             )
         out.append(StateSeriesEntry(
             version=rev.patch_series_version or "?",
