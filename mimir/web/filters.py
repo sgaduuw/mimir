@@ -124,12 +124,15 @@ def _msg_url_filter(article: Article, inbox_name: str) -> str:
 
 
 @bp_web.app_template_filter("render_body")
-def _render_body_filter(body, msgid_urls=None, parent_url=None):
+def _render_body_filter(
+    body, msgid_urls=None, parent_url=None, lore_mirror_urls=None,
+):
     return render_body(
         body,
         msgid_urls=msgid_urls,
         address_redactor=_redact_trailer_address,
         parent_url=parent_url,
+        lore_mirror_urls=lore_mirror_urls,
     )
 
 
