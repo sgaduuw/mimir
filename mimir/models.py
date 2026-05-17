@@ -81,14 +81,20 @@ class Article(Base):
     # `patch_series_version` is a short marker like `v1`, `v2`,
     # `rfc`. The unversioned-but-cover-letter case is materialised
     # as `v1`.
-    # Per-patch (1/N, 2/N, ...) attachment to a series is a future
-    # slice; for now these columns are populated for cover letters
-    # only.
+    # `patch_series_position` (#212): NULL = not a series patch;
+    # 0 = cover letter; positive = in-series patch position (the
+    # `M` of `[PATCH M/T]`). Position is set by the subject parser
+    # alone, no cross-article lookup; key + version follow the
+    # cover-letter linkage and may lag (NULL until backfill walks
+    # the thread parent).
     patch_series_key: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True,
     )
     patch_series_version: Mapped[str | None] = mapped_column(
         String, nullable=True,
+    )
+    patch_series_position: Mapped[int | None] = mapped_column(
+        nullable=True,
     )
 
     # Author's intended primary list, derived from the first list-shaped
