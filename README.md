@@ -248,7 +248,7 @@ functions.
 ```sh
 mimir admin inbox list
 mimir admin inbox show <name>
-mimir admin inbox add <name> --mirror-path PATH --upstream-url URL
+mimir admin inbox add <name> [--mirror-path PATH] [--upstream-url URL]
 mimir admin inbox update <name> [--mirror-path P] [--upstream-url U] [--rename NEW]
 mimir admin inbox remove <name> [--keep-orphan-articles] [--remove-inbox-data] [--yes]
 ```
@@ -264,13 +264,15 @@ Validation is enforced at the service layer:
   allowed to not exist yet, `mimir update --inbox
   <name>` will create it on first clone.
 
-`add` only inserts the row. To actually populate the inbox:
+`add` only inserts the row. With just a name, it defaults to
+`Inboxes/<name>/git` on disk and `https://lore.kernel.org/<name>`
+upstream, matching the conventional lore.kernel.org public-inbox
+layout. Pass `--mirror-path` and/or `--upstream-url` to override
+either independently. To actually populate the inbox:
 
 ```sh
-mimir admin inbox add my-list \
-    --mirror-path Inboxes/my-list/git \
-    --upstream-url https://lore.kernel.org/my-list
-mimir update --inbox my-list   # clone the mirror + ingest
+mimir admin inbox add linux-arm-kernel    # defaults to lore.kernel.org
+mimir update --inbox linux-arm-kernel     # clone the mirror + ingest
 ```
 
 `remove` cascade-deletes via FK `ON DELETE CASCADE`: the inbox's
