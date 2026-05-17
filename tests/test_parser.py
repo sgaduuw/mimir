@@ -304,6 +304,33 @@ def test_multipart_text_plain_is_body():
     assert "hello world" in art.body
 
 
+def test_body_with_unknown_charset_falls_back_to_latin1():
+    """A message body declaring `charset=unknown-8bit` (RFC 1428) or
+    any other charset Python's codec registry can't resolve used to
+    LookupError out of `body_part.get_content()` and the message
+    silently rendered as `(no body)` even though the git blob has
+    real text. Fall back to `get_payload(decode=True).decode('latin-1')`,
+    which is RFC 1428's recommended interpretation and is bijective
+    on bytes; structure (ASCII tokens, addresses, patch markers)
+    survives even when high-bit content shows as mojibake."""
+    raw = (
+        b"Message-ID: <unkbody@x>\r\n"
+        b"From: a@b\r\n"
+        b"Subject: t\r\n"
+        b'Content-Type: text/plain; charset="unknown-8bit"\r\n'
+        b"Content-Transfer-Encoding: 8bit\r\n\r\n"
+        b"hello \xe9 world\r\n"
+    )
+    art = parse_message(raw)
+    assert art.body is not None
+    assert "hello" in art.body
+    assert "world" in art.body
+    # latin-1 decoding of 0xe9 is the Latin Small Letter E With Acute.
+    # `errors="replace"` is set defensively; on latin-1 nothing
+    # actually triggers replacement (bijective by construction).
+    assert "é" in art.body
+
+
 def test_attachment_extracted():
     raw = (
         b"Message-ID: <m@x>\r\n"
