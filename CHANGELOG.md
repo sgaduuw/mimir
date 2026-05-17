@@ -11,6 +11,25 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.25.1], 2026-05-17
+
+### Fixed
+
+- Patch-series detection silently dropped zero-padded position
+  shapes (`[PATCH v3 00/27]`, `[PATCH v3 01/27]`, ...) produced by
+  `git format-patch --numbered` on series with >=10 patches. The
+  cover-letter discriminator anchored on `\b0/` (single zero only)
+  and the in-series matcher on `\b([1-9]\d*)` (first digit
+  non-zero), so any series ingested with column-aligned `NN/MM`
+  positions lost both its cover-letter row and every in-series
+  patch row. User-visible effect: a v3 cover page rendered without
+  the "previous revisions" timeline, and the inter-revision diff
+  surface had no positions to compare. The Rust HRT series surfaced
+  this on lkml. Fix is two single-character regex relaxations
+  (`0+` on the cover side, `0*` prefix on the matcher side); a
+  `mimir backfill-patch-series` pass after deploy reindexes the
+  affected articles. (#247)
+
 ## [1.25.0], 2026-05-17
 
 ### Added

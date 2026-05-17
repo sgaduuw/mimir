@@ -43,8 +43,11 @@ _BRACKET_RE = re.compile(r"^\[([^\]]+)\]\s*(.+)$")
 
 # `N/M` shape inside the bracket. We accept `N >= 1` so the cover
 # letter's `0/M` doesn't match here (the cover letter is detected
-# upstream via `patch_series.parse_cover_letter`).
-_N_OF_M_RE = re.compile(r"\b([1-9]\d*)\s*/\s*(\d+)\b")
+# upstream via `patch_series.parse_cover_letter`). The optional
+# `0*` prefix tolerates zero-padded shapes like `01/27`, `09/27`
+# produced by `git format-patch --numbered` on ≥10-patch series;
+# the capture group still pulls the actual position (`1`, `9`).
+_N_OF_M_RE = re.compile(r"\b0*([1-9]\d*)\s*/\s*(\d+)\b")
 
 # The bracket must literally contain `PATCH`. `[GIT PULL]` and
 # `[ANNOUNCE]` subjects can carry `N/M` shapes too (for entirely
