@@ -218,8 +218,10 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
     """
     out: list[str] = []
     meta_buffer: list[str] = []
+    hunk_buffer: list[str] = []
     current_lexer = TextLexer()
     in_hunk = False
+    in_trailer = False
     hunk_idx = 0
     line_in_hunk = 0
 
@@ -233,7 +235,15 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
     def close_hunk() -> None:
         nonlocal in_hunk
         if in_hunk:
-            out.append("</pre></div>")
+            # Per-line spans are joined with `\n` inside the <pre>; the
+            # browser turns those into visible line breaks. Without
+            # this, all line spans collapse onto a single line.
+            out.append(
+                f'<div{hunk_attr()} class="hunk"><pre>'
+                + "\n".join(hunk_buffer)
+                + "</pre></div>"
+            )
+            hunk_buffer.clear()
             in_hunk = False
 
     def hunk_attr() -> str:
@@ -243,16 +253,33 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
         return f' id="h-{hunk_idx}-L{line_in_hunk}"' if with_anchors else ""
 
     for line in lines:
+        # `git format-patch` ends every patch with `-- \n<version>`.
+        # The exact `-- ` line is the email signature delimiter and
+        # everything after it is git's version, not patch content.
+        # Without an explicit check, `-- ` falls into the in-hunk
+        # `" +-"` branch below and renders as a stray `<span class
+        # ="gd">-</span>` red minus on the message page. Closing
+        # the hunk + routing subsequent lines through meta_buffer
+        # keeps the trailer rendered as plain text. (Matches the
+        # `DIFF_TRAILER_LINE` handling in `parse_blocks`.)
+        if line == DIFF_TRAILER_LINE:
+            close_hunk()
+            in_trailer = True
+            meta_buffer.append(html.escape(line))
+            continue
+        if in_trailer:
+            meta_buffer.append(html.escape(line))
+            continue
+
         if _HUNK_HEADER_RE.match(line):
             close_hunk()
             flush_meta()
             hunk_idx += 1
             line_in_hunk = 1
             in_hunk = True
-            out.append(f'<div{hunk_attr()} class="hunk"><pre>')
             # @@ line is line 1 of the hunk; carries the hunk-line
             # anchor and the DiffLexer-style hunk-heading colour.
-            out.append(
+            hunk_buffer.append(
                 f'<span{line_attr()} class="gu">{html.escape(line)}</span>'
             )
             continue
@@ -268,7 +295,7 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
                 marker_html = '<span class="gd">-</span>'
             else:
                 marker_html = " "
-            out.append(
+            hunk_buffer.append(
                 f'<span{line_attr()}>{marker_html}{highlighted}</span>'
             )
             continue
@@ -279,7 +306,7 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
             # anchorable empty line so the line-number scheme stays
             # consistent.
             line_in_hunk += 1
-            out.append(f'<span{line_attr()}></span>')
+            hunk_buffer.append(f'<span{line_attr()}></span>')
             continue
 
         # Out-of-hunk line. A new `diff --git` (multi-file patch) or

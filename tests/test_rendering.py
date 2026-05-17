@@ -639,6 +639,66 @@ def test_render_body_url_in_quote_is_linked():
 # #211: hunk anchors + per-language overlay on context.
 
 
+def test_render_body_diff_signature_delimiter_not_rendered_as_minus_line():
+    """`git format-patch` ends every patch with `-- \\n<version>`.
+    The literal `-- ` line is the email signature delimiter, not a
+    deletion. Without an explicit guard it lands in the in-hunk
+    `" +-"` branch and gets rendered as `<span class="gd">-</span>`
+    (a red minus) followed by the per-language overlay on ` `.
+    Pin: the trailer area must NOT contain a `gd` marker span; the
+    `-- ` line renders as plain text in the diff-meta tail."""
+    body = (
+        "diff --git a/x.c b/x.c\n"
+        "--- a/x.c\n"
+        "+++ b/x.c\n"
+        "@@ -1 +1 @@\n"
+        "-old line\n"
+        "+new line\n"
+        "-- \n"
+        "2.45.0\n"
+    )
+    out = str(render_body(body))
+    # Trailer must render as plain text inside a diff-meta block,
+    # NOT inside the hunk as a fake deletion line.
+    assert "<pre class=\"diff-meta\">-- \n2.45.0</pre>" in out, (
+        "signature delimiter + git version must land in a tail "
+        f"diff-meta block, not inside a hunk:\n{out}"
+    )
+    # gd-styled spans should be: one for `--- a/x.c` (the source-
+    # file marker) + one for the real `-old line` deletion. With the
+    # bug, the `-- ` trailer line added a third bogus `gd` span.
+    assert out.count('class="gd"') == 2, (
+        "expected exactly two `gd`-styled spans (source-file marker "
+        f"+ one deletion); the trailer line must not add a third:\n{out}"
+    )
+
+
+def test_render_body_diff_hunk_lines_separated_by_newlines():
+    """Each line span inside a hunk must be separated by a `\\n` so
+    the surrounding `<pre>` renders them on distinct visual lines.
+    Without the join, all spans concatenate and the patch collapses
+    into a single horizontal stream (visual bug observed pre-fix on
+    `dev-patch/2024/06/65`)."""
+    body = (
+        "diff --git a/x.c b/x.c\n"
+        "--- a/x.c\n"
+        "+++ b/x.c\n"
+        "@@ -1,3 +1,3 @@\n"
+        " line one\n"
+        "-line two\n"
+        "+line two changed\n"
+    )
+    out = str(render_body(body))
+    # Inside the hunk's <pre>, line spans must be `\n`-separated.
+    # Extract the slice between `<pre>` and `</pre>` of the hunk.
+    hunk_pre = out[out.index('class="hunk"'):out.index("</pre></div>")]
+    pre_inner = hunk_pre[hunk_pre.index("<pre>") + len("<pre>"):]
+    # At least three newlines between line spans (@@ + 3 content lines = 4 lines).
+    assert pre_inner.count("\n") >= 3, (
+        f"hunk body lacks newline separators between line spans:\n{pre_inner}"
+    )
+
+
 def test_render_body_diff_hunk_anchor_per_hunk_and_per_line():
     """Each hunk renders inside `<div id="h-N" class="hunk">` and
     every line within the hunk carries `id="h-N-LM"` (1-indexed,
