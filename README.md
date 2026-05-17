@@ -491,8 +491,15 @@ and emits HTML accordingly:
   deep. Levels at or beyond depth 2 collapse into `<details>` so
   the reader can expand on demand.
 - Inline unified diffs (recognized by `diff --git`, `--- `, `+++ `,
-  `@@` starts) are run through Pygments' `DiffLexer` with inline
-  styles, giving the standard green/red/cyan rendering.
+  `@@` starts) get the standard green/red/cyan add/remove/header
+  rendering, with two extras: each hunk wraps in
+  `<div id="h-N" class="hunk">` and each line within carries
+  `id="h-N-LM"` so URL fragments like `#h-2-L15` jump to a
+  specific line of a patch; context, add, and remove lines also
+  receive a per-language Pygments overlay (the lexer is detected
+  from each `+++ b/<path>`), so a C patch's hunk content reads as
+  C, a Python patch's reads as Python, and unknown / binary
+  targets fall through to plain monospace.
 - Plain text runs are escaped, preserve newlines via `<pre>`, and
   have URLs and `<Message-ID>`s linkified, clicking a referenced
   Message-ID inside one message takes you to that message's
