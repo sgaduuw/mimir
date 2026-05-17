@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.22.0], 2026-05-17
+
 ### Added
 
 - New column `articles.patch_series_position` records each
