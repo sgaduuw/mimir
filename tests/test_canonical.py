@@ -62,11 +62,23 @@ def test_is_list_address_custom_suffix_set():
 
 def test_known_suffixes_cover_kernel_basics():
     # Smoke-check the baseline suffix set so we notice if it's
-    # accidentally trimmed.
-    assert "vger.kernel.org" in LIST_HOST_SUFFIXES
-    assert "kvack.org" in LIST_HOST_SUFFIXES
-    assert "lists.infradead.org" in LIST_HOST_SUFFIXES
-    assert "lists.freedesktop.org" in LIST_HOST_SUFFIXES
+    # accidentally trimmed. `issubset` over set algebra rather than
+    # per-element `<hostname-literal> in LIST_HOST_SUFFIXES`: the
+    # latter shape is what `LIST_HOST_SUFFIXES` is actually for
+    # (set membership, not URL substring matching), but CodeQL's
+    # `py/incomplete-url-substring-sanitization` rule pattern-matches
+    # the `<hostname-literal> in <thing>` shape regardless of the
+    # RHS type, so the per-element form flagged 4 high-severity
+    # alerts (#4-7) it had no actual basis for. The subset check
+    # is also a tighter assertion: it pins the baseline set as a
+    # contract instead of cherry-picking values.
+    baseline = {
+        "vger.kernel.org",
+        "kvack.org",
+        "lists.infradead.org",
+        "lists.freedesktop.org",
+    }
+    assert baseline.issubset(LIST_HOST_SUFFIXES)
 
 
 # extract_list_addresses: ordering, dedup, header parsing
