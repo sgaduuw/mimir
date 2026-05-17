@@ -22,6 +22,37 @@ def _clear_sitemap_cache():
 
 
 # Endpoints that don't depend on a configured inbox.
+def test_pages_use_external_stylesheet_not_inline_style_blocks(client):
+    """#228: CSS lives in `mimir/static/css/mimir.css`, loaded via a
+    single `<link rel="stylesheet">` in `base.html`. Pages must NOT
+    carry `<style>` blocks (that's the inline form the extraction
+    targeted, and the form whose presence would force CSP to keep
+    `'unsafe-inline'` on `style-src`).
+
+    Per-element `style="..."` attributes are out of scope for this
+    pin, the issue explicitly leaves them in place; the assertion
+    here is specifically on `<style>` *blocks*."""
+    import re as _re
+    # Sample a handful of routes covering every base template path
+    # the inline blocks used to live in (index.html, message.html
+    # via the seeded fixture pages, inbox.html for the dashboard).
+    routes = ["/", "/alpha/", "/alpha/today", "/alpha/yesterday"]
+    for path in routes:
+        body = client.get(path).data.decode()
+        assert "<style>" not in body, (
+            f"`{path}` still emits an inline `<style>` block:\n"
+            + body[body.index("<style>"):body.index("</style>") + 8]
+        )
+        # And the external sheet IS linked with the cache-bust.
+        link_re = _re.compile(
+            r'<link rel="stylesheet"\s+href="[^"]*'
+            r'/static/css/mimir\.css\?v=[^"]+"'
+        )
+        assert link_re.search(body), (
+            f"`{path}` missing the external mimir.css link tag"
+        )
+
+
 def test_meta_index_has_inboxes_anchor(client):
     """`/` carries the `id="inboxes"` structural anchor. The content
     of the inbox list -- and the pin-aware ordering -- is exercised

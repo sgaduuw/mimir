@@ -11,6 +11,21 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- Page CSS now ships as a single external stylesheet at
+  `/static/css/mimir.css` instead of inline `<style>` blocks in
+  `base.html`, `index.html`, and `message.html`. Browsers cache
+  the sheet across pages (subject to the existing
+  `SEND_FILE_MAX_AGE_DEFAULT = 86400` 1-day window); a `?v=`
+  query string keyed to `mimir.__version__` busts the cache on
+  every release. The `style-src 'unsafe-inline'` grant in the CSP
+  stays for now: per-element `style="..."` attributes on a
+  handful of templates (thread-tree per-node indent depth, year-
+  archive month tiles, dialog max-width) still need it. Sweeping
+  those into CSS classes or a CSP3 `'unsafe-hashes'` allowlist is
+  a follow-up that would let `'unsafe-inline'` go entirely. (#228)
+
 ## [1.24.0], 2026-05-17
 
 ### Changed
