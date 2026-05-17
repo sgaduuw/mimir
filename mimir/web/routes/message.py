@@ -22,6 +22,7 @@ from mimir.models import (
 )
 from mimir.patch_state import patch_state_for_article
 from mimir.rendering import URL_OR_MSGID_RE
+from mimir.rendering.linkify import _extract_lore_msgid
 from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import recent_patches_touching, subsystems_for_article
@@ -178,6 +179,22 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # Resolve in-body <Message-ID> references to canonical URLs.
         # Restrict to this inbox, cross-list refs render as plain text.
         msgid_urls: dict[str, str] = {}
+        # In-body `https://lore.kernel.org/<slug>/<msgid>/...` URLs:
+        # if mimir has the referenced message in *any* inbox, append
+        # a `(local)` mirror link routed to the canonical-inbox URL.
+        # Distinct from `msgid_urls` because:
+        # 1. Scope is global (cross-inbox); the existing `<MID>`
+        #    linkifier is deliberately current-inbox-only per
+        #    CONTEXT.md's "references that reach into another inbox
+        #    render as plain text". Lore URLs already carry an
+        #    explicit cross-list intent (slug in the path), so
+        #    routing via canonical-inbox is the appropriate
+        #    counterpart.
+        # 2. URLs and msgid-refs render differently (the lore URL
+        #    survives as-is; only an additional `(local)` anchor is
+        #    appended), so keying both off one dict would coerce
+        #    semantics that aren't actually the same.
+        lore_mirror_urls: dict[str, str] = {}
         if parsed.body:
             candidates = {
                 m.group("msgid")
@@ -194,6 +211,39 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                     )
                 ).scalars().all()
                 msgid_urls = {a.message_id: _msg_url(a, inbox.name) for a in referenced}
+
+            lore_msgids: set[str] = set()
+            for m in URL_OR_MSGID_RE.finditer(parsed.body):
+                if not m.group("url"):
+                    continue
+                url = m.group("url").rstrip(".,;:!?")
+                mid = _extract_lore_msgid(url)
+                if mid:
+                    lore_msgids.add(mid)
+            if lore_msgids:
+                lore_articles = session.execute(
+                    select(Article).where(Article.message_id.in_(lore_msgids))
+                ).scalars().all()
+                # Bulk-load inbox links for canonical-inbox resolution
+                # so we don't N+1 the per-article URL composition.
+                lore_article_ids = [a.id for a in lore_articles]
+                link_rows = list(session.execute(
+                    select(ArticleList.article_id, Inbox.id, Inbox.name)
+                    .join(Inbox, Inbox.id == ArticleList.inbox_id)
+                    .where(ArticleList.article_id.in_(lore_article_ids))
+                    .order_by(ArticleList.article_id, Inbox.name)
+                ).all())
+                links_by_article: dict[int, list[tuple[int, str]]] = {}
+                for art_id, ix_id, ix_name in link_rows:
+                    links_by_article.setdefault(art_id, []).append((ix_id, ix_name))
+                for art in lore_articles:
+                    links = links_by_article.get(art.id)
+                    if not links:
+                        continue
+                    target_inbox = (
+                        _canonical_inbox_name(art, links) or links[0][1]
+                    )
+                    lore_mirror_urls[art.message_id] = _msg_url(art, target_inbox)
 
         # All inboxes this article is linked to. Used for both the
         # cross-post hint (which excludes the current inbox) and the
@@ -285,6 +335,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         parent_url=parent_url,
         thread_summary=thread_summary,
         msgid_urls=msgid_urls,
+        lore_mirror_urls=lore_mirror_urls,
         parent_off_list=parent_off_list,
         parent_off_list_hints=parent_off_list_hints,
         related=related,
