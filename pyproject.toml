@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mimir"
-version = "1.22.0"
+version = "1.23.0"
 description = "toy project for reading lkml"
 authors = ["Eelco Wesemann <6771014+sgaduuw@users.noreply.github.com>"]
 license = "MIT"
@@ -23,6 +23,11 @@ pytest = "^9.0.3"
 pillow = "^12.2.0"
 pytest-cov = "^7.1.0"
 freezegun = "^1.5.5"
+
+[tool.poetry.scripts]
+# Standalone CLI entry point (#221). Same backing as
+# `flask --app mimir <cmd>` via `FlaskGroup`; both stay supported.
+mimir = "mimir.cli:mimir"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

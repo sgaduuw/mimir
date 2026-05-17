@@ -9,7 +9,7 @@ User=mimir
 Group=mimir
 WorkingDirectory=/opt/mimir
 EnvironmentFile=/opt/mimir/.env
-ExecStart=/opt/mimir/.venv/bin/flask --app mimir warm-cache
+ExecStart=/opt/mimir/.venv/bin/mimir warm-cache
 
 # Keep maintenance jobs from saturating the box.
 Nice=10

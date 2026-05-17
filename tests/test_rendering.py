@@ -423,13 +423,17 @@ def test_render_body_diff_full_patch_stays_one_block():
     assert out.count('class="highlight"') == 1
     # Every patch component is inside that single block, in source
     # order: header → index → ---/+++ → hunk → -/+ lines → trailer.
+    # Add/remove lines render as a marker span + per-language
+    # content span (#211), so the `-old`/`+new` concatenation no
+    # longer exists in the raw HTML; check for the marker span
+    # itself, which is the new stable substring.
     idx_diff = out.index("diff --git")
     idx_index = out.index("index abc1234..def5678")
     idx_minus_file = out.index("--- a/x")
     idx_plus_file = out.index("+++ b/x")
     idx_hunk = out.index("@@ -1 +1 @@")
-    idx_old = out.index("-old")
-    idx_new = out.index("+new")
+    idx_old = out.index("old", out.index('class="gd">-</span>'))
+    idx_new = out.index("new", out.index('class="gi">+</span>'))
     idx_trailer = out.index("2.53.0")
     assert (
         idx_diff < idx_index < idx_minus_file < idx_plus_file
@@ -630,3 +634,247 @@ def test_render_body_url_in_quote_is_linked():
     out = str(render_body("> see http://example.com"))
     assert "<blockquote>" in out
     assert '<a href="http://example.com"' in out
+
+
+# #211: hunk anchors + per-language overlay on context.
+
+
+def test_render_body_diff_signature_delimiter_not_rendered_as_minus_line():
+    """`git format-patch` ends every patch with `-- \\n<version>`.
+    The literal `-- ` line is the email signature delimiter, not a
+    deletion. Without an explicit guard it lands in the in-hunk
+    `" +-"` branch and gets rendered as `<span class="gd">-</span>`
+    (a red minus) followed by the per-language overlay on ` `.
+    Pin: the trailer area must NOT contain a `gd` marker span; the
+    `-- ` line renders as plain text in the diff-meta tail."""
+    body = (
+        "diff --git a/x.c b/x.c\n"
+        "--- a/x.c\n"
+        "+++ b/x.c\n"
+        "@@ -1 +1 @@\n"
+        "-old line\n"
+        "+new line\n"
+        "-- \n"
+        "2.45.0\n"
+    )
+    out = str(render_body(body))
+    # Trailer must render as plain text inside a diff-meta block,
+    # NOT inside the hunk as a fake deletion line.
+    assert "<pre class=\"diff-meta\">-- \n2.45.0</pre>" in out, (
+        "signature delimiter + git version must land in a tail "
+        f"diff-meta block, not inside a hunk:\n{out}"
+    )
+    # gd-styled spans should be: one for `--- a/x.c` (the source-
+    # file marker) + one for the real `-old line` deletion. With the
+    # bug, the `-- ` trailer line added a third bogus `gd` span.
+    assert out.count('class="gd"') == 2, (
+        "expected exactly two `gd`-styled spans (source-file marker "
+        f"+ one deletion); the trailer line must not add a third:\n{out}"
+    )
+
+
+def test_render_body_diff_hunk_lines_separated_by_newlines():
+    """Each line span inside a hunk must be separated by a `\\n` so
+    the surrounding `<pre>` renders them on distinct visual lines.
+    Without the join, all spans concatenate and the patch collapses
+    into a single horizontal stream (visual bug observed pre-fix on
+    `dev-patch/2024/06/65`)."""
+    body = (
+        "diff --git a/x.c b/x.c\n"
+        "--- a/x.c\n"
+        "+++ b/x.c\n"
+        "@@ -1,3 +1,3 @@\n"
+        " line one\n"
+        "-line two\n"
+        "+line two changed\n"
+    )
+    out = str(render_body(body))
+    # Inside the hunk's <pre>, line spans must be `\n`-separated.
+    # Extract the slice between `<pre>` and `</pre>` of the hunk.
+    hunk_pre = out[out.index('class="hunk"'):out.index("</pre></div>")]
+    pre_inner = hunk_pre[hunk_pre.index("<pre>") + len("<pre>"):]
+    # At least three newlines between line spans (@@ + 3 content lines = 4 lines).
+    assert pre_inner.count("\n") >= 3, (
+        f"hunk body lacks newline separators between line spans:\n{pre_inner}"
+    )
+
+
+def test_render_body_diff_hunk_anchor_per_hunk_and_per_line():
+    """Each hunk renders inside `<div id="h-N" class="hunk">` and
+    every line within the hunk carries `id="h-N-LM"` (1-indexed,
+    including the `@@` header itself as line 1). Pins the anchor
+    scheme so URLs like `#h-2-L15` jump to line 15 of hunk 2."""
+    body = (
+        "diff --git a/x.txt b/x.txt\n"
+        "--- a/x.txt\n"
+        "+++ b/x.txt\n"
+        "@@ -1,2 +1,2 @@\n"
+        " context line\n"
+        "-old\n"
+        "+new\n"
+        "@@ -10,1 +10,1 @@\n"
+        "-foo\n"
+        "+bar\n"
+    )
+    out = str(render_body(body))
+    # Two hunks → two hunk-level anchors, sequential numbering.
+    assert 'id="h-1" class="hunk"' in out
+    assert 'id="h-2" class="hunk"' in out
+    # Hunk 1: @@ header is L1, context is L2, -old is L3, +new is L4.
+    assert 'id="h-1-L1"' in out
+    assert 'id="h-1-L2"' in out
+    assert 'id="h-1-L3"' in out
+    assert 'id="h-1-L4"' in out
+    # Hunk 2 restarts the line counter from 1.
+    assert 'id="h-2-L1"' in out
+    assert 'id="h-2-L2"' in out
+    assert 'id="h-2-L3"' in out
+
+
+def test_render_body_diff_hunk_anchors_unique_in_output():
+    """Anchor IDs must be unique across the rendered HTML; a
+    duplicate `id` would silently break URL-fragment jumps to the
+    second occurrence. Pin by counting each generated anchor."""
+    import re as _re
+    body = (
+        "diff --git a/x b/x\n"
+        "--- a/x\n"
+        "+++ b/x\n"
+        "@@ -1 +1 @@\n"
+        "-a\n"
+        "+b\n"
+        "@@ -10 +10 @@\n"
+        "-c\n"
+        "+d\n"
+    )
+    out = str(render_body(body))
+    ids = _re.findall(r'id="(h-\d+(?:-L\d+)?)"', out)
+    assert len(ids) == len(set(ids)), (
+        f"duplicate anchor IDs in rendered diff: {ids}"
+    )
+
+
+def test_render_body_diff_context_line_gets_per_language_highlight():
+    """A C patch's context lines (` ` prefix, no add/remove) carry
+    per-language Pygments spans, picked up from the `+++ b/<path>`
+    target. `if` is a C keyword and renders as `class="k">if</span>`,
+    same token class the fenced-code-block tests check for."""
+    body = (
+        "diff --git a/foo.c b/foo.c\n"
+        "--- a/foo.c\n"
+        "+++ b/foo.c\n"
+        "@@ -1,3 +1,3 @@\n"
+        " if (x > 0) {\n"
+        "-    return -EINVAL;\n"
+        "+    return 0;\n"
+        "}\n"
+    )
+    out = str(render_body(body))
+    # C keyword `if` in the context line picks up the `k` class.
+    assert 'class="k">if</span>' in out
+    # `return` on add/remove lines also gets per-language coloring
+    # (the marker stays in its DiffLexer prefix span, the content
+    # gets the per-language overlay).
+    assert 'class="k">return</span>' in out
+
+
+def test_render_body_diff_target_path_drives_lexer_choice():
+    """Two-file patch: `.py` target should pick the Python lexer
+    (Pygments tags Python function defs as `nf`, not just `n`).
+    Verifies the `+++` switch flips the active lexer mid-block."""
+    body = (
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1 +1 @@\n"
+        "-def old(): pass\n"
+        "+def new(): pass\n"
+    )
+    out = str(render_body(body))
+    # Python's lexer tags `def` as `k` and the function name as `nf`.
+    # The C lexer does NOT tag identifiers as `nf` in the same shape;
+    # `nf` is the Python-specific discriminator.
+    assert 'class="nf">new</span>' in out
+    assert 'class="nf">old</span>' in out
+
+
+def test_render_body_diff_unknown_extension_falls_back_to_text():
+    """A target path Pygments can't recognise (project-internal
+    extension, no extension, weird suffix) falls back to `TextLexer`,
+    no per-language spans, no crash on `ClassNotFound`."""
+    body = (
+        "diff --git a/CONFIG b/CONFIG\n"
+        "--- a/CONFIG\n"
+        "+++ b/CONFIG\n"
+        "@@ -1 +1 @@\n"
+        " just plaintext\n"
+        "-old setting\n"
+        "+new setting\n"
+    )
+    out = str(render_body(body))
+    # No crash, hunk anchors still present.
+    assert 'id="h-1"' in out
+    # No language-keyword spans on the content (TextLexer emits no
+    # token classes beyond the default).
+    assert 'class="k">' not in out
+
+
+def test_render_body_diff_binary_patch_renders_without_crash():
+    """A `Binary files X and Y differ` line lands in the metadata
+    section as a heading-styled span; no hunks follow, no crash."""
+    body = (
+        "diff --git a/img.png b/img.png\n"
+        "index 1..2 100644\n"
+        "Binary files a/img.png and b/img.png differ\n"
+    )
+    out = str(render_body(body))
+    assert 'class="highlight"' in out
+    assert "Binary files" in out
+    # No hunk → no anchors.
+    assert 'class="hunk"' not in out
+
+
+def test_render_body_diff_inside_quote_skips_anchors():
+    """Quoted-hunk excerpts inside a reply must NOT emit anchor IDs:
+    they'd collide with the primary patch's `h-1` / `h-1-L2` on
+    pages where both render. Per-language overlay still applies
+    (no anchor != no syntax highlighting); only the `id` attribute
+    is suppressed."""
+    body = (
+        "> diff --git a/foo.c b/foo.c\n"
+        "> --- a/foo.c\n"
+        "> +++ b/foo.c\n"
+        "> @@ -1 +1 @@\n"
+        "> -old\n"
+        "> +new\n"
+    )
+    out = str(render_body(body))
+    # Quoted-hunk fold uses <details class="hunk-quote">.
+    assert 'class="hunk-quote"' in out
+    # No anchor IDs in the rendered HTML.
+    assert 'id="h-1"' not in out
+    assert 'id="h-1-L1"' not in out
+    # The DiffLexer-style hunk-heading class is still there.
+    assert 'class="gu"' in out
+
+
+def test_render_body_diff_dev_null_target_path_falls_back_to_text():
+    """File-deletion patches use `+++ /dev/null`. Strip-down lexer
+    lookup must NOT pass `/dev/null` to `get_lexer_for_filename`
+    (which would crash or pick an unrelated lexer); falls back to
+    `TextLexer`."""
+    body = (
+        "diff --git a/gone.c b/gone.c\n"
+        "deleted file mode 100644\n"
+        "--- a/gone.c\n"
+        "+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n"
+        "-int main(void) {}\n"
+    )
+    out = str(render_body(body))
+    # No crash, hunk anchor present.
+    assert 'id="h-1"' in out
+    # Per-language overlay applies to `--- a/gone.c` would be the
+    # SOURCE side, but our lexer choice keys on `+++` (the target).
+    # `/dev/null` → TextLexer → no `k` keyword spans.
+    assert 'class="k">' not in out
