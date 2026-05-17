@@ -52,7 +52,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
   <div class="thread-box">
   <ul class="thread-list">
     {% if parent_off_list %}
-    <li style="padding-left: 0; opacity: 0.6;">
+    <li class="thread-off-list-row">
       {% if parent_off_list_hints %}
       <em data-tooltip="hint: {{ parent_off_list_hints|join(', ') }}" data-placement="bottom">(off-list ancestor, not in this archive)</em>
       {% else %}
@@ -62,7 +62,14 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
     {% endif %}
     {% set offset = 1 if parent_off_list else 0 %}
     {% for n in thread %}
-    <li style="padding-left: {{ (n.depth + offset) * 1.5 }}rem;"
+    {# Clamp to the CSS depth ladder (0..20). Real lkml threads rarely
+       exceed ~50 deep per `threading.py`; beyond 20 the visual indent
+       stops adding orientation so anything deeper renders at the
+       20-level padding. Class-only styling lets the CSP drop
+       `'unsafe-inline'` from `style-src`. #}
+    {% set _d_raw = n.depth + offset %}
+    {% set _d = 20 if _d_raw > 20 else _d_raw %}
+    <li data-depth="{{ _d }}"
         data-article-id="{{ n.id }}"
         {% if n.message_id == article.message_id %}class="is-active"{% endif %}>
       <a href="{{ thread_urls[n.message_id] }}"
@@ -89,7 +96,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    articles. Individual rows skipped when their data is empty so
    the card scales from one-line minimal to four-line full. #}
 {% if patch_state and patch_state.is_patch %}
-<aside class="patch-state" style="margin-block: 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--pico-primary); background: var(--pico-muted-background-color);">
+<aside class="patch-state">
   {% if patch_state.trailers %}
   <small><strong>Trailers:</strong>
     {% for t in patch_state.trailers -%}
@@ -132,7 +139,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    subsystem header, useful when reviewing one patch in a larger
    recent flurry. Skipped silently when the article isn't a patch. #}
 {% if related_patches %}
-<section style="margin-block: 1rem;">
+<section class="related-patches">
   <details>
     <summary><strong>Other recent patches touching these files</strong></summary>
     <ul>
