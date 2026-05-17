@@ -11,6 +11,22 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.27.0], 2026-05-18
+
+### Changed
+
+- JSON-LD `Person.email` and Atom `<author><email>` now ride along
+  on message metadata for senders in the allowlist union
+  (`Settings.email_allowlist` + MAINTAINERS-derived addresses),
+  mirroring exactly what `_safe_from_filter` already does on the
+  visible HTML side. Non-allowlisted senders' addresses stay
+  redacted across both metadata and HTML, unchanged. Closes the
+  prior under-attribution gap where allowlisted maintainers' email
+  was on the rendered page but absent from machine-readable
+  surfaces. The earlier display-name-only-everywhere posture
+  (2026-05-12 review) is superseded; see CONTEXT.md "Redaction is
+  a display-time decision".
+
 ## [1.26.0], 2026-05-17
 
 ### Changed
