@@ -11,6 +11,17 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- `mimir admin inbox add <name>` now defaults `--mirror-path` to
+  `Inboxes/<name>/git` and `--upstream-url` to
+  `https://lore.kernel.org/<name>`, matching the conventional
+  lore.kernel.org public-inbox layout (and the shape already used
+  by `Settings.inboxes`). Both flags remain available to override
+  either side independently. The command also echoes the resolved
+  `mirror_path` / `upstream_url` on success so the operator sees
+  exactly what got stored.
+
 ### Security
 
 - SSRF hardening on the three operator-supplied outbound URL
