@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.23.0], 2026-05-17
+
 ### Added
 
 - Inline-rendered patches now carry per-hunk and per-line anchor
