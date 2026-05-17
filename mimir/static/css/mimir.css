@@ -1,0 +1,489 @@
+/* mimir stylesheet (#228 extraction from inline <style> blocks).
+   Loaded via <link rel="stylesheet"> from base.html with a
+   `?v=<mimir_version>` cache-bust on every release. Browser cache
+   reuses across pages; CSP `style-src` no longer needs
+   `'unsafe-inline'` once every page goes through this sheet. */
+
+
+/* --- Pygments diff classes (from base.html) --- */
+
+/* Class-based output instead of inline styles so the diff inherits
+   Pico's theme; the tones use light-dark() so add/remove stay
+   legible in both modes. */
+.highlight pre { margin: 0; }
+
+/* #211: each hunk renders inside its own <div class="hunk"><pre>
+   so URL fragments like `#h-2-L15` jump to a specific line. The
+   div boundaries would default to flow-block spacing that
+   fragments the visual continuity of the diff; reset margins so
+   consecutive hunks read as one continuous patch. */
+.highlight .hunk { margin: 0; }
+.highlight .diff-meta { margin: 0; }
+
+.highlight .gd { color: light-dark(#a00000, #f4979c); }   /* deleted */
+.highlight .gi { color: light-dark(#008400, #95e591); }   /* inserted */
+.highlight .gh { color: light-dark(#000080, #93b9ff); font-weight: 600; }
+                                                          /* file headers */
+.highlight .gu { color: light-dark(#000080, #93b9ff); }   /* hunk headers */
+.highlight .gs { font-weight: 600; }                      /* strong */
+
+/* Fenced-code-block token theming (issue #69). Covers the common
+   lexer outputs (C, bash, python) the kernel list actually emits.
+   light-dark() pairs keep both modes legible without a separate
+   dark-mode rule. */
+.highlight .k,
+.highlight .kd,
+.highlight .kn,
+.highlight .kp,
+.highlight .kr,
+.highlight .kt,
+.highlight .kc { color: light-dark(#0050a0, #93b9ff); }   /* keywords */
+.highlight .nf,
+.highlight .nc { color: light-dark(#a04080, #f4a0d0); }   /* function/class names */
+.highlight .nb,
+.highlight .bp { color: light-dark(#0086b3, #5ec2da); }   /* built-ins */
+.highlight .s,
+.highlight .s1,
+.highlight .s2,
+.highlight .sc,
+.highlight .sd,
+.highlight .sb,
+.highlight .se { color: light-dark(#008400, #95e591); }   /* strings */
+.highlight .m,
+.highlight .mi,
+.highlight .mf,
+.highlight .mh,
+.highlight .mo { color: light-dark(#a04000, #ffb070); }   /* numbers */
+.highlight .c,
+.highlight .c1,
+.highlight .cm,
+.highlight .cs { color: light-dark(#808080, #999999); font-style: italic; }
+.highlight .cp { color: light-dark(#5a5af0, #b0b0ff); }   /* preprocessor */
+.highlight .o { color: light-dark(#666666, #c0c0c0); }    /* operators */
+.highlight .err { color: light-dark(#a00000, #f4979c); }  /* lexer error */
+
+/* Footer year-browse: one row per decade, plain text grouping
+   no bullets, no oversize spacing. Pico's default <ul> would
+   indent and bullet each line; <li> with display:block + zero
+   padding keeps things compact in the small-text footer. */
+ul.year-decade-list { list-style: none; padding: 0; margin: 0.25rem 0; font-size: 0.875rem; }
+ul.year-decade-list li { padding: 0.05rem 0; }
+ul.year-decade-list strong { display: inline-block; min-width: 4em; }
+
+
+/* --- Front-page hero + inbox cards (from index.html, block 1) --- */
+
+/* Manuscript-marginalia layout: small squirrel left of the wordmark.
+   Stacks on narrow viewports so the figure doesn't crowd the heading
+   on a phone. */
+.index-hero {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+.index-hero figure {
+  flex: 0 0 auto;
+  margin: 0;
+  line-height: 0;
+}
+.index-hero img {
+  height: auto;
+  width: 220px;
+  max-width: 30vw;
+  display: block;
+}
+.index-hero hgroup {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+.index-hero h1 { margin-bottom: 0.25rem; }
+@media (max-width: 480px) {
+  .index-hero { flex-direction: column; align-items: flex-start; gap: 0.75rem; }
+  .index-hero img { width: 160px; max-width: 50vw; }
+}
+
+/* Inbox cards: responsive grid that reflows from N-up wide to
+   single-column narrow without breakpoint math. minmax(18rem, 1fr)
+   keeps cards readable at any width without leaving awkward huge
+   cards on a desktop with only one inbox configured. */
+.inbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.inbox-card {
+  /* Reset the wrapping <a>'s default underline/color so the card
+     reads as a block, not as a hyperlink in the prose sense. The
+     inbox name inside still reads as a heading. */
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-card-background-color);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.inbox-card:hover,
+.inbox-card:focus-visible {
+  border-color: var(--pico-primary);
+  transform: translateY(-1px);
+  text-decoration: none;
+}
+.inbox-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+.inbox-card-name {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--pico-primary);
+}
+.inbox-card-pinned {
+  /* Visual marker for inboxes pinned via settings.pinned_inboxes;
+     supplements the sort order so the layout doesn't rely on
+     position alone for the signal. */
+  font-size: 0.75rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: var(--pico-muted-background-color);
+  color: var(--pico-muted-color);
+  white-space: nowrap;
+}
+.inbox-card-stats { margin: 0; }
+.inbox-card-spark {
+  margin-top: 0.5rem;
+  display: block;
+  width: 100%;
+  height: 24px;
+  /* The svg itself sizes via attributes; the wrapper just enforces
+     a stable footprint so cards align even on dormant inboxes. */
+}
+
+
+/* --- Active subsystems grid (from index.html, block 2) --- */
+
+/* Breathing room between the inbox cards above and this new
+   section so the heading doesn't collide with the previous card
+   row. */
+.active-subsystems-heading { margin-top: 2.5rem; }
+
+/* Subsystem card grid: matches the inbox-card grid above so
+   the two rows of cards share a visual rhythm (same widths,
+   same padding, same hover affordance). Cards have less per-
+   card info than the inbox cards but they line up vertically,
+   which reads cleaner than the prior denser layout. */
+.subsystem-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 1rem;
+}
+.subsystem-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-card-background-color);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.subsystem-card:hover,
+.subsystem-card:focus-visible {
+  border-color: var(--pico-primary);
+  transform: translateY(-1px);
+  text-decoration: none;
+}
+.subsystem-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.1rem;
+}
+.subsystem-card-name {
+  color: var(--pico-primary);
+  font-weight: 700;
+  font-size: 1.05rem;
+  overflow-wrap: anywhere;
+}
+.subsystem-card-status {
+  /* Status pill, same shape as the inbox-card-pinned badge.
+     Only renders for non-default S: values (see template). */
+  font-size: 0.75rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: var(--pico-muted-background-color);
+  color: var(--pico-muted-color);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.subsystem-card-maint { color: var(--pico-color); }
+.subsystem-card-meta { color: var(--pico-muted-color); }
+.subsystem-card-spark {
+  /* 7-day sparkline; same height and spacing as the inbox-
+     card sparkline so the two rows share a vertical rhythm. */
+  display: block;
+  width: 100%;
+  height: 24px;
+  margin-top: 0.4rem;
+}
+
+
+/* --- Message-page thread context + fold states (from message.html) --- */
+
+/* Long-thread sidebar layout (issue #68 slice 2). For threads
+   above LONG_THREAD_SIDEBAR_THRESHOLD on wide viewports, the
+   thread tree becomes a right rail and the message body / asides
+   flow as the main column. Narrow viewports always stack
+   (thread above body), regardless of length. */
+@media (min-width: 60rem) {
+  .message-page-grid--with-sidebar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 22rem;
+    grid-template-areas: "main sidebar";
+    column-gap: 1.5rem;
+    align-items: start;
+  }
+  .message-page-grid--with-sidebar > .message-page-main {
+    grid-area: main;
+    min-width: 0;
+  }
+  .message-page-grid--with-sidebar > .thread-context {
+    grid-area: sidebar;
+    position: sticky;
+    top: 1rem;
+    /* No height/max-height on the wrapper itself, the inner
+       scroll container caps to viewport so the rail can never
+       extend beyond what the user can see, regardless of the
+       article body's height (which sets the grid cell). */
+  }
+  /* In sidebar mode the inner box scrolls within a viewport-
+     relative cap, not the above-body 50vh box. The `8rem`
+     leaves room for the toolbar above + a margin so the bottom
+     of the rail visually clears the viewport bottom. */
+  .message-page-grid--with-sidebar .thread-context .thread-box {
+    max-height: calc(100vh - 8rem);
+  }
+}
+.thread-context { margin-block: 1rem; }
+/* Toolbar sits flush against the top of the box in `partial` and visibly
+   standalone elsewhere. The label collapses to the summary line in
+   `closed`. */
+.thread-context .thread-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  margin: 0;
+}
+.thread-context .thread-toolbar > .thread-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: bold;
+}
+.thread-context .thread-toolbar .thread-summary { display: none; }
+/* The three-button toggle. Avoid Pico's [role="group"] pill component
+   it'd force width: 100% and split the buttons into equal-width bars. */
+.thread-context .thread-toggle {
+  display: inline-flex;
+  gap: 0;
+  flex: 0 0 auto;
+}
+.thread-context .thread-toggle > button {
+  /* defeat Pico's full-width block button defaults */
+  display: inline-block;
+  width: auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0.15rem 0.55rem;
+  line-height: 1.1;
+  font-size: 0.85rem;
+  background: var(--pico-background-color);
+  color: var(--pico-secondary);
+  border: 1px solid var(--pico-muted-border-color);
+  border-right-width: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+.thread-context .thread-toggle > button:first-child {
+  border-top-left-radius: var(--pico-border-radius);
+  border-bottom-left-radius: var(--pico-border-radius);
+}
+.thread-context .thread-toggle > button:last-child {
+  border-right-width: 1px;
+  border-top-right-radius: var(--pico-border-radius);
+  border-bottom-right-radius: var(--pico-border-radius);
+}
+.thread-context .thread-toggle > button:hover {
+  background: var(--pico-secondary-background);
+  color: var(--pico-secondary-inverse);
+}
+.thread-context .thread-toggle > button[aria-pressed="true"] {
+  background: var(--pico-secondary);
+  color: var(--pico-secondary-inverse);
+  border-color: var(--pico-secondary);
+}
+/* Tree list. `list-style: none` on the ul plus list-style-type on each li
+   defeats Pico's marker styling (which leaks through `list-style: none`
+   alone on this Pico version). */
+.thread-context .thread-list,
+.thread-context .thread-list li {
+  list-style: none;
+  list-style-type: none;
+}
+.thread-context .thread-list {
+  padding-left: 0; margin: 0;
+  font-family: monospace; line-height: 1.4;
+}
+.thread-context .thread-list li::marker { content: ""; }
+.thread-context .thread-list li.is-active::before {
+  content: "» ";
+  font-weight: bold;
+}
+.thread-context .thread-list li.is-active > a {
+  font-weight: bold;
+  color: inherit;
+  text-decoration: none;
+}
+.thread-context .thread-box {
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  padding: 0.5rem 1rem;
+  max-height: min(50vh, 24rem);
+  overflow-y: auto;
+}
+/* Toolbar attaches to the box top in any state where the box is
+   visible (partial or expanded). Shared borders merge the two into
+   a single connected unit; the toolbar squares its bottom, the box
+   squares its top. */
+html[data-thread-fold="partial"] .thread-context .thread-toolbar,
+html[data-thread-fold="expanded"] .thread-context .thread-toolbar {
+  border-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+html[data-thread-fold="partial"] .thread-context .thread-box,
+html[data-thread-fold="expanded"] .thread-context .thread-box {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+/* `closed`: hide the box, swap the label for the summary line, and
+   give the whole toolbar a cursor affordance so clicking it opens. */
+html[data-thread-fold="closed"] .thread-context .thread-box { display: none; }
+html[data-thread-fold="closed"] .thread-context .thread-toolbar { cursor: pointer; }
+html[data-thread-fold="closed"] .thread-context .thread-toolbar > .thread-label .thread-count { display: none; }
+html[data-thread-fold="closed"] .thread-context .thread-toolbar > .thread-label .thread-summary { display: inline; font-weight: normal; }
+/* `expanded`: drop only the height cap; keep the bordered box so
+   the tree stays visually connected to the toolbar above. */
+html[data-thread-fold="expanded"] .thread-context .thread-box {
+  max-height: none;
+  overflow-y: visible;
+}
+
+
+/* --- Per-element style="..." attribute sweep (security pass).
+   Each rule below replaces an inline `style="..."` attribute so CSP
+   `style-src` can drop `'unsafe-inline'` without losing presentation.
+   The dynamic case (thread-tree depth) uses a finite ladder of
+   `data-depth` rules; the template clamps the value to the ladder. */
+
+/* Body-text fallback block in `rendering.py`: every non-quote /
+   non-diff / non-code text block lands in a wrap-friendly <pre>. */
+pre.body-text-block {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  margin: 0;
+}
+
+/* Off-list ancestor row in the thread tree: a single dimmed line at
+   the top, flush left, signalling "no real entry in the archive." */
+.thread-context .thread-list li.thread-off-list-row {
+  padding-left: 0;
+  opacity: 0.6;
+}
+
+/* Thread-tree depth ladder. `data-depth` is set per-li by the
+   template; padding is `depth * 1.5rem`. Real lkml threads rarely
+   exceed ~50 deep (per `threading.py`), but beyond ~20 levels the
+   visual indent stops adding orientation, so the template clamps
+   anything above 20 to the 20-level rule. */
+.thread-context .thread-list li[data-depth="0"]  { padding-left: 0; }
+.thread-context .thread-list li[data-depth="1"]  { padding-left: 1.5rem; }
+.thread-context .thread-list li[data-depth="2"]  { padding-left: 3rem; }
+.thread-context .thread-list li[data-depth="3"]  { padding-left: 4.5rem; }
+.thread-context .thread-list li[data-depth="4"]  { padding-left: 6rem; }
+.thread-context .thread-list li[data-depth="5"]  { padding-left: 7.5rem; }
+.thread-context .thread-list li[data-depth="6"]  { padding-left: 9rem; }
+.thread-context .thread-list li[data-depth="7"]  { padding-left: 10.5rem; }
+.thread-context .thread-list li[data-depth="8"]  { padding-left: 12rem; }
+.thread-context .thread-list li[data-depth="9"]  { padding-left: 13.5rem; }
+.thread-context .thread-list li[data-depth="10"] { padding-left: 15rem; }
+.thread-context .thread-list li[data-depth="11"] { padding-left: 16.5rem; }
+.thread-context .thread-list li[data-depth="12"] { padding-left: 18rem; }
+.thread-context .thread-list li[data-depth="13"] { padding-left: 19.5rem; }
+.thread-context .thread-list li[data-depth="14"] { padding-left: 21rem; }
+.thread-context .thread-list li[data-depth="15"] { padding-left: 22.5rem; }
+.thread-context .thread-list li[data-depth="16"] { padding-left: 24rem; }
+.thread-context .thread-list li[data-depth="17"] { padding-left: 25.5rem; }
+.thread-context .thread-list li[data-depth="18"] { padding-left: 27rem; }
+.thread-context .thread-list li[data-depth="19"] { padding-left: 28.5rem; }
+.thread-context .thread-list li[data-depth="20"] { padding-left: 30rem; }
+
+/* Patch-state aside (#208) and related-patches section beneath it on
+   message pages. `.patch-state` was already used as the class hook
+   alongside the inline style; the rule now carries the full
+   presentation. */
+.patch-state {
+  margin-block: 1rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--pico-primary);
+  background: var(--pico-muted-background-color);
+}
+.related-patches { margin-block: 1rem; }
+
+/* MAINTAINERS-derived lists on the subsystem dashboard. Maintainer
+   block is a tight list; paths block reflows into two columns to
+   absorb tall subsystems without scrolling. */
+.subsystem-paths-list {
+  margin: 0;
+  padding-inline-start: 1rem;
+}
+.subsystem-paths-list--columns {
+  columns: 2;
+  column-gap: 2rem;
+}
+
+/* Dashboard / per-subsystem sparkline SVGs. Each is sized via
+   width/height attributes; `vertical-align: middle` keeps the
+   baseline aligned with the surrounding "Last 30 days:" label. */
+.dashboard-sparkline-svg { vertical-align: middle; }
+
+/* Keyboard-help dialog (rendered on every page via `base.html`,
+   opened with `?`). The cap stops the help text spanning a wide
+   viewport; header/footer rules space the table block away from
+   them. */
+.keyboard-help-article { max-width: 28rem; }
+.keyboard-help-header  { margin-bottom: 0.75rem; }
+.keyboard-help-footer  { margin-top: 0.75rem; }
+
+/* Year-archive month tiles: each is a Pico `<article>` inside the
+   `.grid` row of 12. Empty months dim to half opacity so the eye
+   skips them while scanning for activity. */
+.year-month-tile { text-align: center; }
+.year-month-tile--empty { opacity: 0.5; }
+.year-month-name { margin-bottom: 0.25rem; }

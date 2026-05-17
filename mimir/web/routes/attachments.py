@@ -111,8 +111,15 @@ def attachment_preview(inbox_name: str, year: int, month: int, article_id: int, 
         )
     text_content = att.content.decode("utf-8", errors="replace")
     lexer = _lexer_for(att.filename, text_content)
+    # `noclasses=False` so the formatter emits class-named spans
+    # instead of inline `style="color:..."` per token; the token
+    # theming lives in `mimir/static/css/mimir.css` under
+    # `.highlight .X` rules. This is what lets the CSP `style-src`
+    # drop `'unsafe-inline'` site-wide, otherwise Pygments would
+    # emit thousands of inline styles per preview and the
+    # negotiated CSP would have to allow them.
     formatter = HtmlFormatter(
-        noclasses=True, nobackground=True, style="default", linenos="inline",
+        noclasses=False, nobackground=True, linenos="inline",
     )
     highlighted = highlight(text_content, lexer, formatter)
     return render_template(

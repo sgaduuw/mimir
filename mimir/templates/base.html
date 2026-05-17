@@ -21,7 +21,11 @@
   <meta name="generator" content="mimir {{ mimir_version }}">
   <meta name="theme-color" content="#ffc107">
   <link rel="icon" type="image/svg+xml" href="{{ url_for('web.favicon_svg') }}">
+  {% if noindex %}
+  <meta name="robots" content="noindex">
+  {% else %}
   <link rel="canonical" href="{{ canonical_url or default_canonical_url }}">
+  {% endif %}
   {% if current_inbox %}
   <link rel="alternate" type="application/atom+xml"
         title="{{ current_inbox }} feed"
@@ -86,66 +90,13 @@
         href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.amber.min.css"
         integrity="sha384-BiacLKDCyG54e35iUPYB3xZg4mZ2my6tLgF44LKpomzgxexC+sAL7aL7f2mxTh7J"
         crossorigin="anonymous">
-  <style>
-    /* Pygments diff classes. Class-based output instead of inline
-       styles so the diff inherits Pico's theme; the tones use
-       light-dark() so add/remove stay legible in both modes. */
-    .highlight pre { margin: 0; }
-    /* #211: each hunk renders inside its own <div class="hunk"><pre>
-       so URL fragments like `#h-2-L15` jump to a specific line. The
-       div boundaries would default to flow-block spacing that
-       fragments the visual continuity of the diff; reset margins so
-       consecutive hunks read as one continuous patch. */
-    .highlight .hunk { margin: 0; }
-    .highlight .diff-meta { margin: 0; }
-    .highlight .gd { color: light-dark(#a00000, #f4979c); }   /* deleted */
-    .highlight .gi { color: light-dark(#008400, #95e591); }   /* inserted */
-    .highlight .gh { color: light-dark(#000080, #93b9ff); font-weight: 600; }
-                                                              /* file headers */
-    .highlight .gu { color: light-dark(#000080, #93b9ff); }   /* hunk headers */
-    .highlight .gs { font-weight: 600; }                      /* strong */
-    /* Fenced-code-block token theming (issue #69). Covers the common
-       lexer outputs (C, bash, python) the kernel list actually emits.
-       light-dark() pairs keep both modes legible without a separate
-       dark-mode rule. */
-    .highlight .k,
-    .highlight .kd,
-    .highlight .kn,
-    .highlight .kp,
-    .highlight .kr,
-    .highlight .kt,
-    .highlight .kc { color: light-dark(#0050a0, #93b9ff); }   /* keywords */
-    .highlight .nf,
-    .highlight .nc { color: light-dark(#a04080, #f4a0d0); }   /* function/class names */
-    .highlight .nb,
-    .highlight .bp { color: light-dark(#0086b3, #5ec2da); }   /* built-ins */
-    .highlight .s,
-    .highlight .s1,
-    .highlight .s2,
-    .highlight .sc,
-    .highlight .sd,
-    .highlight .sb,
-    .highlight .se { color: light-dark(#008400, #95e591); }   /* strings */
-    .highlight .m,
-    .highlight .mi,
-    .highlight .mf,
-    .highlight .mh,
-    .highlight .mo { color: light-dark(#a04000, #ffb070); }   /* numbers */
-    .highlight .c,
-    .highlight .c1,
-    .highlight .cm,
-    .highlight .cs { color: light-dark(#808080, #999999); font-style: italic; }
-    .highlight .cp { color: light-dark(#5a5af0, #b0b0ff); }   /* preprocessor */
-    .highlight .o { color: light-dark(#666666, #c0c0c0); }    /* operators */
-    .highlight .err { color: light-dark(#a00000, #f4979c); } /* lexer error */
-    /* Footer year-browse: one row per decade, plain text grouping  
-       no bullets, no oversize spacing. Pico's default <ul> would
-       indent and bullet each line; <li> with display:block + zero
-       padding keeps things compact in the small-text footer. */
-    ul.year-decade-list { list-style: none; padding: 0; margin: 0.25rem 0; font-size: 0.875rem; }
-    ul.year-decade-list li { padding: 0.05rem 0; }
-    ul.year-decade-list strong { display: inline-block; min-width: 4em; }
-  </style>
+  {# Project stylesheet (#228). The `?v=` query string busts the
+     browser cache on every release, since `SEND_FILE_MAX_AGE_DEFAULT`
+     gives /static/* a 1-day max-age and we don't want stale CSS to
+     hang around after a deploy. CSP `style-src` no longer carries
+     `'unsafe-inline'`: every page goes through this sheet. #}
+  <link rel="stylesheet"
+        href="{{ url_for('static', filename='css/mimir.css') }}?v={{ mimir_version }}">
   <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"
           integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2"
           crossorigin="anonymous" defer></script>
@@ -185,8 +136,8 @@
      focus trapping. Hidden by default, only `showModal()` (driven
      by keyboard-nav.js) makes it visible. #}
   <dialog id="keyboard-help" aria-labelledby="kbd-help-title">
-    <article style="max-width: 28rem;">
-      <header style="margin-bottom: 0.75rem;">
+    <article class="keyboard-help-article">
+      <header class="keyboard-help-header">
         <strong id="kbd-help-title">Keyboard shortcuts</strong>
       </header>
       <table>
@@ -199,7 +150,7 @@
           <tr><td><kbd>?</kbd></td><td>toggle this help</td></tr>
         </tbody>
       </table>
-      <footer style="margin-top: 0.75rem;">
+      <footer class="keyboard-help-footer">
         <small>Shortcuts bypass when typing in a search box or form
           field. Modifier keys (Ctrl/Cmd/Alt) pass through to the
           browser.</small>

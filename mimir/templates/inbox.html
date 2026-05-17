@@ -140,7 +140,7 @@
 {% block footer_extra %}
   {% if spark and spark.days %}
   <small>Last 30 days:</small>
-  <svg width="180" height="28" style="vertical-align: middle;"
+  <svg width="180" height="28" class="dashboard-sparkline-svg"
        aria-label="Daily message volume, last 30 days">
     {% for day, count in spark.days %}
       {% set h = (count / spark.max_count * 26) if spark.max_count > 0 else 0 %}
