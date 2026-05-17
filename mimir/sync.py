@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel
 
+from mimir._outbound import OUTBOUND_OPENER
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,7 +60,9 @@ def fetch_manifest(upstream_url: str) -> dict:
     url = upstream_url.rstrip("/") + "/manifest.js.gz"
     logger.info("fetching manifest %s", url)
     req = urllib.request.Request(url, headers={"User-Agent": _user_agent()})
-    with urllib.request.urlopen(req, timeout=_MANIFEST_TIMEOUT_SEC) as resp:
+    # Hardened opener (refuses 3xx; see `mimir/_outbound.py`) so a
+    # compromised upstream can't bounce the fetch into internal URLs.
+    with OUTBOUND_OPENER.open(req, timeout=_MANIFEST_TIMEOUT_SEC) as resp:
         # Read one byte past the cap so we can distinguish "fits"
         # from "blew the cap". The trailing-byte form is the standard
         # idiom; a separate Content-Length check would lie when the

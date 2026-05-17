@@ -1,7 +1,9 @@
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from mimir._outbound import validate_outbound_url
 
 # Project root: <root>/mimir/config.py → parent → parent. Resolving
 # follows symlinks so a container running mimir from a bind-mounted
@@ -19,6 +21,13 @@ class InboxConfig(BaseModel):
     (URL slug)."""
     mirror_path: Path
     upstream_url: str
+
+    @field_validator("upstream_url")
+    @classmethod
+    def _validate_upstream_url(cls, v: str) -> str:
+        # Same validator the admin CLI uses; fail fast at config-load
+        # rather than letting a bad URL reach `sync.fetch_manifest`.
+        return validate_outbound_url(v, allow_http=False)
 
 
 class Settings(BaseSettings):
@@ -156,6 +165,17 @@ class Settings(BaseSettings):
     indexnow_key: str | None = None
     indexnow_endpoint: str = "https://api.indexnow.org/indexnow"
     indexnow_max_per_tick: int = 1000
+
+    @field_validator("mainline_tree_url", "indexnow_endpoint")
+    @classmethod
+    def _validate_outbound_endpoint(cls, v: str) -> str:
+        # Shared with `Inbox.upstream_url`'s validator and
+        # `mimir.inboxes.validate_upstream_url` (admin CLI). Rejects
+        # `http://`, `file://`, `git://`, and IP literals in
+        # loopback / link-local / RFC 1918 / ULA / etc. so a
+        # mistyped or attacker-controlled env doesn't aim mimir at
+        # the deploy's internal network or cloud-metadata service.
+        return validate_outbound_url(v, allow_http=False)
 
     # security.txt (RFC 9116). Setting `security_contact` enables
     # /security.txt and /.well-known/security.txt; the routes 404 when
