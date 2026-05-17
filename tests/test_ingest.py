@@ -7,7 +7,7 @@ This file pins each bucket via a tiny ephemeral public-inbox-shaped
 git repo built with dulwich, then drives `ingest_epoch` against it
 with workers=1 (deterministic, stays in-process).
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dulwich.objects import Blob, Commit, Tree
@@ -337,7 +337,80 @@ def test_ingest_records_patch_series_key_for_cover_letter(
         ).scalar_one()
     assert cover.patch_series_key is not None
     assert cover.patch_series_version == "v2"
-    # Non-cover-letter (1/3) → NULL columns.
+    assert cover.patch_series_position == 0
+    # In-series patch without an In-Reply-To header doesn't reach
+    # its cover via the thread-parent walk at ingest, key + version
+    # stay NULL until the backfill command links it (#212). Position
+    # is set unconditionally from the subject parser.
+    assert patch.patch_series_key is None
+    assert patch.patch_series_version is None
+    assert patch.patch_series_position == 1
+
+
+def test_ingest_inseries_with_inreplyto_links_to_cover(seeded_db, tmp_path):
+    """In-series patch carrying `In-Reply-To: <cover>` and ingested
+    in the same walk as the cover (cover commits first → walked
+    first → in DB when the patch is processed) inherits the cover's
+    `patch_series_key + patch_series_version` and gets its own
+    `patch_series_position`. The modal `git send-email --thread`
+    shape goes through this path."""
+    alpha = _alpha(seeded_db)
+    msgs = [
+        _rfc5322("cover-v1@example.com", body=b"x").replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH 0/2] thread title\r\n",
+        ),
+        # Direct reply to the cover, the standard send-email shape.
+        _rfc5322("patch-1of2@example.com", body=b"x").replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH 1/2] thread title: first patch\r\n",
+        ).replace(
+            b"From: a@b.example\r\n",
+            b"From: a@b.example\r\nIn-Reply-To: <cover-v1@example.com>\r\n",
+        ),
+    ]
+    _build_pubinbox_repo(tmp_path / "0.git", msgs)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+        cover, patch = s.execute(
+            select(Article).where(Article.message_id.in_([
+                "cover-v1@example.com", "patch-1of2@example.com",
+            ])).order_by(Article.patch_series_position.asc())
+        ).scalars().all()
+    assert cover.patch_series_position == 0
+    assert patch.patch_series_position == 1
+    # Patch inherits the cover's series identity at ingest time.
+    assert patch.patch_series_key is not None
+    assert patch.patch_series_key == cover.patch_series_key
+    assert patch.patch_series_version == cover.patch_series_version
+
+
+def test_ingest_inseries_orphan_when_cover_not_yet_ingested(
+    seeded_db, tmp_path,
+):
+    """An in-series patch arriving before its cover (rare across
+    epoch boundaries, or when ingesting one epoch at a time) has
+    no parent to look up, position is set, key + version stay NULL.
+    Backfill closes the gap on a later pass."""
+    alpha = _alpha(seeded_db)
+    msgs = [
+        # Only the patch, the cover stays missing. In-Reply-To points
+        # at a Message-ID we have no row for.
+        _rfc5322("patch-1of2-orphan@example.com", body=b"x").replace(
+            b"Subject: t\r\n",
+            b"Subject: [PATCH 1/2] thread title: first patch\r\n",
+        ).replace(
+            b"From: a@b.example\r\n",
+            b"From: a@b.example\r\nIn-Reply-To: <not-in-db@example.com>\r\n",
+        ),
+    ]
+    _build_pubinbox_repo(tmp_path / "0.git", msgs)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+        patch = s.execute(
+            select(Article).where(Article.message_id == "patch-1of2-orphan@example.com")
+        ).scalar_one()
+    assert patch.patch_series_position == 1
     assert patch.patch_series_key is None
     assert patch.patch_series_version is None
 
@@ -1836,3 +1909,164 @@ def test_replay_failures_cross_post_links_existing_article(
             select(func.count()).select_from(ParseFailure)
             .where(ParseFailure.inbox_id == alpha.id)
         ).scalar_one() == 0
+
+
+# Inbox.last_article_date (#216): bumped at ingest-commit time so the
+# front-page "Last activity" string doesn't ride the 24h
+# `archive_stats` cache window.
+
+
+def _naive_utc(dt):
+    """SQLite stores DateTime as TEXT without tz; round-trip strips
+    tzinfo. Compare on the naive form for in-DB assertions."""
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
+def test_ingest_bumps_inbox_last_article_date_on_new(
+    seeded_db, tmp_path,
+):
+    """A fresh `new` ingest pushes `Inbox.last_article_date` to the
+    commit time of the just-ingested message. Conftest seeds alpha at
+    2024-03-01; the synthetic repo here uses `commit_time =
+    1700000000 + i` (2023-11-14 onwards), so the bump only happens if
+    the helper picks the max-of-batch and overrides only when newer."""
+    from datetime import datetime
+    alpha = _alpha(seeded_db)
+    # Reset the seeded value so we observe a clean bump-from-nothing.
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.last_article_date = None
+        s.commit()
+    _build_pubinbox_repo(tmp_path / "0.git", [_rfc5322("bumper@example.com")])
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    # 1700000000 epoch = 2023-11-14 22:13:20 UTC; SQLite returns naive.
+    assert _naive_utc(ix.last_article_date) == datetime(2023, 11, 14, 22, 13, 20)
+
+
+def test_ingest_last_article_date_is_monotonic(seeded_db, tmp_path):
+    """A later ingest of an older-dated message doesn't push the
+    field backward. Public-inbox commit times are monotonically
+    increasing within an epoch, but re-walks, replays, and
+    edge-case backfills could ingest out-of-order, the field's
+    contract is "max seen ever", not "last seen"."""
+    from datetime import datetime, timezone
+    alpha = _alpha(seeded_db)
+    future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.last_article_date = future
+        s.commit()
+    _build_pubinbox_repo(tmp_path / "0.git", [_rfc5322("older@example.com")])
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    assert _naive_utc(ix.last_article_date) == _naive_utc(future)
+
+
+def test_migration_backfill_sql_populates_last_article_date(seeded_db):
+    """The alembic backfill statement (correlated MAX(date) per inbox)
+    populates `Inbox.last_article_date` from existing articles +
+    article_lists. Pins the upgrade-against-populated-DB path without
+    re-running alembic, the conftest seed is a stand-in for a populated
+    prod row set.
+
+    Conftest seeds alpha with art1/art3/art4 (max 2024-03-01) and
+    beta with art2/art3 (max 2024-03-01). Wipe the column first to
+    simulate the pre-upgrade state, then run the migration's backfill
+    SQL inline and verify both inboxes pick up the right max."""
+    from datetime import datetime
+    from sqlalchemy import text
+    with seeded_db() as s:
+        # Simulate the pre-upgrade state.
+        s.execute(text("UPDATE inboxes SET last_article_date = NULL"))
+        # Verbatim from alembic/versions/...
+        s.execute(text(
+            """
+            UPDATE inboxes
+            SET last_article_date = (
+                SELECT MAX(a.date)
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                WHERE al.inbox_id = inboxes.id
+            )
+            """
+        ))
+        s.commit()
+    with seeded_db() as s:
+        rows = s.execute(
+            select(Inbox.name, Inbox.last_article_date)
+        ).all()
+    by_name = {n: d for n, d in rows}
+    assert _naive_utc(by_name["alpha"]) == datetime(2024, 3, 1, 12, 0)
+    assert _naive_utc(by_name["beta"]) == datetime(2024, 3, 1, 12, 0)
+
+
+def test_migration_backfill_sets_position_zero_on_keyed_covers(seeded_db):
+    """The #212 alembic backfill statement marks every article that
+    already has `patch_series_key` set as `patch_series_position=0`
+    (Slice 1 only keyed covers). Pins the upgrade-against-populated-DB
+    path without re-running alembic."""
+    from sqlalchemy import text
+    with seeded_db() as s:
+        # Seed a "pre-#212" cover: key set, position NULL.
+        cover = Article(
+            message_id="legacy-cv@x",
+            subject="[PATCH 0/2] legacy",
+            author="A <a@x>",
+            date=datetime(2024, 5, 1, tzinfo=timezone.utc),
+            thread_parent=None,
+            subject_normalized="legacy",
+            patch_series_key="legacy",
+            patch_series_version="v1",
+            patch_series_position=None,
+        )
+        s.add(cover)
+        s.commit()
+        # Verbatim from alembic/versions/...patch_series_position.py
+        s.execute(text(
+            """
+            UPDATE articles
+            SET patch_series_position = 0
+            WHERE patch_series_key IS NOT NULL
+            """
+        ))
+        s.commit()
+    with seeded_db() as s:
+        reloaded = s.execute(
+            select(Article).where(Article.message_id == "legacy-cv@x")
+        ).scalar_one()
+    assert reloaded.patch_series_position == 0
+
+
+def test_ingest_last_article_date_bumps_on_cross_post_link(
+    seeded_db, tmp_path,
+):
+    """A cross-posted message that first landed in `beta` now landing
+    in `alpha` bumps `alpha.last_article_date` too, using the
+    existing article's date. The two inboxes track their own
+    "last activity" independently: linking a cross-post is real
+    activity for the destination inbox, even though no new Article
+    row is created."""
+    alpha = _alpha(seeded_db)
+    # `art2@example.com` is in beta only (per conftest seed) with
+    # date 2024-02-01. Wipe alpha's last_article_date so the bump is
+    # observable from None to 2024-02-01.
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.last_article_date = None
+        s.commit()
+    _build_pubinbox_repo(tmp_path / "0.git", [_rfc5322("art2@example.com")])
+    with seeded_db() as s:
+        result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+    assert result.linked == 1
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    assert ix.last_article_date is not None
+    assert (
+        ix.last_article_date.year, ix.last_article_date.month,
+        ix.last_article_date.day,
+    ) == (2024, 2, 1)

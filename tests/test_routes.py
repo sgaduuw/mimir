@@ -109,6 +109,47 @@ def test_meta_index_card_link_targets_inbox_dashboard(client):
     assert "/beta/" in hrefs
 
 
+def test_meta_index_last_activity_reads_from_inbox_column(client):
+    """Front-page "Last activity" line reads `Inbox.last_article_date`
+    each render, not the 24h-cached `archive_stats` bundle. Pins #216:
+    seeding (or warming) the `archive_stats:<inbox>` cache row should
+    not lock the front-page string to the snapshot's max-date if
+    `Inbox.last_article_date` has since moved forward.
+
+    Strategy: prime the `archive_stats` cache by hitting the page
+    once, then bump `Inbox.last_article_date` to a near-now value and
+    re-request. The visible relative-time string should reflect the
+    new value (a recent "m"/"h ago" stamp), not the conftest seed's
+    14-month-old date."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    # First request warms the archive_stats cache row for both inboxes.
+    body_before = client.get("/").data.decode()
+    # Sanity check: conftest seed of 2024-03-01 surfaces as an absolute
+    # date in the visible card (>30d ago → `_relative_time` switches
+    # from "Nd ago" to "YYYY-MM-DD"), not a recent stamp.
+    assert "Last activity: 2024-03-01" in body_before
+
+    # Bump alpha to "5 minutes ago" without touching the cache.
+    five_min_ago = datetime.now(timezone.utc) - timedelta(minutes=5)
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.last_article_date = five_min_ago
+        s.commit()
+
+    body_after = client.get("/").data.decode()
+    # alpha's card now reports a fresh activity stamp (5m ago); beta's
+    # is unchanged.
+    assert "Last activity: 5m ago" in body_after
+    # alpha's old date string is gone from alpha's card. (beta still
+    # carries it, so this asserts disappearance in alpha's region.)
+    alpha_card = body_after.split('href="/alpha/"')[1].split("</a>")[0]
+    assert "2024-03-01" not in alpha_card
+
+
 def test_meta_index_renders_subsystem_chips_with_activity(client, tmp_path):
     """Front page surfaces an "Active subsystems" teaser when one
     or more subsystems have recent messages. Chips link to the
@@ -2828,38 +2869,43 @@ def _seed_mainline_commit(message_id, commit_sha="abc1234567890def" + "0" * 24,
 def test_message_page_shows_applied_as_when_mainline_commit_matches(
     client, tmp_path,
 ):
-    """An article whose Message-ID matches a `mainline_commits` row
-    surfaces an "Applied as <sha>" line above the message body.
-    Pins the issue-66 happy path: walker → DB → render."""
+    """A patch whose Message-ID matches a `mainline_commits` row
+    surfaces a "Landed:" line on the state card. Pins the
+    issue-66 happy path: walker -> DB -> render.
+
+    Card-gated on `is_patch`, so a non-patch article with a
+    mainline_commits row would NOT render here. The mainline
+    walker's Link: trailers point at actual patches in practice,
+    so this is the realistic scenario."""
     _, url = _ingest_one_article(
         tmp_path, "alpha", "applied-msg@example.com",
+        subject="[PATCH 1/2] foo: do bar",
     )
     _seed_mainline_commit(
         message_id="applied-msg@example.com",
         commit_sha="abc1234567890def1234567890abcdef12345678",
     )
     body = client.get(url).data.decode()
-    assert 'class="mainline-applications"' in body
-    assert "Applied as" in body
+    assert 'class="patch-state"' in body
+    assert "Landed:" in body
     # SHA truncated to first 12 chars on display.
     assert "<code>abc123456789</code>" in body
     assert "<code>linus</code>" in body
-    # The tree-name is disambiguated with the word "tree" so the
-    # short identifier doesn't read as a person's first name.
-    assert "tree" in body
 
 
 def test_message_page_no_applied_as_when_no_commit_matches(
     client, tmp_path,
 ):
-    """Articles without a mainline-commit reference render without
-    the aside. Absence is non-informative (may simply not be
-    indexed yet); the surface is opt-in."""
+    """Articles without a mainline-commit reference render no
+    "Landed:" line in the state card. Absence is non-informative
+    (may simply not be indexed yet); the row is opt-in."""
     _, url = _ingest_one_article(
         tmp_path, "alpha", "unapplied@example.com",
+        subject="[PATCH 1/2] foo: in flight",
     )
     body = client.get(url).data.decode()
-    assert 'class="mainline-applications"' not in body
+    assert "Landed:" not in body
+    # Old wording from the pre-#208 standalone aside; must not regress.
     assert "Applied as" not in body
 
 
@@ -2868,12 +2914,13 @@ def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_lin
 ):
     """When a commit references the article via two `Link:` trailers
     (rare), or when two distinct commits apply the same patch (less
-    rare on backports), every mainline_commits row gets a line.
+    rare on backports), every mainline_commits row gets surfaced.
     Ordered by committed_at asc, the first application is the
     primary one."""
     from datetime import datetime, timezone
     _, url = _ingest_one_article(
         tmp_path, "alpha", "multi-app@example.com",
+        subject="[PATCH 1/2] foo: backported",
     )
     _seed_mainline_commit(
         message_id="multi-app@example.com",
@@ -2894,9 +2941,10 @@ def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_lin
 
 def test_message_page_renders_patch_series_timeline(client, tmp_path):
     """When two cover letters share a `patch_series_key`, viewing
-    one renders a `<aside class="patch-series">` with both
-    versions: the current one as plain text (`<strong>v2</strong>`),
-    the other as a link. Pins the issue-65 happy path."""
+    one renders the state card (`<aside class="patch-state">`)
+    with a Series-revisions row carrying both versions: the current
+    one as plain text (`<strong>v2</strong>`), the other as a link.
+    Pins the issue-65 happy path through the #208 card."""
     # Two cover-letter subjects, same author, same title → same
     # series. mkdir each subdir first; `_ingest_one_article`
     # creates `0.git` inside but doesn't make the parent.
@@ -2914,29 +2962,29 @@ def test_message_page_renders_patch_series_timeline(client, tmp_path):
         author=common_author,
     )
     body = client.get(v2_url).data.decode()
-    assert 'class="patch-series"' in body
+    assert 'class="patch-state"' in body
     assert "Series revisions:" in body
     # The current revision (v2) is rendered as bold, not as a link.
     assert "<strong>v2</strong>" in body
     # The prior revision (v1) is rendered as a link.
-    assert "<a href=" in body.split('class="patch-series"')[1].split("</aside>")[0]
-    assert ">v1</a>" in body.split('class="patch-series"')[1].split("</aside>")[0]
+    card = body.split('class="patch-state"')[1].split("</aside>")[0]
+    assert "<a href=" in card
+    assert ">v1</a>" in card
     # Arrow between revisions.
-    assert "→" in body.split('class="patch-series"')[1].split("</aside>")[0]
+    assert "→" in card
 
 
 def test_message_page_no_series_timeline_for_individual_patch(
     client, tmp_path,
 ):
     """A `[PATCH v2 1/3]` subject is an individual patch, not a
-    cover letter. The series block doesn't render on those pages
-    in slice 1."""
+    cover letter. The state card still renders (it's a patch) but
+    the Series-revisions row is omitted in slice 1."""
     _, url = _ingest_one_article(
         tmp_path, "alpha", "patch-1of3@example.com",
         subject="[PATCH v2 1/3] foo: add bar",
     )
     body = client.get(url).data.decode()
-    assert 'class="patch-series"' not in body
     assert "Series revisions:" not in body
 
 
@@ -2944,16 +2992,178 @@ def test_message_page_no_series_timeline_for_solo_cover_letter(
     client, tmp_path,
 ):
     """A cover letter with no other revisions in the DB (only
-    v1, no v2 yet) still gets the `patch_series_key` set but
-    renders no timeline, the timeline needs ≥2 revisions to be
-    useful, and one row on its own would just say "v1 (this)"
-    which is visual clutter."""
+    v1, no v2 yet) still gets the `patch_series_key` set but the
+    Series-revisions row stays hidden, the timeline needs ≥2
+    revisions to be useful, and one row on its own would just say
+    "v1 (this)" which is visual clutter."""
     _, url = _ingest_one_article(
         tmp_path, "alpha", "lonely-v1@example.com",
         subject="[PATCH 0/3] something nobody resent",
     )
     body = client.get(url).data.decode()
-    assert 'class="patch-series"' not in body
+    assert "Series revisions:" not in body
+
+
+# --- #208 patch-state card integration ---------------------------------------
+
+
+def test_patch_state_card_renders_on_patch_subject(client, tmp_path):
+    """A `[PATCH …]` subject opts the message page into the
+    consolidated state card. With no extra inputs, only the
+    Activity row renders ("No replies") and the rest are
+    silently skipped, the card scales from minimal to full."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "bare-patch@example.com",
+        subject="[PATCH 1/2] foo: add bar",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="patch-state"' in body
+    # Bare patch → only Activity. The other rows are absent.
+    assert "Activity:" in body
+    assert "No replies" in body
+    assert "Trailers:" not in body
+    assert "Landed:" not in body
+    assert "Series revisions:" not in body
+
+
+def test_patch_state_card_absent_on_non_patch_subject(client, tmp_path):
+    """A plain message (no `[PATCH …]` bracketing) gets no card at
+    all. Pins the `is_patch` gate, the card is patch-only by design
+    so non-patch articles don't ship an empty shell."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "prose@example.com",
+        subject="thoughts on memory model wording",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="patch-state"' not in body
+    assert "Activity:" not in body
+
+
+def test_patch_state_card_absent_on_git_pull(client, tmp_path):
+    """`[GIT PULL]` looks bracketed but isn't a patch in the sense
+    we're indexing, the bracket-token guard in `_is_patch_subject`
+    keys on the literal `PATCH` word."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "pull@example.com",
+        subject="[GIT PULL] urgent fixes for 6.13",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="patch-state"' not in body
+
+
+def test_patch_state_trailers_row_aggregates_by_role(client, tmp_path):
+    """Trailers in the patch body group by canonical role, each
+    role rendered with its total count. Pins the per-role
+    aggregation: two Reviewed-by + one Acked-by yields the
+    bucketed shape "2 Reviewed-by, 1 Acked-by" rather than three
+    separate entries."""
+    body_bytes = (
+        b"diff --git a/file b/file\n@@ -1 +1 @@\n-x\n+y\n\n"
+        b"Reviewed-by: Reviewer One <r1@example.com>\n"
+        b"Reviewed-by: Reviewer Two <r2@example.com>\n"
+        b"Acked-by: Acker <a@example.com>\n"
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "trailers@example.com",
+        subject="[PATCH] foo: do bar",
+        body=body_bytes,
+    )
+    body = client.get(url).data.decode()
+    assert "Trailers:" in body
+    assert "2 Reviewed-by" in body
+    assert "1 Acked-by" in body
+
+
+def test_patch_state_trailers_row_marks_maintainer_attestation(
+    client, tmp_path,
+):
+    """A trailer whose address matches an M:/R: row on a subsystem
+    this patch touches is counted into the maintainer subset; the
+    rendered chip reads "(N maintainer)". Pins the per-role
+    maintainer aggregation against the subsystem-maintainer
+    lookup."""
+    _seed_subsystem(
+        "BCACHEFS", "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[("M", "Kent Overstreet", "kent.overstreet@kernel.org")],
+    )
+    body_bytes = (
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n\n"
+        b"Reviewed-by: Kent Overstreet <kent.overstreet@kernel.org>\n"
+        b"Reviewed-by: Random Reviewer <random@elsewhere.example>\n"
+    )
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "maintainer-trailer@example.com",
+        subject="[PATCH] bcachefs: tweak super",
+        body=body_bytes,
+    )
+    body = client.get(url).data.decode()
+    assert "Trailers:" in body
+    # Two reviewers total, one of whom is a recognised maintainer.
+    assert "2 Reviewed-by (1 maintainer)" in body
+
+
+def test_patch_state_activity_row_shows_days_since_last_reply(
+    client, tmp_path,
+):
+    """When the article has a reply that's older than today, the
+    Activity row reports a non-zero day count. The reply is
+    inserted directly into the DB (date in the past) so we can
+    control the activity surface without depending on time."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    art_id, url = _ingest_one_article(
+        tmp_path, "alpha", "with-reply@example.com",
+        subject="[PATCH] foo: trigger reply",
+    )
+    # Anchor reply N days in the past; days_since_last_reply caps
+    # at >=0 so this is robust to clock skew.
+    reply_at = datetime.now(timezone.utc) - timedelta(days=3)
+    with SessionLocal() as s:
+        ix = s.execute(
+            select(Inbox).where(Inbox.name == "alpha")
+        ).scalar_one()
+        reply = Article(
+            message_id="reply-3d-old@example.com",
+            subject="Re: [PATCH] foo: trigger reply",
+            author="r@example.com",
+            date=reply_at,
+            thread_parent="with-reply@example.com",
+        )
+        s.add(reply)
+        s.flush()
+        s.add(ArticleList(
+            article_id=reply.id, inbox_id=ix.id,
+            epoch="0.git", commit_sha="deadbeef",
+        ))
+        s.commit()
+    body = client.get(url).data.decode()
+    assert "Activity:" in body
+    # Exact day count depends on rounding; either "3 days ago" or
+    # "2 days ago" depending on the now() boundary.
+    assert "Last reply" in body
+    assert "days ago" in body
+
+
+def test_patch_state_card_skips_empty_rows(client, tmp_path):
+    """A bare cover-letter render with no trailers, no landing, no
+    sibling revisions, no replies skips every optional row, only
+    Activity ("No replies") remains. Pins the row-skipping logic so
+    the card doesn't degrade into a wall of empty labels."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "lone-cover@example.com",
+        subject="[PATCH 0/2] new feature",
+    )
+    body = client.get(url).data.decode()
+    card = body.split('class="patch-state"')[1].split("</aside>")[0]
+    assert "Trailers:" not in card
+    assert "Landed:" not in card
+    assert "Series revisions:" not in card
+    assert "Activity:" in card
+    assert "No replies" in card
 
 
 def test_message_page_emits_breadcrumb_list(client, tmp_path):
@@ -4088,3 +4298,539 @@ def test_reviewer_view_inbox_scoped(client, tmp_path):
     assert "beta-only patch" not in a
     assert "No attestations" in a
     assert "beta-only patch" in b
+
+
+def test_message_page_patch_series_revisions_does_not_n1_inbox(client, tmp_path):
+    """The cover-letter patch-series sidebar (issue 65) iterates each
+    revision's `lists` and reads `al.inbox.name` per `ArticleList`. The
+    handler eager-loads the `Article.lists` collection, but until #198
+    the eager-load did not chain through to `ArticleList.inbox`, so
+    each per-revision `al.inbox.name` traversal triggered a lazy fetch
+    per distinct inbox the series had touched.
+
+    SQLAlchemy's identity map dedupes within the session so the worst
+    case scaled with distinct-inbox-count rather than `len(revisions)
+    * len(lists)`, but for a cross-posted series the per-render cost
+    was still bounded by (extra-inboxes-in-series + 1) round-trips
+    above the eager-load. Cover letters render on every load.
+
+    The fix chained `.selectinload(Article.lists).selectinload(
+    ArticleList.inbox)`. Pin that by counting `FROM inboxes` queries
+    fired during the render: with the fix the only inbox SELECTs are
+    the URL-resolution lookup (1) and the bulk selectinload (1).
+    Without the fix a third per-id SELECT would fire for the
+    cross-post inbox the identity map hasn't cached yet."""
+    from sqlalchemy import event
+    from mimir.extensions import SessionLocal, engine
+    from mimir.models import Article, ArticleList, Inbox
+    from sqlalchemy import select as _sa_select
+
+    # Two cover-letter revisions, same author + title so they share a
+    # `patch_series_key`. Ingest both into alpha via the public helper.
+    (tmp_path / "v1").mkdir()
+    (tmp_path / "v2").mkdir()
+    common_author = "Alice <a@example>"
+    _, v1_url = _ingest_one_article(
+        tmp_path / "v1", "alpha", "n1-v1-cover@example.com",
+        subject="[PATCH 0/3] eager-load chain",
+        author=common_author,
+    )
+    _, v2_url = _ingest_one_article(
+        tmp_path / "v2", "alpha", "n1-v2-cover@example.com",
+        subject="[PATCH v2 0/3] eager-load chain",
+        author=common_author,
+    )
+    # Cross-post both revisions to beta so each `Article.lists` has
+    # two `ArticleList` rows pointing at distinct inboxes; that's the
+    # shape the lazy load fell over on.
+    with SessionLocal() as s:
+        beta = s.execute(_sa_select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        for mid in ("n1-v1-cover@example.com", "n1-v2-cover@example.com"):
+            art = s.execute(
+                _sa_select(Article).where(Article.message_id == mid)
+            ).scalar_one()
+            s.add(ArticleList(
+                article_id=art.id, inbox_id=beta.id,
+                epoch="0.git", commit_sha="ee" * 20,
+            ))
+        s.commit()
+
+    inbox_selects: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _grab(conn, cursor, statement, parameters, context, executemany):
+        if "FROM inboxes" in statement:
+            inbox_selects.append(statement)
+
+    try:
+        resp = client.get(v2_url)
+    finally:
+        event.remove(engine, "before_cursor_execute", _grab)
+    assert resp.status_code == 200
+    # Three `FROM inboxes` SELECTs are expected, all batched: the URL
+    # inbox-name resolution (`WHERE inboxes.name = ?`), the `all_links`
+    # bulk fetch (`JOIN article_lists WHERE al.article_id = ?`), and
+    # the chained selectinload for the patch-series revisions (`WHERE
+    # inboxes.id IN (...)`). Any per-id `WHERE inboxes.id = ?` is the
+    # lazy-load signature and means the chain broke.
+    lazy = [s for s in inbox_selects if "inboxes.id = ?" in s]
+    assert not lazy, (
+        f"patch-series render lazy-loaded {len(lazy)} inbox row(s); "
+        "the selectinload chain through ArticleList.inbox broke:\n"
+        + "\n---\n".join(lazy)
+    )
+
+
+# --- Series-diff route (#210) -------------------------------------------------
+
+
+def _build_pubinbox_epoch(epoch_dir, messages):
+    """Build a chained-commit bare git repo simulating a public-inbox
+    epoch with multiple messages. Each tuple is
+    `(message_id, subject, in_reply_to, body, author)`; in_reply_to and
+    body may be None / b"". Returns nothing; the caller arranges
+    `Inbox.mirror_path` to point at the parent dir before ingesting.
+    """
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+
+    repo = Repo.init_bare(str(epoch_dir), mkdir=True)
+    parent = None
+    last_commit_id = None
+    for msgid, subject, in_reply_to, body, author in messages:
+        extra = b""
+        if in_reply_to:
+            extra += b"In-Reply-To: <" + in_reply_to.encode() + b">\r\n"
+        raw = (
+            b"Message-ID: <" + msgid.encode() + b">\r\n"
+            b"From: " + author.encode() + b"\r\n"
+            b"Subject: " + subject.encode() + b"\r\n"
+            b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+            + extra + b"\r\n" + (body or b"")
+        )
+        blob = Blob.from_string(raw)
+        repo.object_store.add_object(blob)
+        tree = Tree()
+        tree.add(b"m", 0o100644, blob.id)
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.parents = [parent] if parent else []
+        commit.author = commit.committer = b"test <t@x>"
+        commit.commit_time = commit.author_time = 1700000000
+        commit.commit_timezone = commit.author_timezone = 0
+        commit.encoding = b"UTF-8"
+        commit.message = f"add {msgid}".encode()
+        repo.object_store.add_object(commit)
+        parent = commit.id
+        last_commit_id = commit.id
+    repo.refs[b"HEAD"] = last_commit_id
+
+
+def _ingest_series_pair(tmp_path, inbox_name, v1_messages, v2_messages):
+    """Build v1 and v2 epochs in `tmp_path/0.git` and `tmp_path/1.git`,
+    repoint `inbox_name.mirror_path` to `tmp_path`, ingest both.
+    Returns the cover letter's `patch_series_key` (the same for both
+    revisions by construction)."""
+    from sqlalchemy import select as _sa_select
+    from mimir.extensions import SessionLocal
+    from mimir.ingest import ingest_epoch
+    from mimir.models import Article, Inbox
+
+    _build_pubinbox_epoch(tmp_path / "0.git", v1_messages)
+    _build_pubinbox_epoch(tmp_path / "1.git", v2_messages)
+    with SessionLocal() as s:
+        ix = s.execute(_sa_select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        ix.mirror_path = str(tmp_path)
+        s.commit()
+        ingest_epoch(s, ix, "0.git", tmp_path / "0.git", workers=1)
+        ingest_epoch(s, ix, "1.git", tmp_path / "1.git", workers=1)
+        s.commit()
+        v1_cover_msgid = v1_messages[0][0]
+        cover = s.execute(
+            _sa_select(Article).where(Article.message_id == v1_cover_msgid)
+        ).scalar_one()
+        assert cover.patch_series_key is not None
+        return cover.patch_series_key
+
+
+def test_series_diff_cover_letter_renders(client, tmp_path):
+    """Happy path: two cover letters with the same patch_series_key,
+    `pos=cover` diffs their bodies. The diff appears in the rendered
+    HTML wrapped in Pygments markup."""
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[
+            ("v1-cv@x", "[PATCH 0/3] improve foo handling", None,
+             b"original cover letter explanation\n", author),
+        ],
+        v2_messages=[
+            ("v2-cv@x", "[PATCH v2 0/3] improve foo handling", None,
+             b"revised cover letter explanation\nadded a Fixes line\n", author),
+        ],
+    )
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v2&pos=cover"
+    )
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    # Pygments-wrapped diff content: both sides appear in the HTML.
+    assert "original cover letter explanation" in body
+    assert "revised cover letter explanation" in body
+    assert "added a Fixes line" in body
+    # Sanity: the page is the series-diff template, not a generic 404.
+    assert "Inter-revision diff" in body
+
+
+def test_series_diff_identical_cover_letters(client, tmp_path):
+    """When v1 and v2 bodies are byte-identical, render the
+    "no changes" message rather than an empty diff."""
+    author = "Alice <a@example>"
+    body = b"identical cover\nbyte for byte\n"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[("c1@x", "[PATCH 0/2] series", None, body, author)],
+        v2_messages=[("c2@x", "[PATCH v2 0/2] series", None, body, author)],
+    )
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v2&pos=cover"
+    )
+    assert resp.status_code == 200
+    out = resp.data.decode()
+    assert "No changes between v1 and v2" in out
+
+
+def test_series_diff_per_patch_match_by_subject(client, tmp_path):
+    """In-series patch (pos=1): matches v1's [PATCH 1/2] subject to
+    v2's [PATCH v2 1/2] subject; diffs the patch bodies."""
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[
+            ("v1-cv@x", "[PATCH 0/2] series title", None, b"cover\n", author),
+            ("v1-p1@x", "[PATCH 1/2] foo: do bar", "v1-cv@x",
+             b"v1 commit message\n---\n diff --git a/fs/foo.c b/fs/foo.c\n@@\n+old\n", author),
+            ("v1-p2@x", "[PATCH 2/2] baz: fix", "v1-cv@x",
+             b"v1 baz commit\n", author),
+        ],
+        v2_messages=[
+            ("v2-cv@x", "[PATCH v2 0/2] series title", None, b"cover v2\n", author),
+            ("v2-p1@x", "[PATCH v2 1/2] foo: do bar", "v2-cv@x",
+             b"v2 commit message updated\n---\n diff --git a/fs/foo.c b/fs/foo.c\n@@\n+new\n", author),
+            ("v2-p2@x", "[PATCH v2 2/2] baz: fix", "v2-cv@x",
+             b"v2 baz commit\n", author),
+        ],
+    )
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v2&pos=1"
+    )
+    assert resp.status_code == 200
+    out = resp.data.decode()
+    # Both patch bodies' distinctive content surfaces in the diff.
+    assert "v1 commit message" in out
+    assert "v2 commit message updated" in out
+    assert "patch 1" in out  # position_label rendering
+
+
+def test_series_diff_no_match_404(client, tmp_path):
+    """When v1 has pos=3 and v2 has no plausible counterpart (different
+    subjects, no file overlap), 404 with an actionable message."""
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[
+            ("v1-cv@x", "[PATCH 0/3] series", None, b"cover\n", author),
+            ("v1-p1@x", "[PATCH 1/3] foo: do A", "v1-cv@x", b"v1 A\n", author),
+            ("v1-p2@x", "[PATCH 2/3] bar: do B", "v1-cv@x", b"v1 B\n", author),
+            ("v1-p3@x", "[PATCH 3/3] baz: do C", "v1-cv@x", b"v1 C\n", author),
+        ],
+        # v2 dropped patch 3 entirely; no subject match, no file overlap.
+        v2_messages=[
+            ("v2-cv@x", "[PATCH v2 0/3] series", None, b"cover v2\n", author),
+            ("v2-p1@x", "[PATCH v2 1/2] foo: do A", "v2-cv@x", b"v2 A\n", author),
+            ("v2-p2@x", "[PATCH v2 2/2] bar: do B", "v2-cv@x", b"v2 B\n", author),
+        ],
+    )
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v2&pos=3"
+    )
+    assert resp.status_code == 404
+
+
+def test_series_diff_unknown_version_404(client, tmp_path):
+    """Asking for a version that doesn't exist returns 404. The
+    available revisions are surfaced in the 404 description for
+    debuggability."""
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[("c1@x", "[PATCH 0/1] series", None, b"v1\n", author)],
+        v2_messages=[("c2@x", "[PATCH v2 0/1] series", None, b"v2\n", author)],
+    )
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v9&pos=cover"
+    )
+    assert resp.status_code == 404
+
+
+def test_series_diff_self_diff_404(client, tmp_path):
+    """`from=v1&to=v1` is meaningless; reject as 404 rather than
+    rendering an empty diff page."""
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[("c1@x", "[PATCH 0/1] series", None, b"v1\n", author)],
+        v2_messages=[("c2@x", "[PATCH v2 0/1] series", None, b"v2\n", author)],
+    )
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v1&pos=cover"
+    )
+    assert resp.status_code == 404
+
+
+def test_series_diff_unknown_series_key_404(client, tmp_path):
+    """A `series_key` that doesn't exist in the DB returns plain 404,
+    not the "available revisions" message."""
+    resp = client.get("/alpha/series/deadbeef/diff?from=v1&to=v2&pos=cover")
+    assert resp.status_code == 404
+
+
+def test_series_diff_missing_inbox_404(client, tmp_path):
+    """Unknown inbox slug 404s (the inbox guard runs before any
+    series resolution)."""
+    resp = client.get("/no-such-inbox/series/deadbeef/diff?from=v1&to=v2&pos=cover")
+    assert resp.status_code == 404
+
+
+def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
+    """Viewing a cover letter that has revisions, the patch-state
+    card's Series-revisions row renders a `diff vs current` link
+    per non-current revision pointing at the new route."""
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=[("v1-cv@x", "[PATCH 0/2] series title", None, b"v1 cover\n", author)],
+        v2_messages=[("v2-cv@x", "[PATCH v2 0/2] series title", None, b"v2 cover\n", author)],
+    )
+    # Viewing v2 cover, the card should link a diff from v1 to v2.
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from sqlalchemy import select as _sa_select
+    with SessionLocal() as s:
+        v2_art = s.execute(
+            _sa_select(Article).where(Article.message_id == "v2-cv@x")
+        ).scalar_one()
+        v2_url = f"/alpha/{v2_art.date.year}/{v2_art.date.month:02d}/{v2_art.id}"
+    body = client.get(v2_url).data.decode()
+    card = body.split('class="patch-state"')[1].split("</aside>")[0]
+    assert "diff vs current" in card
+    assert f"/alpha/series/{series_key}/diff" in card
+    assert "from=v1" in card
+    assert "to=v2" in card
+    assert "pos=cover" in card
+
+
+def test_series_diff_uses_indexed_lookup_without_thread_parent(
+    client, tmp_path,
+):
+    """#212: the diff route's indexed-lookup path resolves
+    `(key, version, position)` directly, without needing thread
+    structure between cover and in-series patches. Seed two
+    in-series patches with `patch_series_*` columns set but
+    `thread_parent=None`, the heuristic resolver from #210 would
+    fail (no children to walk), the indexed path succeeds."""
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    # Two cover letters (needed for the 404-availability lookup the
+    # route does upfront) plus two in-series patches with no thread
+    # linkage. Build a minimal mirror so `read_message` finds the
+    # patch bodies.
+    author = "Alice <a@example>"
+    msgs_v1 = [
+        ("v1-cv@x", "[PATCH 0/2] series", None, b"cover v1\n", author),
+        ("v1-p1@x", "[PATCH 1/2] foo: do bar", None,  # NO thread parent
+         b"v1 patch body\n", author),
+    ]
+    msgs_v2 = [
+        ("v2-cv@x", "[PATCH v2 0/2] series", None, b"cover v2\n", author),
+        ("v2-p1@x", "[PATCH v2 1/2] foo: do bar", None,  # NO thread parent
+         b"v2 patch body updated\n", author),
+    ]
+    series_key = _ingest_series_pair(
+        tmp_path, "alpha",
+        v1_messages=msgs_v1, v2_messages=msgs_v2,
+    )
+    # Verify the seeded state matches the test premise: the in-series
+    # patches have the indexed columns set even without thread linkage.
+    with SessionLocal() as s:
+        v1_p1 = s.execute(
+            select(Article).where(Article.message_id == "v1-p1@x")
+        ).scalar_one()
+        v2_p1 = s.execute(
+            select(Article).where(Article.message_id == "v2-p1@x")
+        ).scalar_one()
+    # Without a thread parent, ingest can't link the patch to its
+    # cover, so key/version stay NULL here. Backfill them inline
+    # to mirror the post-`backfill-patch-series` state and exercise
+    # the indexed resolver.
+    with SessionLocal() as s:
+        v1_cover = s.execute(
+            select(Article).where(Article.message_id == "v1-cv@x")
+        ).scalar_one()
+        v2_cover = s.execute(
+            select(Article).where(Article.message_id == "v2-cv@x")
+        ).scalar_one()
+        for patch, cover in [(v1_p1, v1_cover), (v2_p1, v2_cover)]:
+            p = s.get(Article, patch.id)
+            p.patch_series_key = cover.patch_series_key
+            p.patch_series_version = cover.patch_series_version
+            # position already 1 from ingest's parser-only path.
+        s.commit()
+
+    resp = client.get(
+        f"/alpha/series/{series_key}/diff?from=v1&to=v2&pos=1"
+    )
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "v1 patch body" in body
+    assert "v2 patch body updated" in body
+
+
+# --- Message-page ETag / conditional revalidation -----------------------------
+
+
+def test_message_page_sends_etag_and_no_cache(client, tmp_path):
+    """The message route emits a strong ETag and `Cache-Control:
+    public, no-cache`. Pairs with the route-level conditional check
+    that returns 304 when If-None-Match matches; together they
+    eliminate the within-cache-window stale-after-deploy problem
+    while keeping repeated loads cheap via 304s."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "etag-headers@example.com",
+        subject="basic article",
+    )
+    resp = client.get(url)
+    assert resp.status_code == 200
+    assert resp.headers.get("ETag"), "message page must emit ETag"
+    assert resp.headers.get("Cache-Control") == "public, no-cache"
+    # Vary on HX-Request was already set; pin it stays set so a future
+    # refactor doesn't drop it (browsers would otherwise confuse the
+    # full-page response with the HTMX partial under the same URL).
+    assert "HX-Request" in resp.headers.get("Vary", "")
+
+
+def test_message_page_returns_304_on_matching_if_none_match(client, tmp_path):
+    """Repeating the request with `If-None-Match` set to the ETag from
+    the first response returns 304 with no body. The 304 must still
+    carry Cache-Control (RFC 7232) so the client knows when to
+    revalidate next."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "etag-304@example.com",
+        subject="basic article",
+    )
+    first = client.get(url)
+    etag = first.headers.get("ETag")
+    assert etag, "must have ETag on the first response"
+    second = client.get(url, headers={"If-None-Match": etag})
+    assert second.status_code == 304
+    assert second.data == b""
+    # 304 echoes ETag and Cache-Control per RFC.
+    assert second.headers.get("ETag") == etag
+    assert second.headers.get("Cache-Control") == "public, no-cache"
+
+
+def test_message_page_returns_200_when_if_none_match_does_not_match(client, tmp_path):
+    """A stale or unrelated If-None-Match value gets a full 200
+    response, not a misleading 304. Pins that the matcher does an
+    actual comparison rather than blindly 304-ing."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "etag-mismatch@example.com",
+        subject="basic article",
+    )
+    resp = client.get(url, headers={"If-None-Match": '"deadbeef"'})
+    assert resp.status_code == 200
+    assert resp.data  # body present
+
+
+def test_message_page_etag_changes_when_thread_gains_a_reply(client, tmp_path):
+    """The ETag includes `max(thread node date)`; adding a reply to
+    the thread must change the value so the browser's previously
+    cached version is no longer "still good" and a fresh render
+    surfaces the new reply in the thread tree.
+
+    Implementation note: the reply is inserted directly into the DB
+    rather than via `_ingest_one_article`, because that helper
+    re-points the inbox's `mirror_path` per call and the second
+    invocation would render the root article's blob unreachable
+    (the route's body fetch would then 404, never getting to the
+    ETag check). Direct DB insert is enough; the ETag only reads
+    the date column."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import delete as _delete
+    from sqlalchemy import select as _select
+    from mimir.extensions import SessionLocal as _SL
+    from mimir.models import (
+        Article as _Article,
+        ArticleList as _ArticleList,
+        CacheEntry as _CacheEntry,
+        Inbox as _Inbox,
+    )
+
+    root_id, root_url = _ingest_one_article(
+        tmp_path, "alpha", "etag-thread-root@example.com",
+        subject="root subject",
+    )
+    first = client.get(root_url)
+    assert first.status_code == 200, first.data[:200]
+    first_etag = first.headers["ETag"]
+
+    # Insert a reply pointing at the root via thread_parent. Reply
+    # date is later so the thread's max date moves forward. Doesn't
+    # need a blob in the mirror (the message page being rendered is
+    # the root, not the reply; the reply just shows up in the
+    # thread-tree sidebar).
+    with _SL() as s:
+        alpha = s.execute(_select(_Inbox).where(_Inbox.name == "alpha")).scalar_one()
+        root_date = s.get(_Article, root_id).date
+        reply = _Article(
+            message_id="etag-thread-reply@example.com",
+            subject="Re: root subject",
+            author="r@b.example",
+            date=(root_date or datetime.now(timezone.utc)) + timedelta(hours=1),
+            thread_parent="etag-thread-root@example.com",
+            subject_normalized="root subject",
+            lists=[_ArticleList(
+                inbox_id=alpha.id, epoch="0.git", commit_sha="ee" * 20,
+            )],
+        )
+        s.add(reply)
+        # Bust the threading-helper cache so the next render reflects
+        # the new reply (cache TTL is 5 min; the test would otherwise
+        # see the pre-reply thread and the ETag wouldn't change).
+        s.execute(_delete(_CacheEntry))
+        s.commit()
+
+    second = client.get(root_url)
+    assert second.status_code == 200, second.data[:200]
+    second_etag = second.headers["ETag"]
+    assert second_etag != first_etag, (
+        f"ETag must change when the thread gains a reply; "
+        f"first={first_etag} second={second_etag}"
+    )
+
+
+def test_message_page_hx_request_has_distinct_etag(client, tmp_path):
+    """The full-page response and the HTMX intra-thread-swap partial
+    are different bodies for the same URL; they must have distinct
+    ETags so a browser that cached one can't reuse the cache entry
+    for the other on a subsequent request of the opposite type."""
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "etag-hx@example.com",
+        subject="basic article",
+    )
+    full = client.get(url)
+    partial = client.get(url, headers={"HX-Request": "true"})
+    assert full.headers["ETag"] != partial.headers["ETag"]

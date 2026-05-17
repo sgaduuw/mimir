@@ -24,8 +24,11 @@ from email.utils import parseaddr
 from typing import Callable
 
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from mimir._backfill import walk_articles
+from mimir.models import Article
+from mimir.patch_revisions import parse_in_series_patch_subject
 
 logger = logging.getLogger(__name__)
 
@@ -142,31 +145,107 @@ def series_key(title: str, author: str | None) -> str:
 class BackfillResult(BaseModel):
     """Outcome counters for `backfill_patch_series`."""
     examined: int = 0
-    indexed: int = 0      # cover letter detected, key + version written
-    not_cover: int = 0    # non-cover-letter subject, no series row
-    skipped: int = 0      # already had a key set (idempotent re-run)
+    indexed: int = 0           # cover letter detected, key + version + pos=0 written
+    in_series_indexed: int = 0  # in-series patch linked to its cover via thread parent
+    in_series_orphan: int = 0   # in-series patch, position set, cover not in DB
+    not_cover: int = 0          # non-series-shaped subject (prose, replies, solo [PATCH])
+    skipped: int = 0            # already fully resolved (idempotent re-run)
+
+
+def _resolve_in_series_link(
+    session, article,
+) -> tuple[str, str] | None:
+    """Look up `(patch_series_key, patch_series_version)` from the
+    article's thread parent. Depth-1 walk: `git send-email --thread`
+    posts in-series patches as direct children of the cover, which
+    is the modal shape. Deeper chains (patch resent as a reply to
+    a reply) fall through to the orphan bucket; if they become
+    common we'll lift the depth, but for now the cost of a recursive
+    walker isn't worth the rare hit.
+
+    Two-step resolve so a single backfill pass is order-independent:
+    if the parent is already keyed, use those values; otherwise
+    compute the key + version from the parent's subject locally
+    (without writing). When the walker later visits the parent and
+    runs the cover-letter path, it writes the same `series_key()`
+    output, so the in-series patch and cover converge on the same
+    key without ordering constraints.
+    """
+    if not article.thread_parent:
+        return None
+    parent = session.execute(
+        select(
+            Article.subject,
+            Article.author,
+            Article.patch_series_key,
+            Article.patch_series_version,
+        ).where(Article.message_id == article.thread_parent)
+    ).one_or_none()
+    if parent is None:
+        return None
+    if parent.patch_series_key is not None:
+        return parent.patch_series_key, parent.patch_series_version
+    cover = parse_cover_letter(parent.subject)
+    if cover is None:
+        return None
+    return series_key(cover.title, parent.author), cover.version
 
 
 def _process_one(session, article, reprocess: bool) -> str:
     """Per-article work for `backfill_patch_series`. Returns the
-    bucket name on `BackfillResult` to bump. `session` is unused
-    here (no body re-read, no related-row delete) but the walker
-    contract passes it; it stays available for a future slice
-    that wants per-revision link rows."""
-    if article.patch_series_key is not None and not reprocess:
+    bucket name on `BackfillResult` to bump.
+
+    Idempotency: an article is "fully resolved" when its
+    `patch_series_position` is set AND (it's a cover with key, OR
+    it's an in-series patch with key). An in-series patch with
+    position but NULL key is an orphan that we try to re-link on
+    every run, the cover may have arrived since the prior pass.
+    """
+    # Fully-resolved articles skip on non-reprocess runs.
+    is_fully_resolved = (
+        article.patch_series_position is not None
+        and (
+            article.patch_series_position == 0
+            and article.patch_series_key is not None
+            or article.patch_series_position > 0
+            and article.patch_series_key is not None
+        )
+    )
+    if is_fully_resolved and not reprocess:
         return "skipped"
+
     cover = parse_cover_letter(article.subject)
-    if cover is None:
-        # Reprocess: clear any prior key (the subject may have
-        # changed, or our parser may now reject something it
-        # previously accepted).
-        if reprocess and article.patch_series_key is not None:
+    if cover is not None:
+        article.patch_series_key = series_key(cover.title, article.author)
+        article.patch_series_version = cover.version
+        article.patch_series_position = 0
+        return "indexed"
+
+    in_series = parse_in_series_patch_subject(article.subject)
+    if in_series is not None:
+        article.patch_series_position = in_series.position
+        link = _resolve_in_series_link(session, article)
+        if link is not None:
+            article.patch_series_key, article.patch_series_version = link
+            return "in_series_indexed"
+        # Orphan: clear key/version on reprocess (a prior pass may
+        # have linked, but the cover got rewritten or removed since).
+        if reprocess:
             article.patch_series_key = None
             article.patch_series_version = None
-        return "not_cover"
-    article.patch_series_key = series_key(cover.title, article.author)
-    article.patch_series_version = cover.version
-    return "indexed"
+        return "in_series_orphan"
+
+    # Neither a cover nor an in-series patch. Reprocess clears any
+    # prior series row (subject may have changed, or our parsers
+    # tightened a previously-accepted shape).
+    if reprocess and (
+        article.patch_series_key is not None
+        or article.patch_series_position is not None
+    ):
+        article.patch_series_key = None
+        article.patch_series_version = None
+        article.patch_series_position = None
+    return "not_cover"
 
 
 def backfill_patch_series(
@@ -174,18 +253,25 @@ def backfill_patch_series(
     reprocess: bool = False,
     progress: Callable[["BackfillResult"], None] | None = None,
 ) -> BackfillResult:
-    """Walk articles, parse subjects for cover-letter shape, write
-    `patch_series_key` + `patch_series_version` where applicable.
+    """Walk articles, parse subjects for cover-letter / in-series
+    shape, write `patch_series_key` + `patch_series_version` +
+    `patch_series_position` where applicable.
 
     Cheaper than `backfill_article_files`: only reads `Article.subject`
-    and `Article.author`, no body re-parse via the git mirror. Safe
-    to run on any host with the DB; doesn't need the inbox mirrors.
-    `preload_lists=False` is the saving, patches and trailers need
-    `Article.lists` for the inbox lookup; we don't.
+    + `Article.author` + `Article.thread_parent`, no body re-parse via
+    the git mirror. Safe to run on any host with the DB; doesn't need
+    the inbox mirrors. `preload_lists=False` is the saving, patches
+    and trailers need `Article.lists` for the inbox lookup; we don't.
 
-    Idempotent: articles with `patch_series_key` already set are
-    skipped unless `reprocess=True`. Newest-first walk so a
-    bounded session covers the most-visible articles first.
+    Idempotent: fully-resolved articles are skipped unless
+    `reprocess=True`. In-series patch orphans (position set, no
+    cover known) are re-attempted every run so a later-ingested
+    cover letter links the previously-orphaned patches without a
+    `--reprocess` sweep. Newest-first walk so a bounded session
+    covers the most-visible articles first.
+
+    In-series detection is a #212 addition; pre-#212 runs only
+    keyed cover letters.
     """
     result = BackfillResult()
     walk_articles(

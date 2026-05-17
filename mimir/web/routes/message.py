@@ -8,16 +8,19 @@ HTMX intra-thread swap returns the `_message_body.html` partial when
 `HX-Request: true` so clicks within the tree don't re-fetch the
 chrome.
 """
-from flask import abort, render_template, request
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+import hashlib
 
+from flask import Response, abort, make_response, render_template, request
+from sqlalchemy import select
+
+import mimir
 from mimir import cache
 from mimir.canonical import extract_list_addresses
 from mimir.extensions import SessionLocal
 from mimir.models import (
-    Article, ArticleFile, ArticleList, Inbox, MainlineCommit,
+    Article, ArticleFile, ArticleList, Inbox,
 )
+from mimir.patch_state import patch_state_for_article
 from mimir.rendering import URL_OR_MSGID_RE
 from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
@@ -65,15 +68,49 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
 
         _abort_404_if_url_date_mismatches(article, year, month)
 
+        # Full thread context (replaces the v1 parent + immediate-replies
+        # view). Walk constrained to this article's inbox. Loaded BEFORE
+        # the body fetch so the ETag-revalidation block below has the
+        # freshness signal (max thread date) without the git-mirror blob
+        # read; on a 304 we skip both the body fetch and the render.
+        root_msgid = find_thread_root(session, inbox, article.message_id) or article.message_id
+        thread = get_thread(session, inbox, root_msgid)
+
+        # Conditional-GET (ETag) for the message page. Inputs:
+        # - article.id: invariant for the resource itself.
+        # - mimir.__version__: invalidates every cached page on deploy so
+        #   a UI rendering change (sidebar, headers, layout) surfaces
+        #   without waiting for the Cache-Control window to lapse.
+        # - thread max date: invalidates when a new reply lands in the
+        #   thread, so the tree-rendered view doesn't go stale.
+        # - HX-Request flag: the partial response (`_message_body.html`)
+        #   is a strict subset of the full response, so the two variants
+        #   need distinct ETags. Companion `Vary: HX-Request` header is
+        #   applied in `web.hooks` so intermediate caches don't confuse
+        #   the two responses for the same URL.
+        # Cache-Control on this endpoint is `public, no-cache` (set in
+        # `web.hooks._CACHE_CONTROL_BY_ENDPOINT`), so browsers always
+        # revalidate; the 304 path skips the body fetch + render entirely.
+        hx_request = request.headers.get("HX-Request") == "true"
+        thread_max_date = max(
+            (n.date for n in thread if n.date is not None),
+            default=article.date,
+        )
+        etag_input = (
+            f"{article.id}|{mimir.__version__}|"
+            f"{thread_max_date.isoformat() if thread_max_date else ''}|"
+            f"{'hx' if hx_request else 'full'}"
+        )
+        etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
+        if etag in request.if_none_match:
+            response = Response(status=304)
+            response.set_etag(etag)
+            return response
+
         try:
             parsed = read_message(session, inbox, article.message_id)
         except MessageNotFound:
             abort(404)
-
-        # Full thread context (replaces the v1 parent + immediate-replies view).
-        # Walk constrained to this article's inbox.
-        root_msgid = find_thread_root(session, inbox, article.message_id) or article.message_id
-        thread = get_thread(session, inbox, root_msgid)
 
         # If the thread root still has a thread_parent (i.e. our walk-up hit
         # the top of what we have, but the original chain continued through
@@ -201,23 +238,19 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 exclude_article_id=article.id, limit=5,
             ),
         ) if touched_paths else []
-        mainline_applications = list(session.execute(
-            select(MainlineCommit)
-            .where(MainlineCommit.message_id == article.message_id)
-            .order_by(MainlineCommit.committed_at.asc())
-        ).scalars())
-        patch_series_revisions: list[tuple[Article, str]] = []
-        if article.patch_series_key:
-            revisions = list(session.execute(
-                select(Article)
-                .options(selectinload(Article.lists))
-                .where(Article.patch_series_key == article.patch_series_key)
-                .order_by(Article.date.asc().nulls_last())
-            ).scalars())
-            for rev in revisions:
-                link_set = [(al.inbox_id, al.inbox.name) for al in rev.lists]
-                url = _canonical_url_for(rev, link_set, base="") or ""
-                patch_series_revisions.append((rev, url))
+        # Per-patch state card (#208): consolidates trailer roll-up,
+        # mainline-landing record, patch-series timeline + per-revision
+        # diff links, and thread-activity summary into one card. The
+        # helper subsumes the prior `mainline_applications` query and
+        # the `patch_series_revisions` block; both `mainline_commits`
+        # and the chained-selectinload `patch_series_key` query now
+        # live in `mimir.patch_state` for one-place ownership.
+        patch_state = patch_state_for_article(
+            session, article,
+            thread_dates=[n.date for n in thread],
+            subsystem_ids=[s.id for s in subsystem_hits],
+            inbox_name=inbox.name,
+        )
 
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
     thread_summary = _thread_summary(thread)
@@ -240,12 +273,8 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
     # only the message-body partial (just the <article id="msg">). The
     # surrounding tree + nav stay put on the client; the client-side script
     # flips which <li> carries the .is-active class after the swap.
-    template = (
-        "_message_body.html"
-        if request.headers.get("HX-Request") == "true"
-        else "message.html"
-    )
-    return render_template(
+    template = "_message_body.html" if hx_request else "message.html"
+    response = make_response(render_template(
         template,
         inbox_name=inbox.name,
         current_inbox=inbox.name,
@@ -264,7 +293,8 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         page_json_ld=page_json_ld,
         subsystem_hits=subsystem_hits,
         related_patches=related_patches,
-        mainline_applications=mainline_applications,
-        patch_series_revisions=patch_series_revisions,
+        patch_state=patch_state,
         long_thread=long_thread,
-    )
+    ))
+    response.set_etag(etag)
+    return response

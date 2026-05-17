@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}diff {{ diff.from_version }}{{ '→' }}{{ diff.to_version }} ({{ position_label }}) | series | {{ site_name }}{% endblock %}
+{% block meta_description %}Inter-revision diff of {{ position_label }} between {{ diff.from_version }} and {{ diff.to_version }} of a patch series on the {{ inbox_name }} archive.{% endblock %}
+{% block content %}
+<article>
+  <header>
+    <h2>Inter-revision diff: {{ position_label }}</h2>
+    <p>
+      <small>
+        Comparing
+        <strong>{{ diff.from_version }}</strong>
+        (<a href="{{ diff.from_url }}">message</a>)
+        to
+        <strong>{{ diff.to_version }}</strong>
+        (<a href="{{ diff.to_url }}">message</a>)
+      </small>
+    </p>
+  </header>
+
+  {% if diff.is_identical %}
+    <p><em>No changes between {{ diff.from_version }} and {{ diff.to_version }} of this {{ position_label }}.</em>
+    The body bytes are identical; the maintainer reposted without modification.</p>
+  {% else %}
+    {{ diff.diff_html|safe }}
+  {% endif %}
+</article>
+{% endblock %}

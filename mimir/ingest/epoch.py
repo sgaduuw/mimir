@@ -36,6 +36,7 @@ from mimir.models import (
     ParseFailure,
 )
 from mimir.parser import ParsedArticle, normalize_subject, parse_message
+from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import parse_cover_letter, series_key
 from mimir.patches import extract_touched_paths
 from mimir.trailers import extract_trailers
@@ -200,10 +201,17 @@ def _to_article(
     commit_sha: str,
     date: datetime,
     canonical_inbox_id: int | None = None,
+    session: Session | None = None,
 ) -> Article:
     """Construct a brand-new Article (with one ArticleList row) for a
     message we haven't seen before. For cross-posts (already-known
-    Message-ID), the caller adds an ArticleList row directly instead."""
+    Message-ID), the caller adds an ArticleList row directly instead.
+
+    `session` is required to populate `patch_series_key` / `version`
+    on in-series patches via a thread-parent lookup; without it,
+    in-series patches land with position set but key + version NULL
+    and need the backfill command to fill the gap.
+    """
     thread_parent = parsed.in_reply_to or (
         parsed.references[-1] if parsed.references else None
     )
@@ -223,16 +231,61 @@ def _to_article(
         )
         for role, name, address in extract_trailers(parsed.body)
     ]
-    # Detect cover-letter shape (`[PATCH ... 0/N] <title>`) and
-    # compute a stable series-identity key. Non-cover-letters
-    # (every individual `1/N` patch, every prose article, every
-    # reply) leave both columns NULL.
-    cover = parse_cover_letter(parsed.subject)
+    # Patch-series identity, two write paths (#212):
+    # - Cover letter (`[PATCH ... 0/N]`): key + version derived from
+    #   the subject + author; position = 0.
+    # - In-series patch (`[PATCH ... M/T]` with M >= 1): position = M
+    #   from the parser; key + version copied from the thread parent
+    #   when that parent is a cover letter already in the DB.
+    # Otherwise (prose, replies, solo `[PATCH]`, `[GIT PULL]` etc.)
+    # all three columns stay NULL.
     series_key_val: str | None = None
     series_version: str | None = None
+    series_position: int | None = None
+    cover = parse_cover_letter(parsed.subject)
     if cover is not None:
         series_key_val = series_key(cover.title, parsed.author)
         series_version = cover.version
+        series_position = 0
+    else:
+        in_series = parse_in_series_patch_subject(parsed.subject)
+        if in_series is not None:
+            series_position = in_series.position
+            if session is not None and thread_parent is not None:
+                # Direct-reply linkage is the modal `git send-email
+                # --thread` shape. Two-step lookup: same-batch
+                # pending Articles via `session.new` (we don't
+                # autoflush; an already-added cover in this batch
+                # isn't visible to SELECT yet), then SQL for already-
+                # committed parents. Skip when the parent has no key
+                # (orphan parent, or this thread isn't series-shaped
+                # after all); backfill closes the gap later.
+                pending_key = pending_version = None
+                for obj in session.new:
+                    if (
+                        isinstance(obj, Article)
+                        and obj.message_id == thread_parent
+                        and obj.patch_series_key is not None
+                    ):
+                        pending_key = obj.patch_series_key
+                        pending_version = obj.patch_series_version
+                        break
+                if pending_key is not None:
+                    series_key_val = pending_key
+                    series_version = pending_version
+                else:
+                    row = session.execute(
+                        select(
+                            Article.patch_series_key,
+                            Article.patch_series_version,
+                        ).where(
+                            Article.message_id == thread_parent,
+                            Article.patch_series_key.isnot(None),
+                        )
+                    ).one_or_none()
+                    if row is not None:
+                        series_key_val = row.patch_series_key
+                        series_version = row.patch_series_version
     return Article(
         message_id=parsed.message_id,
         subject=parsed.subject,
@@ -243,6 +296,7 @@ def _to_article(
         canonical_inbox_id=canonical_inbox_id,
         patch_series_key=series_key_val,
         patch_series_version=series_version,
+        patch_series_position=series_position,
         lists=[ArticleList(inbox_id=inbox_id, epoch=epoch, commit_sha=commit_sha)],
         files=[ArticleFile(path=p) for p in sorted(touched_paths)],
         trailers=trailer_rows,
@@ -360,15 +414,33 @@ def ingest_epoch(
     # write per message.
     pending_obs: dict[str, tuple[int, datetime]] = {}
 
+    # Max article date seen this batch (across `new` AND `linked`
+    # outcomes, so cross-posts first seen elsewhere still bump the
+    # destination inbox's "Last activity"). Flushed to
+    # `Inbox.last_article_date` on each commit so the front-page card
+    # doesn't ride the 24h `archive_stats` cache. See #216.
+    pending_max_date: datetime | None = None
+
     logger.info(
         "%s/%s: starting from %s (workers=%d)",
         inbox_name, epoch_name, last_sha or "<beginning>", workers,
     )
 
     def flush_batch() -> None:
+        nonlocal pending_max_date
         if pending_obs:
             _flush_observations(session, inbox_id, pending_obs)
             pending_obs.clear()
+        if pending_max_date is not None:
+            # `inbox` may be detached (callers sometimes pass an Inbox
+            # fetched in another session); re-fetch by id so the mutation
+            # lands on a session-attached row that SQLAlchemy will flush.
+            ib = session.get(Inbox, inbox_id)
+            if ib is not None:
+                current = ib.last_article_date
+                if current is None or _aware_utc(current) < pending_max_date:
+                    ib.last_article_date = pending_max_date
+            pending_max_date = None
         state.last_commit_sha = last_seen
         session.commit()
         seen_in_batch.clear()
@@ -430,9 +502,14 @@ def ingest_epoch(
         # not yet linked here (cross-post first seen elsewhere); one
         # row with non-NULL `linked_id` → already linked (dup_db).
         # Halves the query count on the 6M-row backfill cold path
-        # (was 1000/batch, now ~500).
+        # (was 1000/batch, now ~500). `Article.date` rides along to
+        # bump `Inbox.last_article_date` for cross-posts; the column
+        # is on the same row so no extra cost.
         existing_row = session.execute(
-            select(Article.id, ArticleList.article_id.label("linked_id"))
+            select(
+                Article.id, Article.date,
+                ArticleList.article_id.label("linked_id"),
+            )
             .select_from(Article)
             .join(
                 ArticleList,
@@ -461,6 +538,13 @@ def ingest_epoch(
                 ))
                 seen_in_batch.add(parsed.message_id)
                 result.linked += 1
+                # Cross-post: bump activity using the existing article's
+                # date (the link is new to *this* inbox but the article
+                # already carries a real date from its first ingest).
+                if existing_row.date is not None:
+                    link_date = _aware_utc(existing_row.date)
+                    if pending_max_date is None or link_date > pending_max_date:
+                        pending_max_date = link_date
                 logger.debug("%s/%s commit %s: linked (cross-post) %s",
                              inbox_name, epoch_name, commit_sha[:12], parsed.message_id)
             continue
@@ -470,10 +554,15 @@ def ingest_epoch(
             parsed, inbox_id=inbox_id, epoch=epoch_name,
             commit_sha=commit_sha, date=commit_time,
             canonical_inbox_id=canonical_inbox_id,
+            session=session,
         ))
         seen_in_batch.add(parsed.message_id)
         result.new += 1
         result.new_message_ids.append(parsed.message_id)
+        # `commit_time` is already aware-UTC from `_walk_epoch`; same
+        # value `_to_article` just persisted to `Article.date`.
+        if pending_max_date is None or commit_time > pending_max_date:
+            pending_max_date = commit_time
         logger.debug("%s/%s commit %s: new %s", inbox_name, epoch_name, commit_sha[:12], parsed.message_id)
 
         if processed % PROGRESS_EVERY == 0:
