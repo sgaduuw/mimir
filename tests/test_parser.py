@@ -90,27 +90,44 @@ def test_references_strips_cfws_comments():
     assert art.references == ["a@x", "b@x", "c@x"]
 
 
-def test_decode_rfc2047_falls_back_and_logs_on_unknown_charset(caplog):
+def test_decode_rfc2047_falls_back_and_logs_at_debug_on_unknown_charset(
+    caplog,
+):
     """The audit (2026-05-15) flagged the bare `except Exception`
     in `_decode_rfc2047` as silencing real charset-registry / decode
-    bugs. The tightened catch now logs a warning when it falls back
-    to the verbatim header; pin both the fallback and the warning so
-    a future regression that drops the logger or widens the catch
-    surfaces."""
+    bugs. The tightened catch logs SOMETHING when it falls back to
+    the verbatim header; pin both the fallback and the log line so a
+    future regression that drops the logger or widens the catch
+    surfaces.
+
+    Level is DEBUG, not WARN: the fallback is the canonical
+    handling for buggy-mailer encoded-words (`=?UNKNOWN?...`,
+    `=?unknown-8bit?...`, whitespace charset names), and the
+    verbatim string is itself the "broken sender mailer" cue in
+    the rendered subject/author. Multi-list ingest swamped the log
+    with WARN lines that carried no operationally actionable info.
+    """
     import logging
 
     from mimir.parser import _decode_rfc2047
 
-    with caplog.at_level(logging.WARNING, logger="mimir.parser"):
+    with caplog.at_level(logging.DEBUG, logger="mimir.parser"):
         out = _decode_rfc2047("=?totally-not-a-real-charset?Q?test?=")
 
     # Fallback is the verbatim header value.
     assert out == "=?totally-not-a-real-charset?Q?test?="
-    # A warning landed in the log; not silent.
-    assert any(
-        "fallback" in rec.message.lower() or "verbatim" in rec.message.lower()
-        for rec in caplog.records
-    ), f"expected a warning log; got: {[r.message for r in caplog.records]}"
+    # The log line lands at DEBUG, not WARN.
+    matching = [
+        rec for rec in caplog.records
+        if "fallback" in rec.message.lower() or "verbatim" in rec.message.lower()
+    ]
+    assert matching, (
+        f"expected a debug log; got: {[r.message for r in caplog.records]}"
+    )
+    assert all(rec.levelno == logging.DEBUG for rec in matching), (
+        f"expected DEBUG; got: "
+        f"{[(rec.levelname, rec.message) for rec in matching]}"
+    )
 
 
 # RFC 2047 encoded-word headers
@@ -287,6 +304,33 @@ def test_multipart_text_plain_is_body():
     assert "hello world" in art.body
 
 
+def test_body_with_unknown_charset_falls_back_to_latin1():
+    """A message body declaring `charset=unknown-8bit` (RFC 1428) or
+    any other charset Python's codec registry can't resolve used to
+    LookupError out of `body_part.get_content()` and the message
+    silently rendered as `(no body)` even though the git blob has
+    real text. Fall back to `get_payload(decode=True).decode('latin-1')`,
+    which is RFC 1428's recommended interpretation and is bijective
+    on bytes; structure (ASCII tokens, addresses, patch markers)
+    survives even when high-bit content shows as mojibake."""
+    raw = (
+        b"Message-ID: <unkbody@x>\r\n"
+        b"From: a@b\r\n"
+        b"Subject: t\r\n"
+        b'Content-Type: text/plain; charset="unknown-8bit"\r\n'
+        b"Content-Transfer-Encoding: 8bit\r\n\r\n"
+        b"hello \xe9 world\r\n"
+    )
+    art = parse_message(raw)
+    assert art.body is not None
+    assert "hello" in art.body
+    assert "world" in art.body
+    # latin-1 decoding of 0xe9 is the Latin Small Letter E With Acute.
+    # `errors="replace"` is set defensively; on latin-1 nothing
+    # actually triggers replacement (bijective by construction).
+    assert "é" in art.body
+
+
 def test_attachment_extracted():
     raw = (
         b"Message-ID: <m@x>\r\n"
@@ -389,6 +433,39 @@ def test_attachment_with_opaque_content_type_survives():
     assert att.filename == "hcidump.dat"
     assert att.content_type == "chemical/x-mopac-input"
     assert att.content == b"hcidump"
+
+
+def test_attachment_with_unknown_charset_survives():
+    """A leaf attachment with a registered content-type
+    (`text/plain`) but an unregistered charset (`unknown-8bit`,
+    per RFC 1428's "we have 8-bit bytes, encoding unknown" label)
+    used to LookupError out of `get_content()` and get dropped with
+    a warning. PR #258's catch was too narrow (KeyError only),
+    real-world patches/log files attached with this charset
+    (`r8169-getstats.patch`, `putty.log` on older lists) survived
+    only after the catch widened to LookupError. Recovered via the
+    same raw-payload fallback as the opaque-content-type case."""
+    raw = (
+        b"Message-ID: <unkcharset@x>\r\n"
+        b"From: a@b\r\n"
+        b"Subject: t\r\n"
+        b'Content-Type: multipart/mixed; boundary="bbb"\r\n\r\n'
+        b"--bbb\r\n"
+        b"Content-Type: text/plain\r\n\r\n"
+        b"body\r\n"
+        b"--bbb\r\n"
+        b'Content-Type: text/plain; charset="unknown-8bit"\r\n'
+        b'Content-Disposition: attachment; filename="putty.log"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n\r\n"
+        b"cHV0dHk=\r\n"
+        b"--bbb--\r\n"
+    )
+    art = parse_message(raw)
+    assert len(art.attachments) == 1
+    att = art.attachments[0]
+    assert att.filename == "putty.log"
+    assert att.content_type == "text/plain"
+    assert att.content == b"putty"
 
 
 # Subject normalization

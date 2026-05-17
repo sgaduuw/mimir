@@ -11,6 +11,42 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.28.1], 2026-05-18
+
+### Fixed
+
+- `parse_message` no longer drops the body when the message
+  declares a charset Python's codec registry can't resolve (RFC
+  1428's `unknown-8bit`, malformed encoded-word charsets, etc.).
+  Previously the `LookupError`/`UnicodeDecodeError` catch on
+  `body_part.get_content()` silently set `body = None` and the
+  message rendered as `(no body)` even though the git blob held
+  real text. Now falls back to
+  `body_part.get_payload(decode=True).decode("latin-1", errors="replace")`,
+  RFC 1428's recommended interpretation, latin-1 is bijective on
+  bytes so high-bit content shows as mojibake but structure
+  (ASCII tokens, addresses, patch markers) survives. Symmetric
+  with the attachment-side recovery introduced in PR #258 / #262.
+- `parse_message` now keeps leaf attachments whose declared
+  Content-Type IS handled by the stdlib's content manager (e.g.
+  `text/plain`) but whose declared charset isn't in Python's codec
+  registry (RFC 1428's `unknown-8bit`, malformed encoded-word
+  charsets, etc.). PR #258's catch in `_attachment_bytes` covered
+  only `KeyError` (the content-type-registry miss); `LookupError`
+  from a `codecs.lookup(charset)` failure on the text-content path
+  is a *sibling* of `KeyError` in the stdlib's lookup hierarchy,
+  not the parent, so attachments like `r8169-getstats.patch` and
+  `putty.log` from older list archives kept getting dropped.
+  Catch widened to `(LookupError, UnicodeError)`; same fallback to
+  raw transfer-decoded payload.
+- `_decode_rfc2047` now logs the fallback path at DEBUG instead of
+  WARNING. The fallback is the canonical handling for buggy-mailer
+  encoded-words (`=?UNKNOWN?...`, `=?unknown-8bit?...`, whitespace
+  charset names, single-letter charsets) and the rendered subject /
+  author already carries the verbatim `=?UNKNOWN?B?...?=` string as
+  the "broken sender mailer" cue. On multi-list ingest the WARN
+  volume swamped real signal.
+
 ## [1.28.0], 2026-05-18
 
 ### Added
