@@ -39,9 +39,13 @@ logger = logging.getLogger(__name__)
 _BRACKET_RE = re.compile(r"^\[([^\]]+)\]\s*(.+)$")
 
 # `0/N` shape inside the bracket, the cover-letter discriminator.
+# `0+` (not just `0`) so zero-padded covers like `00/24` or `000/100`
+# still match: contributors using `git format-patch --numbered`
+# get column-aligned shapes (`00/27`, `01/27`, ..., `27/27`) when
+# the series has ≥10 patches, and we want those covers indexed too.
 # `\b` boundaries so a stray `10/30` (patch ten in series of thirty)
 # can't be misread as a cover letter.
-_ZERO_OF_N_RE = re.compile(r"\b0\s*/\s*\d+\b")
+_ZERO_OF_N_RE = re.compile(r"\b0+\s*/\s*\d+\b")
 
 # Version qualifiers. `v\d+` is the conventional revision marker;
 # `RFC` and `RESEND` are version-shaped enough to surface

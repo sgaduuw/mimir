@@ -105,6 +105,26 @@ def test_rejects_high_low_pattern_resembling_zero_of_n():
     assert parse_cover_letter("[PATCH 10/30] foo: x") is None
 
 
+def test_recognises_zero_padded_cover_letter():
+    """`git format-patch --numbered` column-aligns positions when
+    the series has >=10 patches: `00/27`, `01/27`, ..., `27/27`.
+    The cover letter shape is `00/N`, not `0/N`. Regression for #247."""
+    out = parse_cover_letter("[PATCH v3 00/27] Rust HRT support")
+    assert out is not None
+    assert out.version == "v3"
+    assert out.total == 27
+    # And the unversioned shape.
+    out = parse_cover_letter("[PATCH 00/12] foo: cleanups")
+    assert out is not None
+    assert out.version == "v1"
+    assert out.total == 12
+    # Three-digit padding shape (rare but valid: >=100-patch series).
+    out = parse_cover_letter("[PATCH v2 000/100] huge refactor")
+    assert out is not None
+    assert out.version == "v2"
+    assert out.total == 100
+
+
 # series_key, stability across cosmetic drift.
 
 
