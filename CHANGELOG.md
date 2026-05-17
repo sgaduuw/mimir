@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.27.0], 2026-05-18
+
 ### Changed
 
 - JSON-LD `Person.email` and Atom `<author><email>` now ride along
