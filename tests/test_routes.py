@@ -810,21 +810,32 @@ def test_csp_script_src_pins_specific_htmx_version(client):
     `base.html` MUST update the CSP in lockstep; the bare origin
     would silently allow any unpkg package or version to load.
 
-    Asserts the shape (`unpkg.com/htmx.org@<digits>.<digits>.<digits>/`)
-    so a future htmx version bump is fine but a "loosen back to bare
-    origin" regression isn't."""
+    Pins via an anchored regex (`^https://unpkg\\.com/htmx\\.org@
+    <X.Y.Z>/$`) rather than substring checks, so a future htmx
+    version bump is fine but a "loosen back to bare origin"
+    regression isn't, and CodeQL's `py/incomplete-url-substring-
+    sanitization` rule has nothing to flag on a strict-match check.
+    """
     import re
     r = client.get("/")
     directives = _parse_csp(r.headers.get("Content-Security-Policy", ""))
     script_src = directives.get("script-src", [])
-    htmx_sources = [
-        s for s in script_src if "unpkg.com" in s
-    ]
-    assert htmx_sources, "no unpkg.com source on script-src"
     pinned = re.compile(r"^https://unpkg\.com/htmx\.org@\d+\.\d+\.\d+/$")
-    assert all(pinned.match(s) for s in htmx_sources), (
-        f"unpkg sources must be path-pinned to a specific htmx version, "
-        f"got: {htmx_sources}"
+    matched = [s for s in script_src if pinned.match(s)]
+    assert matched, (
+        "script-src must carry exactly one source matching "
+        f"`{pinned.pattern}`; full script-src was {script_src!r}"
+    )
+    # And nothing else on unpkg.com: a stray `https://unpkg.com`
+    # bare-origin entry alongside the pinned one would still allow
+    # any package, defeating the lockstep contract.
+    other_unpkg = [
+        s for s in script_src
+        if s.endswith("unpkg.com") or s.endswith("unpkg.com/")
+    ]
+    assert not other_unpkg, (
+        f"bare unpkg.com origin must not appear on script-src, "
+        f"got: {other_unpkg}"
     )
 
 
