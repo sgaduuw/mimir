@@ -24,7 +24,7 @@ defaults assume:
 - **Multi-million-message scale.** Tested on the full lkml corpus
   (~6 M articles, ~3.6 GB DB on disk). Comfortable on a laptop;
   growing past ~50 M would warrant revisiting SQLite.
-- **Single-user ingest at a time.** `flask --app mimir update` /
+- **Single-user ingest at a time.** `mimir update` /
   `ingest` are not safe to run concurrently against the same DB.
   Multiple readers (web server + warm-cache cron) are fine, WAL
   mode handles that.
@@ -114,12 +114,16 @@ Each list on lore.kernel.org is published as one git repo per epoch.
 The easiest way to set things up is to let mimir do it for you:
 
 ```sh
-poetry run flask --app mimir update                   # all configured inboxes
-poetry run flask --app mimir update --inbox lkml      # one specific inbox
-poetry run flask --app mimir update --skip-clone      # only fetch updates on existing epochs
-poetry run flask --app mimir update --skip-fetch      # only discover/clone new epochs
-poetry run flask --app mimir update --skip-ingest     # download but don't index
+poetry run mimir update                   # all configured inboxes
+poetry run mimir update --inbox lkml      # one specific inbox
+poetry run mimir update --skip-clone      # only fetch updates on existing epochs
+poetry run mimir update --skip-fetch      # only discover/clone new epochs
+poetry run mimir update --skip-ingest     # download but don't index
 ```
+
+(All `mimir <cmd>` invocations are also reachable as
+`flask --app mimir <cmd>`, both share the same Click commands.
+Pick whichever reads better in your scripts.)
 
 For each inbox `update` fetches the upstream `manifest.js.gz`, runs
 `git clone --mirror -- <url>` on any epoch missing locally, runs
@@ -143,12 +147,12 @@ git clone --mirror -- https://lore.kernel.org/lkml/git/1.git 1.git
 ## Ingesting
 
 ```sh
-poetry run flask --app mimir ingest                   # walk every configured inbox (parallel by default)
-poetry run flask --app mimir ingest --inbox lkml      # only one inbox
-poetry run flask --app mimir ingest --limit 500       # cap for testing
-poetry run flask --app mimir ingest --workers 1       # force sequential (debug)
-poetry run flask --app mimir ingest -v                # progress every 100 msgs
-poetry run flask --app mimir ingest -vv               # one log line per message
+poetry run mimir ingest                   # walk every configured inbox (parallel by default)
+poetry run mimir ingest --inbox lkml      # only one inbox
+poetry run mimir ingest --limit 500       # cap for testing
+poetry run mimir ingest --workers 1       # force sequential (debug)
+poetry run mimir ingest -v                # progress every 100 msgs
+poetry run mimir ingest -vv               # one log line per message
 ```
 
 Parsing runs in a `ProcessPoolExecutor` (defaults to
@@ -161,9 +165,9 @@ unaffected, parallelism is confined to the CPU-bound
 To inspect a single message (smoke test for the git-backed read path):
 
 ```sh
-poetry run flask --app mimir show '<message-id-without-angle-brackets>'
-poetry run flask --app mimir show '...' --inbox lkml         # read the blob from this inbox's mirror
-poetry run flask --app mimir show '...' --body-chars -1      # full body, no truncation
+poetry run mimir show '<message-id-without-angle-brackets>'
+poetry run mimir show '...' --inbox lkml         # read the blob from this inbox's mirror
+poetry run mimir show '...' --body-chars -1      # full body, no truncation
 ```
 
 By default the ingest is quiet apart from the per-epoch summary
@@ -173,8 +177,8 @@ To re-walk a single epoch, e.g. to backfill messages that failed
 under an older parser version:
 
 ```sh
-poetry run flask --app mimir reindex lkml 0.git                    # rewind state, re-walk; dedup skips existing
-poetry run flask --app mimir reindex lkml 0.git --from-scratch     # also DELETE this inbox's links to that epoch first
+poetry run mimir reindex lkml 0.git                    # rewind state, re-walk; dedup skips existing
+poetry run mimir reindex lkml 0.git --from-scratch     # also DELETE this inbox's links to that epoch first
 ```
 
 Output is one line per epoch, e.g.:
@@ -222,10 +226,10 @@ that parses the same commit cleanly clears the row automatically.
 To enumerate or replay without re-walking the whole epoch:
 
 ```sh
-flask --app mimir admin failures list                                 # all
-flask --app mimir admin failures list --inbox lkml --error-class ValueError
-flask --app mimir admin failures replay lkml                          # re-parse all of lkml's failures
-flask --app mimir admin failures replay lkml --epoch 0.git --limit 100
+mimir admin failures list                                 # all
+mimir admin failures list --inbox lkml --error-class ValueError
+mimir admin failures replay lkml                          # re-parse all of lkml's failures
+mimir admin failures replay lkml --epoch 0.git --limit 100
 ```
 
 `replay` re-fetches each failure's blob from the mirror, re-runs the
@@ -242,11 +246,11 @@ directly. The CLI is the front-end to a service layer in
 functions.
 
 ```sh
-flask --app mimir admin inbox list
-flask --app mimir admin inbox show <name>
-flask --app mimir admin inbox add <name> --mirror-path PATH --upstream-url URL
-flask --app mimir admin inbox update <name> [--mirror-path P] [--upstream-url U] [--rename NEW]
-flask --app mimir admin inbox remove <name> [--keep-orphan-articles] [--remove-inbox-data] [--yes]
+mimir admin inbox list
+mimir admin inbox show <name>
+mimir admin inbox add <name> --mirror-path PATH --upstream-url URL
+mimir admin inbox update <name> [--mirror-path P] [--upstream-url U] [--rename NEW]
+mimir admin inbox remove <name> [--keep-orphan-articles] [--remove-inbox-data] [--yes]
 ```
 
 Validation is enforced at the service layer:
@@ -257,16 +261,16 @@ Validation is enforced at the service layer:
   hyphens, ≤64 chars.
 - `<upstream_url>` must be `https://` with a non-empty host.
 - `<mirror_path>` must be a non-empty string. The directory is
-  allowed to not exist yet, `flask --app mimir update --inbox
+  allowed to not exist yet, `mimir update --inbox
   <name>` will create it on first clone.
 
 `add` only inserts the row. To actually populate the inbox:
 
 ```sh
-flask --app mimir admin inbox add my-list \
+mimir admin inbox add my-list \
     --mirror-path Inboxes/my-list/git \
     --upstream-url https://lore.kernel.org/my-list
-flask --app mimir update --inbox my-list   # clone the mirror + ingest
+mimir update --inbox my-list   # clone the mirror + ingest
 ```
 
 `remove` cascade-deletes via FK `ON DELETE CASCADE`: the inbox's
@@ -397,7 +401,7 @@ and [Pygments](https://pygments.org/) for server-side syntax
 highlighting.
 
 ```sh
-poetry run flask --app mimir run        # http://127.0.0.1:5000/
+poetry run mimir run        # http://127.0.0.1:5000/
 ```
 
 Routes:
@@ -408,7 +412,7 @@ Routes:
   7 days, top 10 by decay-weighted score); side-by-side latest
   `[GIT PULL]` requests and `Linux N.N.N` release announcements;
   side-by-side per-author trackers driven by `Inbox.tracked_authors`
-  (manage via `flask --app mimir admin inbox trackers …`; the
+  (manage via `mimir admin inbox trackers …`; the
   section is hidden when the inbox has no trackers configured); a
   "this day, 5 years ago" sample; the last 10 messages in the
   inbox; a 30-day daily-volume sparkline + archive stats footer.
@@ -516,13 +520,13 @@ table; values JSON-encoded with a small dataclass registry in
 To eliminate user-facing cold-start latency, run:
 
 ```sh
-poetry run flask --app mimir warm-cache
+poetry run mimir warm-cache
 ```
 
 from cron or a systemd timer. Sample `crontab`:
 
 ```cron
-* * * * * cd ~/Projects/python/mimir && poetry run flask --app mimir warm-cache >/dev/null
+* * * * * cd ~/Projects/python/mimir && poetry run mimir warm-cache >/dev/null
 ```
 
 A warm-cache run refreshes every cached helper for every configured
@@ -544,7 +548,7 @@ past its actual content over time, and the WAL grows during long
 ingests until something checkpoints it. To compact both:
 
 ```sh
-poetry run flask --app mimir vacuum
+poetry run mimir vacuum
 ```
 
 Reports before/after sizes for `mimir.db`, `mimir.db-wal`, and
@@ -557,7 +561,7 @@ run it during a quiet window.
 Sample `crontab` (daily at 04:00, only if no ingest is running):
 
 ```cron
-0 4 * * * cd ~/Projects/python/mimir && poetry run flask --app mimir vacuum >/dev/null
+0 4 * * * cd ~/Projects/python/mimir && poetry run mimir vacuum >/dev/null
 ```
 
 On lkml-scale (~6 M articles, ~3.6 GB DB) a full VACUUM takes ~80 
@@ -573,13 +577,13 @@ instead of walking the date index). Run periodically, daily or
 after big ingest deltas:
 
 ```sh
-poetry run flask --app mimir analyze
+poetry run mimir analyze
 ```
 
 Example crontab (4:30am, just after the daily vacuum):
 
 ```cron
-30 4 * * * cd ~/Projects/python/mimir && poetry run flask --app mimir analyze
+30 4 * * * cd ~/Projects/python/mimir && poetry run mimir analyze
 ```
 
 On lkml-scale ANALYZE takes ~5 15 s.
@@ -618,13 +622,13 @@ and `MAINLINE_TREE_URL`.
 
 ```sh
 # Clone (first run) or fetch + load:
-poetry run flask --app mimir update-mainline
+poetry run mimir update-mainline
 
 # Re-parse the local HEAD without fetching:
-poetry run flask --app mimir update-mainline --skip-fetch
+poetry run mimir update-mainline --skip-fetch
 
 # Force re-parse even when HEAD hasn't moved (after a parser fix):
-poetry run flask --app mimir update-mainline --force
+poetry run mimir update-mainline --force
 ```
 
 Steady-state ticks (HEAD unchanged) are cheap: fetch, compare,
@@ -653,7 +657,7 @@ at ingest time (parsing `diff --git a/<old> b/<new>` headers out
 of patch bodies). For articles ingested before that landed, run:
 
 ```sh
-poetry run flask --app mimir backfill-article-files [-v]
+poetry run mimir backfill-article-files [-v]
 ```
 
 Idempotent, articles that already have rows are skipped. Pass
@@ -672,7 +676,7 @@ via their thread parent). For articles ingested before that
 landed:
 
 ```sh
-poetry run flask --app mimir backfill-patch-series [-v]
+poetry run mimir backfill-patch-series [-v]
 ```
 
 Cheaper than the article-files backfill, only reads

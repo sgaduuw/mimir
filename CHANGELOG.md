@@ -11,6 +11,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- New `mimir` shell command (Poetry console script) as a first-class
+  CLI entry point. `mimir ingest`, `mimir backfill-patch-series`,
+  `mimir admin inbox list` etc. work the same as
+  `flask --app mimir <cmd>`; both invocations share the underlying
+  Click commands via Flask's `FlaskGroup` discovery, so no operator
+  retraining or migration window is needed. The scheduler sidecar
+  (`deploy/scheduler.sh`) and the systemd one-shot units
+  (`deploy/systemd/mimir-{analyze,vacuum,warm-cache}.service`)
+  switch to the shorter form; the longer `flask --app mimir` form
+  stays available indefinitely. (#221)
+
 ## [1.22.0], 2026-05-17
 
 ### Added
