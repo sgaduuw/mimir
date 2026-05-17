@@ -11,6 +11,38 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.23.0], 2026-05-17
+
+### Added
+
+- Inline-rendered patches now carry per-hunk and per-line anchor
+  IDs so URL fragments like `/<inbox>/.../<id>#h-2-L15` jump to
+  line 15 of hunk 2. Each hunk wraps in
+  `<div id="h-N" class="hunk">`; each line within carries
+  `id="h-N-LM"` (1-indexed, including the `@@` header itself as
+  line 1). Reviewers can deep-link to specific lines of a patch
+  from issue trackers, Slack, IRC, etc. Anchors are suppressed on
+  diffs nested inside quote blocks (the "quoted hunk" reply
+  pattern) to avoid `h-N` collisions on pages where both render.
+  (#211)
+- Patch context, add, and remove lines pick up per-language
+  Pygments highlighting overlaid on the existing add/remove
+  prefix colouring. The lexer is detected from each
+  `+++ b/<path>` line and stays active until the next `+++`
+  switch; multi-file patches transition lexer on each new file.
+  Unknown extensions, `/dev/null` (file-deletion targets), and
+  binary patches fall back to `TextLexer` cleanly. (#211)
+- New `mimir` shell command (Poetry console script) as a first-class
+  CLI entry point. `mimir ingest`, `mimir backfill-patch-series`,
+  `mimir admin inbox list` etc. work the same as
+  `flask --app mimir <cmd>`; both invocations share the underlying
+  Click commands via Flask's `FlaskGroup` discovery, so no operator
+  retraining or migration window is needed. The scheduler sidecar
+  (`deploy/scheduler.sh`) and the systemd one-shot units
+  (`deploy/systemd/mimir-{analyze,vacuum,warm-cache}.service`)
+  switch to the shorter form; the longer `flask --app mimir` form
+  stays available indefinitely. (#221)
+
 ## [1.22.0], 2026-05-17
 
 ### Added

@@ -1,12 +1,24 @@
 """CLI command package.
 
-`register_cli(app)` is the only public entry point: it attaches every
-command and group to the Flask app's `app.cli`. The package is split by
-concern (see each submodule); names that callers (tests, the legacy
-`mimir.cli` import path) used to import from `mimir.cli` are
-re-exported here so the cutover is a pure refactor.
+Two public entry points:
+
+- `register_cli(app)`: attaches every command + group to the Flask
+  app's `app.cli`. Used both by Flask's own `flask --app mimir <cmd>`
+  discovery path and by the standalone `mimir` shell command.
+- `mimir`: a `FlaskGroup`-based Click group exposed via Poetry as the
+  `mimir` console script (`[tool.poetry.scripts]` in pyproject.toml).
+  Same backing as `flask --app mimir` since both use `FlaskGroup`'s
+  app-factory discovery; this just spares operators the
+  `flask --app mimir` prefix.
+
+The package is split by concern (see each submodule); names that
+callers (tests, the legacy `mimir.cli` import path) used to import
+from `mimir.cli` are re-exported here so the cutover is a pure
+refactor.
 """
+import click
 from flask import Flask
+from flask.cli import FlaskGroup
 
 from mimir.cli._common import (
     _configure_logging,
@@ -118,3 +130,20 @@ def register_cli(app: Flask) -> None:
     app.cli.add_command(analyze_command)
     app.cli.add_command(dev_seed_thread_command)
     app.cli.add_command(admin_group)
+
+
+def _create_app_for_cli(info=None):
+    """Factory hook for the standalone `mimir` Click group. `FlaskGroup`
+    passes a `ScriptInfo` instance, which we ignore (no per-invocation
+    config), and we return the same app `create_app()` builds. The
+    import is local to dodge a top-of-module circular: `mimir.cli` is
+    imported by `mimir.__init__` via `register_cli` during `create_app`."""
+    from mimir import create_app
+    return create_app()
+
+
+@click.group(cls=FlaskGroup, create_app=_create_app_for_cli)
+def mimir() -> None:
+    """mimir CLI, every command registered via `register_cli` is
+    available as `mimir <command>`. Same backing as
+    `flask --app mimir <command>`; both invocations stay supported."""

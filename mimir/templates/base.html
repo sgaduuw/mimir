@@ -91,6 +91,13 @@
        styles so the diff inherits Pico's theme; the tones use
        light-dark() so add/remove stay legible in both modes. */
     .highlight pre { margin: 0; }
+    /* #211: each hunk renders inside its own <div class="hunk"><pre>
+       so URL fragments like `#h-2-L15` jump to a specific line. The
+       div boundaries would default to flow-block spacing that
+       fragments the visual continuity of the diff; reset margins so
+       consecutive hunks read as one continuous patch. */
+    .highlight .hunk { margin: 0; }
+    .highlight .diff-meta { margin: 0; }
     .highlight .gd { color: light-dark(#a00000, #f4979c); }   /* deleted */
     .highlight .gi { color: light-dark(#008400, #95e591); }   /* inserted */
     .highlight .gh { color: light-dark(#000080, #93b9ff); font-weight: 600; }
