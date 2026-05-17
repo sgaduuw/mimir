@@ -130,6 +130,8 @@ def backfill_patch_series_command(
         def progress_fn(r):  # noqa: E306
             click.echo(
                 f"... examined={r.examined} indexed={r.indexed} "
+                f"in_series_indexed={r.in_series_indexed} "
+                f"in_series_orphan={r.in_series_orphan} "
                 f"not_cover={r.not_cover} skipped={r.skipped}"
             )
     result = patch_series.backfill_patch_series(
@@ -137,6 +139,8 @@ def backfill_patch_series_command(
     )
     click.echo(
         f"backfill complete: examined={result.examined} "
-        f"indexed={result.indexed} not_cover={result.not_cover} "
-        f"skipped={result.skipped}"
+        f"indexed={result.indexed} "
+        f"in_series_indexed={result.in_series_indexed} "
+        f"in_series_orphan={result.in_series_orphan} "
+        f"not_cover={result.not_cover} skipped={result.skipped}"
     )

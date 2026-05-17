@@ -85,7 +85,13 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.inbox_sitemap": "public, max-age=300",
     "web.message_id_lookup": "public, max-age=3600",
     "web.message_id_lookup_inbox": "public, max-age=3600",
-    "web.message": "public, max-age=60",
+    # web.message uses ETag-based conditional revalidation (set inside
+    # the route handler). `no-cache` directs browsers + edges to ALWAYS
+    # revalidate via If-None-Match before reusing a cached body; matched
+    # ETags resolve as 304 with no body, so the bandwidth cost is small
+    # while the within-window stale-after-deploy problem (a code change
+    # leaving cached pages mis-rendered up to max-age) goes away.
+    "web.message": "public, no-cache",
     "web.attachment_download": "public, max-age=3600, immutable",
     "web.attachment_preview": "public, max-age=3600, immutable",
 }
@@ -152,9 +158,11 @@ def _start_request_timer():
 @bp_web.after_app_request
 def _add_cache_headers(response):
     # 200 OK and 301/302 redirects (Message-ID lookup) are cacheable;
-    # honor their dict entries. 4xx/5xx skip, error responses
-    # shouldn't be pinned in upstream caches.
-    if response.status_code in (200, 301, 302):
+    # 304 Not Modified (web.message conditional revalidation) must
+    # carry the same Cache-Control as the would-be 200 per RFC 7232
+    # so the client knows when to revalidate again. 4xx/5xx skip,
+    # error responses shouldn't be pinned in upstream caches.
+    if response.status_code in (200, 301, 302, 304):
         rule = _CACHE_CONTROL_BY_ENDPOINT.get(request.endpoint)
         if rule:
             response.headers["Cache-Control"] = rule

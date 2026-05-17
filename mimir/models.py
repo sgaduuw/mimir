@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mimir.extensions import Base
@@ -32,6 +32,17 @@ class Inbox(Base):
     # tile per entry. Managed via `admin inbox trackers`.
     tracked_authors: Mapped[dict[str, str] | None] = mapped_column(
         JSON, nullable=True,
+    )
+
+    # Cached "max article date in this inbox", bumped on every
+    # successful ingest commit. Exists so the front-page "Last
+    # activity" string doesn't ride the 24h `archive_stats` cache
+    # row (the slow COUNT(*) is what justifies that TTL; MAX(date)
+    # rode along and inherited the same staleness window, see #216).
+    # NULL on inboxes that haven't ingested anything yet; otherwise
+    # monotonic non-decreasing.
+    last_article_date: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True,
     )
 
     # IngestState rows are tiny (one per epoch, ≤50 total per inbox);
@@ -70,14 +81,20 @@ class Article(Base):
     # `patch_series_version` is a short marker like `v1`, `v2`,
     # `rfc`. The unversioned-but-cover-letter case is materialised
     # as `v1`.
-    # Per-patch (1/N, 2/N, ...) attachment to a series is a future
-    # slice; for now these columns are populated for cover letters
-    # only.
+    # `patch_series_position` (#212): NULL = not a series patch;
+    # 0 = cover letter; positive = in-series patch position (the
+    # `M` of `[PATCH M/T]`). Position is set by the subject parser
+    # alone, no cross-article lookup; key + version follow the
+    # cover-letter linkage and may lag (NULL until backfill walks
+    # the thread parent).
     patch_series_key: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True,
     )
     patch_series_version: Mapped[str | None] = mapped_column(
         String, nullable=True,
+    )
+    patch_series_position: Mapped[int | None] = mapped_column(
+        nullable=True,
     )
 
     # Author's intended primary list, derived from the first list-shaped

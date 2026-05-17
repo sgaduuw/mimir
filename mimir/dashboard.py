@@ -425,14 +425,21 @@ def archive_stats(
 ) -> ArchiveStats:
     """Total row count + date span + epoch count for `inbox`. Cached
     per-inbox for 24h. COUNT(*) over a single inbox still does a scan but
-    is cheaper than across all inboxes."""
+    is cheaper than across all inboxes.
+
+    `last_date` is overlaid from `Inbox.last_article_date` (bumped on
+    every ingest commit, see #216) instead of being part of the
+    cached row, so the front-page "Last activity" string doesn't ride
+    the 24h cache window. The COUNT(*) is the slow piece that
+    justifies the TTL; first_date / epochs drift on geological
+    timescales by comparison.
+    """
     def compute() -> ArchiveStats:
         row = session.execute(
             text(
                 """
                 SELECT COUNT(*) AS total,
                        MIN(a.date) FILTER (WHERE a.date >= :min_date) AS first_date,
-                       MAX(a.date) AS last_date,
                        COUNT(DISTINCT al.epoch) AS epochs
                 FROM articles a
                 JOIN article_lists al ON al.article_id = a.id
@@ -445,13 +452,19 @@ def archive_stats(
             total=row.total,
             epochs=row.epochs,
             first_date=_coerce_dt(row.first_date),
-            last_date=_coerce_dt(row.last_date),
+            last_date=None,
         )
 
-    return cache.get_or_compute(
+    cached = cache.get_or_compute(
         session,
         f"archive_stats:{inbox.name}",
         STATS_CACHE_TTL_SEC,
         compute,
         force=force,
+    )
+    return ArchiveStats(
+        total=cached.total,
+        epochs=cached.epochs,
+        first_date=cached.first_date,
+        last_date=inbox.last_article_date,
     )

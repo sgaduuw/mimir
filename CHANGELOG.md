@@ -11,6 +11,113 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.22.0], 2026-05-17
+
+### Added
+
+- New column `articles.patch_series_position` records each
+  article's position within its patch series (NULL = not a series
+  patch; 0 = cover letter; 1+ = in-series patch position from the
+  `M` of `[PATCH M/T]`). Ingest writes it from the subject parser
+  on every fresh article; in-series patches additionally inherit
+  `patch_series_key + patch_series_version` from their thread
+  parent's cover letter when present. `flask --app mimir
+  backfill-patch-series` extended to handle in-series patches via
+  the same thread-parent walk, with new `in_series_indexed` /
+  `in_series_orphan` buckets in the output. The
+  `/<inbox>/series/<key>/diff` route now resolves both sides via
+  an indexed `(key, version, position)` lookup, falling back to
+  the per-render heuristic resolver from #210 only when a side is
+  awaiting backfill. The state card's "Series revisions" row now
+  renders on `[PATCH N/M]` message pages too (previously cover-
+  letter only), with a same-position filter so the timeline shows
+  every revision of THIS patch instead of every patch in every
+  revision; `[diff vs current]` links carry `pos=N` accordingly.
+  (#212)
+
+### Fixed
+
+- Front-page "Last activity" string per inbox card no longer lags
+  behind ingest by up to 24 hours. The value previously rode the
+  same cache row as `archive_stats`'s `COUNT(*)` (24 h TTL,
+  justified by the ~6 s COUNT pass on a 6M-row inbox), so a fresh
+  ingest landed but the dashboard stayed pinned to whatever
+  `MAX(date)` was when the cache was last refreshed. Materialised
+  `Inbox.last_article_date` (bumped on every successful ingest
+  commit, including cross-post links) and made `archive_stats`
+  overlay it on the cached row at read time. Schema migration adds
+  the column and backfills existing inboxes via correlated
+  `MAX(a.date)` per row. (#216)
+
+### Changed
+
+- Message pages on patch articles now render a consolidated
+  per-patch state card at the top of the body, replacing the
+  previous standalone "Applied as" line and "Patch series"
+  sidebar. The card has four rows, each rendered only when it has
+  data: **Trailers** (per-role tally across `Reviewed-by`,
+  `Acked-by`, `Tested-by`, `Reported-by`, `Suggested-by`,
+  `Co-developed-by`, `Reported-and-tested-by`, with a
+  `(N maintainer)` chip marking the subset attested by an
+  M:/R: address on a subsystem this patch touches);
+  **Landed** (mainline-commit landings via `Link:`-trailer
+  reverse lookup, same surface as the old "Applied as" aside);
+  **Series revisions** (cover-letter timeline with
+  `[diff vs current]` links per non-current revision, carried
+  over from the inter-revision diff route added under #210);
+  **Activity** (days since the last reply in the thread). The
+  card is gated on the subject reading as `[PATCH …]` so prose
+  and `[GIT PULL]` / `[ANNOUNCE]` brackets get no card at all.
+  Result round-trips through the existing 5-min cache so the
+  render stays cheap on repeated views.
+- Message page (`/<inbox>/<year>/<month>/<id>`) now uses ETag-based
+  conditional revalidation instead of a 60-second `max-age` window.
+  The route emits an ETag computed from `(article.id,
+  mimir.__version__, max(thread node date), HX-Request flag)` and
+  returns `304 Not Modified` when `If-None-Match` matches. The
+  Cache-Control header flips from `public, max-age=60` to
+  `public, no-cache`, which directs browsers and edges to always
+  revalidate. Matched ETags resolve as a tiny 304 (no body), so the
+  bandwidth cost is small; the within-window stale-after-deploy
+  problem (a code change leaving cached pages mis-rendered up to a
+  minute after release) is eliminated entirely. The thread walk
+  moved before the body fetch so 304 responses skip the git-mirror
+  read and the template render. HTMX intra-thread swaps get a
+  distinct ETag so browsers don't confuse the partial response with
+  the full page.
+
+### Added
+
+- New route `/<inbox>/series/<patch_series_key>/diff?from=<vN>&to=<vM>&pos=<pos>`
+  surfaces the diff between two revisions of a patch series. `pos=cover`
+  diffs the cover-letter bodies (changelog evolution); `pos=N` diffs the
+  N-th in-series patch's body across revisions, surfacing both commit-
+  message and patch-hunk changes in one view. The cover-letter sidebar
+  on `[PATCH 0/N]` message pages gains a `[diff vs current]` link next
+  to each non-current revision pointing at the new route. Scope is
+  cover-letter+request-time-resolved-in-series-patches: in-series
+  patches don't have `patch_series_key` set today, so the resolver
+  walks each cover letter's thread children at request time and matches
+  positions across revisions by canonical-subject equality with file-
+  overlap fallback. Refuses to guess on ambiguous matches (returns a
+  "couldn't pick" 404 rather than picking wrong on a review surface).
+  Diffs cached 24h, source emails being immutable in the public-inbox
+  mirror. Follow-up (#212) will persist `patch_series_position` to
+  in-series patches, simplifying the resolver into an indexed lookup.
+
+### Fixed
+
+- Cover-letter patch-series sidebar (`/<inbox>/.../msg/<id>` on a
+  `[PATCH 0/N]` view) no longer lazy-loads the inbox row for each
+  cross-post inbox the series has touched. The handler eager-loads
+  `Article.lists` but the chain stopped there; per-revision
+  `al.inbox.name` traversal fell back to lazy fetches, deduped by
+  the identity map to one query per distinct inbox above the
+  eager-load. Chained the selectinload through `ArticleList.inbox`
+  so the worst case is zero extra round-trips. Regression test pins
+  that no `WHERE inboxes.id = ?` (per-id lazy form) fires during a
+  cross-posted series render.
+
 ## [1.21.3] - 2026-05-16
 
 ### Fixed
