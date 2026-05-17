@@ -1543,6 +1543,12 @@ def test_register_cli_attaches_every_module_level_command():
     declared = {
         v for v in vars(cli_mod).values() if isinstance(v, click.Command)
     }
+    # `mimir` (the FlaskGroup-based standalone entry point introduced
+    # in #221) is the OUTER group, not a subcommand of `app.cli`. It
+    # discovers `app.cli` commands via `FlaskGroup.create_app`, so
+    # asserting it's reachable via `app.cli.commands` would be
+    # circular. Exclude from the wire-up assertion.
+    declared -= {cli_mod.mimir}
 
     missing = declared - attached
     assert not missing, (
@@ -1550,3 +1556,20 @@ def test_register_cli_attaches_every_module_level_command():
         f"`register_cli(app)`: {sorted(c.name for c in missing)}. "
         "Either add to register_cli() or attach to an existing subgroup."
     )
+
+
+def test_mimir_entry_point_help_lists_registered_commands():
+    """#221: the standalone `mimir` Click group (Poetry console
+    script `mimir`) exposes the same commands `register_cli` attaches
+    to `app.cli`. Hits `--help` via `CliRunner` so the test doesn't
+    depend on the entry-point being on $PATH inside the test runner."""
+    from mimir.cli import mimir as mimir_group
+    result = CliRunner().invoke(mimir_group, ["--help"])
+    assert result.exit_code == 0
+    # Spot-check a few commands across the surface: a top-level
+    # operator command, a backfill, the admin group, a Flask builtin
+    # (FlaskGroup hands those through too).
+    for cmd in ("ingest", "backfill-patch-series", "admin", "run"):
+        assert cmd in result.output, (
+            f"`mimir --help` is missing `{cmd}`:\n{result.output}"
+        )

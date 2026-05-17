@@ -22,7 +22,7 @@ User=mimir
 Group=mimir
 WorkingDirectory=/opt/mimir
 EnvironmentFile=/opt/mimir/.env
-ExecStart=/opt/mimir/.venv/bin/flask --app mimir vacuum
+ExecStart=/opt/mimir/.venv/bin/mimir vacuum
 
 Nice=15
 IOSchedulingClass=idle
