@@ -99,3 +99,111 @@ def test_backfill_cli_honours_limit(seeded_db):
     result = CliRunner().invoke(backfill_patch_series_command, ["--limit", "2"])
     assert result.exit_code == 0
     assert "examined=2" in result.output
+
+
+# #212 (position + in-series linkage)
+
+
+def _add_article_with_parent(seeded_db, msgid, subject, parent_msgid):
+    """Like `_add_article` but with `thread_parent` set so the
+    backfill's in-series linker can walk up to the cover."""
+    from datetime import datetime, timezone
+    with seeded_db() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        art = Article(
+            message_id=msgid, subject=subject, author="A <a@x>",
+            date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            thread_parent=parent_msgid,
+            subject_normalized=subject.lower(),
+            canonical_inbox_id=inbox.id,
+            lists=[ArticleList(inbox_id=inbox.id, epoch="0.git",
+                               commit_sha="e" * 40)],
+        )
+        s.add(art)
+        s.commit()
+        return art.id
+
+
+def test_backfill_sets_position_zero_on_cover_letters(seeded_db):
+    """A cover letter walked by backfill lands with
+    `patch_series_position = 0`, the column #212 added."""
+    _add_article(seeded_db, "cv@x", "[PATCH v2 0/3] improve foo")
+    backfill_patch_series()
+    with seeded_db() as s:
+        cover = s.execute(
+            select(Article).where(Article.message_id == "cv@x")
+        ).scalar_one()
+    assert cover.patch_series_position == 0
+    assert cover.patch_series_key is not None
+
+
+def test_backfill_links_in_series_via_thread_parent(seeded_db):
+    """In-series patch with `thread_parent` set to a cover letter
+    that's already backfilled inherits the cover's `(key, version)`
+    and lands in the `in_series_indexed` bucket."""
+    _add_article(seeded_db, "cover@x", "[PATCH v2 0/3] thread title")
+    _add_article_with_parent(
+        seeded_db, "patch1of3@x",
+        "[PATCH v2 1/3] thread title: first patch",
+        parent_msgid="cover@x",
+    )
+    result = backfill_patch_series()
+    assert result.indexed == 1
+    assert result.in_series_indexed == 1
+    with seeded_db() as s:
+        cover = s.execute(
+            select(Article).where(Article.message_id == "cover@x")
+        ).scalar_one()
+        patch = s.execute(
+            select(Article).where(Article.message_id == "patch1of3@x")
+        ).scalar_one()
+    assert patch.patch_series_position == 1
+    assert patch.patch_series_key == cover.patch_series_key
+    assert patch.patch_series_version == cover.patch_series_version
+
+
+def test_backfill_in_series_orphan_when_cover_missing(seeded_db):
+    """In-series patch without a thread_parent pointing at an
+    already-keyed cover lands in the `in_series_orphan` bucket:
+    position set, key + version stay NULL."""
+    _add_article(seeded_db, "patch-orphan@x", "[PATCH 1/3] orphan title")
+    result = backfill_patch_series()
+    assert result.in_series_orphan == 1
+    with seeded_db() as s:
+        patch = s.execute(
+            select(Article).where(Article.message_id == "patch-orphan@x")
+        ).scalar_one()
+    assert patch.patch_series_position == 1
+    assert patch.patch_series_key is None
+    assert patch.patch_series_version is None
+
+
+def test_backfill_relinks_orphan_when_cover_arrives_later(seeded_db):
+    """Re-running backfill after a previously-orphaned in-series
+    patch's cover lands in the DB links them, without needing
+    `--reprocess`. Pins the design: orphans are re-attempted every
+    run because their state is "linkage attempted, not found"
+    rather than "fully resolved"."""
+    # First run: patch is orphaned (cover not yet in DB).
+    _add_article_with_parent(
+        seeded_db, "early-patch@x",
+        "[PATCH 1/3] title: first patch",
+        parent_msgid="late-cover@x",  # parent not yet in DB
+    )
+    first = backfill_patch_series()
+    assert first.in_series_orphan == 1
+    # Cover arrives in a later ingest tick; backfill picks it up.
+    _add_article(seeded_db, "late-cover@x", "[PATCH 0/3] title")
+    second = backfill_patch_series()
+    # Cover indexed; previously-orphaned patch now linked.
+    assert second.indexed == 1
+    assert second.in_series_indexed == 1
+    with seeded_db() as s:
+        cover = s.execute(
+            select(Article).where(Article.message_id == "late-cover@x")
+        ).scalar_one()
+        patch = s.execute(
+            select(Article).where(Article.message_id == "early-patch@x")
+        ).scalar_one()
+    assert patch.patch_series_key == cover.patch_series_key
+    assert patch.patch_series_version == cover.patch_series_version

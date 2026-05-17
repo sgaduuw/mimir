@@ -11,6 +11,28 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- New column `articles.patch_series_position` records each
+  article's position within its patch series (NULL = not a series
+  patch; 0 = cover letter; 1+ = in-series patch position from the
+  `M` of `[PATCH M/T]`). Ingest writes it from the subject parser
+  on every fresh article; in-series patches additionally inherit
+  `patch_series_key + patch_series_version` from their thread
+  parent's cover letter when present. `flask --app mimir
+  backfill-patch-series` extended to handle in-series patches via
+  the same thread-parent walk, with new `in_series_indexed` /
+  `in_series_orphan` buckets in the output. The
+  `/<inbox>/series/<key>/diff` route now resolves both sides via
+  an indexed `(key, version, position)` lookup, falling back to
+  the per-render heuristic resolver from #210 only when a side is
+  awaiting backfill. The state card's "Series revisions" row now
+  renders on `[PATCH N/M]` message pages too (previously cover-
+  letter only), with a same-position filter so the timeline shows
+  every revision of THIS patch instead of every patch in every
+  revision; `[diff vs current]` links carry `pos=N` accordingly.
+  (#212)
+
 ### Fixed
 
 - Front-page "Last activity" string per inbox card no longer lags

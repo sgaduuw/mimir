@@ -107,6 +107,7 @@ def replay_failures(
                     session.add(_to_article(
                         parsed, inbox_id=attached.id, epoch=row.epoch,
                         commit_sha=row.commit_sha, date=commit_time,
+                        session=session,
                     ))
                 else:
                     # Cross-post: link if not already linked. We only ever
