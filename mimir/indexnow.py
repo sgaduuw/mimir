@@ -22,11 +22,12 @@ import json
 import logging
 from urllib.error import URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mimir._outbound import OUTBOUND_OPENER
 from mimir.config import settings
 from mimir.models import Article, ArticleList, Inbox
 from mimir.web import _canonical_url_for
@@ -146,7 +147,10 @@ def notify(urls: list[str]) -> int:
             method="POST",
         )
         try:
-            with urlopen(req, timeout=INDEXNOW_TIMEOUT_S) as resp:
+            # Hardened opener (refuses 3xx; see `mimir/_outbound.py`)
+            # so a redirecting endpoint can't bounce the POST body
+            # (which carries the IndexNow key) to an attacker host.
+            with OUTBOUND_OPENER.open(req, timeout=INDEXNOW_TIMEOUT_S) as resp:
                 status = resp.status
                 # IndexNow accepts both 200 (received and processed) and
                 # 202 (received, processing async). Other codes are

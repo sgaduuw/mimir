@@ -8,6 +8,10 @@ had no guard against a regression.
 Network and subprocess are mocked at module-import time -- the
 manifest format is the actual contract we care about, and the
 git-subprocess invocation is the secondary contract (argv shape).
+The network mock patches `OUTBOUND_OPENER.open` (the hardened
+opener used by the production caller) rather than `urlopen`
+directly, so the no-redirect handler stays in the call path that
+the tests reason about.
 """
 import gzip
 import io
@@ -53,7 +57,7 @@ def test_fetch_manifest_decompresses_and_parses():
     fake_response.__enter__ = lambda self: fake_response
     fake_response.__exit__ = lambda *args: False
 
-    with patch("mimir.sync.urllib.request.urlopen", return_value=fake_response):
+    with patch.object(sync_module.OUTBOUND_OPENER, "open", return_value=fake_response):
         out = fetch_manifest("https://lore.kernel.org/lkml")
 
     assert out == payload
@@ -75,7 +79,7 @@ def test_fetch_manifest_sends_user_agent():
         captured_request.append(req)
         return fake_response
 
-    with patch("mimir.sync.urllib.request.urlopen", side_effect=_urlopen):
+    with patch.object(sync_module.OUTBOUND_OPENER, "open", side_effect=_urlopen):
         fetch_manifest("https://lore.kernel.org/lkml")
 
     assert len(captured_request) == 1
@@ -100,7 +104,7 @@ def test_fetch_manifest_passes_timeout_to_urlopen():
         captured_kwargs.append(kwargs)
         return fake_response
 
-    with patch("mimir.sync.urllib.request.urlopen", side_effect=_urlopen):
+    with patch.object(sync_module.OUTBOUND_OPENER, "open", side_effect=_urlopen):
         fetch_manifest("https://lore.kernel.org/lkml")
 
     assert captured_kwargs[0].get("timeout") == sync_module._MANIFEST_TIMEOUT_SEC
@@ -117,7 +121,7 @@ def test_fetch_manifest_caps_oversized_response():
     fake_response.__enter__ = lambda self: fake_response
     fake_response.__exit__ = lambda *args: False
 
-    with patch("mimir.sync.urllib.request.urlopen", return_value=fake_response):
+    with patch.object(sync_module.OUTBOUND_OPENER, "open", return_value=fake_response):
         with pytest.raises(ValueError, match="exceeds"):
             fetch_manifest("https://lore.kernel.org/lkml")
 
@@ -138,7 +142,7 @@ def test_fetch_manifest_uses_manifest_js_gz_suffix():
         captured.append(req.full_url)
         return fake_response
 
-    with patch("mimir.sync.urllib.request.urlopen", side_effect=_urlopen):
+    with patch.object(sync_module.OUTBOUND_OPENER, "open", side_effect=_urlopen):
         fetch_manifest("https://lore.kernel.org/lkml")
         fetch_manifest("https://lore.kernel.org/lkml/")  # trailing slash
 
