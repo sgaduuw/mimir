@@ -17,6 +17,13 @@ infrastructure module:
   aggregations (`most_active_subsystems_in_inbox`,
   `most_active_subsystems_global`, and the `_full` cached
   payload helpers they slice).
+- `triage`: per-subsystem queue helpers
+  (`needs_attention_patches_in_subsystem`,
+  `quiet_patches_in_subsystem`) and the `PatchAttention`
+  dataclass. Different concern from `reads` because the queries
+  pivot on `article_trailers`/`mainline_commits`/same-series
+  later versions rather than the plain "what's in this
+  subsystem" fan-outs.
 - `_path_filter` (underscore-prefixed): the shared
   `_subsystem_path_filter_sql` builder, imported by `reads` and
   `reviewers`. Infrastructure, not a public surface.
@@ -50,11 +57,17 @@ from mimir.subsystems_dashboard.reviewers import (
     active_reviewers_in_subsystem,
     articles_reviewed_by,
 )
+from mimir.subsystems_dashboard.triage import (
+    PatchAttention,
+    needs_attention_patches_in_subsystem,
+    quiet_patches_in_subsystem,
+)
 
 __all__ = [
     "MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC",
     "MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP",
     "REVIEWS_PER_PAGE_LIMIT",
+    "PatchAttention",
     "ReviewEntry",
     "ReviewerStat",
     "SubsystemActivity",
@@ -64,5 +77,7 @@ __all__ = [
     "daily_volume_in_subsystem",
     "most_active_subsystems_global",
     "most_active_subsystems_in_inbox",
+    "needs_attention_patches_in_subsystem",
+    "quiet_patches_in_subsystem",
     "recent_articles_in_subsystem",
 ]

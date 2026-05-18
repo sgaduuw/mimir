@@ -29,6 +29,8 @@ from mimir.subsystems_dashboard import (
     daily_volume_in_subsystem,
     most_active_subsystems_global,
     most_active_subsystems_in_inbox,
+    needs_attention_patches_in_subsystem,
+    quiet_patches_in_subsystem,
     recent_articles_in_subsystem,
 )
 from mimir.threading import active_threads
@@ -256,6 +258,12 @@ def subsystem_dashboard(inbox_name: str, name: str):
         reviewers = active_reviewers_in_subsystem(
             session, inbox, subsystem, days=30, limit=10,
         )
+        needs_attention = needs_attention_patches_in_subsystem(
+            session, inbox, subsystem, limit=10,
+        )
+        quiet = quiet_patches_in_subsystem(
+            session, inbox, subsystem, limit=10,
+        )
     return render_template(
         "subsystem.html",
         inbox_name=inbox.name,
@@ -266,4 +274,7 @@ def subsystem_dashboard(inbox_name: str, name: str):
         active=active,
         spark=spark,
         reviewers=reviewers,
+        needs_attention=needs_attention,
+        quiet=quiet,
+        quiet_days=settings.subsystem_quiet_days,
     )

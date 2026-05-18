@@ -11,6 +11,35 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- Per-subsystem triage queues on the subsystem dashboard
+  (`/<inbox>/subsystem/<name>/`), closing #209. Two new ranked
+  lists below the existing widgets:
+  - **Needs attention**: patches with one or more review trailers
+    (`Reviewed-by` / `Acked-by` / `Tested-by`) that haven't landed
+    in mainline, haven't been superseded by a later same-key
+    revision, and haven't been Acked by a subsystem maintainer.
+    Older than `SUBSYSTEM_NEEDS_ATTENTION_DAYS` (default 14).
+  - **Quiet for N+ days**: patches with no trailers and no
+    replies, older than `SUBSYSTEM_QUIET_DAYS` (default 30).
+  Both ordered oldest-first so the most concerning entries
+  surface at the top; both hidden when empty. Backed by
+  `needs_attention_patches_in_subsystem` and
+  `quiet_patches_in_subsystem` in
+  `mimir/subsystems_dashboard/triage.py`; pre-warmed per
+  pinned-subsystem by `_warm_subsystem_dashboards`. The
+  maintainer-Ack pickup signal cross-references
+  `article_trailers.address_normalized` against
+  `subsystem_maintainers` (M:/R: roles only); a Reviewed-by from
+  a maintainer is treated as feedback, not pickup. Plan-pinned
+  in tests to walk `ix_articles_date` ASC over a bounded date
+  range (`SUBSYSTEM_TRIAGE_MAX_AGE_DAYS`, default 180) with no
+  full scans on `articles` / `article_trailers` /
+  `article_files`. ~200 ms cold on NETWORKING [GENERAL] / MM
+  CORE against the prod-mirror DB, well under the issue's 1 s
+  budget.
+
 ## [1.30.1], 2026-05-18
 
 ### Fixed
