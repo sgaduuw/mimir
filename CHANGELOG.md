@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.30.1], 2026-05-18
+
 ### Fixed
 
 - Long-running CLI write workloads (`admin canonicals backfill`,
