@@ -197,5 +197,25 @@ class Settings(BaseSettings):
     security_encryption_url: str | None = None
     security_preferred_languages: str = "en"
 
+    # Per-subsystem triage queue thresholds (issue #209). Defaults
+    # chosen with the kernel-review cadence in mind: 14 days is
+    # roughly one merge-window iteration, by which point a patch
+    # with review trailers but no pickup deserves a maintainer's
+    # attention; 30 days of total silence is the point at which a
+    # patch is unlikely to land without a re-post. Override via
+    # SUBSYSTEM_NEEDS_ATTENTION_DAYS / SUBSYSTEM_QUIET_DAYS.
+    subsystem_needs_attention_days: int = 14
+    subsystem_quiet_days: int = 30
+
+    # Hard upper bound on triage-queue age (#209). Patches older than
+    # this are considered abandoned, not "needs attention" or
+    # "quiet": the author has moved on, the patch won't land without
+    # a fresh post. Bounding the queue this way is also load-bearing
+    # for the query plan, walking `ix_articles_date` ASC over an
+    # unbounded range scans 6M+ rows for popular subsystems (8 s
+    # cold miss); over 180 days it's ~200k rows and milliseconds.
+    # Override via SUBSYSTEM_TRIAGE_MAX_AGE_DAYS.
+    subsystem_triage_max_age_days: int = 180
+
 
 settings = Settings()
