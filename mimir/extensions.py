@@ -22,6 +22,12 @@ def _sqlite_pragmas(dbapi_conn, _conn_record) -> None:
     cur.execute("PRAGMA synchronous=NORMAL")
     cur.execute("PRAGMA foreign_keys=ON")
     cur.execute(f"PRAGMA busy_timeout={settings.sqlite_busy_timeout_ms}")
+    # Maintenance toggle: when this container is flagged read-only,
+    # block writes at the SQLite layer so anything that slipped past
+    # the cache.set short-circuit raises instead of silently competing
+    # for the writer lock. See Settings.read_only_db.
+    if settings.read_only_db:
+        cur.execute("PRAGMA query_only=1")
     cur.close()
 
 

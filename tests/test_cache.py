@@ -1020,6 +1020,76 @@ def test_real_path_roundtrip_string_with_surrogate_escape_range():
         _drop_cache_key(key)
 
 
+def test_read_only_db_short_circuits_writes(monkeypatch):
+    """`Settings.read_only_db=True` makes every cache mutation a no-op
+    without touching SessionLocal. Pin all four entry points
+    (`set` / `delete` / `delete_for_inbox` / `purge_expired`) so a
+    future write entry point added to this module gets flagged when
+    the read-only contract drifts.
+
+    SessionLocal is stubbed to raise on use; under the flag, none of
+    the entry points must reach it.
+    """
+    def _explode(*_a, **_k):
+        raise AssertionError("SessionLocal must not be opened under read_only_db")
+
+    monkeypatch.setattr(cache, "SessionLocal", _explode)
+    monkeypatch.setattr(cache.settings, "read_only_db", True)
+
+    cache.set("xtest-readonly", "value", ttl=60)  # returns None
+    assert cache.delete("xtest-readonly") == 0
+    assert cache.delete_for_inbox("xtest-inbox") == 0
+    assert cache.purge_expired() == 0
+
+
+def test_read_only_db_does_not_break_reads():
+    """Reads still work under `read_only_db`: `get` returns the row if
+    present, `get_or_compute` falls through to `fn()` on miss and just
+    skips persisting the result (because `set` is now a no-op). The
+    next call recomputes; that's the documented trade.
+    """
+    from mimir.config import settings as live_settings
+    from mimir.extensions import engine
+
+    db_path = engine.url.database
+    if not db_path or db_path == ":memory:":
+        pytest.skip("requires file-backed SQLite to seed a row from outside")
+
+    # Seed a value with the flag OFF.
+    seed_key = "xtest-readonly-seed"
+    cache.set(seed_key, "seeded", ttl=60)
+    try:
+        assert cache.get(seed_key) == "seeded"
+
+        # Flip the flag and confirm reads still work.
+        prev = live_settings.read_only_db
+        live_settings.read_only_db = True
+        try:
+            assert cache.get(seed_key) == "seeded"
+
+            # On miss, get_or_compute calls fn() but doesn't persist;
+            # a second call recomputes (proves we didn't silently write).
+            calls = {"n": 0}
+
+            def _fn():
+                calls["n"] += 1
+                return "computed"
+
+            from mimir.extensions import SessionLocal
+            with SessionLocal() as session:
+                assert cache.get_or_compute(
+                    session, "xtest-readonly-miss", ttl=60, fn=_fn,
+                ) == "computed"
+                assert cache.get_or_compute(
+                    session, "xtest-readonly-miss", ttl=60, fn=_fn,
+                ) == "computed"
+            assert calls["n"] == 2, "fn must run twice under read_only_db (no write persisted)"
+        finally:
+            live_settings.read_only_db = prev
+    finally:
+        cache.delete(seed_key)
+
+
 def test_cache_module_has_no_pickle_dependency():
     """Regression marker for the 2026-04-ish pickle-pivot. The original
     cache was a single pickle file; concurrent-write races dropped
