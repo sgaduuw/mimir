@@ -39,6 +39,17 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   `article_files`. ~200 ms cold on NETWORKING [GENERAL] / MM
   CORE against the prod-mirror DB, well under the issue's 1 s
   budget.
+- `READ_ONLY_DB` maintenance toggle for the web container. When set
+  to `true`, the process quiesces all DB writes: `cache.set` /
+  `delete` / `purge_expired` / `delete_for_inbox` short-circuit to
+  no-ops, and `PRAGMA query_only=1` is issued on every connection as
+  a belt-and-braces safety net. Used to hand the writer lock to a
+  long admin operation on the scheduler sidecar (e.g.
+  `admin canonicals backfill --reprocess` on the full corpus) without
+  taking the site down. The flag is intentionally not persisted; a
+  normal container restart without `READ_ONLY_DB` in the env
+  restores read-write. The scheduler sidecar must stay un-flagged so
+  migrations / ingest / cache hygiene keep working.
 
 ## [1.30.1], 2026-05-18
 

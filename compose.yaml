@@ -31,6 +31,14 @@ services:
       # SITE_NAME: lkml-mirror
       # SECURITY_CONTACT: mailto:security@example.com
       # SECURITY_POLICY_URL: https://example.com/security
+      #
+      # Maintenance toggle. Set to "true" to quiesce all DB writes
+      # from this container (cache.set / delete / purge become no-ops
+      # AND PRAGMA query_only=1 catches any other write path) so a
+      # long admin operation on the sidecar (canonicals backfill,
+      # manual SQL) has the writer lock to itself. Unset / remove
+      # the line and restart this service to restore read-write.
+      # READ_ONLY_DB: "true"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:5000/healthz"]

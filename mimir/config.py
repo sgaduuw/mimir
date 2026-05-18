@@ -126,6 +126,29 @@ class Settings(BaseSettings):
     # it with a multi-minute hang. Override via SQLITE_BUSY_TIMEOUT_MS.
     sqlite_busy_timeout_ms: int = 5000
 
+    # Quiesce DB writes from this process for the lifetime of the
+    # container. Used as a maintenance toggle: when a long admin
+    # operation (e.g. `admin canonicals backfill --reprocess`) needs
+    # the writer lock to itself, set READ_ONLY_DB=true on the web
+    # container so its gunicorn workers stop competing for the lock
+    # via `cache.set`. The scheduler sidecar keeps the default (False)
+    # so it can still run migrations / ingest / cache hygiene.
+    #
+    # Two layers when enabled:
+    #   1. `cache.set` / `cache.delete` / `cache.purge_expired` /
+    #      `cache.delete_for_inbox` short-circuit to no-ops so the
+    #      best-effort write path doesn't log a warning per request.
+    #   2. `PRAGMA query_only=1` is issued on every connection as a
+    #      belt-and-braces safety net catching any non-cache write
+    #      path; offending statements raise `OperationalError:
+    #      attempt to write a readonly database`.
+    #
+    # Intentionally not persisted anywhere: the toggle is a runtime
+    # env var. A normal container restart (without READ_ONLY_DB set)
+    # restores read-write mode automatically. Override via
+    # READ_ONLY_DB.
+    read_only_db: bool = False
+
     # Auto-ANALYZE threshold. After `ingest_inbox` finishes a run, if
     # `new + linked` across that run's epochs reaches this many rows,
     # we issue ANALYZE so the SQLite planner doesn't keep stale stats
