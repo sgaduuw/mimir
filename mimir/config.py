@@ -116,6 +116,20 @@ class Settings(BaseSettings):
     # could spoof those values via a forged XFF header.
     trusted_proxy_hops: int = 0
 
+    # SQLite per-connection `busy_timeout` (milliseconds) for the
+    # write-heavy CLI workloads wrapped in
+    # `mimir.extensions.write_transaction()` (backfills,
+    # ingest_inbox, update-mainline). The web-tier default
+    # (`sqlite_busy_timeout_ms` below) is intentionally short so a
+    # stuck request can't hang for minutes; a one-shot backfill has
+    # no latency budget and benefits from much more patience. 60s
+    # comfortably rides out the cache-write burst that follows an
+    # archive_stats invalidation (every cold-miss page render writes
+    # its computed value, so a few hundred page renders in a 5s
+    # window will starve a backfill on the default timeout). Tunable
+    # via SQLITE_BUSY_TIMEOUT_MS_WRITES.
+    sqlite_busy_timeout_ms_writes: int = 60000
+
     # SQLite per-connection `busy_timeout` (milliseconds). When a
     # writer hits a locked DB, SQLite waits up to this long before
     # raising `SQLITE_BUSY`. Default 0 turns transient contention
