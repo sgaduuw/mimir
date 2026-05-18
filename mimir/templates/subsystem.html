@@ -103,5 +103,39 @@
   {% else %}
   <p><em>No patches touching this subsystem's paths on {{ inbox_name }} yet.</em></p>
   {% endif %}
+
+  {# Triage queues. Both hidden when empty (no card-with-no-rows
+     noise on subsystems where the queue happens to be clear). #}
+  {% if needs_attention %}
+  <h2>Needs attention <small><em>(review trailers in, no pickup)</em></small></h2>
+  <p><small>Patches with review trailers that haven't landed in
+  mainline and haven't been Acked by a maintainer. Oldest
+  first.</small></p>
+  <ul>
+    {% for p in needs_attention %}
+    <li>
+      <a href="/{{ p.inbox_name }}/{{ p.date.year }}/{{ '%02d' % p.date.month }}/{{ p.article_id }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
+      <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
+        &middot; {{ p.author|safe_from }}
+        {% if p.trailer_summary %}&middot; {{ p.trailer_summary }}{% endif %}</small>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if quiet %}
+  <h2>Quiet for {{ quiet_days }}+ days</h2>
+  <p><small>Patches with no review trailers and no replies. Either the
+  author is heads-down elsewhere or these slipped through. Oldest first.</small></p>
+  <ul>
+    {% for p in quiet %}
+    <li>
+      <a href="/{{ p.inbox_name }}/{{ p.date.year }}/{{ '%02d' % p.date.month }}/{{ p.article_id }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
+      <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
+        &middot; {{ p.author|safe_from }}</small>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
 </section>
 {% endblock %}
