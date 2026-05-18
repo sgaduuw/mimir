@@ -18,10 +18,10 @@ swapping the engine for a fresh one without re-registering) would
 only show up on a production lock incident. These tests assert the
 contract directly so the regression surfaces in CI instead.
 """
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from mimir.config import settings
-from mimir.extensions import engine
+from mimir.extensions import SessionLocal, engine, write_transaction
 
 
 def _pragma(name: str):
@@ -74,3 +74,115 @@ def test_pragmas_apply_per_connection():
         assert mode.lower() == "wal"
         assert fk == 1
         assert bt == settings.sqlite_busy_timeout_ms
+
+
+# write_transaction(): BEGIN IMMEDIATE opt-in for long-running CLI
+# write paths. Pins the contract so a regression that flipped the
+# event-listener wiring (or dropped the contextvar guard) would surface
+# in CI rather than as a production SQLITE_BUSY_SNAPSHOT under load.
+
+
+def _capture_sql():
+    """Install a `before_cursor_execute` listener that records every
+    SQL statement the engine emits. Returns `(seen, install, remove)`."""
+    seen: list[str] = []
+
+    def _on_exec(conn, cursor, statement, parameters, context, executemany):
+        seen.append(statement)
+
+    def install():
+        event.listen(engine, "before_cursor_execute", _on_exec)
+
+    def remove():
+        event.remove(engine, "before_cursor_execute", _on_exec)
+
+    return seen, install, remove
+
+
+def test_write_transaction_emits_begin_immediate():
+    """Inside `write_transaction()`, every BEGIN must be IMMEDIATE so
+    the connection acquires the writer lock at transaction start.
+    The deferred default is what tripped SQLITE_BUSY_SNAPSHOT against
+    the gunicorn cache writes in production: backfill SELECTs first,
+    takes a snapshot, then INSERTs; another writer commits in
+    between, and the snapshot upgrade is rejected (non-retryable
+    via busy_timeout)."""
+    seen, install, remove = _capture_sql()
+    install()
+    try:
+        with write_transaction(), SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+            session.commit()
+    finally:
+        remove()
+
+    assert any("BEGIN IMMEDIATE" in s.upper() for s in seen), (
+        f"expected BEGIN IMMEDIATE inside write_transaction(); SQL: {seen}"
+    )
+
+
+def test_default_outside_write_transaction_is_deferred():
+    """Outside the helper, sessions begin DEFERRED (the SQLAlchemy
+    default). Important to pin: read-only paths (web routes, cache
+    reads) MUST NOT promote to IMMEDIATE, or every gunicorn worker
+    would serialise on the writer lock."""
+    seen, install, remove = _capture_sql()
+    install()
+    try:
+        with SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+            session.commit()
+    finally:
+        remove()
+
+    assert not any("BEGIN IMMEDIATE" in s.upper() for s in seen), (
+        f"plain SessionLocal() must not emit BEGIN IMMEDIATE; SQL: {seen}"
+    )
+
+
+def test_write_transaction_applies_to_every_transaction_in_block():
+    """Each `session.commit()` ends one transaction; the next operation
+    implicitly opens a new one. The contextvar gating must apply to
+    *every* BEGIN in the block, not just the first, so a batched
+    backfill (which commits every N rows) doesn't silently relapse
+    to deferred mid-run."""
+    seen, install, remove = _capture_sql()
+    install()
+    try:
+        with write_transaction(), SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+            session.commit()
+            session.execute(text("SELECT 2"))
+            session.commit()
+    finally:
+        remove()
+
+    immediates = [s for s in seen if "BEGIN IMMEDIATE" in s.upper()]
+    assert len(immediates) >= 2, (
+        f"expected ≥2 BEGIN IMMEDIATE (one per transaction in the "
+        f"block); got {len(immediates)}: {seen}"
+    )
+
+
+def test_write_transaction_resets_after_block():
+    """The contextvar is reset on block exit. A subsequent session
+    outside the block goes back to deferred BEGIN; otherwise a
+    single backfill invocation would leak IMMEDIATE mode into the
+    entire process for the rest of its lifetime, which would
+    re-serialise the web tier on the writer lock."""
+    with write_transaction(), SessionLocal() as session:
+        session.execute(text("SELECT 1"))
+        session.commit()
+
+    seen, install, remove = _capture_sql()
+    install()
+    try:
+        with SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+            session.commit()
+    finally:
+        remove()
+
+    assert not any("BEGIN IMMEDIATE" in s.upper() for s in seen), (
+        "write_transaction() must not leak into subsequent sessions"
+    )

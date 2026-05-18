@@ -11,6 +11,34 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Long-running CLI write workloads (`admin canonicals backfill`,
+  the `backfill-article-*` family, `ingest_inbox`/`update`, the
+  `update-mainline` MAINTAINERS reparse + Link-trailer walk) no
+  longer crash with
+  `OperationalError("database is locked")` on a busy production
+  deploy. Diagnosed on coruscant during a `canonicals backfill
+  --reprocess` pass that consistently failed within a few seconds
+  even with the scheduler paused and `SQLITE_BUSY_TIMEOUT_MS`
+  raised to 10 minutes: the error wasn't the timeout-retryable
+  `SQLITE_BUSY` but `SQLITE_BUSY_SNAPSHOT`, which fires when a
+  transaction that started as a *reader* tries to upgrade to a
+  *writer* and another connection committed in between. Snapshot
+  upgrade is non-retryable via `busy_timeout` regardless of how
+  patient you set it. The gunicorn-side `cache.set` writes
+  (every cold-miss page render writes back its computed value)
+  were the concurrent committers, so any backfill that read an
+  article batch and then tried to write its updates would
+  collide. New `mimir.extensions.write_transaction()` context
+  manager opts the wrapped block into `BEGIN IMMEDIATE`, which
+  acquires the writer lock at transaction start, so the
+  read-then-write upgrade can't happen and concurrent writers
+  queue politely via `busy_timeout`. Applied to every long-
+  running write path; read-only paths (web routes, cache reads)
+  keep the default deferred BEGIN, so they don't serialise on
+  the writer lock.
+
 ## [1.30.0], 2026-05-18
 
 ### Added

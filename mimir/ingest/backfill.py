@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from mimir.canonical import extract_list_addresses, pick_canonical_inbox_id
 from mimir.config import settings
 from mimir.datetime_utils import aware_utc
-from mimir.extensions import SessionLocal
+from mimir.extensions import SessionLocal, write_transaction
 from mimir.ingest.epoch import (
     _flush_observations,
     _maybe_promote_list_address,
@@ -109,7 +109,11 @@ def backfill_canonicals(
                 promoted = True
         return promoted
 
-    with SessionLocal() as session:
+    # BEGIN IMMEDIATE for every transaction in this block, avoids
+    # SQLITE_BUSY_SNAPSHOT when gunicorn cache.set commits a write
+    # between the backfill's read of the next article batch and its
+    # write of canonical_inbox_id / inbox_address_observations.
+    with write_transaction(), SessionLocal() as session:
         refresh_address_map(session)
 
         # Build the article query. Newest-first so the most-indexed
