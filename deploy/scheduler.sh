@@ -36,6 +36,14 @@
 # the single owner of DDL, the web container has no migration step
 # and waits on this sidecar's healthcheck (which fires once the
 # sentinel `/data/.migrated` is touched, below). Idempotent.
+#
+# Ad-hoc pause: `touch /data/.scheduler-paused` quiesces the loop
+# (no warm-cache / update / update-mainline / analyze / vacuum
+# firings) within ~10s; `rm /data/.scheduler-paused` resumes. Used
+# during operator maintenance (e.g. `admin canonicals backfill`,
+# manual SQL) where scheduler write contention would extend the
+# ad-hoc work. Initial-boot passes ignore the sentinel; if you
+# restart the sidecar mid-maintenance, drop the sentinel first.
 
 set -u
 
@@ -126,8 +134,26 @@ last_update_mainline=$(sentinel_mtime /data/.last_update_mainline)
 last_analyze=$(sentinel_mtime /data/.last_analyze)
 last_vacuum=$(sentinel_mtime /data/.last_vacuum)
 
+# Tracks whether we logged the most recent pause/resume transition so
+# the journal carries one line per state change (rather than one per
+# 10s tick while the sentinel sits).
+was_paused=0
+
 while true; do
     now=$(date +%s)
+
+    if [ -f /data/.scheduler-paused ]; then
+        if [ "$was_paused" -eq 0 ]; then
+            log "paused (sentinel /data/.scheduler-paused present); skipping task ticks until removed"
+            was_paused=1
+        fi
+        sleep 10
+        continue
+    fi
+    if [ "$was_paused" -eq 1 ]; then
+        log "resumed (sentinel cleared)"
+        was_paused=0
+    fi
 
     if [ $((now - last_warm)) -ge "$WARM_CACHE_EVERY" ]; then
         # shellcheck disable=SC2086
