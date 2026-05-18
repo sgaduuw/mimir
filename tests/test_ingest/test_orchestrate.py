@@ -61,6 +61,75 @@ def test_ingest_inbox_skips_analyze_when_disabled(seeded_db, tmp_path, monkeypat
     assert "ANALYZE" not in seen
 
 
+# Cache invalidation on empty-to-non-empty transition
+
+
+def test_ingest_inbox_invalidates_cache_on_first_ingest(seeded_db, tmp_path):
+    """When an inbox transitions from empty (`last_article_date IS
+    NULL`) to populated, drop the per-inbox cache keys. The
+    front-page card otherwise sticks on `total=0` ("not yet
+    ingested") for the rest of the 24h archive_stats TTL after a
+    warm-cache tick captures the empty state between
+    `admin inbox add` and the first ingest."""
+    from mimir import cache
+
+    alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
+    # The seeded `alpha` fixture stamps `last_article_date` as a
+    # mid-2024 timestamp to mimic an already-ingested inbox; null it
+    # back out to simulate a brand-new inbox (the actual case the
+    # invalidation protects against, where a warm-cache tick wrote
+    # `total=0` between `admin inbox add` and the first ingest).
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.last_article_date = None
+        s.commit()
+
+    # Seed a cache row keyed under the inbox name (mimics the `total=0`
+    # row a warm-cache tick would write between add and first ingest).
+    # The shape of the value doesn't matter; `delete_for_inbox` is
+    # key-pattern-driven.
+    cache.set(f"archive_stats:{alpha.name}", "sentinel", ttl=86400)
+    assert cache.get(f"archive_stats:{alpha.name}") == "sentinel"
+
+    ingest_inbox(alpha, workers=1)
+
+    assert cache.get(f"archive_stats:{alpha.name}") is None, (
+        "first ingest should bust the per-inbox cache so the "
+        "front-page card recomputes against real data"
+    )
+
+
+def test_ingest_inbox_does_not_invalidate_cache_on_steady_state(
+    seeded_db, tmp_path,
+):
+    """An already-populated inbox (last_article_date set) running its
+    next ingest does NOT bust the per-inbox cache. Doing so would
+    force a COUNT(*) refresh on every UPDATE_EVERY tick, defeating
+    the 24h TTL that exists precisely because the count is the slow
+    piece."""
+    from datetime import datetime, timezone
+
+    from mimir import cache
+
+    alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
+    # Stamp the inbox as already-populated so the empty-state
+    # capture sees a non-NULL value going into ingest.
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.last_article_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        s.commit()
+
+    cache.set(f"archive_stats:{alpha.name}", "sentinel", ttl=86400)
+    assert cache.get(f"archive_stats:{alpha.name}") == "sentinel"
+
+    ingest_inbox(alpha, workers=1)
+
+    assert cache.get(f"archive_stats:{alpha.name}") == "sentinel", (
+        "steady-state ingest should leave the per-inbox cache alone; "
+        "the 24h TTL is intentional"
+    )
+
+
 # Canonical inbox + list-address observation
 
 
