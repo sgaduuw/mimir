@@ -24,7 +24,7 @@ from sqlalchemy import delete
 from mimir import maintainers
 from mimir.cli._common import _configure_logging
 from mimir.config import settings
-from mimir.extensions import SessionLocal
+from mimir.extensions import SessionLocal, write_transaction
 from mimir.models import (
     MainlineState,
     Subsystem,
@@ -133,7 +133,12 @@ def _load_maintainers(tree_path: Path, tree_name: str, force: bool) -> None:
         )
     blob_bytes = repo[blob_sha].data
 
-    with SessionLocal() as session:
+    # BEGIN IMMEDIATE: the MAINTAINERS reparse reads `MainlineState`
+    # then writes the whole `subsystems` / `subsystem_paths` /
+    # `subsystem_maintainers` triple in one transaction. The
+    # snapshot upgrade is the exact shape that trips
+    # SQLITE_BUSY_SNAPSHOT under concurrent cache writes.
+    with write_transaction(), SessionLocal() as session:
         state = session.get(MainlineState, tree_name)
         if state is None:
             state = MainlineState(tree_name=tree_name)
@@ -186,7 +191,7 @@ def _walk_link_trailers(tree_path: Path, tree_name: str) -> None:
     `mainline_commits` rows. Resumable via the cursor on
     `MainlineState.commits_walked_to_sha`."""
     from mimir import mainline
-    with SessionLocal() as session:
+    with write_transaction(), SessionLocal() as session:
         result = mainline.walk_commits(session, tree_path, tree_name=tree_name)
     # State-change line at default verbosity. Steady-state ticks
     # produce zero new commits and stay silent.
