@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mimir.canonical import extract_list_addresses, pick_canonical_inbox_id
+from mimir.config import settings
 from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
 from mimir.ingest.epoch import (
@@ -69,14 +70,18 @@ def backfill_canonicals(
     """
     out = BackfillResult()
     address_to_inbox_id: dict[str, int] = {}
+    demoted_inbox_ids: frozenset[int] = frozenset()
     pending_obs: dict[int, dict[str, tuple[int, datetime]]] = {}
     inbox_cache: dict[int, Inbox] = {}
 
     def refresh_address_map(session: Session) -> None:
-        nonlocal address_to_inbox_id
+        nonlocal address_to_inbox_id, demoted_inbox_ids
         address_to_inbox_id = dict(session.execute(
             select(Inbox.list_address, Inbox.id).where(Inbox.list_address.isnot(None))
         ).all())
+        demoted_inbox_ids = frozenset(session.execute(
+            select(Inbox.id).where(Inbox.name.in_(settings.canonical_demoted_inboxes))
+        ).scalars())
 
     def get_inbox(session: Session, inbox_id: int) -> Inbox:
         ix = inbox_cache.get(inbox_id)
@@ -179,7 +184,9 @@ def backfill_canonicals(
                             cnt, ts = prev
                             bucket[addr] = (cnt + 1, max(ts, obs_time))
 
-            new_canonical = pick_canonical_inbox_id(list_addrs, address_to_inbox_id)
+            new_canonical = pick_canonical_inbox_id(
+                list_addrs, address_to_inbox_id, demoted_inbox_ids,
+            )
             if new_canonical != article.canonical_inbox_id:
                 article.canonical_inbox_id = new_canonical
                 out.resolved += 1

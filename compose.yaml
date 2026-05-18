@@ -49,10 +49,11 @@ services:
         condition: service_healthy
 
   # Scheduled-tasks sidecar: warm-cache, update (sync + ingest),
-  # analyze, vacuum. Replaces cron / systemd timers. Shares the same
-  # /data volume; no port exposure. See deploy/scheduler.sh for the
-  # loop body and the env-overridable cadence knobs (WARM_CACHE_EVERY,
-  # UPDATE_EVERY, ANALYZE_EVERY, VACUUM_EVERY, all in seconds).
+  # update-mainline (linux.git + MAINTAINERS refresh), analyze, vacuum.
+  # Replaces cron / systemd timers. Shares the same /data volume; no
+  # port exposure. See deploy/scheduler.sh for the loop body and the
+  # env-overridable cadence knobs (WARM_CACHE_EVERY, UPDATE_EVERY,
+  # UPDATE_MAINLINE_EVERY, ANALYZE_EVERY, VACUUM_EVERY, all in seconds).
   #
   # Owns `alembic upgrade head` (single source of DDL truth). The
   # healthcheck reports healthy once the sentinel `/data/.migrated`
