@@ -35,6 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
+from mimir.canonical import fallback_canonical_name
 from mimir.models import (
     Article,
     ArticleFile,
@@ -231,16 +232,7 @@ def recent_patches_touching(
     out: list[RelatedPatch] = []
     for art_id, mid, subj, author, date, canon_id in rows:
         link_set = links_by_article.get(art_id, [])
-        # Canonical inbox fall-back: alphabetically-first link when
-        # the explicit canonical_inbox_id isn't in the link set.
-        canon_name: str | None = None
-        if canon_id is not None:
-            for ix_id, name in link_set:
-                if ix_id == canon_id:
-                    canon_name = name
-                    break
-        if canon_name is None and link_set:
-            canon_name = min(name for _, name in link_set)
+        canon_name = fallback_canonical_name(canon_id, link_set)
         if canon_name is None:
             continue  # shouldn't happen given FK cascades
         out.append(RelatedPatch(
