@@ -11,6 +11,26 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.31.1], 2026-05-19
+
+### Fixed
+
+- Web container no longer crashes at startup with
+  `OperationalError: attempt to write a readonly database` when
+  `READ_ONLY_DB=true` is set. Hotfix to v1.31.0's `READ_ONLY_DB`
+  toggle: `create_app()` used to call `bootstrap_inboxes()`
+  directly, so the first env-driven `INSERT ... ON CONFLICT DO
+  NOTHING` against the `inboxes` table fired during Flask's
+  application factory, before any request was served, and tripped
+  the `PRAGMA query_only=1` safety net. Moved inbox bootstrap to
+  the scheduler sidecar (new `mimir bootstrap-inboxes` CLI
+  command, wired into `deploy/scheduler.sh` right after `alembic
+  upgrade head` and before the `/data/.migrated` healthcheck
+  sentinel is touched). Web tier is now read-only at startup,
+  matching the migration-ownership rule that already governed
+  `alembic upgrade head`. Idempotent; admin edits to existing
+  rows are never clobbered.
+
 ## [1.31.0], 2026-05-19
 
 ### Added
