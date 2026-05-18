@@ -5,10 +5,19 @@
 # so a crash in one task doesn't take the loop down.
 #
 # Cadences (env-overridable, all in seconds):
-#   WARM_CACHE_EVERY  default 60     ; refresh dashboard helpers
-#   UPDATE_EVERY      default 300    ; sync upstream + ingest new commits
-#   ANALYZE_EVERY     default 86400  ; refresh sqlite_stat1 (daily)
-#   VACUUM_EVERY      default 604800 ; compact DB + collapse WAL (weekly)
+#   WARM_CACHE_EVERY      default 60     ; refresh dashboard helpers
+#   UPDATE_EVERY          default 300    ; sync upstream + ingest new commits
+#   UPDATE_MAINLINE_EVERY default 600    ; fetch linux.git + (re)parse MAINTAINERS
+#   ANALYZE_EVERY         default 86400  ; refresh sqlite_stat1 (daily)
+#   VACUUM_EVERY          default 604800 ; compact DB + collapse WAL (weekly)
+#
+# `update-mainline` no-ops cheaply when the mainline HEAD hasn't
+# moved (state.last_commit_sha == fetched HEAD short-circuits the
+# MAINTAINERS reparse; the Link-trailer walk is incremental). The
+# 10-min default is "small enough that a kernel-tree subsystem
+# rename or a new MAINTAINERS section propagates to the From-line
+# allowlist within one rebase cycle, large enough that the per-tick
+# git fetch on mainline.kernel.org stays polite."
 #
 # Timing is wall-clock, persisted across container restarts via
 # `/data/.last_<task>` sentinel files. Without persistence, a release
@@ -32,6 +41,7 @@ set -u
 
 WARM_CACHE_EVERY=${WARM_CACHE_EVERY:-60}
 UPDATE_EVERY=${UPDATE_EVERY:-300}
+UPDATE_MAINLINE_EVERY=${UPDATE_MAINLINE_EVERY:-600}
 ANALYZE_EVERY=${ANALYZE_EVERY:-86400}
 VACUUM_EVERY=${VACUUM_EVERY:-604800}
 
@@ -112,6 +122,7 @@ run "warm-cache (initial)" /data/.last_warm mimir warm-cache $SCHEDULER_VERBOSE
 # mtime alone.
 last_warm=$(sentinel_mtime /data/.last_warm)
 last_update=$(sentinel_mtime /data/.last_update)
+last_update_mainline=$(sentinel_mtime /data/.last_update_mainline)
 last_analyze=$(sentinel_mtime /data/.last_analyze)
 last_vacuum=$(sentinel_mtime /data/.last_vacuum)
 
@@ -128,6 +139,12 @@ while true; do
         # shellcheck disable=SC2086
         run "update" /data/.last_update mimir update $SCHEDULER_VERBOSE
         last_update=$(date +%s)
+    fi
+
+    if [ $((now - last_update_mainline)) -ge "$UPDATE_MAINLINE_EVERY" ]; then
+        # shellcheck disable=SC2086
+        run "update-mainline" /data/.last_update_mainline mimir update-mainline $SCHEDULER_VERBOSE
+        last_update_mainline=$(date +%s)
     fi
 
     if [ $((now - last_analyze)) -ge "$ANALYZE_EVERY" ]; then
