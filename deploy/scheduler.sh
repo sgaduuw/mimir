@@ -100,6 +100,14 @@ else
     exit 1
 fi
 
+# Seed env-configured inboxes into the `inboxes` table. The web
+# container's create_app() does not do this (writes belong on the
+# sidecar, alongside migrations); without this step a fresh deploy
+# would come up with an empty `inboxes` table and `/` would render
+# a blank meta-index. Idempotent via ON CONFLICT DO NOTHING; admin
+# edits to existing rows are never clobbered.
+run "bootstrap-inboxes" "" mimir bootstrap-inboxes
+
 # Refresh planner stats before unblocking the web tier. A migration
 # in the just-applied stack can add a new index; without this pass
 # sqlite_stat1 has no entry for it and the planner picks shapes
@@ -109,7 +117,9 @@ run "analyze (post-migrate)" /data/.last_analyze mimir analyze
 
 # Healthcheck sentinel: the web container's depends_on uses
 # condition: service_healthy and a `test -f /data/.migrated` test,
-# so gunicorn waits for this file before it starts serving.
+# so gunicorn waits for this file before it starts serving. Touched
+# only after migrations + inbox bootstrap + post-migrate ANALYZE,
+# the three things the web tier needs to be in place before serving.
 touch /data/.migrated
 
 # Initial update so a fresh deployment has data to render before the
