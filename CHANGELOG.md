@@ -11,6 +11,35 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.28.2], 2026-05-18
+
+### Fixed
+
+- `parse_message` no longer drops messages that carry an empty
+  first `Message-Id:` header followed by a real `Message-ID: <...>`
+  further down. The naive first-match in `_raw_header` returned
+  the empty string and the parser raised "message has no
+  Message-ID", silently losing the message at ingest. Surfaced
+  on a reindex of alsa-devel where Mark Brown's `Applied "..."`
+  auto-reply bot emits exactly this shape; 116 commits on the
+  `0.git` epoch were affected. `_raw_header` now picks the first
+  non-empty matching header (strict improvement: same behaviour
+  for the modal single-header case, and `In-Reply-To` /
+  `References` only change when their first occurrence is
+  empty). Re-run `mimir reindex alsa-devel 0.git` after deploy
+  to recover the missed articles, `parse_failures` rows clear
+  themselves on successful re-parse.
+
+### Changed
+
+- Ingest now logs a parse failure at `DEBUG` instead of `WARNING`
+  when the same commit is already in `parse_failures` from a
+  prior run. First-time failures still log `WARNING` (real new
+  event). A reindex pass over a long archive with a stable set
+  of untriagable blobs (RFC 5322 violators, oversized payloads)
+  no longer floods the journal with one WARNING per known-bad
+  commit per run.
+
 ## [1.28.1], 2026-05-18
 
 ### Fixed
