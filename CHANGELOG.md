@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.30.0], 2026-05-18
+
 ### Added
 
 - Scheduler sidecar honours `/data/.scheduler-paused` as an ad-hoc
