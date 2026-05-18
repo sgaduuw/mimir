@@ -186,3 +186,47 @@ def test_write_transaction_resets_after_block():
     assert not any("BEGIN IMMEDIATE" in s.upper() for s in seen), (
         "write_transaction() must not leak into subsequent sessions"
     )
+
+
+def test_write_transaction_raises_busy_timeout():
+    """Inside `write_transaction()`, the connection's busy_timeout
+    is raised to `sqlite_busy_timeout_ms_writes` (default 60s).
+    Default 5s is right for request handlers but too short for a
+    backfill: BEGIN IMMEDIATE itself can fail with the recoverable
+    SQLITE_BUSY if the writer lock is held when the backfill tries
+    to acquire it, and a cache-write burst (after an archive_stats
+    invalidation, every cold-miss render writes back) easily
+    exceeds 5s of queue depth."""
+    with write_transaction(), SessionLocal() as session:
+        # Force a transaction so the begin listener fires and bumps
+        # the pragma.
+        session.execute(text("SELECT 1"))
+        observed = session.execute(text("PRAGMA busy_timeout")).scalar()
+        session.commit()
+    assert observed == settings.sqlite_busy_timeout_ms_writes, (
+        f"expected busy_timeout={settings.sqlite_busy_timeout_ms_writes} "
+        f"inside write_transaction(); got {observed}"
+    )
+
+
+def test_busy_timeout_restored_on_pool_checkin():
+    """The pool-`reset` listener restores busy_timeout to the
+    web-tier default when a connection is returned to the pool.
+    Without this, a write_transaction()-promoted connection going
+    back to the pool would hand the higher value to whoever checks
+    it out next (typically a web request handler), and the short-
+    timeout contract for request handlers would silently drift."""
+    # Burn a write_transaction() so a connection visits the bump
+    # path and then returns to the pool with the reset applied.
+    with write_transaction(), SessionLocal() as session:
+        session.execute(text("SELECT 1"))
+        session.commit()
+
+    # Fresh checkout: the pool may hand back the same connection.
+    # Either way, busy_timeout must be the default.
+    with engine.connect() as conn:
+        observed = conn.execute(text("PRAGMA busy_timeout")).scalar()
+    assert observed == settings.sqlite_busy_timeout_ms, (
+        f"pool checkin must restore busy_timeout to "
+        f"{settings.sqlite_busy_timeout_ms}; got {observed}"
+    )
