@@ -46,6 +46,35 @@ def test_message_id_strips_angle_brackets():
     assert art.message_id == "abc@example.com"
 
 
+def test_message_id_picks_first_non_empty_when_duplicated():
+    """Real-world blobs from alsa-devel's `Applied "..."` auto-reply
+    bot carry two `Message-ID` headers: an empty `Message-Id:` line
+    followed by a real `Message-ID: <...>` further down. The naive
+    first-match returned the empty string and the parser raised
+    `message has no Message-ID`, dropping 116 messages on a recent
+    reindex of the alsa-devel 0.git epoch. Pin the first-non-empty
+    behaviour."""
+    raw = (
+        b"Message-Id: \r\n"
+        b"Message-ID: <real@example.com>\r\n"
+        b"From: bot@example.com\r\n"
+        b"Subject: Applied something\r\n"
+        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+        b"\r\nbody"
+    )
+    art = parse_message(raw)
+    assert art.message_id == "real@example.com"
+
+
+def test_in_reply_to_picks_first_non_empty_when_duplicated():
+    """Same shape applies to In-Reply-To: an empty first header
+    should not shadow a real follow-up; threading depends on it."""
+    art = parse_message(_msg(
+        extra_headers=b"In-Reply-To: \r\nIn-Reply-To: <parent@x.com>\r\n",
+    ))
+    assert art.in_reply_to == "parent@x.com"
+
+
 def test_in_reply_to_strips_angle_brackets():
     art = parse_message(_msg(extra_headers=b"In-Reply-To: <parent@x.com>\r\n"))
     assert art.in_reply_to == "parent@x.com"
