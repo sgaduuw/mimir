@@ -499,6 +499,47 @@ def test_ingest_failed_on_unparseable_message(seeded_db, tmp_path):
     assert result.linked == 0
 
 
+def test_ingest_failed_repeat_logs_at_debug_not_warning(
+    seeded_db, tmp_path, caplog,
+):
+    """A previously-recorded parse failure (its commit_sha is loaded
+    into `failed_shas` at the start of the run) should log at DEBUG
+    on the next encounter, not WARNING. Otherwise a reindex pass
+    over a long archive with a stable set of untriagable blobs
+    spams the journal on every run. First-time failures still log
+    WARNING (real new event)."""
+    import logging
+
+    alpha = _alpha(seeded_db)
+    bad = b"From: a@b.example\r\nSubject: no msgid\r\n\r\nbody"
+    _build_pubinbox_repo(tmp_path / "0.git", [bad])
+
+    # First run: WARNING.
+    with caplog.at_level(logging.DEBUG, logger="mimir.ingest.epoch"):
+        with seeded_db() as s:
+            result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+    assert result.failed == 1
+    levels_first = {r.levelname for r in caplog.records if "parse failed" in r.message}
+    assert levels_first == {"WARNING"}, levels_first
+
+    caplog.clear()
+
+    # Rewind IngestState so the walker re-yields the bad commit
+    # (this is what `mimir reindex` does before calling ingest_epoch).
+    with seeded_db() as s:
+        state = s.get(IngestState, (alpha.id, "0.git"))
+        state.last_commit_sha = None
+        s.commit()
+
+    # Second run: same bad blob, now already_recorded → DEBUG.
+    with caplog.at_level(logging.DEBUG, logger="mimir.ingest.epoch"):
+        with seeded_db() as s:
+            result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+    assert result.failed == 1
+    levels_second = {r.levelname for r in caplog.records if "parse failed" in r.message}
+    assert levels_second == {"DEBUG"}, levels_second
+
+
 def test_ingest_failed_on_oversized_message(seeded_db, tmp_path, monkeypatch):
     """A message above the size cap raises MessageTooLarge in
     parse_message; counted as failed."""

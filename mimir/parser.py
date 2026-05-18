@@ -199,10 +199,18 @@ def _raw_header(msg: EmailMessage, name: str) -> str | None:
     We avoid msg[name] for everything except structural body/attachment work
     because email.headerregistry.AddressHeader.parse in Python 3.11 raises
     AttributeError on RFC 5322 group addresses (Group has no .local_part).
+
+    When the same header name appears more than once, prefer the first
+    *non-empty* value. lkml carries real-world blobs (alsa-devel's
+    `Applied "..."` auto-reply bot is the modal source) that emit an
+    empty `Message-Id:` line ahead of a real `Message-ID: <...>`; the
+    naive first-match shadowed the real value and dropped the message
+    at ingest with "no Message-ID". A whitespace-only match is treated
+    as empty since `_normalize_msgid` would reduce it to None anyway.
     """
     target = name.lower()
     for k, v in msg.raw_items():
-        if k.lower() == target:
+        if k.lower() == target and v and v.strip():
             return v
     return None
 
