@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.29.0], 2026-05-18
+
 ### Changed
 
 - Canonical-inbox resolution now demotes lkml (and any inbox in the
@@ -57,6 +59,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   and the Link-trailer walk is incremental), so a 10-minute
   cadence is a per-tick `git fetch` + SHA compare at steady
   state. Sentinel: `/data/.last_update_mainline`.
+
+## [1.28.2], 2026-05-18
 
 ### Fixed
 
