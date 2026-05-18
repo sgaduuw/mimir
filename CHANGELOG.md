@@ -11,6 +11,22 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- Canonical-inbox resolution now demotes lkml (and any inbox in the
+  new `Settings.canonical_demoted_inboxes` env, default `["lkml"]`)
+  to a fallback tier. A cross-post that lands on a topical list +
+  lkml canonicalises to the topical list, even when lkml appears
+  first in the message's To/Cc walk. Reflects the convention that
+  lkml is a firehose CC and the topical list is the conversational
+  home, matches Google's observed canonical pick on prod
+  cross-posts, and consolidates link equity on the page where
+  review actually happens. The render-time alphabetical fallback
+  (`canonical_inbox_id IS NULL`) gets the same demoted-to-back
+  ordering for consistency. Re-run
+  `mimir admin canonicals backfill --reprocess` after deploy to
+  rewrite existing rows; the backfill is idempotent.
+
 ### Fixed
 
 - Front-page inbox cards no longer stick on "not yet ingested"

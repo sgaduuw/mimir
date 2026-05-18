@@ -124,13 +124,68 @@ def extract_list_addresses(headers: dict[str, str]) -> list[str]:
 def pick_canonical_inbox_id(
     addresses: list[str],
     address_to_inbox_id: dict[str, int],
+    demoted_inbox_ids: frozenset[int] = frozenset(),
 ) -> int | None:
     """Walk `addresses` (already in To-then-Cc order) and return the
-    inbox_id of the first address that maps to a known inbox. None if
-    no address matches, caller falls back to the alphabetical-first
-    rule at render time."""
+    inbox_id of the best matching inbox. None if no address matches;
+    caller falls back to the alphabetical-first rule at render time.
+
+    Two-pass: a match against a *demoted* inbox (a firehose like
+    lkml, configured via `Settings.canonical_demoted_inboxes`) is
+    only used as a fallback when no non-demoted match is found later
+    in the walk. So `Cc: linux-kernel@vger.kernel.org,
+    linux-arm-kernel@lists.infradead.org` pins to linux-arm-kernel
+    even though lkml is positionally first. The premise of "first
+    list-shaped address = author intent" holds well across topical
+    lists but breaks against firehose-shaped lists that are
+    routinely cc'd as a general-visibility broadcast; this layer
+    encodes the convention that the topical list is the
+    conversational home.
+    """
+    fallback: int | None = None
     for addr in addresses:
         inbox_id = address_to_inbox_id.get(addr)
-        if inbox_id is not None:
-            return inbox_id
-    return None
+        if inbox_id is None:
+            continue
+        if inbox_id in demoted_inbox_ids:
+            if fallback is None:
+                fallback = inbox_id
+            continue
+        return inbox_id
+    return fallback
+
+
+def fallback_canonical_name(
+    canonical_id: int | None,
+    links: list[tuple[int, str]],
+    demoted_names: frozenset[str] | None = None,
+) -> str | None:
+    """Render-time canonical-inbox resolution. Uses `canonical_id`
+    when set and present in `links`; otherwise alphabetically-first
+    among the linked inboxes, with demoted names sorted to the back.
+
+    Centralises the fallback rule used by `_canonical_inbox_name`,
+    `_canonical_inbox_names_for`, and the per-subsystem `recent
+    patches` surface. `demoted_names=None` defers to
+    `Settings.canonical_demoted_inboxes`, so the typical call site
+    (a render path with no plumbed setting) does the right thing
+    without threading the value through.
+    """
+    if canonical_id is not None:
+        for ix_id, name in links:
+            if ix_id == canonical_id:
+                return name
+    if not links:
+        return None
+    if demoted_names is None:
+        # Lazy import to avoid cycles: `mimir.config` doesn't import
+        # canonical, but `canonical` is imported early in `mimir.web`
+        # bootstrap before settings are guaranteed-initialised; the
+        # late import sidesteps any ordering risk.
+        from mimir.config import settings
+        demoted_names = frozenset(settings.canonical_demoted_inboxes)
+    names = [name for _, name in links]
+    non_demoted = sorted(n for n in names if n not in demoted_names)
+    if non_demoted:
+        return non_demoted[0]
+    return min(names)
