@@ -25,6 +25,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from mimir.canonical import extract_list_addresses, pick_canonical_inbox_id
+from mimir.config import settings
 from mimir.datetime_utils import aware_utc
 from mimir.models import (
     Article,
@@ -399,6 +400,13 @@ def ingest_epoch(
         select(Inbox.list_address, Inbox.id).where(Inbox.list_address.isnot(None))
     ).all())
 
+    # Inbox IDs to treat as firehoses during canonical pick (see
+    # `pick_canonical_inbox_id`). Computed once per run; name list
+    # comes from `Settings.canonical_demoted_inboxes`.
+    demoted_inbox_ids: frozenset[int] = frozenset(session.execute(
+        select(Inbox.id).where(Inbox.name.in_(settings.canonical_demoted_inboxes))
+    ).scalars())
+
     # Per-address observation deltas accumulated this batch; flushed to
     # `inbox_address_observations` on each commit so we don't issue a
     # write per message.
@@ -548,7 +556,9 @@ def ingest_epoch(
                              inbox_name, epoch_name, commit_sha[:12], parsed.message_id)
             continue
 
-        canonical_inbox_id = pick_canonical_inbox_id(list_addrs, address_to_inbox_id)
+        canonical_inbox_id = pick_canonical_inbox_id(
+            list_addrs, address_to_inbox_id, demoted_inbox_ids,
+        )
         session.add(_to_article(
             parsed, inbox_id=inbox_id, epoch=epoch_name,
             commit_sha=commit_sha, date=commit_time,
