@@ -14,7 +14,7 @@ from sqlalchemy import select, text
 
 from mimir import cache
 from mimir.config import settings
-from mimir.extensions import SessionLocal, engine
+from mimir.extensions import SessionLocal, engine, write_transaction
 from mimir.ingest.epoch import (
     DEFAULT_WORKERS,
     IngestResult,
@@ -47,7 +47,13 @@ def ingest_inbox(
     """Ingest every epoch under one inbox's mirror path."""
     results: list[IngestResult] = []
     remaining = limit
-    with SessionLocal() as session:
+    # BEGIN IMMEDIATE on every transaction in this block. ingest_epoch
+    # interleaves SELECTs (dedup checks, list-address map refresh) with
+    # INSERTs (new articles, article_lists rows, observations), so a
+    # gunicorn cache.set committing between two of those statements
+    # would trip SQLITE_BUSY_SNAPSHOT and roll back the in-progress
+    # batch.
+    with write_transaction(), SessionLocal() as session:
         # Re-attach the Inbox to this session so .id reads work after
         # the caller's session was closed.
         attached = session.merge(inbox)
@@ -73,7 +79,7 @@ def ingest_inbox(
 
     # Promote `Inbox.list_address` if we now have enough observations.
     # Cheap: at most two rows queried, one update if it fires.
-    with SessionLocal() as session:
+    with write_transaction(), SessionLocal() as session:
         _maybe_promote_list_address(session, inbox.id)
         session.commit()
 
