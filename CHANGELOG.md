@@ -11,6 +11,20 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- Scheduler sidecar honours `/data/.scheduler-paused` as an ad-hoc
+  pause sentinel. `touch /data/.scheduler-paused` quiesces the
+  loop (no warm-cache / update / update-mainline / analyze /
+  vacuum firings) within ~10s; `rm /data/.scheduler-paused`
+  resumes. Used during operator maintenance (e.g.
+  `admin canonicals backfill`, manual SQL, `reindex` over a large
+  epoch) where scheduler write contention would extend the
+  ad-hoc work. One log line on each pause/resume transition (not
+  per tick). In-flight tasks finish before the pause takes
+  effect; the cadence isn't reset, tasks that became due during
+  the pause fire on the next tick after resume.
+
 ## [1.29.0], 2026-05-18
 
 ### Changed
