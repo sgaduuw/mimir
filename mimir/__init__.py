@@ -14,7 +14,6 @@ from werkzeug.middleware.proxy_fix import ProxyFix  # noqa: E402
 
 from mimir.cli import register_cli  # noqa: E402
 from mimir.config import settings  # noqa: E402
-from mimir.inboxes import bootstrap_inboxes  # noqa: E402
 from mimir.web import bp_web  # noqa: E402
 
 
@@ -53,7 +52,11 @@ def create_app() -> Flask:
     app.register_blueprint(bp_web)
     _register_indexnow_key_route(app)
     register_cli(app)
-    bootstrap_inboxes()
+    # No bootstrap_inboxes() here: writes belong on the scheduler
+    # sidecar (run via `mimir bootstrap-inboxes` in deploy/scheduler.sh,
+    # gated by the same `/data/.migrated` sentinel as `alembic upgrade
+    # head`). Web-tier startup must stay read-only so READ_ONLY_DB=true
+    # boots cleanly.
     return app
 
 

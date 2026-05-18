@@ -50,6 +50,7 @@ from mimir.cli.admin.inbox import (
     admin_inbox_trackers_show_command,
     admin_inbox_update_command,
 )
+from mimir.cli.bootstrap import bootstrap_inboxes_command
 from mimir.cli.backfill import (
     backfill_article_files_command,
     backfill_article_trailers_command,
@@ -99,6 +100,7 @@ __all__ = [
     "admin_inbox_trackers_show_command",
     "admin_inbox_update_command",
     "analyze_command",
+    "bootstrap_inboxes_command",
     "backfill_article_files_command",
     "backfill_article_trailers_command",
     "backfill_patch_series_command",
@@ -117,6 +119,7 @@ __all__ = [
 
 def register_cli(app: Flask) -> None:
     app.cli.add_command(init_db_command)
+    app.cli.add_command(bootstrap_inboxes_command)
     app.cli.add_command(ingest_command)
     app.cli.add_command(reindex_command)
     app.cli.add_command(show_command)
