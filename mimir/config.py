@@ -116,6 +116,20 @@ class Settings(BaseSettings):
     # could spoof those values via a forged XFF header.
     trusted_proxy_hops: int = 0
 
+    # SQLite per-connection `busy_timeout` (milliseconds) for the
+    # write-heavy CLI workloads wrapped in
+    # `mimir.extensions.write_transaction()` (backfills,
+    # ingest_inbox, update-mainline). The web-tier default
+    # (`sqlite_busy_timeout_ms` below) is intentionally short so a
+    # stuck request can't hang for minutes; a one-shot backfill has
+    # no latency budget and benefits from much more patience. 60s
+    # comfortably rides out the cache-write burst that follows an
+    # archive_stats invalidation (every cold-miss page render writes
+    # its computed value, so a few hundred page renders in a 5s
+    # window will starve a backfill on the default timeout). Tunable
+    # via SQLITE_BUSY_TIMEOUT_MS_WRITES.
+    sqlite_busy_timeout_ms_writes: int = 60000
+
     # SQLite per-connection `busy_timeout` (milliseconds). When a
     # writer hits a locked DB, SQLite waits up to this long before
     # raising `SQLITE_BUSY`. Default 0 turns transient contention
@@ -125,6 +139,29 @@ class Settings(BaseSettings):
     # we'd rather surface a true VACUUM-vs-write conflict than mask
     # it with a multi-minute hang. Override via SQLITE_BUSY_TIMEOUT_MS.
     sqlite_busy_timeout_ms: int = 5000
+
+    # Quiesce DB writes from this process for the lifetime of the
+    # container. Used as a maintenance toggle: when a long admin
+    # operation (e.g. `admin canonicals backfill --reprocess`) needs
+    # the writer lock to itself, set READ_ONLY_DB=true on the web
+    # container so its gunicorn workers stop competing for the lock
+    # via `cache.set`. The scheduler sidecar keeps the default (False)
+    # so it can still run migrations / ingest / cache hygiene.
+    #
+    # Two layers when enabled:
+    #   1. `cache.set` / `cache.delete` / `cache.purge_expired` /
+    #      `cache.delete_for_inbox` short-circuit to no-ops so the
+    #      best-effort write path doesn't log a warning per request.
+    #   2. `PRAGMA query_only=1` is issued on every connection as a
+    #      belt-and-braces safety net catching any non-cache write
+    #      path; offending statements raise `OperationalError:
+    #      attempt to write a readonly database`.
+    #
+    # Intentionally not persisted anywhere: the toggle is a runtime
+    # env var. A normal container restart (without READ_ONLY_DB set)
+    # restores read-write mode automatically. Override via
+    # READ_ONLY_DB.
+    read_only_db: bool = False
 
     # Auto-ANALYZE threshold. After `ingest_inbox` finishes a run, if
     # `new + linked` across that run's epochs reaches this many rows,
@@ -196,6 +233,26 @@ class Settings(BaseSettings):
     security_policy_url: str | None = None
     security_encryption_url: str | None = None
     security_preferred_languages: str = "en"
+
+    # Per-subsystem triage queue thresholds (issue #209). Defaults
+    # chosen with the kernel-review cadence in mind: 14 days is
+    # roughly one merge-window iteration, by which point a patch
+    # with review trailers but no pickup deserves a maintainer's
+    # attention; 30 days of total silence is the point at which a
+    # patch is unlikely to land without a re-post. Override via
+    # SUBSYSTEM_NEEDS_ATTENTION_DAYS / SUBSYSTEM_QUIET_DAYS.
+    subsystem_needs_attention_days: int = 14
+    subsystem_quiet_days: int = 30
+
+    # Hard upper bound on triage-queue age (#209). Patches older than
+    # this are considered abandoned, not "needs attention" or
+    # "quiet": the author has moved on, the patch won't land without
+    # a fresh post. Bounding the queue this way is also load-bearing
+    # for the query plan, walking `ix_articles_date` ASC over an
+    # unbounded range scans 6M+ rows for popular subsystems (8 s
+    # cold miss); over 180 days it's ~200k rows and milliseconds.
+    # Override via SUBSYSTEM_TRIAGE_MAX_AGE_DAYS.
+    subsystem_triage_max_age_days: int = 180
 
 
 settings = Settings()

@@ -106,3 +106,92 @@ def _subsystem_path_filter_sql(
     if not branches:
         return None
     return " UNION ".join(branches), params
+
+
+def _subsystem_path_filter_exists_sql(
+    subsystem: Subsystem,
+    article_alias: str = "a",
+    prefix: str = "spe",
+) -> tuple[str, dict] | None:
+    """Sibling of `_subsystem_path_filter_sql` that returns a
+    correlated `EXISTS (...)` predicate fragment rather than an
+    article_id enumerator. Use when the outer query wants to walk
+    a different index (typically `ix_articles_date`) and test the
+    path filter per article, instead of materialising the full set
+    of matching article_ids and joining.
+
+    Returns `(predicate_sql, params)` where `predicate_sql` is a
+    boolean expression to AND into an outer WHERE. The expression
+    references `{article_alias}.id` as the correlation column.
+    Returns `None` when the subsystem has no supported (non-
+    wildcard) include rules; caller treats that as "no match" and
+    skips the query entirely.
+
+    Why a separate helper: the UNION-of-seeks shape in
+    `_subsystem_path_filter_sql` is right when the path filter is
+    the most selective predicate AND the outer query has no other
+    order/limit. The triage queues invert that: they walk
+    `ix_articles_date` ASC, ORDER BY ... LIMIT 10, and the
+    path filter is the *cheapest per-row* predicate (an article
+    has ~3 files on average, indexed by `(article_id, path)` PK).
+    Walking the date index ASC + per-row EXISTS gets the planner
+    to a "test 10-N articles to find 10 hits" shape and avoids
+    materialising the full subsystem's article_id set, which on
+    NETWORKING [GENERAL] runs into the hundreds of thousands and
+    drives the IN-list variant to ~8 s cold.
+    """
+    includes = [r.glob for r in subsystem.paths if not r.is_exclude]
+    excludes = [r.glob for r in subsystem.paths if r.is_exclude]
+    params: dict[str, str] = {}
+
+    def _add(name: str, value: str) -> str:
+        params[name] = value
+        return name
+
+    def _prefix_bounds(g: str) -> tuple[str, str]:
+        return g, g[:-1] + chr(ord(g[-1]) + 1)
+
+    # Build the include OR-list. Skip wildcards (same slice-1/2
+    # rationale as the sibling helper).
+    inc_parts: list[str] = []
+    for i, g in enumerate(includes):
+        if g.endswith("/"):
+            lo, hi = _prefix_bounds(g)
+            pname_lo = _add(f"{prefix}_inc_lo_{i}", lo)
+            pname_hi = _add(f"{prefix}_inc_hi_{i}", hi)
+            inc_parts.append(f"(af.path >= :{pname_lo} AND af.path < :{pname_hi})")
+            pname_eq = _add(f"{prefix}_inc_eq_{i}", g[:-1])
+            inc_parts.append(f"af.path = :{pname_eq}")
+        elif not any(c in g for c in "*?["):
+            pname = _add(f"{prefix}_inc_eq_{i}", g)
+            inc_parts.append(f"af.path = :{pname}")
+        # else: wildcard skipped
+    if not inc_parts:
+        return None
+    include_or = " OR ".join(inc_parts)
+
+    # Exclude OR-list AND-NOT-ed against the include match. Same
+    # per-row shape as the sibling helper (the exclude check rides
+    # on already-narrow include matches).
+    exc_parts: list[str] = []
+    for i, g in enumerate(excludes):
+        if g.endswith("/"):
+            lo, hi = _prefix_bounds(g)
+            pname_lo = _add(f"{prefix}_exc_lo_{i}", lo)
+            pname_hi = _add(f"{prefix}_exc_hi_{i}", hi)
+            exc_parts.append(f"(af.path >= :{pname_lo} AND af.path < :{pname_hi})")
+            pname_eq = _add(f"{prefix}_exc_eq_{i}", g[:-1])
+            exc_parts.append(f"af.path = :{pname_eq}")
+        elif not any(c in g for c in "*?["):
+            pname = _add(f"{prefix}_exc_eq_{i}", g)
+            exc_parts.append(f"af.path = :{pname}")
+    exc_clause = (
+        f" AND NOT ({' OR '.join(exc_parts)})" if exc_parts else ""
+    )
+
+    predicate = (
+        f"EXISTS (SELECT 1 FROM article_files af "
+        f"WHERE af.article_id = {article_alias}.id "
+        f"AND ({include_or}){exc_clause})"
+    )
+    return predicate, params

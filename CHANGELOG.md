@@ -11,6 +11,67 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.31.0], 2026-05-19
+
+### Added
+
+- Per-subsystem triage queues on the subsystem dashboard
+  (`/<inbox>/subsystem/<name>/`), closing #209. Two new ranked
+  lists below the existing widgets:
+  - **Needs attention**: patches with one or more review trailers
+    (`Reviewed-by` / `Acked-by` / `Tested-by`) that haven't landed
+    in mainline, haven't been superseded by a later same-key
+    revision, and haven't been Acked by a subsystem maintainer.
+    Older than `SUBSYSTEM_NEEDS_ATTENTION_DAYS` (default 14).
+  - **Quiet for N+ days**: patches with no trailers and no
+    replies, older than `SUBSYSTEM_QUIET_DAYS` (default 30).
+  Both ordered oldest-first so the most concerning entries
+  surface at the top; both hidden when empty. Backed by
+  `needs_attention_patches_in_subsystem` and
+  `quiet_patches_in_subsystem` in
+  `mimir/subsystems_dashboard/triage.py`; pre-warmed per
+  pinned-subsystem by `_warm_subsystem_dashboards`. The
+  maintainer-Ack pickup signal cross-references
+  `article_trailers.address_normalized` against
+  `subsystem_maintainers` (M:/R: roles only); a Reviewed-by from
+  a maintainer is treated as feedback, not pickup. Plan-pinned
+  in tests to walk `ix_articles_date` ASC over a bounded date
+  range (`SUBSYSTEM_TRIAGE_MAX_AGE_DAYS`, default 180) with no
+  full scans on `articles` / `article_trailers` /
+  `article_files`. ~200 ms cold on NETWORKING [GENERAL] / MM
+  CORE against the prod-mirror DB, well under the issue's 1 s
+  budget.
+- `READ_ONLY_DB` maintenance toggle for the web container. When set
+  to `true`, the process quiesces all DB writes: `cache.set` /
+  `delete` / `purge_expired` / `delete_for_inbox` short-circuit to
+  no-ops, and `PRAGMA query_only=1` is issued on every connection as
+  a belt-and-braces safety net. Used to hand the writer lock to a
+  long admin operation on the scheduler sidecar (e.g.
+  `admin canonicals backfill --reprocess` on the full corpus) without
+  taking the site down. The flag is intentionally not persisted; a
+  normal container restart without `READ_ONLY_DB` in the env
+  restores read-write. The scheduler sidecar must stay un-flagged so
+  migrations / ingest / cache hygiene keep working.
+
+### Changed
+
+- `write_transaction()` now raises the SQLite `busy_timeout` on the
+  active connection to `Settings.sqlite_busy_timeout_ms_writes`
+  (default 60 s, env-tunable via `SQLITE_BUSY_TIMEOUT_MS_WRITES`)
+  for the duration of the block, restoring the web-tier default
+  (5 s) when the connection is returned to the pool. Closes the
+  follow-up gap left by v1.30.1: BEGIN IMMEDIATE itself can still
+  fail with the recoverable `SQLITE_BUSY` when another writer is
+  active, and on a busy production deploy (cache-write burst
+  after an `archive_stats` invalidation, every cold-miss render
+  writes its computed value back) the 5 s web-tier default starves
+  a concurrent backfill within seconds. Operators no longer need
+  to remember `SQLITE_BUSY_TIMEOUT_MS=60000` on the backfill
+  command line; the helper does the right thing automatically.
+  Web-tier request handlers keep the short timeout (the short
+  budget there is intentional, a stuck request shouldn't hang for
+  a minute).
+
 ## [1.30.1], 2026-05-18
 
 ### Fixed

@@ -28,6 +28,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.models import CacheEntry
 
@@ -166,7 +167,13 @@ def set(key: str, value: Any, ttl: int) -> None:
     we got here, so a failed cache write must not propagate, it'd
     500 a successful response. Log and move on; the next request
     recomputes.
+
+    Under `Settings.read_only_db` this becomes a no-op so the
+    maintenance-toggled web container doesn't log a warning per
+    request when its query_only pragma rejects the INSERT.
     """
+    if settings.read_only_db:
+        return
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
     expires_at = _now() + ttl
@@ -235,7 +242,13 @@ def keys() -> list[str]:
 
 def purge_expired() -> int:
     """Drop every expired row. Returns rows deleted. Cheap thanks to
-    `ix_cache_expires_at`."""
+    `ix_cache_expires_at`.
+
+    No-op under `Settings.read_only_db`; the scheduler sidecar (which
+    is not flagged) handles purges via the warm-cache tick.
+    """
+    if settings.read_only_db:
+        return 0
     now = _now()
     with SessionLocal() as session:
         result = session.execute(delete_stmt(CacheEntry).where(CacheEntry.expires_at < now))
@@ -255,7 +268,12 @@ def delete(key: str) -> int:
     invalidation lost the lock race. Log + return 0; the cached
     value still ages out via TTL and a successful subsequent write
     overwrites whatever stale row survived.
+
+    No-op under `Settings.read_only_db`; admin CRUD that drives this
+    runs on the scheduler sidecar, not the flagged web container.
     """
+    if settings.read_only_db:
+        return 0
     nskey = _ns(key)
     try:
         with SessionLocal() as session:
@@ -282,7 +300,12 @@ def delete_for_inbox(inbox_name: str) -> int:
     Inbox names are slug-validated (alphanumeric + hyphen) so they
     contain no LIKE-pattern metacharacters; the literal `%` and `_`
     cases that would need escaping can't occur.
+
+    No-op under `Settings.read_only_db`; admin CRUD that drives this
+    runs on the scheduler sidecar, not the flagged web container.
     """
+    if settings.read_only_db:
+        return 0
     suffix_pat = f"%:{inbox_name}"
     middle_pat = f"%:{inbox_name}:%"
     try:

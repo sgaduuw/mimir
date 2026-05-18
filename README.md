@@ -379,7 +379,8 @@ mimir/
   subsystems_dashboard/  per-subsystem dashboard surfaces split by concern:
                          reads (per-subsystem fan-outs), reviewers
                          (attestation surfaces), activity (cross-inbox
-                         "most active subsystems").
+                         "most active subsystems"), triage (needs-
+                         attention + quiet-for-N+-days queues).
   maintainers.py         MAINTAINERS file parser (no DB)
   maintainer_allowlist.py  dynamic email allowlist sourced from MAINTAINERS
   mainline.py            Linus-tree commit walker for Link: trailers
