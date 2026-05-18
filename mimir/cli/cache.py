@@ -37,6 +37,8 @@ from mimir.subsystems_dashboard import (
     daily_volume_in_subsystem,
     most_active_subsystems_global,
     most_active_subsystems_in_inbox,
+    needs_attention_patches_in_subsystem,
+    quiet_patches_in_subsystem,
     recent_articles_in_subsystem,
 )
 from mimir.threading import active_threads, threads_for_day
@@ -114,6 +116,10 @@ def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
         )
         active_threads_in_subsystem(session, inbox, sub, days=7, limit=10)
         daily_volume_in_subsystem(session, inbox, sub, days=30)
+        # Triage queues (#209). Same arg shape as the route call
+        # site so the cache key matches.
+        needs_attention_patches_in_subsystem(session, inbox, sub, limit=10)
+        quiet_patches_in_subsystem(session, inbox, sub, limit=10)
         # Collect addresses so we can warm the per-reviewer page each
         # one links to from this subsystem's "Active reviewers" list.
         for r in active_reviewers_in_subsystem(
