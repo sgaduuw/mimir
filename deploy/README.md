@@ -58,6 +58,30 @@ the cadence intent survives. A task that overruns its slot is logged
 but the loop continues; sentinels are only touched on successful
 runs so a failure doesn't push the next retry out by a full cadence.
 
+### Ad-hoc pause
+
+For maintenance windows (e.g. `admin canonicals backfill`, manual
+SQL, `reindex` over a large epoch) where scheduler write contention
+would extend the work, quiesce the loop with a sentinel file:
+
+```sh
+# Pause: scheduler stops firing tasks within ~10s. Currently-running
+# tasks finish first; new ticks are skipped while the sentinel exists.
+podman exec mimir-tasks touch /data/.scheduler-paused
+
+# Resume.
+podman exec mimir-tasks rm /data/.scheduler-paused
+```
+
+The journal carries one `paused` line on entry and one `resumed` line
+on exit, not one per tick. Tasks that became due during the pause fire
+in the next tick after resume; the cadence isn't reset.
+
+The sentinel gates only the in-loop ticks; the boot-time
+`alembic upgrade head` + post-migrate ANALYZE + `(initial)`
+warm-cache/update passes ignore it. If you need to restart the
+sidecar mid-maintenance, drop the sentinel first.
+
 The sidecar owns schema: `alembic upgrade head` runs once on start
 (before the loop) and is the single place that touches DDL. A
 post-migrate `ANALYZE` runs immediately after the upgrade and
