@@ -19,7 +19,7 @@ from typing import Any, Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from mimir.extensions import SessionLocal
+from mimir.extensions import SessionLocal, write_transaction
 from mimir.models import Article
 
 
@@ -54,7 +54,12 @@ def walk_articles(
     `examined=k` exactly across `k <= count`."""
     examined_total = 0
 
-    with SessionLocal() as session:
+    # BEGIN IMMEDIATE per batch transaction. The walker reads the
+    # next batch of articles, mutates them in process_one, then
+    # commits; without IMMEDIATE the first commit-then-next-read
+    # interleave can trip SQLITE_BUSY_SNAPSHOT against the web
+    # tier's cache.set writes.
+    with write_transaction(), SessionLocal() as session:
         cursor: int | None = None
         while True:
             q = (
