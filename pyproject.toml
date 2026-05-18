@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mimir"
-version = "1.29.0"
+version = "1.30.0"
 description = "toy project for reading lkml"
 authors = ["Eelco Wesemann <6771014+sgaduuw@users.noreply.github.com>"]
 license = "MIT"
