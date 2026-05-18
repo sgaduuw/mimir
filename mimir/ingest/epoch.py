@@ -443,13 +443,22 @@ def ingest_epoch(
         last_seen = commit_sha
         processed += 1
         if isinstance(parsed_or_exc, Exception):
-            logger.warning(
+            # First-time failures are WARNINGs (real new event the
+            # operator should know about); re-encounters of an already-
+            # recorded failure drop to DEBUG so a reindex pass over a
+            # long archive with a stable set of untriagable blobs (RFC
+            # 5322 violators, oversized payloads) doesn't drown the
+            # journal. The `parse_failures` row still tracks everything,
+            # this only governs the log line.
+            already_recorded = commit_sha in failed_shas
+            log = logger.debug if already_recorded else logger.warning
+            log(
                 "epoch %s commit %s: parse failed: %r",
                 epoch_name, commit_sha[:12], parsed_or_exc,
             )
             _record_parse_failure(
                 session, inbox_id, epoch_name, commit_sha, parsed_or_exc,
-                already_recorded=commit_sha in failed_shas,
+                already_recorded=already_recorded,
             )
             failed_shas.add(commit_sha)
             result.failed += 1
