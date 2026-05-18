@@ -51,6 +51,25 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   restores read-write. The scheduler sidecar must stay un-flagged so
   migrations / ingest / cache hygiene keep working.
 
+### Changed
+
+- `write_transaction()` now raises the SQLite `busy_timeout` on the
+  active connection to `Settings.sqlite_busy_timeout_ms_writes`
+  (default 60 s, env-tunable via `SQLITE_BUSY_TIMEOUT_MS_WRITES`)
+  for the duration of the block, restoring the web-tier default
+  (5 s) when the connection is returned to the pool. Closes the
+  follow-up gap left by v1.30.1: BEGIN IMMEDIATE itself can still
+  fail with the recoverable `SQLITE_BUSY` when another writer is
+  active, and on a busy production deploy (cache-write burst
+  after an `archive_stats` invalidation, every cold-miss render
+  writes its computed value back) the 5 s web-tier default starves
+  a concurrent backfill within seconds. Operators no longer need
+  to remember `SQLITE_BUSY_TIMEOUT_MS=60000` on the backfill
+  command line; the helper does the right thing automatically.
+  Web-tier request handlers keep the short timeout (the short
+  budget there is intentional, a stuck request shouldn't hang for
+  a minute).
+
 ## [1.30.1], 2026-05-18
 
 ### Fixed
