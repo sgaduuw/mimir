@@ -10,8 +10,9 @@ from pathlib import Path
 
 from dulwich.errors import NotGitRepository
 from dulwich.repo import Repo
-from sqlalchemy import text
+from sqlalchemy import select, text
 
+from mimir import cache
 from mimir.config import settings
 from mimir.extensions import SessionLocal, engine
 from mimir.ingest.epoch import (
@@ -50,6 +51,15 @@ def ingest_inbox(
         # Re-attach the Inbox to this session so .id reads work after
         # the caller's session was closed.
         attached = session.merge(inbox)
+        # Capture the empty-vs-populated state *from the DB* (not via
+        # the merged ORM attribute, which would inherit a possibly-
+        # stale value from the input object) before any ingest_epoch
+        # call mutates last_article_date in this session. Used below
+        # to decide whether this run is an empty-to-non-empty
+        # transition that should bust the per-inbox cache.
+        was_empty = session.execute(
+            select(Inbox.last_article_date).where(Inbox.id == attached.id)
+        ).scalar_one() is None
         for epoch_path in discover_epochs(Path(attached.mirror_path)):
             if remaining is not None and remaining <= 0:
                 break
@@ -73,12 +83,22 @@ def ingest_inbox(
     # in one go and would otherwise leave the planner blind until the
     # next scheduled ANALYZE.
     threshold = settings.analyze_after_ingest_rows
-    if threshold > 0:
-        moved = sum(r.new + r.linked for r in results)
-        if moved >= threshold:
-            logger.info("auto-ANALYZE after %s/%d rows ingested", inbox.name, moved)
-            with engine.begin() as conn:
-                conn.execute(text("ANALYZE"))
+    moved = sum(r.new + r.linked for r in results)
+    if threshold > 0 and moved >= threshold:
+        logger.info("auto-ANALYZE after %s/%d rows ingested", inbox.name, moved)
+        with engine.begin() as conn:
+            conn.execute(text("ANALYZE"))
+
+    # First-ingest cache bust. `archive_stats:<inbox>` is cached for
+    # 24h, so when a freshly-added inbox happened to be warmed in
+    # the seconds between `admin inbox add` and the first ingest,
+    # the front-page card sticks on `total=0` ("not yet ingested")
+    # until the TTL aged out. Drop the per-inbox keys exactly on
+    # the empty-to-non-empty transition: targeted enough that
+    # steady-state ingests of established inboxes don't trigger
+    # the COUNT(*) refresh on every tick.
+    if was_empty and moved > 0:
+        cache.delete_for_inbox(inbox.name)
 
     return results
 

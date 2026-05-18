@@ -96,6 +96,17 @@ class Settings(BaseSettings):
     # set to empty to fall back to pure alphabetical.
     pinned_inboxes: list[str] = ["lkml"]
 
+    # Inboxes treated as a *firehose* during canonical-inbox resolution
+    # for cross-posts. A message posted to a topical list AND lkml is
+    # canonically the topical-list version, even when lkml appears
+    # first in the To/Cc walk; the firehose copy is the cross-post.
+    # An inbox in this list is only chosen as canonical when no
+    # non-firehose inbox in the article's link set matches. Mirrors
+    # how kernel devs (and Google's crawler) actually treat the
+    # topical lists as the conversational home. Override via
+    # CANONICAL_DEMOTED_INBOXES (comma-separated).
+    canonical_demoted_inboxes: list[str] = ["lkml"]
+
     # Number of trusted reverse-proxy hops in front of the app. When
     # > 0, Werkzeug's ProxyFix is wired up so the last N entries of
     # X-Forwarded-{For,Proto,Host} are honoured, request.remote_addr

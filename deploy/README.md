@@ -41,12 +41,13 @@ for container deployments. It shares the `/data` volume with the
 web container, exposes no ports, and runs the same image with a
 different `command:`.
 
-| Env var            | Default         | What it controls                      |
-| ------------------ | --------------- | ------------------------------------- |
-| `WARM_CACHE_EVERY` | `60` (s)        | Refresh dashboard helpers             |
-| `UPDATE_EVERY`     | `300` (s)       | Sync upstream + ingest new commits    |
-| `ANALYZE_EVERY`    | `86400` (s)     | Refresh `sqlite_stat1`                |
-| `VACUUM_EVERY`     | `604800` (s)    | Compact DB + collapse WAL             |
+| Env var                 | Default         | What it controls                              |
+| ----------------------- | --------------- | --------------------------------------------- |
+| `WARM_CACHE_EVERY`      | `60` (s)        | Refresh dashboard helpers                     |
+| `UPDATE_EVERY`          | `300` (s)       | Sync upstream + ingest new commits            |
+| `UPDATE_MAINLINE_EVERY` | `600` (s)       | Fetch `linux.git` + (re)parse `MAINTAINERS`   |
+| `ANALYZE_EVERY`         | `86400` (s)     | Refresh `sqlite_stat1`                        |
+| `VACUUM_EVERY`          | `604800` (s)    | Compact DB + collapse WAL                     |
 
 Timing is wall-clock, persisted across container restarts via
 `/data/.last_<task>` sentinel files. Without persistence a release

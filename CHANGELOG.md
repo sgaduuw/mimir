@@ -11,6 +11,55 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.29.0], 2026-05-18
+
+### Changed
+
+- Canonical-inbox resolution now demotes lkml (and any inbox in the
+  new `Settings.canonical_demoted_inboxes` env, default `["lkml"]`)
+  to a fallback tier. A cross-post that lands on a topical list +
+  lkml canonicalises to the topical list, even when lkml appears
+  first in the message's To/Cc walk. Reflects the convention that
+  lkml is a firehose CC and the topical list is the conversational
+  home, matches Google's observed canonical pick on prod
+  cross-posts, and consolidates link equity on the page where
+  review actually happens. The render-time alphabetical fallback
+  (`canonical_inbox_id IS NULL`) gets the same demoted-to-back
+  ordering for consistency. Re-run
+  `mimir admin canonicals backfill --reprocess` after deploy to
+  rewrite existing rows; the backfill is idempotent.
+
+### Fixed
+
+- Front-page inbox cards no longer stick on "not yet ingested"
+  for the rest of the 24h `archive_stats` TTL after a freshly-added
+  inbox finishes its first ingest. The race was: between
+  `admin inbox add <name>` and the first `update`, the
+  scheduler's `warm-cache` tick wrote `archive_stats:<name>` with
+  `total=0`, and the subsequent ingest didn't invalidate it; the
+  TTL refresh-window logic in `warm-cache` then preserved the
+  stale row for ~24h. `ingest_inbox` now calls
+  `cache.delete_for_inbox(name)` exactly on the empty-to-non-empty
+  transition (`Inbox.last_article_date` was NULL at the start of
+  the run AND ingest landed at least one `new`/`linked` row), so
+  steady-state ingests of established inboxes don't churn the
+  cache.
+
+### Added
+
+- Scheduler sidecar now runs `update-mainline` on a 10-minute
+  cadence (env-tunable via `UPDATE_MAINLINE_EVERY`), alongside the
+  existing `warm-cache`/`update`/`analyze`/`vacuum` knobs. Previously
+  the kernel-tree pull and MAINTAINERS reparse had to be invoked
+  manually (`podman exec mimir-tasks mimir update-mainline`), so
+  the maintainer-derived half of the From-line allowlist and the
+  per-subsystem dashboards drifted from upstream between manual
+  runs. The task no-ops cheaply when mainline HEAD hasn't moved
+  (the reparse short-circuits on unchanged `state.last_commit_sha`
+  and the Link-trailer walk is incremental), so a 10-minute
+  cadence is a per-tick `git fetch` + SHA compare at steady
+  state. Sentinel: `/data/.last_update_mainline`.
+
 ## [1.28.2], 2026-05-18
 
 ### Fixed
