@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.31.0], 2026-05-19
+
 ### Added
 
 - Per-subsystem triage queues on the subsystem dashboard
