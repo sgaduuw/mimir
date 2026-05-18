@@ -15,9 +15,10 @@ from datetime import datetime, timezone
 from email.utils import parseaddr
 
 from flask import abort, g, request
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mimir.canonical import fallback_canonical_name
 from mimir.config import settings
 from mimir.datetime_utils import aware_utc
 from mimir.models import Article, ArticleList, Inbox
@@ -100,18 +101,14 @@ def _canonical_inbox_name(
     """Pick the canonical inbox name for `article` from the list of
     `(inbox_id, inbox_name)` tuples it's linked to. Uses
     `article.canonical_inbox_id` when set; falls back to the
-    alphabetically-first link, stable across renders so the SEO
-    signal doesn't flicker between equivalent cross-posts. Returns
-    None only when `links` is empty (a corrupt row; should never
-    happen given FK cascades)."""
-    canonical_id = article.canonical_inbox_id
-    if canonical_id is not None:
-        for ix_id, name in links:
-            if ix_id == canonical_id:
-                return name
-    if not links:
-        return None
-    return min(name for _, name in links)
+    alphabetically-first link with `Settings.canonical_demoted_inboxes`
+    sorted to the back (so a cross-post to lkml + a topical list
+    canonicalises to the topical list even before auto-promotion
+    populates `canonical_inbox_id`). Stable across renders so the
+    SEO signal doesn't flicker between equivalent cross-posts.
+    Returns None only when `links` is empty (a corrupt row; should
+    never happen given FK cascades)."""
+    return fallback_canonical_name(article.canonical_inbox_id, links)
 
 
 def _year_decade_groups(first_year: int, last_year: int) -> list[tuple[int, list[int]]]:
@@ -192,10 +189,10 @@ def _canonical_inbox_names_for(
     session: Session, article_ids: list[int],
 ) -> dict[int, str]:
     """Resolve article_id → canonical inbox name for a batch (typically
-    a feed's worth, ≤50). Falls back to the alphabetically-first linked
-    inbox when canonical_inbox_id is NULL. One query for the canonical
-    side, one for the fallback set; total ≤2 queries regardless of
-    batch size."""
+    a feed's worth, ≤50). Uses `canonical_inbox_id` when set; falls
+    back to the alphabetically-first linked inbox with
+    `Settings.canonical_demoted_inboxes` sorted to the back. Total
+    ≤2 queries regardless of batch size."""
     if not article_ids:
         return {}
     out: dict[int, str] = {}
@@ -208,12 +205,21 @@ def _canonical_inbox_names_for(
         out[art_id] = inbox_name
     missing = [aid for aid in article_ids if aid not in out]
     if missing:
-        fallback = session.execute(
-            select(ArticleList.article_id, func.min(Inbox.name))
+        # Pull every linked inbox for the missing set and bucket in
+        # Python rather than expressing the two-tier order in a SQL
+        # CASE. For a ≤50-article feed with 1-3 inboxes each, the
+        # extra rows pulled are negligible and the call-site clarity
+        # win is worth it.
+        link_rows = session.execute(
+            select(ArticleList.article_id, Inbox.name)
             .join(Inbox, Inbox.id == ArticleList.inbox_id)
             .where(ArticleList.article_id.in_(missing))
-            .group_by(ArticleList.article_id)
         ).all()
-        for art_id, inbox_name in fallback:
-            out[art_id] = inbox_name
+        demoted_names = frozenset(settings.canonical_demoted_inboxes)
+        names_by_article: dict[int, list[str]] = {}
+        for art_id, name in link_rows:
+            names_by_article.setdefault(art_id, []).append(name)
+        for art_id, names in names_by_article.items():
+            non_demoted = sorted(n for n in names if n not in demoted_names)
+            out[art_id] = non_demoted[0] if non_demoted else min(names)
     return out

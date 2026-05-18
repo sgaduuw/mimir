@@ -801,6 +801,50 @@ def test_ingest_sets_canonical_when_to_address_matches_known_inbox(seeded_db, tm
         assert art.canonical_inbox_id == alpha.id
 
 
+def test_ingest_canonical_demotes_lkml_in_favour_of_topical(seeded_db, tmp_path, monkeypatch):
+    """When `Settings.canonical_demoted_inboxes` lists an inbox and a
+    cross-posted message hits both the demoted inbox and a topical
+    inbox, `canonical_inbox_id` pins to the topical one even if the
+    demoted address appears first in To/Cc. End-to-end check that
+    the ingest-time call site threads `demoted_inbox_ids` correctly."""
+    from mimir.config import settings
+
+    # Use beta as the firehose stand-in (the seeded fixture
+    # ships alpha+beta; "lkml" isn't seeded). Map beta's
+    # list_address to the canonical lkml address shape.
+    monkeypatch.setattr(settings, "canonical_demoted_inboxes", ["beta"])
+    with seeded_db() as s:
+        a = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        b = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        a.list_address = "linux-arm-kernel@lists.infradead.org"
+        b.list_address = "linux-kernel@vger.kernel.org"
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+
+    raw = _rfc5322(
+        "demote@example.com",
+        # Demoted (lkml-shaped) appears positionally first; topical
+        # (alpha) appears after. Old behaviour would canonicalise
+        # to beta; new behaviour canonicalises to alpha.
+        to="linux-kernel@vger.kernel.org",
+        cc="linux-arm-kernel@lists.infradead.org",
+    )
+    _build_pubinbox_repo(tmp_path / "0.git", [raw])
+
+    with seeded_db() as s:
+        ingest_epoch(s, beta, "0.git", tmp_path / "0.git", workers=1)
+
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == "demote@example.com")
+        ).scalar_one()
+        assert art.canonical_inbox_id == alpha.id, (
+            f"expected canonical to skip demoted beta and pick alpha "
+            f"(id={alpha.id}); got {art.canonical_inbox_id}"
+        )
+
+
 def test_ingest_canonical_null_when_no_known_address_matches(seeded_db, tmp_path):
     alpha = _alpha(seeded_db)
     raw = _rfc5322(
