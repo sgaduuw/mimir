@@ -11,6 +11,22 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Front-page inbox cards no longer stick on "not yet ingested"
+  for the rest of the 24h `archive_stats` TTL after a freshly-added
+  inbox finishes its first ingest. The race was: between
+  `admin inbox add <name>` and the first `update`, the
+  scheduler's `warm-cache` tick wrote `archive_stats:<name>` with
+  `total=0`, and the subsequent ingest didn't invalidate it; the
+  TTL refresh-window logic in `warm-cache` then preserved the
+  stale row for ~24h. `ingest_inbox` now calls
+  `cache.delete_for_inbox(name)` exactly on the empty-to-non-empty
+  transition (`Inbox.last_article_date` was NULL at the start of
+  the run AND ingest landed at least one `new`/`linked` row), so
+  steady-state ingests of established inboxes don't churn the
+  cache.
+
 ### Added
 
 - Scheduler sidecar now runs `update-mainline` on a 10-minute
