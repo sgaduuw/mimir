@@ -11,7 +11,20 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
-## [1.28.2], 2026-05-18
+### Added
+
+- Scheduler sidecar now runs `update-mainline` on a 10-minute
+  cadence (env-tunable via `UPDATE_MAINLINE_EVERY`), alongside the
+  existing `warm-cache`/`update`/`analyze`/`vacuum` knobs. Previously
+  the kernel-tree pull and MAINTAINERS reparse had to be invoked
+  manually (`podman exec mimir-tasks mimir update-mainline`), so
+  the maintainer-derived half of the From-line allowlist and the
+  per-subsystem dashboards drifted from upstream between manual
+  runs. The task no-ops cheaply when mainline HEAD hasn't moved
+  (the reparse short-circuits on unchanged `state.last_commit_sha`
+  and the Link-trailer walk is incremental), so a 10-minute
+  cadence is a per-tick `git fetch` + SHA compare at steady
+  state. Sentinel: `/data/.last_update_mainline`.
 
 ### Fixed
 
