@@ -109,6 +109,52 @@ def test_client_persistent_connection_survives_idle_window(seeded_db):
             c.close()
 
 
+def test_client_concurrent_rpcs_from_one_singleton(seeded_db):
+    """Regression: warm-cache fans out across `min(cpu_count, 8)`
+    worker threads, each sharing the process-singleton broker
+    client. Without a per-client lock around `_rpc`, concurrent
+    threads would race on the same socket: interleaved writes
+    break JSONL framing, the broker returns parse errors, the
+    client closes the socket, and every thread piles into a fresh
+    connect attempt against the broker's listen backlog (the
+    `Errno 11 Resource temporarily unavailable` connect storm
+    observed in production v1.32.1 with broker mode on).
+
+    Pin: N threads each issue M unique cache_set RPCs through a
+    shared client. All complete without raising. Every key lands
+    in the DB exactly once (idempotent upsert via _direct_set).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from mimir.cache import _ns
+
+    sp = short_socket_path("client-concurrent")
+    n_threads = 8
+    rpcs_per_thread = 20
+
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            def _worker(tid: int) -> None:
+                for i in range(rpcs_per_thread):
+                    key = _ns(f"concurrent:{tid}:{i}")
+                    c.cache_set(key, f'"v-{tid}-{i}"', 60)
+
+            with ThreadPoolExecutor(max_workers=n_threads) as ex:
+                futures = [ex.submit(_worker, t) for t in range(n_threads)]
+                for f in as_completed(futures):
+                    f.result()  # re-raise any worker exception
+        finally:
+            c.close()
+
+    # Every key should be present exactly once.
+    for tid in range(n_threads):
+        for i in range(rpcs_per_thread):
+            assert cache.get(f"concurrent:{tid}:{i}") == f"v-{tid}-{i}", (
+                f"missing or corrupted cache row for tid={tid} i={i}"
+            )
+
+
 def test_client_persistent_connection_reuses_socket(seeded_db):
     """Multiple RPCs through one client reuse the same underlying
     socket (no `_close` between calls)."""
