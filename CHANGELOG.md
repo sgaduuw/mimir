@@ -11,6 +11,31 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Broker now serves multiple client connections concurrently.
+  Replaced the single-threaded
+  `socketserver.UnixStreamServer` handler with a queue + worker
+  pool: each accepted connection runs on its own reader thread
+  that enqueues JSONL request lines onto a shared
+  `queue.Queue`, and a single worker thread drains the queue,
+  dispatches the RPC, and writes the reply back to the
+  originating socket. Fixes the production bug where, with two
+  gunicorn workers + scheduler-tasks subprocesses all holding
+  persistent connections, the broker only ever served one
+  client at a time; the other clients' RPCs sat unread in the
+  kernel buffer and timed out at the client's 5 s socket
+  timeout. Writes stay serialised at the single worker so
+  in-process SQLite contention is unchanged; the queue makes
+  backpressure observable too. Slow-RPC WARNING now breaks
+  total elapsed into `queued + dispatch` components plus
+  current `qsize`, so an operator can tell whether the broker
+  is contended at the front of the queue (many clients piling
+  on) or at the back (writer lock held by scheduler-side
+  ingest). Plan-pinned in
+  `test_server_serves_two_clients_concurrently` and
+  `test_server_serves_many_clients_concurrently`.
+
 ### Added
 
 - Broker daemon now logs a WARNING when an individual RPC takes
