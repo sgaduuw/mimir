@@ -11,6 +11,38 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.32.3], 2026-05-20
+
+### Fixed
+
+- Broker client was not thread-safe, producing
+  `Errno 11 Resource temporarily unavailable` storms on
+  `connect /data/.broker.sock` whenever multiple threads
+  shared the process-singleton (notably the scheduler-
+  sidecar's `warm-cache`, which fans out across
+  `min(cpu_count, 8)` `ThreadPoolExecutor` workers). Concurrent
+  RPCs raced on the same socket: interleaved writes broke
+  JSONL framing, the broker returned `MalformedJSON` replies,
+  the client closed and reconnected, every thread piled into
+  fresh connects, and the broker's Python-default listen
+  backlog of 5 overflowed. Reported by the operator after
+  enabling broker mode on the production deploy with
+  warm-cache running.
+  - Added per-`BrokerClient` `threading.Lock` wrapping every
+    `_rpc` call. Concurrent threads serialize cleanly on this
+    client's socket; the broker is single-threaded upstream
+    so the lock doesn't reduce achievable throughput, just
+    keeps framing intact and avoids connect storms.
+  - Bumped `_BrokerServer.request_queue_size` from Python's
+    default of 5 to 256 so transient bursts during a slow RPC
+    don't surface as EAGAIN to the client even when some
+    other code path opens a fresh connection.
+  - Regression pinned in
+    `test_client_concurrent_rpcs_from_one_singleton`: 8 threads
+    each issue 20 unique `cache_set` RPCs through one shared
+    client; without the lock the test fails with framing
+    errors or connect-storm OSErrors.
+
 ## [1.32.2], 2026-05-19
 
 ### Fixed
