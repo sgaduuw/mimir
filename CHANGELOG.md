@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.32.0], 2026-05-19
+
 ### Added
 
 - **Write-broker service (Phase 1)**: new `mimir-broker` process
