@@ -112,10 +112,24 @@ class BrokerClient:
     def _send_one(self, request_json: str) -> Reply:
         """One attempt: write the request, read one reply line.
         Raises any socket / framing error to the caller; the public
-        wrappers handle retry."""
-        assert self._wfile is not None and self._rfile is not None
-        self._wfile.write(request_json.encode("utf-8"))
-        self._wfile.write(b"\n")
+        wrappers handle retry.
+
+        Uses `socket.sendall` (loops on partial sends) rather than
+        the `_wfile.write` path. The earlier shape called
+        `makefile("wb", buffering=0).write(...)`, which delegates to
+        `SocketIO.write`, which does a single `send()` and **returns
+        the number of bytes actually written**. For small payloads
+        that's the full request; for payloads larger than the
+        kernel socket-send buffer (~208 KB on Linux by default,
+        tripped easily by sitemap XML for inboxes with many
+        articles), `send()` returns a short count and the leftover
+        bytes are silently dropped. The broker then receives a
+        truncated message and the JSON parser reports
+        `Unterminated string`. Reported in production after the
+        1.33.0 deploy on inbox sitemap writes.
+        """
+        assert self._sock is not None and self._rfile is not None
+        self._sock.sendall(request_json.encode("utf-8") + b"\n")
         line = self._rfile.readline()
         if not line:
             raise BrokerUnavailable("broker closed the connection")

@@ -11,6 +11,30 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.33.1], 2026-05-20
+
+### Fixed
+
+- Broker client truncated cache write payloads larger than the
+  kernel socket-send buffer (~208 KB on Linux by default),
+  causing the broker to log `malformed JSON: Unterminated
+  string` and the client to receive
+  `cache_set: MalformedJSON`. Hit production for every inbox
+  sitemap cache_set on the 1.33.0 deploy. Root cause: the
+  client used `makefile('wb', buffering=0).write(...)`, which
+  delegates to `SocketIO.write`, which calls `send()` exactly
+  once and **returns the number of bytes actually written**;
+  for payloads exceeding the socket buffer the short-write
+  count was ignored and the leftover bytes silently dropped.
+  Server side was already correct (it used `sock.sendall`).
+  Switched the client to the same `sock.sendall` shape, which
+  loops on partial sends. Regression-pinned with a >1 MB
+  payload round-trip
+  (`test_client_cache_set_handles_payload_larger_than_socket_buffer`),
+  which closes the test-coverage gap that let this slip past
+  the 1.33.0 CI (no prior test exercised payloads above a
+  handful of bytes).
+
 ## [1.33.0], 2026-05-20
 
 ### Fixed
