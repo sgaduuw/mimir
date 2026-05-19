@@ -155,6 +155,45 @@ def test_client_concurrent_rpcs_from_one_singleton(seeded_db):
             )
 
 
+def test_client_cache_set_handles_payload_larger_than_socket_buffer(seeded_db):
+    """Regression: 1.33.0 production deploy hit
+    `broker: malformed JSON: Unterminated string` on sitemap
+    cache_set writes (multi-KB XML). Root cause: the client used
+    `makefile('wb', buffering=0).write(...)`, which delegates to
+    `SocketIO.write`, which does a single `send()` and returns the
+    number of bytes actually written. For payloads larger than the
+    kernel socket-send buffer (~208 KB on Linux by default), the
+    short-write count was ignored and the leftover bytes silently
+    dropped. Broker received a truncated message and the JSON
+    parser reported `Unterminated string`. Fixed by switching to
+    `socket.sendall`, which loops on partial sends.
+
+    Pin: round-trip a >1 MB value through cache_set and assert it
+    lands intact. Without the fix this fails with
+    `BrokerUnavailable: cache_set: MalformedJSON`.
+    """
+    from mimir import cache
+    from mimir.broker.client import BrokerClient
+
+    sp = short_socket_path("large-payload")
+    # >1 MB of JSON-encoded content. Sitemap XML payloads on the
+    # production deploy are in this range for popular inboxes.
+    big = "x" * (2 * 1024 * 1024)
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            c.cache_set(cache._ns("large-payload-test"), f'"{big}"', 60)
+        finally:
+            c.close()
+    # Round-trip: cache.get decodes the JSON. The stored value is
+    # the string, so `cache.get` returns the same big string.
+    got = cache.get("large-payload-test")
+    assert got == big, (
+        f"large-payload round-trip failed; expected {len(big)} chars, "
+        f"got {len(got) if got else 'None'}"
+    )
+
+
 def test_client_persistent_connection_reuses_socket(seeded_db):
     """Multiple RPCs through one client reuse the same underlying
     socket (no `_close` between calls)."""
