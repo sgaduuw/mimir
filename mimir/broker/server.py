@@ -1,26 +1,58 @@
-"""Broker daemon lifecycle: UNIX socket accept loop + signal
-handling + periodic-purge thread.
+"""Broker daemon: queue + worker-pool architecture.
 
-Single-threaded SocketServer (`UnixStreamServer`, no
-`ThreadingMixIn`): every request is processed in sequence on one
-thread, which serialises writes in-process by construction. We
-don't need a Python-level lock around the writer connection;
-serial-by-handler is the lock. Latency cost is negligible (each
-RPC commits in ~ms on the pooled connection).
+The broker accepts an arbitrary number of concurrent client
+connections. Each connection runs a small **reader thread** that
+pulls JSONL request lines off the socket and enqueues them onto a
+shared work queue. A single **worker thread** dequeues, dispatches
+the RPC against the SQLite writer, and writes the reply back to
+the originating connection.
 
-The periodic-purge thread runs alongside, calling
-`cache._direct_purge_expired` on a configurable cadence. The
-broker owns the cache table's data lifecycle end-to-end (writes +
-purge); the scheduler sidecar's `warm-cache` no longer drives
-purges when broker mode is on.
+Why this shape (rather than `ThreadingMixIn` per-connection):
 
-Signal handler (`SIGTERM`, `SIGINT`) sets a stop flag, the accept
-loop exits, the socket file is unlinked, the purge thread joins.
+1. **Multi-client serving is the load-bearing property.** Earlier
+   versions ran `socketserver.UnixStreamServer` without threading,
+   so once one persistent connection was accept()ed (e.g. gunicorn
+   worker #1), all other clients sat unread by the application
+   even though the kernel had queued their connects. With two
+   gunicorn workers + scheduler-tasks subprocesses, the un-served
+   clients eventually timed out on `recv`. The reader-per-
+   connection design fixes that: every connection is being read
+   from by its own thread.
+
+2. **Writes stay serialised at one worker.** A single worker
+   thread dequeues + dispatches + replies, so two concurrent
+   client RPCs never race for the SQLAlchemy connection pool's
+   writer slot or hit unnecessary `SQLITE_BUSY` retries from
+   in-process contention. The serialisation that used to be a
+   property of `serve_forever`'s synchronous handler is now a
+   property of the single-worker queue drain.
+
+3. **Backpressure is observable.** Queue depth and per-RPC
+   queue-wait time are first-class signals. The slow-RPC WARNING
+   that 1.32.x already emits gets a queue-wait breakdown for
+   free (`Nms total = Qms queued + Dms dispatch`), so an
+   operator looking at a slow log line can tell whether the
+   broker is contended at the front of the queue (many clients
+   piling on) or at the back (SQLite writer lock held by
+   scheduler-side ingest).
+
+4. **Future-ready for batching.** A queue is the natural place
+   to coalesce N cache.sets into one transaction when the
+   throughput needs it. Phase 1.5+ work.
+
+The periodic-purge thread is unchanged: calls
+`cache._direct_purge_expired` on `PURGE_INTERVAL_SEC` cadence.
+
+Signal handlers (`SIGTERM`, `SIGINT`) set `stop_event`; reader
+threads notice via their selector poll, the worker notices via
+its `queue.get(timeout=...)` poll, all exit cleanly.
 """
 import logging
 import os
+import queue
 import selectors
 import signal
+import socket
 import socketserver
 import threading
 import time
@@ -36,133 +68,177 @@ logger = logging.getLogger(__name__)
 
 PURGE_INTERVAL_SEC = 3600  # 1 hour; matches today's warm-cache-driven cadence
 
+# How often the worker / reader threads check `stop_event` while idle.
+# Bounds the shutdown latency from SIGTERM to clean exit.
+SHUTDOWN_POLL_SEC = 0.1
 
-class _ConnectionHandler(socketserver.StreamRequestHandler):
-    """One per accepted connection. Reads JSONL request lines from
-    the client, writes JSONL reply lines back, until the client
-    closes the socket (or the broker is shutting down).
 
-    Uses `selectors.select` to poll for readable data so a quiet
-    persistent client (gunicorn worker between cache.set calls)
-    doesn't pin this handler thread blocked indefinitely. On
-    timeout, we loop back to re-check `stop_event`. Without this,
-    SIGTERM during a quiet window would never reach this thread and
-    the broker process couldn't exit cleanly.
-
-    The earlier shape used `self.request.settimeout(0.1)` + buffered
-    `rfile.readline()`. That trips a Python stdlib gotcha: after one
-    `socket.timeout`, `socket.makefile`'s `SocketIO` flags
-    `_timeout_occurred=True` and every subsequent read raises
-    `OSError("cannot read from timed out object")`, permanently
-    poisoning the rfile. Production logs filled with that exception
-    on every idle window > 100ms (typical between cache.set calls
-    from a single web worker). Switched to raw `socket.recv` with a
-    selector-based wait, accumulating into a line buffer ourselves
-    so framing stays JSONL but the socket doesn't enter the broken
-    timed-out state.
-    """
-
-    def setup(self) -> None:
-        super().setup()
-        self._selector = selectors.DefaultSelector()
-        self._selector.register(self.request, selectors.EVENT_READ)
-        self._linebuf = bytearray()
-
-    def finish(self) -> None:
-        try:
-            self._selector.close()
-        except Exception:
-            pass
-        super().finish()
-
-    def _drain_lines(self) -> list[bytes]:
-        """Pull complete `\\n`-delimited lines out of the accumulator
-        and return them. Trailing partial line (no newline yet) stays
-        in `_linebuf` for the next read pass."""
-        out: list[bytes] = []
-        while True:
-            nl = self._linebuf.find(b"\n")
-            if nl < 0:
-                break
-            out.append(bytes(self._linebuf[:nl]))
-            del self._linebuf[:nl + 1]
-        return out
+class _NoopHandler(socketserver.BaseRequestHandler):
+    """Stub passed to `socketserver` because the framework requires a
+    RequestHandlerClass argument. `_BrokerServer.process_request`
+    overrides the per-connection handler dispatch to spawn a reader
+    thread instead, so this class is never instantiated in
+    practice."""
 
     def handle(self) -> None:
-        while not self.server.stop_event.is_set():
-            events = self._selector.select(timeout=0.1)
-            if not events:
-                # Idle window; re-check stop_event and loop.
+        raise RuntimeError(
+            "broker: _NoopHandler.handle should not be reached; "
+            "_BrokerServer.process_request overrides this path"
+        )
+
+
+class _BrokerServer(socketserver.UnixStreamServer):
+    """UNIX-socket server that hands every accepted connection off
+    to a dedicated reader thread and runs one worker thread draining
+    a shared work queue. `daemon_threads = True` so reader / worker
+    threads don't block process exit on unclean shutdown.
+
+    `request_queue_size` (the kernel's `listen()` backlog) stays at
+    256 (from 1.32.3) so brief bursts above the accept rate don't
+    surface as EAGAIN at the client.
+    """
+
+    request_queue_size = 256
+
+    def __init__(self, socket_path: str) -> None:
+        super().__init__(socket_path, _NoopHandler)
+        self.stop_event = threading.Event()
+        # `work_queue` items are `(line, sock, enqueued_at)` tuples.
+        # `sock` is the raw socket the request came in on; the worker
+        # writes the reply back to it directly. Unbounded queue: under
+        # observed peak load (~few hundred cache.sets per warm-cache
+        # tick) memory is negligible and a hard cap would just drop
+        # work silently. The slow-RPC WARNING is the operator-facing
+        # signal that the queue is backing up.
+        self.work_queue: "queue.Queue[tuple[bytes, socket.socket, float]]" = (
+            queue.Queue()
+        )
+        self._reader_threads: list[threading.Thread] = []
+        self._worker_thread: threading.Thread | None = None
+
+    def process_request(self, request, client_address) -> None:
+        """Override of `BaseServer.process_request` so each accepted
+        connection runs on its own thread instead of synchronously
+        on the accept loop. The reader thread owns the socket
+        lifecycle (closes it on EOF / error / shutdown); we do NOT
+        call `shutdown_request` here for that reason."""
+        thread = threading.Thread(
+            target=self._reader_loop,
+            args=(request,),
+            daemon=True,
+            name=f"broker-reader-{request.fileno()}",
+        )
+        self._reader_threads.append(thread)
+        thread.start()
+
+    def handle_error(self, request, client_address) -> None:
+        # Suppress socketserver's default print-to-stderr; reader
+        # threads catch and log their own errors. Without this
+        # override an EOF mid-readline would smear a stack trace
+        # across the broker's log.
+        logger.exception("broker: connection error")
+
+    def _reader_loop(self, sock: socket.socket) -> None:
+        """Read JSONL request lines from this connection, enqueue
+        each onto `work_queue` tagged with the enqueue timestamp.
+        One per accepted connection."""
+        linebuf = bytearray()
+        sel = selectors.DefaultSelector()
+        sel.register(sock, selectors.EVENT_READ)
+        try:
+            while not self.stop_event.is_set():
+                events = sel.select(timeout=SHUTDOWN_POLL_SEC)
+                if not events:
+                    continue
+                try:
+                    chunk = sock.recv(4096)
+                except (OSError, ConnectionError):
+                    return
+                if not chunk:
+                    return  # Clean EOF from peer.
+                linebuf.extend(chunk)
+                while True:
+                    nl = linebuf.find(b"\n")
+                    if nl < 0:
+                        break
+                    line = bytes(linebuf[:nl])
+                    del linebuf[:nl + 1]
+                    self.work_queue.put((line, sock, time.perf_counter()))
+        finally:
+            sel.close()
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def _worker_loop(self) -> None:
+        """Drain `work_queue` serially. One RPC at a time, so writes
+        stay ordered at the SQLAlchemy layer without an extra lock.
+        Each iteration: dequeue, dispatch, write reply to the
+        originating socket. Slow-RPC WARNING fires with queue-wait
+        + dispatch breakdown."""
+        while not self.stop_event.is_set():
+            try:
+                line, sock, enqueued_at = self.work_queue.get(
+                    timeout=SHUTDOWN_POLL_SEC,
+                )
+            except queue.Empty:
                 continue
             try:
-                chunk = self.request.recv(4096)
-            except (OSError, ConnectionError):
-                # Peer reset / EBADF / etc. Treat as a normal close.
-                return
-            if not chunk:
-                # Clean EOF from the peer.
-                return
-            self._linebuf.extend(chunk)
-            for line in self._drain_lines():
+                queue_wait_ms = (time.perf_counter() - enqueued_at) * 1000.0
                 t0 = time.perf_counter()
                 reply = dispatch(line)
-                elapsed_ms = (time.perf_counter() - t0) * 1000.0
-                # Slow-RPC overload signal: when a single RPC takes
-                # longer than the operator-tunable threshold, log a
-                # WARNING. Sustained warnings indicate writer-lock
-                # contention (an admin backfill running, ingest mid-
-                # commit) or a genuinely slow op
-                # (`cache_delete_for_inbox` on a huge table). Set
-                # `BROKER_SLOW_RPC_WARN_MS=0` to disable.
+                dispatch_ms = (time.perf_counter() - t0) * 1000.0
+                total_ms = queue_wait_ms + dispatch_ms
+
                 threshold_ms = settings.broker_slow_rpc_warn_ms
-                if threshold_ms > 0 and elapsed_ms >= threshold_ms:
+                if threshold_ms > 0 and total_ms >= threshold_ms:
+                    # Breakdown helps operators tell the
+                    # difference between front-of-queue contention
+                    # (high queue_wait_ms; many clients piling on)
+                    # and back-of-queue contention
+                    # (high dispatch_ms; SQLite writer lock held
+                    # by scheduler-side ingest).
                     logger.warning(
-                        "broker slow rpc (%.1fms >= %dms): %.80s -> ok=%s",
-                        elapsed_ms, threshold_ms,
+                        "broker slow rpc (%.1fms total = %.1fms queued + %.1fms "
+                        "dispatch, qsize=%d): %.80s -> ok=%s",
+                        total_ms, queue_wait_ms, dispatch_ms,
+                        self.work_queue.qsize(),
                         line.decode("utf-8", "replace"),
                         reply.ok,
                     )
                 else:
-                    # Per-RPC DEBUG visibility: log the leading
-                    # bytes of the request line (enough to see the
-                    # op + key) plus the reply's ok flag. Default
-                    # INFO floor keeps this off; pass `-v` on
-                    # `mimir broker` to enable.
                     logger.debug(
-                        "broker rpc: %.80s -> ok=%s%s (%.1fms)",
+                        "broker rpc: %.80s -> ok=%s%s "
+                        "(%.1fms total = %.1fms queued + %.1fms dispatch)",
                         line.decode("utf-8", "replace"),
                         reply.ok,
                         f" error={reply.error}" if not reply.ok else "",
-                        elapsed_ms,
+                        total_ms, queue_wait_ms, dispatch_ms,
                     )
-                self.wfile.write(reply.model_dump_json().encode("utf-8"))
-                self.wfile.write(b"\n")
-                self.wfile.flush()
 
+                payload = reply.model_dump_json().encode("utf-8") + b"\n"
+                try:
+                    sock.sendall(payload)
+                except (OSError, ConnectionError):
+                    # Client closed mid-flight or socket reset.
+                    # Drop the reply silently; the client treats
+                    # the missing reply as `BrokerUnavailable` and
+                    # retries.
+                    logger.debug("broker: dropped reply on closed sock")
+            finally:
+                self.work_queue.task_done()
 
-class _BrokerServer(socketserver.UnixStreamServer):
-    """UnixStreamServer with a stop-event the request handler polls
-    so a graceful shutdown reaches in-flight connections. `allow_reuse_address`
-    isn't meaningful for AF_UNIX, we unlink the stale socket file
-    before binding instead.
-
-    `request_queue_size` (the kernel's `listen()` backlog) is
-    bumped well above Python's default of 5 so concurrent connect
-    attempts from across the deploy (gunicorn workers + the
-    scheduler-sidecar's warm-cache ThreadPoolExecutor + ad-hoc CLI
-    invocations) don't see EAGAIN on connect when the broker is
-    briefly busy with a slow RPC. The broker still processes
-    requests serially on one thread, so the queue is just a
-    breathing room buffer, not a parallelism knob. 256 is small
-    enough to be a no-op on any modern kernel and large enough to
-    absorb any plausible burst from this deploy's workload."""
-
-    daemon_threads = True
-    request_queue_size = 256
-
-    def __init__(self, socket_path: str) -> None:
-        super().__init__(socket_path, _ConnectionHandler)
-        self.stop_event = threading.Event()
+    def start_worker(self) -> None:
+        """Spawn the single worker thread. Call once after
+        construction (before `serve_forever`)."""
+        assert self._worker_thread is None, "worker already started"
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            daemon=True,
+            name="broker-worker",
+        )
+        self._worker_thread.start()
 
 
 def _purge_loop(stop_event: threading.Event) -> None:
@@ -181,16 +257,16 @@ def _purge_loop(stop_event: threading.Event) -> None:
             logger.exception("broker purge: tick failed, continuing")
 
 
-def build_server(socket_path: Path) -> "_BrokerServer":
+def build_server(socket_path: Path) -> _BrokerServer:
     """Bind a broker server on `socket_path` and return it (not yet
     serving). Unlinks any stale socket file, creates parent dirs,
-    sets file mode 0660. Used by `serve()` (production entry) and
-    by tests that need to drive the server without signal handling.
+    sets file mode 0660. Starts the worker thread so an immediate
+    accept can hand work off without a race. Used by `serve()`
+    (production entry) and by tests that need to drive the server
+    without signal handling.
 
-    Caller is responsible for `serve_forever()` and `server_close()` +
-    socket-file cleanup; `serve()` does both. Tests typically run
-    `serve_forever` in a thread and call `shutdown()` + cleanup
-    manually."""
+    Caller is responsible for `serve_forever()` and `server_close()`
+    + socket-file cleanup; `serve()` does both."""
     sp = Path(socket_path)
     if sp.exists():
         logger.info("broker: unlinking stale socket %s", sp)
@@ -198,6 +274,7 @@ def build_server(socket_path: Path) -> "_BrokerServer":
     sp.parent.mkdir(parents=True, exist_ok=True)
     server = _BrokerServer(str(sp))
     os.chmod(sp, 0o660)
+    server.start_worker()
     logger.info("broker: listening on %s", sp)
     return server
 
