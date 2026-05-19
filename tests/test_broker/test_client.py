@@ -76,6 +76,39 @@ def test_client_reconnects_after_broker_restart(seeded_db):
         c.close()
 
 
+def test_client_persistent_connection_survives_idle_window(seeded_db):
+    """Regression: production broker crashed with
+    `OSError: cannot read from timed out object` after the very
+    first idle window > 100ms (the handler's selector poll interval).
+    Root cause: the prior server-side handler used
+    `socket.settimeout` + `socket.makefile`'s SocketIO, which sets a
+    permanent `_timeout_occurred` flag on the first timeout and
+    every subsequent read raises OSError. Switched to
+    `selectors.select` + raw `recv`; pins the contract that a
+    persistent client surviving > 100ms between requests must still
+    work cleanly on the next RPC."""
+    import time
+
+    sp = short_socket_path("client-idle")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            assert c.ping() is True
+            # Longer than the handler's selector timeout (100ms)
+            # plus a margin so we cross at least one poll boundary
+            # mid-idle. The prior bug surfaced on the very NEXT
+            # read after the timeout, so we just need > 100ms.
+            time.sleep(0.25)
+            # Without the fix this raises BrokerUnavailable on the
+            # broker's broken-handler reply (or, in some races, just
+            # disconnects and the client reconnects on retry, which
+            # still costs latency). With the fix the broker is
+            # quietly waiting and the RPC returns clean.
+            assert c.ping() is True
+        finally:
+            c.close()
+
+
 def test_client_persistent_connection_reuses_socket(seeded_db):
     """Multiple RPCs through one client reuse the same underlying
     socket (no `_close` between calls)."""
