@@ -122,9 +122,21 @@ class _BrokerServer(socketserver.UnixStreamServer):
     """UnixStreamServer with a stop-event the request handler polls
     so a graceful shutdown reaches in-flight connections. `allow_reuse_address`
     isn't meaningful for AF_UNIX, we unlink the stale socket file
-    before binding instead."""
+    before binding instead.
+
+    `request_queue_size` (the kernel's `listen()` backlog) is
+    bumped well above Python's default of 5 so concurrent connect
+    attempts from across the deploy (gunicorn workers + the
+    scheduler-sidecar's warm-cache ThreadPoolExecutor + ad-hoc CLI
+    invocations) don't see EAGAIN on connect when the broker is
+    briefly busy with a slow RPC. The broker still processes
+    requests serially on one thread, so the queue is just a
+    breathing room buffer, not a parallelism knob. 256 is small
+    enough to be a no-op on any modern kernel and large enough to
+    absorb any plausible burst from this deploy's workload."""
 
     daemon_threads = True
+    request_queue_size = 256
 
     def __init__(self, socket_path: str) -> None:
         super().__init__(socket_path, _ConnectionHandler)
