@@ -175,6 +175,16 @@ class Settings(BaseSettings):
     # BROKER_SOCKET_PATH.
     broker_socket_path: Path | None = None
 
+    # Slow-RPC warning threshold for the write-broker (milliseconds).
+    # When the broker takes longer than this to handle a single RPC,
+    # it logs a WARNING with the leading bytes of the request and
+    # the elapsed time. Healthy RPCs commit in sub-ms; sustained
+    # warnings indicate writer-lock contention (e.g. an admin
+    # backfill running) or a slow operation
+    # (`cache_delete_for_inbox` on a huge table). Set to 0 or
+    # negative to disable. Override via BROKER_SLOW_RPC_WARN_MS.
+    broker_slow_rpc_warn_ms: int = 100
+
     # Per-process role tag. Drives broker-mode side effects on
     # connection setup: when `broker_socket_path` is set AND
     # `mimir_role` is `"web"`, every SQLAlchemy connection is opened
