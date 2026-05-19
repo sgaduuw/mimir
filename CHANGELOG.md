@@ -11,6 +11,19 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- Broker daemon now logs a WARNING when an individual RPC takes
+  longer than `BROKER_SLOW_RPC_WARN_MS` (default 100 ms; set to
+  0 to disable). Useful overload signal: healthy cache writes
+  commit in sub-ms, so a sustained stream of slow-RPC warnings
+  indicates writer-lock contention (an admin backfill running,
+  ingest mid-commit batch) or a genuinely slow operation
+  (`cache_delete_for_inbox` on a huge table). Default INFO log
+  level surfaces the warnings without needing `-v`; the existing
+  DEBUG line that fires on every RPC also gained the elapsed
+  duration for ad-hoc latency inspection.
+
 ## [1.32.3], 2026-05-20
 
 ### Fixed
