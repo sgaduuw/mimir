@@ -1,11 +1,21 @@
 """Broker client: talk to the broker daemon from another process.
 
 Process-singleton (`get_broker_client()`): each gunicorn worker /
-each CLI invocation reuses one persistent socket connection. The
-client is NOT thread-safe; gunicorn runs `sync` workers
-(single-threaded per process) so this is fine in production. If we
-ever switch to gthread / async workers, the client needs a
-threading.Lock around send/recv.
+each CLI invocation reuses one persistent socket connection.
+
+Thread-safe via a per-client `threading.Lock` wrapping every RPC.
+Gunicorn's sync workers are single-threaded, but the scheduler-
+sidecar's `warm-cache` (and other CLI commands invoking the
+ThreadPoolExecutor) fans out across N worker threads sharing the
+same process-singleton client. Without the lock, concurrent RPCs
+would race on the same socket: interleaved writes break JSONL
+framing, the broker returns parse errors, the client closes the
+socket, and every thread piles into a fresh connect attempt
+against the broker's listen backlog (production saw `Errno 11
+Resource temporarily unavailable` on connect under load). The
+lock serializes RPCs in-process; the broker itself is already
+single-threaded so the bottleneck is unchanged, but framing and
+connect pressure stay clean.
 
 Reconnect: on any socket error mid-RPC the client closes the
 socket, marks itself disconnected, and retries the same RPC once
@@ -17,8 +27,7 @@ out web-tier request latency under broker-restart windows.
 Each RPC has a 5s timeout (`SO_RCVTIMEO`). The broker handles
 requests serially on one thread; 5s comfortably covers the
 worst-case (a slow `cache_delete_for_inbox` on a large cache
-table) without blocking gunicorn workers indefinitely if the
-broker hangs.
+table) without blocking callers indefinitely if the broker hangs.
 """
 import logging
 import socket
@@ -59,6 +68,13 @@ class BrokerClient:
         self._sock: socket.socket | None = None
         self._rfile = None
         self._wfile = None
+        # Serialises every RPC through the singleton from multiple
+        # caller threads (warm-cache's ThreadPoolExecutor fans out
+        # to ~8 workers sharing this client). Held for the duration
+        # of `_rpc`, which covers connect, write, read, and any
+        # retry. Cheap on the happy path (uncontended); essential
+        # under contention.
+        self._rpc_lock = threading.Lock()
 
     def _connect(self) -> None:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -108,25 +124,35 @@ class BrokerClient:
     def _rpc(self, request_json: str) -> Reply:
         """Send the request, read the reply. Retries once across a
         reconnect on socket errors; raises `BrokerUnavailable` on
-        the second failure."""
-        last_exc: Exception | None = None
-        for attempt in range(2):
-            if self._sock is None:
+        the second failure.
+
+        Held inside `_rpc_lock` so concurrent calls from multiple
+        threads (warm-cache's ThreadPoolExecutor) serialize cleanly
+        on this client's socket. The broker is single-threaded
+        upstream anyway, so the lock doesn't reduce throughput,
+        just keeps framing intact and avoids connect storms when
+        each thread races to reopen the socket after a framing
+        error.
+        """
+        with self._rpc_lock:
+            last_exc: Exception | None = None
+            for attempt in range(2):
+                if self._sock is None:
+                    try:
+                        self._connect()
+                    except BrokerUnavailable as exc:
+                        last_exc = exc
+                        continue
                 try:
-                    self._connect()
-                except BrokerUnavailable as exc:
+                    return self._send_one(request_json)
+                except (OSError, BrokerUnavailable) as exc:
                     last_exc = exc
+                    self._close()
+                    # Fall through to retry on a fresh connection.
                     continue
-            try:
-                return self._send_one(request_json)
-            except (OSError, BrokerUnavailable) as exc:
-                last_exc = exc
-                self._close()
-                # Fall through to retry on a fresh connection.
-                continue
-        raise BrokerUnavailable(
-            f"broker rpc failed after retry: {last_exc}"
-        )
+            raise BrokerUnavailable(
+                f"broker rpc failed after retry: {last_exc}"
+            )
 
     # Public ops ─────────────────────────────────────────────
 
