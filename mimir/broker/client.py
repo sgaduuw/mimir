@@ -1,0 +1,201 @@
+"""Broker client: talk to the broker daemon from another process.
+
+Process-singleton (`get_broker_client()`): each gunicorn worker /
+each CLI invocation reuses one persistent socket connection. The
+client is NOT thread-safe; gunicorn runs `sync` workers
+(single-threaded per process) so this is fine in production. If we
+ever switch to gthread / async workers, the client needs a
+threading.Lock around send/recv.
+
+Reconnect: on any socket error mid-RPC the client closes the
+socket, marks itself disconnected, and retries the same RPC once
+on a fresh connection. Two consecutive failures raise
+`BrokerUnavailable`. Backoff is hardcoded short (~100ms) because
+the broker is on the same host; long backoffs would just stretch
+out web-tier request latency under broker-restart windows.
+
+Each RPC has a 5s timeout (`SO_RCVTIMEO`). The broker handles
+requests serially on one thread; 5s comfortably covers the
+worst-case (a slow `cache_delete_for_inbox` on a large cache
+table) without blocking gunicorn workers indefinitely if the
+broker hangs.
+"""
+import logging
+import socket
+import threading
+from pathlib import Path
+
+from mimir.broker.protocol import (
+    CacheDeleteForInboxRequest,
+    CacheDeleteRequest,
+    CachePurgeExpiredRequest,
+    CacheSetRequest,
+    PingRequest,
+    Reply,
+)
+from mimir.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+# Per-RPC timeout. Broker is on the same host on a UNIX socket;
+# 5s is generous against any single op the broker handles.
+RPC_TIMEOUT_SEC = 5.0
+
+
+class BrokerUnavailable(Exception):
+    """Raised when the broker socket can't be reached or two
+    consecutive RPCs failed. Callers in `mimir.cache` catch this and
+    log+drop, matching today's best-effort `OperationalError`
+    semantics."""
+
+
+class BrokerClient:
+    """Persistent connection to the broker daemon. One per
+    process; obtain via `get_broker_client()`."""
+
+    def __init__(self, socket_path: Path) -> None:
+        self._socket_path = Path(socket_path)
+        self._sock: socket.socket | None = None
+        self._rfile = None
+        self._wfile = None
+
+    def _connect(self) -> None:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(RPC_TIMEOUT_SEC)
+        try:
+            s.connect(str(self._socket_path))
+        except OSError as exc:
+            s.close()
+            raise BrokerUnavailable(
+                f"connect {self._socket_path}: {exc}"
+            ) from exc
+        self._sock = s
+        # Buffered file wrappers for line-oriented JSONL framing.
+        # `newline=""` because we frame on `\n` ourselves and don't
+        # want Python's universal-newline translation rewriting it.
+        self._rfile = s.makefile("rb", buffering=0)
+        self._wfile = s.makefile("wb", buffering=0)
+
+    def _close(self) -> None:
+        for f in (self._rfile, self._wfile):
+            if f is not None:
+                try:
+                    f.close()
+                except OSError:
+                    pass
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        self._sock = None
+        self._rfile = None
+        self._wfile = None
+
+    def _send_one(self, request_json: str) -> Reply:
+        """One attempt: write the request, read one reply line.
+        Raises any socket / framing error to the caller; the public
+        wrappers handle retry."""
+        assert self._wfile is not None and self._rfile is not None
+        self._wfile.write(request_json.encode("utf-8"))
+        self._wfile.write(b"\n")
+        line = self._rfile.readline()
+        if not line:
+            raise BrokerUnavailable("broker closed the connection")
+        return Reply.model_validate_json(line)
+
+    def _rpc(self, request_json: str) -> Reply:
+        """Send the request, read the reply. Retries once across a
+        reconnect on socket errors; raises `BrokerUnavailable` on
+        the second failure."""
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            if self._sock is None:
+                try:
+                    self._connect()
+                except BrokerUnavailable as exc:
+                    last_exc = exc
+                    continue
+            try:
+                return self._send_one(request_json)
+            except (OSError, BrokerUnavailable) as exc:
+                last_exc = exc
+                self._close()
+                # Fall through to retry on a fresh connection.
+                continue
+        raise BrokerUnavailable(
+            f"broker rpc failed after retry: {last_exc}"
+        )
+
+    # Public ops ─────────────────────────────────────────────
+
+    def cache_set(self, key: str, value_json: str, ttl: int) -> None:
+        req = CacheSetRequest(key=key, value_json=value_json, ttl=ttl)
+        reply = self._rpc(req.model_dump_json())
+        if not reply.ok:
+            raise BrokerUnavailable(f"cache_set: {reply.error}")
+
+    def cache_delete(self, key: str) -> int:
+        req = CacheDeleteRequest(key=key)
+        reply = self._rpc(req.model_dump_json())
+        if not reply.ok:
+            raise BrokerUnavailable(f"cache_delete: {reply.error}")
+        return reply.rows_deleted or 0
+
+    def cache_delete_for_inbox(self, name: str) -> int:
+        req = CacheDeleteForInboxRequest(name=name)
+        reply = self._rpc(req.model_dump_json())
+        if not reply.ok:
+            raise BrokerUnavailable(f"cache_delete_for_inbox: {reply.error}")
+        return reply.rows_deleted or 0
+
+    def cache_purge_expired(self) -> int:
+        req = CachePurgeExpiredRequest()
+        reply = self._rpc(req.model_dump_json())
+        if not reply.ok:
+            raise BrokerUnavailable(f"cache_purge_expired: {reply.error}")
+        return reply.rows_deleted or 0
+
+    def ping(self) -> bool:
+        req = PingRequest()
+        reply = self._rpc(req.model_dump_json())
+        return bool(reply.ok)
+
+    def close(self) -> None:
+        """Tests and CLI tools call this to release the socket; the
+        process-singleton accessor below normally never closes."""
+        self._close()
+
+
+# Process-singleton, lazy-constructed on first use. Lookup is
+# guarded by a lock so the first call from two threads at once
+# (unlikely with sync workers but cheap insurance) doesn't open
+# two sockets.
+_client_lock = threading.Lock()
+_client: BrokerClient | None = None
+
+
+def get_broker_client() -> BrokerClient:
+    """Return the process-singleton client, constructing it on
+    first call. Reads `settings.broker_socket_path` at first call
+    time; if that's unset, raises (callers should check the
+    setting before reaching this)."""
+    global _client
+    with _client_lock:
+        if _client is None:
+            if settings.broker_socket_path is None:
+                raise BrokerUnavailable("broker_socket_path unset")
+            _client = BrokerClient(settings.broker_socket_path)
+        return _client
+
+
+def reset_broker_client() -> None:
+    """Tear down the singleton. Test-only entry point; production
+    code never calls this. Returns silently if no client was
+    constructed."""
+    global _client
+    with _client_lock:
+        if _client is not None:
+            _client.close()
+            _client = None

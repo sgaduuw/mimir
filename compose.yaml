@@ -27,6 +27,15 @@ services:
       # port 5000 directly, anyone could otherwise spoof these values
       # via a forged X-Forwarded-For.
       TRUSTED_PROXY_HOPS: "1"
+      # Write-broker integration (opt-in, off by default). Uncomment
+      # both lines AND the `mimir-broker` service block below to
+      # route cache.set / delete / delete_for_inbox / purge through
+      # the broker sidecar's UNIX socket. With MIMIR_ROLE=web set,
+      # PRAGMA query_only=1 is also issued on every connection as
+      # belt-and-braces. Default deploy keeps these unset, web
+      # writes direct to SQLite, matching pre-1.32.0 behaviour.
+      # MIMIR_ROLE: "web"
+      # BROKER_SOCKET_PATH: "/data/.broker.sock"
       # Optional:
       # SITE_NAME: lkml-mirror
       # SECURITY_CONTACT: mailto:security@example.com
@@ -38,6 +47,8 @@ services:
       # long admin operation on the sidecar (canonicals backfill,
       # manual SQL) has the writer lock to itself. Unset / remove
       # the line and restart this service to restore read-write.
+      # Largely subsumed by the broker (above): with broker mode on,
+      # this container is already read-only at the SQLite layer.
       # READ_ONLY_DB: "true"
     restart: unless-stopped
     healthcheck:
@@ -51,7 +62,9 @@ services:
     # unmigrated DB on a fresh /data volume. Default `service_started`
     # would only wait for the sidecar's container to launch (faster but
     # racy). Switch to that if you migrate manually before bringing
-    # the stack up.
+    # the stack up. When broker mode is on (see env block above),
+    # add `mimir-broker: condition: service_healthy` here so cache
+    # writes have somewhere to land before gunicorn serves.
     depends_on:
       mimir-tasks:
         condition: service_healthy
@@ -75,6 +88,14 @@ services:
     environment:
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY required}
       DATABASE_URL: sqlite:////data/db/mimir.db
+      # Write-broker integration (opt-in, off by default). Uncomment
+      # both lines AND the `mimir-broker` service block below when
+      # adopting broker mode. The tasks role keeps RW connections
+      # (direct writes from ingest, backfill, update-mainline still
+      # work); only cache.set / delete / purge_expired calls from
+      # inside these CLI commands route through the broker.
+      # MIMIR_ROLE: "tasks"
+      # BROKER_SOCKET_PATH: "/data/.broker.sock"
       # Match the web container's INBOXES / SITE_NAME / etc. so the
       # CLI commands see the same Settings.
       # SITE_NAME: lkml-mirror
@@ -93,3 +114,48 @@ services:
       timeout: 2s
       retries: 60
       start_period: 0s
+
+  # Write-broker sidecar (Phase 1, opt-in). Owns the sole cache-table
+  # writer connection. Web tier (PRAGMA query_only=1) and the
+  # scheduler sidecar's CLI commands submit cache.set / delete /
+  # purge_expired over the UNIX socket at /data/.broker.sock; the
+  # broker serializes them through one connection so no two writers
+  # ever fight for the SQLite writer lock. Complex writes (ingest,
+  # backfill, update-mainline) stay on the scheduler sidecar with
+  # direct SQLite access; this is Phase 1, scope is cache only.
+  #
+  # OFF BY DEFAULT in 1.32.0. To enable: uncomment the whole block
+  # below, AND uncomment the MIMIR_ROLE / BROKER_SOCKET_PATH env
+  # vars on the `mimir` and `mimir-tasks` services above, AND add
+  # `mimir-broker: condition: service_healthy` to the web service's
+  # `depends_on:`. Three uncomments + one add.
+  #
+  # See mimir/broker/ for the daemon, RPC protocol, and client.
+  # `mimir broker-ping` is the healthcheck command.
+  # mimir-broker:
+  #   build: .
+  #   image: mimir:latest
+  #   command: ["mimir", "broker", "--socket", "/data/.broker.sock"]
+  #   volumes:
+  #     - ./data:/data
+  #   environment:
+  #     SECRET_KEY: ${SECRET_KEY:?SECRET_KEY required}
+  #     DATABASE_URL: sqlite:////data/db/mimir.db
+  #     # Broker role: this is the sole writer. PRAGMA query_only stays
+  #     # OFF on its connections. The broker process itself does NOT
+  #     # set BROKER_SOCKET_PATH on its own env (no self-RPC).
+  #     MIMIR_ROLE: "broker"
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "mimir", "broker-ping", "--socket", "/data/.broker.sock"]
+  #     interval: 10s
+  #     timeout: 2s
+  #     retries: 3
+  #     start_period: 5s
+  #   # Broker depends on the sidecar's `/data/.migrated` sentinel so
+  #   # the cache table exists before the broker accepts its first
+  #   # write. The scheduler still owns the alembic step; the broker
+  #   # is purely the writer process for cache.* operations.
+  #   depends_on:
+  #     mimir-tasks:
+  #       condition: service_healthy

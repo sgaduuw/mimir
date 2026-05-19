@@ -28,6 +28,19 @@ def _sqlite_pragmas(dbapi_conn, _conn_record) -> None:
     # for the writer lock. See Settings.read_only_db.
     if settings.read_only_db:
         cur.execute("PRAGMA query_only=1")
+    # Broker mode: in broker mode the web container's role is
+    # read-only at the SQLite level (writes route through the broker
+    # over a UNIX socket). Enforce via PRAGMA query_only=1 so anything
+    # that slipped past the cache.set broker-dispatch raises instead
+    # of writing directly. Scheduler sidecar (MIMIR_ROLE=tasks) keeps
+    # RW so ingest/backfill/update-mainline still work; the broker
+    # itself (MIMIR_ROLE=broker) also keeps RW because it IS the
+    # writer.
+    elif (
+        settings.broker_socket_path is not None
+        and settings.mimir_role == "web"
+    ):
+        cur.execute("PRAGMA query_only=1")
     cur.close()
 
 

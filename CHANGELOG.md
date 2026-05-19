@@ -11,6 +11,46 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.32.0], 2026-05-19
+
+### Added
+
+- **Write-broker service (Phase 1)**: new `mimir-broker` process
+  owns the sole writer connection to the cache table; web tier and
+  scheduler-sidecar CLI commands submit `cache.set` / `delete` /
+  `delete_for_inbox` / `purge_expired` over a UNIX domain socket
+  instead of opening their own DB sessions. Eliminates SQLite
+  writer-lock contention between gunicorn workers and the
+  scheduler-tier writers, which was the load-bearing cause of
+  silently-dropped cache writes and front-page stalls. Opt-in via
+  `BROKER_SOCKET_PATH=/data/.broker.sock` on the web + tasks
+  containers; broker mode is off when the env var is unset
+  (pre-1.32.0 direct-SQLite path). Web tier additionally honours
+  `MIMIR_ROLE=web` by issuing `PRAGMA query_only=1` on every
+  connection so a non-cache write path that slipped past the
+  broker dispatch raises instead of competing for the lock.
+  The broker also owns periodic cache-row purge via an internal
+  timer thread; the scheduler's `warm-cache` no longer drives
+  `purge_expired` when broker mode is on.
+  - New CLI commands: `mimir broker --socket PATH` to launch the
+    daemon (blocks until SIGTERM/SIGINT), and `mimir broker-ping
+    --socket PATH` for the compose healthcheck.
+  - New compose service `mimir-broker`. Web `depends_on` it for
+    service_healthy ordering; scheduler-tasks `depends_on` it
+    transitively (web also depends_on tasks, broker also
+    depends_on tasks for the `/data/.migrated` migration gate).
+  - Complex writers (ingest, backfill, update-mainline, admin
+    inbox CRUD) stay on the scheduler sidecar with direct SQLite
+    access for Phase 1. Phase 2+ (deferable) migrates them into
+    the broker.
+  - `READ_ONLY_DB` continues to work; broker mode subsumes its
+    purpose for the web tier (a broker-mode web container is
+    already read-only at the SQLite layer), so the flag is
+    redundant in compose deploys that adopt broker mode.
+  - Plan-pinned in `tests/test_broker/` (protocol round-trips,
+    handler dispatch, server lifecycle, client reconnect across
+    broker restart).
+
 ## [1.31.2], 2026-05-19
 
 ### Fixed
