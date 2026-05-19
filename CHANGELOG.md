@@ -11,6 +11,30 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.32.1], 2026-05-19
+
+### Fixed
+
+- Broker daemon crashed per RPC after the first idle window
+  longer than the handler's selector poll interval (100 ms),
+  logging `OSError: cannot read from timed out object` and
+  closing the connection. Root cause: the prior handler used
+  `socket.settimeout(0.1)` plus `socket.makefile`'s buffered
+  `rfile.readline()`. Python's stdlib `SocketIO` sets a
+  permanent `_timeout_occurred=True` flag on the first
+  `socket.timeout` and every subsequent buffered read raises
+  `OSError` instead of returning to the caller, which my
+  `except TimeoutError` clause didn't cover. Replaced with
+  `selectors.select(timeout=0.1)` for the wait plus raw
+  `socket.recv` for the read, accumulating into a line buffer
+  so JSONL framing stays correct without poisoning the socket
+  on idle. Functional impact in 1.32.0 was modest (the client
+  reconnects on each broken socket and the RPC succeeds via
+  retry) but the broker log filled with exceptions and every
+  cache.set after the first one on a persistent connection
+  paid an extra reconnect round-trip. Regression-pinned in
+  `test_client_persistent_connection_survives_idle_window`.
+
 ## [1.32.0], 2026-05-19
 
 ### Added
