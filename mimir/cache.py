@@ -158,6 +158,27 @@ def get(key: str) -> Any:
     return _decode(json.loads(row.value))
 
 
+def _direct_set(nskey: str, payload: str, ttl: int) -> None:
+    """Direct-SQLite upsert into the cache table. Pre-namespaced key,
+    pre-encoded value (so this helper is symmetric with the broker's
+    handler, which receives the already-namespaced key and JSON
+    payload over the wire). Used by `set()` when broker mode is off,
+    and imported by `mimir.broker.handlers` so the broker daemon
+    runs the same write without recursing into broker mode."""
+    expires_at = _now() + ttl
+    stmt = (
+        sqlite_insert(CacheEntry)
+        .values(key=nskey, value=payload, expires_at=expires_at)
+        .on_conflict_do_update(
+            index_elements=["key"],
+            set_={"value": payload, "expires_at": expires_at},
+        )
+    )
+    with SessionLocal() as session:
+        session.execute(stmt)
+        session.commit()
+
+
 def set(key: str, value: Any, ttl: int) -> None:
     """Best-effort cache write.
 
@@ -171,24 +192,31 @@ def set(key: str, value: Any, ttl: int) -> None:
     Under `Settings.read_only_db` this becomes a no-op so the
     maintenance-toggled web container doesn't log a warning per
     request when its query_only pragma rejects the INSERT.
+
+    When `Settings.broker_socket_path` is set, forward the write to
+    the broker daemon via the RPC client instead of opening a local
+    DB session. `BrokerUnavailable` is logged + swallowed (same
+    best-effort posture as `OperationalError` below); next request
+    recomputes.
     """
     if settings.read_only_db:
         return
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
-    expires_at = _now() + ttl
-    stmt = (
-        sqlite_insert(CacheEntry)
-        .values(key=nskey, value=payload, expires_at=expires_at)
-        .on_conflict_do_update(
-            index_elements=["key"],
-            set_={"value": payload, "expires_at": expires_at},
-        )
-    )
+    if settings.broker_socket_path is not None:
+        # Import locally so the cache module doesn't depend on the
+        # broker package at import time (avoids a cycle through
+        # `mimir.broker.client` → `mimir.cache` for tests that stub
+        # the client out, and lets unit tests for the cache module
+        # run without spinning up a broker).
+        from mimir.broker.client import BrokerUnavailable, get_broker_client
+        try:
+            get_broker_client().cache_set(nskey, payload, ttl)
+        except BrokerUnavailable as exc:
+            logger.warning("broker write failed for %s: %s", nskey, exc)
+        return
     try:
-        with SessionLocal() as session:
-            session.execute(stmt)
-            session.commit()
+        _direct_set(nskey, payload, ttl)
     except OperationalError as exc:
         logger.warning("cache write failed for %s: %s", nskey, exc)
 
@@ -240,18 +268,49 @@ def keys() -> list[str]:
         ]
 
 
+def _direct_purge_expired() -> int:
+    """Direct-SQLite delete of every expired row. Used by
+    `purge_expired()` when broker mode is off, and by
+    `mimir.broker.handlers` (the broker daemon's internal periodic
+    purge timer runs this against its own writer connection)."""
+    now = _now()
+    with SessionLocal() as session:
+        result = session.execute(delete_stmt(CacheEntry).where(CacheEntry.expires_at < now))
+        session.commit()
+        return result.rowcount or 0
+
+
 def purge_expired() -> int:
     """Drop every expired row. Returns rows deleted. Cheap thanks to
     `ix_cache_expires_at`.
 
     No-op under `Settings.read_only_db`; the scheduler sidecar (which
     is not flagged) handles purges via the warm-cache tick.
+
+    When `Settings.broker_socket_path` is set, forward to the broker
+    daemon, which owns the cache table's data lifecycle end-to-end
+    (writes + purge). On `BrokerUnavailable`, log + return 0; the
+    broker's own internal periodic purge thread will catch up.
     """
     if settings.read_only_db:
         return 0
-    now = _now()
+    if settings.broker_socket_path is not None:
+        from mimir.broker.client import BrokerUnavailable, get_broker_client
+        try:
+            return get_broker_client().cache_purge_expired()
+        except BrokerUnavailable as exc:
+            logger.warning("broker purge_expired failed: %s", exc)
+            return 0
+    return _direct_purge_expired()
+
+
+def _direct_delete(nskey: str) -> int:
+    """Direct-SQLite delete of one cache row. Used by `delete()` when
+    broker mode is off, and by `mimir.broker.handlers`."""
     with SessionLocal() as session:
-        result = session.execute(delete_stmt(CacheEntry).where(CacheEntry.expires_at < now))
+        result = session.execute(
+            delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
+        )
         session.commit()
         return result.rowcount or 0
 
@@ -271,20 +330,45 @@ def delete(key: str) -> int:
 
     No-op under `Settings.read_only_db`; admin CRUD that drives this
     runs on the scheduler sidecar, not the flagged web container.
+
+    When `Settings.broker_socket_path` is set, forward to the broker
+    daemon. `BrokerUnavailable` is logged + returns 0 (cached value
+    still ages out via TTL).
     """
     if settings.read_only_db:
         return 0
     nskey = _ns(key)
+    if settings.broker_socket_path is not None:
+        from mimir.broker.client import BrokerUnavailable, get_broker_client
+        try:
+            return get_broker_client().cache_delete(nskey)
+        except BrokerUnavailable as exc:
+            logger.warning("broker delete failed for %s: %s", nskey, exc)
+            return 0
     try:
-        with SessionLocal() as session:
-            result = session.execute(
-                delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
-            )
-            session.commit()
-            return result.rowcount or 0
+        return _direct_delete(nskey)
     except OperationalError as exc:
         logger.warning("cache delete failed for %s: %s", nskey, exc)
         return 0
+
+
+def _direct_delete_for_inbox(inbox_name: str) -> int:
+    """Direct-SQLite delete of every cache entry whose key references
+    `inbox_name`. Used by `delete_for_inbox()` when broker mode is off,
+    and by `mimir.broker.handlers`."""
+    suffix_pat = f"%:{inbox_name}"
+    middle_pat = f"%:{inbox_name}:%"
+    with SessionLocal() as session:
+        result = session.execute(
+            delete_stmt(CacheEntry).where(
+                or_(
+                    CacheEntry.key.like(suffix_pat),
+                    CacheEntry.key.like(middle_pat),
+                )
+            )
+        )
+        session.commit()
+        return result.rowcount or 0
 
 
 def delete_for_inbox(inbox_name: str) -> int:
@@ -303,23 +387,23 @@ def delete_for_inbox(inbox_name: str) -> int:
 
     No-op under `Settings.read_only_db`; admin CRUD that drives this
     runs on the scheduler sidecar, not the flagged web container.
+
+    When `Settings.broker_socket_path` is set, forward to the broker
+    daemon. `BrokerUnavailable` is logged + returns 0.
     """
     if settings.read_only_db:
         return 0
-    suffix_pat = f"%:{inbox_name}"
-    middle_pat = f"%:{inbox_name}:%"
-    try:
-        with SessionLocal() as session:
-            result = session.execute(
-                delete_stmt(CacheEntry).where(
-                    or_(
-                        CacheEntry.key.like(suffix_pat),
-                        CacheEntry.key.like(middle_pat),
-                    )
-                )
+    if settings.broker_socket_path is not None:
+        from mimir.broker.client import BrokerUnavailable, get_broker_client
+        try:
+            return get_broker_client().cache_delete_for_inbox(inbox_name)
+        except BrokerUnavailable as exc:
+            logger.warning(
+                "broker delete_for_inbox failed for %s: %s", inbox_name, exc,
             )
-            session.commit()
-            return result.rowcount or 0
+            return 0
+    try:
+        return _direct_delete_for_inbox(inbox_name)
     except OperationalError as exc:
         logger.warning(
             "cache delete_for_inbox failed for %s: %s", inbox_name, exc,
