@@ -93,6 +93,90 @@ def test_server_socket_file_has_mode_0660(seeded_db):
             sp.unlink()
 
 
+def test_server_warns_on_slow_rpc(seeded_db, caplog, monkeypatch):
+    """Per-RPC latency is the overload signal: when a single dispatch
+    takes longer than `broker_slow_rpc_warn_ms`, the handler emits a
+    WARNING with the elapsed duration and leading request bytes.
+    Lets the operator notice writer-lock contention (an admin
+    backfill running) without staring at the log."""
+    import logging
+    import time as time_module
+
+    from mimir import cache
+    from mimir.broker import server as broker_server
+    from mimir.broker.client import BrokerClient
+    from mimir.broker.handlers import dispatch as real_dispatch
+    from mimir.config import settings
+
+    def slow_dispatch(line):
+        time_module.sleep(0.05)  # 50ms; comfortably above the 10ms threshold below
+        return real_dispatch(line)
+
+    monkeypatch.setattr(broker_server, "dispatch", slow_dispatch)
+    monkeypatch.setattr(settings, "broker_slow_rpc_warn_ms", 10)
+    caplog.set_level(logging.WARNING, logger="mimir.broker.server")
+
+    sp = short_socket_path("slow-warn")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            c.cache_set(cache._ns("slow-warn-test"), '"x"', 60)
+        finally:
+            c.close()
+
+    slow_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "broker slow rpc" in r.getMessage()
+    ]
+    assert slow_warnings, (
+        "expected a slow-rpc WARNING after the 50ms sleep dispatch; "
+        f"got log records: {[r.getMessage() for r in caplog.records]}"
+    )
+    # The warning text includes the elapsed time and op preview.
+    msg = slow_warnings[0].getMessage()
+    assert "ms >=" in msg
+    assert "cache_set" in msg
+
+
+def test_server_does_not_warn_when_threshold_disabled(seeded_db, caplog, monkeypatch):
+    """`broker_slow_rpc_warn_ms = 0` disables the slow-RPC log.
+    Operators who don't want the noise can opt out without removing
+    the timing call entirely (the elapsed-time DEBUG log still
+    fires when `-v` is on)."""
+    import logging
+    import time as time_module
+
+    from mimir import cache
+    from mimir.broker import server as broker_server
+    from mimir.broker.client import BrokerClient
+    from mimir.broker.handlers import dispatch as real_dispatch
+    from mimir.config import settings
+
+    def slow_dispatch(line):
+        time_module.sleep(0.05)
+        return real_dispatch(line)
+
+    monkeypatch.setattr(broker_server, "dispatch", slow_dispatch)
+    monkeypatch.setattr(settings, "broker_slow_rpc_warn_ms", 0)
+    caplog.set_level(logging.WARNING, logger="mimir.broker.server")
+
+    sp = short_socket_path("slow-disabled")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            c.cache_set(cache._ns("slow-disabled-test"), '"x"', 60)
+        finally:
+            c.close()
+
+    slow_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "broker slow rpc" in r.getMessage()
+    ]
+    assert not slow_warnings, (
+        "threshold=0 must disable slow-rpc warnings"
+    )
+
+
 def test_server_cleans_up_socket_file_on_shutdown(seeded_db):
     """After the broker shuts down (in production: SIGTERM; in
     tests: stop_event + server_close + manual unlink in the helper),
