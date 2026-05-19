@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.31.2], 2026-05-19
+
 ### Fixed
 
 - Front-page hangs caused by missing per-inbox cache rows when
