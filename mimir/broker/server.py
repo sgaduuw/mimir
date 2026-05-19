@@ -23,11 +23,13 @@ import selectors
 import signal
 import socketserver
 import threading
+import time
 from pathlib import Path
 
 from mimir import cache
 from mimir.broker.handlers import dispatch
 from mimir.broker.protocol import Reply
+from mimir.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -102,17 +104,37 @@ class _ConnectionHandler(socketserver.StreamRequestHandler):
                 return
             self._linebuf.extend(chunk)
             for line in self._drain_lines():
+                t0 = time.perf_counter()
                 reply = dispatch(line)
-                # Per-RPC DEBUG visibility: log the leading bytes of
-                # the request line (enough to see the op + key) plus
-                # the reply's ok flag. Default INFO floor keeps this
-                # off; pass `-v` on `mimir broker` to enable.
-                logger.debug(
-                    "broker rpc: %.80s -> ok=%s%s",
-                    line.decode("utf-8", "replace"),
-                    reply.ok,
-                    f" error={reply.error}" if not reply.ok else "",
-                )
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                # Slow-RPC overload signal: when a single RPC takes
+                # longer than the operator-tunable threshold, log a
+                # WARNING. Sustained warnings indicate writer-lock
+                # contention (an admin backfill running, ingest mid-
+                # commit) or a genuinely slow op
+                # (`cache_delete_for_inbox` on a huge table). Set
+                # `BROKER_SLOW_RPC_WARN_MS=0` to disable.
+                threshold_ms = settings.broker_slow_rpc_warn_ms
+                if threshold_ms > 0 and elapsed_ms >= threshold_ms:
+                    logger.warning(
+                        "broker slow rpc (%.1fms >= %dms): %.80s -> ok=%s",
+                        elapsed_ms, threshold_ms,
+                        line.decode("utf-8", "replace"),
+                        reply.ok,
+                    )
+                else:
+                    # Per-RPC DEBUG visibility: log the leading
+                    # bytes of the request line (enough to see the
+                    # op + key) plus the reply's ok flag. Default
+                    # INFO floor keeps this off; pass `-v` on
+                    # `mimir broker` to enable.
+                    logger.debug(
+                        "broker rpc: %.80s -> ok=%s%s (%.1fms)",
+                        line.decode("utf-8", "replace"),
+                        reply.ok,
+                        f" error={reply.error}" if not reply.ok else "",
+                        elapsed_ms,
+                    )
                 self.wfile.write(reply.model_dump_json().encode("utf-8"))
                 self.wfile.write(b"\n")
                 self.wfile.flush()
