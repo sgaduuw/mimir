@@ -19,6 +19,7 @@ loop exits, the socket file is unlinked, the purge thread joins.
 """
 import logging
 import os
+import selectors
 import signal
 import socketserver
 import threading
@@ -39,35 +40,72 @@ class _ConnectionHandler(socketserver.StreamRequestHandler):
     the client, writes JSONL reply lines back, until the client
     closes the socket (or the broker is shutting down).
 
-    The accepted socket carries a short recv timeout so a quiet
-    client (gunicorn worker between cache.set calls) doesn't pin
-    this handler thread blocked in `readline()` indefinitely. On
-    timeout, we loop back and re-check `stop_event`. Without this,
+    Uses `selectors.select` to poll for readable data so a quiet
+    persistent client (gunicorn worker between cache.set calls)
+    doesn't pin this handler thread blocked indefinitely. On
+    timeout, we loop back to re-check `stop_event`. Without this,
     SIGTERM during a quiet window would never reach this thread and
-    the broker process couldn't exit cleanly."""
+    the broker process couldn't exit cleanly.
+
+    The earlier shape used `self.request.settimeout(0.1)` + buffered
+    `rfile.readline()`. That trips a Python stdlib gotcha: after one
+    `socket.timeout`, `socket.makefile`'s `SocketIO` flags
+    `_timeout_occurred=True` and every subsequent read raises
+    `OSError("cannot read from timed out object")`, permanently
+    poisoning the rfile. Production logs filled with that exception
+    on every idle window > 100ms (typical between cache.set calls
+    from a single web worker). Switched to raw `socket.recv` with a
+    selector-based wait, accumulating into a line buffer ourselves
+    so framing stays JSONL but the socket doesn't enter the broken
+    timed-out state.
+    """
 
     def setup(self) -> None:
         super().setup()
-        # 100ms timeout: 10 checks/sec, negligible CPU, ~100ms worst-
-        # case shutdown latency per active connection. The buffered
-        # rfile wrappers re-raise the socket timeout as TimeoutError
-        # on readline.
-        self.request.settimeout(0.1)
+        self._selector = selectors.DefaultSelector()
+        self._selector.register(self.request, selectors.EVENT_READ)
+        self._linebuf = bytearray()
+
+    def finish(self) -> None:
+        try:
+            self._selector.close()
+        except Exception:
+            pass
+        super().finish()
+
+    def _drain_lines(self) -> list[bytes]:
+        """Pull complete `\\n`-delimited lines out of the accumulator
+        and return them. Trailing partial line (no newline yet) stays
+        in `_linebuf` for the next read pass."""
+        out: list[bytes] = []
+        while True:
+            nl = self._linebuf.find(b"\n")
+            if nl < 0:
+                break
+            out.append(bytes(self._linebuf[:nl]))
+            del self._linebuf[:nl + 1]
+        return out
 
     def handle(self) -> None:
         while not self.server.stop_event.is_set():
-            try:
-                line = self.rfile.readline()
-            except TimeoutError:
-                # Quiet client; loop back to re-check stop_event.
+            events = self._selector.select(timeout=0.1)
+            if not events:
+                # Idle window; re-check stop_event and loop.
                 continue
-            if not line:
-                # Client closed the connection. Normal lifecycle.
+            try:
+                chunk = self.request.recv(4096)
+            except (OSError, ConnectionError):
+                # Peer reset / EBADF / etc. Treat as a normal close.
                 return
-            reply = dispatch(line.rstrip(b"\n"))
-            self.wfile.write(reply.model_dump_json().encode("utf-8"))
-            self.wfile.write(b"\n")
-            self.wfile.flush()
+            if not chunk:
+                # Clean EOF from the peer.
+                return
+            self._linebuf.extend(chunk)
+            for line in self._drain_lines():
+                reply = dispatch(line)
+                self.wfile.write(reply.model_dump_json().encode("utf-8"))
+                self.wfile.write(b"\n")
+                self.wfile.flush()
 
 
 class _BrokerServer(socketserver.UnixStreamServer):
