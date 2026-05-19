@@ -23,7 +23,7 @@ from mimir.cli._common import _configure_logging
     required=True, type=click.Path(path_type=Path),
     help="UNIX socket path to listen on (e.g. /data/.broker.sock).",
 )
-@click.option("--verbose", "-v", count=True, help="-v: info logs, -vv: debug.")
+@click.option("--verbose", "-v", count=True, help="-v: debug logs (per-RPC).")
 def broker_command(socket_path: Path, verbose: int) -> None:
     """Run the write-broker daemon. Blocks until terminated.
 
@@ -31,8 +31,14 @@ def broker_command(socket_path: Path, verbose: int) -> None:
     tier, scheduler-tier CLI commands) submit `cache.set` / `delete`
     / `delete_for_inbox` / `purge_expired` over the socket. The
     broker also runs a periodic purge thread internally.
+
+    Log floor is INFO regardless of `-v` so the daemon's startup,
+    shutdown, and periodic-purge lines are always visible; without
+    that an operator can't tell whether the container is actually
+    running (silent WARNING-level default looks identical to a
+    crashed loop). `-v` adds per-RPC DEBUG logs.
     """
-    _configure_logging(verbose)
+    _configure_logging(max(verbose, 1))
     serve(socket_path)
 
 

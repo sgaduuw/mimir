@@ -103,6 +103,16 @@ class _ConnectionHandler(socketserver.StreamRequestHandler):
             self._linebuf.extend(chunk)
             for line in self._drain_lines():
                 reply = dispatch(line)
+                # Per-RPC DEBUG visibility: log the leading bytes of
+                # the request line (enough to see the op + key) plus
+                # the reply's ok flag. Default INFO floor keeps this
+                # off; pass `-v` on `mimir broker` to enable.
+                logger.debug(
+                    "broker rpc: %.80s -> ok=%s%s",
+                    line.decode("utf-8", "replace"),
+                    reply.ok,
+                    f" error={reply.error}" if not reply.ok else "",
+                )
                 self.wfile.write(reply.model_dump_json().encode("utf-8"))
                 self.wfile.write(b"\n")
                 self.wfile.flush()
