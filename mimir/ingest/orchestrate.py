@@ -11,9 +11,11 @@ from pathlib import Path
 from dulwich.errors import NotGitRepository
 from dulwich.repo import Repo
 from sqlalchemy import select, text
+from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.config import settings
+from mimir.dashboard import archive_stats, daily_volume
 from mimir.extensions import SessionLocal, engine, write_transaction
 from mimir.ingest.epoch import (
     DEFAULT_WORKERS,
@@ -22,8 +24,51 @@ from mimir.ingest.epoch import (
     ingest_epoch,
 )
 from mimir.models import Inbox
+from mimir.subsystems_dashboard import most_active_subsystems_in_inbox
 
 logger = logging.getLogger(__name__)
+
+
+def _warm_after_ingest(session: Session, inbox: Inbox) -> None:
+    """Recover any missing front-page-critical per-inbox cache rows.
+
+    Lazy: each helper is called with `force=False`, so a present cache
+    row is returned untouched (one SELECT, ~ms) and only a missing
+    or expired row triggers the compute + `cache.set`. The intent is to
+    plug warm-cache lag, not to displace it: when warm-cache reliably
+    refreshes a row every minute, this helper is a no-op cost; when
+    warm-cache has fallen behind (or never reached a freshly-added
+    inbox), the next ingest tick proactively rebuilds the row so the
+    next request to `/` doesn't pay the cold-miss recompute inline.
+    Importantly, this keeps the 24h `archive_stats` TTL property
+    intact: a steady-state UPDATE_EVERY=300s tick doesn't re-run the
+    multi-second COUNT(*) on every fire.
+
+    Runs *outside* `ingest_inbox`'s `write_transaction()` block on
+    purpose. `cache.set` opens its own write session (the cache module
+    is session-independent by design); if the warm ran under
+    `write_transaction()`, that helper's ContextVar would leak into
+    `cache.set`'s session, upgrade its `BEGIN` to `BEGIN IMMEDIATE`,
+    and self-deadlock against the writer lock the outer block already
+    holds. The read SELECT in this helper uses the normal deferred
+    BEGIN and doesn't contend with anything.
+
+    Scope is deliberately narrow: just the helpers that drive the meta-
+    index `/` cards (`archive_stats`, `daily_volume`) and the per-inbox
+    dashboard's subsystem-discoverability widget. Active-threads /
+    today / yesterday / pulls / stable / trackers etc. keep flowing
+    through `warm-cache`; their compute is cheap enough that a
+    per-ingest-tick top-up would be wasteful. Cross-inbox aggregates
+    (`most_active_subsystems_global`) also stay with `warm-cache`,
+    they fan in from every inbox and re-running per-inbox-ingest is
+    the wrong granularity.
+
+    Best-effort: caller wraps in `try/except` so a failed warm doesn't
+    crash the ingest tick.
+    """
+    archive_stats(session, inbox)
+    daily_volume(session, inbox, days=30)
+    most_active_subsystems_in_inbox(session, inbox, days=7)
 
 
 def discover_epochs(mirror_path: Path) -> list[Path]:
@@ -105,6 +150,26 @@ def ingest_inbox(
     # the COUNT(*) refresh on every tick.
     if was_empty and moved > 0:
         cache.delete_for_inbox(inbox.name)
+
+    # Eager per-inbox cache warm whenever this tick moved rows. Closes
+    # the freshness gap between an ingest commit and the next
+    # `warm-cache` tick (60s by default). Scope is the front-page-
+    # critical per-inbox helpers only, see `_warm_after_ingest` for
+    # which and why. No `write_transaction()` wrap here on purpose:
+    # `cache.set` opens its own session, and the outer
+    # `write_transaction()`'s ContextVar would otherwise leak into it
+    # and self-deadlock on the writer lock. Best-effort; a failed
+    # warm doesn't fail the ingest tick.
+    if moved > 0:
+        try:
+            with SessionLocal() as warm_session:
+                attached = warm_session.merge(inbox)
+                _warm_after_ingest(warm_session, attached)
+        except Exception:
+            logger.warning(
+                "post-ingest cache warm failed for %s",
+                inbox.name, exc_info=True,
+            )
 
     return results
 

@@ -66,11 +66,12 @@ def test_ingest_inbox_skips_analyze_when_disabled(seeded_db, tmp_path, monkeypat
 
 def test_ingest_inbox_invalidates_cache_on_first_ingest(seeded_db, tmp_path):
     """When an inbox transitions from empty (`last_article_date IS
-    NULL`) to populated, drop the per-inbox cache keys. The
-    front-page card otherwise sticks on `total=0` ("not yet
-    ingested") for the rest of the 24h archive_stats TTL after a
-    warm-cache tick captures the empty state between
-    `admin inbox add` and the first ingest."""
+    NULL`) to populated: (1) `delete_for_inbox` drops the stale
+    `total=0` row a warm-cache tick may have left behind between
+    `admin inbox add` and first ingest, and (2) the post-ingest lazy
+    warm immediately rebuilds it with the real `ArchiveStats` payload.
+    Net effect: the sentinel does not survive, and the cache holds a
+    truthful payload before the next request hits `/`."""
     from mimir import cache
 
     alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
@@ -86,17 +87,118 @@ def test_ingest_inbox_invalidates_cache_on_first_ingest(seeded_db, tmp_path):
 
     # Seed a cache row keyed under the inbox name (mimics the `total=0`
     # row a warm-cache tick would write between add and first ingest).
-    # The shape of the value doesn't matter; `delete_for_inbox` is
-    # key-pattern-driven.
     cache.set(f"archive_stats:{alpha.name}", "sentinel", ttl=86400)
     assert cache.get(f"archive_stats:{alpha.name}") == "sentinel"
 
     ingest_inbox(alpha, workers=1)
 
-    assert cache.get(f"archive_stats:{alpha.name}") is None, (
-        "first ingest should bust the per-inbox cache so the "
-        "front-page card recomputes against real data"
+    rebuilt = cache.get(f"archive_stats:{alpha.name}")
+    assert rebuilt is not None and rebuilt != "sentinel", (
+        "first ingest should drop the sentinel and the post-ingest "
+        "warm should rebuild the cache row with a real payload"
     )
+
+
+def test_ingest_inbox_warms_per_inbox_cache_when_missing(
+    seeded_db, tmp_path,
+):
+    """When the per-inbox cache rows are missing at the end of a
+    moved>0 ingest tick, the post-ingest lazy warm should populate
+    them. Recovers from warm-cache lag without the next request
+    paying the cold-miss recompute inline."""
+    from mimir import cache
+
+    alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
+
+    # Force-evict any rows a previous fixture / helper might have
+    # warmed so we're testing the cache-empty path explicitly.
+    cache.delete(f"archive_stats:{alpha.name}")
+    cache.delete(f"daily_volume:{alpha.name}:30")
+    assert cache.get(f"archive_stats:{alpha.name}") is None
+    assert cache.get(f"daily_volume:{alpha.name}:30") is None
+
+    ingest_inbox(alpha, workers=1)
+
+    assert cache.get(f"archive_stats:{alpha.name}") is not None, (
+        "post-ingest warm should have populated the missing "
+        "archive_stats cache row"
+    )
+    assert cache.get(f"daily_volume:{alpha.name}:30") is not None, (
+        "post-ingest warm should have populated the missing "
+        "daily_volume cache row"
+    )
+
+
+def test_ingest_inbox_warm_preserves_existing_cache_row(
+    seeded_db, tmp_path,
+):
+    """When the per-inbox cache row already exists at the end of a
+    moved>0 ingest tick, the post-ingest warm should leave it
+    untouched. force=False semantics: cache hit returns cached value,
+    no recompute, no write. Keeps the 24h `archive_stats` TTL
+    property intact, a steady-state UPDATE_EVERY=300s tick does not
+    pay the multi-second COUNT(*) on every fire."""
+    from mimir import cache
+
+    alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
+
+    cache.set(f"archive_stats:{alpha.name}", "sentinel", ttl=86400)
+    assert cache.get(f"archive_stats:{alpha.name}") == "sentinel"
+
+    ingest_inbox(alpha, workers=1)
+
+    assert cache.get(f"archive_stats:{alpha.name}") == "sentinel", (
+        "post-ingest warm with a fresh cache row present must not "
+        "overwrite it; force=False is the load-bearing property"
+    )
+
+
+def test_ingest_inbox_does_not_warm_on_noop_tick(seeded_db, tmp_path):
+    """Re-ingesting an already-fully-ingested inbox (every commit
+    already dedup_db'd) is a no-op tick: `moved == 0`. The post-ingest
+    warm must not fire on those, otherwise an inbox whose cache row
+    happens to be evicted between ticks would pay an unnecessary
+    cold-miss compute on every UPDATE_EVERY tick even with no new
+    articles. Skip on moved==0; let warm-cache cover that case."""
+    from mimir import cache
+
+    alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
+    # First ingest moves all 3 articles in.
+    ingest_inbox(alpha, workers=1)
+
+    # Force-evict, then verify a second (no-op) ingest doesn't
+    # re-populate.
+    cache.delete(f"archive_stats:{alpha.name}")
+    assert cache.get(f"archive_stats:{alpha.name}") is None
+
+    # Second ingest against the same mirror: every commit is now
+    # dedup_db, moved == 0.
+    ingest_inbox(alpha, workers=1)
+
+    assert cache.get(f"archive_stats:{alpha.name}") is None, (
+        "no-op tick (moved == 0) must not trigger the post-ingest warm"
+    )
+
+
+def test_ingest_inbox_warm_failure_does_not_break_ingest(
+    seeded_db, tmp_path, monkeypatch,
+):
+    """The post-ingest warm is best-effort: a failure in any of its
+    helper calls is logged at warning and swallowed, so an unrelated
+    bug in `archive_stats` / `daily_volume` / `most_active_subsystems_in_inbox`
+    cannot crash the ingest pipeline. The article rows themselves are
+    already committed by the time the warm runs, so a failed warm
+    just leaves the next request to recompute."""
+    alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated archive_stats failure")
+
+    monkeypatch.setattr("mimir.ingest.orchestrate.archive_stats", _boom)
+
+    # Must not raise.
+    results = ingest_inbox(alpha, workers=1)
+    assert sum(r.new + r.linked for r in results) == 3
 
 
 def test_ingest_inbox_does_not_invalidate_cache_on_steady_state(
