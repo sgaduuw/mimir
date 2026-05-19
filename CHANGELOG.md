@@ -11,6 +11,21 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.32.2], 2026-05-19
+
+### Fixed
+
+- Broker daemon was silent under default verbosity: `mimir
+  broker --socket PATH` called `_configure_logging(0)` which
+  sets the root logger to WARNING, suppressing the broker's
+  INFO-level startup / shutdown / periodic-purge lines.
+  Operators couldn't tell whether the broker container was
+  running. Floor at INFO regardless of `-v` so lifecycle
+  events are always visible; `-v` now turns on DEBUG (which
+  also logs per-RPC: leading bytes of the request line plus
+  the reply ok/error flag). Same INFO floor pattern as
+  gunicorn's `--access-logfile -` for the web container.
+
 ## [1.32.1], 2026-05-19
 
 ### Fixed
