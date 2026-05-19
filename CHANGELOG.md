@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.33.0], 2026-05-20
+
 ### Fixed
 
 - Broker now serves multiple client connections concurrently.
