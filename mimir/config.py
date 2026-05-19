@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -162,6 +163,29 @@ class Settings(BaseSettings):
     # restores read-write mode automatically. Override via
     # READ_ONLY_DB.
     read_only_db: bool = False
+
+    # Write-broker integration. When `broker_socket_path` is set,
+    # `cache.set` / `cache.delete` / `cache.delete_for_inbox` /
+    # `cache.purge_expired` forward to the broker daemon at the given
+    # UNIX-socket path instead of opening their own DB sessions. The
+    # broker (a separate `mimir broker` process) is then the sole
+    # writer to the cache table, eliminating SQLite writer-lock
+    # contention between gunicorn workers and the scheduler sidecar.
+    # Unset = direct-SQLite writes (today's behaviour). Override via
+    # BROKER_SOCKET_PATH.
+    broker_socket_path: Path | None = None
+
+    # Per-process role tag. Drives broker-mode side effects on
+    # connection setup: when `broker_socket_path` is set AND
+    # `mimir_role` is `"web"`, every SQLAlchemy connection is opened
+    # with `PRAGMA query_only=1`. The scheduler sidecar
+    # (`mimir_role="tasks"`) and the broker itself
+    # (`mimir_role="broker"`) keep RW connections so their direct-
+    # write paths (ingest, backfill, broker handlers) still work.
+    # Unset = no role-based enforcement; broker mode then routes
+    # writes through the broker on every process indiscriminately.
+    # Override via MIMIR_ROLE.
+    mimir_role: Literal["web", "tasks", "broker"] | None = None
 
     # Auto-ANALYZE threshold. After `ingest_inbox` finishes a run, if
     # `new + linked` across that run's epochs reaches this many rows,
