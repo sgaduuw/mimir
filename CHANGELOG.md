@@ -11,6 +11,24 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.31.2], 2026-05-19
+
+### Fixed
+
+- Front-page hangs caused by missing per-inbox cache rows when
+  `warm-cache` has fallen behind for some inboxes. `ingest_inbox`
+  now runs a lazy post-ingest warm at the end of any tick that
+  moved rows (new or linked > 0): calls `archive_stats`,
+  `daily_volume`, and `most_active_subsystems_in_inbox` with
+  `force=False`, so a present cache row returns instantly (one
+  SELECT, ~ms) and only a missing or expired row triggers the
+  compute + `cache.set`. Keeps the 24h `archive_stats` TTL
+  property intact: a steady-state UPDATE_EVERY=300s tick does
+  not re-run the multi-second COUNT(*) on every fire; only
+  recovers rows warm-cache failed to refresh. No-op tick
+  (moved == 0) skips the warm entirely. Best-effort; a failed
+  warm logs at warning and does not crash the ingest tick.
+
 ## [1.31.1], 2026-05-19
 
 ### Fixed
