@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.34.0], 2026-05-20
+
 ### Added
 
 - `write_transaction()` now accepts a `label` argument and logs a
