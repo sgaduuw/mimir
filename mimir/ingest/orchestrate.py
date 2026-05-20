@@ -98,7 +98,10 @@ def ingest_inbox(
     # gunicorn cache.set committing between two of those statements
     # would trip SQLITE_BUSY_SNAPSHOT and roll back the in-progress
     # batch.
-    with write_transaction(), SessionLocal() as session:
+    with (
+        write_transaction(f"ingest_inbox:{inbox.name}"),
+        SessionLocal() as session,
+    ):
         # Re-attach the Inbox to this session so .id reads work after
         # the caller's session was closed.
         attached = session.merge(inbox)
@@ -124,7 +127,10 @@ def ingest_inbox(
 
     # Promote `Inbox.list_address` if we now have enough observations.
     # Cheap: at most two rows queried, one update if it fires.
-    with write_transaction(), SessionLocal() as session:
+    with (
+        write_transaction(f"promote_list_address:{inbox.name}"),
+        SessionLocal() as session,
+    ):
         _maybe_promote_list_address(session, inbox.id)
         session.commit()
 
@@ -137,8 +143,15 @@ def ingest_inbox(
     moved = sum(r.new + r.linked for r in results)
     if threshold > 0 and moved >= threshold:
         logger.info("auto-ANALYZE after %s/%d rows ingested", inbox.name, moved)
-        with engine.begin() as conn:
-            conn.execute(text("ANALYZE"))
+        # Wrap in write_transaction so the writer-lock-hold duration
+        # surfaces in the slow-write WARNING with a clear label. The
+        # ANALYZE itself can run tens of seconds on a multi-million-row
+        # corpus; without the label an operator sees a slow broker
+        # dispatch and has to triangulate to figure out it was the
+        # post-ingest ANALYZE rather than the ingest commits.
+        with write_transaction(f"auto_analyze:{inbox.name}"):
+            with engine.begin() as conn:
+                conn.execute(text("ANALYZE"))
 
     # First-ingest cache bust. `archive_stats:<inbox>` is cached for
     # 24h, so when a freshly-added inbox happened to be warmed in

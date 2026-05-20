@@ -11,6 +11,26 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- `write_transaction()` now accepts a `label` argument and logs a
+  WARNING when the block holds the SQLite writer lock longer than
+  `WRITE_TRANSACTION_SLOW_LOG_MS` (default 1000 ms; set to 0 to
+  disable). Operator-facing diagnostic for cross-process writer-
+  lock contention: a slow scheduler-side write
+  (`label=auto_analyze:lkml held=16234ms`) correlates 1:1 with a
+  slow broker dispatch on the cache side, so an operator looking
+  at the broker's slow-RPC WARNING can grep the scheduler log for
+  the same time window and identify the culprit. Labels added at
+  every major write entry point: `ingest_inbox:<inbox>`,
+  `promote_list_address:<inbox>`, `auto_analyze:<inbox>` (now also
+  wrapped in `write_transaction()` so it shows up),
+  `backfill_canonicals[:<inbox>]`, `backfill_article_files`,
+  `backfill_article_trailers`, `backfill_patch_series`,
+  `update_mainline:maintainers`, `update_mainline:link_trailers`,
+  `analyze`, plus `broker:<op>` for each broker handler. Fires on
+  both COMMIT and ROLLBACK paths so failures get attributed too.
+
 ## [1.33.1], 2026-05-20
 
 ### Fixed
