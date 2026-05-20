@@ -1298,3 +1298,65 @@ def test_ingest_last_article_date_bumps_on_cross_post_link(
         ix.last_article_date.year, ix.last_article_date.month,
         ix.last_article_date.day,
     ) == (2024, 2, 1)
+
+
+# ----- commit-cadence time cap (1.36.1) ---------------------------------
+
+
+def test_commit_cadence_time_cap_fires_on_steady_state_hot_inbox(
+    seeded_db, tmp_path, monkeypatch, request,
+):
+    """1.36.1 regression: under broker mode (Phase 2.1+), the long
+    worker holds the SQLite writer lock for the duration of each
+    `ingest_epoch` commit batch and the cache worker queues behind
+    it. Before this fix, a hot inbox committing a few hundred new
+    messages per scheduler tick produced ONE commit at end of loop
+    (`processed % COMMIT_EVERY == 0` only fires every 500
+    messages); the commit held the writer lock for 1.7-2.2 s on
+    production, cache writes from the web tier piled up to
+    multi-second waits, and the front page rendered cold for >100 s.
+
+    The fix wraps the per-message commit decision in an OR with a
+    wall-clock cap (`COMMIT_EVERY_SECONDS`, 0.5 s by default), so
+    even sub-COMMIT_EVERY bursts release the writer lock at most
+    every 500 ms.
+
+    This test pins the property by forcing the time cap to fire on
+    every iteration (`COMMIT_EVERY_SECONDS=0`) and observing that
+    the engine commits N+1 times for N messages, rather than the
+    pre-1.36.1 single end-of-loop commit. The contrasting "default
+    cap, small burst" case is covered by the existing new/linked
+    tests above: 1-2 messages on the default 0.5 s cap commit once.
+    """
+    from sqlalchemy import event
+
+    from mimir.extensions import engine
+    from mimir.ingest import epoch as epoch_mod
+
+    alpha = _alpha(seeded_db)
+    msgs = [_rfc5322(f"tcap{i}@example.com") for i in range(5)]
+    _build_pubinbox_repo(tmp_path / "0.git", msgs)
+    monkeypatch.setattr(epoch_mod, "COMMIT_EVERY", 1000)
+    monkeypatch.setattr(epoch_mod, "COMMIT_EVERY_SECONDS", 0.0)
+
+    counter = [0]
+
+    def _bump(_conn):
+        counter[0] += 1
+
+    event.listen(engine, "commit", _bump)
+    request.addfinalizer(lambda: event.remove(engine, "commit", _bump))
+
+    with seeded_db() as s:
+        result = epoch_mod.ingest_epoch(
+            s, alpha, "0.git", tmp_path / "0.git", workers=1,
+        )
+
+    assert result.new == 5
+    # One commit per message (in-loop time-cap flushes) plus one
+    # final `flush_batch()` at end of loop = 6. Pre-1.36.1 this
+    # was 1 (only the final flush), regardless of message count.
+    assert counter[0] == 6, (
+        f"expected 6 commits (5 in-loop + 1 final) with "
+        f"COMMIT_EVERY_SECONDS=0; got {counter[0]}"
+    )
