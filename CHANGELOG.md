@@ -11,6 +11,32 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.36.1], 2026-05-20
+
+### Fixed
+
+- **Dashboard timeouts under broker mode (1.36.0 regression)**: hot
+  inboxes (`stable`, `linux-mm`, `linux-arm-kernel`) committing a
+  few hundred new messages per scheduler tick held the broker's
+  SQLite writer lock for 1.7-2.2 s per `ingest_inbox` commit. The
+  broker's cache worker queued behind, so every `cache_set` from
+  the web tier waited 1-2 s for the lock. Dashboard renders that
+  hit ~8 cached surfaces (front page, per-inbox pages) stacked
+  multi-second waits per surface and tripped the gateway timeout
+  with HTTP 524 / TTFB > 100 s.
+
+  `ingest_epoch` now commits when **either** `processed %
+  COMMIT_EVERY == 0` (the existing message-count side) **or**
+  `time.monotonic() - last_commit_at >= COMMIT_EVERY_SECONDS`
+  (new, default 0.5 s) is true. The writer-lock hold per commit
+  is bounded to ~500 ms regardless of inbox burst size, so the
+  cache worker gets the lock back within half a second of any
+  long-op commit.
+
+  Direct (non-broker) ingests are unaffected in throughput: same
+  total number of inserts, just more commits on hot inboxes;
+  commit overhead on SQLite WAL is single-digit ms each.
+
 ## [1.36.0], 2026-05-20
 
 ### Added
