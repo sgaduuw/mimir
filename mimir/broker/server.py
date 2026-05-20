@@ -59,7 +59,7 @@ import time
 from pathlib import Path
 
 from mimir import cache
-from mimir.broker.handlers import LONG_OPS, classify_op, dispatch
+from mimir.broker.handlers import LONG_OPS, WARM_OPS, classify_op, dispatch
 from mimir.broker.protocol import Reply
 from mimir.config import settings
 
@@ -89,19 +89,28 @@ class _NoopHandler(socketserver.BaseRequestHandler):
 
 class _BrokerServer(socketserver.UnixStreamServer):
     """UNIX-socket server that hands every accepted connection off
-    to a dedicated reader thread and runs **two** worker threads
-    draining two separate work queues:
+    to a dedicated reader thread and runs **three** classes of
+    worker thread draining three separate work queues:
 
     - `cache_queue` for cache ops (sub-ms commits). Always-on
-      throughput; the only thing the web tier waits on.
+      throughput; the only thing the web tier waits on. **One**
+      worker thread (write ordering matters here).
     - `long_queue` for long-running ops (`bootstrap_inboxes` in
       Phase 2.0; ingest / backfills / mainline / analyze / vacuum
-      in Phase 2.1+). One op at a time; can run for minutes.
+      in Phase 2.1+). **One** worker thread; one op at a time can
+      run for minutes.
+    - `warm_queue` for cache warming (Phase 2.2). **N** worker
+      threads (default 4, env `BROKER_WARM_WORKERS`) so the
+      compute phase of warming overlaps across inboxes; cache.set
+      commits still funnel through the SQLite writer lock but
+      every warm worker has its own session for the read phase.
 
-    The two workers contend for the SQLite writer lock at the
-    SQLite level (via `busy_timeout`), but cache writes never wait
+    The cache + long workers contend for the SQLite writer lock at
+    the SQLite level (via `busy_timeout`); cache writes never wait
     behind the *whole* long op, just behind the long op's current
-    commit batch. That's the point of the split.
+    commit batch. The warm workers add another N entries to that
+    contention pool, but each warm cache.set is short-lived, so
+    they queue cleanly behind any cache op the web tier is firing.
 
     `daemon_threads = True` so reader / worker threads don't block
     process exit on unclean shutdown.
@@ -116,23 +125,28 @@ class _BrokerServer(socketserver.UnixStreamServer):
     def __init__(self, socket_path: str) -> None:
         super().__init__(socket_path, _NoopHandler)
         self.stop_event = threading.Event()
-        # Two queues, one per worker class. Items are
+        # Three queues, one per worker class. Items are
         # `(line, sock, enqueued_at)` tuples; the reader classifies
         # by op name and routes (`handlers.classify_op` →
-        # `handlers.LONG_OPS`). Unbounded queues: under observed
-        # peak load (a few hundred cache.sets per warm-cache tick)
-        # memory is negligible and a hard cap would just drop work
-        # silently. The slow-RPC WARNING (with breakdown into queue
-        # vs dispatch) is the operator-facing signal.
+        # `handlers.LONG_OPS` / `WARM_OPS`). Unbounded queues:
+        # under observed peak load (a few hundred cache.sets per
+        # warm-cache tick) memory is negligible and a hard cap
+        # would just drop work silently. The slow-RPC WARNING
+        # (with breakdown into queue vs dispatch) is the operator-
+        # facing signal.
         self.cache_queue: "queue.Queue[tuple[bytes, socket.socket, float]]" = (
             queue.Queue()
         )
         self.long_queue: "queue.Queue[tuple[bytes, socket.socket, float]]" = (
             queue.Queue()
         )
+        self.warm_queue: "queue.Queue[tuple[bytes, socket.socket, float]]" = (
+            queue.Queue()
+        )
         self._reader_threads: list[threading.Thread] = []
         self._cache_worker_thread: threading.Thread | None = None
         self._long_worker_thread: threading.Thread | None = None
+        self._warm_worker_threads: list[threading.Thread] = []
 
     def process_request(self, request, client_address) -> None:
         """Override of `BaseServer.process_request` so each accepted
@@ -188,11 +202,12 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     line = bytes(linebuf[:nl])
                     del linebuf[:nl + 1]
                     op = classify_op(line)
-                    target = (
-                        self.long_queue
-                        if op is not None and op in LONG_OPS
-                        else self.cache_queue
-                    )
+                    if op is not None and op in LONG_OPS:
+                        target = self.long_queue
+                    elif op is not None and op in WARM_OPS:
+                        target = self.warm_queue
+                    else:
+                        target = self.cache_queue
                     target.put((line, sock, time.perf_counter()))
         finally:
             sel.close()
@@ -270,8 +285,15 @@ class _BrokerServer(socketserver.UnixStreamServer):
                 q.task_done()
 
     def start_workers(self) -> None:
-        """Spawn one worker thread per queue. Call once after
-        construction (before `serve_forever`)."""
+        """Spawn worker threads for each queue. Call once after
+        construction (before `serve_forever`).
+
+        Cache and long queues get one worker each (write ordering).
+        Warm queue gets `settings.broker_warm_workers` workers
+        (default 4) so the read-heavy compute phase of warming
+        parallelises across inboxes; cache.set commits still
+        serialise at the SQLite writer lock, but the upstream
+        compute overlaps."""
         assert self._cache_worker_thread is None, "workers already started"
         self._cache_worker_thread = threading.Thread(
             target=self._worker_loop,
@@ -287,6 +309,18 @@ class _BrokerServer(socketserver.UnixStreamServer):
         )
         self._cache_worker_thread.start()
         self._long_worker_thread.start()
+        # Warm workers: N parallel drains of the same queue. One op
+        # at a time per worker; concurrency across workers.
+        warm_n = max(1, settings.broker_warm_workers)
+        for i in range(warm_n):
+            t = threading.Thread(
+                target=self._worker_loop,
+                args=(self.warm_queue, f"warm-{i}"),
+                daemon=True,
+                name=f"broker-warm-worker-{i}",
+            )
+            t.start()
+            self._warm_worker_threads.append(t)
 
 
 def _purge_loop(stop_event: threading.Event) -> None:

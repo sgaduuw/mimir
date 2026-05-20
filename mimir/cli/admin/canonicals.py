@@ -4,11 +4,16 @@ the original To/Cc headers.
 Use after initial deployment of canonical resolution, or after editing
 an `Inbox.list_address` to repoint canonicals. Newest-first,
 idempotent, resumable.
+
+When `BROKER_SOCKET_PATH` is set, dispatches via the broker as a
+chain of chunked RPCs (Phase 2.2 cooperative scheduling); see
+`mimir.cli.backfill` for the chunk/resume contract.
 """
 import click
 
-from mimir.cli._common import _configure_logging
+from mimir.cli._common import _broker_backfill_loop, _configure_logging
 from mimir.cli.admin import admin_group
+from mimir.config import settings
 from mimir.ingest import backfill_canonicals
 
 
@@ -38,7 +43,8 @@ def admin_canonicals_group() -> None:
 )
 @click.option(
     "-v", "--verbose", count=True,
-    help="-v: progress every 1000 articles.",
+    help="-v: progress every 1000 articles (direct mode only; broker "
+         "mode logs to the broker process).",
 )
 def admin_canonicals_backfill_command(
     inbox_filter: str | None,
@@ -50,19 +56,39 @@ def admin_canonicals_backfill_command(
     observations and resolving canonical_inbox_id from original
     To/Cc headers. Newest-first, idempotent, resumable."""
     _configure_logging(verbose)
-    progress_fn = None
-    if verbose:
-        def progress_fn(r):  # noqa: E306
+    if settings.broker_socket_path is not None:
+        if verbose:
             click.echo(
-                f"... examined={r.examined} resolved={r.resolved} "
-                f"unresolved={r.unresolved} skipped={r.skipped}"
+                "broker mode: per-batch progress flows via broker logs "
+                "(e.g. `podman logs -f mimir-broker`)",
+                err=True,
             )
-    result = backfill_canonicals(
-        inbox_filter=inbox_filter,
-        limit=limit,
-        reprocess=reprocess,
-        progress=progress_fn,
-    )
+        from mimir.broker.client import BrokerUnavailable, get_broker_client
+        client = get_broker_client()
+        try:
+            result = _broker_backfill_loop(
+                client.backfill_canonicals,
+                limit=limit, reprocess=reprocess,
+                extra={"inbox_filter": inbox_filter},
+            )
+        except BrokerUnavailable as exc:
+            raise click.ClickException(
+                f"broker backfill_canonicals failed: {exc}"
+            )
+    else:
+        progress_fn = None
+        if verbose:
+            def progress_fn(r):  # noqa: E306
+                click.echo(
+                    f"... examined={r.examined} resolved={r.resolved} "
+                    f"unresolved={r.unresolved} skipped={r.skipped}"
+                )
+        result = backfill_canonicals(
+            inbox_filter=inbox_filter,
+            limit=limit,
+            reprocess=reprocess,
+            progress=progress_fn,
+        )
     click.echo(
         f"backfill complete: examined={result.examined} "
         f"resolved={result.resolved} unresolved={result.unresolved} "

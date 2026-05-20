@@ -74,3 +74,46 @@ def _parse_pair(pair: str) -> tuple[str, str]:
         )
     label, substring = pair.split("=", 1)
     return label, substring
+
+
+def _broker_backfill_loop(
+    call,
+    *,
+    limit: int | None,
+    reprocess: bool,
+    extra: dict | None = None,
+):
+    """Run a chunked backfill RPC loop against the broker, summing
+    per-chunk counters into one `BackfillResult`.
+
+    `call` is a bound `BrokerClient.backfill_*` method. Each RPC
+    advances by at most one chunk (the broker's
+    `broker_backfill_chunk_seconds` budget); the loop continues while
+    `partial=True` is returned, supplying `continuation=` so the
+    handler resumes at `Article.id < continuation`. `extra` carries
+    per-backfill extras (e.g. `inbox_filter` for canonicals).
+
+    Cross-chunk `--limit` semantics: each iteration subtracts the
+    chunk's `examined` from the remaining cap and stops once it
+    reaches zero. The per-RPC `limit` is the remaining budget so the
+    handler short-circuits at the right total.
+    """
+    extra = extra or {}
+    aggregated = None
+    remaining = limit
+    continuation = None
+    while True:
+        chunk = call(
+            limit=remaining,
+            reprocess=reprocess,
+            continuation=continuation,
+            **extra,
+        )
+        aggregated = chunk if aggregated is None else aggregated.merge(chunk)
+        if not chunk.partial:
+            return aggregated
+        if remaining is not None:
+            remaining -= chunk.examined
+            if remaining <= 0:
+                return aggregated
+        continuation = chunk.continuation

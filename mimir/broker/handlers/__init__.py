@@ -1,23 +1,26 @@
 """RPC dispatch table and the queue-routing decision for the
-write-broker. Two-file family layout (cache + longops) so the
-short and long handler concerns stay separate as Phase 2.x adds
+write-broker. Three-file family layout (cache + longops + warm)
+so each handler concern stays in its own module as Phase 2.x adds
 more ops:
 
 - `cache.py`: sub-ms cache ops + ping → route to the cache worker.
 - `longops.py`: ingest, backfills, mainline, analyze, vacuum,
   bootstrap_inboxes → route to the long worker.
+- `warm.py`: per-inbox + global cache warming → route to the warm
+  workers (N-multi-worker queue, Phase 2.2).
 
-This module owns the two cross-cutting things that have to stay in
-sync with each other:
+This module owns the three cross-cutting things that have to stay
+in sync with each other:
 
-- `LONG_OPS`: the set of op names that route to the long queue.
-  The reader thread (`server._reader_loop`) consults this on every
-  incoming line.
+- `LONG_OPS`: op names that route to the long queue.
+- `WARM_OPS`: op names that route to the warm queue (Phase 2.2).
 - `_DISPATCH`: op name → (request model, handler) lookup, used by
   the worker to validate-and-dispatch.
 
+The reader thread (`server._reader_loop`) consults `LONG_OPS` and
+`WARM_OPS` to route; anything else falls to the cache queue.
 `classify_op` + `dispatch` are the public functions the server
-imports. Anything else in this package is implementation detail.
+imports.
 
 Errors are caught at the dispatch boundary: pydantic validation
 failures become `Reply(ok=False, error="InvalidRequest")`,
@@ -40,10 +43,22 @@ from mimir.broker.handlers.cache import (
     handle_ping,
 )
 from mimir.broker.handlers.longops import (
+    handle_backfill_article_files,
+    handle_backfill_article_trailers,
+    handle_backfill_canonicals,
+    handle_backfill_patch_series,
     handle_bootstrap_inboxes,
     handle_ingest_inbox,
 )
+from mimir.broker.handlers.warm import (
+    handle_warm_global,
+    handle_warm_inbox,
+)
 from mimir.broker.protocol import (
+    BackfillArticleFilesRequest,
+    BackfillArticleTrailersRequest,
+    BackfillCanonicalsRequest,
+    BackfillPatchSeriesRequest,
     BootstrapInboxesRequest,
     CacheDeleteForInboxRequest,
     CacheDeleteRequest,
@@ -52,6 +67,8 @@ from mimir.broker.protocol import (
     IngestInboxRequest,
     PingRequest,
     Reply,
+    WarmGlobalRequest,
+    WarmInboxRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,6 +81,20 @@ logger = logging.getLogger(__name__)
 LONG_OPS: frozenset[str] = frozenset({
     "bootstrap_inboxes",
     "ingest_inbox",
+    "backfill_article_files",
+    "backfill_article_trailers",
+    "backfill_patch_series",
+    "backfill_canonicals",
+})
+
+
+# Warm ops route to the broker's warm queue, which is drained by
+# N parallel warm-workers (Phase 2.2). Sibling to LONG_OPS; an op
+# can only belong to one routing set. Anything in neither set
+# falls through to the cache queue.
+WARM_OPS: frozenset[str] = frozenset({
+    "warm_inbox",
+    "warm_global",
 })
 
 
@@ -82,6 +113,20 @@ _DISPATCH: dict[str, tuple[type, Callable]] = {
     "ping": (PingRequest, handle_ping),
     "bootstrap_inboxes": (BootstrapInboxesRequest, handle_bootstrap_inboxes),
     "ingest_inbox": (IngestInboxRequest, handle_ingest_inbox),
+    "backfill_article_files": (
+        BackfillArticleFilesRequest, handle_backfill_article_files,
+    ),
+    "backfill_article_trailers": (
+        BackfillArticleTrailersRequest, handle_backfill_article_trailers,
+    ),
+    "backfill_patch_series": (
+        BackfillPatchSeriesRequest, handle_backfill_patch_series,
+    ),
+    "backfill_canonicals": (
+        BackfillCanonicalsRequest, handle_backfill_canonicals,
+    ),
+    "warm_inbox": (WarmInboxRequest, handle_warm_inbox),
+    "warm_global": (WarmGlobalRequest, handle_warm_global),
 }
 
 
@@ -137,4 +182,4 @@ def dispatch(line: bytes) -> Reply:
         return Reply(ok=False, error="HandlerCrashed")
 
 
-__all__ = ["LONG_OPS", "classify_op", "dispatch"]
+__all__ = ["LONG_OPS", "WARM_OPS", "classify_op", "dispatch"]
