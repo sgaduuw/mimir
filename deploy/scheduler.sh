@@ -8,7 +8,8 @@
 #   WARM_CACHE_EVERY      default 60     ; refresh dashboard helpers
 #   UPDATE_EVERY          default 300    ; sync upstream + ingest new commits
 #   UPDATE_MAINLINE_EVERY default 600    ; fetch linux.git + (re)parse MAINTAINERS
-#   ANALYZE_EVERY         default 86400  ; refresh sqlite_stat1 (daily)
+#   ANALYZE_EVERY         default 86400  ; refresh sqlite_stat1 (daily, bounded)
+#   ANALYZE_FULL_EVERY    default 604800 ; full-sample sqlite_stat1 (weekly)
 #   VACUUM_EVERY          default 604800 ; compact DB + collapse WAL (weekly)
 #
 # `update-mainline` no-ops cheaply when the mainline HEAD hasn't
@@ -38,8 +39,9 @@
 # sentinel `/data/.migrated` is touched, below). Idempotent.
 #
 # Ad-hoc pause: `touch /data/.scheduler-paused` quiesces the loop
-# (no warm-cache / update / update-mainline / analyze / vacuum
-# firings) within ~10s; `rm /data/.scheduler-paused` resumes. Used
+# (no warm-cache / update / update-mainline / analyze /
+# analyze --full / vacuum firings) within ~10s;
+# `rm /data/.scheduler-paused` resumes. Used
 # during operator maintenance (e.g. `admin canonicals backfill`,
 # manual SQL) where scheduler write contention would extend the
 # ad-hoc work. Initial-boot passes ignore the sentinel; if you
@@ -51,6 +53,15 @@ WARM_CACHE_EVERY=${WARM_CACHE_EVERY:-60}
 UPDATE_EVERY=${UPDATE_EVERY:-300}
 UPDATE_MAINLINE_EVERY=${UPDATE_MAINLINE_EVERY:-600}
 ANALYZE_EVERY=${ANALYZE_EVERY:-86400}
+# Full-scan ANALYZE (no analysis_limit cap) on a weekly cadence.
+# The daily ANALYZE above uses settings.analyze_limit (default 4000
+# from 1.36.4) which is fast (~1-3 s) and accurate enough for most
+# planning, but a few tail-heavy indexes can still drift under that
+# sample. The weekly full pass (analysis_limit=0) re-samples every
+# row of every index, holding the writer lock ~25-30 s once a week
+# in exchange for guaranteed-accurate stats. Override via
+# ANALYZE_FULL_EVERY.
+ANALYZE_FULL_EVERY=${ANALYZE_FULL_EVERY:-604800}
 VACUUM_EVERY=${VACUUM_EVERY:-604800}
 
 # Verbosity flag passed through to the underlying flask invocations.
@@ -142,6 +153,7 @@ last_warm=$(sentinel_mtime /data/.last_warm)
 last_update=$(sentinel_mtime /data/.last_update)
 last_update_mainline=$(sentinel_mtime /data/.last_update_mainline)
 last_analyze=$(sentinel_mtime /data/.last_analyze)
+last_analyze_full=$(sentinel_mtime /data/.last_analyze_full)
 last_vacuum=$(sentinel_mtime /data/.last_vacuum)
 
 # Tracks whether we logged the most recent pause/resume transition so
@@ -185,6 +197,23 @@ while true; do
 
     if [ $((now - last_analyze)) -ge "$ANALYZE_EVERY" ]; then
         run "analyze" /data/.last_analyze mimir analyze
+        last_analyze=$(date +%s)
+    fi
+
+    # Weekly full ANALYZE (analysis_limit=0). The daily ANALYZE
+    # above uses the bounded analysis_limit (default 4000 from
+    # 1.36.4) which is fast and accurate enough for most planning,
+    # but a few tail-heavy indexes can drift under that sample. The
+    # full pass re-samples every row and holds the writer lock for
+    # ~25-30 s; running once a week in exchange for guaranteed-
+    # accurate plans is the safety net for distribution drift.
+    if [ $((now - last_analyze_full)) -ge "$ANALYZE_FULL_EVERY" ]; then
+        run "analyze --full" /data/.last_analyze_full mimir analyze --full
+        last_analyze_full=$(date +%s)
+        # Touch the daily-analyze sentinel too so the daily one
+        # doesn't fire right after a full pass that just refreshed
+        # the same stats.
+        touch /data/.last_analyze
         last_analyze=$(date +%s)
     fi
 
