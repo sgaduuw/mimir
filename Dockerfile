@@ -77,7 +77,8 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DATABASE_URL=sqlite:////data/db/mimir.db \
-    WORKERS=2
+    WORKERS=2 \
+    WORKER_TIMEOUT=60
 
 # /data is the only stateful path. Subdirs are created at build time
 # so a bind-mounted /data with the right owner just works on first
@@ -99,4 +100,13 @@ EXPOSE 5000
 # the web service (depends_on with a healthcheck-gated sidecar, or
 # bring the sidecar up first by hand) so gunicorn doesn't serve
 # requests against an unmigrated DB on a fresh /data volume.
-CMD ["sh", "-c", "exec gunicorn 'mimir:create_app()' --bind 0.0.0.0:5000 --workers ${WORKERS} --access-logfile - --error-logfile -"]
+# `--timeout` (default ${WORKER_TIMEOUT}=60s) is higher than
+# gunicorn's stock 30s so the occasional genuinely-slow render
+# (cold cache on a heavy `msg_related` compute, oversized thread
+# CTE) completes rather than getting SIGKILL'd mid-request. The
+# 1.36.3 query-plan fix in `mimir.subsystems.recent_patches_touching`
+# brought typical message-view renders well under a second; the
+# margin here exists for the rare outlier rather than as the steady
+# state. Tune via WORKER_TIMEOUT env if a deployment needs different
+# headroom.
+CMD ["sh", "-c", "exec gunicorn 'mimir:create_app()' --bind 0.0.0.0:5000 --workers ${WORKERS} --timeout ${WORKER_TIMEOUT} --access-logfile - --error-logfile -"]
