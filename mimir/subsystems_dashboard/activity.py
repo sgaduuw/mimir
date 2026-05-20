@@ -72,12 +72,22 @@ class SubsystemActivity:
 cache.register("SubsystemActivity", SubsystemActivity)
 
 
-# Cache TTL for the "most active subsystems" surfaces. Same window
-# as `active_threads` since the visual semantics match: "what's hot
-# in the last N days". 5 min keeps the page responsive to fresh
-# ingest without recomputing the per-subsystem fan-out on every
-# request.
-MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC = 300
+# Cache TTL for the "most active subsystems" surfaces. Must exceed
+# the warm-cache cycle time, otherwise the row expires faster than
+# warm-cache can refresh it and request-path callers fall through to
+# a cold-compute path that is multi-second on the per-inbox version
+# and multi-minute on the cross-inbox version. On the production
+# 203-inbox corpus warm-cache takes ~10 min per cycle, so the prior
+# 5 min TTL had the row expired for ~4-5 min of every cycle; the
+# front page's meta-index serialised on that recompute and tripped
+# Cloudflare's 100 s gateway timeout (HTTP 524). 1 h covers any
+# plausible warm-cache cycle time with comfortable margin; the
+# `compute_on_miss=False` request-path guard below removes the
+# request-path-recompute footgun even when this TTL is somehow
+# exceeded. The "freshness" trade-off is acceptable: a 1 h cache
+# of "what's hot in the last 7 days" lags by ~14% at worst, and
+# warm-cache refreshes the row every ~10 min in practice.
+MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC = 3600
 
 
 # How many ranked subsystems we cache per (inbox, days) tuple. Callers
@@ -93,6 +103,8 @@ MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP = 100
 def most_active_subsystems_in_inbox(
     session: Session, inbox: Inbox,
     days: int = 7, limit: int = 10, force: bool = False,
+    *,
+    compute_on_miss: bool = True,
 ) -> list[SubsystemActivity]:
     """Top-N subsystems by message volume in `inbox` over the
     recent window. Powers the "Most active subsystems" widget on
@@ -105,15 +117,30 @@ def most_active_subsystems_in_inbox(
     therefore `(inbox.name, days)` only, adding `limit` to the key
     was the v1.19.2 cold-path waste (three caches for one
     aggregation).
+
+    `compute_on_miss=True` (the default, used by warm-cache and any
+    background context) falls through to a fresh compute when the
+    cache is cold or expired. `compute_on_miss=False` (the
+    request-path posture, per `mimir/web/routes/dashboards.py`)
+    returns `[]` on a cache miss instead of blocking the request
+    on a seconds-to-minutes recompute. The widget renders empty
+    during the brief window between TTL expiry and the next warm-
+    cache refresh; the alternative was the 1.36.0-era 524 timeout
+    when a single cold render serialised gunicorn workers behind
+    the per-inbox subsystem aggregation.
     """
-    return _most_active_subsystems_in_inbox_full(
+    full = _most_active_subsystems_in_inbox_full(
         session, inbox, days=days, force=force,
-    )[:limit]
+        compute_on_miss=compute_on_miss,
+    )
+    return full[:limit]
 
 
 def _most_active_subsystems_in_inbox_full(
     session: Session, inbox: Inbox,
     days: int = 7, force: bool = False,
+    *,
+    compute_on_miss: bool = True,
 ) -> list[SubsystemActivity]:
     """Cached full ranked list (top `MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP`)
     for `(inbox, days)`. The public `most_active_subsystems_in_inbox`
@@ -289,18 +316,24 @@ def _most_active_subsystems_in_inbox_full(
             ))
         return out
 
+    key = f"most_active_subsystems_in_inbox:{inbox.name}:{days}"
+    if not compute_on_miss:
+        # Request-path posture: cache hit serves immediately, cache
+        # miss serves empty so the page render never blocks on the
+        # multi-second aggregation. Warm-cache keeps the row fresh.
+        cached = cache.get(key)
+        return cached if cached is not None else []
     return cache.get_or_compute(
-        session,
-        f"most_active_subsystems_in_inbox:{inbox.name}:{days}",
-        MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
-        compute,
-        force=force,
+        session, key, MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
+        compute, force=force,
     )
 
 
 def most_active_subsystems_global(
     session: Session,
     days: int = 7, limit: int = 10, force: bool = False,
+    *,
+    compute_on_miss: bool = True,
 ) -> list[SubsystemActivity]:
     """Top-N subsystems across **all** configured inboxes over the
     recent window. Powers the "Active subsystems" teaser on the
@@ -308,14 +341,29 @@ def most_active_subsystems_global(
 
     Thin slicer over `_most_active_subsystems_global_full`: same
     limit-less caching shape as the per-inbox helper.
+
+    `compute_on_miss=False` (the request-path posture from the
+    meta-index route) returns `[]` on cache miss rather than
+    blocking on the cross-inbox aggregation. Critical here: this
+    aggregator iterates every configured inbox's per-inbox
+    aggregation in turn, so a cold compute on a 200-inbox corpus
+    can run for minutes. A single cold front-page render under
+    that posture would serialise every gunicorn worker behind the
+    same compute and trip the gateway timeout (1.36.0 production
+    incident). With `compute_on_miss=False`, the widget renders
+    empty for the brief window between TTL expiry and the next
+    warm-cache refresh, and the rest of the page renders normally.
     """
-    return _most_active_subsystems_global_full(
-        session, days=days, force=force,
-    )[:limit]
+    full = _most_active_subsystems_global_full(
+        session, days=days, force=force, compute_on_miss=compute_on_miss,
+    )
+    return full[:limit]
 
 
 def _most_active_subsystems_global_full(
     session: Session, days: int = 7, force: bool = False,
+    *,
+    compute_on_miss: bool = True,
 ) -> list[SubsystemActivity]:
     """Cached full cross-inbox ranking (top `MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP`)
     for `days`. Each subsystem appears at most once; the row's
@@ -389,10 +437,11 @@ def _most_active_subsystems_global_full(
         out.sort(key=lambda a: (-a.message_count, -a.last_activity.timestamp()))
         return out[:MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP]
 
+    key = f"most_active_subsystems_global:{days}"
+    if not compute_on_miss:
+        cached = cache.get(key)
+        return cached if cached is not None else []
     return cache.get_or_compute(
-        session,
-        f"most_active_subsystems_global:{days}",
-        MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
-        compute,
-        force=force,
+        session, key, MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
+        compute, force=force,
     )
