@@ -40,6 +40,7 @@ from mimir.broker.protocol import (
     CacheDeleteRequest,
     CachePurgeExpiredRequest,
     CacheSetRequest,
+    IngestInboxRequest,
     PingRequest,
     Reply,
 )
@@ -228,6 +229,34 @@ class BrokerClient:
         return bool(reply.ok)
 
     # Long ops ─────────────────────────────────────────────────────────
+
+    def ingest_inbox(
+        self,
+        inbox_name: str,
+        *,
+        limit: int | None = None,
+        workers: int | None = None,
+        timeout: float = 3600.0,
+    ) -> list:
+        """Phase 2.1 long op: run `ingest_inbox(name)` on the broker.
+        Returns the per-epoch `IngestResult` list (reconstructed
+        from the JSON payload so the CLI sees the same shape as
+        the direct path).
+
+        Default `timeout=3600s` (1 hour) covers a fresh-deploy
+        per-inbox ingest of an unindexed mirror; smaller per-tick
+        ingests complete in seconds. Operators on huge deploys can
+        bump it via the per-call kwarg.
+        """
+        from mimir.ingest.epoch import IngestResult
+        req = IngestInboxRequest(
+            inbox_name=inbox_name, limit=limit, workers=workers,
+        )
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"ingest_inbox: {reply.error}")
+        raw = (reply.result or {}).get("results", [])
+        return [IngestResult.model_validate(r) for r in raw]
 
     def bootstrap_inboxes(self, *, timeout: float = 60.0) -> int:
         """Tell the broker to reconcile env-configured inboxes into
