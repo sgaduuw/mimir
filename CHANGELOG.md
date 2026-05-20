@@ -11,6 +11,51 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.36.4], 2026-05-20
+
+### Fixed
+
+- **Catastrophic recursive-CTE plans on production-scale corpus
+  (1.35.1 regression)**: 1.35.1 set `PRAGMA analysis_limit=400` on
+  every SQLite connection on the basis that SQLite docs called 400
+  "appropriate for typical workloads." On the production 11M-row
+  multi-inbox corpus this undersampled the join-driving tables
+  (`articles.thread_parent`, the `(article_id, inbox_id)` covering
+  index on `article_lists`) so badly that the planner picked
+  catastrophically wrong recursive-CTE shapes. Worst confirmed
+  case: `get_thread` for a **15-message** thread on lkml took
+  **400 seconds** instead of the documented ~2 ms baseline. A
+  manual full-scan ANALYZE (`analysis_limit=0; ANALYZE`) on
+  production restored 200-1700× speedups instantly across the
+  previously-slowest message URLs.
+
+- **`ANALYZE_LIMIT` default bumped 400 → 4000**. SQLite docs hint
+  at 1000-1500 for "very large databases"; 4000 is a 10× margin
+  on that for an 11M-row corpus and brings the post-migrate
+  ANALYZE wall time to ~1-3 s (vs 100 ms at 400 and 25-30 s
+  uncapped). Validated end-to-end on the production corpus:
+  produces accurate recursive-CTE plans across every read path
+  hot enough to matter.
+
+### Added
+
+- **Weekly full ANALYZE** safety net via the scheduler sidecar.
+  New `ANALYZE_FULL_EVERY` env (default 604800 = 7 days) drives
+  `mimir analyze --full` once a week; the `--full` flag overrides
+  `analysis_limit` to 0 for that pass so every row of every index
+  is sampled. Holds the writer lock for ~25-30 s once a week in
+  exchange for guaranteed-accurate stats catching any tail-heavy
+  index that drifts under the bounded daily ANALYZE. Daily
+  `analyze` remains the limited fast pass. The two sentinels
+  (`/data/.last_analyze` + `/data/.last_analyze_full`) survive
+  container restarts so the weekly cadence holds across deploys.
+
+- **`mimir analyze --full` CLI flag**. Per-invocation override of
+  the connection's `PRAGMA analysis_limit` for one full-scan
+  ANALYZE pass. Used by the scheduler weekly tick; also available
+  ad-hoc when an operator wants to refresh stats after a large
+  ingest delta or to diagnose a planner regression.
+
 ## [1.36.3], 2026-05-20
 
 ### Fixed
