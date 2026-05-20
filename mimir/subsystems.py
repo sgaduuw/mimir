@@ -28,14 +28,15 @@ exist in MAINTAINERS, `X:` only acts on its own section.
 """
 import fnmatch
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
 from mimir.canonical import fallback_canonical_name
+from mimir.config import settings
 from mimir.models import (
     Article,
     ArticleFile,
@@ -195,20 +196,47 @@ def recent_patches_touching(
     build a URL without re-querying. Articles with no canonical
     inbox fall back to the alphabetically-first linked inbox (same
     rule as `_canonical_inbox_name`).
+
+    Query shape: walks `ix_articles_date` DESC over a bounded recent
+    window (`settings.recent_patches_max_age_days`, default 180) and
+    tests `EXISTS (SELECT 1 FROM article_files af WHERE af.article_id
+    = a.id AND af.path IN (...))` per article via the
+    `(article_id, path)` PK on `article_files`. Stops after `limit`
+    matches.
+
+    The earlier `JOIN article_files ... WHERE path IN (...) GROUP BY
+    article_id ORDER BY date DESC` materialised every match (up to
+    millions of rows for "hot" files like `Makefile`,
+    `include/linux/kernel.h`) before sorting, taking 5+ minutes per
+    request on the production corpus. The same shape on
+    `mimir.subsystems_dashboard._path_filter` was already rewritten
+    to this EXISTS-with-date-bound pattern (see
+    `_subsystem_path_filter_exists_sql`); this function gets the
+    matching treatment. Plan pinned in
+    `tests/test_subsystems/test_path_matching.py`.
     """
     if not paths:
         return []
-    # DISTINCT on article_id because an article touching multiple
-    # of `paths` would otherwise return once per match. Order by
-    # date DESC keeps the surface to "what's been active here
-    # lately".
+    min_date = (
+        datetime.now(timezone.utc)
+        - timedelta(days=settings.recent_patches_max_age_days)
+    )
+    # EXISTS-with-date-bound. The driver is `ix_articles_date` DESC
+    # over the bounded window; the planner tests the EXISTS per
+    # candidate article via the `(article_id, path)` PK on
+    # `article_files` (cheap, ~3 files per article). Stops as soon
+    # as `limit` matches are found.
     q = (
         select(Article.id, Article.message_id, Article.subject,
                Article.author, Article.date,
                Article.canonical_inbox_id)
-        .join(ArticleFile, ArticleFile.article_id == Article.id)
-        .where(ArticleFile.path.in_(paths))
-        .group_by(Article.id)
+        .where(Article.date >= min_date)
+        .where(exists(
+            select(1)
+            .select_from(ArticleFile)
+            .where(ArticleFile.article_id == Article.id)
+            .where(ArticleFile.path.in_(paths))
+        ))
         .order_by(Article.date.desc())
         .limit(limit)
     )

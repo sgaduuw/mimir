@@ -118,7 +118,17 @@ def _ingest_one_article(
     commit.tree = tree.id
     commit.parents = []
     commit.author = commit.committer = b"test <t@x>"
-    commit.commit_time = commit.author_time = 1700000000
+    # Recent commit timestamp (yesterday-ish) so the article stays
+    # within any default time-window filter applied downstream
+    # (`recent_patches_max_age_days`=180 from 1.36.3, active-thread
+    # windows, etc.). `Article.date` comes from this commit time
+    # rather than the RFC 5322 `Date:` header per the public-inbox-
+    # as-source-of-truth design (CONTEXT.md). A fixed 2023 timestamp
+    # would now fall off the back of every recency window. Tests
+    # that exercise URL date prefixes infer the year/month from
+    # the returned URL rather than hardcoding 2023/11.
+    import time as _time
+    commit.commit_time = commit.author_time = int(_time.time()) - 86400
     commit.commit_timezone = commit.author_timezone = 0
     commit.encoding = b"UTF-8"
     commit.message = b"add"

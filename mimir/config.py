@@ -314,5 +314,22 @@ class Settings(BaseSettings):
     # Override via SUBSYSTEM_TRIAGE_MAX_AGE_DAYS.
     subsystem_triage_max_age_days: int = 180
 
+    # Hard upper bound on age of "related patches" surfaced on a
+    # message page (1.36.3). The `recent_patches_touching` helper
+    # joins `article_files` by `path IN (...)` and asks for the
+    # top-N most-recent matches. Without a date bound, a patch that
+    # touches a popular file (Makefile, include/linux/kernel.h,
+    # anything in arch/x86/) matches millions of rows and the
+    # GROUP BY + ORDER BY DESC materialises + sorts the whole set
+    # before LIMITing, ran for 5+ minutes per request on the
+    # production corpus and starved gunicorn workers under bot
+    # load. Bounded to a 180-day window the planner walks the date
+    # index DESC and tests EXISTS per candidate article via the
+    # `(article_id, path)` PK on `article_files`; cold miss drops
+    # to milliseconds. Same rationale + same default as
+    # `subsystem_triage_max_age_days` above. Override via
+    # RECENT_PATCHES_MAX_AGE_DAYS.
+    recent_patches_max_age_days: int = 180
+
 
 settings = Settings()
