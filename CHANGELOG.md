@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.36.0], 2026-05-20
+
 ### Added
 
 - **Write-broker Phase 2.1**: `mimir ingest` and `mimir update`
