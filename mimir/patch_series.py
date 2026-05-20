@@ -282,6 +282,7 @@ def backfill_patch_series(
         result, _process_one,
         limit=limit, reprocess=reprocess, progress=progress,
         preload_lists=False,
+        label="backfill_patch_series",
     )
     return result
 

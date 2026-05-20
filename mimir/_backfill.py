@@ -32,6 +32,7 @@ def walk_articles(
     progress: Callable[[Any], None] | None = None,
     preload_lists: bool = True,
     batch_size: int = 1000,
+    label: str = "walk_articles",
 ) -> None:
     """Walk every Article newest-first, calling `process_one` per row
     and bumping the matching bucket on `result`.
@@ -51,7 +52,12 @@ def walk_articles(
 
     `progress(result)` fires once per batch boundary. `limit` caps
     `examined` (post-increment, pre-process), so `limit=k` produces
-    `examined=k` exactly across `k <= count`."""
+    `examined=k` exactly across `k <= count`.
+
+    `label` is threaded through to `write_transaction()` for the
+    slow-write WARNING; callers pass e.g. `"backfill_article_files"`
+    so a long lock-hold is identifiable in the broker-vs-scheduler
+    correlation log."""
     examined_total = 0
 
     # BEGIN IMMEDIATE per batch transaction. The walker reads the
@@ -59,7 +65,7 @@ def walk_articles(
     # commits; without IMMEDIATE the first commit-then-next-read
     # interleave can trip SQLITE_BUSY_SNAPSHOT against the web
     # tier's cache.set writes.
-    with write_transaction(), SessionLocal() as session:
+    with write_transaction(label), SessionLocal() as session:
         cursor: int | None = None
         while True:
             q = (
