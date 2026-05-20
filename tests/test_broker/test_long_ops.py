@@ -143,6 +143,128 @@ def test_per_op_timeout_restored_after_rpc(seeded_db):
             c.close()
 
 
+# ----- ingest_inbox via broker -------------------------------------------
+
+
+def test_ingest_inbox_via_broker_runs_to_completion(seeded_db, tmp_path):
+    """End-to-end: spin a broker, send an `ingest_inbox` RPC against
+    a freshly-built inbox with a handful of messages, verify the
+    broker actually runs the ingest (rows land) and returns the
+    per-epoch `IngestResult` list. This is the Phase 2.1 happy path.
+    """
+    from sqlalchemy import select
+    from mimir.broker.client import BrokerClient
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, Inbox
+    from tests.test_ingest._helpers import _setup_alpha_with_messages
+
+    # Build a real-ish inbox/mirror so the broker has something to
+    # walk. The helper already attaches an `alpha` row in the DB
+    # and points it at a tmp-path mirror with N messages.
+    _setup_alpha_with_messages(seeded_db, tmp_path, 3)
+
+    sp = short_socket_path("ingest-e2e")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            results = c.ingest_inbox("alpha", limit=None, workers=1)
+        finally:
+            c.close()
+
+    # Returned shape: list of IngestResult objects (reconstructed
+    # client-side from the Reply.result payload).
+    assert results, "expected at least one IngestResult"
+    total_new = sum(r.new for r in results)
+    assert total_new == 3, f"expected 3 new rows, got {total_new}"
+
+    # Articles actually landed in the DB.
+    with SessionLocal() as s:
+        alpha = s.execute(
+            select(Inbox).where(Inbox.name == "alpha")
+        ).scalar_one()
+        article_count = s.execute(
+            select(Article).join(Article.lists).where(
+                Article.lists.any(inbox_id=alpha.id),
+            )
+        ).scalars().all()
+    assert len(article_count) >= 3, (
+        f"expected the broker-run ingest to land >=3 articles linked "
+        f"to alpha; got {len(article_count)}"
+    )
+
+
+def test_ingest_inbox_via_broker_unknown_inbox_returns_clean_error(seeded_db):
+    """The broker handler looks up the inbox by name. A bogus name
+    must return `Reply(ok=False, error="UnknownInbox:<name>")`
+    rather than crashing the handler or returning a partial result.
+    The client surfaces the error as `BrokerUnavailable`, callers
+    in `cli/ingest.py` turn it into a ClickException."""
+    import pytest
+    from mimir.broker.client import BrokerClient, BrokerUnavailable
+
+    sp = short_socket_path("ingest-unknown")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            with pytest.raises(BrokerUnavailable) as exc_info:
+                c.ingest_inbox("does-not-exist", limit=1, workers=1)
+        finally:
+            c.close()
+    assert "UnknownInbox:does-not-exist" in str(exc_info.value)
+
+
+# ----- broker self-RPC avoidance -----------------------------------------
+
+
+def test_cache_set_writes_direct_inside_broker_process(seeded_db, monkeypatch):
+    """When the calling process IS the broker (`MIMIR_ROLE=broker`),
+    `cache.set` must write directly via `_direct_set` rather than
+    sending an RPC to itself. Phase 2.1 made this load-bearing: now
+    that `ingest_inbox` runs inside the broker, the warm afterwards
+    fires three cache writes per inbox tick; if they all
+    self-RPC'd the broker's own cache_queue would fill up with
+    its own work.
+
+    The pin: set `broker_socket_path` to a NON-EXISTENT path (so
+    a real RPC would fail) + `mimir_role=broker`, then call
+    `cache.set` and confirm it landed via the direct path."""
+    from mimir import cache
+    from mimir.config import settings
+    from pathlib import Path
+
+    monkeypatch.setattr(
+        settings, "broker_socket_path",
+        Path("/tmp/mimir-test-no-such-broker.sock"),
+    )
+    monkeypatch.setattr(settings, "mimir_role", "broker")
+
+    # `_should_dispatch_to_broker` must return False in this state
+    # (we're "the broker"), and the write must land regardless of
+    # the (non-existent) socket path.
+    assert cache._should_dispatch_to_broker() is False
+    cache.set("self_rpc_test", "v", ttl=60)
+    assert cache.get("self_rpc_test") == "v"
+
+
+def test_cache_set_dispatches_outside_broker_process(monkeypatch):
+    """Inverse of the above: when `mimir_role` is anything other
+    than "broker" and `broker_socket_path` is set, dispatch goes
+    via the broker (the normal Phase 1+ path). Verifies that the
+    role check doesn't accidentally disable broker mode for
+    legitimate clients (web, tasks)."""
+    from mimir import cache
+    from mimir.config import settings
+    from pathlib import Path
+
+    sp = Path("/tmp/mimir-test-stub-broker.sock")
+    for role in ("web", "tasks", None):
+        monkeypatch.setattr(settings, "broker_socket_path", sp)
+        monkeypatch.setattr(settings, "mimir_role", role)
+        assert cache._should_dispatch_to_broker() is True, (
+            f"role={role!r}: expected broker dispatch, got direct"
+        )
+
+
 # ----- two-worker concurrency --------------------------------------------
 
 
@@ -153,21 +275,21 @@ def test_long_worker_does_not_block_cache_worker(seeded_db, monkeypatch):
     long op would head-of-line block every cache.set behind it."""
     from mimir import cache
     from mimir.broker import handlers as _handlers
+    from mimir.broker.handlers.longops import handle_bootstrap_inboxes
 
     # Monkey-patch the bootstrap handler to sleep so the long
     # worker is held in dispatch for ~0.5s. A real ingest would
     # take much longer; 0.5s is enough to deterministically
     # observe the cache op completing during that window.
-    real_handle = _handlers._handle_bootstrap_inboxes
-
+    #
+    # The dispatch table (`_DISPATCH` in the handlers package
+    # __init__) holds a direct function reference captured at
+    # import time, so patching the source module's symbol isn't
+    # enough; swap the entry in the dispatch table directly.
     def slow_handle(req):
         time.sleep(0.5)
-        return real_handle(req)
+        return handle_bootstrap_inboxes(req)
 
-    monkeypatch.setattr(_handlers, "_handle_bootstrap_inboxes", slow_handle)
-    # The dispatch table holds a reference captured at import
-    # time; patch that entry too so the dispatch call actually
-    # routes through `slow_handle`.
     real_entry = _handlers._DISPATCH["bootstrap_inboxes"]
     _handlers._DISPATCH["bootstrap_inboxes"] = (real_entry[0], slow_handle)
     try:
