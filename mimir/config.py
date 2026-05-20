@@ -187,6 +187,33 @@ class Settings(BaseSettings):
     # not noise". Override via WRITE_TRANSACTION_SLOW_LOG_MS.
     write_transaction_slow_log_ms: int = 1000
 
+    # Number of broker warm-worker threads (Phase 2.2). The warm
+    # queue is drained by N parallel workers so the read-heavy
+    # compute phase of `warm_inbox` jobs overlaps across inboxes;
+    # cache.set commits still funnel through the SQLite writer lock,
+    # but the upstream compute is concurrent. 4 is a reasonable
+    # default for a 200-inbox corpus: warm-cache fans out ~200
+    # warm_inbox jobs, the broker chews them ~4 at a time, finishing
+    # the cycle in ~50× per-task time rather than 200×. Tune higher
+    # on bigger corpora; tune to 1 for serial-equivalent behaviour
+    # (useful for tests). Override via BROKER_WARM_WORKERS.
+    broker_warm_workers: int = 4
+
+    # Backfill chunk budget (seconds) for broker-mode cooperative
+    # scheduling (Phase 2.2). When a backfill RPC handler runs inside
+    # the broker, it walks for at most this long before committing
+    # and returning `partial=True, continuation=<cursor>` so the CLI
+    # loop can issue a follow-up RPC. Between two chunk-RPCs the
+    # broker's long worker is free; queued cache writes and other
+    # long ops (a scheduler `update` tick) get serviced naturally
+    # before the next chunk arrives. Tuneable: shorter dial = more
+    # interleaving (better front-page liveness during a long
+    # backfill) at the cost of more RPC overhead; longer dial = less
+    # overhead at the cost of longer pauses for queued cache writes.
+    # 10 s is a reasonable balance on the production corpus. Override
+    # via BROKER_BACKFILL_CHUNK_SECONDS.
+    broker_backfill_chunk_seconds: int = 10
+
     # Slow-RPC warning threshold for the write-broker (milliseconds).
     # When the broker takes longer than this to handle a single RPC,
     # it logs a WARNING with the leading bytes of the request and
