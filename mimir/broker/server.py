@@ -59,7 +59,7 @@ import time
 from pathlib import Path
 
 from mimir import cache
-from mimir.broker.handlers import dispatch
+from mimir.broker.handlers import LONG_OPS, classify_op, dispatch
 from mimir.broker.protocol import Reply
 from mimir.config import settings
 
@@ -89,9 +89,22 @@ class _NoopHandler(socketserver.BaseRequestHandler):
 
 class _BrokerServer(socketserver.UnixStreamServer):
     """UNIX-socket server that hands every accepted connection off
-    to a dedicated reader thread and runs one worker thread draining
-    a shared work queue. `daemon_threads = True` so reader / worker
-    threads don't block process exit on unclean shutdown.
+    to a dedicated reader thread and runs **two** worker threads
+    draining two separate work queues:
+
+    - `cache_queue` for cache ops (sub-ms commits). Always-on
+      throughput; the only thing the web tier waits on.
+    - `long_queue` for long-running ops (`bootstrap_inboxes` in
+      Phase 2.0; ingest / backfills / mainline / analyze / vacuum
+      in Phase 2.1+). One op at a time; can run for minutes.
+
+    The two workers contend for the SQLite writer lock at the
+    SQLite level (via `busy_timeout`), but cache writes never wait
+    behind the *whole* long op, just behind the long op's current
+    commit batch. That's the point of the split.
+
+    `daemon_threads = True` so reader / worker threads don't block
+    process exit on unclean shutdown.
 
     `request_queue_size` (the kernel's `listen()` backlog) stays at
     256 (from 1.32.3) so brief bursts above the accept rate don't
@@ -103,18 +116,23 @@ class _BrokerServer(socketserver.UnixStreamServer):
     def __init__(self, socket_path: str) -> None:
         super().__init__(socket_path, _NoopHandler)
         self.stop_event = threading.Event()
-        # `work_queue` items are `(line, sock, enqueued_at)` tuples.
-        # `sock` is the raw socket the request came in on; the worker
-        # writes the reply back to it directly. Unbounded queue: under
-        # observed peak load (~few hundred cache.sets per warm-cache
-        # tick) memory is negligible and a hard cap would just drop
-        # work silently. The slow-RPC WARNING is the operator-facing
-        # signal that the queue is backing up.
-        self.work_queue: "queue.Queue[tuple[bytes, socket.socket, float]]" = (
+        # Two queues, one per worker class. Items are
+        # `(line, sock, enqueued_at)` tuples; the reader classifies
+        # by op name and routes (`handlers.classify_op` →
+        # `handlers.LONG_OPS`). Unbounded queues: under observed
+        # peak load (a few hundred cache.sets per warm-cache tick)
+        # memory is negligible and a hard cap would just drop work
+        # silently. The slow-RPC WARNING (with breakdown into queue
+        # vs dispatch) is the operator-facing signal.
+        self.cache_queue: "queue.Queue[tuple[bytes, socket.socket, float]]" = (
+            queue.Queue()
+        )
+        self.long_queue: "queue.Queue[tuple[bytes, socket.socket, float]]" = (
             queue.Queue()
         )
         self._reader_threads: list[threading.Thread] = []
-        self._worker_thread: threading.Thread | None = None
+        self._cache_worker_thread: threading.Thread | None = None
+        self._long_worker_thread: threading.Thread | None = None
 
     def process_request(self, request, client_address) -> None:
         """Override of `BaseServer.process_request` so each accepted
@@ -139,9 +157,15 @@ class _BrokerServer(socketserver.UnixStreamServer):
         logger.exception("broker: connection error")
 
     def _reader_loop(self, sock: socket.socket) -> None:
-        """Read JSONL request lines from this connection, enqueue
-        each onto `work_queue` tagged with the enqueue timestamp.
-        One per accepted connection."""
+        """Read JSONL request lines from this connection, classify
+        each by op name (`handlers.LONG_OPS` → long_queue; otherwise
+        cache_queue), and enqueue tagged with the enqueue timestamp.
+        One reader per accepted connection.
+
+        Classification is a cheap JSON peek (`classify_op`) plus a
+        set membership test. Malformed lines and unknown ops route
+        to the cache queue and let `dispatch` produce a structured
+        failure reply, preserving existing error semantics."""
         linebuf = bytearray()
         sel = selectors.DefaultSelector()
         sel.register(sock, selectors.EVENT_READ)
@@ -163,7 +187,13 @@ class _BrokerServer(socketserver.UnixStreamServer):
                         break
                     line = bytes(linebuf[:nl])
                     del linebuf[:nl + 1]
-                    self.work_queue.put((line, sock, time.perf_counter()))
+                    op = classify_op(line)
+                    target = (
+                        self.long_queue
+                        if op is not None and op in LONG_OPS
+                        else self.cache_queue
+                    )
+                    target.put((line, sock, time.perf_counter()))
         finally:
             sel.close()
             try:
@@ -171,17 +201,24 @@ class _BrokerServer(socketserver.UnixStreamServer):
             except OSError:
                 pass
 
-    def _worker_loop(self) -> None:
-        """Drain `work_queue` serially. One RPC at a time, so writes
-        stay ordered at the SQLAlchemy layer without an extra lock.
-        Each iteration: dequeue, dispatch, write reply to the
-        originating socket. Slow-RPC WARNING fires with queue-wait
-        + dispatch breakdown."""
+    def _worker_loop(
+        self,
+        q: "queue.Queue[tuple[bytes, socket.socket, float]]",
+        worker_tag: str,
+    ) -> None:
+        """Drain one queue serially. One RPC at a time on this
+        worker so writes stay ordered at the SQLAlchemy layer
+        without an extra lock. Each iteration: dequeue, dispatch,
+        write reply to the originating socket. Slow-RPC WARNING
+        fires with queue-wait + dispatch breakdown.
+
+        `worker_tag` tags the slow-RPC log line ("cache" or "long")
+        so operators reading the broker log can tell which queue
+        is contended without inferring it from the op string.
+        """
         while not self.stop_event.is_set():
             try:
-                line, sock, enqueued_at = self.work_queue.get(
-                    timeout=SHUTDOWN_POLL_SEC,
-                )
+                line, sock, enqueued_at = q.get(timeout=SHUTDOWN_POLL_SEC)
             except queue.Empty:
                 continue
             try:
@@ -198,19 +235,22 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     # (high queue_wait_ms; many clients piling on)
                     # and back-of-queue contention
                     # (high dispatch_ms; SQLite writer lock held
-                    # by scheduler-side ingest).
+                    # by the other worker or, in Phase 1 deploys,
+                    # by direct scheduler-side writes).
                     logger.warning(
-                        "broker slow rpc (%.1fms total = %.1fms queued + %.1fms "
-                        "dispatch, qsize=%d): %.80s -> ok=%s",
+                        "broker slow rpc [%s] (%.1fms total = %.1fms queued + "
+                        "%.1fms dispatch, qsize=%d): %.80s -> ok=%s",
+                        worker_tag,
                         total_ms, queue_wait_ms, dispatch_ms,
-                        self.work_queue.qsize(),
+                        q.qsize(),
                         line.decode("utf-8", "replace"),
                         reply.ok,
                     )
                 else:
                     logger.debug(
-                        "broker rpc: %.80s -> ok=%s%s "
+                        "broker rpc [%s]: %.80s -> ok=%s%s "
                         "(%.1fms total = %.1fms queued + %.1fms dispatch)",
+                        worker_tag,
                         line.decode("utf-8", "replace"),
                         reply.ok,
                         f" error={reply.error}" if not reply.ok else "",
@@ -225,20 +265,28 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     # Drop the reply silently; the client treats
                     # the missing reply as `BrokerUnavailable` and
                     # retries.
-                    logger.debug("broker: dropped reply on closed sock")
+                    logger.debug("broker [%s]: dropped reply on closed sock", worker_tag)
             finally:
-                self.work_queue.task_done()
+                q.task_done()
 
-    def start_worker(self) -> None:
-        """Spawn the single worker thread. Call once after
+    def start_workers(self) -> None:
+        """Spawn one worker thread per queue. Call once after
         construction (before `serve_forever`)."""
-        assert self._worker_thread is None, "worker already started"
-        self._worker_thread = threading.Thread(
+        assert self._cache_worker_thread is None, "workers already started"
+        self._cache_worker_thread = threading.Thread(
             target=self._worker_loop,
+            args=(self.cache_queue, "cache"),
             daemon=True,
-            name="broker-worker",
+            name="broker-cache-worker",
         )
-        self._worker_thread.start()
+        self._long_worker_thread = threading.Thread(
+            target=self._worker_loop,
+            args=(self.long_queue, "long"),
+            daemon=True,
+            name="broker-long-worker",
+        )
+        self._cache_worker_thread.start()
+        self._long_worker_thread.start()
 
 
 def _purge_loop(stop_event: threading.Event) -> None:
@@ -260,10 +308,10 @@ def _purge_loop(stop_event: threading.Event) -> None:
 def build_server(socket_path: Path) -> _BrokerServer:
     """Bind a broker server on `socket_path` and return it (not yet
     serving). Unlinks any stale socket file, creates parent dirs,
-    sets file mode 0660. Starts the worker thread so an immediate
-    accept can hand work off without a race. Used by `serve()`
-    (production entry) and by tests that need to drive the server
-    without signal handling.
+    sets file mode 0660. Starts both worker threads (cache + long)
+    so an immediate accept can hand work off without a race. Used
+    by `serve()` (production entry) and by tests that need to drive
+    the server without signal handling.
 
     Caller is responsible for `serve_forever()` and `server_close()`
     + socket-file cleanup; `serve()` does both."""
@@ -274,7 +322,7 @@ def build_server(socket_path: Path) -> _BrokerServer:
     sp.parent.mkdir(parents=True, exist_ok=True)
     server = _BrokerServer(str(sp))
     os.chmod(sp, 0o660)
-    server.start_worker()
+    server.start_workers()
     logger.info("broker: listening on %s", sp)
     return server
 
