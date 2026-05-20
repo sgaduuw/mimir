@@ -78,6 +78,17 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   aggregation; direct callers see `partial=False,
   continuation=None`.
 
+- **Scheduler boot sequence**: `warm-cache (initial)` now runs
+  before the `/data/.migrated` healthcheck sentinel is touched
+  (was: after, between `update (initial)` and the loop). The web
+  tier waits 30-60 s longer on every recreate but never serves
+  cold-cache requests after `.migrated` lands. `update (initial)`
+  now runs after the sentinel, so a backlogged upstream doesn't
+  gate web startup behind a multi-minute ingest. Closes the gap
+  that triggered the 1.36.0-era dashboard timeouts on every
+  container recreate even with 1.36.1's commit-cadence fix in
+  place.
+
 ## [1.36.4], 2026-05-20
 
 ### Fixed
