@@ -209,6 +209,20 @@ class Settings(BaseSettings):
     # Override via MIMIR_ROLE.
     mimir_role: Literal["web", "tasks", "broker"] | None = None
 
+    # SQLite `PRAGMA analysis_limit` (max rows sampled per index by
+    # ANALYZE). Default 0 means "no limit" and ANALYZE scans every
+    # row of every index, which on the 11M-row prod corpus holds
+    # the writer lock for ~25 s. SQLite's recommended value for
+    # typical workloads is 400; on this corpus that drops the
+    # lock-hold to ~100 ms while still producing planner stats good
+    # enough for sargable index choices. The pragma is set on every
+    # connection in `mimir.extensions._sqlite_pragmas`, so it
+    # applies uniformly to `mimir analyze`, auto-ANALYZE-after-
+    # ingest, and any ad-hoc session running ANALYZE. Set to 0 to
+    # restore full-scan stats (slow but exact). Override via
+    # ANALYZE_LIMIT.
+    analyze_limit: int = 400
+
     # Auto-ANALYZE threshold. After `ingest_inbox` finishes a run, if
     # `new + linked` across that run's epochs reaches this many rows,
     # we issue ANALYZE so the SQLite planner doesn't keep stale stats
