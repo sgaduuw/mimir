@@ -129,8 +129,19 @@ def index():
         # subsystems across every configured inbox so a reader on
         # `/` can drill into a hot subsystem without first picking
         # an inbox. Each row carries the inbox where it's busiest.
+        #
+        # `compute_on_miss=False`: cache hit serves immediately,
+        # cache miss serves empty. A cold compute here aggregates
+        # across every configured inbox and can run for minutes on
+        # a multi-hundred-inbox corpus; under request-path posture
+        # it would serialise every gunicorn worker behind the same
+        # compute and trip Cloudflare's 100 s gateway timeout
+        # (1.36.0 production incident). The widget renders empty
+        # for the window between TTL expiry and the next warm-cache
+        # refresh; warm-cache keeps the row populated in normal
+        # operation.
         active_subsystems = most_active_subsystems_global(
-            session, days=7, limit=12,
+            session, days=7, limit=12, compute_on_miss=False,
         )
     base = _site_base()
     return render_template(
@@ -164,8 +175,15 @@ def inbox_dashboard(inbox_name: str):
         # this inbox over the last 7 days. Cached helper, so warm-cache
         # covers steady state. Empty list when no subsystem has
         # supported globs (no MAINTAINERS ingest yet).
+        #
+        # `compute_on_miss=False` for the same reason as the meta-
+        # index: a cold compute here scans every patch-touched path
+        # in the recent window for this inbox and runs the inverted-
+        # index walk over MAINTAINERS rules. Single-digit seconds on
+        # a busy inbox, fine for warm-cache but request-path-blocking
+        # under the gateway timeout if it lands during the TTL gap.
         active_subsystems = most_active_subsystems_in_inbox(
-            session, inbox, days=7, limit=10,
+            session, inbox, days=7, limit=10, compute_on_miss=False,
         )
     base = _site_base()
     year_decades: list[tuple[int, list[int]]] = []

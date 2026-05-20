@@ -219,3 +219,99 @@ def test_most_active_subsystems_carries_sparkline(seeded_db):
         out = most_active_subsystems_in_inbox(s, alpha, force=True)
     assert out[0].spark is not None
     assert len(out[0].spark.days) == 7  # 7-day series
+
+
+# ----- compute_on_miss request-path guard (1.36.2) ---------------------
+
+
+def test_most_active_subsystems_in_inbox_compute_on_miss_false_returns_empty(
+    seeded_db,
+):
+    """1.36.2 regression: under request-path posture
+    (`compute_on_miss=False`), a cold cache returns `[]` instantly
+    rather than falling through to the per-inbox aggregation. Pin
+    by patching the inner compute path to assert it is never
+    reached when the cache is empty and `compute_on_miss=False`."""
+    from unittest.mock import patch
+
+    from mimir import cache as cache_mod
+    from mimir.subsystems_dashboard import activity as activity_mod
+
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_thread_root(s, "cold@x", ["fs/bcachefs/super.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+    # Cache is empty: the per-inbox key has never been set. Under
+    # the request-path posture we must NOT recompute; the widget
+    # is allowed to render empty for the brief window between TTL
+    # expiry and the next warm-cache refresh.
+    cache_mod.delete(
+        f"most_active_subsystems_in_inbox:{alpha.name}:7",
+    )
+
+    with patch.object(
+        activity_mod, "cache",
+        wraps=activity_mod.cache,
+    ) as wrapped:
+        # `cache.get` must be called (the cache-read side), but
+        # `cache.get_or_compute` must NOT (the compute-fallback side).
+        with seeded_db() as s:
+            alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+            out = most_active_subsystems_in_inbox(
+                s, alpha, days=7, limit=10, compute_on_miss=False,
+            )
+        assert out == [], "expected empty on cache miss with compute_on_miss=False"
+        wrapped.get.assert_called()
+        wrapped.get_or_compute.assert_not_called()
+
+
+def test_most_active_subsystems_in_inbox_compute_on_miss_false_returns_cached(
+    seeded_db,
+):
+    """When the cache IS populated, `compute_on_miss=False` still
+    returns the cached payload. Validates that the request-path
+    posture only opts out of compute, not out of serving warm
+    cache rows."""
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_thread_root(s, "warm@x", ["fs/bcachefs/super.c"])
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        # Warm the cache via the normal compute-on-miss=True path.
+        warm = most_active_subsystems_in_inbox(s, alpha, days=7, limit=10)
+        assert warm  # sanity: this inbox has activity
+        # Request-path posture: same call, must return the same data
+        # without recomputing.
+        served = most_active_subsystems_in_inbox(
+            s, alpha, days=7, limit=10, compute_on_miss=False,
+        )
+    assert [a.name for a in served] == [a.name for a in warm]
+
+
+def test_most_active_subsystems_global_compute_on_miss_false_returns_empty(
+    seeded_db,
+):
+    """Same property on the cross-inbox aggregator: cold cache plus
+    `compute_on_miss=False` returns `[]` without invoking the
+    multi-inbox compute. This is the load-bearing guard for the
+    meta-index `/` route after 1.36.2."""
+    from unittest.mock import patch
+
+    from mimir import cache as cache_mod
+    from mimir.subsystems_dashboard import activity as activity_mod
+
+    cache_mod.delete("most_active_subsystems_global:7")
+
+    with patch.object(
+        activity_mod, "cache",
+        wraps=activity_mod.cache,
+    ) as wrapped:
+        with seeded_db() as s:
+            out = most_active_subsystems_global(
+                s, days=7, limit=12, compute_on_miss=False,
+            )
+        assert out == []
+        wrapped.get.assert_called()
+        wrapped.get_or_compute.assert_not_called()
