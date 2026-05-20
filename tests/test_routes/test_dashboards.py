@@ -7,6 +7,38 @@ contract (card grids, sparklines, tracker tiles, footer)."""
 from tests.test_routes._helpers import _ingest_one_article, _json_ld_blocks, _meta_value, _seed_author_article, _seed_subsystem, _title_of
 
 
+def _warm_active_subsystems(inbox_name: str | None = None) -> None:
+    """Pre-warm the `most_active_subsystems_*` cache so the meta-
+    index / per-inbox dashboard renders the "Active subsystems"
+    section. Necessary in tests because the request-path posture
+    (1.36.2) is `compute_on_miss=False`: cache miss serves empty
+    rather than blocking on a cross-inbox aggregation that can run
+    for minutes on a multi-hundred-inbox production corpus.
+
+    `inbox_name=None` warms the global aggregator (meta-index);
+    a non-None value warms the per-inbox aggregator (inbox
+    dashboard). Tests that need both call this twice.
+    """
+    from sqlalchemy import select
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.subsystems_dashboard import (
+        most_active_subsystems_global,
+        most_active_subsystems_in_inbox,
+    )
+
+    with SessionLocal() as s:
+        if inbox_name is None:
+            most_active_subsystems_global(s, days=7, limit=12, force=True)
+        else:
+            inbox = s.execute(
+                select(Inbox).where(Inbox.name == inbox_name)
+            ).scalar_one()
+            most_active_subsystems_in_inbox(
+                s, inbox, days=7, limit=10, force=True,
+            )
+
+
 def test_meta_index_has_inboxes_anchor(client):
     """`/` carries the `id="inboxes"` structural anchor. The content
     of the inbox list -- and the pin-aware ordering -- is exercised
@@ -156,6 +188,7 @@ def test_meta_index_renders_subsystem_chips_with_activity(client, tmp_path):
         art = s.get(Article, art_id)
         art.date = datetime.now(timezone.utc) - timedelta(hours=2)
         s.commit()
+    _warm_active_subsystems()
     text = client.get("/").data.decode()
     assert "Active subsystems" in text
     # Display name is lowercased on the chip; URL is also lowercase
@@ -198,6 +231,7 @@ def test_meta_index_subsystem_card_shows_maintainer_and_sparkline(
         art = s.get(Article, art_id)
         art.date = datetime.now(timezone.utc) - timedelta(hours=2)
         s.commit()
+    _warm_active_subsystems()
     text = client.get("/").data.decode()
     # Maintainer line.
     assert "maintained by Kent Overstreet" in text
@@ -229,6 +263,7 @@ def test_meta_index_subsystem_card_status_badge_when_non_default(
         art = s.get(Article, art_id)
         art.date = datetime.now(timezone.utc) - timedelta(hours=2)
         s.commit()
+    _warm_active_subsystems()
     text = client.get("/").data.decode()
     # `class="subsystem-card-status">Supported<` shape, the class
     # is also referenced in the inline <style>, so anchor on the
@@ -262,6 +297,7 @@ def test_meta_index_subsystem_card_no_status_badge_for_default(
         art = s.get(Article, art_id)
         art.date = datetime.now(timezone.utc) - timedelta(hours=2)
         s.commit()
+    _warm_active_subsystems()
     text = client.get("/").data.decode()
     # Card present, but no rendered status badge for the
     # Maintained value.
@@ -698,6 +734,7 @@ def test_inbox_dashboard_renders_subsystem_list_with_activity(
         art = s.get(Article, art_id)
         art.date = datetime.now(timezone.utc) - timedelta(hours=2)
         s.commit()
+    _warm_active_subsystems(inbox_name="alpha")
     text = client.get("/alpha/").data.decode()
     assert "Most active subsystems" in text
     assert "/alpha/subsystem/bcachefs/" in text
