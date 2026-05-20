@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.37.0], 2026-05-21
+
 ### Added
 
 - **Write-broker Phase 2.2**: the four backfill commands route
