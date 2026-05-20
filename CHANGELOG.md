@@ -11,6 +11,24 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.35.1], 2026-05-20
+
+### Fixed
+
+- `PRAGMA analysis_limit=400` is now set on every SQLite
+  connection, bounding ANALYZE's per-index row sample to
+  SQLite's recommended value. On the 11M-row prod corpus that
+  drops ANALYZE from ~25 s (full scan) to ~100 ms while still
+  producing planner stats good enough for sargable index
+  choices. The 25 s lock-hold was the dominant source of
+  broker-side cache.set stalls in production (e.g.
+  `21545 ms total = 0 ms queued + 21545 ms dispatch` waiting
+  for the daily ANALYZE to release the writer lock). Applies
+  uniformly to `mimir analyze`, auto-ANALYZE-after-ingest, and
+  any ad-hoc session running ANALYZE. Env-tunable via
+  `ANALYZE_LIMIT`; set to 0 to restore the previous full-scan
+  behaviour.
+
 ## [1.35.0], 2026-05-20
 
 ### Added
