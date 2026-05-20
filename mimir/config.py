@@ -187,6 +187,18 @@ class Settings(BaseSettings):
     # not noise". Override via WRITE_TRANSACTION_SLOW_LOG_MS.
     write_transaction_slow_log_ms: int = 1000
 
+    # Number of broker warm-worker threads (Phase 2.2). The warm
+    # queue is drained by N parallel workers so the read-heavy
+    # compute phase of `warm_inbox` jobs overlaps across inboxes;
+    # cache.set commits still funnel through the SQLite writer lock,
+    # but the upstream compute is concurrent. 4 is a reasonable
+    # default for a 200-inbox corpus: warm-cache fans out ~200
+    # warm_inbox jobs, the broker chews them ~4 at a time, finishing
+    # the cycle in ~50× per-task time rather than 200×. Tune higher
+    # on bigger corpora; tune to 1 for serial-equivalent behaviour
+    # (useful for tests). Override via BROKER_WARM_WORKERS.
+    broker_warm_workers: int = 4
+
     # Backfill chunk budget (seconds) for broker-mode cooperative
     # scheduling (Phase 2.2). When a backfill RPC handler runs inside
     # the broker, it walks for at most this long before committing
