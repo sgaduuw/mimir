@@ -230,3 +230,149 @@ def test_busy_timeout_restored_on_pool_checkin():
         f"pool checkin must restore busy_timeout to "
         f"{settings.sqlite_busy_timeout_ms}; got {observed}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Slow-write logging contract for write_transaction(). The COMMIT and
+# ROLLBACK listeners log a WARNING with the supplied label and the
+# elapsed time the writer lock was held, when over
+# `settings.write_transaction_slow_log_ms`. This is the operator-facing
+# diagnostic for cross-process writer-lock contention: a slow write on
+# the scheduler side correlates 1:1 with a slow broker dispatch on the
+# cache side.
+# ---------------------------------------------------------------------------
+
+
+def test_write_transaction_slow_log_fires_on_commit(caplog, monkeypatch):
+    """When a `write_transaction(label=...)` block holds the writer
+    lock longer than the threshold and commits cleanly, the COMMIT
+    listener emits a WARNING tagged with the label and elapsed
+    time."""
+    import logging
+    import time as _time
+
+    # Trip the threshold trivially: 0ms means "every write_transaction
+    # logs". 1ms also works but is racy in a fast test environment.
+    monkeypatch.setattr(settings, "write_transaction_slow_log_ms", 1)
+    caplog.set_level(logging.WARNING, logger="mimir.extensions")
+
+    with write_transaction("test:slow_commit"), SessionLocal() as session:
+        session.execute(text("SELECT 1"))
+        # Sleep beyond the threshold so the elapsed measurement is
+        # comfortably over 1ms regardless of CI jitter.
+        _time.sleep(0.05)
+        session.commit()
+
+    slow = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "write_transaction slow" in r.getMessage()
+    ]
+    assert slow, (
+        "expected a slow-write WARNING; "
+        f"got: {[r.getMessage() for r in caplog.records]}"
+    )
+    msg = slow[0].getMessage()
+    assert "label=test:slow_commit" in msg
+    assert "held=" in msg
+
+
+def test_write_transaction_slow_log_fires_on_rollback(caplog, monkeypatch):
+    """An exception that propagates out of the `write_transaction()`
+    block fires ROLLBACK at the SessionLocal exit; the ROLLBACK
+    listener emits the same slow-write WARNING tagged as a
+    `slow rollback` so the operator sees lock-hold duration even
+    when the transaction failed."""
+    import logging
+    import time as _time
+
+    monkeypatch.setattr(settings, "write_transaction_slow_log_ms", 1)
+    caplog.set_level(logging.WARNING, logger="mimir.extensions")
+
+    class _Boom(RuntimeError):
+        pass
+
+    try:
+        with write_transaction("test:slow_rollback"), SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+            _time.sleep(0.05)
+            raise _Boom()
+    except _Boom:
+        pass
+
+    slow = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "write_transaction slow rollback" in r.getMessage()
+    ]
+    assert slow, (
+        "expected a slow-rollback WARNING; "
+        f"got: {[r.getMessage() for r in caplog.records]}"
+    )
+    assert "label=test:slow_rollback" in slow[0].getMessage()
+
+
+def test_write_transaction_below_threshold_is_silent(caplog, monkeypatch):
+    """When the block completes faster than the threshold, no
+    WARNING is emitted. Healthy commits land in single-digit ms,
+    so the default 1000ms threshold is "this is interesting, not
+    noise"."""
+    import logging
+
+    monkeypatch.setattr(settings, "write_transaction_slow_log_ms", 60_000)
+    caplog.set_level(logging.WARNING, logger="mimir.extensions")
+
+    with write_transaction("test:fast"), SessionLocal() as session:
+        session.execute(text("SELECT 1"))
+        session.commit()
+
+    slow = [
+        r for r in caplog.records
+        if "write_transaction slow" in r.getMessage()
+    ]
+    assert not slow, "fast commits must not log a slow-write WARNING"
+
+
+def test_write_transaction_zero_threshold_disables_log(caplog, monkeypatch):
+    """`write_transaction_slow_log_ms = 0` disables the slow-write
+    log entirely. Operators who don't want the line can opt out."""
+    import logging
+    import time as _time
+
+    monkeypatch.setattr(settings, "write_transaction_slow_log_ms", 0)
+    caplog.set_level(logging.WARNING, logger="mimir.extensions")
+
+    with write_transaction("test:disabled"), SessionLocal() as session:
+        session.execute(text("SELECT 1"))
+        _time.sleep(0.02)
+        session.commit()
+
+    slow = [
+        r for r in caplog.records
+        if "write_transaction slow" in r.getMessage()
+    ]
+    assert not slow, "threshold=0 must disable slow-write log"
+
+
+def test_write_transaction_unlabelled_default(caplog, monkeypatch):
+    """`write_transaction()` with no label still logs when slow,
+    but with the sentinel `(unlabelled)` so the line is grep-able
+    and obviously incomplete (callers should always pass a
+    label)."""
+    import logging
+    import time as _time
+
+    monkeypatch.setattr(settings, "write_transaction_slow_log_ms", 1)
+    caplog.set_level(logging.WARNING, logger="mimir.extensions")
+
+    with write_transaction(), SessionLocal() as session:
+        session.execute(text("SELECT 1"))
+        _time.sleep(0.05)
+        session.commit()
+
+    slow = [
+        r for r in caplog.records
+        if "write_transaction slow" in r.getMessage()
+    ]
+    assert slow, "expected a slow-write WARNING"
+    assert "label=(unlabelled)" in slow[0].getMessage()

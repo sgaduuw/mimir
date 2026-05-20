@@ -113,7 +113,11 @@ def backfill_canonicals(
     # SQLITE_BUSY_SNAPSHOT when gunicorn cache.set commits a write
     # between the backfill's read of the next article batch and its
     # write of canonical_inbox_id / inbox_address_observations.
-    with write_transaction(), SessionLocal() as session:
+    label = (
+        f"backfill_canonicals:{inbox_filter}"
+        if inbox_filter else "backfill_canonicals"
+    )
+    with write_transaction(label), SessionLocal() as session:
         refresh_address_map(session)
 
         # Build the article query. Newest-first so the most-indexed

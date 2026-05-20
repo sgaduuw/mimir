@@ -175,6 +175,18 @@ class Settings(BaseSettings):
     # BROKER_SOCKET_PATH.
     broker_socket_path: Path | None = None
 
+    # Slow-write-transaction WARNING threshold (milliseconds). When
+    # a block wrapped in `mimir.extensions.write_transaction(label=...)`
+    # holds the SQLite writer lock longer than this, the COMMIT
+    # (or ROLLBACK) listener logs a WARNING with the label and
+    # elapsed time. Operator diagnostic for cross-process writer-lock
+    # contention: a slow `write_transaction` on the scheduler side
+    # correlates 1:1 with a slow broker dispatch on the cache side.
+    # Set to 0 (or negative) to disable. Default 1000 ms: healthy
+    # commits land in single-digit ms, so 1 s is "this is interesting,
+    # not noise". Override via WRITE_TRANSACTION_SLOW_LOG_MS.
+    write_transaction_slow_log_ms: int = 1000
+
     # Slow-RPC warning threshold for the write-broker (milliseconds).
     # When the broker takes longer than this to handle a single RPC,
     # it logs a WARNING with the leading bytes of the request and
