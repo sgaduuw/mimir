@@ -376,3 +376,27 @@ def test_write_transaction_unlabelled_default(caplog, monkeypatch):
     ]
     assert slow, "expected a slow-write WARNING"
     assert "label=(unlabelled)" in slow[0].getMessage()
+
+
+def test_analyze_limit_pragma_set_on_every_connection():
+    """`Settings.analyze_limit` is applied via PRAGMA on every
+    connection so ANALYZE's per-index row sample stays bounded
+    uniformly across `mimir analyze`, auto-ANALYZE-after-ingest,
+    and ad-hoc sessions. Without this, the dominant production
+    lock-holder (a 25-second ANALYZE on the 11M-row corpus) goes
+    back to its full-scan default."""
+    assert _pragma("analysis_limit") == settings.analyze_limit
+
+
+def test_analyze_limit_default_is_400():
+    """SQLite's recommended value for typical workloads. Pinning
+    the default so an accidental config edit (someone setting
+    `analyze_limit: int = 0` 'because that matches SQLite's
+    default') surfaces in CI rather than silently restoring the
+    25-second lock-hold in production."""
+    # Note: this asserts the **default** before any env override.
+    # If env sets ANALYZE_LIMIT, that wins at process start;
+    # `settings.analyze_limit` reflects the final value, which
+    # may differ. So we read the model field's default directly.
+    from mimir.config import Settings
+    assert Settings.model_fields["analyze_limit"].default == 400
