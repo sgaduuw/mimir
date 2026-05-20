@@ -126,20 +126,38 @@ run "bootstrap-inboxes" "" mimir bootstrap-inboxes
 # seconds), idempotent on subsequent restarts.
 run "analyze (post-migrate)" /data/.last_analyze mimir analyze
 
+# Pre-flight warm so the web tier doesn't start serving until the
+# dashboard cache is hot. Without this, every container recreate
+# served the first wave of `/`, `/<inbox>/` requests cold: each
+# render miss writes back through the broker, and under broker mode
+# (1.36.0+) any concurrent ingest commit makes that cache.set wait
+# hundreds of ms. Multiplied by the ~8 cached surfaces a dashboard
+# composes, the first-wave renders stacked seconds of wait time and
+# tripped the gateway timeout. Pre-flight warm trades 30-60 s of
+# post-migrate boot latency for zero cold-cache requests served
+# after `.migrated` lands. Steady-state `warm-cache` ticks in the
+# loop below keep the cache fresh; this initial pass closes the
+# cold-start gap.
+# shellcheck disable=SC2086  # SCHEDULER_VERBOSE is a flag string, intentionally unquoted to splat empty -> nothing.
+run "warm-cache (initial)" /data/.last_warm mimir warm-cache $SCHEDULER_VERBOSE
+
 # Healthcheck sentinel: the web container's depends_on uses
 # condition: service_healthy and a `test -f /data/.migrated` test,
 # so gunicorn waits for this file before it starts serving. Touched
-# only after migrations + inbox bootstrap + post-migrate ANALYZE,
-# the three things the web tier needs to be in place before serving.
+# only after migrations + inbox bootstrap + post-migrate ANALYZE +
+# pre-flight warm-cache, the four things the web tier needs to be
+# in place before serving.
 touch /data/.migrated
 
 # Initial update so a fresh deployment has data to render before the
-# first UPDATE_EVERY tick.
-# shellcheck disable=SC2086  # SCHEDULER_VERBOSE is a flag string, intentionally unquoted to splat empty -> nothing.
-run "update (initial)" /data/.last_update mimir update $SCHEDULER_VERBOSE
-
+# first UPDATE_EVERY tick. Runs after `.migrated` so the web tier is
+# already serving; an update that takes minutes on a backlogged
+# upstream doesn't gate web startup behind it. The per-inbox post-
+# ingest warm (in `mimir.ingest.orchestrate._warm_after_ingest`)
+# refreshes the cache for inboxes that received new messages during
+# this initial tick.
 # shellcheck disable=SC2086
-run "warm-cache (initial)" /data/.last_warm mimir warm-cache $SCHEDULER_VERBOSE
+run "update (initial)" /data/.last_update mimir update $SCHEDULER_VERBOSE
 
 # Persisted-mtime initialisation: read each sentinel's last-touch
 # time off /data. Missing file → 0 → the next tick fires immediately
