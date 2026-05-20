@@ -123,6 +123,7 @@ def backfill_article_trailers(
     walk_articles(
         result, _process_one,
         limit=limit, reprocess=reprocess, progress=progress,
+        label="backfill_article_trailers",
     )
     return result
 
