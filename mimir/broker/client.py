@@ -35,6 +35,7 @@ import threading
 from pathlib import Path
 
 from mimir.broker.protocol import (
+    BootstrapInboxesRequest,
     CacheDeleteForInboxRequest,
     CacheDeleteRequest,
     CachePurgeExpiredRequest,
@@ -47,8 +48,11 @@ from mimir.config import settings
 logger = logging.getLogger(__name__)
 
 
-# Per-RPC timeout. Broker is on the same host on a UNIX socket;
-# 5s is generous against any single op the broker handles.
+# Default per-RPC timeout. Broker is on the same host on a UNIX
+# socket; 5s is generous against any single cache op the broker
+# handles. Long ops override this per-call via the `timeout=`
+# argument on the matching client method (e.g.
+# `bootstrap_inboxes(timeout=300)` for a 5-minute ceiling).
 RPC_TIMEOUT_SEC = 5.0
 
 
@@ -135,7 +139,12 @@ class BrokerClient:
             raise BrokerUnavailable("broker closed the connection")
         return Reply.model_validate_json(line)
 
-    def _rpc(self, request_json: str) -> Reply:
+    def _rpc(
+        self,
+        request_json: str,
+        *,
+        timeout: float | None = None,
+    ) -> Reply:
         """Send the request, read the reply. Retries once across a
         reconnect on socket errors; raises `BrokerUnavailable` on
         the second failure.
@@ -147,6 +156,13 @@ class BrokerClient:
         just keeps framing intact and avoids connect storms when
         each thread races to reopen the socket after a framing
         error.
+
+        `timeout`: when not None, set the socket's per-RPC timeout
+        to this value (seconds) for the duration of the call, then
+        restore the default `RPC_TIMEOUT_SEC` afterwards. Long ops
+        (Phase 2.0+: `bootstrap_inboxes`, ingest, backfills, ...)
+        pass a much larger value (minutes) since their reply only
+        arrives once the work completes. Cache ops use the default.
         """
         with self._rpc_lock:
             last_exc: Exception | None = None
@@ -157,13 +173,22 @@ class BrokerClient:
                     except BrokerUnavailable as exc:
                         last_exc = exc
                         continue
+                if timeout is not None and self._sock is not None:
+                    # Override the default 5s for this RPC. Restored
+                    # in the `finally` below so subsequent RPCs on
+                    # the same socket go back to the default.
+                    self._sock.settimeout(timeout)
                 try:
-                    return self._send_one(request_json)
-                except (OSError, BrokerUnavailable) as exc:
-                    last_exc = exc
-                    self._close()
-                    # Fall through to retry on a fresh connection.
-                    continue
+                    try:
+                        return self._send_one(request_json)
+                    except (OSError, BrokerUnavailable) as exc:
+                        last_exc = exc
+                        self._close()
+                        # Fall through to retry on a fresh connection.
+                        continue
+                finally:
+                    if timeout is not None and self._sock is not None:
+                        self._sock.settimeout(RPC_TIMEOUT_SEC)
             raise BrokerUnavailable(
                 f"broker rpc failed after retry: {last_exc}"
             )
@@ -201,6 +226,22 @@ class BrokerClient:
         req = PingRequest()
         reply = self._rpc(req.model_dump_json())
         return bool(reply.ok)
+
+    # Long ops ─────────────────────────────────────────────────────────
+
+    def bootstrap_inboxes(self, *, timeout: float = 60.0) -> int:
+        """Tell the broker to reconcile env-configured inboxes into
+        the DB. Returns the number of inboxes the env declares (so
+        the CLI can echo the same line whether running broker-mode
+        or direct). Phase 2.0 long op; smallest op in the long
+        family and the migration canary for the per-op-timeout
+        machinery. Default `timeout=60s` is generous (the operation
+        is one upsert per inbox)."""
+        req = BootstrapInboxesRequest()
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"bootstrap_inboxes: {reply.error}")
+        return int((reply.result or {}).get("inboxes", 0))
 
     def close(self) -> None:
         """Tests and CLI tools call this to release the socket; the
