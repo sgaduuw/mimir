@@ -11,6 +11,34 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- **Write-broker Phase 2.0 scaffolding**: the broker now serves
+  two queues with two dedicated worker threads. Cache ops
+  (`cache_set` / `cache_delete` / `cache_delete_for_inbox` /
+  `cache_purge_expired` / `ping`) keep flowing through the cache
+  worker; new **long ops** (starting with `bootstrap_inboxes`)
+  flow through the long worker. The two workers contend for the
+  SQLite writer lock at the SQLite level, so cache writes only
+  wait for the long worker's *current commit batch*, not the
+  whole long op. Cache-op latency under load gains a fast lane.
+- **Per-op timeout override on `BrokerClient`**: long ops can
+  legitimately take minutes (Phase 2.1 ingest, future backfills);
+  the per-RPC client API now accepts a `timeout=` kwarg that
+  overrides the default 5s socket timeout for the duration of
+  that one RPC and restores the default afterwards. Plan-pinned
+  in `test_per_op_timeout_restored_after_rpc`.
+- **`bootstrap_inboxes` migrated to long-op RPC**: when
+  `BROKER_SOCKET_PATH` is set, `mimir bootstrap-inboxes` (the
+  scheduler-tasks startup step) sends an RPC to the broker
+  instead of writing the DB directly. Broker handler delegates to
+  the same `mimir.inboxes.bootstrap_inboxes()` function. CLI
+  echoes `... reconciled (via broker)` in broker mode to make the
+  path visible. Direct path is preserved as the fallback for
+  unconfigured deploys. This is the canary migration for the long-
+  op family; Phase 2.1 migrates `ingest_epoch`, Phase 2.2 the
+  backfills, etc., per the broker plan in MEMORY.md.
+
 ## [1.34.0], 2026-05-20
 
 ### Added

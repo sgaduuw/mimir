@@ -10,8 +10,18 @@ Cache value encoding stays in `mimir.cache` (the `register()`-driven
 type registry). The `value_json` field on `CacheSetRequest` carries
 the already-encoded JSON string; the broker stores it verbatim and
 the encoding side imports never reach the broker process.
+
+Op kinds: **cache** ops (sub-ms commits; `cache_set`, `cache_delete`,
+`cache_delete_for_inbox`, `cache_purge_expired`, `ping`) route to
+the broker's cache worker. **Long** ops (commit batches that run
+seconds to minutes; `bootstrap_inboxes` and the Phase 2.1+ additions
+to come: `ingest_epoch`, `backfill_*`, `update_mainline`, `analyze`,
+`vacuum`) route to the broker's long worker. The two workers compete
+for the SQLite writer lock at the SQLite level, so cache writes only
+wait for the long worker's current commit batch, not the whole long
+op. See `handlers.LONG_OPS` for the routing set.
 """
-from typing import Literal, Union
+from typing import Any, Literal, Union
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -52,6 +62,15 @@ class PingRequest(BaseModel):
     op: Literal["ping"] = "ping"
 
 
+class BootstrapInboxesRequest(BaseModel):
+    """Long op: reconcile `Settings.inboxes` env config into the
+    `inboxes` table. Idempotent via `ON CONFLICT (name) DO NOTHING`.
+    Smallest of the long ops and the migration canary for Phase 2.0
+    (proves the long-worker + per-op-timeout path end-to-end before
+    Phase 2.1 migrates the meatier ingest ops)."""
+    op: Literal["bootstrap_inboxes"] = "bootstrap_inboxes"
+
+
 # Tagged union over all valid request ops. Discriminated on `op` so
 # pydantic dispatches to the right model on parse; an unknown `op`
 # raises `ValidationError` at the broker boundary, which the
@@ -62,6 +81,7 @@ Request = Union[
     CacheDeleteForInboxRequest,
     CachePurgeExpiredRequest,
     PingRequest,
+    BootstrapInboxesRequest,
 ]
 
 
@@ -74,3 +94,8 @@ class Reply(BaseModel):
     # `cache_purge_expired` returns `rows_deleted`. Keeps the reply
     # shape uniform across ops; absent for ops with no return value.
     rows_deleted: int | None = None
+    # Free-form result payload for long ops: e.g.
+    # `{"inboxes": 5}` from `bootstrap_inboxes`, or (in Phase 2.1)
+    # `{"new": N, "linked": N, ...}` from `ingest_epoch`. Stays
+    # `None` for ops that don't return a value.
+    result: dict[str, Any] | None = None
