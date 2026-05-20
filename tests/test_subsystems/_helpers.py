@@ -36,7 +36,16 @@ def _add_subsystem(
 
 def _add_patch_article(session, msgid, paths, inbox_name="alpha"):
     """Insert a minimal Article + linked ArticleList + ArticleFile
-    rows. Returns the Article id."""
+    rows. Returns the Article id.
+
+    The article is dated "yesterday-ish" rather than a fixed
+    2024-06-01 so it stays within any default date-window filter
+    the helpers under test apply (the 180-day bound on
+    `recent_patches_touching` added in 1.36.3, the 7/30-day triage
+    windows, etc.). Tests that exercise time-ordering set their own
+    explicit dates; the default just needs to be "recent enough not
+    to fall off the back of any reasonable window."
+    """
     inbox = session.execute(
         select(Inbox).where(Inbox.name == inbox_name)
     ).scalar_one()
@@ -44,7 +53,7 @@ def _add_patch_article(session, msgid, paths, inbox_name="alpha"):
         message_id=msgid,
         subject=f"patch {msgid}",
         author="a@example",
-        date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+        date=datetime.now(timezone.utc) - timedelta(days=1),
         thread_parent=None,
         subject_normalized=f"patch {msgid}",
         canonical_inbox_id=inbox.id,

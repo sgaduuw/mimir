@@ -1057,13 +1057,17 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
         tmp_path, "alpha", "with-reply@example.com",
         subject="[PATCH] foo: trigger reply",
     )
-    # Anchor reply N days in the past; days_since_last_reply caps
-    # at >=0 so this is robust to clock skew.
+    # Re-anchor the article date 10 days ago so the reply we insert
+    # 3 days ago is plausibly *after* it. `_ingest_one_article`
+    # defaults to "yesterday" (1.36.3), which was after the reply
+    # date and made the activity row skip the reply.
     reply_at = datetime.now(timezone.utc) - timedelta(days=3)
     with SessionLocal() as s:
         ix = s.execute(
             select(Inbox).where(Inbox.name == "alpha")
         ).scalar_one()
+        art = s.get(Article, art_id)
+        art.date = datetime.now(timezone.utc) - timedelta(days=10)
         reply = Article(
             message_id="reply-3d-old@example.com",
             subject="Re: [PATCH] foo: trigger reply",
