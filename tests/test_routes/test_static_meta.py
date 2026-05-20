@@ -56,8 +56,9 @@ def test_security_txt_optional_fields_emitted_when_set(client, monkeypatch):
 def test_og_tags_on_index_match_expected_values(client):
     html = client.get("/").data.decode()
     expected_desc = (
-        "Indexed mailing-list archives, served from local "
-        "public-inbox v2 mirrors."
+        "Linux kernel mailing list archives. ~200 inboxes indexed with "
+        "cross-list deduplication, subsystem dashboards, patch-series "
+        "timelines, and reviewer activity surfaces."
     )
     assert _meta_value(html, "og:title") == "indexed mailing list archives | mimir"
     assert _meta_value(html, "og:type") == "website"

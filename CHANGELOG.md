@@ -11,6 +11,15 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Changed
+
+- **Landing page copy refresh**: the hero tagline + meta description
+  + JSON-LD `description` for the meta-index `/` now name the
+  distinctive surfaces concretely (cross-list deduplication,
+  subsystem dashboards, patch-series timelines, reviewer activity)
+  rather than describing the storage layer. Same SEO + link-card
+  budget; better hook for first-time visitors.
+
 ## [1.37.0], 2026-05-21
 
 ### Added
