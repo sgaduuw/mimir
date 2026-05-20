@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from mimir.broker.protocol import (
+    BootstrapInboxesRequest,
     CacheDeleteForInboxRequest,
     CacheDeleteRequest,
     CachePurgeExpiredRequest,
@@ -93,3 +94,29 @@ def test_op_tag_is_load_bearing():
     })
     with pytest.raises(ValidationError):
         CacheDeleteRequest.model_validate_json(set_payload)
+
+
+def test_bootstrap_inboxes_round_trip():
+    """Phase 2.0 long op. No args; just the op tag."""
+    req = BootstrapInboxesRequest()
+    parsed = BootstrapInboxesRequest.model_validate_json(req.model_dump_json())
+    assert parsed.op == "bootstrap_inboxes"
+
+
+def test_reply_result_field_round_trips():
+    """Long ops use the `result` dict for op-specific payloads
+    (`bootstrap_inboxes` → `{"inboxes": N}`, Phase 2.1 ingest →
+    `{"new": N, "linked": N, ...}`). Round-trip a few shapes to
+    catch a future pydantic config change that'd accidentally
+    drop unknown keys."""
+    r = Reply(ok=True, result={"inboxes": 7})
+    parsed = Reply.model_validate_json(r.model_dump_json())
+    assert parsed.result == {"inboxes": 7}
+
+    r2 = Reply(
+        ok=True,
+        result={"new": 12, "linked": 3, "dup_batch": 1, "failed": 0},
+    )
+    parsed2 = Reply.model_validate_json(r2.model_dump_json())
+    assert parsed2.result["new"] == 12
+    assert parsed2.result["failed"] == 0
