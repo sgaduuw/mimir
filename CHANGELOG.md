@@ -11,6 +11,73 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- **Write-broker Phase 2.2**: the four backfill commands route
+  through the broker as a chain of chunked RPCs when
+  `BROKER_SOCKET_PATH` is set, with **cooperative scheduling**
+  baked in. Each broker handler runs the underlying walker for at
+  most `BROKER_BACKFILL_CHUNK_SECONDS` seconds (default 10),
+  commits, and returns `partial=True, continuation=<last id>`;
+  the CLI loops with a follow-up RPC until completion, summing
+  per-chunk counters. Between two chunks the broker's long-op
+  worker is free, queued cache writes and other long ops (a
+  scheduler `update` tick) get serviced before the next chunk
+  arrives. Multi-hour `backfill_canonicals --reprocess` runs no
+  longer monopolise the long worker.
+
+  Affected commands:
+  `mimir backfill-article-files`,
+  `mimir backfill-article-trailers`,
+  `mimir backfill-patch-series`,
+  `mimir admin canonicals backfill`.
+
+  New protocol message types: `BackfillArticleFilesRequest`,
+  `BackfillArticleTrailersRequest`, `BackfillPatchSeriesRequest`,
+  `BackfillCanonicalsRequest` (each carrying `limit`,
+  `reprocess`, `continuation`; canonicals also carries
+  `inbox_filter`). `Reply.result` carries
+  `{counters, partial, continuation}` for these ops. New matching
+  methods on `BrokerClient` with default per-RPC timeout 3600 s.
+
+  Direct (non-broker) path preserved as the fallback for deploys
+  not yet in broker mode. When broker mode is on the CLI's `-v`
+  flag becomes a one-line stderr hint pointing at the broker log
+  (`podman logs -f mimir-broker`) since the walker is no longer
+  running in the CLI's own process.
+
+- **`BROKER_BACKFILL_CHUNK_SECONDS`** (default 10): per-chunk time
+  budget for the Phase 2.2 backfill RPC handlers. Shorter dial
+  yields finer interleaving with queued cache writes / ingest
+  ticks at the cost of more RPC overhead; longer dial cuts
+  overhead at the cost of longer pauses for queued cache writes.
+
+### Changed
+
+- **`backfill_canonicals` ordering**: switched from
+  `Article.date DESC NULLS LAST` to `Article.id DESC` so the
+  cooperative-scheduling continuation cursor is a single
+  integer. Production ingest order is date-monotonic so the
+  practical effect is negligible (id-desc ≈ date-desc); the
+  former `nullslast()` bucketed NULL-date rows at the very end
+  whereas they now fall in their natural id position. NULL-date
+  rows are rare and carry no list-address signal anyway.
+
+- **Walker API**: `mimir._backfill.walk_articles` gains
+  `max_seconds` + `start_cursor` parameters and now returns
+  `(partial, continuation)`. Direct callers that ignore the
+  return value see the historical behaviour unchanged.
+
+- **`BackfillResult` shapes**: each of the four backfill result
+  classes (`patches.BackfillResult`, `trailers.BackfillResult`,
+  `patch_series.BackfillResult`,
+  `ingest.backfill.BackfillResult`) gains `partial: bool` and
+  `continuation: int | None` fields plus a `merge(other)`
+  helper that sums counter fields while carrying `other`'s
+  partial/continuation forward. Powers the CLI's per-chunk
+  aggregation; direct callers see `partial=False,
+  continuation=None`.
+
 ## [1.36.4], 2026-05-20
 
 ### Fixed

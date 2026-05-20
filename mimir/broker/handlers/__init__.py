@@ -40,10 +40,18 @@ from mimir.broker.handlers.cache import (
     handle_ping,
 )
 from mimir.broker.handlers.longops import (
+    handle_backfill_article_files,
+    handle_backfill_article_trailers,
+    handle_backfill_canonicals,
+    handle_backfill_patch_series,
     handle_bootstrap_inboxes,
     handle_ingest_inbox,
 )
 from mimir.broker.protocol import (
+    BackfillArticleFilesRequest,
+    BackfillArticleTrailersRequest,
+    BackfillCanonicalsRequest,
+    BackfillPatchSeriesRequest,
     BootstrapInboxesRequest,
     CacheDeleteForInboxRequest,
     CacheDeleteRequest,
@@ -64,6 +72,10 @@ logger = logging.getLogger(__name__)
 LONG_OPS: frozenset[str] = frozenset({
     "bootstrap_inboxes",
     "ingest_inbox",
+    "backfill_article_files",
+    "backfill_article_trailers",
+    "backfill_patch_series",
+    "backfill_canonicals",
 })
 
 
@@ -82,6 +94,18 @@ _DISPATCH: dict[str, tuple[type, Callable]] = {
     "ping": (PingRequest, handle_ping),
     "bootstrap_inboxes": (BootstrapInboxesRequest, handle_bootstrap_inboxes),
     "ingest_inbox": (IngestInboxRequest, handle_ingest_inbox),
+    "backfill_article_files": (
+        BackfillArticleFilesRequest, handle_backfill_article_files,
+    ),
+    "backfill_article_trailers": (
+        BackfillArticleTrailersRequest, handle_backfill_article_trailers,
+    ),
+    "backfill_patch_series": (
+        BackfillPatchSeriesRequest, handle_backfill_patch_series,
+    ),
+    "backfill_canonicals": (
+        BackfillCanonicalsRequest, handle_backfill_canonicals,
+    ),
 }
 
 

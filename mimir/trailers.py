@@ -97,18 +97,41 @@ class BackfillResult(BaseModel):
     """Outcome counters for `backfill_article_trailers`. Each examined
     article lands in exactly one bucket. `skipped` covers articles
     that already have rows (idempotent re-runs) plus mirror-
-    unreachable cases."""
+    unreachable cases.
+
+    `partial` + `continuation` carry the cooperative-scheduling
+    handoff between broker chunks (Phase 2.2). Direct (non-broker)
+    callers always see `partial=False, continuation=None`.
+    """
     examined: int = 0
     indexed: int = 0      # body parsed and one or more trailer rows landed
     no_trailers: int = 0  # body parsed but no indexed-role trailers
     skipped: int = 0      # already had rows, or unreadable
     failed: int = 0       # parse error reading the blob
+    partial: bool = False
+    continuation: int | None = None
+
+    def merge(self, other: "BackfillResult") -> "BackfillResult":
+        """Sum counters with `other`, carrying `other`'s
+        `partial`/`continuation` forward."""
+        return BackfillResult(
+            examined=self.examined + other.examined,
+            indexed=self.indexed + other.indexed,
+            no_trailers=self.no_trailers + other.no_trailers,
+            skipped=self.skipped + other.skipped,
+            failed=self.failed + other.failed,
+            partial=other.partial,
+            continuation=other.continuation,
+        )
 
 
 def backfill_article_trailers(
     limit: int | None = None,
     reprocess: bool = False,
     progress: Callable[["BackfillResult"], None] | None = None,
+    *,
+    max_seconds: float | None = None,
+    start_cursor: int | None = None,
 ) -> BackfillResult:
     """Walk articles, extract trailers, insert ArticleTrailer rows.
     Idempotent: articles with existing rows are skipped unless
@@ -118,13 +141,20 @@ def backfill_article_trailers(
     Newest-first ordering so a `--limit`-bounded session covers the
     most-recently-active articles first; the per-author / per-
     subsystem reviewer surfaces (slices 2+3) gain visible coverage
-    fastest from the recent end."""
+    fastest from the recent end.
+
+    `max_seconds` + `start_cursor` enable broker-side cooperative
+    scheduling (Phase 2.2); see `mimir.patches.backfill_article_files`
+    for the chunk/resume contract. Direct callers leave both None."""
     result = BackfillResult()
-    walk_articles(
+    partial, continuation = walk_articles(
         result, _process_one,
         limit=limit, reprocess=reprocess, progress=progress,
         label="backfill_article_trailers",
+        max_seconds=max_seconds, start_cursor=start_cursor,
     )
+    result.partial = partial
+    result.continuation = continuation
     return result
 
 

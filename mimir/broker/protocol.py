@@ -88,6 +88,54 @@ class BootstrapInboxesRequest(BaseModel):
     op: Literal["bootstrap_inboxes"] = "bootstrap_inboxes"
 
 
+# Phase 2.2 long ops: the four backfills. Each shares the same RPC
+# shape (limit + reprocess + continuation) because each one's CLI
+# loop wants the same thing: feed the broker a chunk budget, get
+# back per-chunk counters + a continuation pointer, repeat until
+# done. `continuation` carries the last `Article.id` the prior chunk
+# processed; the handler resumes at `Article.id < continuation` on
+# the next call. `None` means "start at the newest article."
+#
+# A backfill RPC handler runs for at most `Settings.broker_backfill_
+# chunk_seconds` (default 10 s) before returning `partial=True,
+# continuation=<last id>`. Between chunks the broker's long-op
+# worker is free, queued cache writes and other long ops get to
+# run, then the CLI fires the next chunk. Multi-hour backfills no
+# longer monopolise the long worker.
+
+class BackfillArticleFilesRequest(BaseModel):
+    op: Literal["backfill_article_files"] = "backfill_article_files"
+    limit: int | None = Field(default=None, ge=0)
+    reprocess: bool = False
+    continuation: int | None = Field(default=None, ge=0)
+
+
+class BackfillArticleTrailersRequest(BaseModel):
+    op: Literal["backfill_article_trailers"] = "backfill_article_trailers"
+    limit: int | None = Field(default=None, ge=0)
+    reprocess: bool = False
+    continuation: int | None = Field(default=None, ge=0)
+
+
+class BackfillPatchSeriesRequest(BaseModel):
+    op: Literal["backfill_patch_series"] = "backfill_patch_series"
+    limit: int | None = Field(default=None, ge=0)
+    reprocess: bool = False
+    continuation: int | None = Field(default=None, ge=0)
+
+
+class BackfillCanonicalsRequest(BaseModel):
+    """Phase 2.2 long op: chunked `backfill_canonicals` over the
+    broker. Same shape as the patch-metadata backfills plus
+    `inbox_filter` for the `admin canonicals backfill --inbox`
+    surface."""
+    op: Literal["backfill_canonicals"] = "backfill_canonicals"
+    inbox_filter: str | None = Field(default=None, min_length=1, max_length=64)
+    limit: int | None = Field(default=None, ge=0)
+    reprocess: bool = False
+    continuation: int | None = Field(default=None, ge=0)
+
+
 # Tagged union over all valid request ops. Discriminated on `op` so
 # pydantic dispatches to the right model on parse; an unknown `op`
 # raises `ValidationError` at the broker boundary, which the
@@ -100,6 +148,10 @@ Request = Union[
     PingRequest,
     BootstrapInboxesRequest,
     IngestInboxRequest,
+    BackfillArticleFilesRequest,
+    BackfillArticleTrailersRequest,
+    BackfillPatchSeriesRequest,
+    BackfillCanonicalsRequest,
 ]
 
 
@@ -112,8 +164,11 @@ class Reply(BaseModel):
     # `cache_purge_expired` returns `rows_deleted`. Keeps the reply
     # shape uniform across ops; absent for ops with no return value.
     rows_deleted: int | None = None
-    # Free-form result payload for long ops: e.g.
-    # `{"inboxes": 5}` from `bootstrap_inboxes`, or (in Phase 2.1)
-    # `{"new": N, "linked": N, ...}` from `ingest_epoch`. Stays
-    # `None` for ops that don't return a value.
+    # Free-form result payload for long ops:
+    #   - `bootstrap_inboxes`: `{"inboxes": 5}`
+    #   - `ingest_inbox` (Phase 2.1): `{"results": [<IngestResult>, ...]}`
+    #   - `backfill_*` (Phase 2.2):
+    #       `{"counters": <BackfillResult>, "partial": bool,
+    #         "continuation": <int | None>}`
+    # Stays `None` for ops that don't return a value.
     result: dict[str, Any] | None = None
