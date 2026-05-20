@@ -11,6 +11,62 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.36.3], 2026-05-20
+
+### Fixed
+
+- **Message-view renders taking 12-300+ seconds, starving gunicorn
+  workers**: `recent_patches_touching` (the `msg_related` cache
+  compute behind the "Other recent patches touching ..." sidebar
+  on every message page) was structured as
+  `JOIN article_files ... WHERE path IN (...) GROUP BY article_id
+  ORDER BY date DESC LIMIT 5`. When a patch touched a popular
+  file (`Makefile`, `include/linux/kernel.h`, anything under
+  `arch/x86/`), `path IN (...)` matched millions of rows on the
+  7M-row `article_files` table, the GROUP BY + ORDER BY
+  materialised + sorted the whole set, and only then LIMITed.
+  Result: 5-minute single-message renders. Direct localhost curl
+  on `/lkml/2014/01/4189394` returned 200 at TTFB 304 s.
+
+  Compounding factor: gunicorn's default 30 s worker timeout
+  SIGKILL'd most of those requests before they could write the
+  result back to cache. Production cache held **13** `msg_related`
+  rows total against a corpus of millions of message views;
+  steady-state cache-hit rate was effectively 0, so every bot
+  request to a message page paid the full cold-compute cost. The
+  bots retried, workers were continuously killed, and the
+  cumulative effect made every other request (including the
+  dashboards) wait in gunicorn's request queue. Cloudflare 524 by
+  the time anything got served.
+
+  Two-layer fix:
+
+  1. **`recent_patches_touching` rewritten** to the same date-
+     bound EXISTS pattern already used by
+     `mimir.subsystems_dashboard._path_filter.
+     _subsystem_path_filter_exists_sql`. Walks `ix_articles_date`
+     DESC over a `RECENT_PATCHES_MAX_AGE_DAYS=180` window, tests
+     `EXISTS (SELECT 1 FROM article_files af WHERE af.article_id
+     = a.id AND af.path IN (...))` per article via the
+     `(article_id, path)` PK on `article_files`, stops at LIMIT.
+     Cold miss drops from minutes to milliseconds for any
+     touched-path mix. Plan pinned in
+     `test_recent_patches_touching_uses_date_index_no_full_scan`.
+  2. **Gunicorn `--timeout` raised to 60 s** (env
+     `WORKER_TIMEOUT`, default 60). Margin for any single
+     genuinely-slow render (cold thread CTE, oversized
+     `msg_related` mix) without SIGKILL'ing the worker mid-write.
+     The query fix above brings typical renders well under a
+     second; this margin only matters for outliers.
+
+  `RECENT_PATCHES_MAX_AGE_DAYS` env-tunable (default 180), same
+  semantics + shape as `SUBSYSTEM_TRIAGE_MAX_AGE_DAYS`. A patch
+  touching a path with no activity in the last 180 days surfaces
+  no "related patches" sidebar; an empty sidebar is the
+  conservative answer when there's no recent neighbourhood to
+  display, and the bound is the load-bearing piece of the query
+  plan.
+
 ## [1.36.2], 2026-05-20
 
 ### Fixed
