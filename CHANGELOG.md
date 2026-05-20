@@ -11,6 +11,41 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.36.2], 2026-05-20
+
+### Fixed
+
+- **Front-page 524 timeouts after 1.36.1 deploy (cold-miss on
+  `most_active_subsystems_global`)**: on a 200+ inbox corpus
+  `warm-cache` takes ~10 min per cycle. The
+  `most_active_subsystems_global` Phase B target ran once at the
+  end of each cycle with a 5 min TTL, so the cache row was
+  expired for ~5 min of every cycle. Front-page renders landing
+  in that window fell through to a cross-inbox aggregation that
+  iterates every configured inbox's per-inbox subsystem
+  aggregation in turn (minutes of CPU on a 200-inbox corpus).
+  Multiple gunicorn workers would race the same cold compute,
+  Cloudflare's 100 s gateway timeout fired first, and operators
+  saw HTTP 524 / TTFB > 100 s even with thousands of valid cache
+  rows in the table.
+
+  Two-layer fix:
+
+  1. **`MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC` 300 → 3600** (5 min
+     → 1 h). Comfortably exceeds any plausible `warm-cache` cycle
+     time, so the row no longer expires faster than warm-cache
+     can refresh it. The cached "active subsystems over the last
+     7 days" is allowed to lag by up to 1 h, an acceptable
+     trade-off versus the request-path-recompute footgun.
+  2. **Request-path `compute_on_miss=False`** on
+     `most_active_subsystems_global` and
+     `most_active_subsystems_in_inbox`. The meta-index and per-
+     inbox dashboard routes now serve an empty "Active
+     subsystems" widget on cache miss instead of blocking the
+     render on a cold compute. `warm-cache` keeps
+     `compute_on_miss=True` so the cache stays populated; only
+     the request path opts out.
+
 ## [1.36.1], 2026-05-20
 
 ### Fixed
