@@ -21,7 +21,7 @@ def test_update_default_silent_on_no_op(seeded_db, monkeypatch):
 
     def _fake_sync(*_a, **_kw):
         return sync_mod.SyncResult(cloned=[], fetched=[], failed=[])
-    def _fake_ingest_all(inboxes, workers):
+    def _fake_ingest_all(inboxes, limit=None, workers=1):
         return {
             name: [IngestResult(
                 epoch="0.git", new=0, linked=0, dup_batch=3,
@@ -50,7 +50,7 @@ def test_update_verbose_prints_no_op_lines(seeded_db, monkeypatch):
     )
     monkeypatch.setattr(
         cli, "ingest_all",
-        lambda inboxes, workers: {
+        lambda inboxes, limit=None, workers=1: {
             name: [IngestResult(
                 epoch="0.git", new=0, linked=0, dup_batch=1,
                 dup_db=1, failed=0, last_commit_sha="bb" * 20,

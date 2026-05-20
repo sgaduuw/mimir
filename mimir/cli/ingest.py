@@ -35,6 +35,59 @@ from mimir.sync import sync_epochs
 logger = logging.getLogger(__name__)
 
 
+def _ingest_all_dispatch(
+    inboxes: dict,
+    limit: int | None,
+    workers: int,
+) -> dict:
+    """Per-inbox ingest with broker-mode dispatch.
+
+    When `settings.broker_socket_path` is set, each `ingest_inbox`
+    call goes through the broker RPC (Phase 2.1). The broker
+    handler runs the work in the broker process and writes through
+    its own writer connection; the scheduler-tasks container's
+    direct SQLite writer no longer competes with the broker's
+    cache.set commits.
+
+    Otherwise (broker mode off), falls back to the direct
+    `mimir.ingest.orchestrate.ingest_all` path, which is the
+    pre-Phase-2 behaviour.
+
+    Cross-inbox `--limit` semantics are preserved: limit decrements
+    as inboxes complete; the loop stops once exhausted. Result
+    shape matches `ingest_all`: `{inbox_name: [IngestResult, ...]}`.
+    """
+    if settings.broker_socket_path is None:
+        return ingest_all(inboxes=inboxes, limit=limit, workers=workers)
+
+    from mimir.broker.client import BrokerUnavailable, get_broker_client
+    client = get_broker_client()
+    out: dict = {}
+    remaining = limit
+    for name in inboxes:
+        if remaining is not None and remaining <= 0:
+            break
+        try:
+            results = client.ingest_inbox(
+                name, limit=remaining, workers=workers,
+            )
+        except BrokerUnavailable as exc:
+            # Hard fail: this is the scheduler-side ingest loop,
+            # silently falling back to direct writes would re-
+            # introduce the cross-process contention this phase
+            # was built to eliminate. Surface to the operator.
+            raise click.ClickException(
+                f"broker ingest_inbox({name}) failed: {exc}"
+            )
+        out[name] = results
+        if remaining is not None:
+            for r in results:
+                remaining -= (
+                    r.new + r.linked + r.dup_batch + r.dup_db + r.failed
+                )
+    return out
+
+
 @click.command("ingest")
 @click.option(
     "--inbox",
@@ -71,7 +124,9 @@ def ingest_command(
     """Walk every configured inbox's mirror and import new messages."""
     _configure_logging(verbose)
     inboxes = _select_inboxes(inbox_filter)
-    results_by_name = ingest_all(inboxes=inboxes, limit=limit, workers=workers)
+    results_by_name = _ingest_all_dispatch(
+        inboxes=inboxes, limit=limit, workers=workers,
+    )
     for name, results in results_by_name.items():
         for r in results:
             click.echo(
@@ -214,7 +269,9 @@ def update_command(
     if skip_ingest:
         return
 
-    results_by_name = ingest_all(inboxes=inboxes, workers=workers)
+    results_by_name = _ingest_all_dispatch(
+        inboxes=inboxes, limit=None, workers=workers,
+    )
     new_message_ids: list[str] = []
     for name, results in results_by_name.items():
         for r in results:

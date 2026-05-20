@@ -146,6 +146,22 @@ def _now() -> int:
     return int(datetime.now(timezone.utc).timestamp())
 
 
+def _should_dispatch_to_broker() -> bool:
+    """True iff this process should send cache writes to the broker
+    via RPC. False inside the broker process itself (we'd be
+    RPC'ing to ourselves: socket round-trip + queue + dispatch +
+    direct write on the cache worker, vs just one direct write
+    here on the long worker), and false when broker mode is off
+    entirely. Phase 2.1+ matters because `ingest_inbox` now runs
+    inside the broker (the long worker); its `_warm_after_ingest`
+    would otherwise fire three self-RPCs per per-inbox tick.
+    """
+    return (
+        settings.broker_socket_path is not None
+        and settings.mimir_role != "broker"
+    )
+
+
 def get(key: str) -> Any:
     nskey = _ns(key)
     now = _now()
@@ -203,7 +219,7 @@ def set(key: str, value: Any, ttl: int) -> None:
         return
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
-    if settings.broker_socket_path is not None:
+    if _should_dispatch_to_broker():
         # Import locally so the cache module doesn't depend on the
         # broker package at import time (avoids a cycle through
         # `mimir.broker.client` → `mimir.cache` for tests that stub
@@ -294,7 +310,7 @@ def purge_expired() -> int:
     """
     if settings.read_only_db:
         return 0
-    if settings.broker_socket_path is not None:
+    if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
         try:
             return get_broker_client().cache_purge_expired()
@@ -338,7 +354,7 @@ def delete(key: str) -> int:
     if settings.read_only_db:
         return 0
     nskey = _ns(key)
-    if settings.broker_socket_path is not None:
+    if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
         try:
             return get_broker_client().cache_delete(nskey)
@@ -393,7 +409,7 @@ def delete_for_inbox(inbox_name: str) -> int:
     """
     if settings.read_only_db:
         return 0
-    if settings.broker_socket_path is not None:
+    if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
         try:
             return get_broker_client().cache_delete_for_inbox(inbox_name)

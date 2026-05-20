@@ -62,6 +62,23 @@ class PingRequest(BaseModel):
     op: Literal["ping"] = "ping"
 
 
+class IngestInboxRequest(BaseModel):
+    """Phase 2.1 long op: run `ingest_inbox(name)` on the broker
+    process. Carries the inbox NAME (not an Inbox ORM object;
+    that doesn't pickle and isn't useful across the RPC anyway);
+    the broker handler looks the row up from the DB before
+    delegating to `mimir.ingest.orchestrate.ingest_inbox`.
+
+    `limit` and `workers` mirror the CLI options. `None` limit
+    means "run to completion" (per-inbox-no-cap, the steady-
+    state scheduler tick shape). `workers` defaults to
+    `DEFAULT_WORKERS` server-side."""
+    op: Literal["ingest_inbox"] = "ingest_inbox"
+    inbox_name: str = Field(min_length=1, max_length=64)
+    limit: int | None = Field(default=None, ge=0)
+    workers: int | None = Field(default=None, ge=1)
+
+
 class BootstrapInboxesRequest(BaseModel):
     """Long op: reconcile `Settings.inboxes` env config into the
     `inboxes` table. Idempotent via `ON CONFLICT (name) DO NOTHING`.
@@ -82,6 +99,7 @@ Request = Union[
     CachePurgeExpiredRequest,
     PingRequest,
     BootstrapInboxesRequest,
+    IngestInboxRequest,
 ]
 
 
