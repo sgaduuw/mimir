@@ -11,6 +11,8 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+## [1.35.1], 2026-05-20
+
 ### Fixed
 
 - `PRAGMA analysis_limit=400` is now set on every SQLite
