@@ -4,7 +4,7 @@ atom-feed / sitemap targets), `analyze`, and `vacuum`
 (post-vacuum size reporting)."""
 
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from click.testing import CliRunner
 from sqlalchemy import select
@@ -143,6 +143,13 @@ def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
     )
 
     # Seed: one subsystem with one matching article, in 'alpha'.
+    # Use a *relative* date so the article stays inside the
+    # `most_active_subsystems_in_inbox` 7-day window regardless of
+    # when the test runs. Hardcoded dates (the original shape) drift
+    # past the window as wall-clock advances; we hit that on
+    # 2026-05-20 when CI started failing the very test that had been
+    # green the day before.
+    recent = datetime.now(timezone.utc) - timedelta(days=2)
     with SessionLocal() as s:
         sub = Subsystem(name="BCACHEFS", status="Supported")
         s.add(sub)
@@ -150,7 +157,7 @@ def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
         s.add(SubsystemPath(subsystem_id=sub.id, glob="fs/bcachefs/", is_exclude=False))
         art = Article(
             message_id="warm-sub@x", subject="patch", author="A",
-            date=datetime(2026, 5, 14, tzinfo=timezone.utc),
+            date=recent,
             thread_parent=None, subject_normalized="patch",
         )
         s.add(art)
@@ -220,7 +227,10 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
     # Seed: one subsystem, one recent in-subsystem article with one
     # review trailer. The address is what active_reviewers_in_subsystem
     # will surface and what we expect warm-cache to look up via
-    # articles_reviewed_by.
+    # articles_reviewed_by. Relative date (see companion test above)
+    # so the article stays inside the 7-day "most active" window
+    # regardless of when the test runs.
+    recent = datetime.now(timezone.utc) - timedelta(days=2)
     with SessionLocal() as s:
         sub = Subsystem(name="BCACHEFS", status="Supported")
         s.add(sub)
@@ -235,7 +245,7 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
             message_id="reviewer-warm@x",
             subject="patch with reviewer",
             author="A",
-            date=datetime(2026, 5, 14, tzinfo=timezone.utc),
+            date=recent,
             thread_parent=None,
             subject_normalized="patch with reviewer",
         )
