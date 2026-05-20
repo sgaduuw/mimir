@@ -35,25 +35,25 @@ logger = logging.getLogger(__name__)
 
 
 def _handle_cache_set(req: CacheSetRequest) -> Reply:
-    with write_transaction():
+    with write_transaction("broker:cache_set"):
         cache._direct_set(req.key, req.value_json, req.ttl)
     return Reply(ok=True)
 
 
 def _handle_cache_delete(req: CacheDeleteRequest) -> Reply:
-    with write_transaction():
+    with write_transaction("broker:cache_delete"):
         cache._direct_delete(req.key)
     return Reply(ok=True)
 
 
 def _handle_cache_delete_for_inbox(req: CacheDeleteForInboxRequest) -> Reply:
-    with write_transaction():
+    with write_transaction("broker:cache_delete_for_inbox"):
         n = cache._direct_delete_for_inbox(req.name)
     return Reply(ok=True, rows_deleted=n)
 
 
 def _handle_cache_purge_expired(req: CachePurgeExpiredRequest) -> Reply:
-    with write_transaction():
+    with write_transaction("broker:cache_purge_expired"):
         n = cache._direct_purge_expired()
     return Reply(ok=True, rows_deleted=n)
 

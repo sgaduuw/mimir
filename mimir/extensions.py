@@ -1,10 +1,14 @@
 import contextvars
+import logging
+import time
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from mimir.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -53,6 +57,23 @@ _WRITE_TXN: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "mimir_write_txn", default=False,
 )
 
+# Operator-facing label for the current write_transaction()'s slow
+# log entry. Set inside write_transaction(label="..."); read at
+# commit/rollback time. `None` means "unlabelled"; the slow log
+# falls back to a sentinel string so the line is still grep-able.
+_WRITE_TXN_LABEL: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "mimir_write_txn_label", default=None,
+)
+
+# Perf-counter timestamp of the last BEGIN IMMEDIATE inside a
+# `write_transaction()` block on this task. Reset to None when the
+# commit / rollback event fires and the slow-log decision is made,
+# so a subsequent BEGIN inside the same `with write_transaction()`
+# block starts a fresh measurement.
+_WRITE_TXN_STARTED_AT: contextvars.ContextVar[float | None] = (
+    contextvars.ContextVar("mimir_write_txn_started_at", default=None)
+)
+
 
 @event.listens_for(engine, "begin")
 def _begin_immediate_when_marked(conn) -> None:
@@ -92,6 +113,57 @@ def _begin_immediate_when_marked(conn) -> None:
             f"PRAGMA busy_timeout={settings.sqlite_busy_timeout_ms_writes}"
         )
         conn.exec_driver_sql("BEGIN IMMEDIATE")
+        # Stamp the moment we acquired the writer lock so the
+        # commit / rollback listeners below can compute elapsed
+        # time and emit a WARNING when the transaction held the
+        # lock longer than `settings.write_transaction_slow_log_ms`.
+        # This is the operator's diagnostic signal for cross-
+        # process writer-lock contention: a slow `write_transaction`
+        # on the scheduler side correlates 1:1 with a slow broker
+        # dispatch on the cache side.
+        _WRITE_TXN_STARTED_AT.set(time.perf_counter())
+
+
+@event.listens_for(engine, "commit")
+def _log_slow_write_transaction_on_commit(conn) -> None:
+    """Log a WARNING when a `write_transaction()` block held the
+    writer lock longer than `Settings.write_transaction_slow_log_ms`.
+    Fires on COMMIT (the typical path); see `_log_slow_write_transaction_on_rollback`
+    for the failure path. No-op for transactions outside a
+    `write_transaction()` block."""
+    _emit_slow_write_log_if_needed(rolled_back=False)
+
+
+@event.listens_for(engine, "rollback")
+def _log_slow_write_transaction_on_rollback(conn) -> None:
+    """Companion to `_log_slow_write_transaction_on_commit`. Logs the
+    same way when a transaction terminates via ROLLBACK (e.g. on an
+    exception that propagates out of the `with` block) rather than
+    COMMIT, so an operator sees the writer-lock-hold duration
+    regardless of outcome."""
+    _emit_slow_write_log_if_needed(rolled_back=True)
+
+
+def _emit_slow_write_log_if_needed(*, rolled_back: bool) -> None:
+    started_at = _WRITE_TXN_STARTED_AT.get()
+    if started_at is None:
+        # No active write_transaction-marked BEGIN; nothing to log.
+        # (This is the common case for non-write_transaction commits.)
+        return
+    # Clear immediately so a subsequent BEGIN in the same block
+    # measures from its own start, and so we don't double-log if
+    # commit + rollback both fire.
+    _WRITE_TXN_STARTED_AT.set(None)
+    elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+    threshold_ms = settings.write_transaction_slow_log_ms
+    if threshold_ms <= 0 or elapsed_ms < threshold_ms:
+        return
+    label = _WRITE_TXN_LABEL.get() or "(unlabelled)"
+    verb = "slow rollback" if rolled_back else "slow"
+    logger.warning(
+        "write_transaction %s: label=%s held=%.1fms",
+        verb, label, elapsed_ms,
+    )
 
 
 @event.listens_for(engine, "reset")
@@ -109,7 +181,7 @@ def _restore_default_busy_timeout(dbapi_connection, _record, _state) -> None:
 
 
 @contextmanager
-def write_transaction():
+def write_transaction(label: str | None = None):
     """Mark every transaction started inside this block as write-heavy
     so its `BEGIN` is `IMMEDIATE` (see `_begin_immediate_when_marked`).
 
@@ -124,9 +196,19 @@ def write_transaction():
     Read-only paths and the web tier do NOT need this; they stay
     deferred so the writer lock is held only by code that actually
     writes.
+
+    `label` identifies the caller in the slow-write log line emitted
+    when the transaction holds the writer lock longer than
+    `Settings.write_transaction_slow_log_ms`. Caller convention is
+    `<area>:<scope>`, e.g. `"ingest_inbox:lkml"`,
+    `"backfill_canonicals"`, `"auto_analyze:lkml"`,
+    `"broker:cache_set"`. Defaults to `None` → logged as
+    `(unlabelled)`, callable but useless for triage.
     """
+    label_token = _WRITE_TXN_LABEL.set(label)
     token = _WRITE_TXN.set(True)
     try:
         yield
     finally:
         _WRITE_TXN.reset(token)
+        _WRITE_TXN_LABEL.reset(label_token)

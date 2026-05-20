@@ -12,7 +12,7 @@ import click
 from sqlalchemy import text
 
 from mimir.cli._common import _fmt_bytes
-from mimir.extensions import engine
+from mimir.extensions import engine, write_transaction
 
 
 @click.command("analyze")
@@ -29,8 +29,13 @@ def analyze_command() -> None:
         30 4 * * * cd ~/Projects/python/mimir && poetry run flask --app mimir analyze
     """
     t0 = time.perf_counter()
-    with engine.begin() as conn:
-        conn.execute(text("ANALYZE"))
+    # Label the ANALYZE write so the slow-write WARNING attributes
+    # the lock-hold cleanly: an operator correlating a slow broker
+    # cache.set dispatch against the scheduler log will see
+    # `label=analyze held=<N>ms` and know the cause.
+    with write_transaction("analyze"):
+        with engine.begin() as conn:
+            conn.execute(text("ANALYZE"))
     elapsed = time.perf_counter() - t0
     click.echo(f"ANALYZE complete in {elapsed:.1f} s")
 
