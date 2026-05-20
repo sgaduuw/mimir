@@ -12,6 +12,7 @@ imported by `.replay`, `.backfill`, and `.orchestrate`.
 """
 import logging
 import os
+import time
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from itertools import islice
@@ -52,6 +53,22 @@ logger = logging.getLogger(__name__)
 # subsampling.
 PROGRESS_EVERY = 1000
 COMMIT_EVERY = 500
+# Time cap on the writer-lock-hold per commit batch (seconds). In
+# broker mode (1.36.0+) the broker's long worker and cache worker
+# share the SQLite writer lock; while the long worker holds it for a
+# multi-second commit, every queued cache_set blocks. A page render
+# with N cached surfaces stacks N x (commit hold) of wait time and
+# trips the 30 s gateway timeout on a cold front page. Capping
+# per-commit hold at 500 ms keeps that stack under ~5 s comfortably.
+#
+# Floor: even hot inboxes (`stable`, `linux-mm`) committing on the
+# message-count side already hit COMMIT_EVERY=500 well within this
+# wall budget, so the time cap only fires on the steady-state
+# few-hundred-messages-per-tick path that was holding the lock for
+# 1.7-2.2 s on production 1.36.0. Direct (non-broker) ingests are
+# unaffected: same number of commits, just more of them on hot
+# inboxes; commit overhead on SQLite WAL is single-digit ms.
+COMMIT_EVERY_SECONDS = 0.5
 DEFAULT_WORKERS = os.cpu_count() or 1
 PARSE_CHUNKSIZE = 50
 
@@ -419,13 +436,21 @@ def ingest_epoch(
     # doesn't ride the 24h `archive_stats` cache. See #216.
     pending_max_date: datetime | None = None
 
+    # Wall-clock anchor for the `COMMIT_EVERY_SECONDS` time cap. Reset
+    # to the current monotonic time inside `flush_batch` so every
+    # commit window starts fresh; an exception that propagates out
+    # before `flush_batch` runs would leave a stale anchor, but the
+    # surrounding `write_transaction` rolls back the in-flight batch
+    # in that case so the stale value is moot.
+    last_commit_at = time.monotonic()
+
     logger.info(
         "%s/%s: starting from %s (workers=%d)",
         inbox_name, epoch_name, last_sha or "<beginning>", workers,
     )
 
     def flush_batch() -> None:
-        nonlocal pending_max_date
+        nonlocal pending_max_date, last_commit_at
         if pending_obs:
             _flush_observations(session, inbox_id, pending_obs)
             pending_obs.clear()
@@ -442,6 +467,7 @@ def ingest_epoch(
         state.last_commit_sha = last_seen
         session.commit()
         seen_in_batch.clear()
+        last_commit_at = time.monotonic()
 
     walker = _walk_epoch(repo_path, since_sha=last_sha)
     if limit is not None:
@@ -581,7 +607,15 @@ def ingest_epoch(
                 result.new, result.linked, result.dup_batch, result.dup_db, result.failed,
             )
 
-        if processed % COMMIT_EVERY == 0:
+        # Commit at the message-count boundary (large bursts) OR
+        # when the wall-clock cap fires (steady-state hot inboxes
+        # under broker mode, where the cache worker needs the writer
+        # lock back regularly to serve cache.set RPCs). See the
+        # COMMIT_EVERY_SECONDS comment above for the why.
+        if (
+            processed % COMMIT_EVERY == 0
+            or (time.monotonic() - last_commit_at) >= COMMIT_EVERY_SECONDS
+        ):
             flush_batch()
 
     flush_batch()
