@@ -392,6 +392,19 @@ def test_analyze_command_runs(seeded_db):
     assert "ANALYZE complete" in result.output
 
 
+def test_analyze_command_full_flag_runs(seeded_db):
+    """`mimir analyze --full` (1.36.4) runs ANALYZE with
+    `analysis_limit=0` overriding the per-connection default cap
+    (`settings.analyze_limit`). On a tiny test DB the behaviour is
+    indistinguishable from the default flow; the contract being
+    pinned is just that the flag is wired and the command's
+    distinct output line lands so the scheduler loop's log makes
+    `analyze --full` legible vs the default daily `analyze`."""
+    result = CliRunner().invoke(analyze_command, ["--full"])
+    assert result.exit_code == 0, result.output
+    assert "full ANALYZE complete" in result.output
+
+
 def test_vacuum_command_runs_and_reports_sizes(seeded_db):
     """`vacuum` rebuilds the DB and checkpoints the WAL. On a tiny
     test DB the reclamation is negligible, but the before/after/
