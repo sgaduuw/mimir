@@ -26,6 +26,19 @@ def _sqlite_pragmas(dbapi_conn, _conn_record) -> None:
     cur.execute("PRAGMA synchronous=NORMAL")
     cur.execute("PRAGMA foreign_keys=ON")
     cur.execute(f"PRAGMA busy_timeout={settings.sqlite_busy_timeout_ms}")
+    # Bound ANALYZE's per-index row sample. SQLite default is 0
+    # (no limit), which makes ANALYZE scan every row of every
+    # index and hold the writer lock for the full duration; on the
+    # 11M-row corpus that's ~25 s, dominant source of broker-side
+    # cache.set stalls in production. `Settings.analyze_limit=400`
+    # (the SQLite-recommended value, applied here) caps per-index
+    # work and drops the lock-hold to ~100 ms while still producing
+    # stats good enough for sargable index choices. Setting it on
+    # every connection means `mimir analyze`, auto-ANALYZE-after-
+    # ingest, and any ad-hoc session running ANALYZE all inherit
+    # the limit uniformly; an operator who wants the old exact-
+    # stats behaviour sets `ANALYZE_LIMIT=0` in env.
+    cur.execute(f"PRAGMA analysis_limit={settings.analyze_limit}")
     # Maintenance toggle: when this container is flagged read-only,
     # block writes at the SQLite layer so anything that slipped past
     # the cache.set short-circuit raises instead of silently competing
