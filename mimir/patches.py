@@ -82,18 +82,42 @@ class BackfillResult(BaseModel):
     """Outcome counters for `backfill_article_files`. Every article
     examined lands in exactly one bucket. `skipped` covers articles
     that already had ArticleFile rows (idempotent re-runs) plus
-    articles whose mirror is unreachable from this host."""
+    articles whose mirror is unreachable from this host.
+
+    `partial` + `continuation` carry the cooperative-scheduling
+    handoff between broker chunks (Phase 2.2). Direct (non-broker)
+    callers always see `partial=False, continuation=None`.
+    """
     examined: int = 0
     indexed: int = 0   # had a patch body and one or more paths landed
     no_diff: int = 0   # body parsed but no `diff --git` headers
     skipped: int = 0   # already had rows, or unreadable
     failed: int = 0    # parse error reading the blob
+    partial: bool = False
+    continuation: int | None = None
+
+    def merge(self, other: "BackfillResult") -> "BackfillResult":
+        """Sum counters with `other`, carrying `other`'s
+        `partial`/`continuation` forward. Used by the CLI loop that
+        aggregates per-chunk results from the broker."""
+        return BackfillResult(
+            examined=self.examined + other.examined,
+            indexed=self.indexed + other.indexed,
+            no_diff=self.no_diff + other.no_diff,
+            skipped=self.skipped + other.skipped,
+            failed=self.failed + other.failed,
+            partial=other.partial,
+            continuation=other.continuation,
+        )
 
 
 def backfill_article_files(
     limit: int | None = None,
     reprocess: bool = False,
     progress: Callable[["BackfillResult"], None] | None = None,
+    *,
+    max_seconds: float | None = None,
+    start_cursor: int | None = None,
 ) -> BackfillResult:
     """Walk articles, extract diff-touched paths, insert ArticleFile
     rows. Idempotent: articles with existing rows are skipped unless
@@ -102,13 +126,22 @@ def backfill_article_files(
 
     Newest-first ordering so a `--limit`-bounded session covers the
     most-recently-active articles first; that's where the
-    subsystem-header surface is most visible to a user."""
+    subsystem-header surface is most visible to a user.
+
+    `max_seconds` + `start_cursor` enable broker-side cooperative
+    scheduling (Phase 2.2): the broker handler runs at most one
+    chunk per RPC, then returns `partial=True, continuation=<last id>`
+    so the CLI loops with a follow-up RPC. Direct callers leave
+    both None and get the original full-walk behaviour."""
     result = BackfillResult()
-    walk_articles(
+    partial, continuation = walk_articles(
         result, _process_one,
         limit=limit, reprocess=reprocess, progress=progress,
         label="backfill_article_files",
+        max_seconds=max_seconds, start_cursor=start_cursor,
     )
+    result.partial = partial
+    result.continuation = continuation
     return result
 
 

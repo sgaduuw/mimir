@@ -69,6 +69,126 @@ WARM_CACHE_REFRESH_WITHIN_SEC = 450
 WARM_TOP_SUBSYSTEMS_PER_INBOX = 20
 
 
+def _build_inbox_targets(
+    inbox: Inbox,
+    today: "datetime.date",
+    yesterday: "datetime.date",
+    sitemap_base: str = "",
+) -> list[tuple[str, "object"]]:
+    """Per-inbox warm-target list: one inbox in, list of
+    `(label, fn)` tuples out. Each `fn(session)` computes one
+    cached helper and (via `cache.get_or_compute`) writes the
+    result back. Used by:
+
+    - The legacy in-process `warm-cache` CLI, which iterates these
+      across every configured inbox.
+    - The broker's `handle_warm_inbox` handler (1.37.0), which
+      runs them for one inbox per RPC so the broker's N warm-
+      workers fan out across inboxes.
+
+    Sitemap per-inbox row is included only when `sitemap_base` is
+    non-empty (the cache key encodes the base URL, so warming with
+    the wrong/empty base would poison the cache vs what the live
+    route emits at request time).
+
+    Splitting the per-inbox subsystem-dashboard target out into N
+    per-subsystem tasks was considered (and rejected) in the 1.37.0
+    design: the four helpers per subsystem are small individually
+    but commit through the broker's writer-lock funnel anyway, so
+    coalescing them into one task keeps the queue depth manageable
+    without changing wall time.
+    """
+    targets: list[tuple[str, object]] = [
+        (f"{inbox.name} active_threads (7d, 10)",
+         lambda s, ib=inbox: active_threads(s, ib, days=7, limit=10)),
+        (f"{inbox.name} threads_for_day (today)",
+         lambda s, ib=inbox: threads_for_day(s, ib, today)),
+        (f"{inbox.name} threads_for_day (yesterday)",
+         lambda s, ib=inbox: threads_for_day(s, ib, yesterday)),
+        (f"{inbox.name} daily_volume (30d)",
+         lambda s, ib=inbox: daily_volume(s, ib, days=30)),
+        (f"{inbox.name} archive_stats",
+         lambda s, ib=inbox: archive_stats(s, ib)),
+        (f"{inbox.name} latest_pull_requests",
+         lambda s, ib=inbox: latest_pull_requests(s, ib, limit=5)),
+        (f"{inbox.name} latest_stable_releases",
+         lambda s, ib=inbox: latest_stable_releases(s, ib, limit=5)),
+        (f"{inbox.name} this_day_in_history",
+         lambda s, ib=inbox: this_day_in_history(s, ib, years_ago=5, limit=3)),
+        # Atom feed source. Different cache key from the
+        # dashboard "Recent messages" loader because the limit
+        # is the cache key, feeds need 50, the dashboard's
+        # initial paint uses 10.
+        (f"{inbox.name} recent_articles ({FEED_ENTRY_LIMIT})",
+         lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT)),
+        # Per-inbox subsystem discoverability widget. One
+        # warm target per inbox: the cache key is limit-less
+        # since v1.19.3, so every caller (front-page top-12,
+        # inbox dashboard top-10, cross-inbox aggregator)
+        # slices from the same cached top-100 payload.
+        (f"{inbox.name} most_active_subsystems_in_inbox (7d)",
+         lambda s, ib=inbox: most_active_subsystems_in_inbox(s, ib, days=7)),
+        # Per-subsystem dashboard helpers, top-N most active
+        # subsystems only. Coarse-grained: one warm target per
+        # inbox covering 4 helpers × top-N subsystems internally.
+        # Long-tail subsystems pay one cold load per hour.
+        (f"{inbox.name} subsystem dashboards (top {WARM_TOP_SUBSYSTEMS_PER_INBOX})",
+         lambda s, ib=inbox: _warm_subsystem_dashboards(
+             s, ib, WARM_TOP_SUBSYSTEMS_PER_INBOX,
+         )),
+    ]
+    for label, substr in (inbox.tracked_authors or {}).items():
+        # Dashboard tracker tile (limit=5) AND per-author atom
+        # feed (limit=FEED_ENTRY_LIMIT) hit different cache
+        # keys; warm both so the first feed poll per hour
+        # gets a cache-hit just like the dashboard.
+        targets.append((
+            f"{inbox.name} tracker:{label}",
+            lambda s, ib=inbox, sub=substr: author_recent(s, ib, sub, 5),
+        ))
+        targets.append((
+            f"{inbox.name} tracker:{label} (feed)",
+            lambda s, ib=inbox, sub=substr: author_recent(
+                s, ib, sub, FEED_ENTRY_LIMIT,
+            ),
+        ))
+    if sitemap_base:
+        targets.append((
+            f"sitemap:inbox:{inbox.name}",
+            lambda s, ib=inbox, base=sitemap_base: inbox_sitemap_xml(s, ib, base),
+        ))
+    return targets
+
+
+def _build_global_targets(
+    sitemap_base: str = "",
+) -> list[tuple[str, "object"]]:
+    """Global (cross-inbox) warm targets: sitemap index, meta
+    sitemap, and `most_active_subsystems_global`. The aggregator
+    reads per-inbox cache rows, so it MUST run after every
+    `_build_inbox_targets` cycle has completed (Phase B in the
+    legacy CLI; a separate `warm_global` RPC in the broker shape).
+
+    Sitemap targets are included only when `sitemap_base` is set:
+    the helper caches a body keyed implicitly on the base URL, so
+    warming with an empty base would poison the cache against
+    what the route emits at request time."""
+    targets: list[tuple[str, object]] = [(
+        "most_active_subsystems_global (7d)",
+        lambda s: most_active_subsystems_global(s, days=7),
+    )]
+    if sitemap_base:
+        targets.insert(0, (
+            "sitemap:index",
+            lambda s, base=sitemap_base: sitemap_index_xml(s, base),
+        ))
+        targets.insert(1, (
+            "sitemap:meta",
+            lambda s, base=sitemap_base: meta_sitemap_xml(s, base),
+        ))
+    return targets
+
+
 def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
     """Pre-warm the per-subsystem dashboard helpers AND the per-reviewer
     pages each one surfaces, for the top-N most active subsystems in
@@ -176,97 +296,73 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
     worker_count = workers if workers is not None else min(os.cpu_count() or 1, 8)
     total_start = time.perf_counter()
 
-    # Phase A targets fan out across worker threads. Phase B targets
-    # (currently just the global subsystem aggregator) run after the
-    # Phase A barrier so they consume the just-warmed per-inbox cache
-    # rows instead of re-doing the underlying SQL.
-    phase_a: list[tuple[str, "object"]] = []
-    phase_b: list[tuple[str, "object"]] = []
+    # Broker mode (Phase 2.2): fan out warm_inbox RPCs in parallel,
+    # then fire warm_global once the per-inbox fan-out drains.
+    # The broker's N warm-workers chew through the jobs concurrently.
+    # The CLI-side ThreadPool is just a fan-out + collect pattern;
+    # no work runs in this process beyond JSON encode/decode.
+    if settings.broker_socket_path is not None:
+        from mimir.broker.client import BrokerUnavailable, get_broker_client
+        client = get_broker_client()
+        total_keys = 0
+        try:
+            with ThreadPoolExecutor(max_workers=worker_count) as pool:
+                futures = {
+                    pool.submit(client.warm_inbox, name): name
+                    for name in inboxes
+                }
+                for fut in as_completed(futures):
+                    name = futures[fut]
+                    result = fut.result()
+                    warmed = result.get("warmed", [])
+                    errors = result.get("errors", [])
+                    elapsed_ms = result.get("elapsed_ms", 0)
+                    total_keys += len(warmed)
+                    if verbose:
+                        click.echo(
+                            f"{name}: {len(warmed)} keys "
+                            f"warmed in {elapsed_ms} ms"
+                            + (f" (errors: {len(errors)})" if errors else "")
+                        )
+            # Global Phase B after the per-inbox fan-out drains.
+            global_result = client.warm_global()
+            total_keys += len(global_result.get("warmed", []))
+            if verbose:
+                click.echo(
+                    f"warm_global: {len(global_result.get('warmed', []))} "
+                    f"keys warmed in "
+                    f"{global_result.get('elapsed_ms', 0)} ms"
+                )
+        except BrokerUnavailable as exc:
+            raise click.ClickException(
+                f"broker warm-cache failed: {exc}"
+            )
+        total_ms = (time.perf_counter() - total_start) * 1000
+        click.echo(
+            f"warm-cache: {len(inboxes)} inbox{'' if len(inboxes) == 1 else 'es'}, "
+            f"{total_keys} keys, {total_ms:.0f} ms total"
+        )
+        purged = cache_mod.purge_expired()
+        if purged:
+            click.echo(
+                f"purged {purged} expired cache row"
+                f"{'' if purged == 1 else 's'}"
+            )
+        return
 
+    # Direct (non-broker) path: build target lists locally and run
+    # them in this process with a ThreadPoolExecutor.
+    phase_a: list[tuple[str, "object"]] = []
     for inbox in inboxes.values():
-        phase_a.extend([
-            (f"{inbox.name} active_threads (7d, 10)",
-             lambda s, ib=inbox: active_threads(s, ib, days=7, limit=10)),
-            (f"{inbox.name} threads_for_day (today)",
-             lambda s, ib=inbox: threads_for_day(s, ib, today)),
-            (f"{inbox.name} threads_for_day (yesterday)",
-             lambda s, ib=inbox: threads_for_day(s, ib, yesterday)),
-            (f"{inbox.name} daily_volume (30d)",
-             lambda s, ib=inbox: daily_volume(s, ib, days=30)),
-            (f"{inbox.name} archive_stats",
-             lambda s, ib=inbox: archive_stats(s, ib)),
-            (f"{inbox.name} latest_pull_requests",
-             lambda s, ib=inbox: latest_pull_requests(s, ib, limit=5)),
-            (f"{inbox.name} latest_stable_releases",
-             lambda s, ib=inbox: latest_stable_releases(s, ib, limit=5)),
-            (f"{inbox.name} this_day_in_history",
-             lambda s, ib=inbox: this_day_in_history(s, ib, years_ago=5, limit=3)),
-            # Atom feed source. Different cache key from the
-            # dashboard "Recent messages" loader because the limit
-            # is the cache key, feeds need 50, the dashboard's
-            # initial paint uses 10.
-            (f"{inbox.name} recent_articles ({FEED_ENTRY_LIMIT})",
-             lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT)),
-            # Per-inbox subsystem discoverability widget. One
-            # warm target per inbox: the cache key is limit-less
-            # since v1.19.3, so every caller (front-page top-12,
-            # inbox dashboard top-10, cross-inbox aggregator)
-            # slices from the same cached top-100 payload.
-            (f"{inbox.name} most_active_subsystems_in_inbox (7d)",
-             lambda s, ib=inbox: most_active_subsystems_in_inbox(s, ib, days=7)),
-            # Per-subsystem dashboard helpers, top-N most active
-            # subsystems only. Coarse-grained: one warm target per
-            # inbox covering 4 helpers × top-N subsystems internally.
-            # Long-tail subsystems pay one cold load per hour.
-            (f"{inbox.name} subsystem dashboards (top {WARM_TOP_SUBSYSTEMS_PER_INBOX})",
-             lambda s, ib=inbox: _warm_subsystem_dashboards(
-                 s, ib, WARM_TOP_SUBSYSTEMS_PER_INBOX,
-             )),
-        ])
-        for label, substr in (inbox.tracked_authors or {}).items():
-            # Dashboard tracker tile (limit=5) AND per-author atom
-            # feed (limit=FEED_ENTRY_LIMIT) hit different cache
-            # keys; warm both so the first feed poll per hour
-            # gets a cache-hit just like the dashboard.
-            phase_a.append((
-                f"{inbox.name} tracker:{label}",
-                lambda s, ib=inbox, sub=substr: author_recent(s, ib, sub, 5),
-            ))
-            phase_a.append((
-                f"{inbox.name} tracker:{label} (feed)",
-                lambda s, ib=inbox, sub=substr: author_recent(
-                    s, ib, sub, FEED_ENTRY_LIMIT,
-                ),
-            ))
-    # Front-page cross-inbox subsystem teaser runs in Phase B so it
-    # consumes the per-inbox cache rows the Phase A workers just
-    # wrote. With parallel Phase A and no barrier, this target could
-    # race a worker still mid-compute on its inbox's per-inbox key
-    # and end up doing the work itself.
-    phase_b.append((
-        "most_active_subsystems_global (7d)",
-        lambda s: most_active_subsystems_global(s, days=7),
-    ))
-    # Sitemap caches. Only warmed when SITE_BASE_URL is configured
-    # without it, the helper would cache a body with relative-looking
-    # URLs that wouldn't match what the route emits at request time
-    # (where `request.url_root` supplies the base). Production sets
-    # this; local dev tends not to, and that's where we'd rather
-    # skip than poison the cache.
-    if sitemap_base:
-        phase_a.append((
-            "sitemap:index",
-            lambda s, base=sitemap_base: sitemap_index_xml(s, base),
-        ))
-        phase_a.append((
-            "sitemap:meta",
-            lambda s, base=sitemap_base: meta_sitemap_xml(s, base),
-        ))
-        for inbox in inboxes.values():
-            phase_a.append((
-                f"sitemap:inbox:{inbox.name}",
-                lambda s, ib=inbox, base=sitemap_base: inbox_sitemap_xml(s, ib, base),
-            ))
+        phase_a.extend(_build_inbox_targets(inbox, today, yesterday, sitemap_base))
+    # Phase B: global aggregators that read per-inbox cache rows.
+    # `most_active_subsystems_global` MUST run after Phase A so it
+    # picks up freshly-warmed per-inbox rows; with parallel Phase A
+    # and no barrier, this target could race a worker still mid-
+    # compute on its inbox's per-inbox key and end up doing the
+    # work itself. Sitemap index/meta join Phase B in 1.37.0
+    # because they're not per-inbox and have no good Phase A slot.
+    phase_b: list[tuple[str, "object"]] = _build_global_targets(sitemap_base)
     total_keys = len(phase_a) + len(phase_b)
 
     def _run_target(label: str, fn) -> tuple[str, float]:
