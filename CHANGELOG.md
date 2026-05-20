@@ -11,6 +11,52 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
 
 ## [Unreleased]
 
+### Added
+
+- **Write-broker Phase 2.1**: `mimir ingest` and `mimir update`
+  dispatch each per-inbox ingest through the broker when
+  `BROKER_SOCKET_PATH` is set. The broker's long worker runs
+  `ingest_inbox` against its own writer connection; cache writes
+  riding the broker's cache worker no longer compete cross-
+  process with scheduler-side ingest commits. New
+  `IngestInboxRequest(inbox_name, limit, workers)` long-op RPC.
+  Default per-call timeout 3600 s. Direct path is preserved as
+  the fallback for deploys not yet in broker mode.
+
+  Cross-inbox `--limit` semantics are unchanged: the CLI
+  decrements the limit as inboxes complete and stops once
+  exhausted. Per-epoch `IngestResult` rows are reconstructed
+  client-side from the JSON payload so output formatting is
+  identical between direct and broker paths.
+
+  Hard-fail (no silent fallback) when broker mode is set but
+  the broker is unreachable; the Phase 2 architecture was
+  built specifically to eliminate scheduler-side direct writes,
+  silent fallback would defeat that.
+
+### Changed
+
+- **`handlers.py` split into a package**: `mimir/broker/handlers/`
+  now carries `cache.py` (sub-ms ops + ping), `longops.py`
+  (`bootstrap_inboxes`, `ingest_inbox`, plus Phase 2.2+ ops as
+  they land), and `__init__.py` (dispatch table, queue routing,
+  error boundary). Pre-emptive refactor ahead of Phase 2.2's
+  backfill family; keeps each file's job sayable in one
+  sentence. `server.py`'s import path is unchanged.
+
+### Fixed
+
+- **`cache.set` (and `delete` / `delete_for_inbox` /
+  `purge_expired`) skip the self-RPC when called inside the
+  broker process** (`MIMIR_ROLE=broker`). Phase 2.1 made this
+  load-bearing: now that `ingest_inbox` runs in the broker,
+  its post-ingest warm fires three cache writes per inbox; each
+  would otherwise round-trip through the broker's own socket
+  → cache_queue → cache worker. Direct write inside the broker
+  drops the per-write cost from ~ms to microseconds, and
+  removes the self-RPC traffic the broker's own log would
+  otherwise show.
+
 ## [1.35.1], 2026-05-20
 
 ### Fixed
