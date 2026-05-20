@@ -388,15 +388,19 @@ def test_analyze_limit_pragma_set_on_every_connection():
     assert _pragma("analysis_limit") == settings.analyze_limit
 
 
-def test_analyze_limit_default_is_400():
-    """SQLite's recommended value for typical workloads. Pinning
-    the default so an accidental config edit (someone setting
-    `analyze_limit: int = 0` 'because that matches SQLite's
-    default') surfaces in CI rather than silently restoring the
-    25-second lock-hold in production."""
+def test_analyze_limit_default_is_4000():
+    """1.36.4 calibration: bumped from 400 to 4000 after the
+    production multi-inbox corpus (11M+ rows) revealed that 400-
+    sample stats produced catastrophically wrong recursive-CTE
+    plans (400 s `get_thread` for a 15-message thread; 200-1700x
+    speedups under a full ANALYZE). 4000 keeps the daily ANALYZE
+    fast (~1-3 s) while giving the planner enough samples to
+    estimate join cardinalities correctly at this scale. Pinning
+    so an accidental edit ("400 is what SQLite docs say") doesn't
+    silently regress production back to the bad plans."""
     # Note: this asserts the **default** before any env override.
     # If env sets ANALYZE_LIMIT, that wins at process start;
     # `settings.analyze_limit` reflects the final value, which
     # may differ. So we read the model field's default directly.
     from mimir.config import Settings
-    assert Settings.model_fields["analyze_limit"].default == 400
+    assert Settings.model_fields["analyze_limit"].default == 4000

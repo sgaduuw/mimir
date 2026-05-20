@@ -16,13 +16,31 @@ from mimir.extensions import engine, write_transaction
 
 
 @click.command("analyze")
-def analyze_command() -> None:
+@click.option(
+    "--full", "full",
+    is_flag=True,
+    help="Override the connection's `PRAGMA analysis_limit` and run "
+         "with `analysis_limit=0` (no cap) for this pass. Produces "
+         "fully-accurate per-index distribution stats at the cost of "
+         "a longer writer-lock hold (~25-30 s on the production-scale "
+         "11M-row corpus). Use as the periodic safety-net pass; the "
+         "default capped ANALYZE catches typical drift cheaply.",
+)
+def analyze_command(full: bool) -> None:
     """Run ANALYZE to refresh the SQLite query planner statistics.
 
     Stale `sqlite_stat1` makes the planner pick bad plans (we hit
     this once when the migration's ANALYZE ran on empty tables and
     later ingest left the stats wrong by orders of magnitude). Run
     after a big ingest delta, daily or weekly via cron is plenty.
+
+    By default this runs with whatever `PRAGMA analysis_limit` the
+    connection inherited from `mimir.extensions._sqlite_pragmas`
+    (default 4000). Pass `--full` to override that for the duration
+    of this pass and run with `analysis_limit=0` (no cap), which is
+    the safety-net production needs once a week: the default cap
+    means each daily pass undersamples a few tail-heavy indexes,
+    and the full pass catches whatever drifted.
 
     Example crontab (4:30am, after the daily VACUUM):
 
@@ -33,11 +51,19 @@ def analyze_command() -> None:
     # the lock-hold cleanly: an operator correlating a slow broker
     # cache.set dispatch against the scheduler log will see
     # `label=analyze held=<N>ms` and know the cause.
-    with write_transaction("analyze"):
+    label = "analyze_full" if full else "analyze"
+    with write_transaction(label):
         with engine.begin() as conn:
+            if full:
+                # Override the per-connection limit for the duration
+                # of this ANALYZE so the planner gets every-row
+                # samples. `_sqlite_pragmas` will re-apply the default
+                # on the next connect, so this scope is bounded.
+                conn.execute(text("PRAGMA analysis_limit=0"))
             conn.execute(text("ANALYZE"))
     elapsed = time.perf_counter() - t0
-    click.echo(f"ANALYZE complete in {elapsed:.1f} s")
+    kind = "full ANALYZE" if full else "ANALYZE"
+    click.echo(f"{kind} complete in {elapsed:.1f} s")
 
 
 @click.command("vacuum")

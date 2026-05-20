@@ -212,16 +212,35 @@ class Settings(BaseSettings):
     # SQLite `PRAGMA analysis_limit` (max rows sampled per index by
     # ANALYZE). Default 0 means "no limit" and ANALYZE scans every
     # row of every index, which on the 11M-row prod corpus holds
-    # the writer lock for ~25 s. SQLite's recommended value for
-    # typical workloads is 400; on this corpus that drops the
-    # lock-hold to ~100 ms while still producing planner stats good
-    # enough for sargable index choices. The pragma is set on every
+    # the writer lock for ~25 s. SQLite's docs hint at "1000 or
+    # 1500 for very large databases"; **4000** is a 10x margin on
+    # that for an 11M-row corpus and produces accurate-enough stats
+    # for the recursive-CTE shapes the read path leans on (thread
+    # walk via `ix_articles_thread_parent`, the per-inbox
+    # `(article_id, inbox_id)` covering index on `article_lists`,
+    # etc.). ANALYZE wall time scales roughly linearly in the
+    # limit; 4000 measures at ~1-3 s on this corpus, still 10x
+    # better than the 25-30 s full scan. The pragma is set on every
     # connection in `mimir.extensions._sqlite_pragmas`, so it
     # applies uniformly to `mimir analyze`, auto-ANALYZE-after-
-    # ingest, and any ad-hoc session running ANALYZE. Set to 0 to
-    # restore full-scan stats (slow but exact). Override via
-    # ANALYZE_LIMIT.
-    analyze_limit: int = 400
+    # ingest, and any ad-hoc session running ANALYZE.
+    #
+    # **1.36.4 history**: 1.35.1 shipped this at 400 on the basis
+    # that SQLite docs called 400 "appropriate for typical
+    # workloads." It produced catastrophically wrong plans on the
+    # production multi-inbox corpus, e.g. `get_thread` for a 15-
+    # message thread on lkml took 400 s instead of milliseconds
+    # because the planner mis-estimated the recursive CTE's join
+    # cardinality from undersampled `article_lists` /
+    # `thread_parent` stats. A full ANALYZE (`analysis_limit=0`)
+    # restored 200-1700x speedups instantly. 4000 keeps the post-
+    # migrate ANALYZE fast at boot while giving the planner the
+    # samples it needs at this scale. The weekly full ANALYZE on
+    # the scheduler tick is the safety net for distribution drift.
+    #
+    # Set to 0 to restore full-scan stats (slow but exact).
+    # Override via ANALYZE_LIMIT.
+    analyze_limit: int = 4000
 
     # Auto-ANALYZE threshold. After `ingest_inbox` finishes a run, if
     # `new + linked` across that run's epochs reaches this many rows,
