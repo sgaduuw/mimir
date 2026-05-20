@@ -46,6 +46,37 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   (`podman logs -f mimir-broker`) since the walker is no longer
   running in the CLI's own process.
 
+- **Write-broker Phase 2.2 (warm queue)**: `mimir warm-cache`
+  dispatches through the broker as a fan-out of per-inbox
+  `warm_inbox` RPCs plus one final `warm_global` when
+  `BROKER_SOCKET_PATH` is set. The broker grows a **third queue**
+  (`warm_queue`) drained by **N parallel warm-workers** (default
+  4, env `BROKER_WARM_WORKERS`) sibling to the cache and long
+  queues. Read-heavy warm computes parallelise across inboxes;
+  cache.set commits still funnel through the SQLite writer lock
+  but the upstream compute overlaps freely.
+
+  New protocol types: `WarmInboxRequest(inbox_name, targets=None)`,
+  `WarmGlobalRequest()`. `Reply.result` carries
+  `{warmed, elapsed_ms, errors}`. Per-target exceptions are
+  captured into `errors` rather than failing the whole RPC,
+  mirroring `_warm_after_ingest`'s best-effort posture. New
+  matching `BrokerClient.warm_inbox` + `warm_global` methods
+  (default per-RPC timeout 300 s).
+
+  `mimir/cli/cache.py` refactored: per-inbox + global target
+  lists hoisted into `_build_inbox_targets(inbox, today,
+  yesterday, sitemap_base)` and `_build_global_targets(sitemap_base)`
+  so the broker handler and the legacy in-process CLI share one
+  target list. Direct (non-broker) path preserved as the fallback
+  for deploys not yet in broker mode.
+
+- **`BROKER_WARM_WORKERS`** (default 4): number of broker warm-
+  worker threads. The warm queue drains with this many concurrent
+  workers, parallelising the read-heavy compute phase of warming
+  across inboxes. Tune higher for bigger corpora; set to 1 for
+  serial behaviour.
+
 - **`BROKER_BACKFILL_CHUNK_SECONDS`** (default 10): per-chunk time
   budget for the Phase 2.2 backfill RPC handlers. Shorter dial
   yields finer interleaving with queued cache writes / ingest

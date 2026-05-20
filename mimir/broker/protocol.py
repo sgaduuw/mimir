@@ -136,6 +136,57 @@ class BackfillCanonicalsRequest(BaseModel):
     continuation: int | None = Field(default=None, ge=0)
 
 
+# Phase 2.2 warm-queue ops: per-inbox + global warming. Routed to
+# the broker's NEW third queue (`warm_queue`) with N multi-workers
+# (default 4, env `BROKER_WARM_WORKERS`). Sibling to the cache and
+# long queues but parallelised across workers: warm computes are
+# read-heavy and benefit from concurrent execution, even though
+# each one's final `cache.set` commit still funnels through the
+# SQLite writer lock.
+#
+# Reply.result for both warm ops carries:
+#   `{"warmed": [<label>, ...], "elapsed_ms": int,
+#     "errors": [<"label: repr">, ...]}`
+# A per-target exception is captured into `errors` rather than
+# failing the whole RPC, mirroring `_warm_after_ingest`'s best-
+# effort posture: one broken helper shouldn't take down the
+# scheduler's warm cycle.
+
+class WarmInboxRequest(BaseModel):
+    """Per-inbox warm: invoke every cached helper for one inbox.
+    The handler calls `mimir.cli.cache._build_inbox_targets(inbox)`
+    and runs each target on its own session. Used by:
+
+    - The scheduler's `mimir warm-cache` CLI in broker mode (fans
+      out N warm_inbox jobs in parallel across configured inboxes,
+      drained by the broker's N warm-workers).
+    - Post-ingest warm-after-ingest paths
+      (`mimir.ingest.orchestrate`) so a freshly-ingested inbox's
+      cache is hot before the next reader lands.
+
+    `targets`, when non-None, narrows the per-inbox target set to
+    a labelled subset. None = warm all helpers (the warm-cache CLI
+    posture). Post-ingest warm uses a small subset
+    (`active_threads`, `archive_stats`, `daily_volume`).
+    """
+    op: Literal["warm_inbox"] = "warm_inbox"
+    inbox_name: str = Field(min_length=1, max_length=64)
+    targets: list[str] | None = None
+
+
+class WarmGlobalRequest(BaseModel):
+    """Global warm: invoke the cross-inbox aggregators
+    (`most_active_subsystems_global` + sitemap index/meta when
+    `SITE_BASE_URL` is configured). MUST be invoked after every
+    `warm_inbox` job in a given cycle has completed, otherwise
+    the aggregator races a warm-worker still mid-compute on its
+    inbox's per-inbox key. The CLI dispatcher handles this
+    sequencing automatically; ad-hoc callers should issue
+    warm_global only after their warm_inbox fan-out drains.
+    """
+    op: Literal["warm_global"] = "warm_global"
+
+
 # Tagged union over all valid request ops. Discriminated on `op` so
 # pydantic dispatches to the right model on parse; an unknown `op`
 # raises `ValidationError` at the broker boundary, which the
@@ -152,6 +203,8 @@ Request = Union[
     BackfillArticleTrailersRequest,
     BackfillPatchSeriesRequest,
     BackfillCanonicalsRequest,
+    WarmInboxRequest,
+    WarmGlobalRequest,
 ]
 
 

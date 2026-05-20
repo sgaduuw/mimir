@@ -47,6 +47,8 @@ from mimir.broker.protocol import (
     IngestInboxRequest,
     PingRequest,
     Reply,
+    WarmGlobalRequest,
+    WarmInboxRequest,
 )
 from mimir.config import settings
 
@@ -362,6 +364,51 @@ class BrokerClient:
             )
         counters = (reply.result or {}).get("counters", {})
         return BackfillResult.model_validate(counters)
+
+    def warm_inbox(
+        self,
+        inbox_name: str,
+        *,
+        targets: list[str] | None = None,
+        timeout: float = 300.0,
+    ) -> dict:
+        """Phase 2.2 warm op: warm one inbox's cached helpers via
+        the broker. Returns the reply's result dict
+        (`{warmed, elapsed_ms, errors}`); the per-target `errors`
+        list captures helpers that raised, mirroring the best-
+        effort posture of `_warm_after_ingest`.
+
+        `targets` (optional) narrows the helper set to a labelled
+        subset, matching the post-ingest warm scope. None warms
+        every per-inbox helper, which is the warm-cache CLI
+        posture.
+
+        Default timeout 300 s: typical per-inbox warm finishes in
+        seconds on the production corpus; 5 minutes is a generous
+        safety net for outliers (e.g. a brand-new inbox's first
+        warm where every helper is cold). Routed to the broker's
+        N warm-workers so multiple inboxes are warmed concurrently.
+        """
+        req = WarmInboxRequest(inbox_name=inbox_name, targets=targets)
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"warm_inbox: {reply.error}")
+        return reply.result or {}
+
+    def warm_global(self, *, timeout: float = 300.0) -> dict:
+        """Phase 2.2 warm op: warm the cross-inbox aggregators
+        (`most_active_subsystems_global` + sitemap index/meta when
+        SITE_BASE_URL is set). Caller MUST issue this after every
+        warm_inbox in the same cycle has completed, otherwise the
+        aggregator races a warm-worker still mid-compute. The CLI
+        dispatcher in `mimir.cli.cache.warm_cache_command` handles
+        this sequencing.
+        """
+        req = WarmGlobalRequest()
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"warm_global: {reply.error}")
+        return reply.result or {}
 
     def bootstrap_inboxes(self, *, timeout: float = 60.0) -> int:
         """Tell the broker to reconcile env-configured inboxes into
