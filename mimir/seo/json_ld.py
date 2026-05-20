@@ -26,8 +26,9 @@ JSON_LD_TEXT_MAX = 2000
 # meta_description block so the WebSite JSON-LD and the meta tag
 # can't drift. If you change one, change the other.
 DEFAULT_SITE_DESCRIPTION = (
-    "Indexed mailing-list archives, served from local "
-    "public-inbox v2 mirrors."
+    "Linux kernel mailing list archives. ~200 inboxes indexed with "
+    "cross-list deduplication, subsystem dashboards, patch-series "
+    "timelines, and reviewer activity surfaces."
 )
 
 
