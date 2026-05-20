@@ -1,0 +1,299 @@
+"""Phase 2.2 warm-queue RPCs: per-inbox + global cache warming
+via the broker's third queue (N parallel warm-workers).
+
+Covers:
+- `WARM_OPS` routing classification and dispatch-table entries.
+- `handle_warm_inbox` runs the per-inbox target list and reports
+  `{warmed, elapsed_ms, errors}`. `targets=None` warms everything;
+  a narrowed subset warms only the labelled targets.
+- `handle_warm_global` runs the cross-inbox aggregators.
+- Per-target exceptions are captured in `errors` rather than
+  failing the whole RPC (best-effort warming).
+- `BrokerClient.warm_inbox` and `warm_global` round-trip cleanly
+  through a real broker on a tmp socket.
+- The CLI's broker-mode dispatch fans warm_inbox jobs and a
+  single warm_global, then prints the summary.
+- Multi-worker drain: with `broker_warm_workers > 1`, two
+  concurrent warm_inbox RPCs make progress in parallel rather
+  than serialising on a single worker.
+"""
+from __future__ import annotations
+
+import time
+
+from mimir.broker import handlers
+from mimir.broker.client import BrokerClient
+from mimir.broker.handlers import dispatch
+from mimir.broker.protocol import WarmGlobalRequest, WarmInboxRequest
+from tests.test_broker._helpers import broker_running, short_socket_path
+
+
+def _line(req) -> bytes:
+    return req.model_dump_json().encode("utf-8")
+
+
+# ----- WARM_OPS routing ---------------------------------------------------
+
+
+def test_warm_ops_routing_set():
+    """`warm_inbox` and `warm_global` are the only members of the
+    warm routing set. Pinning so a future op accidentally added
+    to LONG_OPS doesn't shadow the warm queue."""
+    assert handlers.WARM_OPS == frozenset({"warm_inbox", "warm_global"})
+    # No warm op shows up in LONG_OPS (mutual exclusion).
+    assert not (handlers.WARM_OPS & handlers.LONG_OPS)
+
+
+def test_warm_ops_in_dispatch():
+    """Both warm ops must be present in the dispatch table so the
+    worker can validate-and-dispatch."""
+    assert "warm_inbox" in handlers._DISPATCH
+    assert "warm_global" in handlers._DISPATCH
+
+
+# ----- handle_warm_inbox --------------------------------------------------
+
+
+def test_dispatch_warm_inbox_reply_shape(seeded_db):
+    """Happy path: dispatch a warm_inbox RPC for the seeded `alpha`
+    inbox, get back `{warmed, elapsed_ms, errors}`. The seeded
+    fixture has enough rows that the targets run cleanly; we don't
+    pin the exact `warmed` content because the helper list evolves,
+    but the shape and the absence of errors is pinned."""
+    reply = dispatch(_line(WarmInboxRequest(inbox_name="alpha")))
+    assert reply.ok is True, reply.error
+    assert reply.result is not None
+    assert "warmed" in reply.result
+    assert "elapsed_ms" in reply.result
+    assert "errors" in reply.result
+    assert isinstance(reply.result["warmed"], list)
+    assert isinstance(reply.result["errors"], list)
+    # Sanity: at least the core per-inbox helpers landed without
+    # error on the seeded test corpus.
+    assert len(reply.result["warmed"]) >= 5
+    assert reply.result["errors"] == [], (
+        f"unexpected warm errors: {reply.result['errors']}"
+    )
+
+
+def test_dispatch_warm_inbox_unknown_returns_clean_error(seeded_db):
+    """Bogus inbox name returns a structured `UnknownInbox:<name>`
+    error rather than crashing the handler. Mirrors the matching
+    contract on `ingest_inbox`."""
+    reply = dispatch(_line(WarmInboxRequest(inbox_name="does-not-exist")))
+    assert reply.ok is False
+    assert reply.error is not None
+    assert "UnknownInbox:does-not-exist" in reply.error
+
+
+def test_dispatch_warm_inbox_targets_narrows_set(seeded_db):
+    """`targets=[label]` warms only the labelled subset. The post-
+    ingest warm shape uses this to refresh just the front-page-
+    critical helpers, not the whole per-inbox sweep."""
+    reply = dispatch(_line(WarmInboxRequest(
+        inbox_name="alpha",
+        targets=["alpha archive_stats"],
+    )))
+    assert reply.ok is True
+    # Only the requested label landed.
+    assert reply.result["warmed"] == ["alpha archive_stats"]
+
+
+def test_dispatch_warm_inbox_captures_per_target_errors(seeded_db, monkeypatch):
+    """A target that raises must NOT fail the whole RPC; the
+    exception is captured in `errors` and the other targets keep
+    going. Mirrors `_warm_after_ingest`'s best-effort posture."""
+    def boom(_s):
+        raise RuntimeError("synthetic warm failure")
+
+    def fake_build(inbox, today, yesterday, sitemap_base):
+        return [
+            ("alpha healthy", lambda s: None),
+            ("alpha boom", boom),
+        ]
+
+    import mimir.cli.cache as cli_cache
+    monkeypatch.setattr(cli_cache, "_build_inbox_targets", fake_build)
+
+    reply = dispatch(_line(WarmInboxRequest(inbox_name="alpha")))
+    assert reply.ok is True
+    assert reply.result["warmed"] == ["alpha healthy"]
+    assert len(reply.result["errors"]) == 1
+    assert "alpha boom" in reply.result["errors"][0]
+    assert "synthetic warm failure" in reply.result["errors"][0]
+
+
+# ----- handle_warm_global -------------------------------------------------
+
+
+def test_dispatch_warm_global_reply_shape(seeded_db):
+    """warm_global runs the cross-inbox aggregators
+    (most_active_subsystems_global + sitemap when SITE_BASE_URL is
+    set). On the seeded test corpus there's at least the one
+    aggregator target."""
+    reply = dispatch(_line(WarmGlobalRequest()))
+    assert reply.ok is True, reply.error
+    assert reply.result is not None
+    assert "warmed" in reply.result
+    assert "elapsed_ms" in reply.result
+    assert "errors" in reply.result
+    # `most_active_subsystems_global (7d)` is the always-on global
+    # target; sitemap entries are gated on SITE_BASE_URL.
+    assert any("most_active_subsystems_global" in w for w in reply.result["warmed"])
+
+
+# ----- BrokerClient round-trip --------------------------------------------
+
+
+def test_broker_client_warm_inbox_round_trip(seeded_db):
+    """End-to-end: spin a real broker on a tmp socket, send a
+    warm_inbox RPC, get the result dict back unchanged. Exercises
+    the framing + JSONL + multi-worker drain together."""
+    sp = short_socket_path("warm-inbox-rt")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            result = c.warm_inbox("alpha")
+        finally:
+            c.close()
+    assert isinstance(result, dict)
+    assert "warmed" in result and "elapsed_ms" in result and "errors" in result
+    assert result["errors"] == []
+
+
+def test_broker_client_warm_global_round_trip(seeded_db):
+    """Same end-to-end shape on warm_global."""
+    sp = short_socket_path("warm-global-rt")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            result = c.warm_global()
+        finally:
+            c.close()
+    assert isinstance(result, dict)
+    assert any("most_active_subsystems_global" in w for w in result["warmed"])
+
+
+# ----- Multi-worker concurrency ------------------------------------------
+
+
+def test_warm_workers_drain_in_parallel(seeded_db, monkeypatch):
+    """The load-bearing property of the warm queue: with N>1 workers,
+    two warm_inbox RPCs run concurrently rather than serialising on
+    a single worker. Confirms the multi-worker drain is actually
+    parallel and not just one worker spinning N labels.
+
+    Strategy: monkey-patch the warm handler to sleep 0.5 s, fire
+    two concurrent warm_inbox RPCs from two clients, expect the
+    pair to complete in well under 1 s (i.e. they overlapped) if
+    multi-worker drain works. Single-worker would take ~1 s.
+    """
+    import threading
+    from mimir.broker import handlers as _handlers
+    from mimir.broker.handlers.warm import handle_warm_inbox
+
+    def slow_handle(req):
+        time.sleep(0.5)
+        return handle_warm_inbox(req)
+
+    real_entry = _handlers._DISPATCH["warm_inbox"]
+    _handlers._DISPATCH["warm_inbox"] = (real_entry[0], slow_handle)
+    try:
+        sp = short_socket_path("warm-parallel")
+        with broker_running(sp):
+            c1 = BrokerClient(sp)
+            c2 = BrokerClient(sp)
+            try:
+                results: list[float] = []
+                lock = threading.Lock()
+
+                def fire(client):
+                    t0 = time.perf_counter()
+                    client.warm_inbox("alpha")
+                    with lock:
+                        results.append(time.perf_counter() - t0)
+
+                t1 = threading.Thread(target=fire, args=(c1,), daemon=True)
+                t2 = threading.Thread(target=fire, args=(c2,), daemon=True)
+                start = time.perf_counter()
+                t1.start()
+                t2.start()
+                t1.join(timeout=5)
+                t2.join(timeout=5)
+                wall_elapsed = time.perf_counter() - start
+
+                # With 4 warm workers (default) and two slow ops,
+                # both should run in parallel; total wall time
+                # should be close to 0.5 s, not 1.0 s. A generous
+                # bound of 0.9 s rules out serial execution while
+                # tolerating thread scheduling jitter.
+                assert wall_elapsed < 0.9, (
+                    f"two warm_inbox RPCs took {wall_elapsed:.2f}s "
+                    f"wall-clock; expected ~0.5 s (parallel). "
+                    f"Multi-worker drain may have regressed to serial."
+                )
+            finally:
+                c1.close()
+                c2.close()
+    finally:
+        _handlers._DISPATCH["warm_inbox"] = real_entry
+
+
+# ----- CLI dispatch -------------------------------------------------------
+
+
+def test_warm_cache_command_broker_mode_dispatches_via_rpc(
+    seeded_db, monkeypatch,
+):
+    """`mimir warm-cache` in broker mode fans warm_inbox RPCs per
+    configured inbox and exits, plus one warm_global. Asserts the
+    dispatch shape end-to-end without spinning a broker: stub
+    `BrokerClient.warm_inbox` / `warm_global` to capture calls.
+    """
+    from pathlib import Path
+    from click.testing import CliRunner
+
+    from mimir.broker import client as broker_client_mod
+    from mimir.cli import warm_cache_command
+    from mimir.config import settings as live_settings
+
+    # Activate broker mode for the duration of this test. The
+    # broker socket path doesn't need to be real because we patch
+    # the client at the singleton accessor.
+    monkeypatch.setattr(
+        live_settings, "broker_socket_path",
+        Path("/tmp/mimir-test-warm-cli.sock"),
+    )
+
+    seen_inboxes: list[str] = []
+    seen_global = [0]
+
+    class FakeClient:
+        def warm_inbox(self, name, **_kw):
+            seen_inboxes.append(name)
+            return {"warmed": ["x"], "elapsed_ms": 1, "errors": []}
+
+        def warm_global(self, **_kw):
+            seen_global[0] += 1
+            return {"warmed": ["global"], "elapsed_ms": 1, "errors": []}
+
+        def cache_purge_expired(self):
+            # Called by warm-cache at the end; stubbed so the
+            # CLI's tail-end purge step doesn't blow up.
+            return 0
+
+    monkeypatch.setattr(
+        broker_client_mod, "get_broker_client",
+        lambda: FakeClient(),
+    )
+    # Also patch via the CLI's import name since `warm_cache_command`
+    # imports `get_broker_client` inside the function body.
+
+    result = CliRunner().invoke(warm_cache_command, ["-v"])
+    assert result.exit_code == 0, result.output
+    # Every configured inbox got a warm_inbox dispatch.
+    assert set(seen_inboxes) >= {"alpha", "beta"}
+    # warm_global fired exactly once.
+    assert seen_global[0] == 1
+    # Summary line still emits.
+    assert "warm-cache:" in result.output and "ms total" in result.output
