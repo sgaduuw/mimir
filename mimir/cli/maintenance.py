@@ -1,30 +1,38 @@
 """SQLite hygiene: ANALYZE and VACUUM (+ WAL checkpoint).
 
-Both are intended for periodic cron runs. `analyze` is cheap and can
-run while the web tier is up; `vacuum` holds an exclusive lock and
-should run in a quiet window with no other DB writers.
+Thin click wrappers around `mimir.maintenance.run_analyze` and
+`mimir.maintenance.run_vacuum`. The library functions do the
+actual work so the broker handlers (Phase 2.3) can call the same
+code path; this module just turns CLI flags into function args and
+echoes the structured result.
+
+Broker dispatch: when `BROKER_SOCKET_PATH` is set the RPC routes
+through the broker. Falls back to the direct path when broker
+mode is off.
+
+Both are intended for periodic cron runs. `analyze` is cheap and
+can run while the web tier is up; `vacuum` holds an exclusive lock
+and should run in a quiet window with no other DB writers (broker
+mode pauses every other worker for the duration).
 """
-import sqlite3
-import time
-from pathlib import Path
 
 import click
-from sqlalchemy import text
 
 from mimir.cli._common import _fmt_bytes
-from mimir.extensions import engine, write_transaction
+from mimir.config import settings
 
 
 @click.command("analyze")
 @click.option(
-    "--full", "full",
+    "--full",
+    "full",
     is_flag=True,
     help="Override the connection's `PRAGMA analysis_limit` and run "
-         "with `analysis_limit=0` (no cap) for this pass. Produces "
-         "fully-accurate per-index distribution stats at the cost of "
-         "a longer writer-lock hold (~25-30 s on the production-scale "
-         "11M-row corpus). Use as the periodic safety-net pass; the "
-         "default capped ANALYZE catches typical drift cheaply.",
+    "with `analysis_limit=0` (no cap) for this pass. Produces "
+    "fully-accurate per-index distribution stats at the cost of "
+    "a longer writer-lock hold (~25-30 s on the production-scale "
+    "11M-row corpus). Use as the periodic safety-net pass; the "
+    "default capped ANALYZE catches typical drift cheaply.",
 )
 def analyze_command(full: bool) -> None:
     """Run ANALYZE to refresh the SQLite query planner statistics.
@@ -41,29 +49,24 @@ def analyze_command(full: bool) -> None:
     the safety-net production needs once a week: the default cap
     means each daily pass undersamples a few tail-heavy indexes,
     and the full pass catches whatever drifted.
-
-    Example crontab (4:30am, after the daily VACUUM):
-
-        30 4 * * * cd ~/Projects/python/mimir && poetry run flask --app mimir analyze
     """
-    t0 = time.perf_counter()
-    # Label the ANALYZE write so the slow-write WARNING attributes
-    # the lock-hold cleanly: an operator correlating a slow broker
-    # cache.set dispatch against the scheduler log will see
-    # `label=analyze held=<N>ms` and know the cause.
-    label = "analyze_full" if full else "analyze"
-    with write_transaction(label):
-        with engine.begin() as conn:
-            if full:
-                # Override the per-connection limit for the duration
-                # of this ANALYZE so the planner gets every-row
-                # samples. `_sqlite_pragmas` will re-apply the default
-                # on the next connect, so this scope is bounded.
-                conn.execute(text("PRAGMA analysis_limit=0"))
-            conn.execute(text("ANALYZE"))
-    elapsed = time.perf_counter() - t0
+    if settings.broker_socket_path is not None:
+        from mimir.broker.client import BrokerUnavailable, get_broker_client
+
+        try:
+            payload = get_broker_client().analyze(full=full)
+        except BrokerUnavailable as exc:
+            raise click.ClickException(f"broker analyze failed: {exc}")
+        elapsed_s = payload.get("elapsed_ms", 0) / 1000.0
+        kind = "full ANALYZE" if full else "ANALYZE"
+        click.echo(f"{kind} complete in {elapsed_s:.1f} s")
+        return
+
+    from mimir.maintenance import run_analyze
+
+    result = run_analyze(full=full)
     kind = "full ANALYZE" if full else "ANALYZE"
-    click.echo(f"{kind} complete in {elapsed:.1f} s")
+    click.echo(f"{kind} complete in {result.elapsed_ms / 1000.0:.1f} s")
 
 
 @click.command("vacuum")
@@ -76,62 +79,34 @@ def vacuum_command() -> None:
     `VACUUM` (rebuilds the database into a compact form) and
     `PRAGMA wal_checkpoint(TRUNCATE)` (collapses the WAL).
 
-    VACUUM holds an exclusive lock for the duration and needs ~2× the
-    on-disk size of free space. Run it during a quiet window, typical
-    cadence is daily or weekly via cron, while ingest isn't active.
-
-    Example crontab:
-
-        0 4 * * * cd ~/Projects/python/mimir && poetry run flask --app mimir vacuum
+    VACUUM holds an exclusive lock for the duration. In broker
+    mode every other broker worker pauses; in direct mode any
+    other process with the DB open prevents the truncate. Run
+    during a quiet window.
     """
-    db_path = Path(engine.url.database) if engine.url.database else None
-    if db_path is None:
-        raise click.ClickException("could not resolve DB path from engine URL")
+    if settings.broker_socket_path is not None:
+        from mimir.broker.client import BrokerUnavailable, get_broker_client
 
-    def _sizes() -> dict[str, int]:
-        out: dict[str, int] = {}
-        for suffix in ("", "-wal", "-shm"):
-            p = db_path.with_name(db_path.name + suffix)
-            out[suffix or "db"] = p.stat().st_size if p.exists() else 0
-        return out
+        try:
+            payload = get_broker_client().vacuum()
+        except BrokerUnavailable as exc:
+            raise click.ClickException(f"broker vacuum failed: {exc}")
+        _echo_vacuum_outcome(payload)
+        return
 
-    before = _sizes()
-    total_before = before["db"] + before["-wal"] + before["-shm"]
-    click.echo(
-        f"before: db={_fmt_bytes(before['db'])}  "
-        f"wal={_fmt_bytes(before['-wal'])}  shm={_fmt_bytes(before['-shm'])}"
-    )
+    from mimir.maintenance import run_vacuum
 
-    # `wal_checkpoint(TRUNCATE)` only succeeds when there are no
-    # other readers, SQLAlchemy's connection pool keeps idle
-    # connections that block it. Dispose the pool and run on a fresh
-    # raw sqlite3 connection so we own the only handle. Any other
-    # process that has the DB open (web server, warm-cache cron) will
-    # also prevent the truncate; stop those before vacuuming.
-    engine.dispose()
+    result = run_vacuum()
+    _echo_vacuum_outcome(result.model_dump(mode="json"))
 
-    t0 = time.perf_counter()
-    conn = sqlite3.connect(str(db_path))
-    try:
-        # In WAL mode, VACUUM's full rebuild goes through the WAL, so
-        # the WAL grows by ~db_size during the operation. Checkpoint
-        # *after* to collapse it; the pre-checkpoint clears any
-        # leftover WAL from prior writers so the truncate can run
-        # cleanly when we're done.
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.execute("VACUUM")
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    finally:
-        conn.close()
-    elapsed = time.perf_counter() - t0
 
-    after = _sizes()
-    total_after = after["db"] + after["-wal"] + after["-shm"]
-    click.echo(
-        f"after:  db={_fmt_bytes(after['db'])}  "
-        f"wal={_fmt_bytes(after['-wal'])}  shm={_fmt_bytes(after['-shm'])}"
-    )
-    reclaimed = total_before - total_after
-    click.echo(
-        f"reclaimed {_fmt_bytes(reclaimed)} in {elapsed:.1f} s"
-    )
+def _echo_vacuum_outcome(payload: dict) -> None:
+    """Render the before/after/reclaimed lines from a VacuumResult
+    dict. Same shape whether the call went via broker or direct."""
+    before = payload.get("db_size_before", 0)
+    after = payload.get("db_size_after", 0)
+    reclaimed = payload.get("reclaimed", 0)
+    elapsed_s = payload.get("elapsed_ms", 0) / 1000.0
+    click.echo(f"before: total={_fmt_bytes(before)}")
+    click.echo(f"after:  total={_fmt_bytes(after)}")
+    click.echo(f"reclaimed {_fmt_bytes(reclaimed)} in {elapsed_s:.1f} s")

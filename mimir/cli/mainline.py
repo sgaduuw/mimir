@@ -1,62 +1,57 @@
 """`update-mainline` — sync Linus's `linux.git` and (re)build the
 MAINTAINERS-derived schema + the lore `Link:`-trailer index.
 
-Two independent passes against the local tree:
+Thin click wrapper around `mimir.mainline.update_mainline`. The
+heavy lifting (clone/fetch, MAINTAINERS reparse, Link-trailer
+walk) lives in the library module so the broker handler can call
+the same code path; this command just turns CLI flags into
+function args and echoes the structured result.
 
-1. MAINTAINERS: re-parse at HEAD and replace the
-   `subsystems` / `subsystem_paths` / `subsystem_maintainers` tables.
-   Skipped when HEAD hasn't moved since the last load; `--force`
-   overrides.
-2. Commit Link-trailer walk: scan every new commit for
-   `Link: https://lore.kernel.org/.../<msgid>` trailers and write
-   them to `mainline_commits`. Resumable via a separate cursor.
-
-Lives in its own CLI submodule (separate from `mimir.cli.ingest`'s
-lkml-side pulls) because the upstream, the target schema, and the
-invocation cadence are all distinct.
+Broker dispatch (Phase 2.3): when `BROKER_SOCKET_PATH` is set the
+RPC routes through the broker (which then calls the same library
+function inside the single-writer process). Falls back to the
+direct path when broker mode is off.
 """
-import subprocess
-from pathlib import Path
 
 import click
-from sqlalchemy import delete
 
-from mimir import maintainers
 from mimir.cli._common import _configure_logging
 from mimir.config import settings
-from mimir.extensions import SessionLocal, write_transaction
-from mimir.models import (
-    MainlineState,
-    Subsystem,
-    SubsystemMaintainer,
-    SubsystemPath,
-)
 
 
 @click.command("update-mainline")
 @click.option(
-    "--skip-fetch", is_flag=True,
+    "--skip-fetch",
+    is_flag=True,
     help="Don't `git fetch` the mainline mirror; just re-read the local HEAD.",
 )
 @click.option(
-    "--skip-maintainers", is_flag=True,
+    "--skip-maintainers",
+    is_flag=True,
     help="Don't re-parse MAINTAINERS; only walk new commits for Link: trailers.",
 )
 @click.option(
-    "--skip-commits", is_flag=True,
+    "--skip-commits",
+    is_flag=True,
     help="Don't walk commits for Link: trailers; only reload MAINTAINERS.",
 )
 @click.option(
-    "--force", is_flag=True,
+    "--force",
+    is_flag=True,
     help="Re-parse MAINTAINERS and replace subsystems even if HEAD hasn't moved.",
 )
 @click.option(
-    "-v", "--verbose", count=True,
+    "-v",
+    "--verbose",
+    count=True,
     help="-v: progress detail. -vv: debug.",
 )
 def update_mainline_command(
-    skip_fetch: bool, skip_maintainers: bool, skip_commits: bool,
-    force: bool, verbose: int,
+    skip_fetch: bool,
+    skip_maintainers: bool,
+    skip_commits: bool,
+    force: bool,
+    verbose: int,
 ) -> None:
     """Sync the mainline kernel tree (Linus's `linux.git`) and load
     its MAINTAINERS file + index `Link:` trailers from commit
@@ -84,126 +79,64 @@ def update_mainline_command(
     new work on almost every tick.
     """
     _configure_logging(verbose)
-    tree_path = Path(settings.mainline_tree_path)
-    if not tree_path.is_absolute():
-        from mimir.config import PROJECT_ROOT
-        tree_path = PROJECT_ROOT / tree_path
 
-    if not tree_path.exists():
-        tree_path.parent.mkdir(parents=True, exist_ok=True)
-        click.echo(f"cloning {settings.mainline_tree_url} -> {tree_path}")
-        # `--` stops git from interpreting an option-shaped URL as a
-        # flag (same defensive pattern as `mimir.sync.clone_epoch`).
-        subprocess.run(
-            ["git", "clone", "--mirror", "--",
-             settings.mainline_tree_url, str(tree_path)],
-            check=True,
-        )
-    elif not skip_fetch:
-        if verbose:
-            click.echo(f"fetching {tree_path}")
-        subprocess.run(
-            ["git", "-C", str(tree_path), "fetch", "--quiet", "--prune"],
-            check=True,
-        )
+    if settings.broker_socket_path is not None:
+        # Broker mode: dispatch via RPC. The broker calls the same
+        # `update_mainline` library function inside its single-
+        # writer process, keeping the subsystems / mainline_commits
+        # writes out of cross-process contention.
+        from mimir.broker.client import BrokerUnavailable, get_broker_client
 
-    tree_name = "linus"  # fixed slug for now; supports future linux-stable, etc.
-
-    if not skip_maintainers:
-        _load_maintainers(tree_path, tree_name, force)
-
-    if not skip_commits:
-        _walk_link_trailers(tree_path, tree_name)
-
-
-def _load_maintainers(tree_path: Path, tree_name: str, force: bool) -> None:
-    """Read MAINTAINERS from HEAD and replace the subsystems
-    schema. No-op when HEAD matches `last_commit_sha` and not
-    forced."""
-    from dulwich.repo import Repo
-    repo = Repo(str(tree_path))
-    head_sha = repo.head().decode("ascii")
-    commit = repo[repo.head()]
-    tree = repo[commit.tree]
-    try:
-        _mode, blob_sha = tree[b"MAINTAINERS"]
-    except KeyError:
-        raise click.ClickException(
-            f"no MAINTAINERS file at HEAD of {tree_path}; wrong tree?"
-        )
-    blob_bytes = repo[blob_sha].data
-
-    # BEGIN IMMEDIATE: the MAINTAINERS reparse reads `MainlineState`
-    # then writes the whole `subsystems` / `subsystem_paths` /
-    # `subsystem_maintainers` triple in one transaction. The
-    # snapshot upgrade is the exact shape that trips
-    # SQLITE_BUSY_SNAPSHOT under concurrent cache writes.
-    with (
-        write_transaction("update_mainline:maintainers"),
-        SessionLocal() as session,
-    ):
-        state = session.get(MainlineState, tree_name)
-        if state is None:
-            state = MainlineState(tree_name=tree_name)
-            session.add(state)
-        if state.last_commit_sha == head_sha and not force:
-            click.echo(
-                f"update-mainline: MAINTAINERS unchanged (HEAD "
-                f"{head_sha[:12]}); use --force to re-parse"
+        try:
+            payload = get_broker_client().update_mainline(
+                skip_fetch=skip_fetch,
+                skip_maintainers=skip_maintainers,
+                skip_commits=skip_commits,
+                force=force,
             )
-            return
+        except BrokerUnavailable as exc:
+            raise click.ClickException(f"broker update_mainline failed: {exc}")
+        _echo_update_mainline_outcome(payload)
+        return
 
-        parsed = maintainers.parse(blob_bytes)
-        # Replace-all in one transaction. The cascade FK on
-        # `subsystems.id` clears `subsystem_paths` + `subsystem_maintainers`
-        # via ON DELETE CASCADE; SQLite needs `PRAGMA foreign_keys=ON`
-        # (set by `mimir.extensions` on every connection) for the
-        # cascade to fire.
-        session.execute(delete(Subsystem))
-        for sub in parsed:
-            row = Subsystem(name=sub.name, status=sub.status)
-            for path in sub.files:
-                row.paths.append(SubsystemPath(glob=path, is_exclude=False))
-            for path in sub.excludes:
-                row.paths.append(SubsystemPath(glob=path, is_exclude=True))
-            for m in sub.maintainers:
-                row.maintainers.append(SubsystemMaintainer(
-                    role=m.role, name=m.name, address=m.address,
-                ))
-            session.add(row)
-        state.last_commit_sha = head_sha
-        session.commit()
+    from mimir.mainline import update_mainline
 
-    # Invalidate the dynamic-allowlist cache so the web tier picks
-    # up the refreshed M:/R: address set on the next request rather
-    # than serving stale redaction decisions for up to the cache
-    # TTL. The cache table is shared across processes, so this
-    # delete from the scheduler sidecar reaches the web container
-    # too.
-    from mimir import maintainer_allowlist
-    maintainer_allowlist.invalidate()
-
-    click.echo(
-        f"update-mainline: loaded {len(parsed)} subsystems "
-        f"from {tree_name}@{head_sha[:12]}"
-    )
+    try:
+        result = update_mainline(
+            skip_fetch=skip_fetch,
+            skip_maintainers=skip_maintainers,
+            skip_commits=skip_commits,
+            force=force,
+        )
+    except FileNotFoundError as exc:
+        # `load_maintainers` raises this when the tree has no
+        # MAINTAINERS file at HEAD (operator pointed at the wrong
+        # tree). Translate to a ClickException so the CLI exits
+        # with a clean message instead of a traceback.
+        raise click.ClickException(str(exc))
+    _echo_update_mainline_outcome(result.model_dump(mode="json"))
 
 
-def _walk_link_trailers(tree_path: Path, tree_name: str) -> None:
-    """Walk new commits, extract `Link:` trailers, insert
-    `mainline_commits` rows. Resumable via the cursor on
-    `MainlineState.commits_walked_to_sha`."""
-    from mimir import mainline
-    with (
-        write_transaction("update_mainline:link_trailers"),
-        SessionLocal() as session,
-    ):
-        result = mainline.walk_commits(session, tree_path, tree_name=tree_name)
-    # State-change line at default verbosity. Steady-state ticks
-    # produce zero new commits and stay silent.
-    if result.commits_seen:
+def _echo_update_mainline_outcome(payload: dict) -> None:
+    """Render the structured `UpdateMainlineResult` to operator-
+    facing lines. Same shape whether the call went via broker (dict
+    payload from RPC) or direct (model dump). State-change lines
+    only; steady-state ticks stay silent."""
+    head = payload.get("mainline_head") or ""
+    head_short = head[:12]
+    if payload.get("maintainers_ran"):
         click.echo(
-            f"update-mainline: walked {result.commits_seen} commits "
-            f"({result.linked} with lore Link:, {result.rows_inserted} "
-            "rows indexed)"
+            f"update-mainline: loaded {payload.get('subsystems_loaded', 0)} "
+            f"subsystems from linus@{head_short}"
+        )
+    elif payload.get("maintainers_unchanged") and head_short:
+        click.echo(
+            f"update-mainline: MAINTAINERS unchanged (HEAD {head_short}); "
+            "use --force to re-parse"
+        )
+    if payload.get("commits_ran") and payload.get("commits_seen"):
+        click.echo(
+            f"update-mainline: walked {payload['commits_seen']} commits "
+            f"({payload.get('commits_linked', 0)} with lore Link:, "
+            f"{payload.get('rows_inserted', 0)} rows indexed)"
         )

@@ -168,6 +168,56 @@ class BackfillCanonicalsRequest(BaseModel):
     continuation: int | None = Field(default=None, ge=0)
 
 
+# Phase 2.3 long ops: the three periodic maintenance writers
+# (update-mainline + analyze + vacuum). Like ingest and the
+# backfills, these route to the long worker and contend with cache
+# writes only at SQLite-level granularity (cache writes wait for
+# the maintenance op's current commit, not the whole op). VACUUM is
+# the load-bearing exception: it holds an exclusive lock for the
+# entire run, which freezes every other worker for the duration.
+# Acceptable trade-off vs the alternative (a direct-writer process
+# co-existing with the broker, which is what the 2.0.0 cleanup
+# pulls out anyway). Operator-visible window is minutes once a
+# week.
+
+
+class UpdateMainlineRequest(BaseModel):
+    """Run `mimir.mainline.update_mainline` on the broker. The four
+    booleans mirror the CLI options exactly so the broker handler
+    can delegate without translating.
+
+    The MAINTAINERS reparse + Link-trailer walk both touch
+    subsystems / mainline_commits writes; running on the broker
+    keeps those writes inside the single-writer process and the
+    cross-process snapshot-upgrade window stays closed."""
+
+    op: Literal["update_mainline"] = "update_mainline"
+    skip_fetch: bool = False
+    skip_maintainers: bool = False
+    skip_commits: bool = False
+    force: bool = False
+
+
+class AnalyzeRequest(BaseModel):
+    """Run `ANALYZE` on the broker. `full=True` overrides the
+    per-connection `analysis_limit` for this pass (no cap) so the
+    weekly safety-net catches index distributions the daily bounded
+    pass undersamples."""
+
+    op: Literal["analyze"] = "analyze"
+    full: bool = False
+
+
+class VacuumRequest(BaseModel):
+    """Run `VACUUM` (+ WAL checkpoint) on the broker. Holds the
+    SQLite exclusive lock for the duration; cache writes from the
+    web tier queue behind it and may time out under the broker
+    client's per-RPC ceiling on huge databases. Documented in
+    CONTEXT.md as an accepted weekly-quiet-window trade-off."""
+
+    op: Literal["vacuum"] = "vacuum"
+
+
 # Phase 2.2 warm-queue ops: per-inbox + global warming. Routed to
 # the broker's NEW third queue (`warm_queue`) with N multi-workers
 # (default 4, env `BROKER_WARM_WORKERS`). Sibling to the cache and
@@ -238,6 +288,9 @@ Request = Union[
     BackfillArticleTrailersRequest,
     BackfillPatchSeriesRequest,
     BackfillCanonicalsRequest,
+    UpdateMainlineRequest,
+    AnalyzeRequest,
+    VacuumRequest,
     WarmInboxRequest,
     WarmGlobalRequest,
 ]
