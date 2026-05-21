@@ -21,6 +21,7 @@ route and threaded through `linkify`/`render_body` as
 JSON-LD code that needs the redaction posture applied to body
 bytes without going through the HTML pipeline.
 """
+
 import html
 import re
 from urllib.parse import unquote, urlsplit
@@ -127,9 +128,13 @@ def linkify(
     rendered_lines: list[str] = []
     for line in text.split("\n"):
         if address_redactor is not None and _TRAILER_LINE_RE.match(line):
-            rendered_lines.append(_render_trailer_line(
-                line, address_redactor, lore_mirror_urls,
-            ))
+            rendered_lines.append(
+                _render_trailer_line(
+                    line,
+                    address_redactor,
+                    lore_mirror_urls,
+                )
+            )
         else:
             rendered_lines.append(_render_line(line, msgid_urls, lore_mirror_urls))
     return "\n".join(rendered_lines)
@@ -164,10 +169,10 @@ def _render_line(
         if m.group("url"):
             url = m.group("url").rstrip(".,;:!?")
             esc = html.escape(url)
-            out.append(f'<a href="{esc}" rel="nofollow">{esc}</a>')
+            out.append(f'<a href="{esc}" rel="nofollow noopener noreferrer">{esc}</a>')
             out.append(_local_mirror_suffix(url, lore_mirror_urls))
             pos = m.start() + len(m.group("url"))
-            trimmed = m.group("url")[len(url):]
+            trimmed = m.group("url")[len(url) :]
             if trimmed:
                 out.append(html.escape(trimmed))
         else:
@@ -183,7 +188,9 @@ def _render_line(
 
 
 def _render_trailer_line(
-    line: str, redactor, lore_mirror_urls: dict[str, str],
+    line: str,
+    redactor,
+    lore_mirror_urls: dict[str, str],
 ) -> str:
     """Trailer-line variant of `_render_line`: redacts ``<email>``
     patterns via `redactor` instead of msgid-linkifying them. URLs
@@ -203,9 +210,11 @@ def _render_trailer_line(
         if m.group("url"):
             url = m.group("url").rstrip(".,;:!?")
             esc = html.escape(url)
-            replacement = f'<a href="{esc}" rel="nofollow">{esc}</a>'
+            replacement = (
+                f'<a href="{esc}" rel="nofollow noopener noreferrer">{esc}</a>'
+            )
             replacement += _local_mirror_suffix(url, lore_mirror_urls)
-            trimmed = m.group("url")[len(url):]
+            trimmed = m.group("url")[len(url) :]
             if trimmed:
                 replacement += html.escape(trimmed)
             spans.append((m.start(), m.end(), replacement))

@@ -6,6 +6,7 @@ Dev-only; not for production. Idempotent if the inbox already exists
 with a synthetic mirror, appends more messages to the same epoch
 on re-run.
 """
+
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -20,20 +21,30 @@ from mimir.models import Article, ArticleList, Inbox
 
 @click.command("dev-seed-thread")
 @click.option(
-    "--inbox", "inbox_name", default="dev-thread", show_default=True,
+    "--inbox",
+    "inbox_name",
+    default="dev-thread",
+    show_default=True,
     help="Inbox name to seed under. Created if missing.",
 )
 @click.option(
-    "--messages", "n_messages", default=8, show_default=True,
+    "--messages",
+    "n_messages",
+    default=8,
+    show_default=True,
     help="Number of messages in the thread (root + replies).",
 )
 @click.option(
-    "--mirror-root", "mirror_root", default="Inboxes",
+    "--mirror-root",
+    "mirror_root",
+    default="Inboxes",
     show_default=True,
     help="Parent directory for the synthetic mirror. Gitignored.",
 )
 def dev_seed_thread_command(
-    inbox_name: str, n_messages: int, mirror_root: str,
+    inbox_name: str,
+    n_messages: int,
+    mirror_root: str,
 ) -> None:
     """Build a synthetic multi-message thread and ingest it.
 
@@ -66,7 +77,7 @@ def dev_seed_thread_command(
     from dulwich.objects import Blob, Commit, Tree
     from dulwich.repo import Repo
 
-    from mimir.inboxes import create_inbox, get_inbox
+    from mimir.inboxes import InboxNotFound, create_inbox, get_inbox
 
     mirror_dir = Path(mirror_root) / inbox_name / "git"
     epoch_dir = mirror_dir / "0.git"
@@ -75,9 +86,12 @@ def dev_seed_thread_command(
     try:
         get_inbox(inbox_name)
         click.echo(f"using existing inbox '{inbox_name}'")
-    except Exception:
+    except InboxNotFound:
         # Validators require https://; this URL is never fetched for a
-        # dev-seed inbox, so the host is a placeholder.
+        # dev-seed inbox, so the host is a placeholder. Narrow except
+        # to InboxNotFound only so a real DB error (connection lost,
+        # schema mismatch) surfaces as a traceback rather than
+        # silently triggering an unwanted create_inbox.
         create_inbox(
             name=inbox_name,
             mirror_path=str(mirror_dir),
@@ -150,11 +164,10 @@ def dev_seed_thread_command(
             b"From: " + author.encode() + b"\r\n"
             b"To: <" + inbox_name.encode() + b"@lists.example.invalid>\r\n"
             b"Subject: " + subject.encode() + b"\r\n"
-            b"Date: " + date_str.encode() + b"\r\n"
-            + extra +
-            b"\r\n"
-            b"This is seed message " + str(i).encode() +
-            b" of the dev-seed thread. Click around the UI from here."
+            b"Date: " + date_str.encode() + b"\r\n" + extra + b"\r\n"
+            b"This is seed message "
+            + str(i).encode()
+            + b" of the dev-seed thread. Click around the UI from here."
         )
         _commit(Blob.from_string(raw))
         parent_msgids.append(msgid)
@@ -183,6 +196,8 @@ def dev_seed_thread_command(
             .limit(1)
         ).scalar_one_or_none()
         if latest and latest.date:
-            url = f"/{inbox_name}/{latest.date.year}/{latest.date.month:02d}/{latest.id}"
+            url = (
+                f"/{inbox_name}/{latest.date.year}/{latest.date.month:02d}/{latest.id}"
+            )
             click.echo(f"navigate to: http://127.0.0.1:5000{url}")
             click.echo(f"  (inbox dashboard: http://127.0.0.1:5000/{inbox_name}/)")

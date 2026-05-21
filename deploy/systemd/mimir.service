@@ -13,6 +13,12 @@ EnvironmentFile=/opt/mimir/.env
 
 # Bring schema up to head before serving. Idempotent on a current DB.
 ExecStartPre=/opt/mimir/.venv/bin/alembic upgrade head
+# Seed env-configured inboxes (mirrors what the compose deployment
+# does on the scheduler sidecar). Without this a fresh systemd
+# deploy comes up with an empty `inboxes` table and `/` renders a
+# blank meta-index. Idempotent via ON CONFLICT DO NOTHING; admin
+# edits to existing rows are never clobbered.
+ExecStartPre=/opt/mimir/.venv/bin/mimir bootstrap-inboxes
 
 # Two workers is plenty for a single-host SQLite archive; raise via
 # the environment file if you actually saturate them.
@@ -24,6 +30,13 @@ ExecStart=/opt/mimir/.venv/bin/gunicorn 'mimir:create_app()' \
 
 Restart=on-failure
 RestartSec=5s
+
+# Resource ceilings: bound a leaking worker / runaway parser from
+# eating the host. MemoryHigh is the soft pressure (kernel throttles
+# allocations); LimitNOFILE caps the gunicorn / dulwich open-file
+# count at ~4k, comfortable for 2 workers + ad-hoc mirror walks.
+MemoryHigh=2G
+LimitNOFILE=4096
 
 # Hardening, mimir reads from public-inbox mirrors and writes to a
 # single SQLite file; everything else is off-limits.
