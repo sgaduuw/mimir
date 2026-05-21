@@ -5,14 +5,18 @@ the git blob), index into `parsed.attachments[n]`, and either serve
 bytes (download, with RFC 6266 Content-Disposition for non-ASCII
 filenames) or hand the decoded text to Pygments (preview).
 """
+
 import re
 from urllib.parse import quote
 
 from flask import Response, abort, render_template
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
+from pygments.lexers.special import TextLexer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+from mimir.rendering.body import PYGMENTS_MAX_BLOCK_CHARS
 
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox
@@ -74,13 +78,15 @@ def _content_disposition(filename: str | None) -> str:
     safe_ascii = _HEADER_CTL_RE.sub("", filename)
     safe_ascii = safe_ascii.replace('"', "").replace("\\", "")
     quoted = quote(filename, safe="")
-    return f'attachment; filename="{safe_ascii}"; filename*=UTF-8\'\'{quoted}'
+    return f"attachment; filename=\"{safe_ascii}\"; filename*=UTF-8''{quoted}"
 
 
 @bp_web.route(
     "/<inbox_name>/<int:year>/<int:month>/<int:article_id>/attachment/<int:n>"
 )
-def attachment_download(inbox_name: str, year: int, month: int, article_id: int, n: int):
+def attachment_download(
+    inbox_name: str, year: int, month: int, article_id: int, n: int
+):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         _, att = _fetch_article_for_attachment(
@@ -105,12 +111,23 @@ def attachment_preview(inbox_name: str, year: int, month: int, article_id: int, 
     if not _is_previewable(att):
         return render_template(
             "attachment_preview.html",
-            inbox_name=inbox.name, current_inbox=inbox.name,
-            article=article, att=att, n=n,
+            inbox_name=inbox.name,
+            current_inbox=inbox.name,
+            article=article,
+            att=att,
+            n=n,
             previewable=False,
         )
     text_content = att.content.decode("utf-8", errors="replace")
-    lexer = _lexer_for(att.filename, text_content)
+    # Pathological-block clamp: oversized attachments fall back to
+    # TextLexer so a crafted attachment can't pin a gunicorn worker
+    # on a pathological Pygments regex run. The preview still renders
+    # (in monospace), just without language tokens. Same threshold
+    # as the body / diff renderers.
+    if len(text_content) > PYGMENTS_MAX_BLOCK_CHARS:
+        lexer = TextLexer()
+    else:
+        lexer = _lexer_for(att.filename, text_content)
     # `noclasses=False` so the formatter emits class-named spans
     # instead of inline `style="color:..."` per token; the token
     # theming lives in `mimir/static/css/mimir.css` under
@@ -119,13 +136,18 @@ def attachment_preview(inbox_name: str, year: int, month: int, article_id: int, 
     # emit thousands of inline styles per preview and the
     # negotiated CSP would have to allow them.
     formatter = HtmlFormatter(
-        noclasses=False, nobackground=True, linenos="inline",
+        noclasses=False,
+        nobackground=True,
+        linenos="inline",
     )
     highlighted = highlight(text_content, lexer, formatter)
     return render_template(
         "attachment_preview.html",
-        inbox_name=inbox.name, current_inbox=inbox.name,
-        article=article, att=att, n=n,
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
+        article=article,
+        att=att,
+        n=n,
         previewable=True,
         highlighted=highlighted,
         lexer_name=lexer.name,
