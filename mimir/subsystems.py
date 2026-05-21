@@ -7,7 +7,7 @@ Two read-path helpers:
   return the deduplicated set of `Subsystem` rows that any of its
   `article_files` paths land in. The header on the patch page reads
   this.
-- `recent_patches_touching(session, paths, exclude_id, limit)`  
+- `recent_patches_touching(session, paths, exclude_id, limit)`
   given a set of paths, return the most-recent articles (other than
   the current one) that share at least one path. The sidebar on the
   patch page reads this.
@@ -26,6 +26,7 @@ subsystem: if any exclude glob matches the path, that subsystem is
 **not** returned for the path. Cross-subsystem exclusions don't
 exist in MAINTAINERS, `X:` only acts on its own section.
 """
+
 import fnmatch
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -58,6 +59,109 @@ from mimir.models import (
 SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC = 3600  # 1 hour
 
 
+# Snapshot cache for the full subsystems rule set. The pull is
+# expensive on a kernel-scale tree (~10k SubsystemPath rows + ~5k
+# cascaded SubsystemMaintainer rows) and the result only changes
+# when `mimir update-mainline` reloads MAINTAINERS, which is rare.
+# 24 h TTL is a backstop, the cache is invalidated explicitly from
+# `mimir.mainline.load_maintainers` after every reload. Same shape
+# as `mimir.maintainer_allowlist`'s cached frozenset.
+_RULES_CACHE_KEY = "subsystem_rules_snapshot"
+_RULES_CACHE_TTL_SEC = 24 * 3600
+
+
+class _SubsystemRule(BaseModel):
+    """One row from `subsystem_paths`, in cache-safe shape."""
+
+    subsystem_id: int
+    glob: str
+    is_exclude: bool
+
+
+class _SubsystemSnap(BaseModel):
+    """One `Subsystem` + its cascaded maintainers, in cache-safe shape."""
+
+    id: int
+    name: str
+    status: str | None = None
+    maintainers: list[tuple[str, str, str]] = []
+
+
+class _RulesSnapshot(BaseModel):
+    """The full rule set as cached. Both fields rebuild together so
+    a partial cache (rules without subsystem metadata or vice versa)
+    can't happen."""
+
+    rules: list[_SubsystemRule] = []
+    subsystems: dict[int, _SubsystemSnap] = {}
+
+
+cache.register("_SubsystemRule", _SubsystemRule)
+cache.register("_SubsystemSnap", _SubsystemSnap)
+cache.register("_RulesSnapshot", _RulesSnapshot)
+
+
+def _compute_rules_snapshot() -> _RulesSnapshot:
+    """Pull every SubsystemPath + Subsystem + cascaded maintainers
+    into a flat Python snapshot. Two queries (one for subsystems
+    with `selectinload` on maintainers, one for the rules).
+    Cached by `_rules_snapshot()` below."""
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as session:
+        subs = (
+            session.execute(
+                select(Subsystem).options(selectinload(Subsystem.maintainers))
+            )
+            .scalars()
+            .all()
+        )
+        sub_map = {
+            s.id: _SubsystemSnap(
+                id=s.id,
+                name=s.name,
+                status=s.status,
+                maintainers=[(m.role, m.name, m.address) for m in s.maintainers],
+            )
+            for s in subs
+        }
+        rule_rows = session.execute(
+            select(
+                SubsystemPath.subsystem_id,
+                SubsystemPath.glob,
+                SubsystemPath.is_exclude,
+            )
+        ).all()
+    rules = [
+        _SubsystemRule(
+            subsystem_id=sub_id,
+            glob=glob,
+            is_exclude=is_exclude,
+        )
+        for sub_id, glob, is_exclude in rule_rows
+    ]
+    return _RulesSnapshot(rules=rules, subsystems=sub_map)
+
+
+def _rules_snapshot(session: Session) -> _RulesSnapshot:
+    """Return the cached subsystems rule snapshot. `session` is the
+    caller's session so the `get_or_compute` cache lookup runs in
+    the same transaction as the surrounding work."""
+    return cache.get_or_compute(
+        session,
+        _RULES_CACHE_KEY,
+        _RULES_CACHE_TTL_SEC,
+        _compute_rules_snapshot,
+    )
+
+
+def invalidate_rules_snapshot() -> None:
+    """Drop the cached rule set. Called from `update-mainline`'s
+    `load_maintainers` after a reload commits, so the next reader
+    sees the fresh state instead of waiting for the 24 h TTL."""
+    cache.delete(_RULES_CACHE_KEY)
+
+
 def path_matches_glob(path: str, glob: str) -> bool:
     """MAINTAINERS-flavoured glob match.
 
@@ -84,6 +188,7 @@ class SubsystemHit(BaseModel):
     across the cache boundary if we ever wrap this in
     `mimir.cache`.
     """
+
     model_config = {"arbitrary_types_allowed": False}
 
     id: int
@@ -95,7 +200,8 @@ class SubsystemHit(BaseModel):
 
 
 def subsystems_for_article(
-    session: Session, article_id: int,
+    session: Session,
+    article_id: int,
 ) -> list[SubsystemHit]:
     """Resolve the subsystem(s) for an article via its touched files.
 
@@ -108,60 +214,61 @@ def subsystems_for_article(
     100k comparisons, fast in practice. If a future deploy with
     much-larger MAINTAINERS makes this hot, the next move is a
     directory-prefix trie over the `F:` rules.
+
+    The rule set itself (every SubsystemPath + cascaded maintainers,
+    ~15k rows on the kernel tree) is fetched once from the
+    cross-process cache, not per call, the data only changes when
+    `update-mainline` reloads MAINTAINERS. The per-article query
+    against `article_files` still hits the DB.
     """
     paths = [
-        row.path for row in session.execute(
+        row.path
+        for row in session.execute(
             select(ArticleFile).where(ArticleFile.article_id == article_id)
         ).scalars()
     ]
     if not paths:
         return []
 
-    # Pull every subsystem_path with the parent Subsystem joined in
-    # one query. selectinload avoids the N+1 trap on
-    # `subsystem.maintainers` for whichever subsystems end up
-    # matching.
-    all_rules = list(session.execute(
-        select(SubsystemPath, Subsystem)
-        .join(Subsystem, Subsystem.id == SubsystemPath.subsystem_id)
-        .options(selectinload(Subsystem.maintainers))
-    ).all())
-
-    # Group rules by subsystem so we can evaluate include AND exclude
-    # together per subsystem.
-    includes_by_sub: dict[int, list[SubsystemPath]] = defaultdict(list)
-    excludes_by_sub: dict[int, list[SubsystemPath]] = defaultdict(list)
-    subs_by_id: dict[int, Subsystem] = {}
-    for rule, sub in all_rules:
-        subs_by_id[sub.id] = sub
+    snap = _rules_snapshot(session)
+    # Group cached rules by subsystem so we can evaluate include AND
+    # exclude together per subsystem.
+    includes_by_sub: dict[int, list[str]] = defaultdict(list)
+    excludes_by_sub: dict[int, list[str]] = defaultdict(list)
+    for rule in snap.rules:
         if rule.is_exclude:
-            excludes_by_sub[sub.id].append(rule)
+            excludes_by_sub[rule.subsystem_id].append(rule.glob)
         else:
-            includes_by_sub[sub.id].append(rule)
+            includes_by_sub[rule.subsystem_id].append(rule.glob)
 
     matched_ids: set[int] = set()
     for sub_id, includes in includes_by_sub.items():
         excludes = excludes_by_sub.get(sub_id, [])
         for path in paths:
-            if any(
-                path_matches_glob(path, rule.glob) for rule in includes
-            ) and not any(
-                path_matches_glob(path, rule.glob) for rule in excludes
+            if any(path_matches_glob(path, glob) for glob in includes) and not any(
+                path_matches_glob(path, glob) for glob in excludes
             ):
                 matched_ids.add(sub_id)
                 break  # one matching path is enough for this subsystem
 
     hits = []
     for sub_id in matched_ids:
-        sub = subs_by_id[sub_id]
-        hits.append(SubsystemHit(
-            id=sub.id,
-            name=sub.name,
-            status=sub.status,
-            maintainers=[
-                (m.role, m.name, m.address) for m in sub.maintainers
-            ],
-        ))
+        snap_sub = snap.subsystems.get(sub_id)
+        if snap_sub is None:
+            # Rule references a subsystem that's no longer in the
+            # snapshot. Can happen briefly if the cached rules
+            # outlive the parent rows (e.g. cache invalidation
+            # ordering during a race). Skip rather than crash; the
+            # next snapshot refresh will reconcile.
+            continue
+        hits.append(
+            SubsystemHit(
+                id=snap_sub.id,
+                name=snap_sub.name,
+                status=snap_sub.status,
+                maintainers=list(snap_sub.maintainers),
+            )
+        )
     hits.sort(key=lambda h: h.name)
     return hits
 
@@ -169,6 +276,7 @@ def subsystems_for_article(
 class RelatedPatch(BaseModel):
     """One entry in the "other patches touching <path>" sidebar.
     Carries just what the template needs."""
+
     article_id: int
     message_id: str
     subject: str | None
@@ -181,7 +289,8 @@ cache.register("RelatedPatch", RelatedPatch)
 
 
 def recent_patches_touching(
-    session: Session, paths: list[str],
+    session: Session,
+    paths: list[str],
     exclude_article_id: int | None = None,
     limit: int = 5,
 ) -> list[RelatedPatch]:
@@ -217,9 +326,8 @@ def recent_patches_touching(
     """
     if not paths:
         return []
-    min_date = (
-        datetime.now(timezone.utc)
-        - timedelta(days=settings.recent_patches_max_age_days)
+    min_date = datetime.now(timezone.utc) - timedelta(
+        days=settings.recent_patches_max_age_days
     )
     # EXISTS-with-date-bound. The driver is `ix_articles_date` DESC
     # over the bounded window; the planner tests the EXISTS per
@@ -227,16 +335,23 @@ def recent_patches_touching(
     # `article_files` (cheap, ~3 files per article). Stops as soon
     # as `limit` matches are found.
     q = (
-        select(Article.id, Article.message_id, Article.subject,
-               Article.author, Article.date,
-               Article.canonical_inbox_id)
+        select(
+            Article.id,
+            Article.message_id,
+            Article.subject,
+            Article.author,
+            Article.date,
+            Article.canonical_inbox_id,
+        )
         .where(Article.date >= min_date)
-        .where(exists(
-            select(1)
-            .select_from(ArticleFile)
-            .where(ArticleFile.article_id == Article.id)
-            .where(ArticleFile.path.in_(paths))
-        ))
+        .where(
+            exists(
+                select(1)
+                .select_from(ArticleFile)
+                .where(ArticleFile.article_id == Article.id)
+                .where(ArticleFile.path.in_(paths))
+            )
+        )
         .order_by(Article.date.desc())
         .limit(limit)
     )
@@ -263,12 +378,17 @@ def recent_patches_touching(
         canon_name = fallback_canonical_name(canon_id, link_set)
         if canon_name is None:
             continue  # shouldn't happen given FK cascades
-        out.append(RelatedPatch(
-            article_id=art_id, message_id=mid, subject=subj,
-            author=author, date=date, inbox_name=canon_name,
-        ))
+        out.append(
+            RelatedPatch(
+                article_id=art_id,
+                message_id=mid,
+                subject=subj,
+                author=author,
+                date=date,
+                inbox_name=canon_name,
+            )
+        )
     return out
-
 
 
 __all__ = [

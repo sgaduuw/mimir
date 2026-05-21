@@ -497,6 +497,8 @@ Routes:
   page otherwise.
 - `GET /api/<inbox>/recent?offset=N`, HTMX partial: next page of
   "Recent messages" entries plus a fresh "Load more" trigger.
+  Hard-capped at offset 1000 (100 pages back); past it the route
+  404s to bound worst-case server work on adversarial pagination.
 - `GET /healthz` and `GET /readyz`, cheap probes for orchestrators.
   `/healthz` does no DB work; `/readyz` runs a `SELECT 1`. Both
   bypass the route cache via `Cache-Control: no-store`.
@@ -558,7 +560,7 @@ poetry run mimir warm-cache
 from cron or a systemd timer. Sample `crontab`:
 
 ```cron
-* * * * * cd ~/Projects/python/mimir && poetry run mimir warm-cache >/dev/null
+* * * * * cd ~/Projects/mimir && poetry run mimir warm-cache >/dev/null
 ```
 
 A warm-cache run refreshes every cached helper for every configured
@@ -593,11 +595,11 @@ run it during a quiet window.
 Sample `crontab` (daily at 04:00, only if no ingest is running):
 
 ```cron
-0 4 * * * cd ~/Projects/python/mimir && poetry run mimir vacuum >/dev/null
+0 4 * * * cd ~/Projects/mimir && poetry run mimir vacuum >/dev/null
 ```
 
-On lkml-scale (~6 M articles, ~3.6 GB DB) a full VACUUM takes ~80 
-120 s.
+On lkml-scale (~6 M articles, ~3.6 GB DB) a full VACUUM takes
+80 to 120 s.
 
 ## Refreshing query-planner stats (ANALYZE)
 
@@ -605,20 +607,42 @@ SQLite's planner reads `sqlite_stat1` to pick query plans. The
 migration runs `ANALYZE` once on an empty schema, which doesn't
 help; as ingest fills the tables the stats stay zero and the
 planner can flip to bad plans (e.g. scanning all of `article_lists`
-instead of walking the date index). Run periodically, daily or
-after big ingest deltas:
+instead of walking the date index).
+
+Under broker mode the broker container owns this: a bounded
+`ANALYZE` runs on first start (gated by
+`/data/.broker_initial_analyze`), and the in-loop daily +
+weekly-full ticks RPC to the broker. Operator-transparent; just
+keep the scheduler tasks container's cadence env vars (see
+deploy/README.md) at their defaults.
+
+Without broker mode, run the bounded form periodically:
 
 ```sh
 poetry run mimir analyze
 ```
 
-Example crontab (4:30am, just after the daily vacuum):
+Pass `--full` to drop the per-connection `analysis_limit` cap for
+this pass:
 
-```cron
-30 4 * * * cd ~/Projects/python/mimir && poetry run mimir analyze
+```sh
+poetry run mimir analyze --full
 ```
 
-On lkml-scale ANALYZE takes ~5 15 s.
+The bounded form runs in 1 to 3 s on the lkml-scale corpus and is
+accurate enough for the common join shapes. The `--full` pass
+re-samples every row of every index, holds the writer lock 25 to
+30 s, and is the safety net for distribution drift in long-tail
+indexes the bounded sample might miss. Run daily (bounded) and
+weekly (full) via cron; the systemd timers ship in
+`deploy/systemd/` carry this cadence.
+
+Example crontab pair:
+
+```cron
+30 4 * * *  cd ~/Projects/mimir && poetry run mimir analyze
+0 5 * * 0  cd ~/Projects/mimir && poetry run mimir analyze --full
+```
 
 ## Deployment
 
@@ -642,6 +666,24 @@ dev), see `deploy/README.md`. Three shapes are covered:
   automatic HTTPS) and `deploy/nginx/mimir.conf.example` (full
   TLS site block with the `X-Forwarded-Proto` and `X-Request-Id`
   headers mimir reads).
+
+### Broker mode (opt-in)
+
+The compose deployment supports an optional third container,
+`mimir-broker`, that owns the sole SQLite writer connection for
+every periodic and admin write op (cache writes, ingest,
+backfills, warm-cache, `update-mainline`, `analyze`, `vacuum`,
+`bootstrap-inboxes`, `admin inbox` CRUD, `admin failures
+replay`). Web and scheduler-tasks containers run with
+`PRAGMA query_only=1` and dispatch their writes via RPC over a
+UNIX socket. The contract is "broker is the sole SQLite writer;
+everything else is `query_only=1`."
+
+Opt-in in the 1.x line, mandatory in 2.0.0. Enable by
+uncommenting three blocks in `compose.yaml` (env on web + tasks
+plus the `mimir-broker:` service block); see `deploy/README.md`
+for the step-by-step, healthcheck shape, and post-migrate
+`ANALYZE` bootstrap behaviour.
 
 ## Mainline tree (MAINTAINERS)
 
@@ -760,12 +802,17 @@ responses log a warning and don't break the ingest tick.
 ## Linting and tests
 
 ```sh
-poetry run ruff check mimir/
+poetry run ruff check mimir/ tests/
 poetry run pytest
 ```
 
-Tests focus on the cache encoder/decoder round-trip; that's where
-silent corruption would be most expensive.
+Both `mimir/` and `tests/` are linted because CI runs ruff over
+the same set; a pre-push sweep that omits `tests/` can pass
+locally and fail in CI. The suite focuses on the cache
+encoder/decoder round-trip, the parser contract, threading CTEs,
+canonical-inbox resolution, the rendering XSS contract, and the
+broker dispatch / handler / client roundtrips; that's where silent
+corruption would be most expensive.
 
 ## License
 

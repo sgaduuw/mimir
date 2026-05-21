@@ -5,16 +5,18 @@ exact-file / wildcard variants), `subsystems_for_article`
 (reverse lookup from article to other patches touching
 the same path)."""
 
-
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
 from mimir.models import (
-    Article, ArticleFile, Inbox,
+    Article,
+    ArticleFile,
+    Inbox,
 )
 from mimir.subsystems import (
-    path_matches_glob, recent_patches_touching,
+    path_matches_glob,
+    recent_patches_touching,
     subsystems_for_article,
 )
 
@@ -40,7 +42,8 @@ def test_directory_glob_does_not_match_sibling_prefix():
 def test_exact_file_glob():
     assert path_matches_glob("Documentation/foo.rst", "Documentation/foo.rst")
     assert not path_matches_glob(
-        "Documentation/foo.rst", "Documentation/bar.rst",
+        "Documentation/foo.rst",
+        "Documentation/bar.rst",
     )
 
 
@@ -59,7 +62,9 @@ def test_wildcard_glob_via_fnmatch():
 def test_subsystems_for_article_directory_match(seeded_db):
     with seeded_db() as s:
         _add_subsystem(
-            s, "BCACHEFS", "Maintained",
+            s,
+            "BCACHEFS",
+            "Maintained",
             files=["fs/bcachefs/"],
             maintainers=[("M", "Kent Overstreet", "kent.overstreet@linux.dev")],
         )
@@ -81,9 +86,14 @@ def test_subsystems_for_article_multi_subsystem(seeded_db):
     with seeded_db() as s:
         _add_subsystem(s, "BCACHEFS", "Maintained", files=["fs/bcachefs/"])
         _add_subsystem(s, "BTRFS", "Maintained", files=["fs/btrfs/"])
-        art_id = _add_patch_article(s, "p2@x", [
-            "fs/bcachefs/io.c", "fs/btrfs/extent_io.c",
-        ])
+        art_id = _add_patch_article(
+            s,
+            "p2@x",
+            [
+                "fs/bcachefs/io.c",
+                "fs/btrfs/extent_io.c",
+            ],
+        )
         s.commit()
         hits = subsystems_for_article(s, art_id)
     assert [h.name for h in hits] == ["BCACHEFS", "BTRFS"]
@@ -94,7 +104,9 @@ def test_subsystems_for_article_exclude_vetoes_match(seeded_db):
     subsystem. `fs/btrfs/tests/` should NOT pull in BTRFS-MAIN."""
     with seeded_db() as s:
         _add_subsystem(
-            s, "BTRFS-MAIN", "Maintained",
+            s,
+            "BTRFS-MAIN",
+            "Maintained",
             files=["fs/btrfs/"],
             excludes=["fs/btrfs/tests/"],
         )
@@ -111,12 +123,16 @@ def test_subsystems_for_article_exclude_only_vetoes_its_own_subsystem(
     cover the path, B's match survives even when A excludes it."""
     with seeded_db() as s:
         _add_subsystem(
-            s, "BTRFS-MAIN", "Maintained",
+            s,
+            "BTRFS-MAIN",
+            "Maintained",
             files=["fs/btrfs/"],
             excludes=["fs/btrfs/tests/"],
         )
         _add_subsystem(
-            s, "BTRFS-TESTS", "Maintained",
+            s,
+            "BTRFS-TESTS",
+            "Maintained",
             files=["fs/btrfs/tests/"],
         )
         art_id = _add_patch_article(s, "p4@x", ["fs/btrfs/tests/runner.c"])
@@ -136,6 +152,46 @@ def test_subsystems_for_article_no_paths_returns_empty(seeded_db):
     assert hits == []
 
 
+def test_subsystems_for_article_uses_cached_rule_snapshot(seeded_db):
+    """The rule set (~15k rows on the kernel tree) is fetched from
+    the cross-process cache, not pulled per call. After a first
+    `subsystems_for_article` populates the cache, adding a new
+    subsystem WITHOUT invalidating the cache must NOT show up in
+    a subsequent lookup, the cached snapshot is what's read. This
+    pins the caching contract; `invalidate_rules_snapshot()` is
+    what the `update-mainline` flow calls to refresh it."""
+    from mimir.subsystems import invalidate_rules_snapshot
+
+    with seeded_db() as s:
+        _add_subsystem(s, "ORIGINAL", "Maintained", files=["drivers/orig/"])
+        art1 = _add_patch_article(s, "p-cache-1@x", ["drivers/orig/x.c"])
+        s.commit()
+
+        # Prime the cache.
+        first = subsystems_for_article(s, art1)
+        assert [h.name for h in first] == ["ORIGINAL"]
+
+        # Add a new subsystem WITHOUT invalidating; the cached
+        # snapshot should still be in effect, so the new
+        # subsystem must NOT yet show up for an article that
+        # touches its path.
+        _add_subsystem(s, "STALE", "Maintained", files=["drivers/stale/"])
+        art2 = _add_patch_article(s, "p-cache-2@x", ["drivers/stale/y.c"])
+        s.commit()
+        stale_hits = subsystems_for_article(s, art2)
+        assert stale_hits == [], (
+            "rule snapshot should still be cached; STALE should not "
+            "appear yet without an explicit invalidate"
+        )
+
+        # Now invalidate, mirroring what `mainline.load_maintainers`
+        # does after a MAINTAINERS reload. The next read picks up
+        # the new subsystem.
+        invalidate_rules_snapshot()
+        fresh_hits = subsystems_for_article(s, art2)
+        assert [h.name for h in fresh_hits] == ["STALE"]
+
+
 # `recent_patches_touching` integration.
 
 
@@ -146,8 +202,7 @@ def test_recent_patches_touching_returns_others_sharing_path(seeded_db):
         a = _add_patch_article(s, "p10@x", ["fs/bcachefs/super.c"])
         b = _add_patch_article(s, "p11@x", ["fs/bcachefs/super.c"])
         s.commit()
-        out = recent_patches_touching(s, ["fs/bcachefs/super.c"],
-                                      exclude_article_id=a)
+        out = recent_patches_touching(s, ["fs/bcachefs/super.c"], exclude_article_id=a)
     assert [r.article_id for r in out] == [b]
 
 
@@ -162,20 +217,27 @@ def test_recent_patches_touching_orders_by_date_desc(seeded_db):
     """
     with seeded_db() as s:
         from mimir.models import ArticleList
+
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         now = datetime.now(timezone.utc)
-        for i, dt in enumerate([
-            now - timedelta(days=60),  # oldest
-            now - timedelta(days=10),  # newest
-            now - timedelta(days=30),  # middle
-        ]):
+        for i, dt in enumerate(
+            [
+                now - timedelta(days=60),  # oldest
+                now - timedelta(days=10),  # newest
+                now - timedelta(days=30),  # middle
+            ]
+        ):
             art = Article(
                 message_id=f"date{i}@x",
-                subject="x", author="a@x", date=dt,
-                thread_parent=None, subject_normalized="x",
+                subject="x",
+                author="a@x",
+                date=dt,
+                thread_parent=None,
+                subject_normalized="x",
                 canonical_inbox_id=inbox.id,
-                lists=[ArticleList(inbox_id=inbox.id, epoch="0.git",
-                                   commit_sha="f" * 40)],
+                lists=[
+                    ArticleList(inbox_id=inbox.id, epoch="0.git", commit_sha="f" * 40)
+                ],
                 files=[ArticleFile(path="fs/x.c")],
             )
             s.add(art)
@@ -200,13 +262,17 @@ def test_recent_patches_touching_resolves_canonical_inbox(seeded_db):
     posts surface under the right URL."""
     with seeded_db() as s:
         from mimir.models import ArticleList
+
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
         # Patch lives in both inboxes, canonical = beta.
         art = Article(
-            message_id="canon@x", subject="x", author="a@x",
+            message_id="canon@x",
+            subject="x",
+            author="a@x",
             date=datetime.now(timezone.utc) - timedelta(days=1),
-            thread_parent=None, subject_normalized="x",
+            thread_parent=None,
+            subject_normalized="x",
             canonical_inbox_id=beta.id,
             lists=[
                 ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="a" * 40),
@@ -236,27 +302,33 @@ def test_recent_patches_touching_respects_max_age_bound(seeded_db):
         # (default window + 30 days), both touching the same path.
         now = datetime.now(timezone.utc)
         recent_art = Article(
-            message_id="recent@x", subject="x", author="a@x",
+            message_id="recent@x",
+            subject="x",
+            author="a@x",
             date=now - timedelta(days=10),
-            thread_parent=None, subject_normalized="x",
+            thread_parent=None,
+            subject_normalized="x",
             canonical_inbox_id=inbox.id,
-            lists=[ArticleList(inbox_id=inbox.id, epoch="0.git",
-                               commit_sha="a" * 40)],
+            lists=[ArticleList(inbox_id=inbox.id, epoch="0.git", commit_sha="a" * 40)],
             files=[ArticleFile(path="fs/popular.c")],
         )
         ancient_art = Article(
-            message_id="ancient@x", subject="x", author="a@x",
+            message_id="ancient@x",
+            subject="x",
+            author="a@x",
             date=now - timedelta(days=settings.recent_patches_max_age_days + 30),
-            thread_parent=None, subject_normalized="x",
+            thread_parent=None,
+            subject_normalized="x",
             canonical_inbox_id=inbox.id,
-            lists=[ArticleList(inbox_id=inbox.id, epoch="0.git",
-                               commit_sha="b" * 40)],
+            lists=[ArticleList(inbox_id=inbox.id, epoch="0.git", commit_sha="b" * 40)],
             files=[ArticleFile(path="fs/popular.c")],
         )
         s.add_all([recent_art, ancient_art])
         s.commit()
         out = recent_patches_touching(
-            s, ["fs/popular.c"], exclude_article_id=-1,
+            s,
+            ["fs/popular.c"],
+            exclude_article_id=-1,
         )
     # Only the recent one surfaces; the ancient one is below the
     # date floor.
@@ -309,13 +381,15 @@ def test_recent_patches_touching_uses_date_index_no_full_scan(seeded_db):
                 LIMIT 5
                 """
             ),
-            {"min_date": (datetime.now(timezone.utc) - timedelta(days=180)).isoformat()},
+            {
+                "min_date": (
+                    datetime.now(timezone.utc) - timedelta(days=180)
+                ).isoformat()
+            },
         ).all()
         plan = "\n".join(r[3] for r in plan_rows)
 
-    assert "SCAN articles" not in plan, (
-        f"full scan of articles in plan:\n{plan}"
-    )
+    assert "SCAN articles" not in plan, f"full scan of articles in plan:\n{plan}"
     assert "SCAN article_files" not in plan, (
         f"full scan of article_files in plan:\n{plan}"
     )

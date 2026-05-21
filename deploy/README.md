@@ -46,7 +46,8 @@ different `command:`.
 | `WARM_CACHE_EVERY`      | `60` (s)        | Refresh dashboard helpers                     |
 | `UPDATE_EVERY`          | `300` (s)       | Sync upstream + ingest new commits            |
 | `UPDATE_MAINLINE_EVERY` | `600` (s)       | Fetch `linux.git` + (re)parse `MAINTAINERS`   |
-| `ANALYZE_EVERY`         | `86400` (s)     | Refresh `sqlite_stat1`                        |
+| `ANALYZE_EVERY`         | `86400` (s)     | Refresh `sqlite_stat1` (bounded)              |
+| `ANALYZE_FULL_EVERY`    | `604800` (s)    | Full ANALYZE (no `analysis_limit` cap)        |
 | `VACUUM_EVERY`          | `604800` (s)    | Compact DB + collapse WAL                     |
 
 Timing is wall-clock, persisted across container restarts via
@@ -78,21 +79,73 @@ on exit, not one per tick. Tasks that became due during the pause fire
 in the next tick after resume; the cadence isn't reset.
 
 The sentinel gates only the in-loop ticks; the boot-time
-`alembic upgrade head` + post-migrate ANALYZE + `(initial)`
+`alembic upgrade head` + `bootstrap-inboxes` + `(initial)`
 warm-cache/update passes ignore it. If you need to restart the
 sidecar mid-maintenance, drop the sentinel first.
 
 The sidecar owns schema: `alembic upgrade head` runs once on start
-(before the loop) and is the single place that touches DDL. A
-post-migrate `ANALYZE` runs immediately after the upgrade and
-before the `/data/.migrated` healthcheck sentinel is touched, so
-any new index introduced by the just-applied migration starts life
-with `sqlite_stat1` entries rather than being invisible to the
-planner until the next scheduled ANALYZE pass. The web container's
-`depends_on: { mimir-tasks: { condition: service_healthy } }` then
-gates gunicorn on that sentinel, so a fresh `/data` volume migrates
-before serving any requests. systemd deployments are unaffected  
-`mimir.service` runs its own `ExecStartPre=alembic upgrade head`.
+(before the loop) and is the single place that touches DDL.
+`bootstrap-inboxes` follows so env-configured inboxes exist before
+the web tier comes up. Finally a pre-flight `warm-cache` runs so
+the dashboard cache is hot before serving. The web container's
+`depends_on: { mimir-tasks: { condition: service_healthy } }`
+gates gunicorn on the `/data/.migrated` healthcheck sentinel
+(touched only after those passes succeed), so a fresh `/data`
+volume migrates before serving any requests. systemd deployments
+are unaffected, `mimir.service` runs its own
+`ExecStartPre=alembic upgrade head` and an
+`ExecStartPre=mimir bootstrap-inboxes`.
+
+**Post-migrate ANALYZE**: under broker mode (see below) the
+broker container runs a bounded `ANALYZE` on first start, gated
+by `/data/.broker_initial_analyze`. Web tier gates on the
+broker's healthcheck so cold requests after a deploy never walk
+un-`ANALYZE`'d indexes. Without broker mode the daily scheduled
+`ANALYZE` in the loop above catches stat drift after each ingest
+delta; new indexes from a fresh migration start life invisible to
+the planner until that next pass fires.
+
+### Broker mode (opt-in)
+
+The write-broker is a third container that owns the sole SQLite
+writer connection for every periodic and admin write op: cache
+writes, ingest, the four backfills, warm-cache fan-out,
+`update-mainline`, `analyze`, `vacuum`, `bootstrap-inboxes`, the
+seven `admin inbox` CRUD ops, and `admin failures replay`. Web
+and scheduler-tasks containers run with `PRAGMA query_only=1`
+and dispatch their writes via RPC over a UNIX socket at
+`/data/.broker.sock`. See `mimir/broker/` for the daemon
+internals; the high-level contract is "broker is the sole SQLite
+writer; everything else is `query_only=1`."
+
+Opt-in in 1.x; 2.0.0 will make it mandatory. Enable by un-
+commenting three blocks in `compose.yaml`:
+
+1. `BROKER_SOCKET_PATH` + `MIMIR_ROLE: "web"` on the `mimir`
+   service env.
+2. `BROKER_SOCKET_PATH` + `MIMIR_ROLE: "tasks"` on the
+   `mimir-tasks` service env.
+3. The full `mimir-broker:` service block lower in the file,
+   plus add `mimir-broker: { condition: service_healthy }` to
+   the web service's `depends_on:`.
+
+The broker's healthcheck is `mimir broker-ping --socket
+/data/.broker.sock` with `start_period: 30s` to cover the
+first-start bounded `ANALYZE`. On a fresh `/data` volume the
+boot chain is: scheduler-tasks runs alembic +
+`bootstrap-inboxes` + pre-flight warm-cache → touches
+`/data/.migrated` → broker comes up, runs post-migrate ANALYZE
+if `/data/.broker_initial_analyze` is missing, then accepts
+RPCs → web tier starts serving. Subsequent restarts skip the
+ANALYZE (sentinel-gated).
+
+To force a re-ANALYZE on the next broker start (e.g. after a
+manual schema change), delete the sentinel:
+
+```sh
+podman exec mimir-broker rm /data/.broker_initial_analyze
+podman restart mimir-broker
+```
 
 ## systemd
 
@@ -134,6 +187,12 @@ sudo systemctl enable --now mimir-vacuum.timer
 ProtectSystem=strict, etc). `ReadWritePaths=/opt/mimir` is what lets
 SQLite write back; if you move the DB elsewhere, add that path too.
 
+Broker mode isn't packaged for systemd; single-host compose is the
+canonical multi-process shape. A systemd broker would mean a fifth
+unit (`mimir-broker.service`) gating the others with
+`After=mimir-broker.service` and a Type=notify readiness signal.
+Possible, not shipped; ask if needed.
+
 VACUUM needs an exclusive lock for the post-VACUUM
 `wal_checkpoint(TRUNCATE)` to actually collapse the WAL. The unit
 does *not* stop `mimir.service` automatically, systemd refuses
@@ -157,10 +216,11 @@ When the app sits behind a reverse proxy, set `TRUSTED_PROXY_HOPS` to
 the number of trusted proxies in front. mimir then wraps its WSGI app
 in Werkzeug's `ProxyFix` so `request.remote_addr` (and `.scheme` /
 `.host`) reflect the real client instead of the proxy's address. The
-canonical `compose.yaml` ships `TRUSTED_PROXY_HOPS=1` for the typical
-"Caddy → mimir" shape. Leave at `0` if mimir is reachable directly  
-otherwise anyone could spoof those values via a forged
-`X-Forwarded-For`.
+canonical `compose.yaml` ships `TRUSTED_PROXY_HOPS=2` for the
+production-targeted "Tailscale Funnel → Caddy → mimir" chain; drop to
+`1` for a single Caddy / nginx layer. Leave at `0` if mimir is
+reachable directly, otherwise anyone could spoof those values via a
+forged `X-Forwarded-For`.
 
 ### Caddy (preferred, automatic HTTPS)
 

@@ -120,23 +120,28 @@ services:
       retries: 60
       start_period: 0s
 
-  # Write-broker sidecar (Phase 1, opt-in). Owns the sole cache-table
-  # writer connection. Web tier (PRAGMA query_only=1) and the
-  # scheduler sidecar's CLI commands submit cache.set / delete /
-  # purge_expired over the UNIX socket at /data/.broker.sock; the
-  # broker serializes them through one connection so no two writers
-  # ever fight for the SQLite writer lock. Complex writes (ingest,
-  # backfill, update-mainline) stay on the scheduler sidecar with
-  # direct SQLite access; this is Phase 1, scope is cache only.
+  # Write-broker sidecar. Owns the sole writer connection across
+  # every periodic + admin write op as of 1.39.0 (Phase 2.4):
+  # cache.{set,delete,delete_for_inbox,purge_expired}, ingest_inbox,
+  # all four backfills, update_mainline, analyze, vacuum,
+  # bootstrap_inboxes, the seven admin inbox CRUD ops, and
+  # failures_replay. Complex writes ride the long worker; cache
+  # writes ride the cache worker; warm jobs fan out across N warm
+  # workers. See mimir/broker/ for the daemon + protocol + client.
   #
-  # OFF BY DEFAULT in 1.32.0. To enable: uncomment the whole block
-  # below, AND uncomment the MIMIR_ROLE / BROKER_SOCKET_PATH env
-  # vars on the `mimir` and `mimir-tasks` services above, AND add
+  # The broker also runs a post-migrate ANALYZE on first startup
+  # (sentinel-gated at /data/.broker_initial_analyze); the web tier
+  # gates on the broker's healthcheck so cold requests after a
+  # deploy don't walk un-ANALYZE'd indexes.
+  #
+  # `mimir broker-ping` is the healthcheck command.
+  #
+  # OFF BY DEFAULT (broker mode opt-in until 2.0.0 makes it
+  # mandatory). To enable: uncomment the whole block below, AND
+  # uncomment the MIMIR_ROLE / BROKER_SOCKET_PATH env vars on the
+  # `mimir` and `mimir-tasks` services above, AND add
   # `mimir-broker: condition: service_healthy` to the web service's
   # `depends_on:`. Three uncomments + one add.
-  #
-  # See mimir/broker/ for the daemon, RPC protocol, and client.
-  # `mimir broker-ping` is the healthcheck command.
   # mimir-broker:
   #   build: .
   #   image: mimir:latest
@@ -156,11 +161,15 @@ services:
   #     interval: 10s
   #     timeout: 2s
   #     retries: 3
-  #     start_period: 5s
-  #   # Broker depends on the sidecar's `/data/.migrated` sentinel so
-  #   # the cache table exists before the broker accepts its first
-  #   # write. The scheduler still owns the alembic step; the broker
-  #   # is purely the writer process for cache.* operations.
+  #     # Generous start_period: on a fresh deploy the broker runs
+  #     # the post-migrate ANALYZE (bounded, ~1-3 s on prod) before
+  #     # accepting RPCs, plus its own startup time. Subsequent
+  #     # restarts skip the ANALYZE (sentinel-gated).
+  #     start_period: 30s
+  #   # Broker depends on the sidecar's `/data/.migrated` sentinel
+  #   # so the cache + ingest schemas exist before the broker
+  #   # accepts its first write. The scheduler still owns the
+  #   # alembic step.
   #   depends_on:
   #     mimir-tasks:
   #       condition: service_healthy

@@ -119,12 +119,16 @@ fi
 # edits to existing rows are never clobbered.
 run "bootstrap-inboxes" "" mimir bootstrap-inboxes
 
-# Refresh planner stats before unblocking the web tier. A migration
-# in the just-applied stack can add a new index; without this pass
-# sqlite_stat1 has no entry for it and the planner picks shapes
-# blind (#202). Cheap on a multi-million-row corpus (tens of
-# seconds), idempotent on subsequent restarts.
-run "analyze (post-migrate)" /data/.last_analyze mimir analyze
+# Post-migrate ANALYZE moved to the broker container as of 1.39.0
+# (Phase 2.4): on a fresh deploy with a new index landing in this
+# alembic stack, the broker's own startup runs a bounded ANALYZE
+# before flipping its own healthcheck. The web tier
+# `depends_on: mimir-broker (service_healthy)` so cold requests
+# after a deploy don't blindly walk new indexes.
+#
+# The scheduler sidecar's job here is now just to land the schema
+# + bootstrap inboxes + warm the read cache; the writer-side
+# `sqlite_stat1` refresh is owned by the broker process.
 
 # Pre-flight warm so the web tier doesn't start serving until the
 # dashboard cache is hot. Without this, every container recreate
