@@ -98,9 +98,11 @@ changes, not internal refactors. Categories: **Added**,
   origin-plus-key concatenation.
 - **External links carry the full rel set**
   (`nofollow noopener noreferrer`) in linkify-rendered URLs.
-- **CI actions SHA-pinned**; new CodeQL workflow runs the
-  `security-and-quality` suite on python + actions, weekly + on
-  PRs to `develop` / `main`.
+- **CI actions SHA-pinned** so a moved tag in an upstream
+  action publisher can't silently land a new ref on the next
+  run. CodeQL coverage (python + actions + javascript) is
+  provided by the repo's default-setup CodeQL configuration
+  (already enabled before the sweep; no custom workflow needed).
 - **Container/systemd hardening**: Dockerfile sets
   `GIT_TERMINAL_PROMPT=0` + `GIT_PROTOCOL_FROM_USER=0`.
   systemd unit gains `ExecStartPre=mimir bootstrap-inboxes` (a
