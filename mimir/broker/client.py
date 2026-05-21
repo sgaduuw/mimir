@@ -46,6 +46,14 @@ from mimir.broker.protocol import (
     CacheDeleteRequest,
     CachePurgeExpiredRequest,
     CacheSetRequest,
+    FailuresReplayRequest,
+    InboxAddTrackedAuthorRequest,
+    InboxClearTrackedAuthorsRequest,
+    InboxCreateRequest,
+    InboxDeleteRequest,
+    InboxRemoveTrackedAuthorRequest,
+    InboxSetTrackedAuthorsRequest,
+    InboxUpdateRequest,
     IngestInboxRequest,
     PingRequest,
     Reply,
@@ -494,6 +502,163 @@ class BrokerClient:
         if not reply.ok:
             raise BrokerUnavailable(f"bootstrap_inboxes: {reply.error}")
         return int((reply.result or {}).get("inboxes", 0))
+
+    # Admin-write ops (Phase 2.4) ─────────────────────────────────────
+
+    def inbox_create(
+        self,
+        name: str,
+        mirror_path: str,
+        upstream_url: str,
+        *,
+        timeout: float = 60.0,
+    ) -> dict:
+        """Create one inbox via the broker. Returns the resulting
+        inbox dict (`{id, name, mirror_path, upstream_url,
+        tracked_authors}`) reconstructed from the Reply payload."""
+        req = InboxCreateRequest(
+            name=name,
+            mirror_path=mirror_path,
+            upstream_url=upstream_url,
+        )
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"inbox_create: {reply.error}")
+        return (reply.result or {}).get("inbox", {})
+
+    def inbox_update(
+        self,
+        name: str,
+        *,
+        new_name: str | None = None,
+        mirror_path: str | None = None,
+        upstream_url: str | None = None,
+        timeout: float = 60.0,
+    ) -> dict:
+        """Modify one inbox via the broker. Only non-None fields are
+        applied server-side."""
+        req = InboxUpdateRequest(
+            name=name,
+            new_name=new_name,
+            mirror_path=mirror_path,
+            upstream_url=upstream_url,
+        )
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"inbox_update: {reply.error}")
+        return (reply.result or {}).get("inbox", {})
+
+    def inbox_delete(
+        self,
+        name: str,
+        *,
+        keep_orphan_articles: bool = False,
+        remove_inbox_data: bool = False,
+        timeout: float = 600.0,
+    ) -> dict:
+        """Remove one inbox via the broker. Returns the removal
+        report dict (`{name, article_lists_deleted,
+        ingest_state_deleted, orphan_articles_deleted,
+        mirror_path_deleted}`). Operator confirmation lives in the
+        CLI; this method only sends the post-confirmation request.
+
+        Default `timeout=600 s`: with `remove_inbox_data=True` the
+        broker `rm -rf`s the on-disk mirror, which can take a few
+        minutes on a ~20 GB lkml-shaped tree."""
+        req = InboxDeleteRequest(
+            name=name,
+            keep_orphan_articles=keep_orphan_articles,
+            remove_inbox_data=remove_inbox_data,
+        )
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"inbox_delete: {reply.error}")
+        return (reply.result or {}).get("report", {})
+
+    def inbox_set_tracked_authors(
+        self,
+        name: str,
+        trackers: dict[str, str],
+        *,
+        timeout: float = 60.0,
+    ) -> dict:
+        """Replace the per-inbox tracker dict in one shot."""
+        req = InboxSetTrackedAuthorsRequest(name=name, trackers=trackers)
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"inbox_set_tracked_authors: {reply.error}")
+        return (reply.result or {}).get("inbox", {})
+
+    def inbox_add_tracked_author(
+        self,
+        name: str,
+        label: str,
+        substring: str,
+        *,
+        timeout: float = 60.0,
+    ) -> dict:
+        """Add (or replace) one tracker entry."""
+        req = InboxAddTrackedAuthorRequest(
+            name=name,
+            label=label,
+            substring=substring,
+        )
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"inbox_add_tracked_author: {reply.error}")
+        return (reply.result or {}).get("inbox", {})
+
+    def inbox_remove_tracked_author(
+        self,
+        name: str,
+        label: str,
+        *,
+        timeout: float = 60.0,
+    ) -> dict:
+        """Remove one tracker entry by label."""
+        req = InboxRemoveTrackedAuthorRequest(name=name, label=label)
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"inbox_remove_tracked_author: {reply.error}")
+        return (reply.result or {}).get("inbox", {})
+
+    def inbox_clear_tracked_authors(
+        self,
+        name: str,
+        *,
+        timeout: float = 60.0,
+    ) -> dict:
+        """Drop all tracker entries (writes NULL)."""
+        req = InboxClearTrackedAuthorsRequest(name=name)
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"inbox_clear_tracked_authors: {reply.error}")
+        return (reply.result or {}).get("inbox", {})
+
+    def failures_replay(
+        self,
+        inbox_name: str,
+        *,
+        epoch_filter: str | None = None,
+        limit: int | None = None,
+        timeout: float = 1800.0,
+    ) -> dict:
+        """Replay persisted parse_failures for one inbox via the
+        broker. Returns the ReplayResult dict
+        (`{attempted, recovered, still_failed, skipped}`).
+
+        Default `timeout=1800 s` (30 min) covers a multi-thousand-
+        row replay session on a fresh post-fix run; steady-state
+        replays are sub-second."""
+        req = FailuresReplayRequest(
+            inbox_name=inbox_name,
+            epoch_filter=epoch_filter,
+            limit=limit,
+        )
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"failures_replay: {reply.error}")
+        return reply.result or {}
 
     def close(self) -> None:
         """Tests and CLI tools call this to release the socket; the

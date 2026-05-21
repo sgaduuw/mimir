@@ -18,6 +18,7 @@ and age out via `purge_expired`. Callers don't see the prefix.
 import dataclasses
 import json
 import logging
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import date, datetime, timezone
@@ -151,11 +152,48 @@ def _should_dispatch_to_broker() -> bool:
     RPC'ing to ourselves: socket round-trip + queue + dispatch +
     direct write on the cache worker, vs just one direct write
     here on the long worker), and false when broker mode is off
-    entirely. Phase 2.1+ matters because `ingest_inbox` now runs
-    inside the broker (the long worker); its `_warm_after_ingest`
-    would otherwise fire three self-RPCs per per-inbox tick.
+    entirely.
+
+    Two short-circuit conditions:
+
+    - `MIMIR_ROLE=broker` env, which the broker container sets in
+      production (and the `mimir broker` CLI entrypoint sets when
+      it runs `serve()`). Process-level marker.
+    - Thread-local "currently inside a broker handler" flag set by
+      `mimir.broker.server`'s worker loops. Catches the in-process
+      test shape where broker + CLI live in the same Python
+      process and `settings.mimir_role` is shared. Worker threads
+      set the flag on entry to a dispatch and clear it on exit, so
+      any cache/inboxes call reachable from a handler sees False
+      and falls through to the direct path.
+
+    Phase 2.1+ matters because `ingest_inbox` now runs inside the
+    broker (the long worker); its `_warm_after_ingest` would
+    otherwise fire three self-RPCs per per-inbox tick. Phase 2.4
+    extends the same concern to `delete_inbox`, which calls
+    `cache.delete_for_inbox` after its DB writes commit.
     """
-    return settings.broker_socket_path is not None and settings.mimir_role != "broker"
+    if settings.mimir_role == "broker":
+        return False
+    if _broker_handler_active():
+        return False
+    return settings.broker_socket_path is not None
+
+
+# Thread-local flag set by `mimir.broker.server`'s worker loops
+# while they're dispatching a request. `cache._should_dispatch_to_broker`
+# checks it (in addition to `settings.mimir_role`) to avoid a
+# self-RPC when broker + caller share a process (the in-process
+# test shape).
+_HANDLER_TLS = threading.local()
+
+
+def _broker_handler_active() -> bool:
+    return getattr(_HANDLER_TLS, "active", False)
+
+
+def _set_broker_handler_active(active: bool) -> None:
+    _HANDLER_TLS.active = active
 
 
 def get(key: str) -> Any:
