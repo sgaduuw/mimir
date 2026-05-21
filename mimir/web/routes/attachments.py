@@ -5,14 +5,18 @@ the git blob), index into `parsed.attachments[n]`, and either serve
 bytes (download, with RFC 6266 Content-Disposition for non-ASCII
 filenames) or hand the decoded text to Pygments (preview).
 """
+
 import re
 from urllib.parse import quote
 
 from flask import Response, abort, render_template
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
+from pygments.lexers.special import TextLexer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+from mimir.rendering.body import PYGMENTS_MAX_BLOCK_CHARS
 
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox
@@ -23,6 +27,55 @@ from mimir.web.urls import _abort_404_if_url_date_mismatches, _get_inbox_or_404
 
 
 _HEADER_CTL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+# Cap the `filename="..."` ASCII fallback. The RFC 6266 `filename*`
+# form has no hard limit, but reverse proxies (Caddy, nginx) cap
+# total response-header bytes; a multi-KB filename can push past
+# the proxy limit and surface as a 502. Real attachments stay well
+# under 100 chars; 200 is generous headroom.
+_FILENAME_ASCII_MAX = 200
+
+# Attachment Content-Type values come from the sending MUA and can
+# be any string. Browsers honor `Content-Disposition: attachment`
+# regardless of the type so the download branch is safe, but mimir
+# still emits the upstream value verbatim to be a good citizen. The
+# allowlist limits the surface to the families a kernel mailing-list
+# archive plausibly carries; anything outside it falls back to
+# `application/octet-stream` so a hostile sender can't pre-classify
+# the response for the browser. The preview route picks its own
+# lexer via Pygments and ignores this value entirely.
+_SAFE_CONTENT_TYPE_PREFIXES = (
+    "text/",
+    "image/",
+    "application/json",
+    "application/pdf",
+    "application/octet-stream",
+    "application/x-patch",
+    "application/x-tar",
+    "application/x-gzip",
+    "application/gzip",
+    "application/zip",
+    "application/x-bzip2",
+    "application/x-xz",
+    "application/x-zstd",
+    "application/zstd",
+    "message/rfc822",
+)
+
+
+def _safe_content_type(content_type: str | None) -> str:
+    """Return the sender-provided Content-Type when it matches the
+    allowlist of safe prefixes, otherwise `application/octet-stream`.
+    Defense in depth on top of `Content-Disposition: attachment` +
+    the global `X-Content-Type-Options: nosniff` header."""
+    if not content_type:
+        return "application/octet-stream"
+    # Normalise: drop parameters (charset, boundary, ...) for the
+    # prefix match; the original full string is what we emit.
+    head = content_type.split(";", 1)[0].strip().lower()
+    if any(head.startswith(p) for p in _SAFE_CONTENT_TYPE_PREFIXES):
+        return content_type
+    return "application/octet-stream"
 
 
 def _fetch_article_for_attachment(
@@ -73,14 +126,18 @@ def _content_disposition(filename: str | None) -> str:
         return "attachment"
     safe_ascii = _HEADER_CTL_RE.sub("", filename)
     safe_ascii = safe_ascii.replace('"', "").replace("\\", "")
+    if len(safe_ascii) > _FILENAME_ASCII_MAX:
+        safe_ascii = safe_ascii[:_FILENAME_ASCII_MAX]
     quoted = quote(filename, safe="")
-    return f'attachment; filename="{safe_ascii}"; filename*=UTF-8\'\'{quoted}'
+    return f"attachment; filename=\"{safe_ascii}\"; filename*=UTF-8''{quoted}"
 
 
 @bp_web.route(
     "/<inbox_name>/<int:year>/<int:month>/<int:article_id>/attachment/<int:n>"
 )
-def attachment_download(inbox_name: str, year: int, month: int, article_id: int, n: int):
+def attachment_download(
+    inbox_name: str, year: int, month: int, article_id: int, n: int
+):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         _, att = _fetch_article_for_attachment(
@@ -88,7 +145,7 @@ def attachment_download(inbox_name: str, year: int, month: int, article_id: int,
         )
     return Response(
         att.content,
-        mimetype=att.content_type or "application/octet-stream",
+        mimetype=_safe_content_type(att.content_type),
         headers={"Content-Disposition": _content_disposition(att.filename)},
     )
 
@@ -105,12 +162,23 @@ def attachment_preview(inbox_name: str, year: int, month: int, article_id: int, 
     if not _is_previewable(att):
         return render_template(
             "attachment_preview.html",
-            inbox_name=inbox.name, current_inbox=inbox.name,
-            article=article, att=att, n=n,
+            inbox_name=inbox.name,
+            current_inbox=inbox.name,
+            article=article,
+            att=att,
+            n=n,
             previewable=False,
         )
     text_content = att.content.decode("utf-8", errors="replace")
-    lexer = _lexer_for(att.filename, text_content)
+    # Pathological-block clamp: oversized attachments fall back to
+    # TextLexer so a crafted attachment can't pin a gunicorn worker
+    # on a pathological Pygments regex run. The preview still renders
+    # (in monospace), just without language tokens. Same threshold
+    # as the body / diff renderers.
+    if len(text_content) > PYGMENTS_MAX_BLOCK_CHARS:
+        lexer = TextLexer()
+    else:
+        lexer = _lexer_for(att.filename, text_content)
     # `noclasses=False` so the formatter emits class-named spans
     # instead of inline `style="color:..."` per token; the token
     # theming lives in `mimir/static/css/mimir.css` under
@@ -119,13 +187,18 @@ def attachment_preview(inbox_name: str, year: int, month: int, article_id: int, 
     # emit thousands of inline styles per preview and the
     # negotiated CSP would have to allow them.
     formatter = HtmlFormatter(
-        noclasses=False, nobackground=True, linenos="inline",
+        noclasses=False,
+        nobackground=True,
+        linenos="inline",
     )
     highlighted = highlight(text_content, lexer, formatter)
     return render_template(
         "attachment_preview.html",
-        inbox_name=inbox.name, current_inbox=inbox.name,
-        article=article, att=att, n=n,
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
+        article=article,
+        att=att,
+        n=n,
         previewable=True,
         highlighted=highlighted,
         lexer_name=lexer.name,

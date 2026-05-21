@@ -78,7 +78,16 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     DATABASE_URL=sqlite:////data/db/mimir.db \
     WORKERS=2 \
-    WORKER_TIMEOUT=60
+    WORKER_TIMEOUT=60 \
+    GIT_TERMINAL_PROMPT=0 \
+    GIT_PROTOCOL_FROM_USER=0
+# `GIT_TERMINAL_PROMPT=0` makes `git clone` / `git fetch` fail
+# rather than block on a credential prompt; a hostile upstream
+# can't pin a worker on stdin. `GIT_PROTOCOL_FROM_USER=0` tells
+# git to treat all URLs in argv as not-user-supplied for the
+# protocol-allowlist check (the allowlist defaults to safe schemes
+# in modern git, but the explicit env makes the posture
+# deploy-stable).
 
 # /data is the only stateful path. Subdirs are created at build time
 # so a bind-mounted /data with the right owner just works on first

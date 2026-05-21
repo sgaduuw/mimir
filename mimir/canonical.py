@@ -16,68 +16,102 @@ auto-replies, etc.), "list-shaped" is a conservative suffix-based
 filter, we only consider addresses on known mailing-list hosts.
 Operator can extend via env if a host we don't yet know is in their
 archive."""
+
 from __future__ import annotations
 
+import re
 from email.utils import getaddresses
 
 # Hosts that overwhelmingly run mailing lists, not personal mailboxes.
 # Used to filter To/Cc: only addresses on these hosts count when
 # resolving canonical inbox or recording per-inbox address observations.
-# Operator can extend via LIST_HOST_SUFFIXES env (comma-separated) once
-# the setting is plumbed through; this baseline covers the kernel and
-# adjacent projects archived on lore.kernel.org.
-LIST_HOST_SUFFIXES: frozenset[str] = frozenset({
-    # kernel.org-hosted (covers most lkml/* via vger relay)
-    "vger.kernel.org",
-    "lists.linux.dev",
-    # NB: bare `kernel.org` is intentionally NOT here, it's primarily
-    # a personal-address domain (gregkh@, torvalds@, cve@, etc.), so
-    # including it produces false positives. List subdomains (vger,
-    # subspace, lists.linux.dev) carry the actual list traffic.
-    # graphics
-    "lists.freedesktop.org",
-    # arm, nvme, mtd, rdma, …
-    "lists.infradead.org",
-    # mm
-    "kvack.org",
-    # alsa
-    "alsa-project.org",
-    # powerpc, openbmc
-    "lists.ozlabs.org",
-    # linux foundation projects (cgroups, fsverity, etc.)
-    "lists.linux-foundation.org",
-    # linaro / arm ecosystem
-    "lists.linaro.org",
-    # qemu, gnu projects
-    "nongnu.org",
-    # ffmpeg
-    "ffmpeg.org",
-    # virtualization (libvirt, qemu, etc.)
-    "redhat.com",
-    # bitcoin, crypto-adjacent lists sometimes mirrored
-    "lists.linux.it",
-    # debian lists
-    "lists.debian.org",
-})
+# Operators extend via `Settings.list_host_suffix_overrides` (env
+# `LIST_HOST_SUFFIX_OVERRIDES`, comma-separated); the effective set
+# returned by `_effective_suffixes()` is the union of this baseline
+# and the operator additions.
+LIST_HOST_SUFFIXES: frozenset[str] = frozenset(
+    {
+        # kernel.org-hosted (covers most lkml/* via vger relay)
+        "vger.kernel.org",
+        "lists.linux.dev",
+        # NB: bare `kernel.org` is intentionally NOT here, it's primarily
+        # a personal-address domain (gregkh@, torvalds@, cve@, etc.), so
+        # including it produces false positives. List subdomains (vger,
+        # subspace, lists.linux.dev) carry the actual list traffic.
+        # graphics
+        "lists.freedesktop.org",
+        # arm, nvme, mtd, rdma, …
+        "lists.infradead.org",
+        # mm
+        "kvack.org",
+        # alsa
+        "alsa-project.org",
+        # powerpc, openbmc
+        "lists.ozlabs.org",
+        # linux foundation projects (cgroups, fsverity, etc.)
+        "lists.linux-foundation.org",
+        # linaro / arm ecosystem
+        "lists.linaro.org",
+        # qemu, gnu projects
+        "nongnu.org",
+        # ffmpeg
+        "ffmpeg.org",
+        # virtualization (libvirt, qemu, etc.)
+        "redhat.com",
+        # bitcoin, crypto-adjacent lists sometimes mirrored
+        "lists.linux.it",
+        # debian lists
+        "lists.debian.org",
+    }
+)
 
 
-def is_list_address(address: str | None, suffixes: frozenset[str] = LIST_HOST_SUFFIXES) -> bool:
+def _effective_suffixes() -> frozenset[str]:
+    """Return the operator-extended suffix set. Reads
+    `Settings.list_host_suffix_overrides` lazily so monkeypatched
+    settings in tests are honored. The baseline `LIST_HOST_SUFFIXES`
+    is always included."""
+    # Late import: avoids a circular dep through `mimir.config` (which
+    # imports models which import canonical for is_list_address).
+    from mimir.config import settings
+
+    overrides = settings.list_host_suffix_overrides or []
+    if not overrides:
+        return LIST_HOST_SUFFIXES
+    return LIST_HOST_SUFFIXES | {s.strip().lower() for s in overrides if s.strip()}
+
+
+def is_list_address(
+    address: str | None,
+    suffixes: frozenset[str] | None = None,
+) -> bool:
     """Conservative filter: True if `address` looks like a mailing-list
     address (i.e. its domain ends in a known list-host suffix). Empty,
-    None, malformed, or off-list addresses return False."""
+    None, malformed, or off-list addresses return False.
+
+    `suffixes=None` (the default) reads the effective set from
+    settings on each call. Tests / callers can pass an explicit set
+    to bypass settings."""
     if not address:
         return False
     at = address.rfind("@")
     if at < 0 or at == len(address) - 1:
         return False
-    domain = address[at + 1:].strip().lower()
+    domain = address[at + 1 :].strip().lower()
     if not domain:
         return False
+    active = suffixes if suffixes is not None else _effective_suffixes()
     # Match exact host or any "<sub>.host" subdomain.
-    return any(
-        domain == suffix or domain.endswith("." + suffix)
-        for suffix in suffixes
-    )
+    return any(domain == suffix or domain.endswith("." + suffix) for suffix in active)
+
+
+# Strips C0/C1 control bytes and surrogate-range codepoints from an
+# address before it flows into HTML attribute contexts. Jinja
+# autoescape already handles `<`, `>`, `"`, `&` for us, but a
+# surrogate-escaped byte in the raw header (which `parsed.headers`
+# carries verbatim, untouched by the surrogate scrub on parsed
+# *fields*) would survive autoescape and break the rendered attribute.
+_UNSAFE_ATTR_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\ud800-\udfff]")
 
 
 def extract_list_addresses(headers: dict[str, str]) -> list[str]:
@@ -111,7 +145,22 @@ def extract_list_addresses(headers: dict[str, str]) -> list[str]:
     for _name, addr in getaddresses(raw_values):
         if not addr:
             continue
-        normalized = addr.strip().lower()
+        # Strip control bytes and surrogate codepoints before any
+        # further processing. The raw header `parsed.headers["To"]`
+        # carries unscrubbed bytes (surrogate scrub runs on
+        # ParsedArticle's typed fields, not on the headers dict);
+        # an address that survives this filter is safe to splice
+        # into an HTML attribute under Jinja's autoescape.
+        cleaned = _UNSAFE_ATTR_CHARS_RE.sub("", addr).strip()
+        if not cleaned:
+            continue
+        # Cap per-address length so a pathological multi-KB
+        # localpart can't bloat the rendered tooltip beyond what a
+        # real reader sees in a few hundred chars. Real list
+        # addresses are well under 100 chars.
+        if len(cleaned) > 254:  # RFC 5321 path length cap
+            cleaned = cleaned[:254]
+        normalized = cleaned.lower()
         if normalized in seen:
             continue
         if not is_list_address(normalized):
@@ -183,6 +232,7 @@ def fallback_canonical_name(
         # bootstrap before settings are guaranteed-initialised; the
         # late import sidesteps any ordering risk.
         from mimir.config import settings
+
         demoted_names = frozenset(settings.canonical_demoted_inboxes)
     names = [name for _, name in links]
     non_demoted = sorted(n for n in names if n not in demoted_names)

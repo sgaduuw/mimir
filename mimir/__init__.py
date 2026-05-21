@@ -20,6 +20,19 @@ from mimir.web import bp_web  # noqa: E402
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config["SECRET_KEY"] = settings.secret_key
+    # FLASK_DEBUG enables verbose tracebacks and (under `flask run`)
+    # the Werkzeug interactive debugger. Gunicorn runs the WSGI
+    # callable so the debugger never spawns in production, but a
+    # debug-true app still leaks tracebacks to the response body,
+    # which is dangerous on a public deploy. Refuse the combination
+    # when the process is tagged with one of the deploy roles, the
+    # CLI (`mimir_role unset`) still honours the flag for
+    # `flask run` debugging.
+    if settings.flask_debug and settings.mimir_role in {"web", "tasks", "broker"}:
+        raise RuntimeError(
+            f"FLASK_DEBUG=true is refused under MIMIR_ROLE={settings.mimir_role!r}; "
+            "disable FLASK_DEBUG in the deploy env"
+        )
     app.config["DEBUG"] = settings.flask_debug
     # Strip the whitespace that un-rendered `{% if %}` / `{% for %}`
     # blocks leave behind. Visual difference is cosmetic, but per the

@@ -30,14 +30,24 @@ def _sqlite_pragmas(dbapi_conn, _conn_record) -> None:
     # (no limit), which makes ANALYZE scan every row of every
     # index and hold the writer lock for the full duration; on the
     # 11M-row corpus that's ~25 s, dominant source of broker-side
-    # cache.set stalls in production. `Settings.analyze_limit=400`
-    # (the SQLite-recommended value, applied here) caps per-index
-    # work and drops the lock-hold to ~100 ms while still producing
-    # stats good enough for sargable index choices. Setting it on
+    # cache.set stalls in production. Setting `analysis_limit` on
     # every connection means `mimir analyze`, auto-ANALYZE-after-
     # ingest, and any ad-hoc session running ANALYZE all inherit
-    # the limit uniformly; an operator who wants the old exact-
-    # stats behaviour sets `ANALYZE_LIMIT=0` in env.
+    # the limit uniformly.
+    #
+    # `Settings.analyze_limit=4000` (the value calibrated for this
+    # codebase in 1.36.4; see CONTEXT.md "ANALYZE sample size") is
+    # ~10x the SQLite-docs hint for "very large databases". An
+    # earlier value of 400 looked appealing from the SQLite docs
+    # but produced catastrophic misplans on the 11M-row multi-
+    # inbox corpus, recursive-CTE shapes hit ~400-second runtimes
+    # against a documented 2 ms baseline. The 4000-row sample
+    # gives the planner accurate enough cardinalities for the
+    # join shapes the read path leans on; the weekly full
+    # ANALYZE (`analyze --full`, `analysis_limit=0`) is the safety
+    # net for whatever drifts in the long tail. Don't lower this
+    # value without re-validating EXPLAIN on the production
+    # corpus, the SQLite docs default is not safe at scale.
     cur.execute(f"PRAGMA analysis_limit={settings.analyze_limit}")
     # Maintenance toggle: when this container is flagged read-only,
     # block writes at the SQLite layer so anything that slipped past

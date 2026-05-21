@@ -29,12 +29,14 @@ requests serially on one thread; 5s comfortably covers the
 worst-case (a slow `cache_delete_for_inbox` on a large cache
 table) without blocking callers indefinitely if the broker hangs.
 """
+
 import logging
 import socket
 import threading
 from pathlib import Path
 
 from mimir.broker.protocol import (
+    AnalyzeRequest,
     BackfillArticleFilesRequest,
     BackfillArticleTrailersRequest,
     BackfillCanonicalsRequest,
@@ -47,6 +49,8 @@ from mimir.broker.protocol import (
     IngestInboxRequest,
     PingRequest,
     Reply,
+    UpdateMainlineRequest,
+    VacuumRequest,
     WarmGlobalRequest,
     WarmInboxRequest,
 )
@@ -94,9 +98,7 @@ class BrokerClient:
             s.connect(str(self._socket_path))
         except OSError as exc:
             s.close()
-            raise BrokerUnavailable(
-                f"connect {self._socket_path}: {exc}"
-            ) from exc
+            raise BrokerUnavailable(f"connect {self._socket_path}: {exc}") from exc
         self._sock = s
         # Buffered file wrappers for line-oriented JSONL framing.
         # `newline=""` because we frame on `\n` ourselves and don't
@@ -196,9 +198,7 @@ class BrokerClient:
                 finally:
                     if timeout is not None and self._sock is not None:
                         self._sock.settimeout(RPC_TIMEOUT_SEC)
-            raise BrokerUnavailable(
-                f"broker rpc failed after retry: {last_exc}"
-            )
+            raise BrokerUnavailable(f"broker rpc failed after retry: {last_exc}")
 
     # Public ops ─────────────────────────────────────────────
 
@@ -255,8 +255,11 @@ class BrokerClient:
         bump it via the per-call kwarg.
         """
         from mimir.ingest.epoch import IngestResult
+
         req = IngestInboxRequest(
-            inbox_name=inbox_name, limit=limit, workers=workers,
+            inbox_name=inbox_name,
+            limit=limit,
+            workers=workers,
         )
         reply = self._rpc(req.model_dump_json(), timeout=timeout)
         if not reply.ok:
@@ -285,14 +288,15 @@ class BrokerClient:
         per-row case (e.g. mirror IO during a blob fetch); a
         properly-tuned chunk should never approach it."""
         from mimir.patches import BackfillResult
+
         req = BackfillArticleFilesRequest(
-            limit=limit, reprocess=reprocess, continuation=continuation,
+            limit=limit,
+            reprocess=reprocess,
+            continuation=continuation,
         )
         reply = self._rpc(req.model_dump_json(), timeout=timeout)
         if not reply.ok:
-            raise BrokerUnavailable(
-                f"backfill_article_files: {reply.error}"
-            )
+            raise BrokerUnavailable(f"backfill_article_files: {reply.error}")
         counters = (reply.result or {}).get("counters", {})
         return BackfillResult.model_validate(counters)
 
@@ -307,14 +311,15 @@ class BrokerClient:
         """Phase 2.2 chunked backfill RPC; see
         `backfill_article_files` for the chunk/resume contract."""
         from mimir.trailers import BackfillResult
+
         req = BackfillArticleTrailersRequest(
-            limit=limit, reprocess=reprocess, continuation=continuation,
+            limit=limit,
+            reprocess=reprocess,
+            continuation=continuation,
         )
         reply = self._rpc(req.model_dump_json(), timeout=timeout)
         if not reply.ok:
-            raise BrokerUnavailable(
-                f"backfill_article_trailers: {reply.error}"
-            )
+            raise BrokerUnavailable(f"backfill_article_trailers: {reply.error}")
         counters = (reply.result or {}).get("counters", {})
         return BackfillResult.model_validate(counters)
 
@@ -329,14 +334,15 @@ class BrokerClient:
         """Phase 2.2 chunked backfill RPC; see
         `backfill_article_files` for the chunk/resume contract."""
         from mimir.patch_series import BackfillResult
+
         req = BackfillPatchSeriesRequest(
-            limit=limit, reprocess=reprocess, continuation=continuation,
+            limit=limit,
+            reprocess=reprocess,
+            continuation=continuation,
         )
         reply = self._rpc(req.model_dump_json(), timeout=timeout)
         if not reply.ok:
-            raise BrokerUnavailable(
-                f"backfill_patch_series: {reply.error}"
-            )
+            raise BrokerUnavailable(f"backfill_patch_series: {reply.error}")
         counters = (reply.result or {}).get("counters", {})
         return BackfillResult.model_validate(counters)
 
@@ -353,15 +359,16 @@ class BrokerClient:
         `articles.canonical_inbox_id`; see `backfill_article_files`
         for the chunk/resume contract."""
         from mimir.ingest.backfill import BackfillResult
+
         req = BackfillCanonicalsRequest(
-            inbox_filter=inbox_filter, limit=limit,
-            reprocess=reprocess, continuation=continuation,
+            inbox_filter=inbox_filter,
+            limit=limit,
+            reprocess=reprocess,
+            continuation=continuation,
         )
         reply = self._rpc(req.model_dump_json(), timeout=timeout)
         if not reply.ok:
-            raise BrokerUnavailable(
-                f"backfill_canonicals: {reply.error}"
-            )
+            raise BrokerUnavailable(f"backfill_canonicals: {reply.error}")
         counters = (reply.result or {}).get("counters", {})
         return BackfillResult.model_validate(counters)
 
@@ -408,6 +415,70 @@ class BrokerClient:
         reply = self._rpc(req.model_dump_json(), timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"warm_global: {reply.error}")
+        return reply.result or {}
+
+    def update_mainline(
+        self,
+        *,
+        skip_fetch: bool = False,
+        skip_maintainers: bool = False,
+        skip_commits: bool = False,
+        force: bool = False,
+        timeout: float = 600.0,
+    ) -> dict:
+        """Phase 2.3 long op: refresh the mainline tree + reload
+        MAINTAINERS + walk Link-trailers via the broker. Returns the
+        `UpdateMainlineResult` dict so the CLI can echo the same
+        outcome lines as the direct path.
+
+        Default `timeout=600 s` (10 min): the steady-state tick
+        short-circuits the MAINTAINERS reparse and walks ~zero new
+        commits, finishing in seconds; the slow path is the first
+        run on a fresh deploy, which walks ~1.5M Linus-tree commits
+        and can run several minutes."""
+        req = UpdateMainlineRequest(
+            skip_fetch=skip_fetch,
+            skip_maintainers=skip_maintainers,
+            skip_commits=skip_commits,
+            force=force,
+        )
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"update_mainline: {reply.error}")
+        return reply.result or {}
+
+    def analyze(self, *, full: bool = False, timeout: float = 600.0) -> dict:
+        """Phase 2.3 long op: run ANALYZE on the broker. Returns the
+        `AnalyzeResult` dict (`{full, elapsed_ms}`).
+
+        Default `timeout=600 s` covers both the bounded daily pass
+        (~1-3 s) and the weekly `full=True` pass (~25-30 s) with
+        plenty of headroom for growth."""
+        req = AnalyzeRequest(full=full)
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"analyze: {reply.error}")
+        return reply.result or {}
+
+    def vacuum(self, *, timeout: float = 3600.0) -> dict:
+        """Phase 2.3 long op: run VACUUM on the broker. Returns the
+        `VacuumResult` dict (`{elapsed_ms, db_size_before,
+        db_size_after, reclaimed}`).
+
+        Default `timeout=3600 s` (1 hour): VACUUM scales with the
+        on-disk DB size; a multi-GB corpus can take minutes, and
+        the per-call timeout caps the worst case rather than letting
+        a runaway lock the CLI indefinitely. Operators on huge
+        deploys can bump via the per-call kwarg.
+
+        While this RPC is in flight, every other broker worker is
+        paused (SQLite exclusive lock); cache writes from the web
+        tier may time out on the client side. The broker logs a
+        WARNING at start so the cause is correlatable."""
+        req = VacuumRequest()
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"vacuum: {reply.error}")
         return reply.result or {}
 
     def bootstrap_inboxes(self, *, timeout: float = 60.0) -> int:

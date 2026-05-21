@@ -11,6 +11,7 @@ forms) so unmatched-route 404s still go through the same hooks; the
 audit (2026-05-15) flagged that blueprint-scoped hooks let those
 404s bypass security headers and the structured log.
 """
+
 import json
 import logging
 import secrets
@@ -41,6 +42,7 @@ def _inject_template_globals() -> dict:
     from flask import has_request_context
 
     from mimir import __version__ as mimir_version
+
     site_base = ""
     default_canonical = ""
     if has_request_context():
@@ -200,9 +202,7 @@ def _start_request_timer():
     # Honor an upstream-supplied request id (typical reverse-proxy
     # pattern) so multi-hop traces stay correlatable; otherwise mint
     # a fresh short id.
-    g._request_id = (
-        request.headers.get("X-Request-Id") or secrets.token_hex(8)
-    )
+    g._request_id = request.headers.get("X-Request-Id") or secrets.token_hex(8)
 
 
 @bp_web.after_app_request
@@ -227,17 +227,22 @@ def _add_cache_headers(response):
         response.headers["Vary"] = "HX-Request"
     for k, v in _SECURITY_HEADERS.items():
         response.headers.setdefault(k, v)
-    # HSTS only when we know the request came in over HTTPS, set
-    # behind a reverse proxy that forwards X-Forwarded-Proto. Otherwise
-    # an http://localhost dev session would tell the browser "force
-    # https on this host forever," which would break the dev workflow.
+    # HSTS only when we know the request came in over HTTPS. We gate
+    # on `request.is_secure` rather than the raw `X-Forwarded-Proto`
+    # header so the trust is consistent with `TRUSTED_PROXY_HOPS`:
+    # with ProxyFix wired up, `is_secure` honours the trusted
+    # forwarded header; with it unwired (the default), `is_secure`
+    # falls back to the actual connection scheme and a forged header
+    # can't pin HSTS into a casual browser cache. An http://localhost
+    # dev session stays HSTS-less; the production path through Caddy
+    # (with ProxyFix=2) sets is_secure True and gets the header.
     # `preload` opts the site into the browser-bundled HSTS preload
     # list once submitted via hstspreload.org; submission is a one-way
     # door (un-preloading takes months), and the site is HTTPS-only
     # via Caddy + Tailscale Funnel so the commitment is consistent
     # with the current posture. The directive alone doesn't auto-
     # submit; it signals readiness.
-    if request.headers.get("X-Forwarded-Proto") == "https":
+    if request.is_secure:
         response.headers.setdefault(
             "Strict-Transport-Security",
             "max-age=31536000; includeSubDomains; preload",
@@ -253,21 +258,25 @@ def _log_request(response):
     response-build path."""
     t0 = getattr(g, "_request_t0", None)
     duration_ms = round((time.perf_counter() - t0) * 1000, 1) if t0 else None
-    _request_logger.info(json.dumps({
-        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-        "request_id": getattr(g, "_request_id", None),
-        "method": request.method,
-        "path": request.path,
-        "status": response.status_code,
-        "duration_ms": duration_ms,
-        "remote": request.remote_addr,
-        # Read the header directly: Werkzeug's request.user_agent is a
-        # UserAgent wrapper whose __bool__ depends on the bundled UA
-        # parser detecting a known browser, which makes legitimate
-        # values like "curl/8.20.0", and, with this Werkzeug, plain
-        # Firefox, evaluate falsy and silently turn into null. The
-        # raw header is what we actually want to log.
-        "ua": request.headers.get("User-Agent"),
-        "referrer": request.referrer,
-    }))
+    _request_logger.info(
+        json.dumps(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                "request_id": getattr(g, "_request_id", None),
+                "method": request.method,
+                "path": request.path,
+                "status": response.status_code,
+                "duration_ms": duration_ms,
+                "remote": request.remote_addr,
+                # Read the header directly: Werkzeug's request.user_agent is a
+                # UserAgent wrapper whose __bool__ depends on the bundled UA
+                # parser detecting a known browser, which makes legitimate
+                # values like "curl/8.20.0", and, with this Werkzeug, plain
+                # Firefox, evaluate falsy and silently turn into null. The
+                # raw header is what we actually want to log.
+                "ua": request.headers.get("User-Agent"),
+                "referrer": request.referrer,
+            }
+        )
+    )
     return response

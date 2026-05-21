@@ -11,6 +11,7 @@ render calls it from the context processor, the route body, and the
 JSON-LD helpers; the settings / X-Forwarded-Proto lookups don't need
 to repeat per call.
 """
+
 from datetime import datetime, timezone
 from email.utils import parseaddr
 
@@ -66,6 +67,7 @@ def _site_base() -> str:
     memoisation when no request context (CLI render-path tests, etc.).
     """
     from flask import has_request_context
+
     if has_request_context():
         cached: str | None = getattr(g, "_mimir_site_base", None)
         if cached is not None:
@@ -74,11 +76,14 @@ def _site_base() -> str:
         base = settings.site_base_url.rstrip("/")
     else:
         base = request.url_root.rstrip("/")
-        if (
-            request.headers.get("X-Forwarded-Proto") == "https"
-            and base.startswith("http://")
-        ):
-            base = "https://" + base[len("http://"):]
+        # Gate the scheme upgrade on `request.is_secure` rather than
+        # the raw `X-Forwarded-Proto` header so the trust matches the
+        # `TRUSTED_PROXY_HOPS` posture. With ProxyFix wired, is_secure
+        # picks up the trusted forwarded scheme; with ProxyFix off
+        # (the default), a forged header can no longer flip og:url to
+        # `https://` on an HTTP-only deploy.
+        if request.is_secure and base.startswith("http://"):
+            base = "https://" + base[len("http://") :]
     if has_request_context():
         g._mimir_site_base = base
     return base
@@ -90,7 +95,9 @@ def _msg_url(article: Article, inbox_name: str) -> str:
     multiple URLs (one per inbox it's linked to); the caller picks
     based on context (the URL's inbox)."""
     if article.date is not None:
-        return f"/{inbox_name}/{article.date.year}/{article.date.month:02d}/{article.id}"
+        return (
+            f"/{inbox_name}/{article.date.year}/{article.date.month:02d}/{article.id}"
+        )
     return f"/{inbox_name}/0000/00/{article.id}"
 
 
@@ -186,7 +193,8 @@ def _thread_summary(thread) -> dict:
 
 
 def _canonical_inbox_names_for(
-    session: Session, article_ids: list[int],
+    session: Session,
+    article_ids: list[int],
 ) -> dict[int, str]:
     """Resolve article_id → canonical inbox name for a batch (typically
     a feed's worth, ≤50). Uses `canonical_inbox_id` when set; falls
