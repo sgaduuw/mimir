@@ -35,9 +35,9 @@ from mimir.subsystems_dashboard import (
 )
 from mimir.threading import active_threads
 from mimir.web._blueprint import bp_web
+from mimir.web.filters import _relative_time
 from mimir.web.urls import (
     _get_inbox_or_404,
-    _relative_time,
     _site_base,
     _year_decade_groups,
 )
