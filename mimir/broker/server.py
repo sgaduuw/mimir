@@ -47,6 +47,7 @@ Signal handlers (`SIGTERM`, `SIGINT`) set `stop_event`; reader
 threads notice via their selector poll, the worker notices via
 its `queue.get(timeout=...)` poll, all exit cleanly.
 """
+
 import logging
 import os
 import queue
@@ -54,6 +55,7 @@ import selectors
 import signal
 import socket
 import socketserver
+import struct
 import threading
 import time
 from pathlib import Path
@@ -71,6 +73,42 @@ PURGE_INTERVAL_SEC = 3600  # 1 hour; matches today's warm-cache-driven cadence
 # How often the worker / reader threads check `stop_event` while idle.
 # Bounds the shutdown latency from SIGTERM to clean exit.
 SHUTDOWN_POLL_SEC = 0.1
+
+# Hard cap on a single JSONL request line (bytes). The reader closes
+# the connection if a peer pushes more than this without a newline.
+# Bounds memory growth from two related local-DoS shapes: a
+# never-terminating line that exhausts broker memory via the linebuf,
+# and a deeply-nested JSON-bomb payload that expands at parse time.
+#
+# 16 MiB accommodates the largest real cache values observed today
+# (sitemap XML payloads for popular inboxes land around 2 MiB; the
+# 1.33.x large-payload regression test pins a 2 MiB round-trip) and
+# leaves an order of magnitude of headroom for growth. Still 3x
+# tighter than the parser's MAX_RAW_MESSAGE_BYTES. The Phase E
+# application-level cap on `CacheSetRequest.value_json` adds an
+# 8 MiB ceiling on top of this wire cap.
+MAX_REQUEST_BYTES = 16 * 1024 * 1024
+
+# Per-connection inactivity ceiling (seconds). A connection that
+# accepts a slot in the kernel queue but sends no bytes for this long
+# is closed so it can't pin a reader thread + selector indefinitely.
+# Legitimate persistent clients (gunicorn workers, scheduler-tasks)
+# send keepalive pings well inside the window; broker_ping CLI is
+# one-shot.
+IDLE_TIMEOUT_SEC = 300
+
+# Linux exposes SO_PEERCRED (pid + uid + gid of the peer process) on
+# AF_UNIX sockets via getsockopt. macOS / BSDs have their own (and
+# different) peer-credential interfaces; we don't try to bridge them
+# because production is Linux and dev tests don't need the check to
+# pass. When the symbol is absent we skip the check and rely on the
+# socket file mode + parent-dir ownership as the access control.
+_HAS_SO_PEERCRED = hasattr(socket, "SO_PEERCRED")
+
+# Cached at module load: the euid we expect every peer to share.
+# Captured once because `os.geteuid()` is cheap but the check fires
+# on every accept and there's no reason to re-read on every call.
+_BROKER_EUID = os.geteuid()
 
 
 class _NoopHandler(socketserver.BaseRequestHandler):
@@ -153,7 +191,22 @@ class _BrokerServer(socketserver.UnixStreamServer):
         connection runs on its own thread instead of synchronously
         on the accept loop. The reader thread owns the socket
         lifecycle (closes it on EOF / error / shutdown); we do NOT
-        call `shutdown_request` here for that reason."""
+        call `shutdown_request` here for that reason.
+
+        Peer-credential check: on Linux we read SO_PEERCRED and
+        refuse connections from any euid other than our own. The
+        socket file mode (0660) and parent-dir ownership are the
+        primary gate; this is defense-in-depth against a misconfigured
+        deploy that loosens the mode, against a co-tenant on the
+        same UID-group, or against a future deploy that puts the
+        socket somewhere with broader visibility. On non-Linux the
+        check is a no-op."""
+        if not _check_peer_uid(request):
+            try:
+                request.close()
+            except OSError:
+                pass
+            return
         thread = threading.Thread(
             target=self._reader_loop,
             args=(request,),
@@ -179,28 +232,57 @@ class _BrokerServer(socketserver.UnixStreamServer):
         Classification is a cheap JSON peek (`classify_op`) plus a
         set membership test. Malformed lines and unknown ops route
         to the cache queue and let `dispatch` produce a structured
-        failure reply, preserving existing error semantics."""
+        failure reply, preserving existing error semantics.
+
+        Two hostile-peer defenses bound the work this loop does:
+
+        - **`MAX_REQUEST_BYTES` cap on the linebuf.** A peer that
+          streams bytes without ever sending `\\n` would otherwise
+          grow `linebuf` until the broker process OOMs. Crossing the
+          cap closes the connection on the offending peer.
+        - **`IDLE_TIMEOUT_SEC` ceiling on inactivity.** A peer that
+          accepts a slot and then sends nothing would otherwise pin
+          this reader thread + its selector indefinitely. Beyond the
+          ceiling the connection is closed.
+
+        Both defenses log at WARNING so an operator can correlate the
+        close with the upstream symptom (a stuck `cache.set` etc.)."""
         linebuf = bytearray()
         sel = selectors.DefaultSelector()
         sel.register(sock, selectors.EVENT_READ)
+        last_activity = time.monotonic()
         try:
             while not self.stop_event.is_set():
                 events = sel.select(timeout=SHUTDOWN_POLL_SEC)
                 if not events:
+                    if time.monotonic() - last_activity > IDLE_TIMEOUT_SEC:
+                        logger.warning(
+                            "broker: closing idle connection after %ds",
+                            IDLE_TIMEOUT_SEC,
+                        )
+                        return
                     continue
                 try:
                     chunk = sock.recv(4096)
-                except (OSError, ConnectionError):
+                except OSError, ConnectionError:
                     return
                 if not chunk:
                     return  # Clean EOF from peer.
+                last_activity = time.monotonic()
                 linebuf.extend(chunk)
+                if len(linebuf) > MAX_REQUEST_BYTES:
+                    logger.warning(
+                        "broker: closing connection; "
+                        "request line exceeded %d bytes without newline",
+                        MAX_REQUEST_BYTES,
+                    )
+                    return
                 while True:
                     nl = linebuf.find(b"\n")
                     if nl < 0:
                         break
                     line = bytes(linebuf[:nl])
-                    del linebuf[:nl + 1]
+                    del linebuf[: nl + 1]
                     op = classify_op(line)
                     if op is not None and op in LONG_OPS:
                         target = self.long_queue
@@ -256,7 +338,9 @@ class _BrokerServer(socketserver.UnixStreamServer):
                         "broker slow rpc [%s] (%.1fms total = %.1fms queued + "
                         "%.1fms dispatch, qsize=%d): %.80s -> ok=%s",
                         worker_tag,
-                        total_ms, queue_wait_ms, dispatch_ms,
+                        total_ms,
+                        queue_wait_ms,
+                        dispatch_ms,
                         q.qsize(),
                         line.decode("utf-8", "replace"),
                         reply.ok,
@@ -269,18 +353,22 @@ class _BrokerServer(socketserver.UnixStreamServer):
                         line.decode("utf-8", "replace"),
                         reply.ok,
                         f" error={reply.error}" if not reply.ok else "",
-                        total_ms, queue_wait_ms, dispatch_ms,
+                        total_ms,
+                        queue_wait_ms,
+                        dispatch_ms,
                     )
 
                 payload = reply.model_dump_json().encode("utf-8") + b"\n"
                 try:
                     sock.sendall(payload)
-                except (OSError, ConnectionError):
+                except OSError, ConnectionError:
                     # Client closed mid-flight or socket reset.
                     # Drop the reply silently; the client treats
                     # the missing reply as `BrokerUnavailable` and
                     # retries.
-                    logger.debug("broker [%s]: dropped reply on closed sock", worker_tag)
+                    logger.debug(
+                        "broker [%s]: dropped reply on closed sock", worker_tag
+                    )
             finally:
                 q.task_done()
 
@@ -323,6 +411,38 @@ class _BrokerServer(socketserver.UnixStreamServer):
             self._warm_worker_threads.append(t)
 
 
+def _check_peer_uid(sock: socket.socket) -> bool:
+    """Return True if the connecting peer's euid matches the broker's
+    own. On platforms without `SO_PEERCRED` (macOS, BSDs) the check
+    is skipped and True is returned; the socket file mode + parent-
+    directory ownership remain the access control there.
+
+    Treats a `getsockopt` failure as "allow" rather than killing the
+    connection: this is defense-in-depth, not the primary gate, and
+    a failing syscall is a worse signal than the missed check."""
+    if not _HAS_SO_PEERCRED:
+        return True
+    try:
+        creds = sock.getsockopt(
+            socket.SOL_SOCKET,
+            socket.SO_PEERCRED,
+            struct.calcsize("3i"),
+        )
+        pid, uid, gid = struct.unpack("3i", creds)
+    except OSError as exc:
+        logger.debug("broker: SO_PEERCRED unavailable: %s", exc)
+        return True
+    if uid != _BROKER_EUID:
+        logger.warning(
+            "broker: refusing connection from uid=%d pid=%d (broker euid=%d)",
+            uid,
+            pid,
+            _BROKER_EUID,
+        )
+        return False
+    return True
+
+
 def _purge_loop(stop_event: threading.Event) -> None:
     """Periodic purge of expired cache rows. Owned by the broker so
     no other writer competes for the same table. Backs off via
@@ -348,13 +468,27 @@ def build_server(socket_path: Path) -> _BrokerServer:
     the server without signal handling.
 
     Caller is responsible for `serve_forever()` and `server_close()`
-    + socket-file cleanup; `serve()` does both."""
+    + socket-file cleanup; `serve()` does both.
+
+    The umask dance around `_BrokerServer(...)` makes the socket
+    node born `0660`. `socketserver.UnixStreamServer.server_bind`
+    invokes `bind(2)`, which creates the node with permissions of
+    `0o666 & ~umask`; a process umask of `0022` would leave it
+    world-connectable for the window between bind and the explicit
+    `chmod` below. By forcing umask to `0o117` for the bind we get
+    the desired mode atomically; the trailing `os.chmod` stays in
+    place so an upgrade that loses the umask still ends up with the
+    right mode."""
     sp = Path(socket_path)
     if sp.exists():
         logger.info("broker: unlinking stale socket %s", sp)
         sp.unlink()
     sp.parent.mkdir(parents=True, exist_ok=True)
-    server = _BrokerServer(str(sp))
+    prev_umask = os.umask(0o117)
+    try:
+        server = _BrokerServer(str(sp))
+    finally:
+        os.umask(prev_umask)
     os.chmod(sp, 0o660)
     server.start_workers()
     logger.info("broker: listening on %s", sp)
@@ -372,7 +506,9 @@ def serve(socket_path: Path) -> None:
     sp = Path(socket_path)
 
     purge_thread = threading.Thread(
-        target=_purge_loop, args=(server.stop_event,), daemon=True,
+        target=_purge_loop,
+        args=(server.stop_event,),
+        daemon=True,
         name="broker-purge",
     )
     purge_thread.start()

@@ -21,9 +21,20 @@ for the SQLite writer lock at the SQLite level, so cache writes only
 wait for the long worker's current commit batch, not the whole long
 op. See `handlers.LONG_OPS` for the routing set.
 """
+
+import re
 from typing import Any, Literal, Union
 
 from pydantic import BaseModel, Field, field_validator
+
+
+# Mirror of `mimir.inboxes._NAME_RE`. Duplicated here (rather than
+# imported) so the broker protocol module stays free of the heavy
+# inboxes/cache/extensions import chain that an `inboxes` import
+# would drag in. The two regexes must stay in sync; the inboxes-side
+# validator is the canonical source and any change there should
+# update this one in lockstep.
+_INBOX_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 
 class CacheSetRequest(BaseModel):
@@ -53,6 +64,23 @@ class CacheDeleteForInboxRequest(BaseModel):
     op: Literal["cache_delete_for_inbox"] = "cache_delete_for_inbox"
     name: str = Field(min_length=1, max_length=64)
 
+    @field_validator("name")
+    @classmethod
+    def _name_is_slug(cls, v: str) -> str:
+        # `cache._direct_delete_for_inbox` translates this name into a
+        # `LIKE %name%` clause. The CLI write paths slug-validate via
+        # `mimir.inboxes.validate_name` before the call ever reaches
+        # cache, so LIKE-pattern metacharacters can't appear in
+        # practice. Re-enforcing it at the wire boundary keeps a
+        # buggy or hostile peer from passing `_:foo` (or any other
+        # pattern) and matching unrelated rows.
+        if not _INBOX_NAME_RE.fullmatch(v):
+            raise ValueError(
+                "name must be lowercase alphanumeric/hyphen, "
+                "1 to 64 chars, not starting or ending with a hyphen"
+            )
+        return v
+
 
 class CachePurgeExpiredRequest(BaseModel):
     op: Literal["cache_purge_expired"] = "cache_purge_expired"
@@ -73,6 +101,7 @@ class IngestInboxRequest(BaseModel):
     means "run to completion" (per-inbox-no-cap, the steady-
     state scheduler tick shape). `workers` defaults to
     `DEFAULT_WORKERS` server-side."""
+
     op: Literal["ingest_inbox"] = "ingest_inbox"
     inbox_name: str = Field(min_length=1, max_length=64)
     limit: int | None = Field(default=None, ge=0)
@@ -85,6 +114,7 @@ class BootstrapInboxesRequest(BaseModel):
     Smallest of the long ops and the migration canary for Phase 2.0
     (proves the long-worker + per-op-timeout path end-to-end before
     Phase 2.1 migrates the meatier ingest ops)."""
+
     op: Literal["bootstrap_inboxes"] = "bootstrap_inboxes"
 
 
@@ -102,6 +132,7 @@ class BootstrapInboxesRequest(BaseModel):
 # worker is free, queued cache writes and other long ops get to
 # run, then the CLI fires the next chunk. Multi-hour backfills no
 # longer monopolise the long worker.
+
 
 class BackfillArticleFilesRequest(BaseModel):
     op: Literal["backfill_article_files"] = "backfill_article_files"
@@ -129,6 +160,7 @@ class BackfillCanonicalsRequest(BaseModel):
     broker. Same shape as the patch-metadata backfills plus
     `inbox_filter` for the `admin canonicals backfill --inbox`
     surface."""
+
     op: Literal["backfill_canonicals"] = "backfill_canonicals"
     inbox_filter: str | None = Field(default=None, min_length=1, max_length=64)
     limit: int | None = Field(default=None, ge=0)
@@ -152,6 +184,7 @@ class BackfillCanonicalsRequest(BaseModel):
 # effort posture: one broken helper shouldn't take down the
 # scheduler's warm cycle.
 
+
 class WarmInboxRequest(BaseModel):
     """Per-inbox warm: invoke every cached helper for one inbox.
     The handler calls `mimir.cli.cache._build_inbox_targets(inbox)`
@@ -169,6 +202,7 @@ class WarmInboxRequest(BaseModel):
     posture). Post-ingest warm uses a small subset
     (`active_threads`, `archive_stats`, `daily_volume`).
     """
+
     op: Literal["warm_inbox"] = "warm_inbox"
     inbox_name: str = Field(min_length=1, max_length=64)
     targets: list[str] | None = None
@@ -184,6 +218,7 @@ class WarmGlobalRequest(BaseModel):
     sequencing automatically; ad-hoc callers should issue
     warm_global only after their warm_inbox fan-out drains.
     """
+
     op: Literal["warm_global"] = "warm_global"
 
 
