@@ -5,11 +5,33 @@ All notable user-facing changes to mimir.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Entries describe behaviour, schema, config, and CLI/route shape changes  
-not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
-**Removed**, **Fixed**, **Security**.
+Entries describe behaviour, schema, config, and CLI/route shape
+changes, not internal refactors. Categories: **Added**,
+**Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
 ## [Unreleased]
+
+### Added
+
+- **Write-broker Phase 2.3**: the periodic-maintenance writers
+  (`mimir update-mainline`, `mimir analyze`, `mimir vacuum`) route
+  through the broker when `BROKER_SOCKET_PATH` is set. Each CLI
+  command checks the setting and either RPCs to the broker (which
+  calls the same library function inside its single-writer
+  process) or falls back to the direct-SQLite path. With Phase
+  2.3 landed, every periodic writer except the post-migrate
+  ANALYZE in `scheduler.sh` is on the broker; the 2.0.0 cleanup
+  will close the last gap.
+- New `BROKER_VACUUM` op emits a high-visibility WARNING at start
+  so an operator correlating cache-write stalls against the
+  broker log can tell "weekly maintenance, not a fault." VACUUM
+  holds the SQLite exclusive lock for the duration; every other
+  broker worker pauses.
+- `LIST_HOST_SUFFIX_OVERRIDES` env var augments the default
+  list-host suffix set used by canonical-inbox resolution. Comma-
+  separated; the effective set is the union of the baseline and
+  the overrides, so operators with archives for lists hosted on
+  domains we don't ship as a default can add them without a patch.
 
 ### Changed
 
@@ -19,6 +41,78 @@ not internal refactors. Categories: **Added**, **Changed**, **Deprecated**,
   subsystem dashboards, patch-series timelines, reviewer activity)
   rather than describing the storage layer. Same SEO + link-card
   budget; better hook for first-time visitors.
+- `TRUSTED_PROXY_HOPS` example in `compose.yaml` bumped from `"1"`
+  to `"2"` (the Caddy-behind-Tailscale-Funnel shape the project
+  actually targets); both shapes documented inline.
+- Per-inbox author trackers are now managed via the `mimir admin
+  inbox trackers` CLI surface; the README no longer documents a
+  `TRACKED_AUTHORS` env var (the global env knob was removed in
+  the multi-inbox refactor, the README hadn't been updated).
+- `/m/<message-id>` is documented as a 301 (was 302 in the README;
+  the actual code has long since been 301 to the article's
+  canonical inbox URL).
+
+### Fixed
+
+- HSTS and `_site_base()` scheme detection now gate on
+  `request.is_secure` rather than the raw `X-Forwarded-Proto`
+  header. A directly-exposed mimir (`TRUSTED_PROXY_HOPS=0`) can
+  no longer have HSTS pinned into a casual browser cache by a
+  forged header; production deploys through ProxyFix are
+  unchanged.
+- `create_app()` refuses `flask_debug=True` when `MIMIR_ROLE` is
+  one of `web`/`tasks`/`broker`. A workspace `.env` that
+  accidentally lands in a container env can no longer leak
+  verbose tracebacks.
+
+### Security
+
+- **Broker hardening**: socket file mode is now born `0660` via
+  an `os.umask` dance around `bind()` (previously relied on a
+  trailing `chmod` that races a local connector). Per-connection
+  line buffer capped at 16 MiB; an idle peer is closed after 5
+  minutes. On Linux, `SO_PEERCRED` is read on every accept and
+  connections from a different euid are refused. The
+  `cache_delete_for_inbox` request gains slug-regex validation
+  at the wire boundary so a buggy or hostile peer can't smuggle
+  LIKE metacharacters.
+- **Parser / rendering caps**: `parse_message` rejects MIME
+  trees with more than 256 leaf parts; `extract_touched_paths`
+  caps at 1000 paths per body; oversized code / diff / attachment
+  blocks fall back to `TextLexer` past 64 KiB to bound
+  pathological-input Pygments cost; `extract_list_addresses`
+  strips C0/C1 control bytes and surrogate-range codepoints, and
+  caps per-address length at the RFC 5321 254-char path limit.
+- **Cache write cap**: `cache.set` refuses payloads larger than
+  8 MiB. Below the broker wire cap (16 MiB), well above real
+  values today.
+- **Attachment Content-Type allowlist**: download route coerces
+  any Content-Type outside an allowlist of safe prefixes
+  (text/*, image/*, application/pdf, message/rfc822, archive
+  families, etc.) to `application/octet-stream`. Same for the
+  ASCII-form `filename=` Content-Disposition fallback, clamped
+  to 200 characters.
+- **`sync.clone_epoch` re-validates the composed clone URL**
+  through `validate_outbound_url` so a hostile manifest can't
+  smuggle a non-https or RFC1918 destination through the
+  origin-plus-key concatenation.
+- **External links carry the full rel set**
+  (`nofollow noopener noreferrer`) in linkify-rendered URLs.
+- **CI actions SHA-pinned**; new CodeQL workflow runs the
+  `security-and-quality` suite on python + actions, weekly + on
+  PRs to `develop` / `main`.
+- **Container/systemd hardening**: Dockerfile sets
+  `GIT_TERMINAL_PROMPT=0` + `GIT_PROTOCOL_FROM_USER=0`.
+  systemd unit gains `ExecStartPre=mimir bootstrap-inboxes` (a
+  fresh systemd deploy no longer comes up with an empty
+  `inboxes` table) plus `MemoryHigh=2G` and `LimitNOFILE=4096`
+  resource ceilings.
+
+### Notes
+
+- The `tests/` tree still carries `--` double-dashes in
+  prose-style docstrings. Tests don't flow into release notes,
+  so the cleanup was deferred; flagged here for visibility.
 
 ## [1.37.0], 2026-05-21
 

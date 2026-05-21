@@ -1,7 +1,7 @@
 """schema.org JSON-LD payloads, one builder per page shape.
 
 `_json_ld_index` (`/`), `_json_ld_inbox` (`/<inbox>/`),
-`_json_ld_message` (message page, the only one with a `@graph` —
+`_json_ld_message` (message page, the only one with a `@graph`:
 `DiscussionForumPosting` + `BreadcrumbList`), `_json_ld_search`
 (rendered `?q=…` results page), and `_json_ld_author`
 (`/<inbox>/author/<sub>`).

@@ -1,4 +1,4 @@
-"""`admin failures …` — list and replay persisted parse failures.
+"""`admin failures …`: list and replay persisted parse failures.
 
 Every commit whose `m` blob couldn't be parsed during ingest lands in
 `parse_failures` keyed by (inbox, epoch, commit_sha). Once the parser

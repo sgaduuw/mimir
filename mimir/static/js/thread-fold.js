@@ -2,8 +2,8 @@
  *
  * Loaded from <head> with src="...thread-fold.js" so it runs synchronously
  * before <body> parses. The early block reads context (data-thread-root-id,
- * data-thread-context) off <html> -- set by Jinja blocks in base.html and
- * message.html -- plus any localStorage pin, and sets data-thread-fold on
+ * data-thread-context) off <html> (set by Jinja blocks in base.html and
+ * message.html), plus any localStorage pin, and sets data-thread-fold on
  * <html>. CSS attribute selectors then resolve the right state (closed /
  * partial / expanded) on first paint, so a pin overriding the server's
  * default doesn't flash.

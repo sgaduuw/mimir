@@ -1,4 +1,4 @@
-"""`admin` — operator surfaces grouped under one Click group.
+"""`admin`: operator surfaces grouped under one Click group.
 
 The submodules attach their commands to the top-level `admin_group`
 at import time. The `cli` package `__init__.py` imports each submodule
