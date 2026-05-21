@@ -39,9 +39,11 @@ from mimir.web.filters import (
     _lexer_for,
     _msg_url_filter,
     _redact_trailer_address,
+    _relative_time,
     _relative_time_filter,
     _render_body_filter,
     _safe_from_filter,
+    _thread_summary,
 )
 from mimir.web.routes.dashboards import (
     RECENT_PAGE_SIZE,
@@ -84,7 +86,6 @@ from mimir.web.urls import (
     _get_inbox_or_404,
     _msg_url,
     _site_base,
-    _thread_summary,
     _year_decade_groups,
 )
 
@@ -119,6 +120,7 @@ __all__ = [
     "_msg_url",
     "_msg_url_filter",
     "_redact_trailer_address",
+    "_relative_time",
     "_relative_time_filter",
     "_render_body_filter",
     "_safe_from_filter",
