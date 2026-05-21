@@ -28,6 +28,7 @@ from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import recent_patches_touching, subsystems_for_article
 from mimir.threading import find_thread_root, get_thread
 from mimir.web._blueprint import bp_web
+from mimir.web.filters import _thread_summary
 from mimir.web.urls import (
     _abort_404_if_url_date_mismatches,
     _canonical_inbox_name,
@@ -35,7 +36,6 @@ from mimir.web.urls import (
     _get_inbox_or_404,
     _msg_url,
     _site_base,
-    _thread_summary,
 )
 
 
