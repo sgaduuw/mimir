@@ -1,4 +1,4 @@
-"""`update-mainline` — sync Linus's `linux.git` and (re)build the
+"""`update-mainline`: sync Linus's `linux.git` and (re)build the
 MAINTAINERS-derived schema + the lore `Link:`-trailer index.
 
 Thin click wrapper around `mimir.mainline.update_mainline`. The

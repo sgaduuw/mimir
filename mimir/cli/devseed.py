@@ -1,4 +1,4 @@
-"""`dev-seed-thread` — build a synthetic multi-message thread and
+"""`dev-seed-thread`: build a synthetic multi-message thread and
 ingest it into the local DB so the message-page UI has real-shaped
 data to render.
 

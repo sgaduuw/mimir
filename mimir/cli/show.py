@@ -1,4 +1,4 @@
-"""`show` — fetch and pretty-print one article by Message-ID.
+"""`show`: fetch and pretty-print one article by Message-ID.
 
 Threading-debug surface that pairs the DB-side row state (linked
 inboxes, indexed date, thread_parent) with the freshly re-parsed
