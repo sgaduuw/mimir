@@ -11,12 +11,45 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- **Write-broker Phase 2.4**: the last admin write ops migrate
+  through the broker when `BROKER_SOCKET_PATH` is set. Seven
+  split RPCs cover `admin inbox` CRUD (`inbox_create`,
+  `inbox_update`, `inbox_delete`, plus the four tracker
+  mutators); one more covers `admin failures replay`. Direct
+  fallback path preserved on every CLI command. After Phase 2.4
+  every periodic + admin writer except the post-migrate ANALYZE
+  is on the broker; the post-migrate ANALYZE moves below.
+- **Broker self-bootstraps the post-migrate ANALYZE.** On first
+  startup the broker checks `/data/.broker_initial_analyze`; if
+  absent it runs a bounded `ANALYZE` (the existing
+  `analysis_limit=4000` pragma) inline and touches the sentinel.
+  Subsequent restarts skip the pass. The web tier's
+  `depends_on: mimir-broker (service_healthy)` orders the chain
+  so cold requests after a deploy never walk un-ANALYZE'd
+  indexes. Replaces `scheduler.sh`'s direct
+  `mimir analyze (post-migrate)` call, which was the last
+  direct-write code path on the scheduler container.
+
 ### Changed
 
 - `mimir/web/urls.py`: `_relative_time` and `_thread_summary`
   moved to `mimir/web/filters.py` (their natural home alongside
   `_relative_time_filter`). External callers see no change;
   `mimir.web` continues to re-export both.
+- `scheduler.sh` no longer runs a direct `mimir analyze` after
+  `alembic upgrade head`; the broker owns that pass now (see
+  Added).
+- `compose.yaml` example block for `mimir-broker` documents the
+  new `start_period: 30s` healthcheck (covers the post-migrate
+  ANALYZE on first cold deploy) and updated commentary on which
+  ops the broker handles.
+- `cache._should_dispatch_to_broker()` gains a thread-local
+  "currently inside a broker handler" check on top of the
+  existing `MIMIR_ROLE=broker` env check. Catches in-process
+  test setups where broker thread and CLI invocations share
+  `settings.mimir_role`; production behaviour unchanged.
 
 ### Fixed
 

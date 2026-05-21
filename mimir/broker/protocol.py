@@ -37,6 +37,20 @@ from pydantic import BaseModel, Field, field_validator
 _INBOX_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 
+def _validate_inbox_name(v: str) -> str:
+    """Shared slug-regex validator used by every request type that
+    carries an `Inbox.name`-shaped field. Re-enforcing slug shape
+    at the wire boundary keeps a buggy or hostile peer from
+    smuggling LIKE metacharacters / path components / weird casing
+    into ops that compose the value into SQL or filesystem paths."""
+    if not _INBOX_NAME_RE.fullmatch(v):
+        raise ValueError(
+            "name must be lowercase alphanumeric/hyphen, "
+            "1 to 64 chars, not starting or ending with a hyphen"
+        )
+    return v
+
+
 class CacheSetRequest(BaseModel):
     op: Literal["cache_set"] = "cache_set"
     key: str = Field(min_length=1, max_length=512)
@@ -208,6 +222,149 @@ class AnalyzeRequest(BaseModel):
     full: bool = False
 
 
+class FailuresReplayRequest(BaseModel):
+    """Phase 2.4 long op: re-parse persisted parse_failures for one
+    inbox. Successful parses insert the article and delete the
+    failure row; failed parses bump `attempts` + `last_attempt`.
+    Idempotent; safe to repeat.
+
+    Required `inbox_name` mirrors the CLI's required positional;
+    failures replay is always inbox-scoped to keep the work
+    bounded (per-inbox parse-failure tables stay small, but the
+    iteration shape opens one dulwich repo per epoch). Optional
+    `epoch_filter` further narrows; optional `limit` caps the
+    rows attempted in this RPC."""
+
+    op: Literal["failures_replay"] = "failures_replay"
+    inbox_name: str = Field(min_length=1, max_length=64)
+    epoch_filter: str | None = Field(default=None, min_length=1, max_length=16)
+    limit: int | None = Field(default=None, ge=0)
+
+    @field_validator("inbox_name")
+    @classmethod
+    def _name_is_slug(cls, v: str) -> str:
+        return _validate_inbox_name(v)
+
+
+# Phase 2.4 admin-inbox CRUD ops. Each one is a split RPC matching
+# the same shape as the rest of the broker family: one pydantic
+# type per logical op, dispatched to a per-op handler. All seven
+# route to the long queue alongside `bootstrap_inboxes` (sub-second
+# writes, but conservative routing keeps them out of cache-queue
+# contention). Name validation uses the shared
+# `_validate_inbox_name` defined near `_INBOX_NAME_RE` at module
+# top.
+
+
+class InboxCreateRequest(BaseModel):
+    """Insert a new Inbox after validating all three fields. Handler
+    delegates to `mimir.inboxes.create_inbox`."""
+
+    op: Literal["inbox_create"] = "inbox_create"
+    name: str = Field(min_length=1, max_length=64)
+    mirror_path: str = Field(min_length=1, max_length=512)
+    upstream_url: str = Field(min_length=1, max_length=512)
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_slug(cls, v: str) -> str:
+        return _validate_inbox_name(v)
+
+
+class InboxUpdateRequest(BaseModel):
+    """Modify an existing inbox. Only the supplied fields are
+    touched server-side. Handler delegates to
+    `mimir.inboxes.update_inbox`."""
+
+    op: Literal["inbox_update"] = "inbox_update"
+    name: str = Field(min_length=1, max_length=64)
+    new_name: str | None = Field(default=None, min_length=1, max_length=64)
+    mirror_path: str | None = Field(default=None, min_length=1, max_length=512)
+    upstream_url: str | None = Field(default=None, min_length=1, max_length=512)
+
+    @field_validator("name", "new_name")
+    @classmethod
+    def _name_is_slug(cls, v: str | None) -> str | None:
+        return None if v is None else _validate_inbox_name(v)
+
+
+class InboxDeleteRequest(BaseModel):
+    """Remove an inbox and its dependent rows. Cascades through
+    `article_lists` / `ingest_state` via FK ondelete=CASCADE. With
+    `keep_orphan_articles=False` (default), also deletes any
+    articles left without remaining links. With
+    `remove_inbox_data=True`, the broker `rm -rf`s the on-disk
+    public-inbox mirror at `mirror_path`. The CLI is responsible
+    for the operator confirmation prompt; this request only carries
+    the post-confirmation intent."""
+
+    op: Literal["inbox_delete"] = "inbox_delete"
+    name: str = Field(min_length=1, max_length=64)
+    keep_orphan_articles: bool = False
+    remove_inbox_data: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_slug(cls, v: str) -> str:
+        return _validate_inbox_name(v)
+
+
+class InboxSetTrackedAuthorsRequest(BaseModel):
+    """Replace the per-inbox tracker dict in one shot. Handler
+    delegates to `mimir.inboxes.set_tracked_authors`."""
+
+    op: Literal["inbox_set_tracked_authors"] = "inbox_set_tracked_authors"
+    name: str = Field(min_length=1, max_length=64)
+    trackers: dict[str, str]
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_slug(cls, v: str) -> str:
+        return _validate_inbox_name(v)
+
+
+class InboxAddTrackedAuthorRequest(BaseModel):
+    """Add (or replace) one tracker entry. Handler delegates to
+    `mimir.inboxes.add_tracked_author`."""
+
+    op: Literal["inbox_add_tracked_author"] = "inbox_add_tracked_author"
+    name: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=128)
+    substring: str = Field(min_length=1, max_length=512)
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_slug(cls, v: str) -> str:
+        return _validate_inbox_name(v)
+
+
+class InboxRemoveTrackedAuthorRequest(BaseModel):
+    """Remove one tracker entry by label. Handler delegates to
+    `mimir.inboxes.remove_tracked_author`."""
+
+    op: Literal["inbox_remove_tracked_author"] = "inbox_remove_tracked_author"
+    name: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=128)
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_slug(cls, v: str) -> str:
+        return _validate_inbox_name(v)
+
+
+class InboxClearTrackedAuthorsRequest(BaseModel):
+    """Drop all tracker entries (writes NULL). Handler delegates to
+    `mimir.inboxes.clear_tracked_authors`."""
+
+    op: Literal["inbox_clear_tracked_authors"] = "inbox_clear_tracked_authors"
+    name: str = Field(min_length=1, max_length=64)
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_slug(cls, v: str) -> str:
+        return _validate_inbox_name(v)
+
+
 class VacuumRequest(BaseModel):
     """Run `VACUUM` (+ WAL checkpoint) on the broker. Holds the
     SQLite exclusive lock for the duration; cache writes from the
@@ -291,6 +448,14 @@ Request = Union[
     UpdateMainlineRequest,
     AnalyzeRequest,
     VacuumRequest,
+    FailuresReplayRequest,
+    InboxCreateRequest,
+    InboxUpdateRequest,
+    InboxDeleteRequest,
+    InboxSetTrackedAuthorsRequest,
+    InboxAddTrackedAuthorRequest,
+    InboxRemoveTrackedAuthorRequest,
+    InboxClearTrackedAuthorsRequest,
     WarmInboxRequest,
     WarmGlobalRequest,
 ]
