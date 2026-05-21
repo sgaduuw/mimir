@@ -1,4 +1,4 @@
-"""`admin canonicals …` — backfill `articles.canonical_inbox_id` from
+"""`admin canonicals …`: backfill `articles.canonical_inbox_id` from
 the original To/Cc headers.
 
 Use after initial deployment of canonical resolution, or after editing

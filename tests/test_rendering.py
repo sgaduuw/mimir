@@ -6,6 +6,7 @@ adversarial inputs (XSS payloads, weird-scheme URLs, deeply nested
 quotes) never get exercised that way. These tests pin the
 escaping behavior and the structural transformations.
 """
+
 import re
 
 from markupsafe import Markup
@@ -39,14 +40,16 @@ def test_linkify_links_http_and_https():
     out = linkify("see http://example.com/x and https://example.org/y")
     assert '<a href="http://example.com/x"' in out
     assert '<a href="https://example.org/y"' in out
-    # Both anchors carry rel=nofollow.
-    assert out.count('rel="nofollow"') == 2
+    # Both anchors carry the full external-link rel set: `nofollow`
+    # (don't propagate ranking signal), `noopener` (no window.opener
+    # back-reference), `noreferrer` (don't leak the referring URL).
+    assert out.count('rel="nofollow noopener noreferrer"') == 2
 
 
 def test_linkify_rejects_javascript_scheme():
     """A `javascript:` URL must NOT become an anchor, the URL regex
     only matches http/https. The literal text gets escaped."""
-    out = linkify('click javascript:alert(1) here')
+    out = linkify("click javascript:alert(1) here")
     assert "<a href=" not in out
     assert "javascript:alert(1)" in out  # escaped, not linked
 
@@ -208,14 +211,7 @@ def test_parse_blocks_groups_consecutive_quotes():
 
 def test_parse_blocks_diff_runs():
     body = (
-        "intro\n"
-        "diff --git a/x b/x\n"
-        "--- a/x\n"
-        "+++ b/x\n"
-        "@@ -1 +1 @@\n"
-        "-old\n"
-        "+new\n"
-        "outro\n"
+        "intro\ndiff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\noutro\n"
     )
     blocks = parse_blocks(body)
     kinds = [b.kind for b in blocks]
@@ -235,10 +231,10 @@ def test_render_body_empty():
 
 def test_render_body_wraps_text_in_pre():
     """A plain text block must be enclosed by a <pre> open + close
-    around the actual content, not just contain a `<pre` substring
-    somewhere on the page (which would also pass if the body
-    rendered the text raw and a *different* block, diff, blockquote
-   , happened to be a `<pre>` further down)."""
+     around the actual content, not just contain a `<pre` substring
+     somewhere on the page (which would also pass if the body
+     rendered the text raw and a *different* block, diff, blockquote
+    , happened to be a `<pre>` further down)."""
     out = str(render_body("hello\nworld"))
     m = re.search(r"<pre[^>]*>(.*?)</pre>", out, re.DOTALL)
     assert m is not None, f"no <pre>...</pre> in output: {out!r}"
@@ -328,14 +324,7 @@ def test_render_body_hunk_quote_jump_link_escapes_parent_url():
 
 
 def test_render_body_diff_pygmentized():
-    body = (
-        "diff --git a/x b/x\n"
-        "--- a/x\n"
-        "+++ b/x\n"
-        "@@ -1 +1 @@\n"
-        "-old\n"
-        "+new\n"
-    )
+    body = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n"
     out = str(render_body(body))
     # Class-based output (noclasses=False): inserted/deleted lines
     # carry Pygments' class names rather than inline `style=` colours.
@@ -378,12 +367,7 @@ def test_render_body_fenced_code_block_default_c():
 def test_render_body_fenced_code_block_with_python_info_string():
     """`\\`\\`\\`python` selects the Python lexer. Pygments' Python
     token class for `def` is `k` (keyword)."""
-    body = (
-        "```python\n"
-        "def hello():\n"
-        "    return 42\n"
-        "```\n"
-    )
+    body = "```python\ndef hello():\n    return 42\n```\n"
     out = str(render_body(body))
     assert 'class="highlight"' in out
     # `def` is a Python keyword, same `k` class. Distinguish from C
@@ -397,11 +381,7 @@ def test_render_body_fenced_code_block_unknown_language_falls_back_to_text():
     """An unknown info string (e.g. `\\`\\`\\`foobar`) falls back to
     `TextLexer` rather than raising. The block still renders as
     monospace; just no token classes."""
-    body = (
-        "```foobar-not-a-language\n"
-        "literal text not highlighted\n"
-        "```\n"
-    )
+    body = "```foobar-not-a-language\nliteral text not highlighted\n```\n"
     out = str(render_body(body))
     assert 'class="highlight"' in out
     assert "literal text not highlighted" in out
@@ -410,11 +390,7 @@ def test_render_body_fenced_code_block_unknown_language_falls_back_to_text():
 def test_render_body_fenced_code_block_excludes_delimiters_from_output():
     """The triple-backtick fence delimiters are markdown wrappers,
     not code. They must not appear in the rendered block."""
-    body = (
-        "```c\n"
-        "int x = 1;\n"
-        "```\n"
-    )
+    body = "```c\nint x = 1;\n```\n"
     out = str(render_body(body))
     # The opening / closing ``` lines aren't part of the C block.
     assert "```" not in out
@@ -426,11 +402,7 @@ def test_render_body_unclosed_fence_runs_to_end_of_body():
     renderers use. Better than dropping the content silently.
     Pygments tokenises each word, so we check the tokens land in
     the highlight block in order."""
-    body = (
-        "```c\n"
-        "int x = 1;\n"
-        "still inside the fence\n"
-    )
+    body = "```c\nint x = 1;\nstill inside the fence\n"
     out = str(render_body(body))
     assert 'class="highlight"' in out
     # The text is tokenised by Pygments into per-word `<span>`s;
@@ -444,12 +416,7 @@ def test_render_body_text_after_closed_fence_is_plain_pre():
     """Re-entering prose after a closed fence must use the plain
     `<pre>` text pipeline, not stay in code mode. Pins the
     state-machine transition out of the fence."""
-    body = (
-        "```c\n"
-        "int x;\n"
-        "```\n"
-        "back to prose with https://example.test\n"
-    )
+    body = "```c\nint x;\n```\nback to prose with https://example.test\n"
     out = str(render_body(body))
     # The post-fence URL should be linkified, that only happens in
     # the prose pipeline, not in a code block.
@@ -460,12 +427,7 @@ def test_render_body_fence_inside_quote_is_treated_as_quote_content():
     """A reviewer quoting code (`> \\`\\`\\`c`) keeps the quote
     structure; we don't re-enter code mode inside a blockquote.
     The quote depth check runs first."""
-    body = (
-        "> ```c\n"
-        "> int x = 1;\n"
-        "> ```\n"
-        "Followup prose.\n"
-    )
+    body = "> ```c\n> int x = 1;\n> ```\nFollowup prose.\n"
     out = str(render_body(body))
     assert "<blockquote>" in out
     # The fence opener inside the quote shouldn't have toggled the
@@ -520,8 +482,14 @@ def test_render_body_diff_full_patch_stays_one_block():
     idx_new = out.index("new", out.index('class="gi">+</span>'))
     idx_trailer = out.index("2.53.0")
     assert (
-        idx_diff < idx_index < idx_minus_file < idx_plus_file
-        < idx_hunk < idx_old < idx_new < idx_trailer
+        idx_diff
+        < idx_index
+        < idx_minus_file
+        < idx_plus_file
+        < idx_hunk
+        < idx_old
+        < idx_new
+        < idx_trailer
     ), "patch components must render in source order"
 
 
@@ -559,9 +527,7 @@ def test_trailer_addresses_not_msgid_linkified():
     body = "Signed-off-by: Bob <bob@example.com>"
     out_no_redactor = str(render_body(body))
     assert "[off-list ref]" in out_no_redactor
-    out_with_redactor = str(
-        render_body(body, address_redactor=lambda _e: "<redacted>")
-    )
+    out_with_redactor = str(render_body(body, address_redactor=lambda _e: "<redacted>"))
     assert "[off-list ref]" not in out_with_redactor
     assert "&lt;redacted&gt;" in out_with_redactor or "<redacted>" in out_with_redactor
 
@@ -570,6 +536,7 @@ def test_trailer_keeps_allowlisted_addresses_when_redactor_says_so():
     """The redactor can return the original `<addr>` for allowlisted
     senders (the web layer's wrapper does exactly this against
     settings.email_allowlist)."""
+
     def keep_if_kernel(email):
         # Domain-suffix check (rather than substring) to keep CodeQL's
         # `py/incomplete-url-substring-sanitization` rule quiet on this
@@ -599,14 +566,16 @@ def test_trailer_redactor_output_html_metacharacters_are_escaped():
     from that return value."""
     # Build a body line that the trailer-recognition regex will match.
     # The redactor returns plain-text content carrying `<`, `>`, and `"`
-    #, exactly what an attacker would smuggle through an address with
+    # , exactly what an attacker would smuggle through an address with
     # HTML metacharacters in the local-part, given the existing email
     # regex permits them.
     payload = '<a"onmouseover=alert(1)@kernel.org>'
-    out = str(render_body(
-        "Signed-off-by: X <something@example.com>",
-        address_redactor=lambda _e: payload,
-    ))
+    out = str(
+        render_body(
+            "Signed-off-by: X <something@example.com>",
+            address_redactor=lambda _e: payload,
+        )
+    )
     # The literal angle bracket from the redactor must not introduce
     # a live tag. Escaped form must be present, raw form must not.
     assert payload not in out
@@ -644,9 +613,7 @@ def test_trailer_recognition_is_case_insensitive():
     """Some senders capitalise trailer keys (`SIGNED-OFF-BY:` etc.);
     the recognition shouldn't drop them just because of case."""
     body = "Reviewed-by: Alice <alice@example.com>"
-    out = str(
-        render_body(body, address_redactor=lambda _e: "<R>")
-    )
+    out = str(render_body(body, address_redactor=lambda _e: "<R>"))
     assert "[off-list ref]" not in out
 
 
@@ -655,9 +622,7 @@ def test_non_trailer_msgid_linkify_unaffected_by_redactor():
     prior message) still go through the msgid linkifier even when a
     trailer redactor is installed."""
     body = "see <abc123@some.host.example> for context"
-    out = str(
-        render_body(body, address_redactor=lambda _e: "<R>")
-    )
+    out = str(render_body(body, address_redactor=lambda _e: "<R>"))
     # Body-text msgid that doesn't match the archive collapses to the
     # off-list ref placeholder, same as before.
     assert "[off-list ref]" in out
@@ -675,6 +640,7 @@ def _no_live_tag_carries(out: str, banned_attr: str) -> None:
     instead and assert none of them carries the attribute name.
     """
     import re
+
     # Match HTML element start tags. Each match is the full `<tag ...>`.
     for tag in re.findall(r"<[a-zA-Z][^>]*>", out):
         assert banned_attr not in tag, (
@@ -744,7 +710,7 @@ def test_render_body_diff_signature_delimiter_not_rendered_as_minus_line():
     out = str(render_body(body))
     # Trailer must render as plain text inside a diff-meta block,
     # NOT inside the hunk as a fake deletion line.
-    assert "<pre class=\"diff-meta\">-- \n2.45.0</pre>" in out, (
+    assert '<pre class="diff-meta">-- \n2.45.0</pre>' in out, (
         "signature delimiter + git version must land in a tail "
         f"diff-meta block, not inside a hunk:\n{out}"
     )
@@ -775,8 +741,8 @@ def test_render_body_diff_hunk_lines_separated_by_newlines():
     out = str(render_body(body))
     # Inside the hunk's <pre>, line spans must be `\n`-separated.
     # Extract the slice between `<pre>` and `</pre>` of the hunk.
-    hunk_pre = out[out.index('class="hunk"'):out.index("</pre></div>")]
-    pre_inner = hunk_pre[hunk_pre.index("<pre>") + len("<pre>"):]
+    hunk_pre = out[out.index('class="hunk"') : out.index("</pre></div>")]
+    pre_inner = hunk_pre[hunk_pre.index("<pre>") + len("<pre>") :]
     # At least three newlines between line spans (@@ + 3 content lines = 4 lines).
     assert pre_inner.count("\n") >= 3, (
         f"hunk body lacks newline separators between line spans:\n{pre_inner}"
@@ -820,6 +786,7 @@ def test_render_body_diff_hunk_anchors_unique_in_output():
     duplicate `id` would silently break URL-fragment jumps to the
     second occurrence. Pin by counting each generated anchor."""
     import re as _re
+
     body = (
         "diff --git a/x b/x\n"
         "--- a/x\n"
@@ -833,9 +800,7 @@ def test_render_body_diff_hunk_anchors_unique_in_output():
     )
     out = str(render_body(body))
     ids = _re.findall(r'id="(h-\d+(?:-L\d+)?)"', out)
-    assert len(ids) == len(set(ids)), (
-        f"duplicate anchor IDs in rendered diff: {ids}"
-    )
+    assert len(ids) == len(set(ids)), f"duplicate anchor IDs in rendered diff: {ids}"
 
 
 def test_render_body_diff_context_line_gets_per_language_highlight():

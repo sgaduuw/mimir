@@ -21,6 +21,7 @@ the new location of the code. The `a/` path is recoverable from the
 blob if a future surface ever needs it; ingest time is the wrong
 moment to make that choice durable.
 """
+
 import logging
 import re
 from typing import Callable
@@ -57,6 +58,16 @@ _DIFF_GIT_RE = re.compile(
 )
 
 
+# Hard ceiling on the number of distinct paths one patch body can
+# contribute to `article_files`. Real-world series rarely touch more
+# than ~50 files in one mail; 1000 is several orders of magnitude
+# above any non-pathological patch. The cap defends against a
+# crafted body with synthetic `diff --git` headers that would
+# otherwise flood `article_files` with bogus rows and degrade the
+# per-subsystem fan-outs that join on `(path, article_id)`.
+MAX_TOUCHED_PATHS = 1000
+
+
 def extract_touched_paths(body: str | None) -> set[str]:
     """Return the set of post-rename paths the patch body touches.
 
@@ -72,10 +83,19 @@ def extract_touched_paths(body: str | None) -> set[str]:
     when responding (rare; git-send-email doesn't quote diffs the
     way mailers quote prose) will have those lines treated as fresh
     diffs. Acceptable: that's effectively a reply containing a
-    patch hunk, which IS a fresh diff for index purposes."""
+    patch hunk, which IS a fresh diff for index purposes.
+
+    Caps the returned set at `MAX_TOUCHED_PATHS` entries. Real-world
+    series stay well under that ceiling; the cap exists to bound
+    work from a hostile or malformed message."""
     if not body:
         return set()
-    return {m.group("new") for m in _DIFF_GIT_RE.finditer(body)}
+    out: set[str] = set()
+    for m in _DIFF_GIT_RE.finditer(body):
+        out.add(m.group("new"))
+        if len(out) >= MAX_TOUCHED_PATHS:
+            break
+    return out
 
 
 class BackfillResult(BaseModel):
@@ -88,11 +108,12 @@ class BackfillResult(BaseModel):
     handoff between broker chunks (Phase 2.2). Direct (non-broker)
     callers always see `partial=False, continuation=None`.
     """
+
     examined: int = 0
-    indexed: int = 0   # had a patch body and one or more paths landed
-    no_diff: int = 0   # body parsed but no `diff --git` headers
-    skipped: int = 0   # already had rows, or unreadable
-    failed: int = 0    # parse error reading the blob
+    indexed: int = 0  # had a patch body and one or more paths landed
+    no_diff: int = 0  # body parsed but no `diff --git` headers
+    skipped: int = 0  # already had rows, or unreadable
+    failed: int = 0  # parse error reading the blob
     partial: bool = False
     continuation: int | None = None
 
@@ -120,25 +141,29 @@ def backfill_article_files(
     start_cursor: int | None = None,
 ) -> BackfillResult:
     """Walk articles, extract diff-touched paths, insert ArticleFile
-    rows. Idempotent: articles with existing rows are skipped unless
-    `reprocess=True` (which deletes existing rows before re-extracting
-   , useful after an extractor change).
+     rows. Idempotent: articles with existing rows are skipped unless
+     `reprocess=True` (which deletes existing rows before re-extracting
+    , useful after an extractor change).
 
-    Newest-first ordering so a `--limit`-bounded session covers the
-    most-recently-active articles first; that's where the
-    subsystem-header surface is most visible to a user.
+     Newest-first ordering so a `--limit`-bounded session covers the
+     most-recently-active articles first; that's where the
+     subsystem-header surface is most visible to a user.
 
-    `max_seconds` + `start_cursor` enable broker-side cooperative
-    scheduling (Phase 2.2): the broker handler runs at most one
-    chunk per RPC, then returns `partial=True, continuation=<last id>`
-    so the CLI loops with a follow-up RPC. Direct callers leave
-    both None and get the original full-walk behaviour."""
+     `max_seconds` + `start_cursor` enable broker-side cooperative
+     scheduling (Phase 2.2): the broker handler runs at most one
+     chunk per RPC, then returns `partial=True, continuation=<last id>`
+     so the CLI loops with a follow-up RPC. Direct callers leave
+     both None and get the original full-walk behaviour."""
     result = BackfillResult()
     partial, continuation = walk_articles(
-        result, _process_one,
-        limit=limit, reprocess=reprocess, progress=progress,
+        result,
+        _process_one,
+        limit=limit,
+        reprocess=reprocess,
+        progress=progress,
         label="backfill_article_files",
-        max_seconds=max_seconds, start_cursor=start_cursor,
+        max_seconds=max_seconds,
+        start_cursor=start_cursor,
     )
     result.partial = partial
     result.continuation = continuation
@@ -150,17 +175,21 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
     # Existing-rows check. `article.files` would also work but
     # selectinload didn't preload it; a COUNT is cheap and avoids
     # pulling the rows.
-    has_rows = session.execute(
-        select(ArticleFile.article_id)
-        .where(ArticleFile.article_id == article.id)
-        .limit(1)
-    ).first() is not None
+    has_rows = (
+        session.execute(
+            select(ArticleFile.article_id)
+            .where(ArticleFile.article_id == article.id)
+            .limit(1)
+        ).first()
+        is not None
+    )
     if has_rows and not reprocess:
         return "skipped"
     if has_rows and reprocess:
         session.execute(
-            ArticleFile.__table__.delete()
-            .where(ArticleFile.__table__.c.article_id == article.id)
+            ArticleFile.__table__.delete().where(
+                ArticleFile.__table__.c.article_id == article.id
+            )
         )
 
     # Pick the canonical inbox to re-read the body. For cross-posts
@@ -180,7 +209,7 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
 
     try:
         parsed = read_message(session, inbox, article.message_id)
-    except (MessageNotFound, KeyError):
+    except MessageNotFound, KeyError:
         # Mirror unreachable on this host, or the recorded SHA isn't
         # in the local repo (dulwich raises bare KeyError for that).
         # Common in dev and after a partial-mirror rebuild; defer
@@ -190,7 +219,9 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
     except Exception as exc:
         logger.warning(
             "backfill: parse failure for article %d (%s): %r",
-            article.id, article.message_id, exc,
+            article.id,
+            article.message_id,
+            exc,
         )
         return "failed"
 

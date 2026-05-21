@@ -20,6 +20,7 @@ class InboxConfig(BaseModel):
     `mimir.models.Inbox`, which is bootstrapped from these entries on
     app startup. The `Settings.inboxes` dict key becomes `Inbox.name`
     (URL slug)."""
+
     mirror_path: Path
     upstream_url: str
 
@@ -76,7 +77,6 @@ class Settings(BaseSettings):
             mirror_path=Path("Inboxes/linux-fsdevel/git"),
             upstream_url="https://lore.kernel.org/linux-fsdevel",
         ),
-
     }
 
     # Senders whose email address is shown in full in the UI. Everyone
@@ -96,6 +96,15 @@ class Settings(BaseSettings):
     # Default pins lkml since this archive treats it as the focal list;
     # set to empty to fall back to pure alphabetical.
     pinned_inboxes: list[str] = ["lkml"]
+
+    # Extra mailing-list host suffixes that augment the default
+    # `mimir.canonical.LIST_HOST_SUFFIXES` set. Operators with archives
+    # for lists hosted on a domain we don't yet ship as a default can
+    # add it here without a patch; the entries are unioned with the
+    # baseline. Default empty (baseline covers kernel.org-adjacent
+    # ecosystems). Override via LIST_HOST_SUFFIX_OVERRIDES
+    # (comma-separated).
+    list_host_suffix_overrides: list[str] = []
 
     # Inboxes treated as a *firehose* during canonical-inbox resolution
     # for cross-posts. A message posted to a topical list AND lkml is
