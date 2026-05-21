@@ -1,27 +1,46 @@
-"""Mainline-tree commit walker.
+"""Mainline-tree indexing: end-to-end ownership of the mainline
+tree's two derived surfaces.
 
-Walks Linus's `linux.git` (or any other tree pointed at by the
-operator) and indexes every `Link: https://lore.kernel.org/.../<msgid>`
-trailer it finds. The resulting `mainline_commits` rows let the
-patch page render "Applied as `<sha>` on <date>", the user-visible
-signal that closes the lore-archive → mainline-tree loop.
+Two sub-areas, one concern (the mainline tree, end to end):
 
-Pure-ish: `extract_message_ids` is a plain function over commit-
-message bytes, easy to unit-test. `walk_commits` does the dulwich
-walking and writes through to the DB; tested via fake bare repos.
+- **Walker.** `extract_message_ids` + `walk_commits` scan commit
+  messages for `Link: https://lore.kernel.org/.../<msgid>` trailers
+  and write them to `mainline_commits` so a patch page can render
+  "Applied as `<sha>` on <date>".
+- **Orchestration.** `update_mainline` is the operator-facing entry
+  point: optionally `git fetch`, reload MAINTAINERS, walk for
+  trailers. Called by the `mimir update-mainline` CLI and the
+  Phase 2.3 broker handler.
+
+Splitting orchestration off into its own module would scatter
+state coupled to the same tree (the `MainlineState` row, the
+`tree_path` resolution, the trailer regex) and force every caller
+to learn two paths. Keeping it together follows the same shape as
+`mimir/inboxes.py` (bootstrap + CRUD + observe in one place).
 """
 
 import logging
 import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dulwich.repo import Repo
 from pydantic import BaseModel
+from sqlalchemy import delete
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from mimir.models import MainlineCommit, MainlineState
+from mimir import maintainers
+from mimir.config import settings
+from mimir.extensions import SessionLocal, write_transaction
+from mimir.models import (
+    MainlineCommit,
+    MainlineState,
+    Subsystem,
+    SubsystemMaintainer,
+    SubsystemPath,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +93,7 @@ def extract_message_ids(commit_message: bytes) -> list[str]:
 
 class WalkResult(BaseModel):
     """Outcome counters for one `walk_commits` invocation."""
+
     commits_seen: int = 0
     # Commits with at least one extractable `Link:` trailer.
     linked: int = 0
@@ -125,7 +145,8 @@ def walk_commits(
             # scratch rather than crash.
             logger.warning(
                 "mainline: cursor SHA %s missing from %s; rewalking",
-                since, tree_path,
+                since,
+                tree_path,
             )
             exclude = []
     walker = repo.get_walker(include=[head], exclude=exclude, reverse=True)
@@ -169,26 +190,228 @@ def walk_commits(
         if msgids:
             result.linked += 1
             committed_at = datetime.fromtimestamp(
-                commit.commit_time, tz=timezone.utc,
+                commit.commit_time,
+                tz=timezone.utc,
             )
             for mid in msgids:
-                pending_rows.append({
-                    "commit_sha": sha,
-                    "message_id": mid,
-                    "tree_name": tree_name,
-                    "committed_at": committed_at,
-                })
+                pending_rows.append(
+                    {
+                        "commit_sha": sha,
+                        "message_id": mid,
+                        "tree_name": tree_name,
+                        "committed_at": committed_at,
+                    }
+                )
                 result.rows_inserted += 1
 
         if result.commits_seen % _BATCH == 0:
             flush()
             logger.info(
                 "mainline: walked %d commits (%d linked, %d rows)",
-                result.commits_seen, result.linked, result.rows_inserted,
+                result.commits_seen,
+                result.linked,
+                result.rows_inserted,
             )
 
     flush()
     return result
 
 
-__all__ = ["WalkResult", "extract_message_ids", "walk_commits"]
+class UpdateMainlineResult(BaseModel):
+    """Outcome of one `update_mainline` invocation. Fields are present
+    even when their phase was skipped, so callers can branch on
+    them without checking which mode was passed; the
+    `<phase>_ran` flags carry the dispositive bit."""
+
+    maintainers_ran: bool = False
+    maintainers_unchanged: bool = False
+    subsystems_loaded: int = 0
+    mainline_head: str | None = None
+
+    commits_ran: bool = False
+    commits_seen: int = 0
+    commits_linked: int = 0
+    rows_inserted: int = 0
+
+
+def _resolve_tree_path() -> Path:
+    """Read `Settings.mainline_tree_path` and absolutize against
+    PROJECT_ROOT when it's relative. Centralised so both the CLI
+    and the broker handler see the same path resolution rules."""
+    tree_path = Path(settings.mainline_tree_path)
+    if not tree_path.is_absolute():
+        # Late import: `PROJECT_ROOT` is a config-module constant
+        # but importing it at module load creates a circular
+        # dependency with the `Settings` instance.
+        from mimir.config import PROJECT_ROOT
+
+        tree_path = PROJECT_ROOT / tree_path
+    return tree_path
+
+
+def _ensure_tree(tree_path: Path, *, skip_fetch: bool) -> None:
+    """Clone the mainline tree on first run, fetch otherwise. Skips
+    the fetch when `skip_fetch=True` (CLI option that lets an
+    operator re-run MAINTAINERS / Link-trailer passes against the
+    current HEAD without burning a network round-trip)."""
+    if not tree_path.exists():
+        tree_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "mainline: cloning %s -> %s",
+            settings.mainline_tree_url,
+            tree_path,
+        )
+        # `--` stops git from interpreting an option-shaped URL as
+        # a flag (same defensive pattern as `mimir.sync.clone_epoch`).
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "--mirror",
+                "--",
+                settings.mainline_tree_url,
+                str(tree_path),
+            ],
+            check=True,
+        )
+        return
+    if not skip_fetch:
+        logger.debug("mainline: fetching %s", tree_path)
+        subprocess.run(
+            ["git", "-C", str(tree_path), "fetch", "--quiet", "--prune"],
+            check=True,
+        )
+
+
+def load_maintainers(
+    tree_path: Path,
+    tree_name: str = "linus",
+    *,
+    force: bool = False,
+) -> tuple[bool, int, str]:
+    """Read MAINTAINERS at HEAD and replace the
+    `subsystems` / `subsystem_paths` / `subsystem_maintainers`
+    triple in one transaction. Returns
+    `(ran, subsystems_loaded, head_sha)`; `ran=False` when HEAD
+    matches `last_commit_sha` and `force=False`.
+
+    BEGIN IMMEDIATE: the reparse reads `MainlineState` then writes
+    the whole subsystems triple in one transaction, the exact
+    shape that trips SQLITE_BUSY_SNAPSHOT under concurrent cache
+    writes."""
+    repo = Repo(str(tree_path))
+    head_sha = repo.head().decode("ascii")
+    commit = repo[repo.head()]
+    tree = repo[commit.tree]
+    try:
+        _mode, blob_sha = tree[b"MAINTAINERS"]
+    except KeyError as exc:
+        raise FileNotFoundError(
+            f"no MAINTAINERS file at HEAD of {tree_path}; wrong tree?"
+        ) from exc
+    blob_bytes = repo[blob_sha].data
+
+    with (
+        write_transaction("update_mainline:maintainers"),
+        SessionLocal() as session,
+    ):
+        state = session.get(MainlineState, tree_name)
+        if state is None:
+            state = MainlineState(tree_name=tree_name)
+            session.add(state)
+        if state.last_commit_sha == head_sha and not force:
+            return False, 0, head_sha
+
+        parsed = maintainers.parse(blob_bytes)
+        # Replace-all in one transaction. The cascade FK on
+        # `subsystems.id` clears `subsystem_paths` +
+        # `subsystem_maintainers` via ON DELETE CASCADE; SQLite
+        # needs `PRAGMA foreign_keys=ON` (set by `mimir.extensions`
+        # on every connection) for the cascade to fire.
+        session.execute(delete(Subsystem))
+        for sub in parsed:
+            row = Subsystem(name=sub.name, status=sub.status)
+            for path in sub.files:
+                row.paths.append(SubsystemPath(glob=path, is_exclude=False))
+            for path in sub.excludes:
+                row.paths.append(SubsystemPath(glob=path, is_exclude=True))
+            for m in sub.maintainers:
+                row.maintainers.append(
+                    SubsystemMaintainer(
+                        role=m.role,
+                        name=m.name,
+                        address=m.address,
+                    )
+                )
+            session.add(row)
+        state.last_commit_sha = head_sha
+        session.commit()
+        loaded = len(parsed)
+
+    # Invalidate the dynamic-allowlist cache so the web tier picks
+    # up the refreshed M:/R: address set on the next request. The
+    # cache table is shared across processes, so this delete from
+    # the sidecar (or broker) reaches the web container too.
+    from mimir import maintainer_allowlist
+
+    maintainer_allowlist.invalidate()
+
+    return True, loaded, head_sha
+
+
+def update_mainline(
+    *,
+    skip_fetch: bool = False,
+    skip_maintainers: bool = False,
+    skip_commits: bool = False,
+    force: bool = False,
+) -> UpdateMainlineResult:
+    """Sync the mainline tree and refresh both derived surfaces.
+
+    The two phases (MAINTAINERS reparse + Link-trailer walk) are
+    independent; either can be skipped via its flag. `force` only
+    affects MAINTAINERS (the commit walker is incremental against
+    a cursor, so "force" doesn't have an analogue there).
+
+    Same body as the CLI command had before Phase 2.3; the CLI now
+    delegates to this function so the broker handler can call the
+    same code path without import gymnastics."""
+    tree_name = "linus"  # fixed slug; supports future linux-stable, etc.
+    tree_path = _resolve_tree_path()
+    _ensure_tree(tree_path, skip_fetch=skip_fetch)
+
+    result = UpdateMainlineResult()
+
+    if not skip_maintainers:
+        ran, loaded, head_sha = load_maintainers(
+            tree_path,
+            tree_name,
+            force=force,
+        )
+        result.maintainers_ran = ran
+        result.maintainers_unchanged = not ran
+        result.subsystems_loaded = loaded
+        result.mainline_head = head_sha
+
+    if not skip_commits:
+        with (
+            write_transaction("update_mainline:link_trailers"),
+            SessionLocal() as session,
+        ):
+            walk = walk_commits(session, tree_path, tree_name=tree_name)
+        result.commits_ran = True
+        result.commits_seen = walk.commits_seen
+        result.commits_linked = walk.linked
+        result.rows_inserted = walk.rows_inserted
+
+    return result
+
+
+__all__ = [
+    "WalkResult",
+    "UpdateMainlineResult",
+    "extract_message_ids",
+    "walk_commits",
+    "load_maintainers",
+    "update_mainline",
+]

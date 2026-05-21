@@ -14,6 +14,7 @@ change that alters cached value shapes (a query rewrite, a renamed
 dataclass field) is bumped centrally, old rows simply never match
 and age out via `purge_expired`. Callers don't see the prefix.
 """
+
 import dataclasses
 import json
 import logging
@@ -100,8 +101,7 @@ def _encode(obj: Any) -> Any:
     if tag is not None:
         if dataclasses.is_dataclass(obj):
             fields = {
-                f.name: _encode(getattr(obj, f.name))
-                for f in dataclasses.fields(obj)
+                f.name: _encode(getattr(obj, f.name)) for f in dataclasses.fields(obj)
             }
         elif isinstance(obj, BaseModel):
             # Iterate via `model_fields` + getattr so nested BaseModel /
@@ -109,8 +109,7 @@ def _encode(obj: Any) -> Any:
             # the type tags), instead of through `model_dump()` which
             # would flatten them to plain dicts and lose the tags.
             fields = {
-                name: _encode(getattr(obj, name))
-                for name in type(obj).model_fields
+                name: _encode(getattr(obj, name)) for name in type(obj).model_fields
             }
         else:
             raise TypeError(
@@ -156,10 +155,7 @@ def _should_dispatch_to_broker() -> bool:
     inside the broker (the long worker); its `_warm_after_ingest`
     would otherwise fire three self-RPCs per per-inbox tick.
     """
-    return (
-        settings.broker_socket_path is not None
-        and settings.mimir_role != "broker"
-    )
+    return settings.broker_socket_path is not None and settings.mimir_role != "broker"
 
 
 def get(key: str) -> Any:
@@ -167,11 +163,24 @@ def get(key: str) -> Any:
     now = _now()
     with SessionLocal() as session:
         row = session.execute(
-            select(CacheEntry.value, CacheEntry.expires_at).where(CacheEntry.key == nskey)
+            select(CacheEntry.value, CacheEntry.expires_at).where(
+                CacheEntry.key == nskey
+            )
         ).one_or_none()
     if row is None or row.expires_at < now:
         return None
     return _decode(json.loads(row.value))
+
+
+# Maximum JSON-encoded payload size accepted by `cache.set`. Defense
+# in depth against a buggy caller or an over-eager aggregator
+# producing huge cache rows; the per-call inputs are bounded by query
+# `LIMIT`s today, but the cap closes the door on accidental bloat.
+# 8 MiB is well above the largest real cache value observed (~2 MiB
+# sitemap XML for popular inboxes) and well below the broker's
+# wire-level 16 MiB cap, so a rejection here surfaces with a clean
+# log rather than as a broker connection close.
+MAX_CACHE_VALUE_BYTES = 8 * 1024 * 1024
 
 
 def _direct_set(nskey: str, payload: str, ttl: int) -> None:
@@ -219,6 +228,18 @@ def set(key: str, value: Any, ttl: int) -> None:
         return
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
+    if len(payload) > MAX_CACHE_VALUE_BYTES:
+        # Refuse the write rather than letting it land. A multi-MB
+        # row would amplify into both the broker wire path (16 MiB
+        # cap) and every cache.get reader's memory; a clean log
+        # surface is the right signal for the caller to investigate.
+        logger.warning(
+            "cache write for %s exceeds %d bytes (%d); dropped",
+            nskey,
+            MAX_CACHE_VALUE_BYTES,
+            len(payload),
+        )
+        return
     if _should_dispatch_to_broker():
         # Import locally so the cache module doesn't depend on the
         # broker package at import time (avoids a cycle through
@@ -226,6 +247,7 @@ def set(key: str, value: Any, ttl: int) -> None:
         # the client out, and lets unit tests for the cache module
         # run without spinning up a broker).
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+
         try:
             get_broker_client().cache_set(nskey, payload, ttl)
         except BrokerUnavailable as exc:
@@ -256,7 +278,9 @@ def get_or_compute(
     nskey = _ns(key)
     if not force:
         row = session.execute(
-            select(CacheEntry.value, CacheEntry.expires_at).where(CacheEntry.key == nskey)
+            select(CacheEntry.value, CacheEntry.expires_at).where(
+                CacheEntry.key == nskey
+            )
         ).one_or_none()
         if row is not None and row.expires_at >= _now():
             window = _refresh_within.get()
@@ -277,8 +301,8 @@ def keys() -> list[str]:
     prefix = f"v{NAMESPACE_VERSION}:"
     with SessionLocal() as session:
         return [
-            (k[len(prefix):] if k.startswith(prefix) else k)
-            for k, in session.execute(
+            (k[len(prefix) :] if k.startswith(prefix) else k)
+            for (k,) in session.execute(
                 select(CacheEntry.key).where(CacheEntry.expires_at >= now)
             )
         ]
@@ -291,7 +315,9 @@ def _direct_purge_expired() -> int:
     purge timer runs this against its own writer connection)."""
     now = _now()
     with SessionLocal() as session:
-        result = session.execute(delete_stmt(CacheEntry).where(CacheEntry.expires_at < now))
+        result = session.execute(
+            delete_stmt(CacheEntry).where(CacheEntry.expires_at < now)
+        )
         session.commit()
         return result.rowcount or 0
 
@@ -312,6 +338,7 @@ def purge_expired() -> int:
         return 0
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+
         try:
             return get_broker_client().cache_purge_expired()
         except BrokerUnavailable as exc:
@@ -324,9 +351,7 @@ def _direct_delete(nskey: str) -> int:
     """Direct-SQLite delete of one cache row. Used by `delete()` when
     broker mode is off, and by `mimir.broker.handlers`."""
     with SessionLocal() as session:
-        result = session.execute(
-            delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
-        )
+        result = session.execute(delete_stmt(CacheEntry).where(CacheEntry.key == nskey))
         session.commit()
         return result.rowcount or 0
 
@@ -356,6 +381,7 @@ def delete(key: str) -> int:
     nskey = _ns(key)
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+
         try:
             return get_broker_client().cache_delete(nskey)
         except BrokerUnavailable as exc:
@@ -411,17 +437,22 @@ def delete_for_inbox(inbox_name: str) -> int:
         return 0
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+
         try:
             return get_broker_client().cache_delete_for_inbox(inbox_name)
         except BrokerUnavailable as exc:
             logger.warning(
-                "broker delete_for_inbox failed for %s: %s", inbox_name, exc,
+                "broker delete_for_inbox failed for %s: %s",
+                inbox_name,
+                exc,
             )
             return 0
     try:
         return _direct_delete_for_inbox(inbox_name)
     except OperationalError as exc:
         logger.warning(
-            "cache delete_for_inbox failed for %s: %s", inbox_name, exc,
+            "cache delete_for_inbox failed for %s: %s",
+            inbox_name,
+            exc,
         )
         return 0

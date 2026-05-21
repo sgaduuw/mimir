@@ -1,7 +1,7 @@
 """schema.org JSON-LD payloads, one builder per page shape.
 
 `_json_ld_index` (`/`), `_json_ld_inbox` (`/<inbox>/`),
-`_json_ld_message` (message page, the only one with a `@graph` —
+`_json_ld_message` (message page, the only one with a `@graph`:
 `DiscussionForumPosting` + `BreadcrumbList`), `_json_ld_search`
 (rendered `?q=…` results page), and `_json_ld_author`
 (`/<inbox>/author/<sub>`).
@@ -26,8 +26,9 @@ JSON_LD_TEXT_MAX = 2000
 # meta_description block so the WebSite JSON-LD and the meta tag
 # can't drift. If you change one, change the other.
 DEFAULT_SITE_DESCRIPTION = (
-    "Indexed mailing-list archives, served from local "
-    "public-inbox v2 mirrors."
+    "Linux kernel mailing list archives. ~200 inboxes indexed with "
+    "cross-list deduplication, subsystem dashboards, patch-series "
+    "timelines, and reviewer activity surfaces."
 )
 
 

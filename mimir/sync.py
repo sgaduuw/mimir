@@ -8,6 +8,7 @@ available repo. We fetch that, derive the set of epoch numbers, and:
 Both clone and fetch shell out to `git`, its smart-HTTP transport is
 faster and more reliable than dulwich's HTTP client for large repos.
 """
+
 import gzip
 import json
 import logging
@@ -35,6 +36,7 @@ def _user_agent() -> str:
     hardcoded `0.1` that drifts against every release). Resolved
     lazily to dodge a circular-import edge during package init."""
     from mimir import __version__
+
     return f"mimir/{__version__} (+https://github.com/sgaduuw/mimir)"
 
 
@@ -69,9 +71,7 @@ def fetch_manifest(upstream_url: str) -> dict:
         # server omits the header.
         raw = resp.read(_MANIFEST_MAX_BYTES + 1)
     if len(raw) > _MANIFEST_MAX_BYTES:
-        raise ValueError(
-            f"manifest body exceeds {_MANIFEST_MAX_BYTES} byte cap"
-        )
+        raise ValueError(f"manifest body exceeds {_MANIFEST_MAX_BYTES} byte cap")
     return json.loads(gzip.decompress(raw))
 
 
@@ -129,6 +129,22 @@ def local_epoch_names(mirror_path: Path) -> set[str]:
 
 
 def clone_epoch(name: str, clone_url: str, mirror_path: Path) -> Path:
+    # Defense in depth: the URL we're about to hand to `git clone`
+    # was constructed by concatenating `<upstream-origin> + <manifest-
+    # key>`. The origin half is operator-validated at config-load
+    # via the `validate_outbound_url` pydantic validator; the key
+    # half comes from a manifest the upstream serves. Re-validating
+    # the composed URL here closes the gap where a hostile manifest
+    # smuggles a non-https or RFC1918 destination through the
+    # concatenation (the operator-config side never sees the final
+    # composed URL otherwise).
+    from mimir._outbound import OutboundUrlError, validate_outbound_url
+
+    try:
+        validate_outbound_url(clone_url)
+    except OutboundUrlError as exc:
+        raise RuntimeError(f"refusing to clone {clone_url}: {exc}") from exc
+
     target = mirror_path / f"{name}.git"
     mirror_path.mkdir(parents=True, exist_ok=True)
     logger.info("cloning epoch %s from %s -> %s", name, clone_url, target)

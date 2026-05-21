@@ -377,8 +377,9 @@ def test_meta_index_emits_default_description(client):
     html = client.get("/").data.decode()
     desc = _meta_value(html, "description")
     assert desc == (
-        "Indexed mailing-list archives, served from local "
-        "public-inbox v2 mirrors."
+        "Linux kernel mailing list archives. ~200 inboxes indexed with "
+        "cross-list deduplication, subsystem dashboards, patch-series "
+        "timelines, and reviewer activity surfaces."
     )
 
 
@@ -400,8 +401,9 @@ def test_index_emits_website_json_ld(client):
     assert obj["name"] == "mimir"
     assert obj["url"] == "http://localhost/"
     assert obj["description"] == (
-        "Indexed mailing-list archives, served from local "
-        "public-inbox v2 mirrors."
+        "Linux kernel mailing list archives. ~200 inboxes indexed with "
+        "cross-list deduplication, subsystem dashboards, patch-series "
+        "timelines, and reviewer activity surfaces."
     )
 
 

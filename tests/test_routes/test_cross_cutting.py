@@ -5,9 +5,13 @@ keyboard-nav `data-nav-up` and the kbd-help dialog rendered
 on every page, the external-stylesheet contract, and small
 helper / filter unit tests imported from mimir.web."""
 
-
 import pytest
-from tests.test_routes._helpers import _build_app_with_hops, _ingest_one_article, _meta_value, _parse_csp
+from tests.test_routes._helpers import (
+    _build_app_with_hops,
+    _ingest_one_article,
+    _meta_value,
+    _parse_csp,
+)
 
 
 def test_pages_use_external_stylesheet_not_inline_style_blocks(client):
@@ -20,6 +24,7 @@ def test_pages_use_external_stylesheet_not_inline_style_blocks(client):
     Per-element `style="..."` attributes are pinned separately by
     `test_pages_emit_no_inline_style_attributes`."""
     import re as _re
+
     # Sample a handful of routes covering every base template path
     # the inline blocks used to live in (index.html, message.html
     # via the seeded fixture pages, inbox.html for the dashboard).
@@ -28,16 +33,14 @@ def test_pages_use_external_stylesheet_not_inline_style_blocks(client):
         body = client.get(path).data.decode()
         assert "<style>" not in body, (
             f"`{path}` still emits an inline `<style>` block:\n"
-            + body[body.index("<style>"):body.index("</style>") + 8]
+            + body[body.index("<style>") : body.index("</style>") + 8]
         )
         # And the external sheet IS linked with the cache-bust.
         link_re = _re.compile(
             r'<link rel="stylesheet"\s+href="[^"]*'
             r'/static/css/mimir\.css\?v=[^"]+"'
         )
-        assert link_re.search(body), (
-            f"`{path}` missing the external mimir.css link tag"
-        )
+        assert link_re.search(body), f"`{path}` missing the external mimir.css link tag"
 
 
 def test_pages_emit_no_inline_style_attributes(client, tmp_path):
@@ -54,7 +57,9 @@ def test_pages_emit_no_inline_style_attributes(client, tmp_path):
     keyboard-help dialog from base.html on every page).
     """
     _, msg_url = _ingest_one_article(
-        tmp_path, "alpha", "inline-style-sweep@example.com",
+        tmp_path,
+        "alpha",
+        "inline-style-sweep@example.com",
     )
     routes = [
         "/",
@@ -71,8 +76,7 @@ def test_pages_emit_no_inline_style_attributes(client, tmp_path):
             f"`{path}` carries an inline style attribute, "
             "which forces CSP to keep `'unsafe-inline'` on "
             "`style-src`:\n"
-            + body[max(0, body.index('style="') - 80):
-                   body.index('style="') + 200]
+            + body[max(0, body.index('style="') - 80) : body.index('style="') + 200]
         )
 
 
@@ -84,6 +88,7 @@ def test_footer_includes_mimir_version(client):
     footer."""
     import re
     from mimir import __version__
+
     body = client.get("/").data.decode()
     # <footer>...<mimir-version>...</footer> -- whatever phrasing,
     # the version must appear in the footer.
@@ -108,31 +113,31 @@ def test_unknown_inbox_404(client):
 # template parse error, ORM mismatch); the content tests catch
 # regressions where the response shape is right but the actual data
 # is wrong or missing.
-@pytest.mark.parametrize("path", [
-    "/",
-    "/today",
-    "/yesterday",
-    "/2024/",
-    "/2024/05/",
-    "/search",
-    "/search?q=Linux",
-    "/feed.atom",
-])
-
-
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/",
+        "/today",
+        "/yesterday",
+        "/2024/",
+        "/2024/05/",
+        "/search",
+        "/search?q=Linux",
+        "/feed.atom",
+    ],
+)
 def test_inbox_scoped_routes_smoke_200(client, inbox_name, path):
     """Smoke only: route resolves, template renders, no 500."""
     assert client.get(f"/{inbox_name}{path}").status_code == 200
 
 
 def test_unknown_inbox_since_404(client):
-    assert (
-        client.get("/nonexistent/since/2024-01-01").status_code == 404
-    )
+    assert client.get("/nonexistent/since/2024-01-01").status_code == 404
 
 
 def test_html_open_tag_is_single_line_on_routes_without_data_attrs(
-    client, inbox_name,
+    client,
+    inbox_name,
 ):
     """`<html lang="en">` renders as a clean single-line tag on every
     route that doesn't override the `html_data_attrs` block. The
@@ -147,7 +152,7 @@ def test_html_open_tag_is_single_line_on_routes_without_data_attrs(
         same_line_close = body.index(">", idx)
         assert "\n" not in body[idx:same_line_close], (
             f"<html ...> on {url} spans multiple lines: "
-            f"{body[idx:same_line_close + 1]!r}"
+            f"{body[idx : same_line_close + 1]!r}"
         )
 
 
@@ -259,9 +264,7 @@ def test_security_headers_present_on_unmatched_404(client):
     # X-Request-Id is populated by the before_app_request hook;
     # absence (or the "-" placeholder) means the hook didn't fire.
     rid = r.headers.get("X-Request-Id")
-    assert rid and rid != "-", (
-        f"X-Request-Id={rid!r}; before_app_request didn't run"
-    )
+    assert rid and rid != "-", f"X-Request-Id={rid!r}; before_app_request didn't run"
 
 
 def test_security_headers_values_pin_csp_contract(client):
@@ -327,6 +330,7 @@ def test_csp_script_src_pins_specific_htmx_version(client):
     comparisons indiscriminately.
     """
     import re
+
     r = client.get("/")
     directives = _parse_csp(r.headers.get("Content-Security-Policy", ""))
     script_src = directives.get("script-src", [])
@@ -387,27 +391,52 @@ def test_permissions_policy_denies_powerful_features(client):
         )
 
 
-def test_hsts_emitted_only_on_https_requests(client):
+def test_hsts_emitted_only_on_https_requests(client, monkeypatch):
     """HSTS is the one pin-the-browser-forever header in the bundle.
-    It must NOT emit on plain-HTTP dev sessions (where it would brick
-    the local workflow) and MUST emit on requests forwarded with
-    X-Forwarded-Proto: https. max-age, includeSubDomains, and the
-    `preload` directive are part of the contract; a refactor that
-    drops any of them would silently weaken the production posture.
+    Two related contracts:
+
+    1. **Plain HTTP gets no HSTS.** A local-dev session over HTTP
+       must not have HSTS forced into the browser cache, that would
+       brick the workflow until the cache expires.
+    2. **A spoofed X-Forwarded-Proto without ProxyFix wired must not
+       emit HSTS.** Pre-Phase-D the gate read the raw header, which
+       meant a directly-exposed mimir would honour the forged value.
+       The new gate uses `request.is_secure`, which only honours the
+       forwarded scheme when `TRUSTED_PROXY_HOPS > 0` (ProxyFix wired).
+    3. **HSTS DOES emit when ProxyFix is wired and the forwarded
+       scheme is https.** Pins the production behaviour through
+       Caddy + Tailscale Funnel.
+
+    max-age, includeSubDomains, and the `preload` directive are part
+    of the contract; a refactor that drops any of them would silently
+    weaken the production posture.
     """
-    # Without the proxy header: no HSTS.
+    # Plain HTTP, no proxy: no HSTS.
     r_plain = client.get("/")
     assert "Strict-Transport-Security" not in r_plain.headers
 
-    # With X-Forwarded-Proto: https: HSTS emitted with the pinned value.
-    r_https = client.get("/", headers={"X-Forwarded-Proto": "https"})
+    # Spoofed proxy header without ProxyFix wired: no HSTS. This is
+    # the new, tighter posture. The pre-Phase-D code would have
+    # emitted the header here.
+    r_spoofed = client.get("/", headers={"X-Forwarded-Proto": "https"})
+    assert "Strict-Transport-Security" not in r_spoofed.headers, (
+        "HSTS must NOT emit on a spoofed X-Forwarded-Proto when "
+        "TRUSTED_PROXY_HOPS=0 (ProxyFix not wired)"
+    )
+
+    # With ProxyFix wired (one trusted hop), the forwarded scheme is
+    # honoured and HSTS fires.
+    app_with_proxy = _build_app_with_hops(monkeypatch, 1)
+    proxy_client = app_with_proxy.test_client()
+    r_https = proxy_client.get("/", headers={"X-Forwarded-Proto": "https"})
     hsts = r_https.headers.get("Strict-Transport-Security", "")
-    assert hsts, "HSTS must emit when X-Forwarded-Proto=https"
+    assert hsts, "HSTS must emit when X-Forwarded-Proto=https AND ProxyFix is wired"
     assert "max-age=" in hsts
     # max-age must be >= 6 months (15768000s); under that, browsers
     # treat the policy as advisory rather than enforced. The
     # hstspreload.org submission requirement is >= 1 year (31536000s).
     import re
+
     m = re.search(r"max-age=(\d+)", hsts)
     assert m is not None
     assert int(m.group(1)) >= 31_536_000, (
@@ -423,12 +452,14 @@ def test_hsts_emitted_only_on_https_requests(client):
 
 def test_proxy_fix_off_when_hops_zero(monkeypatch):
     from werkzeug.middleware.proxy_fix import ProxyFix
+
     app = _build_app_with_hops(monkeypatch, 0)
     assert not isinstance(app.wsgi_app, ProxyFix)
 
 
 def test_proxy_fix_wrapped_when_hops_positive(monkeypatch):
     from werkzeug.middleware.proxy_fix import ProxyFix
+
     app = _build_app_with_hops(monkeypatch, 1)
     assert isinstance(app.wsgi_app, ProxyFix)
 
@@ -437,6 +468,7 @@ def test_proxy_fix_unwraps_remote_addr_from_xff(monkeypatch):
     """End-to-end: with trusted_proxy_hops=1, request.remote_addr
     reflects X-Forwarded-For instead of the connection IP."""
     from flask import request
+
     app = _build_app_with_hops(monkeypatch, 1)
     captured: dict[str, str | None] = {}
 
@@ -464,6 +496,7 @@ def test_proxy_fix_off_keeps_connection_remote_addr(monkeypatch):
     the connection IP. Guards against accidentally enabling ProxyFix
     on a directly-exposed app, where attackers could spoof XFF."""
     from flask import request
+
     app = _build_app_with_hops(monkeypatch, 0)
     captured: dict[str, str | None] = {}
 
@@ -587,9 +620,7 @@ def test_keyboard_help_dialog_present_on_every_page(client, inbox_name):
     just inside an inbox."""
     for path in ("/", f"/{inbox_name}/"):
         body = client.get(path, follow_redirects=True).data.decode()
-        assert 'id="keyboard-help"' in body, (
-            f"keyboard-help dialog missing on {path!r}"
-        )
+        assert 'id="keyboard-help"' in body, f"keyboard-help dialog missing on {path!r}"
         # Each binding row carries its <kbd> label, pin the full set
         # so a refactor that drops a row is caught.
         for key in ("h", "j", "k", "l", "Esc", "?"):
@@ -605,7 +636,8 @@ def test_keyboard_nav_data_nav_up_meta_index_has_no_parent(client):
 
 
 def test_keyboard_nav_data_nav_up_inbox_dashboard_points_at_root(
-    client, inbox_name,
+    client,
+    inbox_name,
 ):
     """The inbox dashboard's `h` key goes up to the meta-index."""
     body = client.get(f"/{inbox_name}/").data.decode()
@@ -613,19 +645,24 @@ def test_keyboard_nav_data_nav_up_inbox_dashboard_points_at_root(
 
 
 def test_keyboard_nav_data_nav_up_message_page_points_at_inbox(
-    client, tmp_path, inbox_name,
+    client,
+    tmp_path,
+    inbox_name,
 ):
     """A message page's `h` key goes up to the inbox dashboard. Pins
     the "back out one level" mental model the issue specifies."""
     _, url = _ingest_one_article(
-        tmp_path, inbox_name, "kbd-nav-up@example.com",
+        tmp_path,
+        inbox_name,
+        "kbd-nav-up@example.com",
     )
     body = client.get(url).data.decode()
     assert f'data-nav-up="/{inbox_name}/"' in body
 
 
 def test_keyboard_nav_data_nav_up_daily_view_points_at_inbox(
-    client, inbox_name,
+    client,
+    inbox_name,
 ):
     """The daily view is a leaf surface inside the inbox, `h` goes
     back to the dashboard, not all the way to `/`. Pins the
@@ -643,6 +680,7 @@ def test_static_assets_carry_cache_control(client):
     and doesn't run for /static/*, so the only lever is
     SEND_FILE_MAX_AGE_DEFAULT in the app factory."""
     import re
+
     r = client.get("/static/js/thread-fold.js")
     assert r.status_code == 200
     cc = r.headers.get("Cache-Control", "")
@@ -660,6 +698,7 @@ def test_static_assets_carry_cache_control(client):
 
 def test_clean_subject_filter_collapses_whitespace():
     from mimir.web import _clean_subject_filter
+
     assert _clean_subject_filter("a\n  b") == "a b"
     assert _clean_subject_filter("a\tb\r\nc") == "a b c"
     assert _clean_subject_filter("  spaces  ") == "spaces"
@@ -669,6 +708,7 @@ def test_clean_subject_filter_collapses_whitespace():
 
 def test_display_name_filter_strips_address(client):
     from mimir.web import _display_name_filter
+
     assert _display_name_filter("Bob <bob@example.com>") == "Bob"
     assert _display_name_filter("bob@example.com") == "unknown sender"
     assert _display_name_filter(None) == "unknown sender"
@@ -676,17 +716,22 @@ def test_display_name_filter_strips_address(client):
 
 
 def test_site_base_url_override_forces_scheme(monkeypatch):
-    """SITE_BASE_URL setting takes precedence over request.url_root  
+    """SITE_BASE_URL setting takes precedence over request.url_root
     the production escape hatch for `http://` leaking through a
     misconfigured proxy chain."""
     from mimir import config
+
     monkeypatch.setattr(
-        config.settings, "site_base_url", "https://forced.example.com",
+        config.settings,
+        "site_base_url",
+        "https://forced.example.com",
     )
     from mimir import create_app
+
     c = create_app().test_client()
     html = c.get("/").data.decode()
     import re as _re
+
     m = _re.search(r'<link rel="canonical" href="([^"]+)"', html)
     assert m is not None
     assert m.group(1).startswith("https://forced.example.com/")

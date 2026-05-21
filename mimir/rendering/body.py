@@ -15,6 +15,7 @@ its own module would create a third tiny rendering submodule for a
 ~25-line concern that already reads cleanly co-located with the
 orchestrator.
 """
+
 import html
 
 from markupsafe import Markup
@@ -29,8 +30,23 @@ from mimir.rendering.blocks import _Block, _strip_one_quote_level, parse_blocks
 from mimir.rendering.diff import _render_diff_block
 from mimir.rendering.linkify import linkify
 
-_CODE_FORMATTER = HtmlFormatter(noclasses=False, nobackground=True, cssclass="highlight")
+_CODE_FORMATTER = HtmlFormatter(
+    noclasses=False, nobackground=True, cssclass="highlight"
+)
 _DEFAULT_CODE_LEXER = CLexer()
+
+# Past this many characters in a single code-fence block we fall
+# back to `TextLexer` instead of running the chosen language lexer.
+# Pygments has a long history of pathological regex performance on
+# crafted inputs for some lexers (CSS, Perl, etc.); a public, no-auth
+# message-view route is the easiest place for a bot to pin a worker
+# until the gunicorn timeout (60 s) by repeated GETs against a
+# crafted body. The 64 KiB threshold is well above any realistic
+# inline code block (typical hunks are sub-KB) but small enough that
+# even a worst-case TextLexer run on the same content stays in the
+# tens of milliseconds. Same threshold reused by diff and attachment
+# preview rendering.
+PYGMENTS_MAX_BLOCK_CHARS = 64 * 1024
 
 
 def _lexer_for_fence(info: str):
@@ -66,7 +82,11 @@ def _render_block(
         inner_blocks = parse_blocks(inner)
         inner_html = "".join(
             _render_block(
-                b, msgid_urls, address_redactor, depth + 1, parent_url,
+                b,
+                msgid_urls,
+                address_redactor,
+                depth + 1,
+                parent_url,
                 lore_mirror_urls,
             )
             for b in inner_blocks
@@ -78,27 +98,21 @@ def _render_block(
         # commentary. Wrap in <details> by default and surface a
         # "↗ jump to hunk" link to the parent message (where the
         # original hunk lives in context).
-        is_hunk_quote = (
-            depth == 0
-            and any(b.kind == "diff" for b in inner_blocks)
-        )
+        is_hunk_quote = depth == 0 and any(b.kind == "diff" for b in inner_blocks)
         if is_hunk_quote:
             jump = ""
             if parent_url:
-                jump = (
-                    ' <a href="' + html.escape(parent_url) +
-                    '">↗ jump to hunk</a>'
-                )
+                jump = ' <a href="' + html.escape(parent_url) + '">↗ jump to hunk</a>'
             return (
                 '<details class="hunk-quote"><summary>'
-                f'<small><em>quoted hunk</em>{jump}</small></summary>'
+                f"<small><em>quoted hunk</em>{jump}</small></summary>"
                 f"<blockquote>{inner_html}</blockquote></details>"
             )
         if depth + 1 >= QUOTE_COLLAPSE_AT_DEPTH:
             # Wrap deep quotes in <details> so the user can collapse the
             # nested levels. Pico styles details/summary out of the box.
             return (
-                '<details><summary><small><em>quoted</em></small></summary>'
+                "<details><summary><small><em>quoted</em></small></summary>"
                 f"<blockquote>{inner_html}</blockquote></details>"
             )
         return f"<blockquote>{inner_html}</blockquote>"
@@ -111,7 +125,13 @@ def _render_block(
 
     if block.kind == "code":
         code_text = "\n".join(block.lines)
-        lexer = _lexer_for_fence(block.info)
+        # Clamp giant blocks to TextLexer so a crafted body can't pin
+        # a gunicorn worker on a pathological regex run. The block
+        # still renders (in monospace), just without language tokens.
+        if len(code_text) > PYGMENTS_MAX_BLOCK_CHARS:
+            lexer = TextLexer()
+        else:
+            lexer = _lexer_for_fence(block.info)
         return highlight(code_text, lexer, _CODE_FORMATTER)
 
     text = "\n".join(block.lines)
@@ -147,9 +167,13 @@ def render_body(
         return Markup("")
     return Markup(
         "".join(
-            _render_block(b, msgid_urls or {}, address_redactor,
-                          parent_url=parent_url,
-                          lore_mirror_urls=lore_mirror_urls)
+            _render_block(
+                b,
+                msgid_urls or {},
+                address_redactor,
+                parent_url=parent_url,
+                lore_mirror_urls=lore_mirror_urls,
+            )
             for b in parse_blocks(body)
         )
     )

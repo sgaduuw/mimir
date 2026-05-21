@@ -1,4 +1,4 @@
-"""`warm-cache` — pre-recompute the slow dashboard queries so the web
+"""`warm-cache`: pre-recompute the slow dashboard queries so the web
 tier serves them out of the DB-backed `cache` table.
 
 Two phases: Phase A fans out across worker threads (per-inbox

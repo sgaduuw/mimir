@@ -1,4 +1,4 @@
-"""`bootstrap-inboxes` — seed the `inboxes` table from `Settings.inboxes`.
+"""`bootstrap-inboxes`: seed the `inboxes` table from `Settings.inboxes`.
 
 Run once on every scheduler-sidecar start, right after `alembic upgrade
 head` and before the `/data/.migrated` healthcheck sentinel is touched.
