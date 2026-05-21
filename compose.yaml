@@ -20,13 +20,18 @@ services:
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY required}
       DATABASE_URL: sqlite:////data/db/mimir.db
       WORKERS: "2"
-      # Wire up ProxyFix so request.remote_addr / .scheme / .host reflect
-      # the real client through Caddy (or whatever reverse proxy fronts
-      # the container). 1 = trust the last hop. Bump only if you stack
-      # additional proxies in front of Caddy. Leave unset if you publish
-      # port 5000 directly, anyone could otherwise spoof these values
-      # via a forged X-Forwarded-For.
-      TRUSTED_PROXY_HOPS: "1"
+      # Wire up ProxyFix so request.remote_addr / .scheme / .host
+      # reflect the real client through Caddy (or whatever reverse
+      # proxy fronts the container). Set to the number of trusted
+      # proxy hops in front of mimir:
+      #   "1"  Caddy (or nginx) directly in front of mimir.
+      #   "2"  Tailscale Funnel + Caddy (the ratatoskr.run shape).
+      # Bump only if you stack more proxies. Leave unset if you
+      # publish port 5000 directly, anyone could otherwise spoof
+      # these values via a forged X-Forwarded-For. HSTS and the
+      # absolute-URL emission (sitemap, og:url, JSON-LD) depend on
+      # the right count being set.
+      TRUSTED_PROXY_HOPS: "2"
       # Write-broker integration (opt-in, off by default). Uncomment
       # both lines AND the `mimir-broker` service block below to
       # route cache.set / delete / delete_for_inbox / purge through
