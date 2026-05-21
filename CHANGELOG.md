@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [1.39.0], 2026-05-21
+
 ### Added
 
 - **Write-broker Phase 2.4**: the last admin write ops migrate
