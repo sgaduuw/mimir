@@ -28,6 +28,7 @@ SQLAlchemy `OperationalError`s become
 `Reply(ok=False, error="OperationalError")`. The connection is
 returned to the pool either way.
 """
+
 import json
 import logging
 from typing import Callable
@@ -50,11 +51,17 @@ from mimir.broker.handlers.longops import (
     handle_bootstrap_inboxes,
     handle_ingest_inbox,
 )
+from mimir.broker.handlers.maintenance import (
+    handle_analyze,
+    handle_update_mainline,
+    handle_vacuum,
+)
 from mimir.broker.handlers.warm import (
     handle_warm_global,
     handle_warm_inbox,
 )
 from mimir.broker.protocol import (
+    AnalyzeRequest,
     BackfillArticleFilesRequest,
     BackfillArticleTrailersRequest,
     BackfillCanonicalsRequest,
@@ -67,6 +74,8 @@ from mimir.broker.protocol import (
     IngestInboxRequest,
     PingRequest,
     Reply,
+    UpdateMainlineRequest,
+    VacuumRequest,
     WarmGlobalRequest,
     WarmInboxRequest,
 )
@@ -78,24 +87,31 @@ logger = logging.getLogger(__name__)
 # in lockstep with `_DISPATCH` below; the reader uses this for
 # routing (no DB or model side effects in the classification
 # path), the worker uses `_DISPATCH` for the actual dispatch.
-LONG_OPS: frozenset[str] = frozenset({
-    "bootstrap_inboxes",
-    "ingest_inbox",
-    "backfill_article_files",
-    "backfill_article_trailers",
-    "backfill_patch_series",
-    "backfill_canonicals",
-})
+LONG_OPS: frozenset[str] = frozenset(
+    {
+        "bootstrap_inboxes",
+        "ingest_inbox",
+        "backfill_article_files",
+        "backfill_article_trailers",
+        "backfill_patch_series",
+        "backfill_canonicals",
+        "update_mainline",
+        "analyze",
+        "vacuum",
+    }
+)
 
 
 # Warm ops route to the broker's warm queue, which is drained by
 # N parallel warm-workers (Phase 2.2). Sibling to LONG_OPS; an op
 # can only belong to one routing set. Anything in neither set
 # falls through to the cache queue.
-WARM_OPS: frozenset[str] = frozenset({
-    "warm_inbox",
-    "warm_global",
-})
+WARM_OPS: frozenset[str] = frozenset(
+    {
+        "warm_inbox",
+        "warm_global",
+    }
+)
 
 
 # Op-name → (request model, handler). Lookup at dispatch time;
@@ -105,26 +121,35 @@ _DISPATCH: dict[str, tuple[type, Callable]] = {
     "cache_set": (CacheSetRequest, handle_cache_set),
     "cache_delete": (CacheDeleteRequest, handle_cache_delete),
     "cache_delete_for_inbox": (
-        CacheDeleteForInboxRequest, handle_cache_delete_for_inbox,
+        CacheDeleteForInboxRequest,
+        handle_cache_delete_for_inbox,
     ),
     "cache_purge_expired": (
-        CachePurgeExpiredRequest, handle_cache_purge_expired,
+        CachePurgeExpiredRequest,
+        handle_cache_purge_expired,
     ),
     "ping": (PingRequest, handle_ping),
     "bootstrap_inboxes": (BootstrapInboxesRequest, handle_bootstrap_inboxes),
     "ingest_inbox": (IngestInboxRequest, handle_ingest_inbox),
     "backfill_article_files": (
-        BackfillArticleFilesRequest, handle_backfill_article_files,
+        BackfillArticleFilesRequest,
+        handle_backfill_article_files,
     ),
     "backfill_article_trailers": (
-        BackfillArticleTrailersRequest, handle_backfill_article_trailers,
+        BackfillArticleTrailersRequest,
+        handle_backfill_article_trailers,
     ),
     "backfill_patch_series": (
-        BackfillPatchSeriesRequest, handle_backfill_patch_series,
+        BackfillPatchSeriesRequest,
+        handle_backfill_patch_series,
     ),
     "backfill_canonicals": (
-        BackfillCanonicalsRequest, handle_backfill_canonicals,
+        BackfillCanonicalsRequest,
+        handle_backfill_canonicals,
     ),
+    "update_mainline": (UpdateMainlineRequest, handle_update_mainline),
+    "analyze": (AnalyzeRequest, handle_analyze),
+    "vacuum": (VacuumRequest, handle_vacuum),
     "warm_inbox": (WarmInboxRequest, handle_warm_inbox),
     "warm_global": (WarmGlobalRequest, handle_warm_global),
 }
