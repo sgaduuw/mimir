@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [1.38.0], 2026-05-21
+
 ### Added
 
 - **Write-broker Phase 2.3**: the periodic-maintenance writers
