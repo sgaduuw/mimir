@@ -1,6 +1,9 @@
-"""Pins for the Phase C safety caps: parser multipart-count cap,
-patches.extract_touched_paths cap, Pygments block-size clamp,
-canonical tooltip-address sanitizer + env override."""
+"""Pins for safety + perf caps:
+- Phase C: parser multipart-count cap, patches.extract_touched_paths
+  cap, Pygments block-size clamp, canonical tooltip-address sanitizer +
+  env override.
+- Worst-case-burst PR: `?offset=` ceiling on the load-more endpoint,
+  Message-ID linkifier cap on the message-view route."""
 
 import email.mime.multipart
 import email.mime.text
@@ -195,3 +198,38 @@ def test_is_list_address_honors_override(monkeypatch):
         ["lists.example.org"],
     )
     assert is_list_address(addr) is True
+
+
+# ----- routes/api.py: `?offset=` ceiling ----------------------------------
+
+
+def test_load_more_endpoint_rejects_oversized_offset(seeded_db, client):
+    """A crawler at `?offset=5000000` would otherwise make SQLite
+    walk 5M index entries before returning anything. The route caps
+    at `_MAX_RECENT_OFFSET` (100 pages back) and 404s past it; the
+    cap is generous against any real reader's click rate and tight
+    enough to flatten the DoS vector."""
+    from mimir.web.routes.api import _MAX_RECENT_OFFSET
+
+    # A reasonable offset still works.
+    ok = client.get(f"/api/alpha/recent?offset={_MAX_RECENT_OFFSET}")
+    assert ok.status_code == 200
+
+    # Past the ceiling, the route 404s.
+    over = client.get(f"/api/alpha/recent?offset={_MAX_RECENT_OFFSET + 1}")
+    assert over.status_code == 404
+
+
+# ----- routes/message.py: Message-ID linkifier cap ------------------------
+
+
+def test_msgid_linkify_cap_constant_is_in_place():
+    """The cap exists as a module constant the route reads. Tested
+    structurally rather than end-to-end because exercising the route
+    with a crafted body requires building a real article with a
+    multi-thousand-MID body, which is more setup than the cap is
+    worth pinning. The constant's presence + the loop's `break` on
+    cap defend against the worst case."""
+    from mimir.web.routes import message as message_route
+
+    assert message_route.MSGID_LINKIFY_CAP == 100

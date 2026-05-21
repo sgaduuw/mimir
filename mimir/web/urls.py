@@ -2,7 +2,7 @@
 common 404 helpers used by every route in the package.
 
 The "URL builders" group (`_msg_url`, `_canonical_inbox_name`,
-`_canonical_url_for`, `_canonical_inbox_names_for`, `_msg_url`,
+`_canonical_url_for`, `_canonical_inbox_names_for`,
 `_year_decade_groups`) is consumed by routes, JSON-LD helpers, atom
 feeds, and the IndexNow notifier (via package re-exports).
 
@@ -12,16 +12,12 @@ JSON-LD helpers; the settings / X-Forwarded-Proto lookups don't need
 to repeat per call.
 """
 
-from datetime import datetime, timezone
-from email.utils import parseaddr
-
 from flask import abort, g, request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mimir.canonical import fallback_canonical_name
 from mimir.config import settings
-from mimir.datetime_utils import aware_utc
 from mimir.models import Article, ArticleList, Inbox
 
 
@@ -147,49 +143,6 @@ def _canonical_url_for(
     if inbox_name is None:
         return None
     return base + _msg_url(article, inbox_name)
-
-
-def _relative_time(then: datetime, now: datetime | None = None) -> str:
-    """Render a coarse relative-time string for the closed-state fold
-    summary ("23 messages, 5 authors, 2h ago"). Uses minutes/hours/days
-    units under 30 days; falls back to an absolute YYYY-MM-DD beyond
-    that, since "47d ago" is harder to parse than the date itself."""
-    if now is None:
-        now = datetime.now(timezone.utc)
-    then = aware_utc(then)
-    delta = now - then
-    secs = int(delta.total_seconds())
-    if secs < 60:
-        return "just now"
-    if secs < 3600:
-        return f"{secs // 60}m ago"
-    if secs < 86400:
-        return f"{secs // 3600}h ago"
-    if secs < 86400 * 30:
-        return f"{secs // 86400}d ago"
-    return then.strftime("%Y-%m-%d")
-
-
-def _thread_summary(thread) -> dict:
-    """Compute the headline stats shown in the `closed` fold state:
-    total message count, unique-author count (by email so display-name
-    drift doesn't fragment the tally), and a coarse relative-time
-    string for the most-recent message in the thread."""
-    if not thread:
-        return {"author_count": 0, "last_activity_rel": "?"}
-    emails: set[str] = set()
-    for n in thread:
-        if not n.author:
-            continue
-        _, addr = parseaddr(n.author)
-        if addr:
-            emails.add(addr.lower())
-    dates = [n.date for n in thread if n.date]
-    last = max(dates) if dates else None
-    return {
-        "author_count": len(emails) or len(thread),
-        "last_activity_rel": _relative_time(last) if last else "?",
-    }
 
 
 def _canonical_inbox_names_for(

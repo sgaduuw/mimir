@@ -4,15 +4,19 @@ Two concerns live here: the small filters templates call by name
 (`safe_from`, `clean_subject`, `display_name`, `relative_time`,
 `is_allowlisted_address`, `is_previewable`, `msg_url`, `render_body`),
 and the address-allowlist machinery they all share
-(`_is_allowlisted`, `_redact_trailer_address`).
+(`_is_allowlisted`, `_redact_trailer_address`). The display-shaped
+helpers feeding the filters (`_relative_time`, `_thread_summary`)
+also live here, since their natural home is "what templates render"
+rather than "URL composition" where they used to sit.
 
 `_is_allowlisted` is memoised on `flask.g` so a long page calling it
 50+ times pays the MAINTAINERS-set lookup once. Outside a request
 context (CLI render-path tests), it bypasses the memo and goes
 straight to the cache.
 """
+
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from email.utils import parseaddr
 
 from flask import g
@@ -22,10 +26,54 @@ from pygments.util import ClassNotFound
 
 from mimir import maintainer_allowlist
 from mimir.config import settings
+from mimir.datetime_utils import aware_utc
 from mimir.models import Article
 from mimir.rendering import render_body
 from mimir.web._blueprint import bp_web
-from mimir.web.urls import _msg_url, _relative_time
+from mimir.web.urls import _msg_url
+
+
+def _relative_time(then: datetime, now: datetime | None = None) -> str:
+    """Render a coarse relative-time string for the closed-state fold
+    summary ("23 messages, 5 authors, 2h ago"). Uses minutes/hours/days
+    units under 30 days; falls back to an absolute YYYY-MM-DD beyond
+    that, since "47d ago" is harder to parse than the date itself."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+    then = aware_utc(then)
+    delta = now - then
+    secs = int(delta.total_seconds())
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    if secs < 86400:
+        return f"{secs // 3600}h ago"
+    if secs < 86400 * 30:
+        return f"{secs // 86400}d ago"
+    return then.strftime("%Y-%m-%d")
+
+
+def _thread_summary(thread) -> dict:
+    """Compute the headline stats shown in the `closed` fold state:
+    total message count, unique-author count (by email so display-name
+    drift doesn't fragment the tally), and a coarse relative-time
+    string for the most-recent message in the thread."""
+    if not thread:
+        return {"author_count": 0, "last_activity_rel": "?"}
+    emails: set[str] = set()
+    for n in thread:
+        if not n.author:
+            continue
+        _, addr = parseaddr(n.author)
+        if addr:
+            emails.add(addr.lower())
+    dates = [n.date for n in thread if n.date]
+    last = max(dates) if dates else None
+    return {
+        "author_count": len(emails) or len(thread),
+        "last_activity_rel": _relative_time(last) if last else "?",
+    }
 
 
 _TEXT_LIKE_EXTENSIONS = {
