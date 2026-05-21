@@ -1,0 +1,58 @@
+name: codeql
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  schedule:
+    # Weekly background scan so a dependency upgrade or query update
+    # in the CodeQL bundle catches issues even when no code changes
+    # land in a given week. Saturday off-peak.
+    - cron: '23 5 * * 6'
+
+# Cancel in-flight runs on the same branch / PR when a new push lands.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      # CodeQL needs `security-events: write` to upload SARIF.
+      # `actions: read` lets it discover the workflow context.
+      contents: read
+      security-events: write
+      actions: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, actions]
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@bc0b696b4103f5fe60f15749af68a046868d511a # v2.25.4
+        with:
+          languages: ${{ matrix.language }}
+          # `security-and-quality` pulls in the full ruleset (the
+          # default `security-extended` skips a handful of lower-
+          # severity rules). Costs little on a small Python codebase
+          # and catches dead-store / unused-import drift that the
+          # ruff config doesn't gate on.
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@bc0b696b4103f5fe60f15749af68a046868d511a # v2.25.4
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@bc0b696b4103f5fe60f15749af68a046868d511a # v2.25.4
+        with:
+          category: "/language:${{ matrix.language }}"
