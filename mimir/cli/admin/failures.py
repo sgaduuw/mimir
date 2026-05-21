@@ -6,10 +6,12 @@ is fixed, `replay` re-fetches the blob, re-runs the parser, and on
 success inserts the article + deletes the row. Failed replays bump
 `attempts` and `last_attempt`.
 """
+
 import click
 from sqlalchemy import func, select
 
 from mimir.cli.admin import admin_group
+from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.inboxes import InboxNotFound, get_inbox
 from mimir.ingest import replay_failures
@@ -29,14 +31,34 @@ def admin_failures_group() -> None:
 
 
 @admin_failures_group.command("list")
-@click.option("--inbox", "inbox_filter", type=str, default=None,
-              help="Restrict to one inbox by name.")
-@click.option("--epoch", "epoch_filter", type=str, default=None,
-              help="Restrict to one epoch (e.g. 0.git). Implies --inbox.")
-@click.option("--error-class", "error_class", type=str, default=None,
-              help="Restrict to one exception class (e.g. MessageTooLarge).")
-@click.option("--limit", type=int, default=50, show_default=True,
-              help="Cap the number of rows shown. Use 0 for no cap.")
+@click.option(
+    "--inbox",
+    "inbox_filter",
+    type=str,
+    default=None,
+    help="Restrict to one inbox by name.",
+)
+@click.option(
+    "--epoch",
+    "epoch_filter",
+    type=str,
+    default=None,
+    help="Restrict to one epoch (e.g. 0.git). Implies --inbox.",
+)
+@click.option(
+    "--error-class",
+    "error_class",
+    type=str,
+    default=None,
+    help="Restrict to one exception class (e.g. MessageTooLarge).",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Cap the number of rows shown. Use 0 for no cap.",
+)
 def admin_failures_list_command(
     inbox_filter: str | None,
     epoch_filter: str | None,
@@ -63,8 +85,10 @@ def admin_failures_list_command(
         rows = list(session.execute(q).all())
 
         # Aggregate counters even when --limit truncates output.
-        total_q = select(func.count()).select_from(ParseFailure).join(
-            Inbox, Inbox.id == ParseFailure.inbox_id
+        total_q = (
+            select(func.count())
+            .select_from(ParseFailure)
+            .join(Inbox, Inbox.id == ParseFailure.inbox_id)
         )
         if inbox_filter is not None:
             total_q = total_q.where(Inbox.name == inbox_filter)
@@ -91,10 +115,16 @@ def admin_failures_list_command(
 
 @admin_failures_group.command("replay")
 @click.argument("inbox_name")
-@click.option("--epoch", "epoch_filter", type=str, default=None,
-              help="Restrict to one epoch (e.g. 0.git).")
-@click.option("--limit", type=int, default=None,
-              help="Cap on rows replayed. Default: all.")
+@click.option(
+    "--epoch",
+    "epoch_filter",
+    type=str,
+    default=None,
+    help="Restrict to one epoch (e.g. 0.git).",
+)
+@click.option(
+    "--limit", type=int, default=None, help="Cap on rows replayed. Default: all."
+)
 def admin_failures_replay_command(
     inbox_name: str,
     epoch_filter: str | None,
@@ -109,6 +139,35 @@ def admin_failures_replay_command(
         flask --app mimir admin failures replay lkml
         flask --app mimir admin failures replay lkml --epoch 0.git
     """
+    if settings.broker_socket_path is not None:
+        # Broker mode: dispatch via RPC. The broker handler looks
+        # the inbox up server-side and runs the same
+        # `replay_failures` inside the broker process.
+        from mimir.broker.client import BrokerUnavailable, get_broker_client
+
+        try:
+            payload = get_broker_client().failures_replay(
+                inbox_name,
+                epoch_filter=epoch_filter,
+                limit=limit,
+            )
+        except BrokerUnavailable as exc:
+            # Translate the broker's `InboxNotFound:<msg>` structured
+            # error back into the operator-facing text the direct
+            # path emits.
+            raw = str(exc)
+            _, _, reply_error = raw.partition(": ")
+            if reply_error.startswith("InboxNotFound:"):
+                raise click.ClickException(reply_error[len("InboxNotFound:") :])
+            raise click.ClickException(raw)
+        click.echo(
+            f"{inbox_name}: attempted={payload.get('attempted', 0)} "
+            f"recovered={payload.get('recovered', 0)} "
+            f"still_failed={payload.get('still_failed', 0)} "
+            f"skipped={payload.get('skipped', 0)}"
+        )
+        return
+
     try:
         inbox = get_inbox(inbox_name)
     except InboxNotFound as exc:
