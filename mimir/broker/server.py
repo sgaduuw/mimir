@@ -321,7 +321,21 @@ class _BrokerServer(socketserver.UnixStreamServer):
             try:
                 queue_wait_ms = (time.perf_counter() - enqueued_at) * 1000.0
                 t0 = time.perf_counter()
-                reply = dispatch(line)
+                # Mark this worker thread as "currently dispatching a
+                # broker handler" so any reachable `cache.set` /
+                # `cache.delete_for_inbox` etc. falls through to the
+                # direct write path rather than attempting a self-RPC
+                # back through the socket. Production handles the
+                # same concern via `MIMIR_ROLE=broker` env at the
+                # process level, but the in-process test environment
+                # shares `settings.mimir_role` between broker thread
+                # and CLI invocations; the thread-local flag is the
+                # right granularity in either case.
+                cache._set_broker_handler_active(True)
+                try:
+                    reply = dispatch(line)
+                finally:
+                    cache._set_broker_handler_active(False)
                 dispatch_ms = (time.perf_counter() - t0) * 1000.0
                 total_ms = queue_wait_ms + dispatch_ms
 
@@ -443,6 +457,57 @@ def _check_peer_uid(sock: socket.socket) -> bool:
     return True
 
 
+def _post_migrate_analyze_if_needed(socket_path: Path) -> None:
+    """Run `ANALYZE` once after a fresh schema migration so the
+    planner has stats for any newly-created index. Bounded by the
+    per-connection `analysis_limit=4000` pragma (~1-3 s on the
+    production 11M-row corpus); the weekly full `ANALYZE` catches
+    whatever drifts in the long tail.
+
+    Gated on a sentinel file next to the broker socket. Once the
+    first deploy has run the pass, subsequent broker restarts skip
+    it. To force a re-run (e.g. after a manual schema change),
+    delete the sentinel.
+
+    Replaces the pre-Phase-2.4 shape where `scheduler.sh` ran
+    `mimir analyze` after `alembic upgrade head`, before touching
+    the `.migrated` healthcheck sentinel. With the broker owning
+    every other periodic write, the post-migrate ANALYZE was the
+    last direct-write path on the scheduler container; moving it
+    here closes that gap and sets up 2.0.0 to drop the
+    `MIMIR_ROLE=tasks` distinction entirely."""
+    sentinel = socket_path.parent / ".broker_initial_analyze"
+    if sentinel.exists():
+        logger.debug(
+            "broker: post-migrate ANALYZE sentinel %s present, skipping",
+            sentinel,
+        )
+        return
+    logger.info("broker: running post-migrate ANALYZE (bounded)")
+    t0 = time.monotonic()
+    try:
+        from mimir.maintenance import run_analyze
+
+        result = run_analyze(full=False)
+    except Exception:
+        # Don't refuse to start the broker if ANALYZE fails; log
+        # loudly and continue. The next scheduled bounded ANALYZE
+        # on the broker's own cadence retries.
+        logger.exception(
+            "broker: post-migrate ANALYZE failed, continuing without sentinel"
+        )
+        return
+    elapsed = time.monotonic() - t0
+    sentinel.touch()
+    logger.info(
+        "broker: post-migrate ANALYZE complete in %.1fs "
+        "(broker-reported elapsed_ms=%d); sentinel %s touched",
+        elapsed,
+        result.elapsed_ms,
+        sentinel,
+    )
+
+
 def _purge_loop(stop_event: threading.Event) -> None:
     """Periodic purge of expired cache rows. Owned by the broker so
     no other writer competes for the same table. Backs off via
@@ -491,6 +556,15 @@ def build_server(socket_path: Path) -> _BrokerServer:
         os.umask(prev_umask)
     os.chmod(sp, 0o660)
     server.start_workers()
+    # Post-migrate ANALYZE BEFORE we log "listening". A fresh
+    # deploy where `alembic upgrade head` just added a new index
+    # needs `sqlite_stat1` populated before the broker accepts the
+    # first cache.set; the web tier gates on the broker's healthcheck
+    # so cold requests after deploy don't walk un-ANALYZE'd indexes.
+    # Sentinel-gated, subsequent restarts skip. Lives in
+    # `build_server` (not `serve`) so the test helper exercises the
+    # same path.
+    _post_migrate_analyze_if_needed(sp)
     logger.info("broker: listening on %s", sp)
     return server
 

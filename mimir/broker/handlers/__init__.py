@@ -53,6 +53,14 @@ from mimir.broker.handlers.longops import (
 )
 from mimir.broker.handlers.maintenance import (
     handle_analyze,
+    handle_failures_replay,
+    handle_inbox_add_tracked_author,
+    handle_inbox_clear_tracked_authors,
+    handle_inbox_create,
+    handle_inbox_delete,
+    handle_inbox_remove_tracked_author,
+    handle_inbox_set_tracked_authors,
+    handle_inbox_update,
     handle_update_mainline,
     handle_vacuum,
 )
@@ -71,6 +79,14 @@ from mimir.broker.protocol import (
     CacheDeleteRequest,
     CachePurgeExpiredRequest,
     CacheSetRequest,
+    FailuresReplayRequest,
+    InboxAddTrackedAuthorRequest,
+    InboxClearTrackedAuthorsRequest,
+    InboxCreateRequest,
+    InboxDeleteRequest,
+    InboxRemoveTrackedAuthorRequest,
+    InboxSetTrackedAuthorsRequest,
+    InboxUpdateRequest,
     IngestInboxRequest,
     PingRequest,
     Reply,
@@ -98,6 +114,14 @@ LONG_OPS: frozenset[str] = frozenset(
         "update_mainline",
         "analyze",
         "vacuum",
+        "failures_replay",
+        "inbox_create",
+        "inbox_update",
+        "inbox_delete",
+        "inbox_set_tracked_authors",
+        "inbox_add_tracked_author",
+        "inbox_remove_tracked_author",
+        "inbox_clear_tracked_authors",
     }
 )
 
@@ -150,6 +174,26 @@ _DISPATCH: dict[str, tuple[type, Callable]] = {
     "update_mainline": (UpdateMainlineRequest, handle_update_mainline),
     "analyze": (AnalyzeRequest, handle_analyze),
     "vacuum": (VacuumRequest, handle_vacuum),
+    "failures_replay": (FailuresReplayRequest, handle_failures_replay),
+    "inbox_create": (InboxCreateRequest, handle_inbox_create),
+    "inbox_update": (InboxUpdateRequest, handle_inbox_update),
+    "inbox_delete": (InboxDeleteRequest, handle_inbox_delete),
+    "inbox_set_tracked_authors": (
+        InboxSetTrackedAuthorsRequest,
+        handle_inbox_set_tracked_authors,
+    ),
+    "inbox_add_tracked_author": (
+        InboxAddTrackedAuthorRequest,
+        handle_inbox_add_tracked_author,
+    ),
+    "inbox_remove_tracked_author": (
+        InboxRemoveTrackedAuthorRequest,
+        handle_inbox_remove_tracked_author,
+    ),
+    "inbox_clear_tracked_authors": (
+        InboxClearTrackedAuthorsRequest,
+        handle_inbox_clear_tracked_authors,
+    ),
     "warm_inbox": (WarmInboxRequest, handle_warm_inbox),
     "warm_global": (WarmGlobalRequest, handle_warm_global),
 }
