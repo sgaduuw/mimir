@@ -1,4 +1,4 @@
-"""`admin inbox …` — CRUD on the `inboxes` table + per-inbox trackers.
+"""`admin inbox …`: CRUD on the `inboxes` table + per-inbox trackers.
 
 CLI front-end to `mimir.inboxes`'s service-layer functions. Validation,
 cascade-delete semantics, and the nav-name cache refresh all live in

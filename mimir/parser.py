@@ -16,14 +16,35 @@ logger = logging.getLogger(__name__)
 # The big space-eaters in lore archives, Received chains, DKIM/ARC blobs,
 # X-Spam-*, Authentication-Results, are all dropped. Compared with raw,
 # this typically cuts the headers dict by 50-70%.
-KEPT_HEADERS = frozenset({
-    "subject", "from", "to", "cc", "bcc", "reply-to", "sender",
-    "date", "message-id", "in-reply-to", "references", "newsgroups",
-    "content-type", "content-transfer-encoding", "mime-version",
-    "list-id", "list-archive", "list-help", "list-post",
-    "list-unsubscribe", "list-subscribe",
-    "user-agent", "x-mailer", "organization", "archived-at",
-})
+KEPT_HEADERS = frozenset(
+    {
+        "subject",
+        "from",
+        "to",
+        "cc",
+        "bcc",
+        "reply-to",
+        "sender",
+        "date",
+        "message-id",
+        "in-reply-to",
+        "references",
+        "newsgroups",
+        "content-type",
+        "content-transfer-encoding",
+        "mime-version",
+        "list-id",
+        "list-archive",
+        "list-help",
+        "list-post",
+        "list-unsubscribe",
+        "list-subscribe",
+        "user-agent",
+        "x-mailer",
+        "organization",
+        "archived-at",
+    }
+)
 
 
 _NON_ESCAPE_SURROGATE_RE = re.compile(r"[\ud800-\udc7f\udd00-\udfff]")
@@ -68,8 +89,12 @@ class ParsedArticle(BaseModel):
     attachments: list[ParsedAttachment] = Field(default_factory=list)
 
     @field_validator(
-        "message_id", "subject", "author", "body",
-        "body_content_type", "in_reply_to",
+        "message_id",
+        "subject",
+        "author",
+        "body",
+        "body_content_type",
+        "in_reply_to",
         mode="after",
     )
     @classmethod
@@ -143,10 +168,7 @@ def _split_references(value: str | None) -> list[str]:
     if not value:
         return []
     cleaned = _CFWS_COMMENT_RE.sub(" ", value)
-    return [
-        r.strip().lstrip("<").rstrip(">")
-        for r in cleaned.split() if r.strip()
-    ]
+    return [r.strip().lstrip("<").rstrip(">") for r in cleaned.split() if r.strip()]
 
 
 # RFC 5322 CFWS comments are `(...)` runs that may appear between
@@ -188,7 +210,8 @@ def _decode_rfc2047(value: str | None) -> str | None:
     except (LookupError, UnicodeError) as exc:
         logger.debug(
             "_decode_rfc2047: falling back to verbatim on %r: %r",
-            value, exc,
+            value,
+            exc,
         )
         return value
 
@@ -218,7 +241,7 @@ def _raw_header(msg: EmailMessage, name: str) -> str | None:
 def _attachment_bytes(part) -> bytes:
     try:
         content = part.get_content()
-    except (LookupError, UnicodeError):
+    except LookupError, UnicodeError:
         # Two distinct stdlib lookup-family failures land here, both
         # recoverable by handing back the raw transfer-decoded payload:
         #
@@ -253,11 +276,29 @@ class MessageTooLarge(ValueError):
     doesn't take the parser pool down."""
 
 
+class MessageTooComplex(ValueError):
+    """Raised when `parse_message` walks more than
+    `MAX_ATTACHMENT_PARTS` leaf parts. Pairs with `MessageTooLarge`
+    to bound per-worker work: a 50 MiB blob can encode hundreds of
+    thousands of nested MIME boundaries (~100 bytes each), and
+    `iter_attachments` would walk them all. Real lkml messages stay
+    well under 100 parts; the cap is several orders of magnitude
+    above any non-pathological message."""
+
+
 # Hard ceiling on the input bytes `parse_message` will accept. lkml
 # attachments occasionally cross 10 MB (full vmlinux, dmesg dumps);
 # 50 MB is comfortably above the 99.99th-percentile message size and
 # bounds worker memory at ~workers × 50 MB even in the worst case.
 MAX_RAW_MESSAGE_BYTES = 50 * 1024 * 1024
+
+# Hard ceiling on the number of leaf parts `iter_attachments` will
+# walk. A pathological multipart tree (hundreds of thousands of
+# nested boundaries inside `MAX_RAW_MESSAGE_BYTES`) would otherwise
+# burn worker CPU well past what the byte cap suggests; this stops
+# the walk at a manifestly-broken-or-hostile threshold and counts
+# the message as failed.
+MAX_ATTACHMENT_PARTS = 256
 
 
 def parse_message(raw: bytes) -> ParsedArticle:
@@ -277,7 +318,7 @@ def parse_message(raw: bytes) -> ParsedArticle:
     if body_part is not None:
         try:
             body = body_part.get_content()
-        except (LookupError, UnicodeDecodeError):
+        except LookupError, UnicodeDecodeError:
             # Same lookup-family failures the attachment path handles:
             # unregistered charset (RFC 1428 `unknown-8bit`, malformed
             # encoded-word charsets) or bytes that don't decode under
@@ -297,7 +338,14 @@ def parse_message(raw: bytes) -> ParsedArticle:
         body_content_type = body_part.get_content_type()
 
     attachments: list[ParsedAttachment] = []
+    parts_walked = 0
     for part in msg.iter_attachments():
+        parts_walked += 1
+        if parts_walked > MAX_ATTACHMENT_PARTS:
+            raise MessageTooComplex(
+                f"message has more than {MAX_ATTACHMENT_PARTS} MIME parts "
+                f"(cap {MAX_ATTACHMENT_PARTS}); refusing to walk further"
+            )
         # multipart/* containers (e.g. multipart/signed, multipart/mixed)
         # come back from iter_attachments() when a non-body branch of
         # the message tree is itself a wrapper, alongside the
@@ -326,7 +374,9 @@ def parse_message(raw: bytes) -> ParsedArticle:
         except (LookupError, UnicodeError, ValueError) as exc:
             logger.warning(
                 "parse_message: dropping attachment %r (content-type %r): %r",
-                part.get_filename(), part.get_content_type(), exc,
+                part.get_filename(),
+                part.get_content_type(),
+                exc,
             )
             continue
 
@@ -335,7 +385,7 @@ def parse_message(raw: bytes) -> ParsedArticle:
     if raw_date:
         try:
             date = parsedate_to_datetime(raw_date)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             date = None
 
     headers: dict[str, str] = {}

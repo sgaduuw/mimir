@@ -11,6 +11,7 @@ is sniffed from each `+++ b/<path>` line and stays active until the
 next `+++` switch; context / + / - lines get a per-line
 `_highlight_inline` against that lexer.
 """
+
 import html
 import re
 
@@ -81,7 +82,11 @@ def _highlight_inline(text: str, lexer) -> str:
     appends one in `nowrap` mode and we splice the result inside a
     line-scoped `<span>`. Empty input short-circuits because
     Pygments otherwise emits a stray newline that breaks the
-    enclosing `<pre>`'s line accounting."""
+    enclosing `<pre>`'s line accounting.
+
+    Per-line in practice (caller feeds one diff line at a time), so
+    pathological-block protection is at the call site; here we just
+    keep the trivial-empty short-circuit."""
     if not text:
         return ""
     return highlight(text, lexer, _INLINE_LANG_FORMATTER).rstrip("\n")
@@ -121,7 +126,19 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
     Per-language lexer is detected from each `+++ b/<path>` line
     and stays active until the next `+++` switch; context / + / -
     lines get a per-line Pygments call against that lexer.
+
+    Pathological-block clamp: when the whole diff block exceeds
+    `PYGMENTS_MAX_BLOCK_CHARS` total bytes (see body.py) we pin the
+    per-language overlay to `TextLexer` regardless of the `+++`
+    header. The diff structure (hunks, gutter colors, anchors) is
+    preserved; only the inline syntax tokens go away. Bounds worst-
+    case Pygments backtracking from a crafted hostile body.
     """
+    # Local import to avoid an import cycle (`body` imports `diff`).
+    from mimir.rendering.body import PYGMENTS_MAX_BLOCK_CHARS
+
+    force_text_lexer = sum(len(line) for line in lines) > PYGMENTS_MAX_BLOCK_CHARS
+
     out: list[str] = []
     meta_buffer: list[str] = []
     hunk_buffer: list[str] = []
@@ -133,9 +150,7 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
 
     def flush_meta() -> None:
         if meta_buffer:
-            out.append(
-                '<pre class="diff-meta">' + "\n".join(meta_buffer) + "</pre>"
-            )
+            out.append('<pre class="diff-meta">' + "\n".join(meta_buffer) + "</pre>")
             meta_buffer.clear()
 
     def close_hunk() -> None:
@@ -201,9 +216,7 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
                 marker_html = '<span class="gd">-</span>'
             else:
                 marker_html = " "
-            hunk_buffer.append(
-                f'<span{line_attr()}>{marker_html}{highlighted}</span>'
-            )
+            hunk_buffer.append(f"<span{line_attr()}>{marker_html}{highlighted}</span>")
             continue
 
         if in_hunk and not line:
@@ -212,7 +225,7 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
             # anchorable empty line so the line-number scheme stays
             # consistent.
             line_in_hunk += 1
-            hunk_buffer.append(f'<span{line_attr()}></span>')
+            hunk_buffer.append(f"<span{line_attr()}></span>")
             continue
 
         # Out-of-hunk line. A new `diff --git` (multi-file patch) or
@@ -225,7 +238,13 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
         elif line.startswith("+++ "):
             meta_buffer.append(f'<span class="gi">{html.escape(line)}</span>')
             m = _DIFF_PLUS_FILE_RE.match(line)
-            current_lexer = _lexer_for_diff_target(m.group(1) if m else None)
+            if force_text_lexer:
+                # Oversized block: hold the inline lexer at TextLexer
+                # regardless of the filename so the rest of the diff
+                # body bypasses per-language regex backtracking.
+                current_lexer = TextLexer()
+            else:
+                current_lexer = _lexer_for_diff_target(m.group(1) if m else None)
         elif _DIFF_META_HEADING_RE.match(line):
             meta_buffer.append(f'<span class="gh">{html.escape(line)}</span>')
         else:

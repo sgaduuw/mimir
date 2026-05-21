@@ -92,8 +92,11 @@ Defaults baked into `mimir/config.py`:
   `INBOXES='{"lkml": {"mirror_path": "...", "upstream_url": "..."}}'`.
 - `EMAIL_ALLOWLIST`, substrings whose email addresses display in
   full; everyone else gets `<hidden>`.
-- `TRACKED_AUTHORS`, `{label: from_substring}` pairs; each gets a
-  tile on the per-inbox dashboard.
+- Per-inbox author trackers (each renders as a tile on the inbox
+  dashboard) are mutated via `mimir admin inbox trackers {set,add,
+  remove,clear} <inbox> [<label>=<email-substring>]`. State lives
+  on `Inbox.tracked_authors` (JSON column), not in env, so each
+  inbox can carry its own list and admin edits survive restarts.
 - `SECURITY_CONTACT`, enables `/security.txt` and
   `/.well-known/security.txt` (RFC 9116). Typical value:
   `mailto:security@example.com`. Without it, both routes 404, better
@@ -347,7 +350,8 @@ mimir/
   __init__.py            Flask app factory; bootstraps inboxes from env
   cli/                   Click commands, one submodule per concern group:
                          initdb, ingest, mainline, backfill, show, cache,
-                         maintenance, devseed, admin/{inbox,failures,canonicals}.
+                         maintenance, devseed, bootstrap, broker,
+                         admin/{inbox,failures,canonicals}.
                          register_cli(app) wires them onto Flask's cli.
   config.py              pydantic-settings Settings class + PROJECT_ROOT
   extensions.py          SQLAlchemy engine + WAL pragmas, sessionmaker, Base
@@ -383,7 +387,18 @@ mimir/
                          attention + quiet-for-N+-days queues).
   maintainers.py         MAINTAINERS file parser (no DB)
   maintainer_allowlist.py  dynamic email allowlist sourced from MAINTAINERS
-  mainline.py            Linus-tree commit walker for Link: trailers
+  mainline.py            mainline-tree end-to-end: MAINTAINERS reload +
+                         Link-trailer commit walker + update_mainline
+                         orchestrator
+  maintenance.py         SQLite hygiene operations: run_analyze, run_vacuum
+  patch_revisions.py     v1/v2/v3 series grouping logic for patch pages
+  patch_state.py         lifecycle classifier (applied / under review / ...)
+  datetime_utils.py      tz-aware UTC normalisation for Date headers
+  broker/                write-broker daemon + JSONL protocol + client:
+                         server (queue + worker pool), handlers
+                         (cache / longops / maintenance / warm),
+                         protocol (pydantic request types), client
+                         (process-singleton, thread-safe RPC)
   indexnow.py            IndexNow push-notification client
   seo/                   SEO output split by format: sitemaps (XML),
                          json_ld (schema.org payloads), atom (Atom 1.0 feeds).
@@ -440,13 +455,16 @@ Routes:
   Caveats: queries with no matches can take seconds to scan on a
   cold cache; the date-index short-circuit only helps when *some*
   rows match. See `mimir.dashboard.search_articles`.
-- `GET /m/<message-id>`, Message-ID lookup. 302-redirects to the
-  canonical `/<inbox>/<YYYY>/<MM>/<article-id>` URL. For cross-posts,
-  redirects to the alphabetically-first inbox; the message page's
-  "Also in:" line surfaces the others. Useful for linking from
-  outside the archive (commit trailers, IRC, lore.kernel.org refs).
-  An inbox-scoped variant `GET /<inbox>/m/<message-id>` 404s when
-  the message exists but isn't in the named inbox.
+- `GET /m/<message-id>`, Message-ID lookup. 301-redirects to the
+  article's canonical `/<inbox>/<YYYY>/<MM>/<article-id>` URL. For
+  cross-posts, the destination is the article's pinned
+  `canonical_inbox_id` (or the alphabetically-first link with
+  firehose inboxes demoted, when canonical isn't pinned yet); the
+  message page's "Also in:" line surfaces the rest. Useful for
+  linking from outside the archive (commit trailers, IRC,
+  lore.kernel.org refs). An inbox-scoped variant
+  `GET /<inbox>/m/<message-id>` 404s when the message exists but
+  isn't in the named inbox.
 - `GET /<inbox>/<YYYY>/<MM>/<article-id>`, single message:
   headers, full thread tree with the current message highlighted,
   body, attachment list. Patch articles also render a per-patch
@@ -628,11 +646,14 @@ dev), see `deploy/README.md`. Three shapes are covered:
 ## Mainline tree (MAINTAINERS)
 
 mimir mirrors Linus's `linux.git` locally so it can read
-`MAINTAINERS` and surface subsystem ownership on patch pages (work
-in progress; first slice ships the data, follow-up slices wire
-the render path). Tree path is configurable via `MAINLINE_TREE_PATH`
-(default `Mainline/linux.git` alongside the per-inbox mirrors)
-and `MAINLINE_TREE_URL`.
+`MAINTAINERS` and surface subsystem ownership across the UI:
+per-subsystem dashboards (`/<inbox>/subsystem/<name>/`), reviewer
+pages, attestation chips on patch views, the most-active-subsystems
+aggregation on `/`, and the MAINTAINERS-derived half of the email
+allowlist that drives From-line / DCO-trailer redaction. Tree path
+is configurable via `MAINLINE_TREE_PATH` (default
+`Mainline/linux.git` alongside the per-inbox mirrors) and
+`MAINLINE_TREE_URL`.
 
 ```sh
 # Clone (first run) or fetch + load:
