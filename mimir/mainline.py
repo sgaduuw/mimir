@@ -27,7 +27,7 @@ from pathlib import Path
 
 from dulwich.repo import Repo
 from pydantic import BaseModel
-from sqlalchemy import delete
+from sqlalchemy import delete, insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -329,32 +329,75 @@ def load_maintainers(
         # needs `PRAGMA foreign_keys=ON` (set by `mimir.extensions`
         # on every connection) for the cascade to fire.
         session.execute(delete(Subsystem))
-        for sub in parsed:
-            row = Subsystem(name=sub.name, status=sub.status)
-            for path in sub.files:
-                row.paths.append(SubsystemPath(glob=path, is_exclude=False))
-            for path in sub.excludes:
-                row.paths.append(SubsystemPath(glob=path, is_exclude=True))
-            for m in sub.maintainers:
-                row.maintainers.append(
-                    SubsystemMaintainer(
-                        role=m.role,
-                        name=m.name,
-                        address=m.address,
-                    )
+
+        # Three bulk inserts beat ORM's per-row flush. The
+        # MAINTAINERS file expands to ~1.5k Subsystem rows + ~10k
+        # SubsystemPath rows + ~5k SubsystemMaintainer rows on the
+        # kernel tree; under `session.add(row)` the unit-of-work
+        # flushed each one individually at commit time, holding the
+        # writer lock for the full round-trip count.
+        #
+        # `sort_by_parameter_order=True` on the RETURNING insert
+        # is what aligns the returned ids with the input order so
+        # the path / maintainer rows can wire to the right
+        # `subsystem_id` without a name lookup. SQLite supports
+        # this since 3.35 (RETURNING) and SQLAlchemy 2.0's bulk
+        # ORM-style insert honours the option.
+        sub_rows = [{"name": sub.name, "status": sub.status} for sub in parsed]
+        result = session.execute(
+            insert(Subsystem).returning(Subsystem.id),
+            sub_rows,
+            execution_options={"sort_by_parameter_order": True},
+        )
+        sub_ids = [row[0] for row in result]
+
+        path_rows = []
+        maintainer_rows = []
+        for sub_id, sub in zip(sub_ids, parsed, strict=True):
+            for glob in sub.files:
+                path_rows.append(
+                    {
+                        "subsystem_id": sub_id,
+                        "glob": glob,
+                        "is_exclude": False,
+                    }
                 )
-            session.add(row)
+            for glob in sub.excludes:
+                path_rows.append(
+                    {
+                        "subsystem_id": sub_id,
+                        "glob": glob,
+                        "is_exclude": True,
+                    }
+                )
+            for m in sub.maintainers:
+                maintainer_rows.append(
+                    {
+                        "subsystem_id": sub_id,
+                        "role": m.role,
+                        "name": m.name,
+                        "address": m.address,
+                    }
+                )
+        if path_rows:
+            session.execute(insert(SubsystemPath), path_rows)
+        if maintainer_rows:
+            session.execute(insert(SubsystemMaintainer), maintainer_rows)
+
         state.last_commit_sha = head_sha
         session.commit()
         loaded = len(parsed)
 
-    # Invalidate the dynamic-allowlist cache so the web tier picks
-    # up the refreshed M:/R: address set on the next request. The
-    # cache table is shared across processes, so this delete from
-    # the sidecar (or broker) reaches the web container too.
-    from mimir import maintainer_allowlist
+    # Invalidate the two derived caches that key off MAINTAINERS:
+    # the dynamic-allowlist (M:/R: address set, used by From-line +
+    # DCO-trailer redaction) and the subsystems-rule snapshot (used
+    # by `subsystems_for_article` on every message page). The cache
+    # table is shared across processes, so these deletes from the
+    # sidecar / broker reach the web container too.
+    from mimir import maintainer_allowlist, subsystems
 
     maintainer_allowlist.invalidate()
+    subsystems.invalidate_rules_snapshot()
 
     return True, loaded, head_sha
 

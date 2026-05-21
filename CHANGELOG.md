@@ -11,6 +11,49 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- `mimir/web/urls.py`: `_relative_time` and `_thread_summary`
+  moved to `mimir/web/filters.py` (their natural home alongside
+  `_relative_time_filter`). External callers see no change;
+  `mimir.web` continues to re-export both.
+
+### Fixed
+
+- **`/api/<inbox>/recent?offset=` hard ceiling.** Caps offset at
+  100 pages back (`RECENT_PAGE_SIZE * 100`); past it the route
+  404s. SQLite's OFFSET walks the index N rows before returning
+  anything, so an unbounded offset let a crawler at `?offset=5M`
+  burn a gunicorn worker. Real readers stop scrolling long before
+  the cap.
+- **Message-view in-body Message-ID linkifier capped at 100
+  distinct refs per render.** Past the cap, additional refs
+  render as plain text rather than going through the bulk
+  `.in_(...)` SELECT against `articles`. Bounds DB work + memory
+  on a pathological body within the parser's body-size budget.
+  Typical messages carry <10 refs; the cap is far above any real
+  ask.
+
+### Changed (perf)
+
+- **`mainline.load_maintainers` switches to three bulk inserts**
+  in place of the prior per-row ORM `session.add()` flush loop.
+  The MAINTAINERS file expands to ~1.5k Subsystem + ~10k
+  SubsystemPath + ~5k SubsystemMaintainer rows; under the old
+  shape SQLAlchemy's unit-of-work flushed one INSERT per row at
+  commit time, holding the writer lock for the full round-trip
+  count. The bulk-INSERT-with-RETURNING idiom is `sqlite_insert`
+  with `sort_by_parameter_order=True` for the parent table,
+  then plain `insert(...)` with the returned ids wired in for
+  the two child tables.
+- **`subsystems.subsystems_for_article` reads from a cached rule
+  snapshot.** The ~15k-row rule set + cascaded maintainers used
+  to be pulled per message-view render; now it's fetched once,
+  cached in the cross-process cache table with a 24 h TTL, and
+  invalidated from `mainline.load_maintainers` after every
+  MAINTAINERS reload (same pattern as `maintainer_allowlist`).
+  Per-article query against `article_files` still hits the DB.
+
 ## [1.38.0], 2026-05-21
 
 ### Added
