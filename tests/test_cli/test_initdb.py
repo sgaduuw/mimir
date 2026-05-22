@@ -1,8 +1,6 @@
 """Tests for mimir/cli/initdb.py: the dev-bootstrap `init-db`
 command (alembic upgrade head against a fresh DB path)."""
 
-
-
 from click.testing import CliRunner
 
 from mimir.cli import (

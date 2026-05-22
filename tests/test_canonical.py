@@ -1,5 +1,6 @@
 """Pure-logic tests for `mimir.canonical`. Hits the heuristic, the
 header-extraction, and the canonical-pick, no DB."""
+
 from mimir.canonical import (
     LIST_HOST_SUFFIXES,
     extract_list_addresses,
@@ -137,10 +138,10 @@ def test_extract_header_keys_case_insensitive():
     off-list-parent hint. Audit (2026-05-15) called it the silent
     canonical-break."""
     for to_key, cc_key in (
-        ("to", "cc"),         # all lowercase (the regression case)
-        ("TO", "CC"),         # all uppercase
-        ("To", "cc"),         # mixed
-        ("tO", "Cc"),         # weird mixed
+        ("to", "cc"),  # all lowercase (the regression case)
+        ("TO", "CC"),  # all uppercase
+        ("To", "cc"),  # mixed
+        ("tO", "Cc"),  # weird mixed
     ):
         headers = {
             to_key: "linux-fsdevel@vger.kernel.org",
@@ -198,7 +199,7 @@ def test_pick_skips_demoted_in_favour_of_later_non_demoted():
     Reflects how kernel devs treat lkml as a firehose CC, not the
     conversational home, and matches Google's canonical pick."""
     addrs = [
-        "linux-kernel@vger.kernel.org",          # demoted (lkml)
+        "linux-kernel@vger.kernel.org",  # demoted (lkml)
         "linux-arm-kernel@lists.infradead.org",  # topical, wins
     ]
     mapping = {
@@ -241,36 +242,50 @@ def test_pick_non_demoted_match_before_demoted_in_walk_order():
 
 
 def test_fallback_uses_explicit_canonical_id():
-    assert fallback_canonical_name(
-        canonical_id=7,
-        links=[(1, "lkml"), (7, "linux-arm-kernel")],
-        demoted_names=frozenset({"lkml"}),
-    ) == "linux-arm-kernel"
+    assert (
+        fallback_canonical_name(
+            canonical_id=7,
+            links=[(1, "lkml"), (7, "linux-arm-kernel")],
+            demoted_names=frozenset({"lkml"}),
+        )
+        == "linux-arm-kernel"
+    )
 
 
 def test_fallback_excludes_demoted_from_alphabetical():
     """`linux-arm-kernel` and `lkml` mixed: alphabetical would pick
     `linux-arm-kernel` anyway, but `mm-commits` vs `lkml` flips
     direction. Pin the demoted-to-back rule on the harder case."""
-    assert fallback_canonical_name(
-        canonical_id=None,
-        links=[(1, "lkml"), (3, "mm-commits")],
-        demoted_names=frozenset({"lkml"}),
-    ) == "mm-commits"
+    assert (
+        fallback_canonical_name(
+            canonical_id=None,
+            links=[(1, "lkml"), (3, "mm-commits")],
+            demoted_names=frozenset({"lkml"}),
+        )
+        == "mm-commits"
+    )
 
 
 def test_fallback_uses_demoted_when_no_non_demoted_link():
-    assert fallback_canonical_name(
-        canonical_id=None,
-        links=[(1, "lkml")],
-        demoted_names=frozenset({"lkml"}),
-    ) == "lkml"
+    assert (
+        fallback_canonical_name(
+            canonical_id=None,
+            links=[(1, "lkml")],
+            demoted_names=frozenset({"lkml"}),
+        )
+        == "lkml"
+    )
 
 
 def test_fallback_empty_links_returns_none():
-    assert fallback_canonical_name(
-        canonical_id=None, links=[], demoted_names=frozenset({"lkml"}),
-    ) is None
+    assert (
+        fallback_canonical_name(
+            canonical_id=None,
+            links=[],
+            demoted_names=frozenset({"lkml"}),
+        )
+        is None
+    )
 
 
 def test_fallback_defaults_to_settings_demoted():
@@ -278,7 +293,10 @@ def test_fallback_defaults_to_settings_demoted():
     `Settings.canonical_demoted_inboxes` (default `['lkml']`). Pin
     that default so a render-path call with no plumbed setting
     still demotes lkml."""
-    assert fallback_canonical_name(
-        canonical_id=None,
-        links=[(1, "lkml"), (3, "mm-commits")],
-    ) == "mm-commits"
+    assert (
+        fallback_canonical_name(
+            canonical_id=None,
+            links=[(1, "lkml"), (3, "mm-commits")],
+        )
+        == "mm-commits"
+    )

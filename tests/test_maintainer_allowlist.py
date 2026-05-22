@@ -3,6 +3,7 @@ allowlist. The redaction-filter wiring (`_safe_from_filter`,
 `_redact_trailer_address`, `_is_allowlisted_address_filter`) is
 exercised through the web tier in `tests/test_routes.py`; this
 file pins the helper itself + the cache invalidation hook."""
+
 from sqlalchemy import select
 
 from mimir import cache, maintainer_allowlist
@@ -21,7 +22,10 @@ def _add_maintainer(session, sub_name, role, name, address):
         session.add(sub)
         session.flush()
     m = SubsystemMaintainer(
-        subsystem_id=sub.id, role=role, name=name, address=address,
+        subsystem_id=sub.id,
+        role=role,
+        name=name,
+        address=address,
     )
     session.add(m)
     session.flush()
@@ -39,7 +43,7 @@ def test_empty_when_no_maintainers_indexed(seeded_db):
 
 
 def test_collects_m_and_r_roles(seeded_db):
-    """Both maintainer and reviewer roles contribute to the set  
+    """Both maintainer and reviewer roles contribute to the set
     the helper doesn't filter by role."""
     with seeded_db() as s:
         _add_maintainer(s, "BCACHEFS", "M", "Kent", "kent@example.com")
@@ -110,14 +114,20 @@ def test_cache_delete_clears_one_key():
     cache.set("ma_test_key", ["a"], ttl=60)
     with SessionLocal() as s:
         assert cache.get_or_compute(
-            s, "ma_test_key", 60, lambda: ["recompute"],
+            s,
+            "ma_test_key",
+            60,
+            lambda: ["recompute"],
         ) == ["a"]
     deleted = cache.delete("ma_test_key")
     assert deleted == 1
     with SessionLocal() as s:
         # Cache miss now → fn() runs.
         assert cache.get_or_compute(
-            s, "ma_test_key", 60, lambda: ["recompute"],
+            s,
+            "ma_test_key",
+            60,
+            lambda: ["recompute"],
         ) == ["recompute"]
     # Belt + braces: a delete on an absent key returns 0.
     assert cache.delete("ma_nonexistent_key") == 0

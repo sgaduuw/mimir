@@ -11,6 +11,7 @@ Diff handling lives here only at the segmentation level, "this run
 of lines is one diff block." Per-hunk rendering, lexer choice, and
 hunk anchors are in `diff.py`.
 """
+
 import re
 from dataclasses import dataclass, field
 

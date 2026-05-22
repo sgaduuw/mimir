@@ -3,8 +3,14 @@ the `/<inbox>/` dashboard, per-subsystem dashboards,
 per-author / per-reviewer pages, and the surrounding render
 contract (card grids, sparklines, tracker tiles, footer)."""
 
-
-from tests.test_routes._helpers import _ingest_one_article, _json_ld_blocks, _meta_value, _seed_author_article, _seed_subsystem, _title_of
+from tests.test_routes._helpers import (
+    _ingest_one_article,
+    _json_ld_blocks,
+    _meta_value,
+    _seed_author_article,
+    _seed_subsystem,
+    _title_of,
+)
 
 
 def _warm_active_subsystems(inbox_name: str | None = None) -> None:
@@ -35,7 +41,11 @@ def _warm_active_subsystems(inbox_name: str | None = None) -> None:
                 select(Inbox).where(Inbox.name == inbox_name)
             ).scalar_one()
             most_active_subsystems_in_inbox(
-                s, inbox, days=7, limit=10, force=True,
+                s,
+                inbox,
+                days=7,
+                limit=10,
+                force=True,
             )
 
 
@@ -70,6 +80,7 @@ def test_meta_index_pinned_card_carries_badge(client, monkeypatch):
     is also mentioned in the inline `<style>` block, so a substring
     check there would pass even without the badge rendering."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "pinned_inboxes", ["beta"])
     body = client.get("/").data.decode()
     assert '<span class="inbox-card-pinned"' in body
@@ -80,6 +91,7 @@ def test_meta_index_no_pin_badge_when_no_pins(client, monkeypatch):
     pinned. Guards against the badge accidentally surfacing for
     everyone."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "pinned_inboxes", [])
     body = client.get("/").data.decode()
     assert '<span class="inbox-card-pinned"' not in body
@@ -93,15 +105,14 @@ def test_meta_index_hero_image_has_substantive_alt(client):
     attribution, not what the image depicts. External review
     2026-05-16."""
     import re
+
     body = client.get("/").data.decode()
     m = re.search(
         r'<img[^>]*src="[^"]*ratatoskr[^"]*"[^>]*alt="([^"]*)"',
         body,
     )
     assert m, "front-page ratatoskr <img> not found"
-    assert m.group(1).strip(), (
-        f"hero image alt must not be empty; got {m.group(1)!r}"
-    )
+    assert m.group(1).strip(), f"hero image alt must not be empty; got {m.group(1)!r}"
 
 
 def test_meta_index_sparkline_renders_when_inbox_has_messages(client):
@@ -116,11 +127,13 @@ def test_meta_index_card_link_targets_inbox_dashboard(client):
     """Each card is wrapped in an `<a>` whose href is the per-inbox
     dashboard. Whole-card click target."""
     import re
+
     body = client.get("/").data.decode()
     # `<a class="inbox-card" ... href="/<name>/">` shape. Capture
     # every card link.
     hrefs = re.findall(
-        r'<a class="inbox-card"[^>]*href="(/[^"]+/)"', body,
+        r'<a class="inbox-card"[^>]*href="(/[^"]+/)"',
+        body,
     )
     assert "/alpha/" in hrefs
     assert "/beta/" in hrefs
@@ -175,14 +188,17 @@ def test_meta_index_renders_subsystem_chips_with_activity(client, tmp_path):
     from datetime import datetime, timedelta, timezone
     from mimir.extensions import SessionLocal
     from mimir.models import Article
+
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
     body = (
-        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n"
     )
     art_id, _ = _ingest_one_article(
-        tmp_path, "alpha", "bch-front@example.com",
-        subject="bcachefs front-page test", body=body,
+        tmp_path,
+        "alpha",
+        "bch-front@example.com",
+        subject="bcachefs front-page test",
+        body=body,
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
@@ -207,7 +223,8 @@ def test_meta_index_no_subsystem_section_when_no_activity(client):
 
 
 def test_meta_index_subsystem_card_shows_maintainer_and_sparkline(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """Front-page subsystem cards carry the top M: maintainer's
     name and a 7-day per-subsystem sparkline so they read as
@@ -215,17 +232,22 @@ def test_meta_index_subsystem_card_shows_maintainer_and_sparkline(
     from datetime import datetime, timedelta, timezone
     from mimir.extensions import SessionLocal
     from mimir.models import Article
+
     _seed_subsystem(
-        "BCACHEFS", "Supported", files=["fs/bcachefs/"],
+        "BCACHEFS",
+        "Supported",
+        files=["fs/bcachefs/"],
         maintainers=[("M", "Kent Overstreet", "kent@kernel.org")],
     )
     body = (
-        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n"
     )
     art_id, _ = _ingest_one_article(
-        tmp_path, "alpha", "bch-card@example.com",
-        subject="bcachefs card test", body=body,
+        tmp_path,
+        "alpha",
+        "bch-card@example.com",
+        subject="bcachefs card test",
+        body=body,
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
@@ -240,24 +262,30 @@ def test_meta_index_subsystem_card_shows_maintainer_and_sparkline(
 
 
 def test_meta_index_subsystem_card_status_badge_when_non_default(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """The Supported status surfaces as a corner badge; the default
     "Maintained" doesn't (would render on every card → noise)."""
     from datetime import datetime, timedelta, timezone
     from mimir.extensions import SessionLocal
     from mimir.models import Article
+
     _seed_subsystem(
-        "BCACHEFS", "Supported", files=["fs/bcachefs/"],
+        "BCACHEFS",
+        "Supported",
+        files=["fs/bcachefs/"],
         maintainers=[("M", "Kent Overstreet", "kent@kernel.org")],
     )
     body = (
-        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n"
     )
     art_id, _ = _ingest_one_article(
-        tmp_path, "alpha", "bch-status-card@example.com",
-        subject="status badge", body=body,
+        tmp_path,
+        "alpha",
+        "bch-status-card@example.com",
+        subject="status badge",
+        body=body,
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
@@ -272,7 +300,8 @@ def test_meta_index_subsystem_card_status_badge_when_non_default(
 
 
 def test_meta_index_subsystem_card_no_status_badge_for_default(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """`Maintained` is the upstream default, most subsystems sit
     at that value, so a badge on every card would be noise. Pin
@@ -281,17 +310,20 @@ def test_meta_index_subsystem_card_no_status_badge_for_default(
     from datetime import datetime, timedelta, timezone
     from mimir.extensions import SessionLocal
     from mimir.models import Article
+
     _seed_subsystem(
-        "BTRFS FILE SYSTEM", "Maintained", files=["fs/btrfs/"],
+        "BTRFS FILE SYSTEM",
+        "Maintained",
+        files=["fs/btrfs/"],
         maintainers=[("M", "Chris Mason", "clm@fb.com")],
     )
-    body = (
-        b"diff --git a/fs/btrfs/extent.c b/fs/btrfs/extent.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
-    )
+    body = b"diff --git a/fs/btrfs/extent.c b/fs/btrfs/extent.c\n@@ -1 +1 @@\n-x\n+y\n"
     art_id, _ = _ingest_one_article(
-        tmp_path, "alpha", "btrfs-card@example.com",
-        subject="default status", body=body,
+        tmp_path,
+        "alpha",
+        "btrfs-card@example.com",
+        subject="default status",
+        body=body,
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
@@ -349,10 +381,7 @@ def test_inbox_dashboard_content(client, inbox_name):
     assert f">{inbox_name}<" in body, "inbox name missing from page chrome"
     # Atom autodiscovery for the inbox's own feed (set by base.html
     # via `current_inbox`).
-    assert (
-        f'href="/{inbox_name}/feed.atom"' in body
-        and 'rel="alternate"' in body
-    )
+    assert f'href="/{inbox_name}/feed.atom"' in body and 'rel="alternate"' in body
 
 
 def test_author_view_too_short_404(client, inbox_name):
@@ -412,17 +441,20 @@ def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
     status, maintainers, and a list of recent patches touching
     the subsystem's paths."""
     _seed_subsystem(
-        "BCACHEFS", "Supported",
+        "BCACHEFS",
+        "Supported",
         files=["fs/bcachefs/"],
         maintainers=[("M", "Kent Overstreet", "kent.overstreet@kernel.org")],
     )
     patch_body = (
-        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n"
     )
     _ingest_one_article(
-        tmp_path, "alpha", "dash-1@example.com",
-        subject="bcachefs: tweak super", body=patch_body,
+        tmp_path,
+        "alpha",
+        "dash-1@example.com",
+        subject="bcachefs: tweak super",
+        body=patch_body,
     )
     r = client.get("/alpha/subsystem/bcachefs/")
     assert r.status_code == 200
@@ -452,6 +484,7 @@ def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
     from datetime import datetime, timedelta, timezone
     from mimir.extensions import SessionLocal
     from mimir.models import Article
+
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
     body = (
         b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
@@ -460,8 +493,11 @@ def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
         b"Reviewed-by: Kent Overstreet <kent.overstreet@kernel.org>\n"
     )
     art_id, _ = _ingest_one_article(
-        tmp_path, "alpha", "rev-1@example.com",
-        subject="bcachefs: review-attested fix", body=body,
+        tmp_path,
+        "alpha",
+        "rev-1@example.com",
+        subject="bcachefs: review-attested fix",
+        body=body,
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
@@ -477,7 +513,8 @@ def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
 
 
 def test_subsystem_dashboard_no_link_for_non_allowlisted_reviewer(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """Non-allowlisted addresses render via `safe_from` (display
     name + `<hidden>`) with NO clickable link to the per-reviewer
@@ -485,6 +522,7 @@ def test_subsystem_dashboard_no_link_for_non_allowlisted_reviewer(
     from datetime import datetime, timedelta, timezone
     from mimir.extensions import SessionLocal
     from mimir.models import Article
+
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
     body = (
         b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
@@ -493,8 +531,11 @@ def test_subsystem_dashboard_no_link_for_non_allowlisted_reviewer(
         b"Reviewed-by: Random Person <rando@somecorp.example>\n"
     )
     art_id, _ = _ingest_one_article(
-        tmp_path, "alpha", "rev-2@example.com",
-        subject="bcachefs: another fix", body=body,
+        tmp_path,
+        "alpha",
+        "rev-2@example.com",
+        subject="bcachefs: another fix",
+        body=body,
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
@@ -587,14 +628,14 @@ def test_subsystem_dashboard_rejects_control_chars_in_name(client):
         "bcache\x1bfs",  # ESC
     ):
         from urllib.parse import quote
+
         # quote(..., safe="") percent-encodes everything including
         # the control bytes; that produces the URL a browser/bot
         # would actually send for the literal name.
         path = f"/alpha/subsystem/{quote(bad, safe='')}/"
         r = client.get(path)
         assert r.status_code == 404, (
-            f"subsystem name {bad!r} should 404 at validator, got "
-            f"{r.status_code}"
+            f"subsystem name {bad!r} should 404 at validator, got {r.status_code}"
         )
 
 
@@ -603,18 +644,23 @@ def test_subsystem_dashboard_scopes_recent_to_inbox(client, tmp_path):
     inbox surface in the recent list."""
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
     patch_body = (
-        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n"
     )
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     _ingest_one_article(
-        tmp_path / "a", "alpha", "scope-a@example.com",
-        subject="alpha-side patch", body=patch_body,
+        tmp_path / "a",
+        "alpha",
+        "scope-a@example.com",
+        subject="alpha-side patch",
+        body=patch_body,
     )
     _ingest_one_article(
-        tmp_path / "b", "beta", "scope-b@example.com",
-        subject="beta-side patch", body=patch_body,
+        tmp_path / "b",
+        "beta",
+        "scope-b@example.com",
+        subject="beta-side patch",
+        body=patch_body,
     )
     body_a = client.get("/alpha/subsystem/bcachefs/").data.decode()
     body_b = client.get("/beta/subsystem/bcachefs/").data.decode()
@@ -648,7 +694,8 @@ def test_subsystem_dashboard_renders_sparkline(client):
 
 
 def test_subsystem_dashboard_renders_active_threads_section(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """Slice 2: a thread with a recent patch matching the
     subsystem's paths surfaces under "Most active threads".
@@ -658,14 +705,17 @@ def test_subsystem_dashboard_renders_active_threads_section(
     from datetime import datetime, timedelta, timezone
     from mimir.extensions import SessionLocal
     from mimir.models import Article
+
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
     patch_body = (
-        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n"
     )
     art_id, _ = _ingest_one_article(
-        tmp_path, "alpha", "active-thread@example.com",
-        subject="bcachefs active thread", body=patch_body,
+        tmp_path,
+        "alpha",
+        "active-thread@example.com",
+        subject="bcachefs active thread",
+        body=patch_body,
     )
     # Bump the article's date into the active window so the
     # decay-weighted CTE picks it up. URL date doesn't matter for
@@ -686,9 +736,7 @@ def test_inbox_dashboard_emits_discussion_forum_json_ld(client, inbox_name):
     page reads as a topical hub for crawlers. ItemList of active
     threads is included when threads exist; an empty test corpus
     yields no `mainEntity`, but the type/name/url still appear."""
-    blocks = _json_ld_blocks(
-        client.get(f"/{inbox_name}/").data.decode()
-    )
+    blocks = _json_ld_blocks(client.get(f"/{inbox_name}/").data.decode())
     assert len(blocks) == 1
     payload = blocks[0]
     assert payload["@type"] == "DiscussionForum"
@@ -707,13 +755,15 @@ def test_inbox_dashboard_with_trackers_renders_tile(client, inbox_name):
     """Configure a tracker via the service layer; the tile should
     render with the configured label."""
     from mimir.inboxes import set_tracked_authors
+
     set_tracked_authors(inbox_name, {"Carol Tracked": "carol@kernel.org"})
     body = client.get(f"/{inbox_name}/").data.decode()
     assert "Latest from Carol Tracked" in body
 
 
 def test_inbox_dashboard_renders_subsystem_list_with_activity(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """Inbox dashboard surfaces a "Most active subsystems" list
     when a subsystem has recent in-window messages on that inbox.
@@ -723,14 +773,17 @@ def test_inbox_dashboard_renders_subsystem_list_with_activity(
     from datetime import datetime, timedelta, timezone
     from mimir.extensions import SessionLocal
     from mimir.models import Article
+
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
     body = (
-        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n"
     )
     art_id, _ = _ingest_one_article(
-        tmp_path, "alpha", "bch-inbox@example.com",
-        subject="bcachefs inbox-dashboard test", body=body,
+        tmp_path,
+        "alpha",
+        "bch-inbox@example.com",
+        subject="bcachefs inbox-dashboard test",
+        body=body,
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
@@ -784,10 +837,14 @@ def test_inbox_dashboard_year_browse_uses_decade_grouping(client, inbox_name):
         )
         s.add(art)
         s.flush()
-        s.add(ArticleList(
-            article_id=art.id, inbox_id=ix.id, epoch="0.git",
-            commit_sha="de" * 20,
-        ))
+        s.add(
+            ArticleList(
+                article_id=art.id,
+                inbox_id=ix.id,
+                epoch="0.git",
+                commit_sha="de" * 20,
+            )
+        )
         s.commit()
 
     html = client.get(f"/{inbox_name}/").data.decode()
@@ -841,6 +898,7 @@ def test_author_view_canonical_uses_percent_encoded_at(client, inbox_name):
     `%40` (via Jinja's `urlencode`). The route now pins canonical
     with `urllib.parse.quote(sub)` so both surfaces agree."""
     import re
+
     body = client.get(f"/{inbox_name}/author/torvalds@").data.decode()
     canonical = re.search(r'<link rel="canonical" href="([^"]+)"', body)
     # Author page emits two atom-feed <link>s in <head>: the inbox
@@ -867,9 +925,7 @@ def test_author_view_emits_profilepage_json_ld(client, inbox_name):
     `Person` mainEntity. Suggested in the 2026-05-13 review --
     cheap structured-data signal for crawlers (the substring is the
     Person.name; we don't try to resolve to a single identity)."""
-    blocks = _json_ld_blocks(
-        client.get(f"/{inbox_name}/author/torvalds").data.decode()
-    )
+    blocks = _json_ld_blocks(client.get(f"/{inbox_name}/author/torvalds").data.decode())
     assert len(blocks) == 1
     payload = blocks[0]
     assert payload["@type"] == "ProfilePage"
@@ -892,8 +948,11 @@ def test_reviewer_view_lists_attestations(client, tmp_path):
         b"Reviewed-by: Kent Overstreet <kent.overstreet@kernel.org>\n"
     )
     _ingest_one_article(
-        tmp_path, "alpha", "rev-page-1@example.com",
-        subject="patch with attestation", body=body,
+        tmp_path,
+        "alpha",
+        "rev-page-1@example.com",
+        subject="patch with attestation",
+        body=body,
     )
     r = client.get("/alpha/reviewer/kent.overstreet@kernel.org")
     assert r.status_code == 200
@@ -908,7 +967,9 @@ def test_reviewer_view_404_on_malformed_address(client):
     the SQL with garbage. The route's address regex defends the
     canonical URL surface."""
     assert client.get("/alpha/reviewer/not-an-email").status_code == 404
-    assert client.get("/alpha/reviewer/a%40b").status_code == 404 or True  # urlencoded @ may also resolve
+    assert (
+        client.get("/alpha/reviewer/a%40b").status_code == 404 or True
+    )  # urlencoded @ may also resolve
     # An empty path segment 404s through Flask's routing.
 
 
@@ -923,8 +984,11 @@ def test_reviewer_view_lowercases_address(client, tmp_path):
         b"Reviewed-by: A <a@kernel.org>\n"
     )
     _ingest_one_article(
-        tmp_path, "alpha", "rev-page-2@example.com",
-        subject="case-test patch", body=body,
+        tmp_path,
+        "alpha",
+        "rev-page-2@example.com",
+        subject="case-test patch",
+        body=body,
     )
     r = client.get("/alpha/reviewer/A@KERNEL.ORG")
     assert r.status_code == 200
@@ -944,9 +1008,10 @@ def test_reviewer_view_empty_state_renders_cleanly(client):
 
 
 def test_reviewer_view_404_on_unknown_inbox(client):
-    assert client.get(
-        "/nonexistent/reviewer/kent.overstreet@kernel.org"
-    ).status_code == 404
+    assert (
+        client.get("/nonexistent/reviewer/kent.overstreet@kernel.org").status_code
+        == 404
+    )
 
 
 def test_reviewer_view_inbox_scoped(client, tmp_path):
@@ -960,8 +1025,11 @@ def test_reviewer_view_inbox_scoped(client, tmp_path):
         b"Reviewed-by: B <b@kernel.org>\n"
     )
     _ingest_one_article(
-        tmp_path, "beta", "rev-page-beta@example.com",
-        subject="beta-only patch", body=body,
+        tmp_path,
+        "beta",
+        "rev-page-beta@example.com",
+        subject="beta-only patch",
+        body=body,
     )
     a = client.get("/alpha/reviewer/b@kernel.org").data.decode()
     b = client.get("/beta/reviewer/b@kernel.org").data.decode()

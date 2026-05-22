@@ -5,6 +5,7 @@ at import time. The `cli` package `__init__.py` imports each submodule
 to trigger the registration, then exposes `admin_group` for
 `register_cli` to attach to the Flask app.
 """
+
 import click
 
 

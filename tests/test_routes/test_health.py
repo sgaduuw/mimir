@@ -1,5 +1,6 @@
 """Tests for mimir/web/routes/health.py: `/healthz` (liveness)
 and `/readyz` (readiness) endpoints."""
+
 from unittest.mock import patch
 
 

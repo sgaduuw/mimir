@@ -5,6 +5,7 @@ from silently corrupting the on-disk cache: tags are explicit strings,
 unknown tags raise, unknown types raise. This test pins the contract
 so future drift gets caught the moment someone runs the suite.
 """
+
 import json
 import logging
 from datetime import date, datetime, timezone
@@ -31,8 +32,11 @@ def test_registry_has_expected_tags():
     `_TAGS[X]` assertions still catch the removal regression
     (a dropped class would `KeyError` on lookup)."""
     assert {
-        "ActiveThread", "ArchiveStats", "ArticleSummary",
-        "DailyVolume", "MonthlyVolume",
+        "ActiveThread",
+        "ArchiveStats",
+        "ArticleSummary",
+        "DailyVolume",
+        "MonthlyVolume",
     }.issubset(_TYPES.keys())
     assert _TAGS[ActiveThread] == "ActiveThread"
     assert _TAGS[ArchiveStats] == "ArchiveStats"
@@ -45,7 +49,9 @@ def test_article_summary_roundtrip():
     from datetime import datetime, timezone
 
     s = ArticleSummary(
-        id=42, subject="patch", author="Foo <foo@bar>",
+        id=42,
+        subject="patch",
+        author="Foo <foo@bar>",
         date=datetime(2025, 1, 1, tzinfo=timezone.utc),
     )
     assert _roundtrip(s) == s
@@ -69,6 +75,7 @@ def test_datetime_keeps_non_utc_offset():
     +0900 alike; serialising those as the same wall-clock with a
     rewritten offset would corrupt the audit trail."""
     from datetime import timedelta
+
     tz_plus_2 = timezone(timedelta(hours=2))
     tz_minus_5 = timezone(timedelta(hours=-5, minutes=-30))  # exotic offset
     for tz in (tz_plus_2, tz_minus_5):
@@ -103,9 +110,14 @@ def test_dict_roundtrip():
 
 def test_active_thread_full():
     at = ActiveThread(
-        id=1, inbox_name="lkml", message_id="abc@x", subject="s", author="a",
+        id=1,
+        inbox_name="lkml",
+        message_id="abc@x",
+        subject="s",
+        author="a",
         date=datetime(2025, 1, 1, tzinfo=timezone.utc),
-        recent_count=2, reply_count=1,
+        recent_count=2,
+        reply_count=1,
         last_activity=datetime(2025, 1, 2, tzinfo=timezone.utc),
     )
     assert _roundtrip(at) == at
@@ -113,15 +125,23 @@ def test_active_thread_full():
 
 def test_active_thread_with_nones():
     at = ActiveThread(
-        id=1, inbox_name="lkml", message_id="abc@x", subject=None, author=None,
-        date=None, recent_count=0, reply_count=0, last_activity=None,
+        id=1,
+        inbox_name="lkml",
+        message_id="abc@x",
+        subject=None,
+        author=None,
+        date=None,
+        recent_count=0,
+        reply_count=0,
+        last_activity=None,
     )
     assert _roundtrip(at) == at
 
 
 def test_archive_stats_full():
     stats = ArchiveStats(
-        total=100, epochs=3,
+        total=100,
+        epochs=3,
         first_date=datetime(2020, 1, 1, tzinfo=timezone.utc),
         last_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
     )
@@ -153,9 +173,15 @@ def test_daily_volume_preserves_inner_tuples():
 def test_list_of_dataclasses():
     items = [
         ActiveThread(
-            id=i, inbox_name="lkml", message_id=f"m{i}@x",
-            subject=None, author=None, date=None,
-            recent_count=0, reply_count=0, last_activity=None,
+            id=i,
+            inbox_name="lkml",
+            message_id=f"m{i}@x",
+            subject=None,
+            author=None,
+            date=None,
+            recent_count=0,
+            reply_count=0,
+            last_activity=None,
         )
         for i in range(3)
     ]
@@ -171,14 +197,26 @@ def test_nested_dict_of_list_of_dataclasses():
     payload = {
         "alpha": [
             ActiveThread(
-                id=1, inbox_name="alpha", message_id="a1@x",
-                subject="t1", author="a", date=None,
-                recent_count=1, reply_count=0, last_activity=None,
+                id=1,
+                inbox_name="alpha",
+                message_id="a1@x",
+                subject="t1",
+                author="a",
+                date=None,
+                recent_count=1,
+                reply_count=0,
+                last_activity=None,
             ),
             ActiveThread(
-                id=2, inbox_name="alpha", message_id="a2@x",
-                subject="t2", author="b", date=None,
-                recent_count=0, reply_count=0, last_activity=None,
+                id=2,
+                inbox_name="alpha",
+                message_id="a2@x",
+                subject="t2",
+                author="b",
+                date=None,
+                recent_count=0,
+                reply_count=0,
+                last_activity=None,
             ),
         ],
         "beta": [],
@@ -195,7 +233,10 @@ def test_dataclass_containing_nested_dict_roundtrip():
     when a plain dict-of-dataclass is wrapped one level deeper."""
     items = [
         ArticleSummary(
-            id=i, subject=f"subj-{i}", author=f"u{i}@x", date=None,
+            id=i,
+            subject=f"subj-{i}",
+            author=f"u{i}@x",
+            date=None,
         )
         for i in range(3)
     ]
@@ -212,6 +253,7 @@ def test_pydantic_basemodel_roundtrip():
     the cache (per-subsystem dashboard's recent-articles surface);
     breaking this roundtrip would silently corrupt that cache."""
     from mimir.subsystems import RelatedPatch
+
     rp = RelatedPatch(
         article_id=42,
         message_id="msg@example.com",
@@ -231,6 +273,7 @@ def test_pydantic_basemodel_with_none_fields():
     """Subject and author are nullable on RelatedPatch; an article
     with no extractable subject/author must still round-trip."""
     from mimir.subsystems import RelatedPatch
+
     rp = RelatedPatch(
         article_id=1,
         message_id="bare@example.com",
@@ -257,18 +300,19 @@ def test_unknown_tag_raises():
 
 def test_set_propagates_encoder_typeerror():
     """`set()`'s swallow window is exactly `OperationalError` from
-    DB write contention (see CONTEXT.md "Cross-process cache"). An
-    encoder error (`TypeError` from `_encode` on an unregistered
-    type) is a programming bug: a forgotten `register()` call, a
-    typo in the tag, a refactor that dropped a dataclass from the
-    registry. Swallowing those would leave the cache silently empty
-   , every page recomputes forever, the dev sees nothing in logs,
-    the bug ships.
+     DB write contention (see CONTEXT.md "Cross-process cache"). An
+     encoder error (`TypeError` from `_encode` on an unregistered
+     type) is a programming bug: a forgotten `register()` call, a
+     typo in the tag, a refactor that dropped a dataclass from the
+     registry. Swallowing those would leave the cache silently empty
+    , every page recomputes forever, the dev sees nothing in logs,
+     the bug ships.
 
-    Pin the boundary: an unregistered class fed to `cache.set` must
-    propagate `TypeError` to the caller, and the no-cache-row
-    invariant must hold (failed write didn't half-commit anything
-    via a different path)."""
+     Pin the boundary: an unregistered class fed to `cache.set` must
+     propagate `TypeError` to the caller, and the no-cache-row
+     invariant must hold (failed write didn't half-commit anything
+     via a different path)."""
+
     class Unregistered:
         pass
 
@@ -285,6 +329,7 @@ def test_set_propagates_value_inside_collection():
     because `_encode` recurses through containers. Pins that the
     raise-loudly contract applies to nested values too, not just to
     bare unregistered objects."""
+
     class Unregistered:
         pass
 
@@ -296,16 +341,20 @@ def test_set_propagates_value_inside_collection():
 
 def test_set_swallows_operational_error_on_lock(monkeypatch):
     """Unit-level: a locked DB during a cache write must not propagate
-   , the request has already rendered. `set()` logs at warning and
-    returns. Mocked SessionLocal pins the swallow + log code path
-    without depending on real SQLite contention timing."""
+    , the request has already rendered. `set()` logs at warning and
+     returns. Mocked SessionLocal pins the swallow + log code path
+     without depending on real SQLite contention timing."""
+
     class _LockedSession:
         def __enter__(self):
             return self
+
         def __exit__(self, *exc):
             return False
+
         def execute(self, _stmt):
             return None
+
         def commit(self):
             raise OperationalError("INSERT", None, Exception("database is locked"))
 
@@ -337,13 +386,17 @@ def test_delete_swallows_operational_error_on_lock(monkeypatch):
     successfully-completed DB change just because the cache
     invalidation lost the lock race. Audit (2026-05-15) flagged the
     asymmetry."""
+
     class _LockedSession:
         def __enter__(self):
             return self
+
         def __exit__(self, *exc):
             return False
+
         def execute(self, _stmt):
             return None
+
         def commit(self):
             raise OperationalError("DELETE", None, Exception("database is locked"))
 
@@ -374,13 +427,17 @@ def test_delete_for_inbox_swallows_operational_error_on_lock(monkeypatch):
     """Symmetric to `test_delete_swallows_operational_error_on_lock`
     for the bulk delete_for_inbox path that runs on every inbox
     rename / delete."""
+
     class _LockedSession:
         def __enter__(self):
             return self
+
         def __exit__(self, *exc):
             return False
+
         def execute(self, _stmt):
             return None
+
         def commit(self):
             raise OperationalError("DELETE", None, Exception("database is locked"))
 
@@ -401,9 +458,7 @@ def test_delete_for_inbox_swallows_operational_error_on_lock(monkeypatch):
         logger.removeHandler(handler)
 
     assert result == 0
-    assert any(
-        "cache delete_for_inbox failed" in r.getMessage() for r in captured
-    ), (
+    assert any("cache delete_for_inbox failed" in r.getMessage() for r in captured), (
         f"expected a 'cache delete_for_inbox failed' warning, got "
         f"{[r.getMessage() for r in captured]}"
     )
@@ -521,6 +576,7 @@ def test_delete_for_inbox_pattern_boundary():
         # Sentinels are stored under the namespace prefix; drop the
         # namespaced form from the underlying table.
         from mimir.cache import _ns
+
         with SessionLocal() as session:
             session.execute(
                 sql_delete(CacheEntry).where(
@@ -552,12 +608,14 @@ def test_namespace_version_isolates_stale_rows():
         (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=1)).timestamp()
     )
     with SessionLocal() as session:
-        session.execute(
-            sql_delete(CacheEntry).where(CacheEntry.key == stale_key)
+        session.execute(sql_delete(CacheEntry).where(CacheEntry.key == stale_key))
+        session.add(
+            CacheEntry(
+                key=stale_key,
+                value='"stale-value"',
+                expires_at=expires_at,
+            )
         )
-        session.add(CacheEntry(
-            key=stale_key, value='"stale-value"', expires_at=expires_at,
-        ))
         session.commit()
 
     try:
@@ -566,9 +624,7 @@ def test_namespace_version_isolates_stale_rows():
         assert cache.get("xtest-stale-row") is None
     finally:
         with SessionLocal() as session:
-            session.execute(
-                sql_delete(CacheEntry).where(CacheEntry.key == stale_key)
-            )
+            session.execute(sql_delete(CacheEntry).where(CacheEntry.key == stale_key))
             session.commit()
 
 
@@ -583,6 +639,7 @@ def test_namespace_version_isolates_stale_rows():
 def _seconds_from_now(delta_seconds: int) -> int:
     """Helper for inserting raw CacheEntry rows with a chosen expiry."""
     from datetime import datetime, timezone, timedelta
+
     return int(
         (datetime.now(timezone.utc) + timedelta(seconds=delta_seconds)).timestamp()
     )
@@ -604,13 +661,19 @@ def test_purge_expired_drops_expired_rows():
 
     with SessionLocal() as s:
         # Clean any prior sentinel rows so the count is exact.
-        s.execute(sql_delete(CacheEntry).where(
-            CacheEntry.key.in_([_ns(k) for k in expired_keys + live_keys])
-        ))
+        s.execute(
+            sql_delete(CacheEntry).where(
+                CacheEntry.key.in_([_ns(k) for k in expired_keys + live_keys])
+            )
+        )
         for k in expired_keys:
-            s.add(CacheEntry(key=_ns(k), value='"v"', expires_at=_seconds_from_now(-60)))
+            s.add(
+                CacheEntry(key=_ns(k), value='"v"', expires_at=_seconds_from_now(-60))
+            )
         for k in live_keys:
-            s.add(CacheEntry(key=_ns(k), value='"v"', expires_at=_seconds_from_now(3600)))
+            s.add(
+                CacheEntry(key=_ns(k), value='"v"', expires_at=_seconds_from_now(3600))
+            )
         s.commit()
 
     try:
@@ -619,8 +682,10 @@ def test_purge_expired_drops_expired_rows():
 
         with SessionLocal() as s:
             from sqlalchemy import select
+
             remaining = {
-                row.key for row in s.execute(
+                row.key
+                for row in s.execute(
                     select(CacheEntry).where(
                         CacheEntry.key.in_([_ns(k) for k in expired_keys + live_keys])
                     )
@@ -632,9 +697,11 @@ def test_purge_expired_drops_expired_rows():
             assert _ns(k) not in remaining
     finally:
         with SessionLocal() as s:
-            s.execute(sql_delete(CacheEntry).where(
-                CacheEntry.key.in_([_ns(k) for k in expired_keys + live_keys])
-            ))
+            s.execute(
+                sql_delete(CacheEntry).where(
+                    CacheEntry.key.in_([_ns(k) for k in expired_keys + live_keys])
+                )
+            )
             s.commit()
 
 
@@ -653,9 +720,13 @@ def test_purge_expired_returns_zero_when_nothing_to_drop():
     live_key = "xtest-purge-zero-live"
     with SessionLocal() as s:
         s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(live_key)))
-        s.add(CacheEntry(
-            key=_ns(live_key), value='"v"', expires_at=_seconds_from_now(3600),
-        ))
+        s.add(
+            CacheEntry(
+                key=_ns(live_key),
+                value='"v"',
+                expires_at=_seconds_from_now(3600),
+            )
+        )
         s.commit()
 
     try:
@@ -791,9 +862,13 @@ def test_refresh_window_recomputes_when_near_expiry():
         s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
         # 60 s of TTL remaining, but the window asks for "anything
         # within 300 s of expiry", so recompute.
-        s.add(CacheEntry(
-            key=_ns(key), value='"stale"', expires_at=_seconds_from_now(60),
-        ))
+        s.add(
+            CacheEntry(
+                key=_ns(key),
+                value='"stale"',
+                expires_at=_seconds_from_now(60),
+            )
+        )
         s.commit()
 
     calls = 0
@@ -828,10 +903,13 @@ def test_refresh_window_skips_when_plenty_of_ttl_left():
     with SessionLocal() as s:
         s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
         # 1 hour of TTL remaining; window is 5 min, skip recompute.
-        s.add(CacheEntry(
-            key=_ns(key), value='"stale-but-fresh-enough"',
-            expires_at=_seconds_from_now(3600),
-        ))
+        s.add(
+            CacheEntry(
+                key=_ns(key),
+                value='"stale-but-fresh-enough"',
+                expires_at=_seconds_from_now(3600),
+            )
+        )
         s.commit()
 
     calls = 0
@@ -866,9 +944,13 @@ def test_get_or_compute_expired_row_treated_as_miss():
         s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
         # Insert directly with a past expiry so the row exists but
         # is not "live" by the helper's clock.
-        s.add(CacheEntry(
-            key=_ns(key), value='"stale"', expires_at=_seconds_from_now(-60),
-        ))
+        s.add(
+            CacheEntry(
+                key=_ns(key),
+                value='"stale"',
+                expires_at=_seconds_from_now(-60),
+            )
+        )
         s.commit()
 
     calls = 0
@@ -895,7 +977,7 @@ def test_get_or_compute_expired_row_treated_as_miss():
 # The `_roundtrip` helper above goes encoder → json text → decoder; the
 # tests below go through the *real* `cache.set` → SQLite TEXT column →
 # `cache.get` path. The two paths diverge whenever a value survives
-# `json.dumps`/`json.loads` but trips up SQLite's TEXT encoding  
+# `json.dumps`/`json.loads` but trips up SQLite's TEXT encoding
 # surrogates being the obvious case. A registered dataclass that
 # round-trips via `_roundtrip` but fails the real path would silently
 # break dashboard caching in production.
@@ -923,9 +1005,14 @@ def _drop_cache_key(key: str) -> None:
 def test_real_path_roundtrip_active_thread():
     key = "xtest-real-path-active-thread"
     value = ActiveThread(
-        id=1, inbox_name="lkml", message_id="m1@x", subject="s", author="a",
+        id=1,
+        inbox_name="lkml",
+        message_id="m1@x",
+        subject="s",
+        author="a",
         date=datetime(2025, 1, 1, tzinfo=timezone.utc),
-        recent_count=2, reply_count=1,
+        recent_count=2,
+        reply_count=1,
         last_activity=datetime(2025, 1, 2, tzinfo=timezone.utc),
     )
     try:
@@ -937,7 +1024,9 @@ def test_real_path_roundtrip_active_thread():
 def test_real_path_roundtrip_article_summary():
     key = "xtest-real-path-article-summary"
     value = ArticleSummary(
-        id=42, subject="patch", author="Foo <foo@bar>",
+        id=42,
+        subject="patch",
+        author="Foo <foo@bar>",
         date=datetime(2025, 1, 1, tzinfo=timezone.utc),
     )
     try:
@@ -949,7 +1038,8 @@ def test_real_path_roundtrip_article_summary():
 def test_real_path_roundtrip_archive_stats():
     key = "xtest-real-path-archive-stats"
     value = ArchiveStats(
-        total=100, epochs=3,
+        total=100,
+        epochs=3,
         first_date=datetime(2020, 1, 1, tzinfo=timezone.utc),
         last_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
     )
@@ -978,7 +1068,9 @@ def test_real_path_roundtrip_daily_volume():
 def test_real_path_roundtrip_monthly_volume():
     key = "xtest-real-path-monthly-volume"
     value = MonthlyVolume(
-        year=2024, months=[(m, m * 10) for m in range(1, 13)], total=780,
+        year=2024,
+        months=[(m, m * 10) for m in range(1, 13)],
+        total=780,
     )
     try:
         out = _real_path_roundtrip(key, value)
@@ -1030,6 +1122,7 @@ def test_read_only_db_short_circuits_writes(monkeypatch):
     SessionLocal is stubbed to raise on use; under the flag, none of
     the entry points must reach it.
     """
+
     def _explode(*_a, **_k):
         raise AssertionError("SessionLocal must not be opened under read_only_db")
 
@@ -1076,14 +1169,29 @@ def test_read_only_db_does_not_break_reads():
                 return "computed"
 
             from mimir.extensions import SessionLocal
+
             with SessionLocal() as session:
-                assert cache.get_or_compute(
-                    session, "xtest-readonly-miss", ttl=60, fn=_fn,
-                ) == "computed"
-                assert cache.get_or_compute(
-                    session, "xtest-readonly-miss", ttl=60, fn=_fn,
-                ) == "computed"
-            assert calls["n"] == 2, "fn must run twice under read_only_db (no write persisted)"
+                assert (
+                    cache.get_or_compute(
+                        session,
+                        "xtest-readonly-miss",
+                        ttl=60,
+                        fn=_fn,
+                    )
+                    == "computed"
+                )
+                assert (
+                    cache.get_or_compute(
+                        session,
+                        "xtest-readonly-miss",
+                        ttl=60,
+                        fn=_fn,
+                    )
+                    == "computed"
+                )
+            assert calls["n"] == 2, (
+                "fn must run twice under read_only_db (no write persisted)"
+            )
         finally:
             live_settings.read_only_db = prev
     finally:

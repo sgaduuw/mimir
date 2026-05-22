@@ -2,6 +2,7 @@
 in unit-isolation by `tests/test_maintainers.py`; this file pins the
 clone/fetch/load wiring against a fake bare repo.
 """
+
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -40,14 +41,16 @@ _SAMPLE_MAINTAINERS = (
 )
 
 
-def _build_mainline_repo(repo_path: Path, blob_bytes: bytes,
-                        parent: bytes | None = None) -> bytes:
+def _build_mainline_repo(
+    repo_path: Path, blob_bytes: bytes, parent: bytes | None = None
+) -> bytes:
     """Build (or append to) a bare repo with a single `MAINTAINERS`
     blob at HEAD. Returns the commit id. If `parent` is supplied,
     the new commit chains onto it, useful for testing "HEAD moved"
     flow."""
     repo = (
-        Repo(str(repo_path)) if repo_path.exists()
+        Repo(str(repo_path))
+        if repo_path.exists()
         else Repo.init_bare(str(repo_path), mkdir=True)
     )
     blob = Blob.from_string(blob_bytes)
@@ -69,7 +72,9 @@ def _build_mainline_repo(repo_path: Path, blob_bytes: bytes,
 
 
 def test_update_mainline_loads_subsystems_from_head_blob(
-    seeded_db, tmp_path, monkeypatch,
+    seeded_db,
+    tmp_path,
+    monkeypatch,
 ):
     """Happy path: bare repo with a MAINTAINERS blob → CLI reads it,
     parses, and inserts rows. Pins the wire shape: subsystems table
@@ -98,7 +103,8 @@ def test_update_mainline_loads_subsystems_from_head_blob(
 
         btrfs = next(sub for sub in subs if sub.name == "BTRFS")
         assert {p.glob: p.is_exclude for p in btrfs.paths} == {
-            "fs/btrfs/": False, "fs/btrfs/tests/": True,
+            "fs/btrfs/": False,
+            "fs/btrfs/tests/": True,
         }
         assert len(btrfs.maintainers) == 2
 
@@ -108,9 +114,11 @@ def test_update_mainline_loads_subsystems_from_head_blob(
 
 
 def test_update_mainline_is_noop_when_head_unchanged(
-    seeded_db, tmp_path, monkeypatch,
+    seeded_db,
+    tmp_path,
+    monkeypatch,
 ):
-    """Second tick on an unchanged HEAD must skip the parse step  
+    """Second tick on an unchanged HEAD must skip the parse step
     that's the steady-state cheap path."""
     repo_path = tmp_path / "linux.git"
     _build_mainline_repo(repo_path, _SAMPLE_MAINTAINERS)
@@ -131,7 +139,9 @@ def test_update_mainline_is_noop_when_head_unchanged(
 
 
 def test_update_mainline_force_reparses_even_on_unchanged_head(
-    seeded_db, tmp_path, monkeypatch,
+    seeded_db,
+    tmp_path,
+    monkeypatch,
 ):
     """`--force` re-parses regardless of HEAD state. Useful after a
     parser fix or for debugging, operator wants the side effect
@@ -148,7 +158,9 @@ def test_update_mainline_force_reparses_even_on_unchanged_head(
 
 
 def test_update_mainline_picks_up_head_movement(
-    seeded_db, tmp_path, monkeypatch,
+    seeded_db,
+    tmp_path,
+    monkeypatch,
 ):
     """A new commit on the bare repo with a different MAINTAINERS
     blob → next tick must pick up the new content. Pins the "tree
@@ -187,17 +199,16 @@ def test_update_mainline_picks_up_head_movement(
     assert "loaded 2 subsystems" in result.output
 
     with seeded_db() as s:
-        names = {
-            sub.name for sub in
-            s.execute(select(Subsystem)).scalars()
-        }
+        names = {sub.name for sub in s.execute(select(Subsystem)).scalars()}
         assert names == {"BCACHEFS", "XFS FILESYSTEM"}, (
             "old subsystems must be gone after replace-all"
         )
 
 
 def test_update_mainline_walks_link_trailers_in_commit_messages(
-    seeded_db, tmp_path, monkeypatch,
+    seeded_db,
+    tmp_path,
+    monkeypatch,
 ):
     """The MAINTAINERS load and the Link-trailer walk are
     independent passes on the same tree. The walker indexes
@@ -211,6 +222,7 @@ def test_update_mainline_walks_link_trailers_in_commit_messages(
     # extract one row.
     from dulwich.repo import Repo
     from dulwich.objects import Blob, Commit, Tree
+
     repo = Repo(str(repo_path))
     parent = repo.head()
     blob = Blob.from_string(_SAMPLE_MAINTAINERS)
@@ -226,8 +238,7 @@ def test_update_mainline_walks_link_trailers_in_commit_messages(
     extra.commit_timezone = extra.author_timezone = 0
     extra.encoding = b"UTF-8"
     extra.message = (
-        b"Fix something.\n\n"
-        b"Link: https://lore.kernel.org/r/fix-msg@example.com\n"
+        b"Fix something.\n\nLink: https://lore.kernel.org/r/fix-msg@example.com\n"
     )
     repo.object_store.add_object(extra)
     repo.refs[b"HEAD"] = extra.id
@@ -238,13 +249,16 @@ def test_update_mainline_walks_link_trailers_in_commit_messages(
     assert "walked 2 commits" in result.output
 
     from mimir.models import MainlineCommit
+
     with seeded_db() as s:
         rows = list(s.execute(select(MainlineCommit)).scalars())
     assert [r.message_id for r in rows] == ["fix-msg@example.com"]
 
 
 def test_update_mainline_skip_commits_does_not_walk(
-    seeded_db, tmp_path, monkeypatch,
+    seeded_db,
+    tmp_path,
+    monkeypatch,
 ):
     """`--skip-commits` keeps the MAINTAINERS pass but skips the
     Link-trailer walk. Useful when an operator only wants to
@@ -253,19 +267,23 @@ def test_update_mainline_skip_commits_does_not_walk(
     _build_mainline_repo(repo_path, _SAMPLE_MAINTAINERS)
     monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
     result = CliRunner().invoke(
-        update_mainline_command, ["--skip-fetch", "--skip-commits"],
+        update_mainline_command,
+        ["--skip-fetch", "--skip-commits"],
     )
     assert result.exit_code == 0
     assert "loaded 2 subsystems" in result.output
     assert "walked" not in result.output
 
     from mimir.models import MainlineCommit
+
     with seeded_db() as s:
         assert s.execute(select(MainlineCommit)).all() == []
 
 
 def test_update_mainline_skip_maintainers_only_walks_commits(
-    seeded_db, tmp_path, monkeypatch,
+    seeded_db,
+    tmp_path,
+    monkeypatch,
 ):
     """`--skip-maintainers` does the inverse, only the
     Link-trailer walk runs. Useful for an operator who wants to
@@ -278,6 +296,7 @@ def test_update_mainline_skip_maintainers_only_walks_commits(
     # Hand-build a commit with a Link trailer on top.
     from dulwich.repo import Repo
     from dulwich.objects import Blob, Commit, Tree
+
     repo = Repo(str(repo_path))
     parent = repo.head()
     blob = Blob.from_string(_SAMPLE_MAINTAINERS)
@@ -298,13 +317,15 @@ def test_update_mainline_skip_maintainers_only_walks_commits(
     monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
 
     result = CliRunner().invoke(
-        update_mainline_command, ["--skip-fetch", "--skip-maintainers"],
+        update_mainline_command,
+        ["--skip-fetch", "--skip-maintainers"],
     )
     assert result.exit_code == 0
-    assert "loaded" not in result.output    # MAINTAINERS skipped
+    assert "loaded" not in result.output  # MAINTAINERS skipped
     assert "walked 2 commits" in result.output
 
     from mimir.models import MainlineCommit, Subsystem
+
     with seeded_db() as s:
         # No subsystems loaded.
         assert s.execute(select(Subsystem)).all() == []
@@ -314,7 +335,9 @@ def test_update_mainline_skip_maintainers_only_walks_commits(
 
 
 def test_update_mainline_errors_if_maintainers_blob_missing(
-    seeded_db, tmp_path, monkeypatch,
+    seeded_db,
+    tmp_path,
+    monkeypatch,
 ):
     """If the tree at the configured path doesn't have a MAINTAINERS
     file at HEAD, fail loudly, almost certainly the wrong tree was

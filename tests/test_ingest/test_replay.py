@@ -4,7 +4,6 @@ fix. Covers recovery on fix, still-failing increments,
 missing-mirror deferral, cached-repo cleanup, and the
 cross-post-link path."""
 
-
 from pathlib import Path
 
 from dulwich.repo import Repo
@@ -33,10 +32,13 @@ def test_replay_failures_recovers_on_parser_fix(seeded_db, tmp_path, monkeypatch
     alpha = _alpha(seeded_db)
     mirror_root = tmp_path / "alpha-mirror"
     mirror_root.mkdir()
-    _build_pubinbox_repo(mirror_root / "0.git", [
-        _rfc5322("a@example.com", body=b"x" * 500),
-        _rfc5322("b@example.com", body=b"x" * 500),
-    ])
+    _build_pubinbox_repo(
+        mirror_root / "0.git",
+        [
+            _rfc5322("a@example.com", body=b"x" * 500),
+            _rfc5322("b@example.com", body=b"x" * 500),
+        ],
+    )
 
     # Update the seeded inbox row so replay_failures can find the repo.
     with seeded_db() as s:
@@ -49,10 +51,14 @@ def test_replay_failures_recovers_on_parser_fix(seeded_db, tmp_path, monkeypatch
         ingest_epoch(s, alpha, "0.git", mirror_root / "0.git", workers=1)
 
     with seeded_db() as s:
-        assert s.execute(
-            select(func.count()).select_from(ParseFailure)
-            .where(ParseFailure.inbox_id == alpha.id)
-        ).scalar_one() == 2
+        assert (
+            s.execute(
+                select(func.count())
+                .select_from(ParseFailure)
+                .where(ParseFailure.inbox_id == alpha.id)
+            ).scalar_one()
+            == 2
+        )
 
     # Parser fix: lift the cap, replay.
     monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 50_000_000)
@@ -66,10 +72,14 @@ def test_replay_failures_recovers_on_parser_fix(seeded_db, tmp_path, monkeypatch
     assert result.skipped == 0
 
     with seeded_db() as s:
-        assert s.execute(
-            select(func.count()).select_from(ParseFailure)
-            .where(ParseFailure.inbox_id == alpha.id)
-        ).scalar_one() == 0
+        assert (
+            s.execute(
+                select(func.count())
+                .select_from(ParseFailure)
+                .where(ParseFailure.inbox_id == alpha.id)
+            ).scalar_one()
+            == 0
+        )
         # Articles are now inserted + linked.
         for mid in ("a@example.com", "b@example.com"):
             art = s.execute(
@@ -91,9 +101,12 @@ def test_replay_failures_still_fails_bumps_attempts(seeded_db, tmp_path, monkeyp
     alpha = _alpha(seeded_db)
     mirror_root = tmp_path / "alpha-mirror"
     mirror_root.mkdir()
-    _build_pubinbox_repo(mirror_root / "0.git", [
-        _rfc5322("c@example.com", body=b"x" * 500),
-    ])
+    _build_pubinbox_repo(
+        mirror_root / "0.git",
+        [
+            _rfc5322("c@example.com", body=b"x" * 500),
+        ],
+    )
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
         ix.mirror_path = str(mirror_root)
@@ -132,9 +145,12 @@ def test_replay_failures_skips_when_mirror_missing(seeded_db, tmp_path, monkeypa
     # Set up + seed a failure row, then point mirror_path elsewhere.
     mirror_root = tmp_path / "alpha-mirror"
     mirror_root.mkdir()
-    _build_pubinbox_repo(mirror_root / "0.git", [
-        _rfc5322("d@example.com", body=b"x" * 500),
-    ])
+    _build_pubinbox_repo(
+        mirror_root / "0.git",
+        [
+            _rfc5322("d@example.com", body=b"x" * 500),
+        ],
+    )
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
         ix.mirror_path = str(mirror_root)
@@ -159,10 +175,14 @@ def test_replay_failures_skips_when_mirror_missing(seeded_db, tmp_path, monkeypa
     assert result.still_failed == 0
 
     with seeded_db() as s:
-        assert s.execute(
-            select(func.count()).select_from(ParseFailure)
-            .where(ParseFailure.inbox_id == alpha.id)
-        ).scalar_one() == 1
+        assert (
+            s.execute(
+                select(func.count())
+                .select_from(ParseFailure)
+                .where(ParseFailure.inbox_id == alpha.id)
+            ).scalar_one()
+            == 1
+        )
 
 
 def test_replay_failures_closes_cached_repos(seeded_db, tmp_path, monkeypatch):
@@ -197,16 +217,18 @@ def test_replay_failures_closes_cached_repos(seeded_db, tmp_path, monkeypatch):
         ix.mirror_path = str(mirror_root)
         now = _dt.datetime.now(_dt.timezone.utc)
         for epoch, sha in [("0.git", sha0), ("1.git", sha1)]:
-            s.add(ParseFailure(
-                inbox_id=ix.id,
-                epoch=epoch,
-                commit_sha=sha,
-                error_class="ValueError",
-                error_message="seeded",
-                attempts=1,
-                first_seen=now,
-                last_attempt=now,
-            ))
+            s.add(
+                ParseFailure(
+                    inbox_id=ix.id,
+                    epoch=epoch,
+                    commit_sha=sha,
+                    error_class="ValueError",
+                    error_message="seeded",
+                    attempts=1,
+                    first_seen=now,
+                    last_attempt=now,
+                )
+            )
         s.commit()
 
     closed: list[str] = []
@@ -241,7 +263,9 @@ def test_replay_failures_closes_cached_repos(seeded_db, tmp_path, monkeypatch):
 
 
 def test_replay_failures_cross_post_links_existing_article(
-    seeded_db, tmp_path, monkeypatch,
+    seeded_db,
+    tmp_path,
+    monkeypatch,
 ):
     """A message that's already an article in another inbox should
     replay into a new `article_lists` row in the failing inbox, not
@@ -278,9 +302,7 @@ def test_replay_failures_cross_post_links_existing_article(
 
     # Confirm the article exists in beta and is *not* linked to alpha yet.
     with seeded_db() as s:
-        art = s.execute(
-            select(Article).where(Article.message_id == msgid)
-        ).scalar_one()
+        art = s.execute(select(Article).where(Article.message_id == msgid)).scalar_one()
         alpha_link = s.execute(
             select(ArticleList).where(
                 ArticleList.article_id == art.id,
@@ -299,16 +321,18 @@ def test_replay_failures_cross_post_links_existing_article(
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
         ix.mirror_path = str(alpha_mirror)
-        s.add(ParseFailure(
-            inbox_id=ix.id,
-            epoch="0.git",
-            commit_sha=alpha_sha,
-            error_class="ValueError",
-            error_message="prior failure",
-            attempts=1,
-            first_seen=_dt.datetime.now(_dt.timezone.utc),
-            last_attempt=_dt.datetime.now(_dt.timezone.utc),
-        ))
+        s.add(
+            ParseFailure(
+                inbox_id=ix.id,
+                epoch="0.git",
+                commit_sha=alpha_sha,
+                error_class="ValueError",
+                error_message="prior failure",
+                attempts=1,
+                first_seen=_dt.datetime.now(_dt.timezone.utc),
+                last_attempt=_dt.datetime.now(_dt.timezone.utc),
+            )
+        )
         s.commit()
 
     with seeded_db() as s:
@@ -321,9 +345,11 @@ def test_replay_failures_cross_post_links_existing_article(
 
     # Cross-post branch fired: no duplicate Article, alpha link now exists.
     with seeded_db() as s:
-        arts = s.execute(
-            select(Article).where(Article.message_id == msgid)
-        ).scalars().all()
+        arts = (
+            s.execute(select(Article).where(Article.message_id == msgid))
+            .scalars()
+            .all()
+        )
         assert len(arts) == 1, (
             f"expected 1 Article row for cross-posted msgid, got {len(arts)}"
         )
@@ -335,10 +361,14 @@ def test_replay_failures_cross_post_links_existing_article(
             )
         ).scalar_one()
         # And the failure row is gone.
-        assert s.execute(
-            select(func.count()).select_from(ParseFailure)
-            .where(ParseFailure.inbox_id == alpha.id)
-        ).scalar_one() == 0
+        assert (
+            s.execute(
+                select(func.count())
+                .select_from(ParseFailure)
+                .where(ParseFailure.inbox_id == alpha.id)
+            ).scalar_one()
+            == 0
+        )
 
 
 # Inbox.last_article_date (#216): bumped at ingest-commit time so the

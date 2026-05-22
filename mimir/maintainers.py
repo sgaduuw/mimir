@@ -39,6 +39,7 @@ class MaintainerEntry:
     or `'R'` (reviewer); the spec also defines `L:` for lists but those
     don't carry a person, they're list addresses, handled separately
     on the parent Subsystem."""
+
     role: str
     name: str
     address: str
@@ -50,6 +51,7 @@ class Subsystem:
     (`Supported`, `Maintained`, `Odd Fixes`, `Orphan`, `Obsolete`);
     None when the section omits the tag (rare; some legacy sections
     do)."""
+
     name: str
     status: str | None = None
     maintainers: list[MaintainerEntry] = field(default_factory=list)
@@ -65,7 +67,7 @@ class Subsystem:
 # `Description of section entries:` is the literal heading at the top
 # of every MAINTAINERS file marking the end of the preamble and the
 # start of the parseable sections. Catching the exact phrase keeps the
-# parser robust to whatever wording the doc block grows over time  
+# parser robust to whatever wording the doc block grows over time
 # we only need to know "the section list starts after this line."
 PREAMBLE_TERMINATOR = "Description of section entries:"
 
@@ -214,12 +216,12 @@ def _apply_tag(sub: Subsystem, tag: str, value: str) -> None:
         if parsed_addr is None:
             return
         name, address = parsed_addr
-        sub.maintainers.append(
-            MaintainerEntry(role=tag, name=name, address=address)
-        )
+        sub.maintainers.append(MaintainerEntry(role=tag, name=name, address=address))
 
 
-def iter_subsystem_paths(subsystems: Iterable[Subsystem]) -> Iterable[tuple[Subsystem, str, bool]]:
+def iter_subsystem_paths(
+    subsystems: Iterable[Subsystem],
+) -> Iterable[tuple[Subsystem, str, bool]]:
     """Yield `(subsystem, path_pattern, is_exclude)` triples, handy
     for bulk-inserting into the `subsystem_paths` table without each
     caller writing the same nested loop."""

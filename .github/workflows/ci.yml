@@ -54,8 +54,11 @@ jobs:
           poetry config virtualenvs.in-project true
           poetry install --no-interaction
 
-      - name: Ruff
+      - name: Ruff check
         run: poetry run ruff check mimir/ tests/
+
+      - name: Ruff format check
+        run: poetry run ruff format --check mimir/ tests/
 
   test:
     runs-on: ubuntu-latest

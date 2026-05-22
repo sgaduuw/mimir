@@ -2,8 +2,6 @@
 inbox 'most active subsystems' aggregations and the
 carrying of top-maintainer / status / sparkline metadata."""
 
-
-
 from sqlalchemy import select
 
 from mimir.models import (
@@ -33,7 +31,11 @@ def test_most_active_subsystems_in_inbox_counts_and_sorts(seeded_db):
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         out = most_active_subsystems_in_inbox(
-            s, alpha, days=7, limit=10, force=True,
+            s,
+            alpha,
+            days=7,
+            limit=10,
+            force=True,
         )
     names = [a.name for a in out]
     counts = [a.message_count for a in out]
@@ -49,12 +51,9 @@ def test_most_active_subsystems_in_inbox_inbox_scoped(seeded_db):
     list."""
     with seeded_db() as s:
         _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
-        _add_recent_thread_root(s, "alpha-1@x", ["fs/bcachefs/a.c"],
-                                inbox_name="alpha")
-        _add_recent_thread_root(s, "alpha-2@x", ["fs/bcachefs/b.c"],
-                                inbox_name="alpha")
-        _add_recent_thread_root(s, "beta-1@x", ["fs/bcachefs/c.c"],
-                                inbox_name="beta")
+        _add_recent_thread_root(s, "alpha-1@x", ["fs/bcachefs/a.c"], inbox_name="alpha")
+        _add_recent_thread_root(s, "alpha-2@x", ["fs/bcachefs/b.c"], inbox_name="alpha")
+        _add_recent_thread_root(s, "beta-1@x", ["fs/bcachefs/c.c"], inbox_name="beta")
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
@@ -104,7 +103,8 @@ def test_most_active_subsystems_global_aggregates_across_inboxes(
 
 
 def test_most_active_subsystems_global_force_propagates_to_inner(
-    seeded_db, monkeypatch,
+    seeded_db,
+    monkeypatch,
 ):
     """The outer `most_active_subsystems_global` wraps its compute
     in `cache.get_or_compute`, and the inner per-inbox helper has
@@ -127,7 +127,9 @@ def test_most_active_subsystems_global_force_propagates_to_inner(
         return real_inner(session, inbox, days=days, force=force)
 
     monkeypatch.setattr(
-        subs_mod, "_most_active_subsystems_in_inbox_full", _spy,
+        subs_mod,
+        "_most_active_subsystems_in_inbox_full",
+        _spy,
     )
 
     with seeded_db() as s:
@@ -138,8 +140,7 @@ def test_most_active_subsystems_global_force_propagates_to_inner(
 
     assert seen_force, "inner helper was never called, test setup broke"
     assert all(seen_force), (
-        f"force=True must propagate through to the per-inbox helper; "
-        f"got {seen_force!r}"
+        f"force=True must propagate through to the per-inbox helper; got {seen_force!r}"
     )
 
 
@@ -168,7 +169,9 @@ def test_most_active_subsystems_carries_top_maintainer_and_status(
     to the "maintained by" decoration (that framing is M:-only)."""
     with seeded_db() as s:
         _add_subsystem(
-            s, "BCACHEFS", "Supported",
+            s,
+            "BCACHEFS",
+            "Supported",
             files=["fs/bcachefs/"],
             maintainers=[
                 ("M", "Kent Overstreet", "kent@kernel.org"),
@@ -191,7 +194,9 @@ def test_most_active_subsystems_marks_multiple_maintainers(seeded_db):
     can render the "et al." suffix."""
     with seeded_db() as s:
         _add_subsystem(
-            s, "NET", "Maintained",
+            s,
+            "NET",
+            "Maintained",
             files=["net/"],
             maintainers=[
                 ("M", "Jakub Kicinski", "kuba@kernel.org"),
@@ -252,7 +257,8 @@ def test_most_active_subsystems_in_inbox_compute_on_miss_false_returns_empty(
     )
 
     with patch.object(
-        activity_mod, "cache",
+        activity_mod,
+        "cache",
         wraps=activity_mod.cache,
     ) as wrapped:
         # `cache.get` must be called (the cache-read side), but
@@ -260,7 +266,11 @@ def test_most_active_subsystems_in_inbox_compute_on_miss_false_returns_empty(
         with seeded_db() as s:
             alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
             out = most_active_subsystems_in_inbox(
-                s, alpha, days=7, limit=10, compute_on_miss=False,
+                s,
+                alpha,
+                days=7,
+                limit=10,
+                compute_on_miss=False,
             )
         assert out == [], "expected empty on cache miss with compute_on_miss=False"
         wrapped.get.assert_called()
@@ -285,7 +295,11 @@ def test_most_active_subsystems_in_inbox_compute_on_miss_false_returns_cached(
         # Request-path posture: same call, must return the same data
         # without recomputing.
         served = most_active_subsystems_in_inbox(
-            s, alpha, days=7, limit=10, compute_on_miss=False,
+            s,
+            alpha,
+            days=7,
+            limit=10,
+            compute_on_miss=False,
         )
     assert [a.name for a in served] == [a.name for a in warm]
 
@@ -305,12 +319,16 @@ def test_most_active_subsystems_global_compute_on_miss_false_returns_empty(
     cache_mod.delete("most_active_subsystems_global:7")
 
     with patch.object(
-        activity_mod, "cache",
+        activity_mod,
+        "cache",
         wraps=activity_mod.cache,
     ) as wrapped:
         with seeded_db() as s:
             out = most_active_subsystems_global(
-                s, days=7, limit=12, compute_on_miss=False,
+                s,
+                days=7,
+                limit=12,
+                compute_on_miss=False,
             )
         assert out == []
         wrapped.get.assert_called()

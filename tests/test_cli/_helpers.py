@@ -4,6 +4,7 @@ Hoisted from the pre-split tests/test_cli.py so per-bucket
 test modules can import what they need. Underscore-prefixed
 filename so pytest does not collect this as a test module.
 """
+
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,7 +15,8 @@ from sqlalchemy import select
 
 from mimir.cli import ingest_command
 from mimir.models import (
-    Inbox, ParseFailure,
+    Inbox,
+    ParseFailure,
 )
 
 
@@ -24,8 +26,7 @@ def _rfc5322_msg(msgid: str, *, subject: str = "t", body: bytes = b"hello") -> b
         b"From: a@example.com\r\n"
         b"Subject: " + subject.encode() + b"\r\n"
         b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
-        b"\r\n"
-        + body
+        b"\r\n" + body
     )
 
 
@@ -60,6 +61,7 @@ def _repoint_inbox(name: str, mirror_dir: Path) -> None:
     """Repoint a seeded Inbox row's mirror_path at the given tmp dir
     so the read path resolves blobs against a real repo."""
     from mimir.extensions import SessionLocal
+
     with SessionLocal() as s:
         ix = s.execute(select(Inbox).where(Inbox.name == name)).scalar_one()
         ix.mirror_path = str(mirror_dir)
@@ -76,9 +78,12 @@ def _ingest_one_for_show(tmp_path) -> tuple[str, Path]:
     seeded fixture rows at 0.git."""
     msgid = "show-msg@example.com"
     mirror = tmp_path / "alpha-mirror"
-    _build_pubinbox_repo(mirror / "2.git", [
-        _rfc5322_msg(msgid, subject="show test subject", body=b"hello show body"),
-    ])
+    _build_pubinbox_repo(
+        mirror / "2.git",
+        [
+            _rfc5322_msg(msgid, subject="show test subject", body=b"hello show body"),
+        ],
+    )
     _repoint_inbox("alpha", mirror)
     CliRunner().invoke(ingest_command, ["--inbox", "alpha"])
     return msgid, mirror
@@ -88,19 +93,20 @@ def _seed_parse_failure(inbox_name: str = "alpha") -> None:
     """Insert one ParseFailure row tied to the seeded inbox."""
     from sqlalchemy import select
     from mimir.extensions import SessionLocal
+
     with SessionLocal() as s:
-        ix = s.execute(
-            select(Inbox).where(Inbox.name == inbox_name)
-        ).scalar_one()
+        ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
         now = datetime.now(timezone.utc)
-        s.add(ParseFailure(
-            inbox_id=ix.id,
-            epoch="0.git",
-            commit_sha="ab" * 20,
-            error_class="MessageTooLarge",
-            error_message="message exceeds cap",
-            first_seen=now,
-            last_attempt=now,
-            attempts=1,
-        ))
+        s.add(
+            ParseFailure(
+                inbox_id=ix.id,
+                epoch="0.git",
+                commit_sha="ab" * 20,
+                error_class="MessageTooLarge",
+                error_message="message exceeds cap",
+                first_seen=now,
+                last_attempt=now,
+                attempts=1,
+            )
+        )
         s.commit()

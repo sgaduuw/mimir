@@ -65,6 +65,7 @@ class CoverLetter:
     lowercase string like `v1`, `v2`, `rfc`, `resend`, that's
     what gets stored on the Article row and rendered on the
     timeline."""
+
     version: str
     total: int
     title: str
@@ -103,7 +104,7 @@ def parse_cover_letter(subject: str | None) -> CoverLetter | None:
         return None
     try:
         total = int(zero_of.group(0).split("/")[1].strip())
-    except (ValueError, IndexError):
+    except ValueError, IndexError:
         return None
     # Prefer the most specific version marker: explicit v\d+ over
     # RFC/RESEND. A subject like `[PATCH RESEND v3 0/3]` is a resent
@@ -153,12 +154,13 @@ class BackfillResult(BaseModel):
     handoff between broker chunks (Phase 2.2). Direct (non-broker)
     callers always see `partial=False, continuation=None`.
     """
+
     examined: int = 0
-    indexed: int = 0           # cover letter detected, key + version + pos=0 written
+    indexed: int = 0  # cover letter detected, key + version + pos=0 written
     in_series_indexed: int = 0  # in-series patch linked to its cover via thread parent
-    in_series_orphan: int = 0   # in-series patch, position set, cover not in DB
-    not_cover: int = 0          # non-series-shaped subject (prose, replies, solo [PATCH])
-    skipped: int = 0            # already fully resolved (idempotent re-run)
+    in_series_orphan: int = 0  # in-series patch, position set, cover not in DB
+    not_cover: int = 0  # non-series-shaped subject (prose, replies, solo [PATCH])
+    skipped: int = 0  # already fully resolved (idempotent re-run)
     partial: bool = False
     continuation: int | None = None
 
@@ -178,7 +180,8 @@ class BackfillResult(BaseModel):
 
 
 def _resolve_in_series_link(
-    session, article,
+    session,
+    article,
 ) -> tuple[str, str] | None:
     """Look up `(patch_series_key, patch_series_version)` from the
     article's thread parent. Depth-1 walk: `git send-email --thread`
@@ -227,14 +230,11 @@ def _process_one(session, article, reprocess: bool) -> str:
     every run, the cover may have arrived since the prior pass.
     """
     # Fully-resolved articles skip on non-reprocess runs.
-    is_fully_resolved = (
-        article.patch_series_position is not None
-        and (
-            article.patch_series_position == 0
-            and article.patch_series_key is not None
-            or article.patch_series_position > 0
-            and article.patch_series_key is not None
-        )
+    is_fully_resolved = article.patch_series_position is not None and (
+        article.patch_series_position == 0
+        and article.patch_series_key is not None
+        or article.patch_series_position > 0
+        and article.patch_series_key is not None
     )
     if is_fully_resolved and not reprocess:
         return "skipped"
@@ -307,11 +307,15 @@ def backfill_patch_series(
     """
     result = BackfillResult()
     partial, continuation = walk_articles(
-        result, _process_one,
-        limit=limit, reprocess=reprocess, progress=progress,
+        result,
+        _process_one,
+        limit=limit,
+        reprocess=reprocess,
+        progress=progress,
         preload_lists=False,
         label="backfill_patch_series",
-        max_seconds=max_seconds, start_cursor=start_cursor,
+        max_seconds=max_seconds,
+        start_cursor=start_cursor,
     )
     result.partial = partial
     result.continuation = continuation

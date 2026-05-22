@@ -4,6 +4,7 @@ Each module attaches route handlers to `bp_web` at import time;
 the package `__init__.py` imports this subpackage to trigger the
 registration before `create_app` registers the blueprint.
 """
+
 from mimir.web.routes import api  # noqa: F401
 from mimir.web.routes import attachments  # noqa: F401
 from mimir.web.routes import dashboards  # noqa: F401

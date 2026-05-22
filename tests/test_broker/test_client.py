@@ -135,6 +135,7 @@ def test_client_concurrent_rpcs_from_one_singleton(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
+
             def _worker(tid: int) -> None:
                 for i in range(rpcs_per_thread):
                     key = _ns(f"concurrent:{tid}:{i}")

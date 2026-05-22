@@ -8,7 +8,6 @@ auto-promotion (`_maybe_promote_list_address`), the kept-
 headers filter, and the tz-aware UTC normalisation for
 `-0000`-dated messages."""
 
-
 from datetime import datetime, timezone
 
 from dulwich.repo import Repo
@@ -31,7 +30,13 @@ from mimir.models import (
     ParseFailure,
 )
 
-from tests.test_ingest._helpers import _alpha, _build_pubinbox_repo, _naive_utc, _rfc5322, _rfc5322_with_date
+from tests.test_ingest._helpers import (
+    _alpha,
+    _build_pubinbox_repo,
+    _naive_utc,
+    _rfc5322,
+    _rfc5322_with_date,
+)
 
 
 def test_ingest_new_message_creates_article(seeded_db, tmp_path):
@@ -69,11 +74,14 @@ def test_ingest_new_message_ids_only_tracks_new_bucket(seeded_db, tmp_path):
     row) and `dup_*` rows must not appear, IndexNow would otherwise
     push URLs that didn't actually become discoverable this tick."""
     alpha = _alpha(seeded_db)
-    _build_pubinbox_repo(tmp_path / "0.git", [
-        _rfc5322("brand-new@example.com"),
-        _rfc5322("art2@example.com"),           # seeded in beta → `linked`
-        _rfc5322("brand-new@example.com"),      # same Message-ID → `dup_batch`
-    ])
+    _build_pubinbox_repo(
+        tmp_path / "0.git",
+        [
+            _rfc5322("brand-new@example.com"),
+            _rfc5322("art2@example.com"),  # seeded in beta → `linked`
+            _rfc5322("brand-new@example.com"),  # same Message-ID → `dup_batch`
+        ],
+    )
     with seeded_db() as s:
         result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
 
@@ -87,7 +95,8 @@ def test_ingest_new_message_ids_only_tracks_new_bucket(seeded_db, tmp_path):
 
 
 def test_ingest_extracts_diff_touched_paths_for_patch_body(
-    seeded_db, tmp_path,
+    seeded_db,
+    tmp_path,
 ):
     """Patch bodies get one ArticleFile row per `diff --git`
     header. The b/ side is stored; that's the path reviewers and
@@ -100,9 +109,12 @@ def test_ingest_extracts_diff_touched_paths_for_patch_body(
         b"diff --git a/include/uapi/foo.h b/include/uapi/foo.h\n"
         b"@@ -1 +1 @@\n-x\n+y\n"
     )
-    _build_pubinbox_repo(tmp_path / "0.git", [
-        _rfc5322("patch@example.com", body=patch_body),
-    ])
+    _build_pubinbox_repo(
+        tmp_path / "0.git",
+        [
+            _rfc5322("patch@example.com", body=patch_body),
+        ],
+    )
     with seeded_db() as s:
         result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
 
@@ -112,7 +124,8 @@ def test_ingest_extracts_diff_touched_paths_for_patch_body(
             select(Article).where(Article.message_id == "patch@example.com")
         ).scalar_one()
         paths = {
-            row.path for row in s.execute(
+            row.path
+            for row in s.execute(
                 select(ArticleFile).where(ArticleFile.article_id == art.id)
             ).scalars()
         }
@@ -120,15 +133,19 @@ def test_ingest_extracts_diff_touched_paths_for_patch_body(
 
 
 def test_ingest_extracts_no_paths_for_prose_only_body(
-    seeded_db, tmp_path,
+    seeded_db,
+    tmp_path,
 ):
     """Non-patch bodies create zero ArticleFile rows. The "other
     patches touching X" sidebar must not include discussion-only
     threads."""
     alpha = _alpha(seeded_db)
-    _build_pubinbox_repo(tmp_path / "0.git", [
-        _rfc5322("prose@example.com", body=b"just a discussion, no diff here\n"),
-    ])
+    _build_pubinbox_repo(
+        tmp_path / "0.git",
+        [
+            _rfc5322("prose@example.com", body=b"just a discussion, no diff here\n"),
+        ],
+    )
     with seeded_db() as s:
         result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
 
@@ -156,9 +173,12 @@ def test_ingest_extracts_review_trailers(seeded_db, tmp_path):
         b"Reviewed-by: Alice <Alice@Example.COM>\n"
         b"Acked-by: Bob <bob@kernel.org>\n"
     )
-    _build_pubinbox_repo(tmp_path / "0.git", [
-        _rfc5322("trailers@example.com", body=body),
-    ])
+    _build_pubinbox_repo(
+        tmp_path / "0.git",
+        [
+            _rfc5322("trailers@example.com", body=body),
+        ],
+    )
     with seeded_db() as s:
         result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
 
@@ -168,7 +188,8 @@ def test_ingest_extracts_review_trailers(seeded_db, tmp_path):
             select(Article).where(Article.message_id == "trailers@example.com")
         ).scalar_one()
         rows = sorted(
-            (t.role, t.address, t.address_normalized) for t in s.execute(
+            (t.role, t.address, t.address_normalized)
+            for t in s.execute(
                 select(ArticleTrailer).where(ArticleTrailer.article_id == art.id)
             ).scalars()
         )
@@ -181,9 +202,12 @@ def test_ingest_extracts_review_trailers(seeded_db, tmp_path):
 def test_ingest_extracts_no_trailers_for_prose_only_body(seeded_db, tmp_path):
     """Prose bodies create zero ArticleTrailer rows."""
     alpha = _alpha(seeded_db)
-    _build_pubinbox_repo(tmp_path / "0.git", [
-        _rfc5322("prose-trailers@example.com", body=b"just chatting\n"),
-    ])
+    _build_pubinbox_repo(
+        tmp_path / "0.git",
+        [
+            _rfc5322("prose-trailers@example.com", body=b"just chatting\n"),
+        ],
+    )
     with seeded_db() as s:
         ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
 
@@ -198,30 +222,35 @@ def test_ingest_extracts_no_trailers_for_prose_only_body(seeded_db, tmp_path):
 
 
 def test_ingest_linked_cross_post_does_not_double_add_files(
-    seeded_db, tmp_path,
+    seeded_db,
+    tmp_path,
 ):
     """When a message gets `linked` (already in another inbox),
     the existing Article retains its ArticleFile rows, the linked
     row doesn't trigger re-extraction. Otherwise a cross-posted
     patch would accumulate duplicate rows per linked inbox."""
     alpha = _alpha(seeded_db)
-    patch_body = (
-        b"diff --git a/fs/x/file.c b/fs/x/file.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
-    )
+    patch_body = b"diff --git a/fs/x/file.c b/fs/x/file.c\n@@ -1 +1 @@\n-x\n+y\n"
     # First ingest into beta (the seeded second inbox).
     with seeded_db() as s:
         from mimir.models import Inbox
+
         beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
-        _build_pubinbox_repo(tmp_path / "beta-0.git", [
-            _rfc5322("xpost@example.com", body=patch_body),
-        ])
+        _build_pubinbox_repo(
+            tmp_path / "beta-0.git",
+            [
+                _rfc5322("xpost@example.com", body=patch_body),
+            ],
+        )
         ingest_epoch(s, beta, "0.git", tmp_path / "beta-0.git", workers=1)
 
     # Then ingest the same Message-ID into alpha → `linked`.
-    _build_pubinbox_repo(tmp_path / "alpha-0.git", [
-        _rfc5322("xpost@example.com", body=patch_body),
-    ])
+    _build_pubinbox_repo(
+        tmp_path / "alpha-0.git",
+        [
+            _rfc5322("xpost@example.com", body=patch_body),
+        ],
+    )
     with seeded_db() as s:
         result = ingest_epoch(s, alpha, "0.git", tmp_path / "alpha-0.git", workers=1)
 
@@ -232,7 +261,8 @@ def test_ingest_linked_cross_post_does_not_double_add_files(
             select(Article).where(Article.message_id == "xpost@example.com")
         ).scalar_one()
         paths = [
-            row.path for row in s.execute(
+            row.path
+            for row in s.execute(
                 select(ArticleFile).where(ArticleFile.article_id == art.id)
             ).scalars()
         ]
@@ -244,7 +274,8 @@ def test_ingest_linked_cross_post_does_not_double_add_files(
 
 
 def test_ingest_records_patch_series_key_for_cover_letter(
-    seeded_db, tmp_path,
+    seeded_db,
+    tmp_path,
 ):
     """A `[PATCH v2 0/3] <title>` subject lands a series key +
     version on the Article row. Non-cover-letter articles leave
@@ -301,10 +332,12 @@ def test_ingest_inseries_with_inreplyto_links_to_cover(seeded_db, tmp_path):
             b"Subject: [PATCH 0/2] thread title\r\n",
         ),
         # Direct reply to the cover, the standard send-email shape.
-        _rfc5322("patch-1of2@example.com", body=b"x").replace(
+        _rfc5322("patch-1of2@example.com", body=b"x")
+        .replace(
             b"Subject: t\r\n",
             b"Subject: [PATCH 1/2] thread title: first patch\r\n",
-        ).replace(
+        )
+        .replace(
             b"From: a@b.example\r\n",
             b"From: a@b.example\r\nIn-Reply-To: <cover-v1@example.com>\r\n",
         ),
@@ -312,11 +345,22 @@ def test_ingest_inseries_with_inreplyto_links_to_cover(seeded_db, tmp_path):
     _build_pubinbox_repo(tmp_path / "0.git", msgs)
     with seeded_db() as s:
         ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
-        cover, patch = s.execute(
-            select(Article).where(Article.message_id.in_([
-                "cover-v1@example.com", "patch-1of2@example.com",
-            ])).order_by(Article.patch_series_position.asc())
-        ).scalars().all()
+        cover, patch = (
+            s.execute(
+                select(Article)
+                .where(
+                    Article.message_id.in_(
+                        [
+                            "cover-v1@example.com",
+                            "patch-1of2@example.com",
+                        ]
+                    )
+                )
+                .order_by(Article.patch_series_position.asc())
+            )
+            .scalars()
+            .all()
+        )
     assert cover.patch_series_position == 0
     assert patch.patch_series_position == 1
     # Patch inherits the cover's series identity at ingest time.
@@ -326,7 +370,8 @@ def test_ingest_inseries_with_inreplyto_links_to_cover(seeded_db, tmp_path):
 
 
 def test_ingest_inseries_orphan_when_cover_not_yet_ingested(
-    seeded_db, tmp_path,
+    seeded_db,
+    tmp_path,
 ):
     """An in-series patch arriving before its cover (rare across
     epoch boundaries, or when ingesting one epoch at a time) has
@@ -336,10 +381,12 @@ def test_ingest_inseries_orphan_when_cover_not_yet_ingested(
     msgs = [
         # Only the patch, the cover stays missing. In-Reply-To points
         # at a Message-ID we have no row for.
-        _rfc5322("patch-1of2-orphan@example.com", body=b"x").replace(
+        _rfc5322("patch-1of2-orphan@example.com", body=b"x")
+        .replace(
             b"Subject: t\r\n",
             b"Subject: [PATCH 1/2] thread title: first patch\r\n",
-        ).replace(
+        )
+        .replace(
             b"From: a@b.example\r\n",
             b"From: a@b.example\r\nIn-Reply-To: <not-in-db@example.com>\r\n",
         ),
@@ -373,11 +420,15 @@ def test_ingest_groups_v1_and_v2_under_same_series_key(seeded_db, tmp_path):
     _build_pubinbox_repo(tmp_path / "0.git", msgs)
     with seeded_db() as s:
         ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
-        rows = list(s.execute(
-            select(Article).where(
-                Article.message_id.in_(["v1-cover@example.com", "v2-cover@example.com"])
-            )
-        ).scalars())
+        rows = list(
+            s.execute(
+                select(Article).where(
+                    Article.message_id.in_(
+                        ["v1-cover@example.com", "v2-cover@example.com"]
+                    )
+                )
+            ).scalars()
+        )
     keys = {r.patch_series_key for r in rows}
     assert len(keys) == 1
     assert None not in keys
@@ -393,7 +444,7 @@ def test_ingest_groups_v1_and_v2_under_same_series_key(seeded_db, tmp_path):
 
 def test_ingest_linked_when_message_id_already_in_other_inbox(seeded_db, tmp_path):
     """art2@example.com is in beta (seeded). Ingesting it into alpha
-    must reuse the existing Article and add an article_lists row  
+    must reuse the existing Article and add an article_lists row
     that's the `linked` bucket."""
     alpha = _alpha(seeded_db)
     _build_pubinbox_repo(tmp_path / "0.git", [_rfc5322("art2@example.com")])
@@ -412,7 +463,8 @@ def test_ingest_linked_when_message_id_already_in_other_inbox(seeded_db, tmp_pat
             select(Article).where(Article.message_id == "art2@example.com")
         ).scalar_one()
         inbox_ids = {
-            row.inbox_id for row in s.execute(
+            row.inbox_id
+            for row in s.execute(
                 select(ArticleList).where(ArticleList.article_id == art.id)
             ).scalars()
         }
@@ -426,10 +478,13 @@ def test_ingest_dup_batch_skips_in_same_walk(seeded_db, tmp_path):
     """Two commits in the same batch carrying the same Message-ID:
     the second lands in dup_batch."""
     alpha = _alpha(seeded_db)
-    _build_pubinbox_repo(tmp_path / "0.git", [
-        _rfc5322("twin@example.com", body=b"first"),
-        _rfc5322("twin@example.com", body=b"second"),
-    ])
+    _build_pubinbox_repo(
+        tmp_path / "0.git",
+        [
+            _rfc5322("twin@example.com", body=b"first"),
+            _rfc5322("twin@example.com", body=b"second"),
+        ],
+    )
 
     with seeded_db() as s:
         result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
@@ -484,10 +539,13 @@ def test_ingest_failed_on_unparseable_message(seeded_db, tmp_path):
     and the walker advances past it."""
     alpha = _alpha(seeded_db)
     bad = b"From: a@b.example\r\nSubject: no msgid\r\n\r\nbody"
-    _build_pubinbox_repo(tmp_path / "0.git", [
-        _rfc5322("good@example.com"),
-        bad,
-    ])
+    _build_pubinbox_repo(
+        tmp_path / "0.git",
+        [
+            _rfc5322("good@example.com"),
+            bad,
+        ],
+    )
 
     with seeded_db() as s:
         result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
@@ -500,7 +558,9 @@ def test_ingest_failed_on_unparseable_message(seeded_db, tmp_path):
 
 
 def test_ingest_failed_repeat_logs_at_debug_not_warning(
-    seeded_db, tmp_path, caplog,
+    seeded_db,
+    tmp_path,
+    caplog,
 ):
     """A previously-recorded parse failure (its commit_sha is loaded
     into `failed_shas` at the start of the run) should log at DEBUG
@@ -549,9 +609,12 @@ def test_ingest_failed_on_oversized_message(seeded_db, tmp_path, monkeypatch):
 
     alpha = _alpha(seeded_db)
     huge_body = b"x" * 500
-    _build_pubinbox_repo(tmp_path / "0.git", [
-        _rfc5322("over@example.com", body=huge_body),
-    ])
+    _build_pubinbox_repo(
+        tmp_path / "0.git",
+        [
+            _rfc5322("over@example.com", body=huge_body),
+        ],
+    )
 
     with seeded_db() as s:
         result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
@@ -617,9 +680,11 @@ def test_failed_parse_persists_parse_failures_row(seeded_db, tmp_path):
 
     head = Repo(str(tmp_path / "0.git")).head().decode()
     with seeded_db() as s:
-        rows = list(s.execute(
-            select(ParseFailure).where(ParseFailure.inbox_id == alpha.id)
-        ).scalars())
+        rows = list(
+            s.execute(
+                select(ParseFailure).where(ParseFailure.inbox_id == alpha.id)
+            ).scalars()
+        )
     assert len(rows) == 1
     row = rows[0]
     assert row.commit_sha == head
@@ -666,7 +731,9 @@ def test_failed_parse_re_walked_increments_attempts(seeded_db, tmp_path):
     assert row.last_attempt >= first_last
 
 
-def test_failed_then_succeeds_clears_parse_failures_row(seeded_db, tmp_path, monkeypatch):
+def test_failed_then_succeeds_clears_parse_failures_row(
+    seeded_db, tmp_path, monkeypatch
+):
     """A commit that failed under an old (artificially-tightened)
     parser parses cleanly after the constraint is relaxed: the
     parse_failures row is deleted on the next walk."""
@@ -681,10 +748,14 @@ def test_failed_then_succeeds_clears_parse_failures_row(seeded_db, tmp_path, mon
     with seeded_db() as s:
         ingest_epoch(s, alpha, "0.git", repo_path, workers=1)
     with seeded_db() as s:
-        assert s.execute(
-            select(func.count()).select_from(ParseFailure)
-            .where(ParseFailure.inbox_id == alpha.id)
-        ).scalar_one() == 1
+        assert (
+            s.execute(
+                select(func.count())
+                .select_from(ParseFailure)
+                .where(ParseFailure.inbox_id == alpha.id)
+            ).scalar_one()
+            == 1
+        )
 
     # Lift the cap, rewind, re-walk: row gets cleared.
     monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 50_000_000)
@@ -699,10 +770,14 @@ def test_failed_then_succeeds_clears_parse_failures_row(seeded_db, tmp_path, mon
     assert result.new == 1
 
     with seeded_db() as s:
-        assert s.execute(
-            select(func.count()).select_from(ParseFailure)
-            .where(ParseFailure.inbox_id == alpha.id)
-        ).scalar_one() == 0
+        assert (
+            s.execute(
+                select(func.count())
+                .select_from(ParseFailure)
+                .where(ParseFailure.inbox_id == alpha.id)
+            ).scalar_one()
+            == 0
+        )
 
 
 # replay_failures
@@ -724,8 +799,9 @@ def test_ingest_records_list_address_observations(seeded_db, tmp_path):
 
     with seeded_db() as s:
         rows = s.execute(
-            select(InboxAddressObservation.address, InboxAddressObservation.count)
-            .where(InboxAddressObservation.inbox_id == alpha.id)
+            select(
+                InboxAddressObservation.address, InboxAddressObservation.count
+            ).where(InboxAddressObservation.inbox_id == alpha.id)
         ).all()
     addresses = {addr: cnt for addr, cnt in rows}
     # alice@example.com is filtered out (not list-shaped); the two
@@ -755,14 +831,16 @@ def test_ingest_observations_accumulate_across_messages(seeded_db, tmp_path):
         # Exactly one row for this (inbox, address); not 5 distinct
         # rows with count=1 each (which would happen if the upsert
         # path were wired wrong).
-        rows = s.execute(
-            select(InboxAddressObservation)
-            .where(InboxAddressObservation.inbox_id == alpha.id)
-        ).scalars().all()
-        for_address = [
-            r for r in rows
-            if r.address == "linux-fsdevel@vger.kernel.org"
-        ]
+        rows = (
+            s.execute(
+                select(InboxAddressObservation).where(
+                    InboxAddressObservation.inbox_id == alpha.id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for_address = [r for r in rows if r.address == "linux-fsdevel@vger.kernel.org"]
         assert len(for_address) == 1, (
             f"expected exactly one observation row for the address; "
             f"got {len(for_address)}: {[(r.address, r.count) for r in rows]}"
@@ -801,7 +879,9 @@ def test_ingest_sets_canonical_when_to_address_matches_known_inbox(seeded_db, tm
         assert art.canonical_inbox_id == alpha.id
 
 
-def test_ingest_canonical_demotes_lkml_in_favour_of_topical(seeded_db, tmp_path, monkeypatch):
+def test_ingest_canonical_demotes_lkml_in_favour_of_topical(
+    seeded_db, tmp_path, monkeypatch
+):
     """When `Settings.canonical_demoted_inboxes` lists an inbox and a
     cross-posted message hits both the demoted inbox and a topical
     inbox, `canonical_inbox_id` pins to the topical one even if the
@@ -868,12 +948,14 @@ def test_promote_list_address_below_threshold_skips(seeded_db):
     hand, even with a clear modal address."""
     alpha = _alpha(seeded_db)
     with seeded_db() as s:
-        s.add(InboxAddressObservation(
-            inbox_id=alpha.id,
-            address="linux-fsdevel@vger.kernel.org",
-            count=MIN_PROMOTE_OBSERVATIONS - 1,
-            last_seen=datetime(2024, 1, 1),
-        ))
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="linux-fsdevel@vger.kernel.org",
+                count=MIN_PROMOTE_OBSERVATIONS - 1,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
         s.commit()
         result = _maybe_promote_list_address(s, alpha.id)
         s.commit()
@@ -901,18 +983,22 @@ def test_promote_list_address_clear_modal_promotes(seeded_db):
 
     alpha = _alpha(seeded_db)
     with seeded_db() as s:
-        s.add(InboxAddressObservation(
-            inbox_id=alpha.id,
-            address="linux-fsdevel@vger.kernel.org",
-            count=winner_count,
-            last_seen=datetime(2024, 1, 1),
-        ))
-        s.add(InboxAddressObservation(
-            inbox_id=alpha.id,
-            address="linux-kernel@vger.kernel.org",
-            count=runner_count,
-            last_seen=datetime(2024, 1, 1),
-        ))
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="linux-fsdevel@vger.kernel.org",
+                count=winner_count,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="linux-kernel@vger.kernel.org",
+                count=runner_count,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
         s.commit()
         result = _maybe_promote_list_address(s, alpha.id)
         s.commit()
@@ -937,18 +1023,22 @@ def test_promote_list_address_split_decision_skips(seeded_db):
 
     alpha = _alpha(seeded_db)
     with seeded_db() as s:
-        s.add(InboxAddressObservation(
-            inbox_id=alpha.id,
-            address="linux-fsdevel@vger.kernel.org",
-            count=winner_count,
-            last_seen=datetime(2024, 1, 1),
-        ))
-        s.add(InboxAddressObservation(
-            inbox_id=alpha.id,
-            address="linux-kernel@vger.kernel.org",
-            count=runner_count,
-            last_seen=datetime(2024, 1, 1),
-        ))
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="linux-fsdevel@vger.kernel.org",
+                count=winner_count,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="linux-kernel@vger.kernel.org",
+                count=runner_count,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
         s.commit()
         result = _maybe_promote_list_address(s, alpha.id)
         s.commit()
@@ -962,12 +1052,14 @@ def test_promote_list_address_already_set_no_overwrite(seeded_db):
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
         ix.list_address = "operator-override@example.com"
-        s.add(InboxAddressObservation(
-            inbox_id=alpha.id,
-            address="linux-fsdevel@vger.kernel.org",
-            count=10000,
-            last_seen=datetime(2024, 1, 1),
-        ))
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="linux-fsdevel@vger.kernel.org",
+                count=10000,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
         s.commit()
         result = _maybe_promote_list_address(s, alpha.id)
         s.commit()
@@ -977,8 +1069,6 @@ def test_promote_list_address_already_set_no_overwrite(seeded_db):
 
 
 # Backfill canonical-inbox + observations from historical blobs
-
-
 
 
 def test_ingest_handles_minus_0000_naive_date_in_observations(seeded_db, tmp_path):
@@ -994,11 +1084,13 @@ def test_ingest_handles_minus_0000_naive_date_in_observations(seeded_db, tmp_pat
     alpha = _alpha(seeded_db)
     msgs = [
         _rfc5322_with_date(
-            "tz-aware@example.com", "Mon, 1 Jan 2024 00:00:00 +0000",
+            "tz-aware@example.com",
+            "Mon, 1 Jan 2024 00:00:00 +0000",
             to="linux-fsdevel@vger.kernel.org",
         ),
         _rfc5322_with_date(
-            "tz-naive@example.com", "Mon, 1 Jan 2024 00:00:00 -0000",
+            "tz-naive@example.com",
+            "Mon, 1 Jan 2024 00:00:00 -0000",
             to="linux-fsdevel@vger.kernel.org",
         ),
     ]
@@ -1041,9 +1133,9 @@ def test_ingest_with_multiple_workers_succeeds(seeded_db, tmp_path):
     alpha = _alpha(seeded_db)
     mirror_root = tmp_path / "alpha-workers"
     mirror_root.mkdir()
-    _build_pubinbox_repo(mirror_root / "0.git", [
-        _rfc5322(f"w-{i}@example.com") for i in range(4)
-    ])
+    _build_pubinbox_repo(
+        mirror_root / "0.git", [_rfc5322(f"w-{i}@example.com") for i in range(4)]
+    )
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
         ix.mirror_path = str(mirror_root)
@@ -1055,7 +1147,8 @@ def test_ingest_with_multiple_workers_succeeds(seeded_db, tmp_path):
 
 
 def test_ingest_parser_failure_mid_worker_batch_preserves_order_and_resumes(
-    seeded_db, tmp_path,
+    seeded_db,
+    tmp_path,
 ):
     """A parser-raising message buried inside a multi-chunk
     `ProcessPoolExecutor.map` run must not derail surrounding commits.
@@ -1103,11 +1196,13 @@ def test_ingest_parser_failure_mid_worker_batch_preserves_order_and_resumes(
     # rows don't leak into the assertion.
     expected = [f"m{i:03d}@example.com" for i in range(100) if i != bad_idx]
     with seeded_db() as s:
-        got = list(s.execute(
-            select(Article.message_id)
-            .where(Article.message_id.like("m%@example.com"))
-            .order_by(Article.date)
-        ).scalars())
+        got = list(
+            s.execute(
+                select(Article.message_id)
+                .where(Article.message_id.like("m%@example.com"))
+                .order_by(Article.date)
+            ).scalars()
+        )
     assert got == expected, (
         f"pool.map order-preservation broken; head={got[:5]} tail={got[-5:]}"
     )
@@ -1126,9 +1221,11 @@ def test_ingest_parser_failure_mid_worker_batch_preserves_order_and_resumes(
     bad_sha = chain[bad_idx]
 
     with seeded_db() as s:
-        fails = list(s.execute(
-            select(ParseFailure).where(ParseFailure.inbox_id == alpha.id)
-        ).scalars())
+        fails = list(
+            s.execute(
+                select(ParseFailure).where(ParseFailure.inbox_id == alpha.id)
+            ).scalars()
+        )
     assert len(fails) == 1
     assert fails[0].commit_sha == bad_sha
     assert fails[0].error_class == "ValueError"
@@ -1205,7 +1302,10 @@ def test_kept_headers_filter_drops_received_dkim_spam(seeded_db, tmp_path):
     assert "user-agent" in keys_lower
     # Dropped: every header in the dropped class must be absent.
     for dropped in (
-        "received", "dkim-signature", "x-spam-status", "authentication-results",
+        "received",
+        "dkim-signature",
+        "x-spam-status",
+        "authentication-results",
     ):
         assert dropped not in keys_lower, (
             f"{dropped!r} should be filtered out by KEPT_HEADERS; "
@@ -1226,7 +1326,8 @@ def test_kept_headers_filter_drops_received_dkim_spam(seeded_db, tmp_path):
 
 
 def test_ingest_bumps_inbox_last_article_date_on_new(
-    seeded_db, tmp_path,
+    seeded_db,
+    tmp_path,
 ):
     """A fresh `new` ingest pushes `Inbox.last_article_date` to the
     commit time of the just-ingested message. Conftest seeds alpha at
@@ -1234,6 +1335,7 @@ def test_ingest_bumps_inbox_last_article_date_on_new(
     1700000000 + i` (2023-11-14 onwards), so the bump only happens if
     the helper picks the max-of-batch and overrides only when newer."""
     from datetime import datetime
+
     alpha = _alpha(seeded_db)
     # Reset the seeded value so we observe a clean bump-from-nothing.
     with seeded_db() as s:
@@ -1256,6 +1358,7 @@ def test_ingest_last_article_date_is_monotonic(seeded_db, tmp_path):
     edge-case backfills could ingest out-of-order, the field's
     contract is "max seen ever", not "last seen"."""
     from datetime import datetime
+
     alpha = _alpha(seeded_db)
     future = datetime(2099, 1, 1, tzinfo=timezone.utc)
     with seeded_db() as s:
@@ -1271,7 +1374,8 @@ def test_ingest_last_article_date_is_monotonic(seeded_db, tmp_path):
 
 
 def test_ingest_last_article_date_bumps_on_cross_post_link(
-    seeded_db, tmp_path,
+    seeded_db,
+    tmp_path,
 ):
     """A cross-posted message that first landed in `beta` now landing
     in `alpha` bumps `alpha.last_article_date` too, using the
@@ -1295,7 +1399,8 @@ def test_ingest_last_article_date_bumps_on_cross_post_link(
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
     assert ix.last_article_date is not None
     assert (
-        ix.last_article_date.year, ix.last_article_date.month,
+        ix.last_article_date.year,
+        ix.last_article_date.month,
         ix.last_article_date.day,
     ) == (2024, 2, 1)
 
@@ -1304,7 +1409,10 @@ def test_ingest_last_article_date_bumps_on_cross_post_link(
 
 
 def test_commit_cadence_time_cap_fires_on_steady_state_hot_inbox(
-    seeded_db, tmp_path, monkeypatch, request,
+    seeded_db,
+    tmp_path,
+    monkeypatch,
+    request,
 ):
     """1.36.1 regression: under broker mode (Phase 2.1+), the long
     worker holds the SQLite writer lock for the duration of each
@@ -1349,7 +1457,11 @@ def test_commit_cadence_time_cap_fires_on_steady_state_hot_inbox(
 
     with seeded_db() as s:
         result = epoch_mod.ingest_epoch(
-            s, alpha, "0.git", tmp_path / "0.git", workers=1,
+            s,
+            alpha,
+            "0.git",
+            tmp_path / "0.git",
+            workers=1,
         )
 
     assert result.new == 5

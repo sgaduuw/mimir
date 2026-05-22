@@ -2,6 +2,7 @@
 alembic; this command is the "just give me an empty DB" shortcut for
 fresh checkouts.
 """
+
 import click
 
 from mimir.extensions import Base, engine
