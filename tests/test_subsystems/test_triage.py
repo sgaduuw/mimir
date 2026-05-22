@@ -6,12 +6,17 @@ mainline vs none, later-version vs none, replies vs none,
 maintainer-Ack vs not), plus an EXPLAIN-plan pin so a regression
 that lost index-driven access surfaces in CI rather than as a
 production cold-miss."""
+
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, text
 
 from mimir.models import (
-    Article, ArticleFile, ArticleList, ArticleTrailer, Inbox,
+    Article,
+    ArticleFile,
+    ArticleList,
+    ArticleTrailer,
+    Inbox,
     MainlineCommit,
 )
 from mimir.subsystems_dashboard.triage import (
@@ -23,14 +28,15 @@ from tests.test_subsystems._helpers import _add_subsystem
 
 
 def _alpha(session):
-    return session.execute(
-        select(Inbox).where(Inbox.name == "alpha")
-    ).scalar_one()
+    return session.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
 
 
 def _add_article(
-    session, msgid, *,
-    paths, days_ago,
+    session,
+    msgid,
+    *,
+    paths,
+    days_ago,
     trailers=(),
     inbox_name="alpha",
     thread_parent=None,
@@ -39,9 +45,7 @@ def _add_article(
 ):
     """Create one article with the bits the triage queries care
     about. `trailers` is a list of (role, address) tuples."""
-    inbox = session.execute(
-        select(Inbox).where(Inbox.name == inbox_name)
-    ).scalar_one()
+    inbox = session.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
     art = Article(
         message_id=msgid,
         subject=f"patch {msgid}",
@@ -52,13 +56,14 @@ def _add_article(
         canonical_inbox_id=inbox.id,
         patch_series_key=patch_series_key,
         patch_series_version=patch_series_version,
-        lists=[ArticleList(inbox_id=inbox.id, epoch="0.git",
-                           commit_sha="f" * 40)],
+        lists=[ArticleList(inbox_id=inbox.id, epoch="0.git", commit_sha="f" * 40)],
         files=[ArticleFile(path=p) for p in paths],
         trailers=[
             ArticleTrailer(
-                role=role, name="reviewer",
-                address=addr, address_normalized=addr.lower(),
+                role=role,
+                name="reviewer",
+                address=addr,
+                address_normalized=addr.lower(),
             )
             for role, addr in trailers
         ],
@@ -77,11 +82,17 @@ def test_needs_attention_includes_review_trailered_patch(seeded_db):
     version, older than the threshold. Must surface."""
     with seeded_db() as s:
         sub = _add_subsystem(
-            s, "NETPLAN", "Supported", files=["net/"],
+            s,
+            "NETPLAN",
+            "Supported",
+            files=["net/"],
         )
         s.commit()
         _add_article(
-            s, "needs-1@x", paths=["net/core/dev.c"], days_ago=20,
+            s,
+            "needs-1@x",
+            paths=["net/core/dev.c"],
+            days_ago=20,
             trailers=[("Reviewed-by", "rev@example.com")],
         )
         s.commit()
@@ -97,12 +108,19 @@ def test_needs_attention_excludes_too_recent(seeded_db):
         sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
         s.commit()
         _add_article(
-            s, "fresh@x", paths=["net/core/dev.c"], days_ago=2,
+            s,
+            "fresh@x",
+            paths=["net/core/dev.c"],
+            days_ago=2,
             trailers=[("Reviewed-by", "rev@example.com")],
         )
         s.commit()
         result = needs_attention_patches_in_subsystem(
-            s, _alpha(s), sub, days=14, limit=10,
+            s,
+            _alpha(s),
+            sub,
+            days=14,
+            limit=10,
         )
     assert result == []
 
@@ -114,7 +132,10 @@ def test_needs_attention_excludes_no_trailers(seeded_db):
         sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
         s.commit()
         _add_article(
-            s, "untrailered@x", paths=["net/core/dev.c"], days_ago=20,
+            s,
+            "untrailered@x",
+            paths=["net/core/dev.c"],
+            days_ago=20,
         )
         s.commit()
         result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
@@ -128,15 +149,20 @@ def test_needs_attention_excludes_landed_in_mainline(seeded_db):
         sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
         s.commit()
         _add_article(
-            s, "landed@x", paths=["net/core/dev.c"], days_ago=20,
+            s,
+            "landed@x",
+            paths=["net/core/dev.c"],
+            days_ago=20,
             trailers=[("Reviewed-by", "rev@example.com")],
         )
-        s.add(MainlineCommit(
-            commit_sha="a" * 40,
-            message_id="landed@x",
-            tree_name="linux.git",
-            committed_at=datetime.now(timezone.utc),
-        ))
+        s.add(
+            MainlineCommit(
+                commit_sha="a" * 40,
+                message_id="landed@x",
+                tree_name="linux.git",
+                committed_at=datetime.now(timezone.utc),
+            )
+        )
         s.commit()
         result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
     assert result == []
@@ -151,13 +177,21 @@ def test_needs_attention_excludes_superseded(seeded_db):
         sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
         s.commit()
         _add_article(
-            s, "v1@x", paths=["net/core/dev.c"], days_ago=25,
-            patch_series_key="key1", patch_series_version="v1",
+            s,
+            "v1@x",
+            paths=["net/core/dev.c"],
+            days_ago=25,
+            patch_series_key="key1",
+            patch_series_version="v1",
             trailers=[("Reviewed-by", "rev@example.com")],
         )
         _add_article(
-            s, "v2@x", paths=["net/core/dev.c"], days_ago=20,
-            patch_series_key="key1", patch_series_version="v2",
+            s,
+            "v2@x",
+            paths=["net/core/dev.c"],
+            days_ago=20,
+            patch_series_key="key1",
+            patch_series_version="v2",
             trailers=[("Reviewed-by", "rev@example.com")],
         )
         s.commit()
@@ -173,12 +207,18 @@ def test_needs_attention_excludes_maintainer_acked(seeded_db):
     they otherwise qualify."""
     with seeded_db() as s:
         sub = _add_subsystem(
-            s, "NETPLAN", "Supported", files=["net/"],
+            s,
+            "NETPLAN",
+            "Supported",
+            files=["net/"],
             maintainers=[("M", "Maintainer One", "maint@x.com")],
         )
         s.commit()
         _add_article(
-            s, "acked@x", paths=["net/core/dev.c"], days_ago=20,
+            s,
+            "acked@x",
+            paths=["net/core/dev.c"],
+            days_ago=20,
             trailers=[
                 ("Reviewed-by", "rev@example.com"),
                 ("Acked-by", "maint@x.com"),
@@ -194,12 +234,18 @@ def test_needs_attention_keeps_random_acked(seeded_db):
     as pickup. The patch should still surface."""
     with seeded_db() as s:
         sub = _add_subsystem(
-            s, "NETPLAN", "Supported", files=["net/"],
+            s,
+            "NETPLAN",
+            "Supported",
+            files=["net/"],
             maintainers=[("M", "Maintainer One", "maint@x.com")],
         )
         s.commit()
         _add_article(
-            s, "random-acked@x", paths=["net/core/dev.c"], days_ago=20,
+            s,
+            "random-acked@x",
+            paths=["net/core/dev.c"],
+            days_ago=20,
             trailers=[("Acked-by", "random@elsewhere.com")],
         )
         s.commit()
@@ -213,12 +259,18 @@ def test_needs_attention_keeps_maintainer_reviewed(seeded_db):
     surface."""
     with seeded_db() as s:
         sub = _add_subsystem(
-            s, "NETPLAN", "Supported", files=["net/"],
+            s,
+            "NETPLAN",
+            "Supported",
+            files=["net/"],
             maintainers=[("M", "Maintainer One", "maint@x.com")],
         )
         s.commit()
         _add_article(
-            s, "maint-reviewed@x", paths=["net/core/dev.c"], days_ago=20,
+            s,
+            "maint-reviewed@x",
+            paths=["net/core/dev.c"],
+            days_ago=20,
             trailers=[("Reviewed-by", "maint@x.com")],
         )
         s.commit()
@@ -233,11 +285,17 @@ def test_needs_attention_oldest_first(seeded_db):
         sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
         s.commit()
         _add_article(
-            s, "newer@x", paths=["net/core/a.c"], days_ago=16,
+            s,
+            "newer@x",
+            paths=["net/core/a.c"],
+            days_ago=16,
             trailers=[("Reviewed-by", "r@x.com")],
         )
         _add_article(
-            s, "older@x", paths=["net/core/b.c"], days_ago=30,
+            s,
+            "older@x",
+            paths=["net/core/b.c"],
+            days_ago=30,
             trailers=[("Reviewed-by", "r@x.com")],
         )
         s.commit()
@@ -267,7 +325,10 @@ def test_quiet_excludes_patch_with_trailers(seeded_db):
         sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
         s.commit()
         _add_article(
-            s, "with-trailer@x", paths=["net/core/dev.c"], days_ago=40,
+            s,
+            "with-trailer@x",
+            paths=["net/core/dev.c"],
+            days_ago=40,
             trailers=[("Reviewed-by", "r@x.com")],
         )
         s.commit()
@@ -283,7 +344,10 @@ def test_quiet_excludes_patch_with_replies(seeded_db):
         s.commit()
         _add_article(s, "root@x", paths=["net/core/dev.c"], days_ago=40)
         _add_article(
-            s, "reply@x", paths=["net/core/dev.c"], days_ago=39,
+            s,
+            "reply@x",
+            paths=["net/core/dev.c"],
+            days_ago=39,
             thread_parent="root@x",
         )
         s.commit()
@@ -304,7 +368,11 @@ def test_quiet_excludes_too_recent(seeded_db):
         _add_article(s, "fresh-quiet@x", paths=["net/core/dev.c"], days_ago=10)
         s.commit()
         result = quiet_patches_in_subsystem(
-            s, _alpha(s), sub, days=30, limit=10,
+            s,
+            _alpha(s),
+            sub,
+            days=30,
+            limit=10,
         )
     assert result == []
 
@@ -341,7 +409,9 @@ def test_triage_queries_use_date_index_no_full_scans(seeded_db):
 
     with seeded_db() as s:
         sub = _add_subsystem(
-            s, "NETPLAN", "Supported",
+            s,
+            "NETPLAN",
+            "Supported",
             files=["net/", "include/linux/skbuff.h"],
             excludes=["net/bluetooth/"],
         )
@@ -358,7 +428,8 @@ def test_triage_queries_use_date_index_no_full_scans(seeded_db):
             # The bounded date range surfaces in the plan as
             # `date>? AND date<?` (BETWEEN compiles to that pair).
             plan_rows = s.execute(
-                text("EXPLAIN QUERY PLAN " + sql), params,
+                text("EXPLAIN QUERY PLAN " + sql),
+                params,
             ).all()
             plan = "\n".join(r[3] for r in plan_rows)
             assert "SCAN articles" not in plan, (

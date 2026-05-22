@@ -29,6 +29,7 @@ Fixture stack:
       a known seeded inbox name. Replaces the per-file fixtures
       in test_routes.py.
 """
+
 import os
 import tempfile
 
@@ -65,6 +66,7 @@ def _migrate_db():
     # the interpreter starts tearing down, which the cpython
     # sqlite3 module reports as "unclosed database").
     from mimir.extensions import engine
+
     engine.dispose()
     # Tempdir is left for the OS to reap; no need to teardown.
 
@@ -100,7 +102,7 @@ def _reset_db():
         # for article deletes, but explicit is cheaper on a tiny DB
         # and immune to FK-order surprises.
         s.execute(delete(IngestState))
-        s.execute(delete(ArticleFile))   # FK to articles; clear before Article
+        s.execute(delete(ArticleFile))  # FK to articles; clear before Article
         s.execute(delete(ArticleTrailer))  # FK to articles
         s.execute(delete(ArticleList))
         s.execute(delete(Article))
@@ -143,25 +145,32 @@ def _reset_db():
         # art3: cross-posted (alpha + beta)
         # art4: alpha, replies to art1 (small thread)
         art1 = Article(
-            message_id="art1@example.com", subject="hello alpha",
+            message_id="art1@example.com",
+            subject="hello alpha",
             author="Alice <alice@example.com>",
             date=datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc),
-            thread_parent=None, subject_normalized="hello alpha",
+            thread_parent=None,
+            subject_normalized="hello alpha",
         )
         art2 = Article(
-            message_id="art2@example.com", subject="hello beta",
+            message_id="art2@example.com",
+            subject="hello beta",
             author="Bob <bob@example.com>",
             date=datetime(2024, 2, 1, 12, 0, tzinfo=timezone.utc),
-            thread_parent=None, subject_normalized="hello beta",
+            thread_parent=None,
+            subject_normalized="hello beta",
         )
         art3 = Article(
-            message_id="art3@example.com", subject="cross-posted note",
+            message_id="art3@example.com",
+            subject="cross-posted note",
             author="Carol <carol@kernel.org>",
             date=datetime(2024, 3, 1, 12, 0, tzinfo=timezone.utc),
-            thread_parent=None, subject_normalized="cross-posted note",
+            thread_parent=None,
+            subject_normalized="cross-posted note",
         )
         art4 = Article(
-            message_id="art4@example.com", subject="Re: hello alpha",
+            message_id="art4@example.com",
+            subject="Re: hello alpha",
             author="Dave <dave@example.com>",
             date=datetime(2024, 1, 2, 12, 0, tzinfo=timezone.utc),
             thread_parent="art1@example.com",
@@ -170,13 +179,40 @@ def _reset_db():
         s.add_all([art1, art2, art3, art4])
         s.flush()
 
-        s.add_all([
-            ArticleList(article_id=art1.id, inbox_id=alpha.id, epoch="0.git", commit_sha="aa" * 20),
-            ArticleList(article_id=art2.id, inbox_id=beta.id,  epoch="0.git", commit_sha="bb" * 20),
-            ArticleList(article_id=art3.id, inbox_id=alpha.id, epoch="0.git", commit_sha="cc" * 20),
-            ArticleList(article_id=art3.id, inbox_id=beta.id,  epoch="0.git", commit_sha="cd" * 20),
-            ArticleList(article_id=art4.id, inbox_id=alpha.id, epoch="0.git", commit_sha="dd" * 20),
-        ])
+        s.add_all(
+            [
+                ArticleList(
+                    article_id=art1.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="aa" * 20,
+                ),
+                ArticleList(
+                    article_id=art2.id,
+                    inbox_id=beta.id,
+                    epoch="0.git",
+                    commit_sha="bb" * 20,
+                ),
+                ArticleList(
+                    article_id=art3.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="cc" * 20,
+                ),
+                ArticleList(
+                    article_id=art3.id,
+                    inbox_id=beta.id,
+                    epoch="0.git",
+                    commit_sha="cd" * 20,
+                ),
+                ArticleList(
+                    article_id=art4.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="dd" * 20,
+                ),
+            ]
+        )
         s.commit()
 
     mimir.inboxes.refresh_inbox_names()
@@ -190,6 +226,7 @@ def seeded_db():
     has already wiped + seeded by the time this fixture is asked
     for."""
     from mimir.extensions import SessionLocal
+
     return SessionLocal
 
 
@@ -199,6 +236,7 @@ def client():
     monkeypatch tests in test_routes don't bleed into other
     test_routes tests through a shared module-scoped app."""
     from mimir import create_app
+
     return create_app().test_client()
 
 
@@ -229,5 +267,6 @@ def frozen_clock():
     forward (e.g. cache-expiry checks) can `frozen_clock.move_to(...)`.
     """
     from freezegun import freeze_time
+
     with freeze_time(FROZEN_NOW) as ft:
         yield ft

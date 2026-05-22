@@ -10,6 +10,7 @@ class Inbox(Base):
     """A public-inbox archive (e.g. lkml, linux-fsdevel). Bootstrapped
     from `Settings.inboxes` (env) and, eventually, managed via an
     admin UI."""
+
     __tablename__ = "inboxes"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -24,14 +25,17 @@ class Inbox(Base):
     # message headers once an inbox crosses the promotion threshold;
     # operator can override via the admin CLI for non-standard lists.
     list_address: Mapped[str | None] = mapped_column(
-        String, nullable=True, index=True,
+        String,
+        nullable=True,
+        index=True,
     )
 
     # Per-inbox tracker tiles on the dashboard. NULL = no tracker
     # section rendered; a dict of {label: email_substring} drives one
     # tile per entry. Managed via `admin inbox trackers`.
     tracked_authors: Mapped[dict[str, str] | None] = mapped_column(
-        JSON, nullable=True,
+        JSON,
+        nullable=True,
     )
 
     # Cached "max article date in this inbox", bumped on every
@@ -42,7 +46,8 @@ class Inbox(Base):
     # NULL on inboxes that haven't ingested anything yet; otherwise
     # monotonic non-decreasing.
     last_article_date: Mapped[datetime | None] = mapped_column(
-        DateTime, nullable=True,
+        DateTime,
+        nullable=True,
     )
 
     # IngestState rows are tiny (one per epoch, ≤50 total per inbox);
@@ -73,7 +78,7 @@ class Article(Base):
     # Patch-series identity for cover letters (`[PATCH ... 0/N]`
     # subjects). NULL on every non-cover-letter article. Indexed
     # so the timeline render, "v1 (date) → v2 (date) → v3 (this)"
-    #, can fetch siblings in one query.
+    # , can fetch siblings in one query.
     # `patch_series_key` is a SHA-1 hex digest over
     # (author-address, normalised-title), opaque on purpose so a
     # query or log line doesn't leak the author's email. See
@@ -88,10 +93,13 @@ class Article(Base):
     # cover-letter linkage and may lag (NULL until backfill walks
     # the thread parent).
     patch_series_key: Mapped[str | None] = mapped_column(
-        String, nullable=True, index=True,
+        String,
+        nullable=True,
+        index=True,
     )
     patch_series_version: Mapped[str | None] = mapped_column(
-        String, nullable=True,
+        String,
+        nullable=True,
     )
     patch_series_position: Mapped[int | None] = mapped_column(
         nullable=True,
@@ -104,7 +112,8 @@ class Article(Base):
     # delete so removing an inbox doesn't strand or drop articles.
     canonical_inbox_id: Mapped[int | None] = mapped_column(
         ForeignKey("inboxes.id", ondelete="SET NULL"),
-        nullable=True, index=True,
+        nullable=True,
+        index=True,
     )
     canonical_inbox: Mapped["Inbox | None"] = relationship(
         foreign_keys=[canonical_inbox_id],
@@ -139,6 +148,7 @@ class ArticleList(Base):
     """Per-inbox presence of an Article. (epoch, commit_sha) point at
     the blob in *this* inbox's mirror, different mirrors commit the
     same message under different SHAs."""
+
     __tablename__ = "article_lists"
 
     article_id: Mapped[int] = mapped_column(
@@ -169,6 +179,7 @@ class IngestState(Base):
 class CacheEntry(Base):
     """Cross-process cache for slow dashboard queries. JSON values
     only, see `mimir.cache` for the encoder/decoder."""
+
     __tablename__ = "cache"
 
     key: Mapped[str] = mapped_column(String, primary_key=True)
@@ -186,6 +197,7 @@ class InboxAddressObservation(Base):
     Conservative filter (`canonical.is_list_address`) keeps personal
     addresses, vendor auto-replies, and bot accounts out of the tally.
     """
+
     __tablename__ = "inbox_address_observations"
 
     inbox_id: Mapped[int] = mapped_column(
@@ -208,6 +220,7 @@ class ArticleFile(Base):
     high-noise. The cost of missing those is that the "other
     patches touching X" sidebar under-represents discussion-only
     threads, acceptable trade for high-precision matches."""
+
     __tablename__ = "article_files"
 
     article_id: Mapped[int] = mapped_column(
@@ -239,11 +252,13 @@ class ArticleTrailer(Base):
     Redaction is a render-time concern, not a storage one: the address
     is stored verbatim and the allowlist is consulted only when
     rendering. See CONTEXT.md "Redaction is a display-time decision"."""
+
     __tablename__ = "article_trailers"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     article_id: Mapped[int] = mapped_column(
-        ForeignKey("articles.id", ondelete="CASCADE"), index=True,
+        ForeignKey("articles.id", ondelete="CASCADE"),
+        index=True,
     )
     # Canonical capitalisation per `parser.INDEXED_TRAILER_ROLES`
     # (e.g. "Reviewed-by"). The body's original casing is lost here;
@@ -262,7 +277,8 @@ class ArticleTrailer(Base):
         # then equality on address_normalized.
         Index(
             "ix_article_trailers_role_addr",
-            "role", "address_normalized",
+            "role",
+            "address_normalized",
         ),
     )
 
@@ -279,6 +295,7 @@ class Subsystem(Base):
     in current usage but the schema permits arbitrary Unicode. `status`
     is the `S:` field (`Supported`, `Maintained`, `Odd Fixes`, `Orphan`,
     `Obsolete`); NULL for sections that omit it (rare but legal)."""
+
     __tablename__ = "subsystems"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -298,6 +315,7 @@ class SubsystemPath(Base):
     section. The literal MAINTAINERS-shaped string is stored
     (trailing slash, brace expansion, etc.), interpretation lives
     in the future glob-matcher, not in the schema."""
+
     __tablename__ = "subsystem_paths"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -318,6 +336,7 @@ class SubsystemMaintainer(Base):
     `Subsystem.lists` in the parser dataclass. (Decided not to
     schema it separately for slice 1; revisit if a downstream
     surface needs the per-section list addresses indexed.)"""
+
     __tablename__ = "subsystem_maintainers"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -351,12 +370,14 @@ class MainlineState(Base):
       almost every tick. Walker is incremental: the next run
       starts after this SHA.
     """
+
     __tablename__ = "mainline_state"
 
     tree_name: Mapped[str] = mapped_column(String, primary_key=True)
     last_commit_sha: Mapped[str | None] = mapped_column(String, nullable=True)
     commits_walked_to_sha: Mapped[str | None] = mapped_column(
-        String, nullable=True,
+        String,
+        nullable=True,
     )
 
 
@@ -377,11 +398,14 @@ class MainlineCommit(Base):
     `committed_at` is the commit's commit-time in UTC, what we
     render as "Applied as <sha> on <date>" on the patch page.
     """
+
     __tablename__ = "mainline_commits"
 
     commit_sha: Mapped[str] = mapped_column(String, primary_key=True)
     message_id: Mapped[str] = mapped_column(
-        String, primary_key=True, index=True,
+        String,
+        primary_key=True,
+        index=True,
     )
     tree_name: Mapped[str] = mapped_column(String, index=True)
     committed_at: Mapped[datetime] = mapped_column()
@@ -395,6 +419,7 @@ class ParseFailure(Base):
     Cleared automatically when the same commit later parses cleanly
     (via `flask --app mimir admin failures replay` or a re-walk).
     """
+
     __tablename__ = "parse_failures"
 
     inbox_id: Mapped[int] = mapped_column(

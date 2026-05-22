@@ -99,16 +99,12 @@ def validate_outbound_url(url: str, *, allow_http: bool = False) -> str:
     allowed_schemes = ("https", "http") if allow_http else ("https",)
     if parsed.scheme not in allowed_schemes:
         joined = " or ".join(repr(s) for s in allowed_schemes)
-        raise OutboundUrlError(
-            f"url scheme must be {joined} (got {parsed.scheme!r})"
-        )
+        raise OutboundUrlError(f"url scheme must be {joined} (got {parsed.scheme!r})")
     host = parsed.hostname
     if not host:
         raise OutboundUrlError("url must include a host")
     if host.lower() in _DENY_HOSTS:
-        raise OutboundUrlError(
-            f"url host {host!r} targets the local machine"
-        )
+        raise OutboundUrlError(f"url host {host!r} targets the local machine")
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
@@ -143,9 +139,11 @@ class NoRedirectHandler(HTTPRedirectHandler):
 
     def http_error_301(self, req, fp, code, msg, headers):
         raise HTTPError(
-            req.full_url, code,
+            req.full_url,
+            code,
             f"redirect-following disabled (HTTP {code})",
-            headers, fp,
+            headers,
+            fp,
         )
 
     http_error_302 = http_error_301

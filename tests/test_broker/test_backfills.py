@@ -24,6 +24,7 @@ the dispatch / merge / loop tests; the other three are covered
 structurally by the protocol + handler registration smoke and the
 typed-result reconstruction on the client.
 """
+
 from __future__ import annotations
 
 from sqlalchemy import select
@@ -53,9 +54,7 @@ def _seed_extra_articles(n: int) -> list[int]:
 
     ids: list[int] = []
     with SessionLocal() as s:
-        alpha = s.execute(
-            select(Inbox).where(Inbox.name == "alpha")
-        ).scalar_one()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         for i in range(n):
             art = Article(
                 message_id=f"coop-{i}@example.com",
@@ -68,10 +67,14 @@ def _seed_extra_articles(n: int) -> list[int]:
             s.add(art)
             s.flush()
             ids.append(art.id)
-            s.add(ArticleList(
-                article_id=art.id, inbox_id=alpha.id,
-                epoch="0.git", commit_sha=f"{i:040d}",
-            ))
+            s.add(
+                ArticleList(
+                    article_id=art.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha=f"{i:040d}",
+                )
+            )
         s.commit()
     return ids
 
@@ -95,7 +98,8 @@ def test_walk_articles_returns_partial_when_deadline_expires(seeded_db):
         return "no_diff"
 
     partial, cont = walk_articles(
-        result, process,
+        result,
+        process,
         batch_size=2,
         label="test_walk_partial",
         max_seconds=0.0,
@@ -119,7 +123,8 @@ def test_walk_articles_returns_full_completion_without_deadline(seeded_db):
         return "no_diff"
 
     partial, cont = walk_articles(
-        result, process,
+        result,
+        process,
         batch_size=2,
         label="test_walk_full",
     )
@@ -139,8 +144,11 @@ def test_walk_articles_resumes_from_start_cursor(seeded_db):
     # Chunk 1: deadline=0 forces a one-batch bail.
     result1 = BackfillResult()
     p1, c1 = walk_articles(
-        result1, lambda _s, _a, _r: "no_diff",
-        batch_size=2, label="test_resume_1", max_seconds=0.0,
+        result1,
+        lambda _s, _a, _r: "no_diff",
+        batch_size=2,
+        label="test_resume_1",
+        max_seconds=0.0,
     )
     assert p1 is True and c1 is not None
 
@@ -149,8 +157,11 @@ def test_walk_articles_resumes_from_start_cursor(seeded_db):
     # seeded article is examined exactly once.
     result2 = BackfillResult()
     p2, c2 = walk_articles(
-        result2, lambda _s, _a, _r: "no_diff",
-        batch_size=2, label="test_resume_2", start_cursor=c1,
+        result2,
+        lambda _s, _a, _r: "no_diff",
+        batch_size=2,
+        label="test_resume_2",
+        start_cursor=c1,
     )
     assert p2 is False and c2 is None
     assert result1.examined + result2.examined == 4
@@ -161,10 +172,16 @@ def test_walk_articles_resumes_from_start_cursor(seeded_db):
 
 def test_patches_backfill_result_merge_sums_counters():
     from mimir.patches import BackfillResult
+
     a = BackfillResult(examined=10, indexed=5, no_diff=3, skipped=1, failed=1)
     b = BackfillResult(
-        examined=20, indexed=10, no_diff=5, skipped=4, failed=1,
-        partial=True, continuation=99,
+        examined=20,
+        indexed=10,
+        no_diff=5,
+        skipped=4,
+        failed=1,
+        partial=True,
+        continuation=99,
     )
     m = a.merge(b)
     assert m.examined == 30
@@ -180,10 +197,15 @@ def test_patches_backfill_result_merge_sums_counters():
 
 def test_trailers_backfill_result_merge_sums_counters():
     from mimir.trailers import BackfillResult
+
     a = BackfillResult(examined=10, indexed=5, no_trailers=4, skipped=1)
     b = BackfillResult(
-        examined=20, indexed=8, no_trailers=10, skipped=2,
-        partial=False, continuation=None,
+        examined=20,
+        indexed=8,
+        no_trailers=10,
+        skipped=2,
+        partial=False,
+        continuation=None,
     )
     m = a.merge(b)
     assert m.examined == 30
@@ -196,13 +218,24 @@ def test_trailers_backfill_result_merge_sums_counters():
 
 def test_patch_series_backfill_result_merge_sums_counters():
     from mimir.patch_series import BackfillResult
+
     a = BackfillResult(
-        examined=5, indexed=2, in_series_indexed=1, in_series_orphan=0,
-        not_cover=2, skipped=0,
+        examined=5,
+        indexed=2,
+        in_series_indexed=1,
+        in_series_orphan=0,
+        not_cover=2,
+        skipped=0,
     )
     b = BackfillResult(
-        examined=5, indexed=1, in_series_indexed=2, in_series_orphan=1,
-        not_cover=1, skipped=0, partial=True, continuation=42,
+        examined=5,
+        indexed=1,
+        in_series_indexed=2,
+        in_series_orphan=1,
+        not_cover=1,
+        skipped=0,
+        partial=True,
+        continuation=42,
     )
     m = a.merge(b)
     assert m.examined == 10
@@ -216,10 +249,15 @@ def test_patch_series_backfill_result_merge_sums_counters():
 
 def test_canonicals_backfill_result_merge_sums_counters():
     from mimir.ingest.backfill import BackfillResult
+
     a = BackfillResult(examined=10, resolved=4, unresolved=5, skipped=1)
     b = BackfillResult(
-        examined=20, resolved=8, unresolved=10, skipped=2,
-        partial=False, continuation=None,
+        examined=20,
+        resolved=8,
+        unresolved=10,
+        skipped=2,
+        partial=False,
+        continuation=None,
     )
     m = a.merge(b)
     assert m.examined == 30
@@ -257,12 +295,12 @@ def test_dispatch_backfill_patch_series_passes_continuation_through(seeded_db):
     >= cursor. Seeded ids are 1..4; resume at cursor=2 examines
     only id=1."""
     with SessionLocal() as s:
-        min_id = s.execute(
-            select(Article.id).order_by(Article.id)
-        ).scalars().first()
-    reply = dispatch(_line(
-        BackfillPatchSeriesRequest(continuation=min_id + 1),
-    ))
+        min_id = s.execute(select(Article.id).order_by(Article.id)).scalars().first()
+    reply = dispatch(
+        _line(
+            BackfillPatchSeriesRequest(continuation=min_id + 1),
+        )
+    )
     assert reply.ok is True
     counters = reply.result["counters"]
     # cursor=min_id+1 → only the id=min_id row matches.
@@ -379,15 +417,18 @@ def test_broker_backfill_loop_converges_across_chunks(seeded_db):
     calls: list[dict] = []
 
     def fake_call(*, limit, reprocess, continuation):
-        calls.append({"limit": limit, "reprocess": reprocess,
-                      "continuation": continuation})
+        calls.append(
+            {"limit": limit, "reprocess": reprocess, "continuation": continuation}
+        )
         return chunks.pop(0)
 
     result = _broker_backfill_loop(
-        fake_call, limit=None, reprocess=False,
+        fake_call,
+        limit=None,
+        reprocess=False,
     )
     assert result.examined == 5  # 2 + 2 + 1
-    assert result.indexed == 2   # 1 + 1 + 0
+    assert result.indexed == 2  # 1 + 1 + 0
     assert result.partial is False
     assert result.continuation is None
     # Three RPCs: continuation None → 99 → 42.
@@ -419,7 +460,9 @@ def test_broker_backfill_loop_respects_limit_across_chunks(seeded_db):
         return chunks.pop(0)
 
     result = _broker_backfill_loop(
-        fake_call, limit=5, reprocess=False,
+        fake_call,
+        limit=5,
+        reprocess=False,
     )
     # 2+2+1 == 5; loop stops there even though chunk 3 said partial=True.
     assert result.examined == 5
@@ -441,7 +484,9 @@ def test_broker_backfill_loop_passes_extra_kwargs(seeded_db):
         return BackfillResult(examined=1, resolved=1)
 
     result = _broker_backfill_loop(
-        fake_call, limit=None, reprocess=False,
+        fake_call,
+        limit=None,
+        reprocess=False,
         extra={"inbox_filter": "alpha"},
     )
     assert result.examined == 1
@@ -483,7 +528,8 @@ def test_chunked_resume_via_broker_covers_full_corpus(seeded_db, monkeypatch):
         try:
             result = _broker_backfill_loop(
                 c.backfill_patch_series,
-                limit=None, reprocess=False,
+                limit=None,
+                reprocess=False,
             )
         finally:
             c.close()

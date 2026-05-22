@@ -2,7 +2,6 @@
 and per-reviewer Atom feeds plus autodiscovery `<link>`
 tags wired into base.html."""
 
-
 from tests.test_routes._helpers import _ingest_one_article, _seed_author_article
 
 
@@ -22,10 +21,10 @@ def test_author_page_autodiscovery_link(client, inbox_name):
     # would pass even if rel="alternate" and the Atom feed lived
     # on different elements. Match the whole element instead.
     import re
+
     link_re = re.compile(
         r'<link\b[^>]*rel="alternate"[^>]*type="application/atom\+xml"[^>]*'
-        r'href="/' + re.escape(inbox_name)
-        + r'/author/example\.com/feed\.atom"',
+        r'href="/' + re.escape(inbox_name) + r'/author/example\.com/feed\.atom"',
         re.DOTALL,
     )
     assert link_re.search(body) is not None, (
@@ -45,7 +44,7 @@ def test_inbox_tracker_tile_links_to_atom(client, inbox_name):
     r = client.get(f"/{inbox_name}/")
     assert r.status_code == 200
     body = r.data.decode()
-    assert f'/{inbox_name}/author/example.com/feed.atom' in body
+    assert f"/{inbox_name}/author/example.com/feed.atom" in body
 
 
 def test_atom_feed_well_formed(client, inbox_name):
@@ -87,7 +86,7 @@ def test_atom_feed_well_formed(client, inbox_name):
         # mustn't leak (only path) and the path must be one of mimir's
         # message URLs.
         href = alt.get("href")
-        # Path-shape match rather than a hardcoded year disjunction  
+        # Path-shape match rather than a hardcoded year disjunction
         # the latter goes stale every January and gives no diagnostic
         # value beyond "the URL contains some year we listed."
         assert re.search(r"/\d{4}/\d{2}/\d+(?:[/?#]|$)", href), (
@@ -96,7 +95,9 @@ def test_atom_feed_well_formed(client, inbox_name):
 
 
 def test_atom_feed_author_name_is_display_name_only(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """Atom <author><name> is always the display name only -- the
     `<hidden>` placeholder reads as broken metadata in feed readers
@@ -108,7 +109,9 @@ def test_atom_feed_author_name_is_display_name_only(
 
     monkeypatch.setattr(settings, "email_allowlist", [])
     _ingest_one_article(
-        tmp_path, "alpha", "atom-named@example.com",
+        tmp_path,
+        "alpha",
+        "atom-named@example.com",
         author="David Woodhouse <dwmw2@infradead.org>",
     )
     r = client.get("/alpha/feed.atom")
@@ -132,7 +135,9 @@ def test_atom_feed_author_name_is_display_name_only(
 
 
 def test_atom_feed_author_includes_email_when_allowlisted(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """Atom <author><email> is present iff the sender is in the
     allowlist union (same gate `_safe_from_filter` uses on the
@@ -144,7 +149,9 @@ def test_atom_feed_author_includes_email_when_allowlisted(
 
     monkeypatch.setattr(settings, "email_allowlist", ["@b.example"])
     _ingest_one_article(
-        tmp_path, "alpha", "atom-allow@example.com",
+        tmp_path,
+        "alpha",
+        "atom-allow@example.com",
         author="Allowed Person <allowed@b.example>",
     )
     r = client.get("/alpha/feed.atom")
@@ -152,15 +159,17 @@ def test_atom_feed_author_includes_email_when_allowlisted(
     root = ET.fromstring(r.get_data())
     ns = {"a": "http://www.w3.org/2005/Atom"}
     entry = next(
-        e for e in root.findall("a:entry", ns)
-        if e.findtext("a:author/a:name", default="", namespaces=ns)
-        == "Allowed Person"
+        e
+        for e in root.findall("a:entry", ns)
+        if e.findtext("a:author/a:name", default="", namespaces=ns) == "Allowed Person"
     )
     assert entry.findtext("a:author/a:email", namespaces=ns) == "allowed@b.example"
 
 
 def test_atom_feed_author_omits_email_when_not_allowlisted(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """Inverse: a non-allowlisted sender's address stays out of the
     feed entirely, matching the visible HTML's `<hidden>` redaction."""
@@ -169,7 +178,9 @@ def test_atom_feed_author_omits_email_when_not_allowlisted(
 
     monkeypatch.setattr(settings, "email_allowlist", [])
     _ingest_one_article(
-        tmp_path, "alpha", "atom-hide@example.com",
+        tmp_path,
+        "alpha",
+        "atom-hide@example.com",
         author="Casual Sender <casual@example.org>",
     )
     r = client.get("/alpha/feed.atom")
@@ -177,9 +188,9 @@ def test_atom_feed_author_omits_email_when_not_allowlisted(
     root = ET.fromstring(r.get_data())
     ns = {"a": "http://www.w3.org/2005/Atom"}
     entry = next(
-        e for e in root.findall("a:entry", ns)
-        if e.findtext("a:author/a:name", default="", namespaces=ns)
-        == "Casual Sender"
+        e
+        for e in root.findall("a:entry", ns)
+        if e.findtext("a:author/a:name", default="", namespaces=ns) == "Casual Sender"
     )
     assert entry.find("a:author/a:email", namespaces=ns) is None
 
@@ -231,7 +242,8 @@ def test_atom_feed_cross_post_id_is_canonical_in_either_feed(client):
 
 
 def test_author_feed_is_well_formed_atom_with_matching_entry(
-    client, inbox_name,
+    client,
+    inbox_name,
 ):
     """Atom feed for one author: must parse as Atom, carry the
     correct feed-level title for the substring, and include the

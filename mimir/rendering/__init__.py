@@ -19,6 +19,7 @@ External callers (`mimir.web.filters`, `mimir.web.routes.message`,
 `mimir.seo.json_ld`, `tests.test_rendering`) don't shift on the
 split.
 """
+
 from mimir.rendering.blocks import parse_blocks
 from mimir.rendering.body import render_body
 from mimir.rendering.linkify import (

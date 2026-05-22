@@ -4,6 +4,7 @@ Hoisted from the pre-split tests/test_ingest.py so per-bucket
 test modules can import what they need. Underscore-prefixed
 filename so pytest does not collect this as a test module.
 """
+
 from pathlib import Path
 
 from dulwich.objects import Blob, Commit, Tree
@@ -12,11 +13,16 @@ from sqlalchemy import delete, select
 
 from mimir.ingest import ingest_epoch
 from mimir.models import (
-    Article, ArticleList, Inbox, InboxAddressObservation,
+    Article,
+    ArticleList,
+    Inbox,
+    InboxAddressObservation,
 )
 
 
-def _rfc5322(msgid: str, body: bytes = b"hello", to: str | None = None, cc: str | None = None) -> bytes:
+def _rfc5322(
+    msgid: str, body: bytes = b"hello", to: str | None = None, cc: str | None = None
+) -> bytes:
     """Minimal valid RFC 5322 message. Optional To/Cc let canonical-
     inbox tests inject list addresses."""
     parts = [
@@ -27,12 +33,14 @@ def _rfc5322(msgid: str, body: bytes = b"hello", to: str | None = None, cc: str 
         parts.append(b"To: " + to.encode() + b"\r\n")
     if cc is not None:
         parts.append(b"Cc: " + cc.encode() + b"\r\n")
-    parts.extend([
-        b"Subject: t\r\n",
-        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n",
-        b"\r\n",
-        body,
-    ])
+    parts.extend(
+        [
+            b"Subject: t\r\n",
+            b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n",
+            b"\r\n",
+            body,
+        ]
+    )
     return b"".join(parts)
 
 
@@ -90,11 +98,14 @@ def _setup_alpha_with_messages(seeded_db, tmp_path, n: int) -> Inbox:
 
 def _spy_text(monkeypatch) -> list[str]:
     from mimir.ingest import orchestrate as ingest_mod
+
     seen: list[str] = []
     real_text = ingest_mod.text
+
     def _spy(stmt):
         seen.append(stmt)
         return real_text(stmt)
+
     monkeypatch.setattr(ingest_mod, "text", _spy)
     return seen
 
@@ -111,8 +122,12 @@ def _clear_seed_articles(seeded_db) -> None:
 
 
 def _ingest_with_to(
-    seeded_db, tmp_path, inbox: Inbox, msgid: str,
-    to: str | None = None, cc: str | None = None,
+    seeded_db,
+    tmp_path,
+    inbox: Inbox,
+    msgid: str,
+    to: str | None = None,
+    cc: str | None = None,
     repo_dir: str = "0.git",
 ) -> None:
     """Ingest a single message with optional To/Cc into `inbox`."""

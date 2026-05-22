@@ -28,8 +28,10 @@ def broker_running(socket_path: Path):
     thread."""
     server = build_server(socket_path)
     thread = threading.Thread(
-        target=server.serve_forever, kwargs={"poll_interval": 0.05},
-        daemon=True, name="test-broker",
+        target=server.serve_forever,
+        kwargs={"poll_interval": 0.05},
+        daemon=True,
+        name="test-broker",
     )
     thread.start()
     try:

@@ -25,6 +25,7 @@ actually arrives (which is typically much later than process
 start, since the broker boots fast and long ops fire on the
 scheduler's tick schedule).
 """
+
 from mimir.broker.protocol import (
     BackfillArticleFilesRequest,
     BackfillArticleTrailersRequest,
@@ -43,6 +44,7 @@ def handle_bootstrap_inboxes(req: BootstrapInboxesRequest) -> Reply:
     same function the scheduler-tasks container called directly
     pre-Phase-2)."""
     from mimir.inboxes import bootstrap_inboxes
+
     with write_transaction("broker:bootstrap_inboxes"):
         inboxes = bootstrap_inboxes()
     return Reply(ok=True, result={"inboxes": len(inboxes)})
@@ -76,7 +78,8 @@ def handle_ingest_inbox(req: IngestInboxRequest) -> Reply:
         ).scalar_one_or_none()
     if inbox is None:
         return Reply(
-            ok=False, error=f"UnknownInbox:{req.inbox_name}",
+            ok=False,
+            error=f"UnknownInbox:{req.inbox_name}",
         )
     workers = req.workers if req.workers is not None else DEFAULT_WORKERS
     results = ingest_inbox(inbox, limit=req.limit, workers=workers)
@@ -92,6 +95,7 @@ def _chunk_seconds() -> float:
     restarting the broker (settings is a singleton but it's safe to
     re-read attrs; the value is an int)."""
     from mimir.config import settings
+
     return float(settings.broker_backfill_chunk_seconds)
 
 
@@ -118,6 +122,7 @@ def handle_backfill_article_files(req: BackfillArticleFilesRequest) -> Reply:
     budget; that helper wraps its work in
     `write_transaction("backfill_article_files")` already."""
     from mimir.patches import backfill_article_files
+
     result = backfill_article_files(
         limit=req.limit,
         reprocess=req.reprocess,
@@ -130,6 +135,7 @@ def handle_backfill_article_files(req: BackfillArticleFilesRequest) -> Reply:
 def handle_backfill_article_trailers(req: BackfillArticleTrailersRequest) -> Reply:
     """Phase 2.2 chunked backfill of `article_trailers`."""
     from mimir.trailers import backfill_article_trailers
+
     result = backfill_article_trailers(
         limit=req.limit,
         reprocess=req.reprocess,
@@ -145,6 +151,7 @@ def handle_backfill_patch_series(req: BackfillPatchSeriesRequest) -> Reply:
     (subject+author only); still benefits from cooperative
     scheduling on `--reprocess` runs over the full corpus."""
     from mimir.patch_series import backfill_patch_series
+
     result = backfill_patch_series(
         limit=req.limit,
         reprocess=req.reprocess,
@@ -161,6 +168,7 @@ def handle_backfill_canonicals(req: BackfillCanonicalsRequest) -> Reply:
     cooperative-scheduling shape here exists primarily to keep
     `--reprocess` runs from blocking ingest ticks."""
     from mimir.ingest.backfill import backfill_canonicals
+
     result = backfill_canonicals(
         inbox_filter=req.inbox_filter,
         limit=req.limit,

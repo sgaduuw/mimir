@@ -5,8 +5,6 @@ including the post-ingest auto-ANALYZE), and `ingest_all`
 budget). Also covers the multi-worker path and the
 parser-failure-mid-batch ordering guarantee."""
 
-
-
 from sqlalchemy import select
 
 from mimir.ingest import (
@@ -18,10 +16,17 @@ from mimir.models import (
     Inbox,
 )
 
-from tests.test_ingest._helpers import _build_pubinbox_repo, _rfc5322, _setup_alpha_with_messages, _spy_text
+from tests.test_ingest._helpers import (
+    _build_pubinbox_repo,
+    _rfc5322,
+    _setup_alpha_with_messages,
+    _spy_text,
+)
 
 
-def test_ingest_inbox_runs_analyze_when_threshold_reached(seeded_db, tmp_path, monkeypatch):
+def test_ingest_inbox_runs_analyze_when_threshold_reached(
+    seeded_db, tmp_path, monkeypatch
+):
     from mimir.config import settings
 
     alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
@@ -100,7 +105,8 @@ def test_ingest_inbox_invalidates_cache_on_first_ingest(seeded_db, tmp_path):
 
 
 def test_ingest_inbox_warms_per_inbox_cache_when_missing(
-    seeded_db, tmp_path,
+    seeded_db,
+    tmp_path,
 ):
     """When the per-inbox cache rows are missing at the end of a
     moved>0 ingest tick, the post-ingest lazy warm should populate
@@ -120,17 +126,16 @@ def test_ingest_inbox_warms_per_inbox_cache_when_missing(
     ingest_inbox(alpha, workers=1)
 
     assert cache.get(f"archive_stats:{alpha.name}") is not None, (
-        "post-ingest warm should have populated the missing "
-        "archive_stats cache row"
+        "post-ingest warm should have populated the missing archive_stats cache row"
     )
     assert cache.get(f"daily_volume:{alpha.name}:30") is not None, (
-        "post-ingest warm should have populated the missing "
-        "daily_volume cache row"
+        "post-ingest warm should have populated the missing daily_volume cache row"
     )
 
 
 def test_ingest_inbox_warm_preserves_existing_cache_row(
-    seeded_db, tmp_path,
+    seeded_db,
+    tmp_path,
 ):
     """When the per-inbox cache row already exists at the end of a
     moved>0 ingest tick, the post-ingest warm should leave it
@@ -181,7 +186,9 @@ def test_ingest_inbox_does_not_warm_on_noop_tick(seeded_db, tmp_path):
 
 
 def test_ingest_inbox_warm_failure_does_not_break_ingest(
-    seeded_db, tmp_path, monkeypatch,
+    seeded_db,
+    tmp_path,
+    monkeypatch,
 ):
     """The post-ingest warm is best-effort: a failure in any of its
     helper calls is logged at warning and swallowed, so an unrelated
@@ -202,7 +209,8 @@ def test_ingest_inbox_warm_failure_does_not_break_ingest(
 
 
 def test_ingest_inbox_does_not_invalidate_cache_on_steady_state(
-    seeded_db, tmp_path,
+    seeded_db,
+    tmp_path,
 ):
     """An already-populated inbox (last_article_date set) running its
     next ingest does NOT bust the per-inbox cache. Doing so would
@@ -272,14 +280,15 @@ def test_ingest_all_limit_decrements_across_inboxes(seeded_db, tmp_path):
     `limit=500` across 5 inboxes could quietly ingest 2500 messages."""
     alpha_mirror = tmp_path / "alpha"
     alpha_mirror.mkdir()
-    _build_pubinbox_repo(alpha_mirror / "0.git", [
-        _rfc5322(f"alpha-cap-{i}@example.com") for i in range(3)
-    ])
+    _build_pubinbox_repo(
+        alpha_mirror / "0.git",
+        [_rfc5322(f"alpha-cap-{i}@example.com") for i in range(3)],
+    )
     beta_mirror = tmp_path / "beta"
     beta_mirror.mkdir()
-    _build_pubinbox_repo(beta_mirror / "0.git", [
-        _rfc5322(f"beta-cap-{i}@example.com") for i in range(3)
-    ])
+    _build_pubinbox_repo(
+        beta_mirror / "0.git", [_rfc5322(f"beta-cap-{i}@example.com") for i in range(3)]
+    )
 
     with seeded_db() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
@@ -305,8 +314,7 @@ def test_ingest_all_limit_decrements_across_inboxes(seeded_db, tmp_path):
     # rolled through up to 3 if the per-epoch loop is more permissive
     # -- but the *cross-inbox* cap is the contract being tested.
     alpha_total = sum(
-        r.new + r.linked + r.dup_batch + r.dup_db + r.failed
-        for r in out["alpha"]
+        r.new + r.linked + r.dup_batch + r.dup_db + r.failed for r in out["alpha"]
     )
     # alpha consumed at least the cap-worth; beta must not have run.
     assert alpha_total >= 2

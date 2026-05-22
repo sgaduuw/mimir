@@ -29,6 +29,7 @@ shared by all three sub-areas, splitting them out would scatter
 tightly-coupled state for no real win. See #187 for the won't-split
 reasoning.
 """
+
 import logging
 import re
 import shutil
@@ -157,7 +158,7 @@ def validate_mirror_path(mirror_path: str) -> str:
 def _publish_names(session: Session) -> None:
     """Refresh the nav-name cache from the open session. Use after
     any CRUD op so the running web process sees the change."""
-    names = sorted(n for n, in session.execute(select(Inbox.name)))
+    names = sorted(n for (n,) in session.execute(select(Inbox.name)))
     _INBOX_NAMES[:] = names
 
 
@@ -193,8 +194,10 @@ def bootstrap_inboxes() -> dict[str, Inbox]:
     ]
     with SessionLocal() as session:
         if rows:
-            stmt = sqlite_insert(Inbox).values(rows).on_conflict_do_nothing(
-                index_elements=["name"]
+            stmt = (
+                sqlite_insert(Inbox)
+                .values(rows)
+                .on_conflict_do_nothing(index_elements=["name"])
             )
             session.execute(stmt)
             session.commit()
@@ -211,9 +214,7 @@ def list_inboxes() -> list[Inbox]:
     """Every inbox in the DB, ordered by name. Detached from the
     transient session, pass through `session.merge()` if needed."""
     with SessionLocal() as session:
-        return list(
-            session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
-        )
+        return list(session.execute(select(Inbox).order_by(Inbox.name)).scalars().all())
 
 
 def get_inbox(name: str) -> Inbox:
@@ -300,8 +301,14 @@ def update_inbox(
 class InboxRemovalReport:
     """What `delete_inbox()` actually did, for the CLI / admin UI to
     report back to the operator."""
-    __slots__ = ("name", "article_lists_deleted", "ingest_state_deleted",
-                 "orphan_articles_deleted", "mirror_path_deleted")
+
+    __slots__ = (
+        "name",
+        "article_lists_deleted",
+        "ingest_state_deleted",
+        "orphan_articles_deleted",
+        "mirror_path_deleted",
+    )
 
     def __init__(self, name: str):
         self.name = name
@@ -339,14 +346,22 @@ def delete_inbox(
 
         mirror_path_str = inbox.mirror_path
 
-        report.article_lists_deleted = session.execute(
-            select(func.count()).select_from(ArticleList)
-            .where(ArticleList.inbox_id == inbox.id)
-        ).scalar_one() or 0
-        report.ingest_state_deleted = session.execute(
-            select(func.count()).select_from(IngestState)
-            .where(IngestState.inbox_id == inbox.id)
-        ).scalar_one() or 0
+        report.article_lists_deleted = (
+            session.execute(
+                select(func.count())
+                .select_from(ArticleList)
+                .where(ArticleList.inbox_id == inbox.id)
+            ).scalar_one()
+            or 0
+        )
+        report.ingest_state_deleted = (
+            session.execute(
+                select(func.count())
+                .select_from(IngestState)
+                .where(IngestState.inbox_id == inbox.id)
+            ).scalar_one()
+            or 0
+        )
 
         # Cascade-delete via the FK ondelete='CASCADE' on
         # article_lists.inbox_id and ingest_state.inbox_id.
@@ -383,9 +398,10 @@ def delete_inbox(
         if path.name == "git" and path.parent.name == name:
             target = path.parent
         logger.warning(
-            "delete_inbox(%s): rmtree target resolved to %s "
-            "(from mirror_path=%s)",
-            name, target, mirror_path_str,
+            "delete_inbox(%s): rmtree target resolved to %s (from mirror_path=%s)",
+            name,
+            target,
+            mirror_path_str,
         )
         if target.exists():
             shutil.rmtree(target)
@@ -395,7 +411,8 @@ def delete_inbox(
 
 
 def set_tracked_authors(
-    name: str, authors: dict[str, str] | None,
+    name: str,
+    authors: dict[str, str] | None,
 ) -> Inbox:
     """Replace an inbox's tracked-authors dict. `authors=None` (or an
     empty dict) writes NULL, the dashboard renders no tracker tiles
@@ -436,9 +453,7 @@ def remove_tracked_author(name: str, label: str) -> Inbox:
     inbox = get_inbox(name)
     current = dict(inbox.tracked_authors or {})
     if label not in current:
-        raise InboxValidationError(
-            f"inbox {name!r} has no tracker labelled {label!r}"
-        )
+        raise InboxValidationError(f"inbox {name!r} has no tracker labelled {label!r}")
     del current[label]
     return set_tracked_authors(name, current or None)
 

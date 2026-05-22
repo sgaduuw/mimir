@@ -3,8 +3,6 @@ inbox + articles, real thread structure, idempotent on re-
 run, message-URL reachable through the route, inbox-name
 validator)."""
 
-
-
 from click.testing import CliRunner
 from sqlalchemy import select
 
@@ -23,9 +21,12 @@ def test_dev_seed_thread_creates_inbox_and_articles(seeded_db, tmp_path):
     result = CliRunner().invoke(
         dev_seed_thread_command,
         [
-            "--inbox", "dev-thread-test",
-            "--messages", "5",
-            "--mirror-root", str(mirror_root),
+            "--inbox",
+            "dev-thread-test",
+            "--messages",
+            "5",
+            "--mirror-root",
+            str(mirror_root),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -61,9 +62,12 @@ def test_dev_seed_thread_forms_a_real_thread(seeded_db, tmp_path):
     result = CliRunner().invoke(
         dev_seed_thread_command,
         [
-            "--inbox", "dev-thread-shape",
-            "--messages", "6",
-            "--mirror-root", str(tmp_path / "Inboxes"),
+            "--inbox",
+            "dev-thread-shape",
+            "--messages",
+            "6",
+            "--mirror-root",
+            str(tmp_path / "Inboxes"),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -72,12 +76,14 @@ def test_dev_seed_thread_forms_a_real_thread(seeded_db, tmp_path):
         ix = s.execute(
             select(Inbox).where(Inbox.name == "dev-thread-shape")
         ).scalar_one()
-        articles = list(s.execute(
-            select(Article)
-            .join(ArticleList, ArticleList.article_id == Article.id)
-            .where(ArticleList.inbox_id == ix.id)
-            .order_by(Article.date.asc())
-        ).scalars())
+        articles = list(
+            s.execute(
+                select(Article)
+                .join(ArticleList, ArticleList.article_id == Article.id)
+                .where(ArticleList.inbox_id == ix.id)
+                .order_by(Article.date.asc())
+            ).scalars()
+        )
 
     assert len(articles) == 6
     # First article is the root: no thread_parent.
@@ -103,9 +109,12 @@ def test_dev_seed_thread_idempotent_appends_on_rerun(seeded_db, tmp_path):
     from mimir.extensions import SessionLocal
 
     args = [
-        "--inbox", "dev-thread-idempotent",
-        "--messages", "3",
-        "--mirror-root", str(tmp_path / "Inboxes"),
+        "--inbox",
+        "dev-thread-idempotent",
+        "--messages",
+        "3",
+        "--mirror-root",
+        str(tmp_path / "Inboxes"),
     ]
     first = CliRunner().invoke(dev_seed_thread_command, args)
     assert first.exit_code == 0, first.output
@@ -138,9 +147,12 @@ def test_dev_seed_thread_message_url_is_reachable(client, seeded_db, tmp_path):
     result = CliRunner().invoke(
         dev_seed_thread_command,
         [
-            "--inbox", "dev-thread-routable",
-            "--messages", "4",
-            "--mirror-root", str(tmp_path / "Inboxes"),
+            "--inbox",
+            "dev-thread-routable",
+            "--messages",
+            "4",
+            "--mirror-root",
+            str(tmp_path / "Inboxes"),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -168,12 +180,12 @@ def test_dev_seed_thread_rejects_invalid_inbox_name(seeded_db, tmp_path):
     catches `..`, slashes, CR/LF, uppercase, and shell metachars
     in one shot."""
     for bad in (
-        "../escape",     # path traversal
-        "Inbox",         # uppercase (slug must be lowercase)
-        "inbox/sub",     # slash
+        "../escape",  # path traversal
+        "Inbox",  # uppercase (slug must be lowercase)
+        "inbox/sub",  # slash
         "inbox\r\nTo:",  # CRLF header-injection vector
-        "-leading",      # validator forbids hyphen at edges
-        "",              # empty
+        "-leading",  # validator forbids hyphen at edges
+        "",  # empty
     ):
         result = CliRunner().invoke(
             dev_seed_thread_command,

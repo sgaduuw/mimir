@@ -2,6 +2,7 @@
 integration (clone/fetch/load) is exercised separately in
 tests/test_cli_maintainers.py against a fake bare repo.
 """
+
 from mimir.maintainers import (
     MaintainerEntry,
     Subsystem,
@@ -48,8 +49,9 @@ def test_parse_single_maintained_section():
     assert sub.name == "BCACHEFS"
     assert sub.status == "Maintained"
     assert sub.maintainers == [
-        MaintainerEntry(role="M", name="Kent Overstreet",
-                        address="kent.overstreet@linux.dev"),
+        MaintainerEntry(
+            role="M", name="Kent Overstreet", address="kent.overstreet@linux.dev"
+        ),
     ]
     assert sub.lists == ["linux-bcachefs@vger.kernel.org"]
     assert sub.files == ["fs/bcachefs/"]
@@ -70,7 +72,9 @@ def test_parse_multiple_maintainers_and_reviewers():
     )
     sub = parse(blob)[0]
     assert [(m.role, m.address) for m in sub.maintainers] == [
-        ("M", "a@example"), ("M", "b@example"), ("R", "c@example"),
+        ("M", "a@example"),
+        ("M", "b@example"),
+        ("R", "c@example"),
     ]
 
 
@@ -167,11 +171,7 @@ def test_parse_skips_preamble_doc_text():
 def test_parse_handles_missing_status_tag():
     """`status` is None when `S:` is omitted (rare but legal in
     older sections)."""
-    blob = _section(
-        "FOO\n"
-        "M:\tA <a@example>\n"
-        "F:\tfoo/\n"
-    )
+    blob = _section("FOO\nM:\tA <a@example>\nF:\tfoo/\n")
     sub = parse(blob)[0]
     assert sub.status is None
 
@@ -209,12 +209,7 @@ def test_parse_drops_malformed_maintainer_lines():
 
 def test_parse_handles_bare_address_maintainer():
     """`M:\t<bare@addr>` with no display name lands with name=''."""
-    blob = _section(
-        "FOO\n"
-        "M:\t<bare@example>\n"
-        "S:\tMaintained\n"
-        "F:\tfoo/\n"
-    )
+    blob = _section("FOO\nM:\t<bare@example>\nS:\tMaintained\nF:\tfoo/\n")
     sub = parse(blob)[0]
     assert sub.maintainers[0].name == ""
     assert sub.maintainers[0].address == "bare@example"

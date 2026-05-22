@@ -2,12 +2,12 @@
 attachment download + Pygments-syntax-highlighted preview,
 and the race-condition fallback when the git blob is gone."""
 
-
 from tests.test_routes._helpers import _ingest_with_attachment
 
 
 def test_attachment_download_serves_bytes_with_content_disposition(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """The download route returns the attachment bytes verbatim with
     a Content-Disposition header carrying the filename. RFC 6266
@@ -16,7 +16,8 @@ def test_attachment_download_serves_bytes_with_content_disposition(
     `filename=` and `filename*=` appear)."""
     payload = b"hello attachment world"
     url = _ingest_with_attachment(
-        tmp_path, "alpha",
+        tmp_path,
+        "alpha",
         "attach-dl@example.com",
         attachment_filename="hello.bin",
         attachment_content_type="application/octet-stream",
@@ -36,7 +37,8 @@ def test_attachment_index_out_of_range_returns_404(client, tmp_path):
     """An attachment index past the parsed-list length must 404,
     not raise IndexError or hand back an empty body."""
     url = _ingest_with_attachment(
-        tmp_path, "alpha",
+        tmp_path,
+        "alpha",
         "attach-oob@example.com",
         attachment_filename="x.bin",
         attachment_content_type="application/octet-stream",
@@ -66,7 +68,9 @@ def test_attachment_404_when_blob_unreachable_via_read_message(client, seeded_db
 
     # Both download and preview routes go through `_fetch_article_for_attachment`.
     assert client.get(f"/alpha/2024/01/{art_id}/attachment/0").status_code == 404
-    assert client.get(f"/alpha/2024/01/{art_id}/attachment/0/preview").status_code == 404
+    assert (
+        client.get(f"/alpha/2024/01/{art_id}/attachment/0/preview").status_code == 404
+    )
 
 
 def test_attachment_preview_pygmentizes_text(client, tmp_path):
@@ -75,7 +79,8 @@ def test_attachment_preview_pygmentizes_text(client, tmp_path):
     plus the file's contents recognisably."""
     src = b"def hello():\n    return 'world'\n"
     url = _ingest_with_attachment(
-        tmp_path, "alpha",
+        tmp_path,
+        "alpha",
         "attach-preview@example.com",
         attachment_filename="snippet.py",
         attachment_content_type="text/x-python",
@@ -101,7 +106,8 @@ def test_attachment_preview_falls_back_for_non_previewable(client, tmp_path):
     response carries the fallback marker rather than highlighted
     output."""
     url = _ingest_with_attachment(
-        tmp_path, "alpha",
+        tmp_path,
+        "alpha",
         "attach-binary@example.com",
         attachment_filename="payload.bin",
         attachment_content_type="application/octet-stream",

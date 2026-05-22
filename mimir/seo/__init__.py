@@ -16,6 +16,7 @@ Cache keys are stable: bumping `cache.NAMESPACE_VERSION` invalidates
 everything if a payload shape changes, so per-route expiry is purely
 about freshness, not correctness.
 """
+
 from mimir.seo.atom import atom_response
 from mimir.seo.json_ld import (
     DEFAULT_SITE_DESCRIPTION,

@@ -7,6 +7,7 @@ thread-walk SQL path is exercised end-to-end. The matcher tests
 construct `InSeriesPatch` dataclasses directly (no DB) so the
 matching logic is isolated from query shape.
 """
+
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -116,12 +117,15 @@ def test_parse_in_series_patch_subject_zero_padded_cover_still_rejected():
 # --- match_revision_position (DB-free; constructs InSeriesPatch directly) ---
 
 
-def _mock_patch(position: int, subject: str, paths: tuple[str, ...] = ()) -> InSeriesPatch:
+def _mock_patch(
+    position: int, subject: str, paths: tuple[str, ...] = ()
+) -> InSeriesPatch:
     """Build an InSeriesPatch for matcher tests without DB rows.
     `article` is None because the matcher only reads
     canonical_subject and touched_paths."""
     return InSeriesPatch(
-        position=position, article=None,  # type: ignore[arg-type]
+        position=position,
+        article=None,  # type: ignore[arg-type]
         canonical_subject=subject,
         touched_paths=frozenset(paths),
     )
@@ -251,9 +255,9 @@ def test_match_revision_position_higher_overlap_wins_over_lower():
     ]
     v2 = [
         _mock_patch(0, "cover"),
-        _mock_patch(1, "x", paths=("fs/a.c",)),                  # overlap 1
-        _mock_patch(2, "y", paths=("fs/a.c", "fs/b.c")),         # overlap 2
-        _mock_patch(3, "z", paths=("fs/unrelated.c",)),          # overlap 0
+        _mock_patch(1, "x", paths=("fs/a.c",)),  # overlap 1
+        _mock_patch(2, "y", paths=("fs/a.c", "fs/b.c")),  # overlap 2
+        _mock_patch(3, "z", paths=("fs/unrelated.c",)),  # overlap 0
     ]
     result = match_revision_position(v1, v2, 1)
     assert isinstance(result, tuple)
@@ -289,20 +293,31 @@ def test_resolve_series_patches_walks_cover_letter_children(seeded_db):
     with seeded_db() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         cover = _make_article(
-            s, "v1-cover@x", "[PATCH 0/3] series title",
+            s,
+            "v1-cover@x",
+            "[PATCH 0/3] series title",
             paths=(),
         )
         _make_article(
-            s, "v1-1@x", "[PATCH 1/3] foo: do bar",
-            thread_parent=cover.message_id, paths=("fs/foo.c",),
+            s,
+            "v1-1@x",
+            "[PATCH 1/3] foo: do bar",
+            thread_parent=cover.message_id,
+            paths=("fs/foo.c",),
         )
         _make_article(
-            s, "v1-2@x", "[PATCH 2/3] baz: fix bug",
-            thread_parent=cover.message_id, paths=("fs/baz.c",),
+            s,
+            "v1-2@x",
+            "[PATCH 2/3] baz: fix bug",
+            thread_parent=cover.message_id,
+            paths=("fs/baz.c",),
         )
         _make_article(
-            s, "v1-3@x", "[PATCH 3/3] qux: tweak",
-            thread_parent=cover.message_id, paths=("fs/qux.c",),
+            s,
+            "v1-3@x",
+            "[PATCH 3/3] qux: tweak",
+            thread_parent=cover.message_id,
+            paths=("fs/qux.c",),
         )
         s.commit()
         result = resolve_series_patches(s, alpha, cover)
@@ -318,19 +333,29 @@ def test_resolve_series_patches_filters_review_replies(seeded_db):
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         cover = _make_article(s, "cv@x", "[PATCH 0/2] series", paths=())
         _make_article(
-            s, "p1@x", "[PATCH 1/2] foo: do bar",
-            thread_parent=cover.message_id, paths=("fs/foo.c",),
+            s,
+            "p1@x",
+            "[PATCH 1/2] foo: do bar",
+            thread_parent=cover.message_id,
+            paths=("fs/foo.c",),
         )
         _make_article(
-            s, "p2@x", "[PATCH 2/2] baz: fix",
-            thread_parent=cover.message_id, paths=("fs/baz.c",),
+            s,
+            "p2@x",
+            "[PATCH 2/2] baz: fix",
+            thread_parent=cover.message_id,
+            paths=("fs/baz.c",),
         )
         _make_article(
-            s, "r1@x", "Re: [PATCH 1/2] foo: do bar",
+            s,
+            "r1@x",
+            "Re: [PATCH 1/2] foo: do bar",
             thread_parent=cover.message_id,
         )
         _make_article(
-            s, "r2@x", "Re: [PATCH 0/2] series",
+            s,
+            "r2@x",
+            "Re: [PATCH 0/2] series",
             thread_parent=cover.message_id,
         )
         s.commit()
@@ -347,10 +372,14 @@ def test_compute_revision_diff_identical_bodies_marks_is_identical():
     between v1 and v2 of this patch" instead of an empty diff."""
     body = "commit message\n---\n diff --git a/x b/x\n@@\n+ line\n"
     rd = compute_revision_diff(
-        body, body,
-        from_article_id=1, to_article_id=2,
-        from_version="v1", to_version="v2",
-        from_url="/alpha/2024/06/1", to_url="/alpha/2024/06/2",
+        body,
+        body,
+        from_article_id=1,
+        to_article_id=2,
+        from_version="v1",
+        to_version="v2",
+        from_url="/alpha/2024/06/1",
+        to_url="/alpha/2024/06/2",
         position=1,
     )
     assert rd.is_identical is True
@@ -361,10 +390,14 @@ def test_compute_revision_diff_renders_when_bodies_differ():
     """Differing bodies produce non-empty Pygments output;
     `is_identical=False`."""
     rd = compute_revision_diff(
-        "old line\nanother\n", "new line\nanother\n",
-        from_article_id=1, to_article_id=2,
-        from_version="v1", to_version="v2",
-        from_url="/alpha/2024/06/1", to_url="/alpha/2024/06/2",
+        "old line\nanother\n",
+        "new line\nanother\n",
+        from_article_id=1,
+        to_article_id=2,
+        from_version="v1",
+        to_version="v2",
+        from_url="/alpha/2024/06/1",
+        to_url="/alpha/2024/06/2",
         position=1,
     )
     assert rd.is_identical is False
@@ -382,10 +415,14 @@ def test_compute_revision_diff_handles_none_bodies():
     the diff renders the other side as wholly new/removed without
     crashing."""
     rd = compute_revision_diff(
-        None, "some content\n",
-        from_article_id=1, to_article_id=2,
-        from_version="v1", to_version="v2",
-        from_url="/alpha/2024/06/1", to_url="/alpha/2024/06/2",
+        None,
+        "some content\n",
+        from_article_id=1,
+        to_article_id=2,
+        from_version="v1",
+        to_version="v2",
+        from_url="/alpha/2024/06/1",
+        to_url="/alpha/2024/06/2",
         position=0,
     )
     assert rd.is_identical is False
@@ -396,10 +433,14 @@ def test_compute_revision_diff_preserves_metadata_round_trip():
     """All metadata fields land on the returned dataclass unchanged
     so the cache + template can read them back."""
     rd = compute_revision_diff(
-        "a", "b",
-        from_article_id=42, to_article_id=99,
-        from_version="v1", to_version="v3",
-        from_url="/alpha/2024/06/42", to_url="/alpha/2024/06/99",
+        "a",
+        "b",
+        from_article_id=42,
+        to_article_id=99,
+        from_version="v1",
+        to_version="v3",
+        from_url="/alpha/2024/06/42",
+        to_url="/alpha/2024/06/99",
         position=2,
     )
     assert rd.from_article_id == 42
@@ -418,8 +459,11 @@ def test_resolve_series_patches_scoped_to_inbox(seeded_db):
         beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
         cover = _make_article(s, "cv@x", "[PATCH 0/2] series")
         _make_article(
-            s, "p1@x", "[PATCH 1/2] foo: do bar",
-            thread_parent=cover.message_id, paths=("fs/foo.c",),
+            s,
+            "p1@x",
+            "[PATCH 1/2] foo: do bar",
+            thread_parent=cover.message_id,
+            paths=("fs/foo.c",),
         )
         # p2 lives only on beta, NOT on alpha.
         beta_only = Article(

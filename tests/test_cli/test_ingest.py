@@ -3,8 +3,6 @@ shape + the `reindex` command (state rewind, --from-scratch
 destructive mode, missing-epoch + malformed-shape
 ClickException branches)."""
 
-
-
 from click.testing import CliRunner
 from sqlalchemy import select
 
@@ -27,10 +25,13 @@ def test_ingest_command_runs_and_prints_per_epoch_line(seeded_db, tmp_path):
     from mimir.extensions import SessionLocal
 
     mirror = tmp_path / "alpha-mirror"
-    _build_pubinbox_repo(mirror / "2.git", [
-        _rfc5322_msg("cli-ingest-1@example.com"),
-        _rfc5322_msg("cli-ingest-2@example.com"),
-    ])
+    _build_pubinbox_repo(
+        mirror / "2.git",
+        [
+            _rfc5322_msg("cli-ingest-1@example.com"),
+            _rfc5322_msg("cli-ingest-2@example.com"),
+        ],
+    )
     _repoint_inbox("alpha", mirror)
 
     result = CliRunner().invoke(ingest_command, ["--inbox", "alpha"])
@@ -41,11 +42,15 @@ def test_ingest_command_runs_and_prints_per_epoch_line(seeded_db, tmp_path):
 
     with SessionLocal() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        ids = s.execute(
-            select(Article.message_id)
-            .join(ArticleList, ArticleList.article_id == Article.id)
-            .where(ArticleList.inbox_id == alpha.id, ArticleList.epoch == "2.git")
-        ).scalars().all()
+        ids = (
+            s.execute(
+                select(Article.message_id)
+                .join(ArticleList, ArticleList.article_id == Article.id)
+                .where(ArticleList.inbox_id == alpha.id, ArticleList.epoch == "2.git")
+            )
+            .scalars()
+            .all()
+        )
     assert "cli-ingest-1@example.com" in ids
     assert "cli-ingest-2@example.com" in ids
 
@@ -70,10 +75,13 @@ def test_reindex_default_rewinds_state_and_redrives(seeded_db, tmp_path):
     from mimir.models import IngestState
 
     mirror = tmp_path / "alpha-mirror"
-    _build_pubinbox_repo(mirror / "2.git", [
-        _rfc5322_msg("reindex-1@example.com"),
-        _rfc5322_msg("reindex-2@example.com"),
-    ])
+    _build_pubinbox_repo(
+        mirror / "2.git",
+        [
+            _rfc5322_msg("reindex-1@example.com"),
+            _rfc5322_msg("reindex-2@example.com"),
+        ],
+    )
     _repoint_inbox("alpha", mirror)
 
     # First ingest seeds the cursor and the rows.
@@ -101,17 +109,21 @@ def test_reindex_from_scratch_deletes_existing_links(seeded_db, tmp_path):
     from mimir.extensions import SessionLocal
 
     mirror = tmp_path / "alpha-mirror"
-    _build_pubinbox_repo(mirror / "2.git", [
-        _rfc5322_msg("scratch-1@example.com"),
-        _rfc5322_msg("scratch-2@example.com"),
-    ])
+    _build_pubinbox_repo(
+        mirror / "2.git",
+        [
+            _rfc5322_msg("scratch-1@example.com"),
+            _rfc5322_msg("scratch-2@example.com"),
+        ],
+    )
     _repoint_inbox("alpha", mirror)
     CliRunner().invoke(ingest_command, ["--inbox", "alpha"])
 
     with SessionLocal() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         before = s.execute(
-            select(func.count()).select_from(ArticleList)
+            select(func.count())
+            .select_from(ArticleList)
             .where(ArticleList.inbox_id == alpha.id, ArticleList.epoch == "2.git")
         ).scalar_one()
     assert before == 2

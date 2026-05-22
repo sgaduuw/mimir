@@ -12,6 +12,7 @@ parent: In-Reply-To OR last entry of References, computed at ingest):
 A 1000-deep depth limit guards against pathological cycles in the
 underlying data (real lkml threads rarely exceed ~50 deep).
 """
+
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
@@ -47,6 +48,7 @@ class ActiveThread:
     the root, so a brand-new thread posted today with no responses yet
     shows reply_count=0, recent_count=1.
     """
+
     id: int
     inbox_name: str
     message_id: str
@@ -68,7 +70,7 @@ def _coerce_dt(value) -> datetime | None:
         return value
     try:
         return datetime.fromisoformat(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -99,7 +101,9 @@ def find_thread_root(session: Session, inbox: Inbox, message_id: str) -> str | N
     ).scalar()
 
 
-def get_thread(session: Session, inbox: Inbox, root_message_id: str) -> list[ThreadNode]:
+def get_thread(
+    session: Session, inbox: Inbox, root_message_id: str
+) -> list[ThreadNode]:
     """Return the full thread rooted at `root_message_id` within `inbox`,
     depth-first by date."""
     sql = text(
@@ -262,6 +266,7 @@ def active_threads(
     """Most active threads in `inbox` in the last `days` days.
     Cached on disk for ACTIVE_THREADS_CACHE_TTL_SEC (5 min) per
     (inbox, days, limit) key. Pass force=True to bypass and recompute."""
+
     def compute() -> list[ActiveThread]:
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=days)
@@ -286,6 +291,7 @@ def threads_for_day(
 ) -> list[ActiveThread]:
     """Every thread in `inbox` with at least one message on `day`
     (UTC), ordered by last activity desc."""
+
     def compute() -> list[ActiveThread]:
         start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
         end = start + timedelta(days=1)
@@ -326,6 +332,7 @@ def threads_since(
     exceeds the cap; this helper returns whatever fits in the
     capped window.
     """
+
     def compute() -> list[ActiveThread]:
         end = datetime.now(timezone.utc)
         floor = end - timedelta(days=THREADS_SINCE_MAX_DAYS)
@@ -335,8 +342,12 @@ def threads_since(
         if start >= end:
             return []
         return _active_threads_query(
-            session, inbox, start, end,
-            order_by="last_activity", limit=None,
+            session,
+            inbox,
+            start,
+            end,
+            order_by="last_activity",
+            limit=None,
         )
 
     return cache.get_or_compute(
@@ -365,6 +376,7 @@ def threads_for_month(
     `monthly_volume` count so the operator can see the total even when
     the rendered list is capped.
     """
+
     def compute() -> list[ActiveThread]:
         start = datetime(year, month, 1, tzinfo=timezone.utc)
         if month == 12:
