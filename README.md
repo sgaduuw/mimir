@@ -298,16 +298,23 @@ defunct inbox.
 
 `/robots.txt` is rendered from the `robots_rules` table on every
 request. The migration seeds a `*` stanza with the previous
-hardcoded values (`Crawl-delay: 5`, `Disallow: /*/attachment/`),
-so a fresh deploy serves the same body it always did. Operator
-mutates the table via:
+hardcoded values plus Cloudflare-style Content-Signal defaults
+(`Crawl-delay: 5`, `Disallow: /*/attachment/`,
+`Content-Signal: search=yes, ai-input=no, ai-train=no`), so a
+fresh deploy serves the structurally-same body it always did
+with an additional Content-Signal line. Operator mutates the
+table via:
 
 ```sh
 mimir admin robots list
 mimir admin robots show <ua>
-mimir admin robots add <ua> [--disallow PATH ...] [--crawl-delay SECS]
+mimir admin robots add <ua> [--disallow PATH ...] [--crawl-delay SECS] \
+                            [--content-signal KEY=VALUE ...]
 mimir admin robots update <ua> [--add-disallow PATH ...] [--remove-disallow PATH ...] \
-                              [--crawl-delay SECS | --clear-crawl-delay]
+                              [--crawl-delay SECS | --clear-crawl-delay] \
+                              [--set-content-signal KEY=VALUE ...] \
+                              [--clear-content-signal KEY ...] \
+                              [--clear-all-content-signals]
 mimir admin robots remove <ua>
 mimir admin robots reset --yes
 ```
@@ -319,6 +326,19 @@ Common shapes:
   `mimir admin robots update '*' --add-disallow '/private/'`.
 - Tune the global crawl delay:
   `mimir admin robots update '*' --crawl-delay 10`.
+- Flip the AI-training consent on the default stanza:
+  `mimir admin robots update '*' --set-content-signal ai-train=yes`.
+
+### Content Signals
+
+Each stanza can carry the
+[Cloudflare-proposed Content-Signal directive](https://blog.cloudflare.com/content-signals-policy/)
+expressing search / AI-input / AI-training consent. Valid keys
+are `search`, `ai-input`, `ai-train`; values are `yes` or `no`;
+omitting a key expresses no preference. The migration seeds the
+`*` stanza with `search=yes, ai-train=no, ai-input=no`, matching
+the "redaction is a friction layer" posture documented in
+`CONTEXT.md`.
 
 The `*` stanza is structural; `remove '*'` is refused. Use
 `reset` to restore the seeded defaults if a `*` mutation has

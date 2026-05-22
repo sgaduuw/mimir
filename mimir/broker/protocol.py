@@ -365,13 +365,15 @@ class InboxClearTrackedAuthorsRequest(BaseModel):
         return _validate_inbox_name(v)
 
 
-# Mirror of `mimir.robots._UA_RE` / `_PATH_RE`. Duplicated here (rather
-# than imported) so the protocol module stays free of the heavy
-# `mimir.robots` → `mimir.extensions` import chain. The robots-side
-# validator is the canonical source; any change there should update
-# these in lockstep.
+# Mirror of `mimir.robots._UA_RE` / `_PATH_RE` / Content-Signal
+# enums. Duplicated here (rather than imported) so the protocol
+# module stays free of the heavy `mimir.robots` → `mimir.extensions`
+# import chain. The robots-side validator is the canonical source;
+# any change there should update these in lockstep.
 _ROBOTS_UA_RE = re.compile(r"^[\x21-\x7e]{1,64}$")
 _ROBOTS_PATH_RE = re.compile(r"^[/*][\x21-\x7e]{0,255}$")
+_ROBOTS_CS_KEYS = frozenset({"search", "ai-input", "ai-train"})
+_ROBOTS_CS_VALUES = frozenset({"yes", "no"})
 
 
 def _validate_robots_user_agent(v: str) -> str:
@@ -392,6 +394,29 @@ def _validate_robots_paths(v: list[str]) -> list[str]:
     return v
 
 
+def _validate_robots_content_signals(v: dict[str, str]) -> dict[str, str]:
+    for k, val in v.items():
+        if k not in _ROBOTS_CS_KEYS:
+            raise ValueError(
+                f"content_signal key {k!r} must be one of {sorted(_ROBOTS_CS_KEYS)}"
+            )
+        if val not in _ROBOTS_CS_VALUES:
+            raise ValueError(
+                f"content_signal value {val!r} must be one of "
+                f"{sorted(_ROBOTS_CS_VALUES)}"
+            )
+    return v
+
+
+def _validate_robots_content_signal_keys(v: list[str]) -> list[str]:
+    for k in v:
+        if k not in _ROBOTS_CS_KEYS:
+            raise ValueError(
+                f"content_signal key {k!r} must be one of {sorted(_ROBOTS_CS_KEYS)}"
+            )
+    return v
+
+
 class RobotsAddRequest(BaseModel):
     """Insert one new robots_rules row. Handler delegates to
     `mimir.robots.add_rule`."""
@@ -400,6 +425,7 @@ class RobotsAddRequest(BaseModel):
     user_agent: str = Field(min_length=1, max_length=64)
     disallow: list[str] = Field(default_factory=list, max_length=64)
     crawl_delay: int | None = Field(default=None, ge=0, le=86_400)
+    content_signals: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("user_agent")
     @classmethod
@@ -411,12 +437,19 @@ class RobotsAddRequest(BaseModel):
     def _paths_ok(cls, v: list[str]) -> list[str]:
         return _validate_robots_paths(v)
 
+    @field_validator("content_signals")
+    @classmethod
+    def _signals_ok(cls, v: dict[str, str]) -> dict[str, str]:
+        return _validate_robots_content_signals(v)
+
 
 class RobotsUpdateRequest(BaseModel):
     """Mutate one existing robots_rules row. Handler delegates to
     `mimir.robots.update_rule`. `clear_crawl_delay=True` sets the
     column to NULL (distinct from omitting `crawl_delay` which means
-    "don't touch")."""
+    "don't touch"). Content-Signal mutations parallel disallow:
+    `set_content_signal` upserts; `clear_content_signal` (list of
+    keys) removes; `clear_all_content_signals` wipes to NULL."""
 
     op: Literal["robots_update"] = "robots_update"
     user_agent: str = Field(min_length=1, max_length=64)
@@ -424,6 +457,9 @@ class RobotsUpdateRequest(BaseModel):
     remove_disallow: list[str] = Field(default_factory=list, max_length=64)
     crawl_delay: int | None = Field(default=None, ge=0, le=86_400)
     clear_crawl_delay: bool = False
+    set_content_signal: dict[str, str] = Field(default_factory=dict)
+    clear_content_signal: list[str] = Field(default_factory=list, max_length=8)
+    clear_all_content_signals: bool = False
 
     @field_validator("user_agent")
     @classmethod
@@ -434,6 +470,16 @@ class RobotsUpdateRequest(BaseModel):
     @classmethod
     def _paths_ok(cls, v: list[str]) -> list[str]:
         return _validate_robots_paths(v)
+
+    @field_validator("set_content_signal")
+    @classmethod
+    def _set_signals_ok(cls, v: dict[str, str]) -> dict[str, str]:
+        return _validate_robots_content_signals(v)
+
+    @field_validator("clear_content_signal")
+    @classmethod
+    def _clear_signal_keys_ok(cls, v: list[str]) -> list[str]:
+        return _validate_robots_content_signal_keys(v)
 
 
 class RobotsRemoveRequest(BaseModel):
