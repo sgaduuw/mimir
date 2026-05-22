@@ -187,22 +187,53 @@ def test_reset_rules_drops_extras_and_reseeds_star():
 
 
 def test_render_matches_seeded_defaults():
-    """Default body after migration: `*` stanza with Content-Signal
-    (search/ai-input/ai-train), Crawl-delay, and the seeded Disallow
-    path, then Sitemap."""
+    """Default body after migration: preamble (because content_signals
+    is non-empty on the seeded `*` row), then `*` stanza with
+    Content-Signal/Crawl-delay/Disallow, then Sitemap."""
     with SessionLocal() as session:
         body = robots.render_robots_txt(
             session,
             "https://example.com/sitemap.xml",
         )
     assert body == (
-        "User-agent: *\n"
-        "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
-        "Crawl-delay: 5\n"
-        "Disallow: /*/attachment/\n"
-        "\n"
-        "Sitemap: https://example.com/sitemap.xml\n"
+        robots._ROBOTS_PREAMBLE
+        + "User-agent: *\n"
+        + "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
+        + "Crawl-delay: 5\n"
+        + "Disallow: /*/attachment/\n"
+        + "\n"
+        + "Sitemap: https://example.com/sitemap.xml\n"
     )
+
+
+def test_render_preamble_emitted_when_any_signal_present():
+    """Pin the wording: the preamble must include the operator-vs-
+    rightsholder framing and the EU Directive 96/9/EC reference
+    (compilation right) instead of 2019/790 (TDM opt-out) since
+    mimir mirrors third-party authors' work."""
+    with SessionLocal() as session:
+        body = robots.render_robots_txt(session, "https://example.com/sm.xml")
+    assert "Copyright in individual messages belongs to their authors" in body
+    assert "EU Directive 96/9/EC" in body
+    # Don't accidentally regress to the Cloudflare-verbatim wording
+    # that overreaches for a mirror operator.
+    assert "DIRECTIVE 2019/790" not in body
+    assert "EXPRESS RESERVATIONS OF RIGHTS" not in body
+
+
+def test_render_preamble_suppressed_when_no_signals_anywhere():
+    """If every rule has zero content_signals, the preamble's
+    glossary describes directives that don't appear in the file;
+    suppress it to keep the file coherent."""
+    robots.update_rule("*", clear_all_content_signals=True)
+
+    with SessionLocal() as session:
+        body = robots.render_robots_txt(session, "https://example.com/sm.xml")
+    assert "Content-Signal" not in body
+    assert "EU Directive" not in body
+    # The stanza itself still renders.
+    assert "User-agent: *" in body
+    assert "Disallow: /*/attachment/" in body
 
 
 def test_render_emits_per_ua_stanzas():
@@ -212,22 +243,24 @@ def test_render_emits_per_ua_stanzas():
     with SessionLocal() as session:
         body = robots.render_robots_txt(session, "https://example.com/sm.xml")
 
-    # `*` first, then alphabetical (ClaudeBot < GPTBot).
+    # `*` first, then alphabetical (ClaudeBot < GPTBot). Preamble at
+    # the top because the seeded `*` row carries Content-Signal.
     expected = (
-        "User-agent: *\n"
-        "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
-        "Crawl-delay: 5\n"
-        "Disallow: /*/attachment/\n"
-        "\n"
-        "User-agent: ClaudeBot\n"
-        "Crawl-delay: 20\n"
-        "Disallow: /\n"
-        "Disallow: /api/\n"
-        "\n"
-        "User-agent: GPTBot\n"
-        "Disallow: /\n"
-        "\n"
-        "Sitemap: https://example.com/sm.xml\n"
+        robots._ROBOTS_PREAMBLE
+        + "User-agent: *\n"
+        + "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
+        + "Crawl-delay: 5\n"
+        + "Disallow: /*/attachment/\n"
+        + "\n"
+        + "User-agent: ClaudeBot\n"
+        + "Crawl-delay: 20\n"
+        + "Disallow: /\n"
+        + "Disallow: /api/\n"
+        + "\n"
+        + "User-agent: GPTBot\n"
+        + "Disallow: /\n"
+        + "\n"
+        + "Sitemap: https://example.com/sm.xml\n"
     )
     assert body == expected
 
