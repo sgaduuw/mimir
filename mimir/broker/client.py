@@ -645,14 +645,17 @@ class BrokerClient:
         *,
         disallow: list[str] | None = None,
         crawl_delay: int | None = None,
+        content_signals: dict[str, str] | None = None,
         timeout: float = 60.0,
     ) -> dict:
         """Insert one robots_rules row via the broker. Returns the
-        resulting rule dict (`{user_agent, crawl_delay, disallow_paths}`)."""
+        resulting rule dict (`{user_agent, crawl_delay,
+        disallow_paths, content_signals}`)."""
         req = RobotsAddRequest(
             user_agent=user_agent,
             disallow=list(disallow or []),
             crawl_delay=crawl_delay,
+            content_signals=dict(content_signals or {}),
         )
         reply = self._rpc(req.model_dump_json(), timeout=timeout)
         if not reply.ok:
@@ -667,17 +670,26 @@ class BrokerClient:
         remove_disallow: list[str] | None = None,
         crawl_delay: int | None = None,
         clear_crawl_delay: bool = False,
+        set_content_signal: dict[str, str] | None = None,
+        clear_content_signal: list[str] | None = None,
+        clear_all_content_signals: bool = False,
         timeout: float = 60.0,
     ) -> dict:
         """Mutate one robots_rules row via the broker. `clear_crawl_delay`
         is distinct from `crawl_delay=None`: the former writes NULL,
-        the latter leaves the column untouched."""
+        the latter leaves the column untouched. Content-Signal
+        mutations parallel: `set_content_signal` upserts keys;
+        `clear_content_signal` drops specific keys;
+        `clear_all_content_signals` wipes the dict."""
         req = RobotsUpdateRequest(
             user_agent=user_agent,
             add_disallow=list(add_disallow or []),
             remove_disallow=list(remove_disallow or []),
             crawl_delay=crawl_delay,
             clear_crawl_delay=clear_crawl_delay,
+            set_content_signal=dict(set_content_signal or {}),
+            clear_content_signal=list(clear_content_signal or []),
+            clear_all_content_signals=clear_all_content_signals,
         )
         reply = self._rpc(req.model_dump_json(), timeout=timeout)
         if not reply.ok:
