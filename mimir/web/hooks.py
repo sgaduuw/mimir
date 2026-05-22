@@ -85,7 +85,12 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.reviewer_view": "public, max-age=600",
     "web.inbox_feed": "public, max-age=300",
     "web.author_feed": "public, max-age=300",
-    "web.robots_txt": "public, max-age=86400",
+    # /robots.txt is now operator-tunable at runtime (see
+    # `admin robots`). Keep the edge cache short so an
+    # `admin robots add GPTBot --disallow /` propagates within
+    # minutes rather than a day. Matches the sitemap.xml cadence
+    # for the same reason (the underlying state is mutable).
+    "web.robots_txt": "public, max-age=300",
     "web.security_txt": "public, max-age=3600",
     "web.favicon_svg": "public, max-age=604800",
     "web.og_image_png": "public, max-age=604800",
