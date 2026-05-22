@@ -19,7 +19,7 @@ from mimir import cache
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
 from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
-from mimir.threading import ACTIVE_THREADS_CACHE_TTL_SEC, _coerce_dt
+from mimir.threading import _coerce_dt
 
 
 @dataclass
@@ -115,9 +115,16 @@ def articles_reviewed_by(
     ingest); callers should `.lower()` before passing if the input
     came from a URL or untrusted source.
 
-    Cached per `(inbox.name, address, limit)` for the same TTL as
-    the threads helper. Cache key uses the address verbatim, it's
-    already lowercased so casing collisions are impossible.
+    Cached per `(inbox.name, address, limit)` for
+    `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC` (1 hour), matching the rest
+    of the per-subsystem dashboard fan-out the warm cycle drives
+    through this helper. Earlier (1.42.0 and prior) the TTL was
+    `ACTIVE_THREADS_CACHE_TTL_SEC` (5 minutes), shorter than the
+    warm cycle's 450 s refresh window, so every warm tick re-
+    computed all ~140 reviewer rows per inbox. Pinned by
+    `test_articles_reviewed_by_caches_for_one_hour`. Cache key uses
+    the address verbatim, it's already lowercased so casing
+    collisions are impossible.
     """
 
     def compute() -> list[ReviewEntry]:
@@ -180,7 +187,7 @@ def articles_reviewed_by(
     return cache.get_or_compute(
         session,
         f"articles_reviewed_by:{inbox.name}:{address_normalized}:{limit}",
-        ACTIVE_THREADS_CACHE_TTL_SEC,
+        SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
         compute,
         force=force,
     )
