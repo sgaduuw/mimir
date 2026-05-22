@@ -420,9 +420,16 @@ class RobotsRule(Base):
     `User-agent: GPTBot` block).
 
     `disallow_paths` is a JSON list of strings; each renders as one
-    `Disallow:` line. NULL or `[]` plus NULL `crawl_delay` is a
-    no-op row (skipped at render time so a row never produces a
-    stanza with only `User-agent:` and nothing else).
+    `Disallow:` line. NULL or `[]` plus NULL `crawl_delay` plus NULL
+    `content_signals` is a no-op row (skipped at render time so a row
+    never produces a stanza with only `User-agent:` and nothing else).
+
+    `content_signals` is a JSON dict of `key: "yes" | "no"` over the
+    Cloudflare-proposed Content-Signal keys (`search`, `ai-input`,
+    `ai-train`). Rendered as one `Content-Signal: k=v, k=v` line
+    between `User-agent:` and `Crawl-delay:`/`Disallow:`. Operators
+    set per stanza via `admin robots {add,update} <ua>
+    --content-signal …`.
     """
 
     __tablename__ = "robots_rules"
@@ -430,6 +437,10 @@ class RobotsRule(Base):
     user_agent: Mapped[str] = mapped_column(String, primary_key=True)
     crawl_delay: Mapped[int | None] = mapped_column(nullable=True)
     disallow_paths: Mapped[list[str] | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+    content_signals: Mapped[dict[str, str] | None] = mapped_column(
         JSON,
         nullable=True,
     )
