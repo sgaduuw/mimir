@@ -10,7 +10,7 @@ per-inbox cache rows instead of re-doing the underlying SQL.
 
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import click
 from sqlalchemy import select
@@ -26,9 +26,7 @@ from mimir.dashboard import (
     recent_articles,
     this_day_in_history,
 )
-from mimir.extensions import SessionLocal
-from mimir.config import settings
-from mimir.inboxes import bootstrap_inboxes
+from mimir.inboxes import list_inboxes
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems_dashboard import (
     REVIEWS_PER_PAGE_LIMIT,
@@ -341,139 +339,50 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
         */5 * * * * cd ~/Projects/python/mimir && poetry run flask --app mimir warm-cache
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from contextvars import copy_context
 
-    today = datetime.now(timezone.utc).date()
-    yesterday = today - timedelta(days=1)
-    inboxes = bootstrap_inboxes()
-    sitemap_base = (settings.site_base_url or "").rstrip("/")
+    inboxes = {ix.name: ix for ix in list_inboxes()}
     worker_count = workers if workers is not None else min(os.cpu_count() or 1, 8)
     total_start = time.perf_counter()
 
-    # Broker mode (Phase 2.2): fan out warm_inbox RPCs in parallel,
-    # then fire warm_global once the per-inbox fan-out drains.
-    # The broker's N warm-workers chew through the jobs concurrently.
-    # The CLI-side ThreadPool is just a fan-out + collect pattern;
-    # no work runs in this process beyond JSON encode/decode.
-    if settings.broker_socket_path is not None:
-        from mimir.broker.client import BrokerUnavailable, get_broker_client
+    # Fan out warm_inbox RPCs in parallel, then fire warm_global
+    # once the per-inbox fan-out drains. The broker's N warm-workers
+    # chew through the jobs concurrently. The CLI-side ThreadPool is
+    # just a fan-out + collect pattern; no work runs in this process
+    # beyond JSON encode/decode.
+    from mimir.broker.client import BrokerUnavailable, get_broker_client
 
-        client = get_broker_client()
-        total_keys = 0
-        try:
-            with ThreadPoolExecutor(max_workers=worker_count) as pool:
-                futures = {
-                    pool.submit(client.warm_inbox, name): name for name in inboxes
-                }
-                for fut in as_completed(futures):
-                    name = futures[fut]
-                    result = fut.result()
-                    warmed = result.get("warmed", [])
-                    errors = result.get("errors", [])
-                    elapsed_ms = result.get("elapsed_ms", 0)
-                    total_keys += len(warmed)
-                    if verbose:
-                        click.echo(
-                            f"{name}: {len(warmed)} keys "
-                            f"warmed in {elapsed_ms} ms"
-                            + (f" (errors: {len(errors)})" if errors else "")
-                        )
-            # Global Phase B after the per-inbox fan-out drains.
-            global_result = client.warm_global()
-            total_keys += len(global_result.get("warmed", []))
-            if verbose:
-                click.echo(
-                    f"warm_global: {len(global_result.get('warmed', []))} "
-                    f"keys warmed in "
-                    f"{global_result.get('elapsed_ms', 0)} ms"
-                )
-        except BrokerUnavailable as exc:
-            raise click.ClickException(f"broker warm-cache failed: {exc}")
-        total_ms = (time.perf_counter() - total_start) * 1000
-        click.echo(
-            f"warm-cache: {len(inboxes)} inbox{'' if len(inboxes) == 1 else 'es'}, "
-            f"{total_keys} keys, {total_ms:.0f} ms total"
-        )
-        purged = cache_mod.purge_expired()
-        if purged:
-            click.echo(f"purged {purged} expired cache row{'' if purged == 1 else 's'}")
-        return
-
-    # Direct (non-broker) path: build target lists locally and run
-    # them in this process with a ThreadPoolExecutor.
-    phase_a: list[tuple[str, "object"]] = []
-    for inbox in inboxes.values():
-        phase_a.extend(_build_inbox_targets(inbox, today, yesterday, sitemap_base))
-    # Phase B: global aggregators that read per-inbox cache rows.
-    # `most_active_subsystems_global` MUST run after Phase A so it
-    # picks up freshly-warmed per-inbox rows; with parallel Phase A
-    # and no barrier, this target could race a worker still mid-
-    # compute on its inbox's per-inbox key and end up doing the
-    # work itself. Sitemap index/meta join Phase B in 1.37.0
-    # because they're not per-inbox and have no good Phase A slot.
-    phase_b: list[tuple[str, "object"]] = _build_global_targets(sitemap_base)
-    total_keys = len(phase_a) + len(phase_b)
-
-    def _run_target(label: str, fn) -> tuple[str, float]:
-        """Open a fresh session per worker (SQLAlchemy sessions are not
-        thread-safe) and run the target. Returns label + elapsed ms so
-        the main thread can print -v lines and apply backpressure."""
-        t0 = time.perf_counter()
-        with SessionLocal() as session:
-            fn(session)
-        return label, (time.perf_counter() - t0) * 1000
-
-    # TTL-aware refresh: a *cron-period* + jitter buffer. The cron
-    # fires every 5 minutes; refreshing keys whose remaining TTL
-    # is < ~7.5 min means 5-min-TTL keys (active_threads) refresh
-    # every tick, 1-hour-TTL keys (daily_volume, listings) refresh
-    # on the tick that lands inside the last 7.5 min of the hour,
-    # and 24h-TTL keys (archive_stats) refresh on the tick nearest
-    # their daily expiry. Previously every key was force-recomputed
-    # on every tick regardless of TTL headroom.
-    with cache_mod.refresh_window(WARM_CACHE_REFRESH_WITHIN_SEC):
-        if worker_count <= 1:
-            # Single-worker mode: the main-thread context already has
-            # refresh_window set; no need to snapshot.
-            for label, fn in phase_a:
-                lbl, ms = _run_target(label, fn)
+    client = get_broker_client()
+    total_keys = 0
+    try:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            futures = {pool.submit(client.warm_inbox, name): name for name in inboxes}
+            for fut in as_completed(futures):
+                name = futures[fut]
+                result = fut.result()
+                warmed = result.get("warmed", [])
+                errors = result.get("errors", [])
+                elapsed_ms = result.get("elapsed_ms", 0)
+                total_keys += len(warmed)
                 if verbose:
-                    click.echo(f"{lbl}: {ms:.0f} ms")
-            for label, fn in phase_b:
-                lbl, ms = _run_target(label, fn)
-                if verbose:
-                    click.echo(f"{lbl}: {ms:.0f} ms")
-        else:
-            with ThreadPoolExecutor(max_workers=worker_count) as pool:
-                # Each submission snapshots the main-thread context
-                # *inside* the with-block, so refresh_window is
-                # captured. `Context.run` cannot be called concurrently
-                # on the same Context object, so one fresh copy per
-                # future is the safe pattern.
-                futures = [
-                    pool.submit(copy_context().run, _run_target, label, fn)
-                    for label, fn in phase_a
-                ]
-                for fut in as_completed(futures):
-                    lbl, ms = fut.result()
-                    if verbose:
-                        click.echo(f"{lbl}: {ms:.0f} ms")
-            # Phase B serially on the main thread, its targets depend
-            # on Phase A completion, and there's only one of them today.
-            for label, fn in phase_b:
-                lbl, ms = _run_target(label, fn)
-                if verbose:
-                    click.echo(f"{lbl}: {ms:.0f} ms")
-
+                    click.echo(
+                        f"{name}: {len(warmed)} keys warmed in {elapsed_ms} ms"
+                        + (f" (errors: {len(errors)})" if errors else "")
+                    )
+        # Global Phase B after the per-inbox fan-out drains.
+        global_result = client.warm_global()
+        total_keys += len(global_result.get("warmed", []))
+        if verbose:
+            click.echo(
+                f"warm_global: {len(global_result.get('warmed', []))} "
+                f"keys warmed in {global_result.get('elapsed_ms', 0)} ms"
+            )
+    except BrokerUnavailable as exc:
+        raise click.ClickException(f"broker warm-cache failed: {exc}")
     total_ms = (time.perf_counter() - total_start) * 1000
     click.echo(
         f"warm-cache: {len(inboxes)} inbox{'' if len(inboxes) == 1 else 'es'}, "
         f"{total_keys} keys, {total_ms:.0f} ms total"
     )
-
-    # Drop expired rows so the cache table doesn't grow monotonically
-    # as search keys, dated `threads_for_day:...:YYYY-MM-DD` keys, and
-    # `monthly_volume:<inbox>:<year>` keys for past years accumulate.
     purged = cache_mod.purge_expired()
     if purged:
         click.echo(f"purged {purged} expired cache row{'' if purged == 1 else 's'}")

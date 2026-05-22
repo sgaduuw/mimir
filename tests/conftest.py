@@ -41,6 +41,14 @@ _TEST_DB_PATH = os.path.join(_TEST_DB_DIR, "test.db")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH}"
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-real-1234567890abc")
 os.environ.setdefault("FLASK_DEBUG", "false")
+# The test process IS the writer: fixtures need alembic + seed
+# direct against the test SQLite. Setting MIMIR_IS_BROKER=true at
+# import time keeps `_sqlite_pragmas` from issuing `PRAGMA
+# query_only=1` on every connection. In-process broker fixtures
+# (`broker_running`) still work because broker-handler self-RPC
+# avoidance uses a thread-local flag (`_HANDLER_TLS`), independent
+# of this process-wide setting.
+os.environ["MIMIR_IS_BROKER"] = "true"
 
 import pytest  # noqa: E402
 
@@ -69,6 +77,75 @@ def _migrate_db():
 
     engine.dispose()
     # Tempdir is left for the OS to reap; no need to teardown.
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _session_broker(_migrate_db):
+    """One in-process broker for the whole test session.
+
+    Post-2.0.0 CLI commands route every write through the broker
+    via `get_broker_client()`; without a real broker on the socket
+    they fail with `BrokerUnavailable` and the click invocation
+    exits non-zero. This fixture starts one broker for the session
+    and points `settings.broker_socket_path` at its socket.
+
+    Self-bootstrap (alembic + bootstrap_inboxes + post-migrate
+    ANALYZE) is skipped via pre-touched sentinels: the
+    `_migrate_db` fixture already ran alembic, `_reset_db` seeds
+    inboxes per-test, and tests don't want a session-start
+    ANALYZE pass.
+
+    Per-test broker fixtures (`broker_running` in
+    `tests/test_broker/_helpers.py`) still work; they spin up a
+    SECOND broker on a different socket for tests that need
+    isolated broker behaviour, and the calling tests monkeypatch
+    `settings.broker_socket_path` to point at it for their
+    duration."""
+    import threading
+    from pathlib import Path
+
+    # Lazy import to keep conftest's import-time graph lean; the
+    # broker package pulls a lot of mimir in.
+    from mimir.broker.server import build_server
+    from mimir.config import settings
+
+    # /tmp because macOS's AF_UNIX 104-byte limit doesn't admit
+    # the pytest tmp_path under /var/folders/.../T/.
+    sock_dir = Path(tempfile.mkdtemp(prefix="mimir-bsess-", dir="/tmp"))
+    sock_path = sock_dir / "broker.sock"
+
+    # Pre-touch the self-bootstrap sentinels so `build_server`'s
+    # _migrate_if_needed / _bootstrap_inboxes_if_needed /
+    # _post_migrate_analyze_if_needed all short-circuit.
+    (sock_dir / ".migrated").touch()
+    (sock_dir / ".bootstrapped").touch()
+    (sock_dir / ".broker_initial_analyze").touch()
+
+    server = build_server(sock_path)
+    thread = threading.Thread(
+        target=server.serve_forever,
+        kwargs={"poll_interval": 0.05},
+        daemon=True,
+        name="pytest-session-broker",
+    )
+    thread.start()
+
+    prev = settings.broker_socket_path
+    settings.broker_socket_path = sock_path
+    try:
+        yield sock_path
+    finally:
+        settings.broker_socket_path = prev
+        server.stop_event.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        if sock_path.exists():
+            sock_path.unlink()
+        # Sentinels + dir cleanup.
+        for name in (".migrated", ".bootstrapped", ".broker_initial_analyze"):
+            (sock_dir / name).unlink(missing_ok=True)
+        sock_dir.rmdir()
 
 
 @pytest.fixture(autouse=True)

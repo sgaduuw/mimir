@@ -668,23 +668,16 @@ help; as ingest fills the tables the stats stay zero and the
 planner can flip to bad plans (e.g. scanning all of `article_lists`
 instead of walking the date index).
 
-Under broker mode the broker container owns this: a bounded
-`ANALYZE` runs on first start (gated by
-`/data/.broker_initial_analyze`), and the in-loop daily +
-weekly-full ticks RPC to the broker. Operator-transparent; just
-keep the scheduler tasks container's cadence env vars (see
+The broker container owns this: a bounded `ANALYZE` runs on first
+start (gated by `/data/.broker_initial_analyze`), and the in-loop
+daily + weekly-full ticks RPC to the broker. Operator-transparent;
+just keep the scheduler tasks container's cadence env vars (see
 deploy/README.md) at their defaults.
 
-Without broker mode, run the bounded form periodically:
+For ad-hoc operator runs:
 
 ```sh
 poetry run mimir analyze
-```
-
-Pass `--full` to drop the per-connection `analysis_limit` cap for
-this pass:
-
-```sh
 poetry run mimir analyze --full
 ```
 
@@ -692,9 +685,7 @@ The bounded form runs in 1 to 3 s on the lkml-scale corpus and is
 accurate enough for the common join shapes. The `--full` pass
 re-samples every row of every index, holds the writer lock 25 to
 30 s, and is the safety net for distribution drift in long-tail
-indexes the bounded sample might miss. Run daily (bounded) and
-weekly (full) via cron; the systemd timers ship in
-`deploy/systemd/` carry this cadence.
+indexes the bounded sample might miss.
 
 Example crontab pair:
 
@@ -710,10 +701,10 @@ dev), see `deploy/README.md`. Three shapes are covered:
 
 - **Container**, `Dockerfile` and `compose.yaml` at the repo root.
   Multi-stage build, non-root runtime, gunicorn behind a `${WORKERS}`
-  knob, auto-`alembic upgrade head` on start, `/healthz` container
-  healthcheck, `/data` (with `/data/db/` and `/data/Inboxes/`
-  subpaths) as the single bind mount. `docker compose up --build`
-  once `SECRET_KEY` is set.
+  knob, broker container self-bootstraps `alembic upgrade head` on
+  first start, `/healthz` container healthcheck, `/data` (with
+  `/data/db/` and `/data/Inboxes/` subpaths) as the single bind
+  mount. `docker compose up --build` once `SECRET_KEY` is set.
 - **systemd**, `deploy/systemd/` carries the web-server unit plus
   three timer/oneshot pairs replacing the cron lines for warm-cache
   (every minute), analyze (daily), and vacuum (weekly). For the
@@ -726,23 +717,32 @@ dev), see `deploy/README.md`. Three shapes are covered:
   TLS site block with the `X-Forwarded-Proto` and `X-Request-Id`
   headers mimir reads).
 
-### Broker mode (opt-in)
+### Architecture: broker as the sole writer
 
-The compose deployment supports an optional third container,
-`mimir-broker`, that owns the sole SQLite writer connection for
-every periodic and admin write op (cache writes, ingest,
-backfills, warm-cache, `update-mainline`, `analyze`, `vacuum`,
-`bootstrap-inboxes`, `admin inbox` CRUD, `admin failures
-replay`). Web and scheduler-tasks containers run with
-`PRAGMA query_only=1` and dispatch their writes via RPC over a
-UNIX socket. The contract is "broker is the sole SQLite writer;
-everything else is `query_only=1`."
+mimir 2.0.0 runs three containers (see `compose.yaml`):
 
-Opt-in in the 1.x line, mandatory in 2.0.0. Enable by
-uncommenting three blocks in `compose.yaml` (env on web + tasks
-plus the `mimir-broker:` service block); see `deploy/README.md`
-for the step-by-step, healthcheck shape, and post-migrate
-`ANALYZE` bootstrap behaviour.
+- **`mimir-broker`** owns the sole SQLite writer connection.
+  Serves cache + admin RPCs over a UNIX socket at
+  `/data/.broker.sock`. Self-bootstraps on startup (`alembic
+  upgrade head` → `bootstrap_inboxes` → bounded post-migrate
+  `ANALYZE`), each gated by a sentinel file so subsequent
+  restarts skip. Internal periodic purge thread drops expired
+  cache rows.
+- **`mimir`** is the web tier. Opens every SQLite connection with
+  `PRAGMA query_only=1`; cache writes route through the broker
+  socket. Depends on the broker's healthcheck so cold requests
+  after deploy don't hit an un-migrated schema.
+- **`mimir-tasks`** is the scheduler. Also `query_only=1`. Fires
+  RPCs at the broker on a timer (warm-cache, update, mainline
+  refresh, ANALYZE, VACUUM). No direct SQLite writes.
+
+The invariant: broker is the sole SQLite writer; everything else
+is `query_only=1`. `MIMIR_IS_BROKER=true` flags the broker
+container; `MIMIR_DEPLOY=true` flags the web + tasks containers
+(triggers `query_only=1` and refuses `FLASK_DEBUG=true`).
+
+See `deploy/README.md` for the step-by-step, healthcheck shape,
+and bootstrap-sentinel layout.
 
 ## Mainline tree (MAINTAINERS)
 

@@ -326,11 +326,11 @@ class _BrokerServer(socketserver.UnixStreamServer):
                 # `cache.delete_for_inbox` etc. falls through to the
                 # direct write path rather than attempting a self-RPC
                 # back through the socket. Production handles the
-                # same concern via `MIMIR_ROLE=broker` env at the
+                # same concern via `MIMIR_IS_BROKER=true` env at the
                 # process level, but the in-process test environment
-                # shares `settings.mimir_role` between broker thread
-                # and CLI invocations; the thread-local flag is the
-                # right granularity in either case.
+                # shares `settings.mimir_is_broker` between broker
+                # thread and CLI invocations; the thread-local flag
+                # is the right granularity in either case.
                 cache._set_broker_handler_active(True)
                 try:
                     reply = dispatch(line)
@@ -457,6 +457,86 @@ def _check_peer_uid(sock: socket.socket) -> bool:
     return True
 
 
+def _migrate_if_needed(socket_path: Path) -> None:
+    """Run `alembic upgrade head` once on broker startup so the broker
+    can serve against a schema known to be current. Gated on a
+    sentinel file next to the broker socket; subsequent restarts
+    skip when the sentinel is present.
+
+    2.0.0 moved schema-migration ownership onto the broker because
+    it's a write operation and broker is the sole writer process
+    post-cleanup. The pre-2.0.0 shape ran `alembic upgrade head` on
+    the tasks container as a startup-only direct write; consolidating
+    here matches the single-writer invariant without exception."""
+    sentinel = socket_path.parent / ".migrated"
+    if sentinel.exists():
+        logger.debug(
+            "broker: alembic-upgrade sentinel %s present, skipping migrate",
+            sentinel,
+        )
+        return
+    logger.info("broker: running alembic upgrade head")
+    t0 = time.monotonic()
+    try:
+        from alembic import command
+        from alembic.config import Config
+
+        cfg = Config("alembic.ini")
+        # Use the same DB URL the rest of the broker process opens.
+        cfg.set_main_option("sqlalchemy.url", settings.database_url)
+        command.upgrade(cfg, "head")
+    except Exception:
+        # Refuse to start: a migration failure is load-bearing for
+        # everything downstream. The healthcheck stays red so web /
+        # tasks containers wait for an operator fix.
+        logger.exception("broker: alembic upgrade failed, refusing to start")
+        raise
+    elapsed = time.monotonic() - t0
+    sentinel.touch()
+    logger.info(
+        "broker: alembic upgrade head complete in %.1fs; sentinel %s touched",
+        elapsed,
+        sentinel,
+    )
+
+
+def _bootstrap_inboxes_if_needed(socket_path: Path) -> None:
+    """Reconcile `Settings.inboxes` (env config) into the `inboxes`
+    table on broker startup. Idempotent via `ON CONFLICT (name) DO
+    NOTHING`; admin edits to existing rows are never clobbered.
+
+    Sentinel-gated. The post-2.0.0 broker container owns this work
+    because it's a write; pre-2.0.0 the tasks container's
+    `mimir bootstrap-inboxes` did it as a startup-only direct write."""
+    sentinel = socket_path.parent / ".bootstrapped"
+    if sentinel.exists():
+        logger.debug(
+            "broker: inbox-bootstrap sentinel %s present, skipping",
+            sentinel,
+        )
+        return
+    logger.info("broker: running bootstrap_inboxes")
+    t0 = time.monotonic()
+    try:
+        from mimir.inboxes import bootstrap_inboxes
+
+        result = bootstrap_inboxes()
+    except Exception:
+        # Same posture as `_migrate_if_needed`: bootstrap is
+        # load-bearing for the web tier's first request, refuse to
+        # advertise readiness without it.
+        logger.exception("broker: bootstrap_inboxes failed, refusing to start")
+        raise
+    elapsed = time.monotonic() - t0
+    sentinel.touch()
+    logger.info(
+        "broker: bootstrap_inboxes reconciled %d inbox(es) in %.1fs; sentinel %s touched",
+        len(result),
+        elapsed,
+        sentinel,
+    )
+
+
 def _post_migrate_analyze_if_needed(socket_path: Path) -> None:
     """Run `ANALYZE` once after a fresh schema migration so the
     planner has stats for any newly-created index. Bounded by the
@@ -556,14 +636,24 @@ def build_server(socket_path: Path) -> _BrokerServer:
         os.umask(prev_umask)
     os.chmod(sp, 0o660)
     server.start_workers()
-    # Post-migrate ANALYZE BEFORE we log "listening". A fresh
-    # deploy where `alembic upgrade head` just added a new index
-    # needs `sqlite_stat1` populated before the broker accepts the
-    # first cache.set; the web tier gates on the broker's healthcheck
-    # so cold requests after deploy don't walk un-ANALYZE'd indexes.
-    # Sentinel-gated, subsequent restarts skip. Lives in
-    # `build_server` (not `serve`) so the test helper exercises the
-    # same path.
+    # Self-bootstrap sequence, in order, BEFORE we log "listening":
+    #
+    #   1. Alembic schema migration: schema must be at HEAD before
+    #      anything else writes.
+    #   2. Bootstrap inboxes: reconcile env config into the
+    #      `inboxes` table so the web tier sees its expected rows
+    #      on the first request.
+    #   3. Post-migrate ANALYZE: a fresh schema migration may have
+    #      added indexes whose `sqlite_stat1` needs populating
+    #      before the planner sees them; the bounded pass takes
+    #      1-3 s on the production corpus.
+    #
+    # Each is sentinel-gated. The web tier gates on the broker's
+    # healthcheck so cold requests after deploy never hit any of
+    # these in-progress. Lives in `build_server` (not `serve`) so
+    # the test helper exercises the same path.
+    _migrate_if_needed(sp)
+    _bootstrap_inboxes_if_needed(sp)
     _post_migrate_analyze_if_needed(sp)
     logger.info("broker: listening on %s", sp)
     return server
