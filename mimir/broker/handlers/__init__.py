@@ -61,6 +61,10 @@ from mimir.broker.handlers.maintenance import (
     handle_inbox_remove_tracked_author,
     handle_inbox_set_tracked_authors,
     handle_inbox_update,
+    handle_robots_add,
+    handle_robots_remove,
+    handle_robots_reset,
+    handle_robots_update,
     handle_update_mainline,
     handle_vacuum,
 )
@@ -90,6 +94,10 @@ from mimir.broker.protocol import (
     IngestInboxRequest,
     PingRequest,
     Reply,
+    RobotsAddRequest,
+    RobotsRemoveRequest,
+    RobotsResetRequest,
+    RobotsUpdateRequest,
     UpdateMainlineRequest,
     VacuumRequest,
     WarmGlobalRequest,
@@ -122,6 +130,10 @@ LONG_OPS: frozenset[str] = frozenset(
         "inbox_add_tracked_author",
         "inbox_remove_tracked_author",
         "inbox_clear_tracked_authors",
+        "robots_add",
+        "robots_update",
+        "robots_remove",
+        "robots_reset",
     }
 )
 
@@ -194,6 +206,10 @@ _DISPATCH: dict[str, tuple[type, Callable]] = {
         InboxClearTrackedAuthorsRequest,
         handle_inbox_clear_tracked_authors,
     ),
+    "robots_add": (RobotsAddRequest, handle_robots_add),
+    "robots_update": (RobotsUpdateRequest, handle_robots_update),
+    "robots_remove": (RobotsRemoveRequest, handle_robots_remove),
+    "robots_reset": (RobotsResetRequest, handle_robots_reset),
     "warm_inbox": (WarmInboxRequest, handle_warm_inbox),
     "warm_global": (WarmGlobalRequest, handle_warm_global),
 }

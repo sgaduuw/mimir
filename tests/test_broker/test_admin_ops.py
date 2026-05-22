@@ -21,6 +21,12 @@ from mimir.cli.admin.inbox import (
     admin_inbox_trackers_set_command,
     admin_inbox_update_command,
 )
+from mimir.cli.admin.robots import (
+    admin_robots_add_command,
+    admin_robots_remove_command,
+    admin_robots_reset_command,
+    admin_robots_update_command,
+)
 from mimir.config import settings
 from tests.test_broker._helpers import broker_running, short_socket_path
 
@@ -540,3 +546,231 @@ def test_broker_self_bootstrap_analyze_skipped_when_sentinel_present(
     finally:
         if sentinel.exists():
             sentinel.unlink()
+
+
+# ----- robots admin ------------------------------------------------------
+
+
+def test_classify_op_recognises_robots_ops():
+    """The four robots admin ops must route to the long queue."""
+    for op in ("robots_add", "robots_update", "robots_remove", "robots_reset"):
+        assert op in handlers.LONG_OPS
+
+
+@pytest.mark.parametrize(
+    "op_name",
+    ["robots_add", "robots_update", "robots_remove", "robots_reset"],
+)
+def test_dispatch_table_routes_robots_ops(op_name):
+    from mimir.broker.handlers import _DISPATCH
+
+    assert op_name in _DISPATCH
+    model, handler = _DISPATCH[op_name]
+    assert callable(handler)
+    assert hasattr(model, "model_validate")
+
+
+def test_robots_add_via_broker_inserts_row(seeded_db):
+    from mimir.extensions import SessionLocal
+
+    sp = short_socket_path("robots-add")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            payload = c.robots_add("GPTBot", disallow=["/"], crawl_delay=10)
+        finally:
+            c.close()
+
+    assert payload == {
+        "user_agent": "GPTBot",
+        "crawl_delay": 10,
+        "disallow_paths": ["/"],
+    }
+
+    from mimir import robots as svc
+
+    with SessionLocal() as s:
+        rule = svc.get_rule(s, "GPTBot")
+    assert rule is not None
+    assert rule.disallow_paths == ["/"]
+
+
+def test_robots_add_duplicate_returns_invalid_error(seeded_db):
+    """Adding a UA that already has a row surfaces as
+    InvalidRobotsRule on the wire; client raises BrokerUnavailable
+    carrying the structured prefix."""
+    from mimir import robots as svc
+
+    svc.add_rule("GPTBot", disallow=["/"])
+
+    sp = short_socket_path("robots-add-dup")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            with pytest.raises(BrokerUnavailable) as ei:
+                c.robots_add("GPTBot", disallow=["/"])
+        finally:
+            c.close()
+    assert "InvalidRobotsRule:" in str(ei.value)
+
+
+def test_robots_update_via_broker_mutates_row(seeded_db):
+    sp = short_socket_path("robots-update")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            payload = c.robots_update(
+                "*",
+                add_disallow=["/private/"],
+                crawl_delay=30,
+            )
+        finally:
+            c.close()
+    assert payload["user_agent"] == "*"
+    assert payload["crawl_delay"] == 30
+    assert "/private/" in payload["disallow_paths"]
+    assert "/*/attachment/" in payload["disallow_paths"]
+
+
+def test_robots_remove_via_broker_drops_row(seeded_db):
+    from mimir import robots as svc
+    from mimir.extensions import SessionLocal
+
+    svc.add_rule("GPTBot", disallow=["/"])
+
+    sp = short_socket_path("robots-remove")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            c.robots_remove("GPTBot")
+        finally:
+            c.close()
+
+    with SessionLocal() as s:
+        assert svc.get_rule(s, "GPTBot") is None
+
+
+def test_robots_remove_star_refused(seeded_db):
+    """Service-layer guard fires server-side; client raises with the
+    `InvalidRobotsRule:` prefix."""
+    from mimir.extensions import SessionLocal
+
+    sp = short_socket_path("robots-remove-star")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            with pytest.raises(BrokerUnavailable) as ei:
+                c.robots_remove("*")
+        finally:
+            c.close()
+    assert "InvalidRobotsRule:" in str(ei.value)
+    from mimir import robots as svc
+
+    with SessionLocal() as s:
+        assert svc.get_rule(s, "*") is not None
+
+
+def test_robots_reset_via_broker_reseeds_defaults(seeded_db):
+    from mimir import robots as svc
+    from mimir.extensions import SessionLocal
+
+    svc.add_rule("GPTBot", disallow=["/"])
+    svc.update_rule("*", crawl_delay=99)
+
+    sp = short_socket_path("robots-reset")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            c.robots_reset()
+        finally:
+            c.close()
+
+    with SessionLocal() as s:
+        rules = svc.list_rules(s)
+    assert [r.user_agent for r in rules] == ["*"]
+    assert rules[0].crawl_delay == 5
+    assert rules[0].disallow_paths == ["/*/attachment/"]
+
+
+def test_cli_admin_robots_add_dispatches_via_broker(seeded_db, monkeypatch):
+    """`mimir admin robots add` routes through the broker when
+    BROKER_SOCKET_PATH is set."""
+    from mimir.extensions import SessionLocal
+
+    sp = short_socket_path("cli-robots-add")
+    with broker_running(sp):
+        monkeypatch.setattr(settings, "broker_socket_path", sp)
+        from mimir.broker import client as _client_mod
+
+        _client_mod.reset_broker_client()
+        try:
+            result = CliRunner().invoke(
+                admin_robots_add_command,
+                ["GPTBot", "--disallow", "/"],
+            )
+        finally:
+            _client_mod.reset_broker_client()
+    assert result.exit_code == 0, result.output
+    assert "added rule for user_agent 'GPTBot'" in result.output
+
+    from mimir import robots as svc
+
+    with SessionLocal() as s:
+        assert svc.get_rule(s, "GPTBot") is not None
+
+
+def test_cli_admin_robots_remove_star_preserves_error_text(seeded_db, monkeypatch):
+    """`admin robots remove '*'` should surface the bare service-layer
+    error text via the CLI, not the broker wrapper text."""
+    sp = short_socket_path("cli-robots-rm-star")
+    with broker_running(sp):
+        monkeypatch.setattr(settings, "broker_socket_path", sp)
+        from mimir.broker import client as _client_mod
+
+        _client_mod.reset_broker_client()
+        try:
+            result = CliRunner().invoke(
+                admin_robots_remove_command,
+                ["*"],
+            )
+        finally:
+            _client_mod.reset_broker_client()
+    assert result.exit_code != 0
+    assert "cannot remove the '*' stanza" in result.output
+    assert "broker" not in result.output
+
+
+def test_cli_admin_robots_update_dispatches_via_broker(seeded_db, monkeypatch):
+    sp = short_socket_path("cli-robots-update")
+    with broker_running(sp):
+        monkeypatch.setattr(settings, "broker_socket_path", sp)
+        from mimir.broker import client as _client_mod
+
+        _client_mod.reset_broker_client()
+        try:
+            result = CliRunner().invoke(
+                admin_robots_update_command,
+                ["*", "--add-disallow", "/private/"],
+            )
+        finally:
+            _client_mod.reset_broker_client()
+    assert result.exit_code == 0, result.output
+    assert "/private/" in result.output
+
+
+def test_cli_admin_robots_reset_dispatches_via_broker(seeded_db, monkeypatch):
+    sp = short_socket_path("cli-robots-reset")
+    with broker_running(sp):
+        monkeypatch.setattr(settings, "broker_socket_path", sp)
+        from mimir.broker import client as _client_mod
+
+        _client_mod.reset_broker_client()
+        try:
+            result = CliRunner().invoke(
+                admin_robots_reset_command,
+                ["--yes"],
+            )
+        finally:
+            _client_mod.reset_broker_client()
+    assert result.exit_code == 0, result.output
+    assert "reset" in result.output
