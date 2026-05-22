@@ -7,6 +7,7 @@ uses. The HTTP transport is monkeypatched at
 `mimir._outbound.OUTBOUND_OPENER.open` (the hardened opener used by
 the production caller) so no real network traffic flies during tests.
 """
+
 import json
 
 import pytest
@@ -19,6 +20,7 @@ from mimir.models import Article
 
 class _StubResponse:
     """Context-manager-compatible urlopen() return-value stand-in."""
+
     def __init__(self, status: int = 200):
         self.status = status
 
@@ -43,13 +45,15 @@ def captured_indexnow(monkeypatch):
     def _fake_open(req, timeout=None):
         body = req.data
         payload = json.loads(body.decode("utf-8")) if body else None
-        calls.append({
-            "url": req.full_url,
-            "method": req.get_method(),
-            "headers": dict(req.headers),
-            "payload": payload,
-            "timeout": timeout,
-        })
+        calls.append(
+            {
+                "url": req.full_url,
+                "method": req.get_method(),
+                "headers": dict(req.headers),
+                "payload": payload,
+                "timeout": timeout,
+            }
+        )
         return _StubResponse(status=200)
 
     monkeypatch.setattr(indexnow.OUTBOUND_OPENER, "open", _fake_open)
@@ -97,7 +101,9 @@ def test_notify_posts_expected_payload(captured_indexnow, monkeypatch):
     monkeypatch.setattr(settings, "indexnow_key", "deadbeef" * 4)
     monkeypatch.setattr(settings, "site_base_url", "https://example.test")
     monkeypatch.setattr(
-        settings, "indexnow_endpoint", "https://api.indexnow.org/indexnow",
+        settings,
+        "indexnow_endpoint",
+        "https://api.indexnow.org/indexnow",
     )
     urls = [
         "https://example.test/lkml/2024/01/1",
@@ -116,9 +122,7 @@ def test_notify_posts_expected_payload(captured_indexnow, monkeypatch):
     payload = call["payload"]
     assert payload["host"] == "example.test"
     assert payload["key"] == "deadbeef" * 4
-    assert payload["keyLocation"] == (
-        "https://example.test/" + "deadbeef" * 4 + ".txt"
-    )
+    assert payload["keyLocation"] == ("https://example.test/" + "deadbeef" * 4 + ".txt")
     assert payload["urlList"] == urls
 
 
@@ -142,6 +146,7 @@ def test_notify_swallows_network_errors(monkeypatch, caplog):
     caller. The scheduler tick keeps going; the sitemap is the
     durable signal."""
     from urllib.error import URLError
+
     monkeypatch.setattr(settings, "indexnow_key", "k" * 32)
     monkeypatch.setattr(settings, "site_base_url", "https://example.test")
 
@@ -164,15 +169,20 @@ def test_build_urls_uses_canonical_inbox(seeded_db):
     # to alpha so two ArticleList rows exist, then pin canonical to
     # alpha.
     from mimir.models import ArticleList, Inbox
+
     with seeded_db() as s:
         article = s.execute(
             select(Article).where(Article.message_id == "art2@example.com")
         ).scalar_one()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        s.add(ArticleList(
-            article_id=article.id, inbox_id=alpha.id,
-            epoch="0.git", commit_sha="x" * 40,
-        ))
+        s.add(
+            ArticleList(
+                article_id=article.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="x" * 40,
+            )
+        )
         article.canonical_inbox_id = alpha.id
         s.commit()
         article_id = article.id
@@ -180,7 +190,9 @@ def test_build_urls_uses_canonical_inbox(seeded_db):
 
     with seeded_db() as s:
         urls = indexnow.build_urls(
-            s, ["art2@example.com"], base="https://example.test",
+            s,
+            ["art2@example.com"],
+            base="https://example.test",
         )
     assert len(urls) == 1
     assert urls[0] == (
@@ -198,15 +210,20 @@ def test_build_urls_falls_back_when_canonical_inbox_vanished(seeded_db):
     push. Pins the canonical-pick rule's behaviour at the FK
     SET-NULL race boundary."""
     from mimir.models import ArticleList, Inbox
+
     with seeded_db() as s:
         article = s.execute(
             select(Article).where(Article.message_id == "art2@example.com")
         ).scalar_one()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        s.add(ArticleList(
-            article_id=article.id, inbox_id=alpha.id,
-            epoch="0.git", commit_sha="x" * 40,
-        ))
+        s.add(
+            ArticleList(
+                article_id=article.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="x" * 40,
+            )
+        )
         # Simulate the FK SET NULL state: cross-posted but no
         # canonical pin.
         article.canonical_inbox_id = None
@@ -216,7 +233,9 @@ def test_build_urls_falls_back_when_canonical_inbox_vanished(seeded_db):
 
     with seeded_db() as s:
         urls = indexnow.build_urls(
-            s, ["art2@example.com"], base="https://example.test",
+            s,
+            ["art2@example.com"],
+            base="https://example.test",
         )
     # Falls back to alphabetical first: alpha before beta.
     assert urls == [
@@ -232,7 +251,9 @@ def test_build_urls_skips_unknown_message_ids(seeded_db):
     silently. Better than emitting URLs that 404."""
     with seeded_db() as s:
         urls = indexnow.build_urls(
-            s, ["does-not-exist@example.com"], base="https://example.test",
+            s,
+            ["does-not-exist@example.com"],
+            base="https://example.test",
         )
     assert urls == []
 
@@ -256,6 +277,7 @@ def test_indexnow_key_route_serves_key_when_set(monkeypatch):
     submitter controls the host."""
     monkeypatch.setattr(settings, "indexnow_key", "abc1234567890abcdef")
     from mimir import create_app
+
     c = create_app().test_client()
     r = c.get("/abc1234567890abcdef.txt")
     assert r.status_code == 200
@@ -269,6 +291,7 @@ def test_indexnow_key_route_only_matches_configured_key(monkeypatch):
     that we're not exposing a `/<arbitrary>.txt` catchall."""
     monkeypatch.setattr(settings, "indexnow_key", "real-key-value-here")
     from mimir import create_app
+
     c = create_app().test_client()
     assert c.get("/real-key-value-here.txt").status_code == 200
     # Non-matching `.txt` paths still 404 (after following the
@@ -282,9 +305,12 @@ def test_update_skips_push_when_above_per_tick_cap(monkeypatch, caplog):
     truncate to the cap; that's still a backfill, just slower).
     The sitemap is the durable discovery path for the backlog."""
     from mimir.cli import _push_indexnow
+
     notify_calls = []
     monkeypatch.setattr(
-        indexnow, "notify", lambda urls: notify_calls.append(urls) or 0,
+        indexnow,
+        "notify",
+        lambda urls: notify_calls.append(urls) or 0,
     )
     monkeypatch.setattr(settings, "indexnow_key", "k" * 32)
     monkeypatch.setattr(settings, "site_base_url", "https://example.test")
@@ -294,18 +320,19 @@ def test_update_skips_push_when_above_per_tick_cap(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="mimir.cli"):
         _push_indexnow([f"m{i}@example.com" for i in range(6)])
     assert notify_calls == []
-    assert any(
-        "exceeds INDEXNOW_MAX_PER_TICK" in r.message for r in caplog.records
-    )
+    assert any("exceeds INDEXNOW_MAX_PER_TICK" in r.message for r in caplog.records)
 
 
 def test_update_no_op_when_no_new_messages(monkeypatch):
     """Steady-state tick with no new articles: don't open a session
     or call notify."""
     from mimir.cli import _push_indexnow
+
     notify_calls = []
     monkeypatch.setattr(
-        indexnow, "notify", lambda urls: notify_calls.append(urls) or 0,
+        indexnow,
+        "notify",
+        lambda urls: notify_calls.append(urls) or 0,
     )
     monkeypatch.setattr(settings, "indexnow_key", "k" * 32)
     monkeypatch.setattr(settings, "site_base_url", "https://example.test")
@@ -319,9 +346,12 @@ def test_update_no_op_when_key_unset(monkeypatch):
     a push. notify itself also guards this, but the CLI short-
     circuits to avoid a wasted DB query in the dev path."""
     from mimir.cli import _push_indexnow
+
     notify_calls = []
     monkeypatch.setattr(
-        indexnow, "notify", lambda urls: notify_calls.append(urls) or 0,
+        indexnow,
+        "notify",
+        lambda urls: notify_calls.append(urls) or 0,
     )
     monkeypatch.setattr(settings, "indexnow_key", None)
 
@@ -330,7 +360,9 @@ def test_update_no_op_when_key_unset(monkeypatch):
 
 
 def test_update_echoes_one_line_on_successful_push(
-    seeded_db, monkeypatch, capsys,
+    seeded_db,
+    monkeypatch,
+    capsys,
 ):
     """Successful submissions surface in default scheduler output
     via click.echo, not just the INFO-level log (which is hidden at
@@ -338,6 +370,7 @@ def test_update_echoes_one_line_on_successful_push(
     ...` lines, anything in the scheduler journal signals a real
     event."""
     from mimir.cli import _push_indexnow
+
     monkeypatch.setattr(indexnow, "notify", lambda urls: len(urls))
     monkeypatch.setattr(settings, "indexnow_key", "k" * 32)
     monkeypatch.setattr(settings, "site_base_url", "https://example.test")
@@ -352,13 +385,16 @@ def test_update_echoes_one_line_on_successful_push(
 
 
 def test_update_no_echo_when_notify_returns_zero(
-    seeded_db, monkeypatch, capsys,
+    seeded_db,
+    monkeypatch,
+    capsys,
 ):
     """notify swallows failures and returns 0 on network/HTTP
-    errors. In that case there's no successful push to announce  
+    errors. In that case there's no successful push to announce
     the warning log inside notify already covers the failure; we
     don't want a second misleading "pushed 0 URL(s)" line."""
     from mimir.cli import _push_indexnow
+
     monkeypatch.setattr(indexnow, "notify", lambda urls: 0)
     monkeypatch.setattr(settings, "indexnow_key", "k" * 32)
     monkeypatch.setattr(settings, "site_base_url", "https://example.test")

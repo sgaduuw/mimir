@@ -2,7 +2,6 @@
 unscoped redirect and the `/<inbox>/m/<id>` scoped form,
 including 301 vs 302 contract and canonical-inbox routing."""
 
-
 import pytest
 from tests.test_routes._helpers import _any_article_in
 

@@ -63,10 +63,7 @@ def _sqlite_pragmas(dbapi_conn, _conn_record) -> None:
     # RW so ingest/backfill/update-mainline still work; the broker
     # itself (MIMIR_ROLE=broker) also keeps RW because it IS the
     # writer.
-    elif (
-        settings.broker_socket_path is not None
-        and settings.mimir_role == "web"
-    ):
+    elif settings.broker_socket_path is not None and settings.mimir_role == "web":
         cur.execute("PRAGMA query_only=1")
     cur.close()
 
@@ -77,7 +74,8 @@ def _sqlite_pragmas(dbapi_conn, _conn_record) -> None:
 # default; the connection only takes the writer lock on its first
 # write statement).
 _WRITE_TXN: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "mimir_write_txn", default=False,
+    "mimir_write_txn",
+    default=False,
 )
 
 # Operator-facing label for the current write_transaction()'s slow
@@ -85,7 +83,8 @@ _WRITE_TXN: contextvars.ContextVar[bool] = contextvars.ContextVar(
 # commit/rollback time. `None` means "unlabelled"; the slow log
 # falls back to a sentinel string so the line is still grep-able.
 _WRITE_TXN_LABEL: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "mimir_write_txn_label", default=None,
+    "mimir_write_txn_label",
+    default=None,
 )
 
 # Perf-counter timestamp of the last BEGIN IMMEDIATE inside a
@@ -93,8 +92,8 @@ _WRITE_TXN_LABEL: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 # commit / rollback event fires and the slow-log decision is made,
 # so a subsequent BEGIN inside the same `with write_transaction()`
 # block starts a fresh measurement.
-_WRITE_TXN_STARTED_AT: contextvars.ContextVar[float | None] = (
-    contextvars.ContextVar("mimir_write_txn_started_at", default=None)
+_WRITE_TXN_STARTED_AT: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "mimir_write_txn_started_at", default=None
 )
 
 
@@ -185,7 +184,9 @@ def _emit_slow_write_log_if_needed(*, rolled_back: bool) -> None:
     verb = "slow rollback" if rolled_back else "slow"
     logger.warning(
         "write_transaction %s: label=%s held=%.1fms",
-        verb, label, elapsed_ms,
+        verb,
+        label,
+        elapsed_ms,
     )
 
 

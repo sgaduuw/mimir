@@ -5,6 +5,7 @@ that takes a verbosity flag or an `--inbox` filter; `_fmt_bytes` formats
 sizes for the maintenance commands; `_parse_pair` parses the
 `LABEL=SUBSTRING` shape used by `admin inbox trackers set`.
 """
+
 import logging
 import re
 
@@ -69,9 +70,7 @@ def _fmt_bytes(n: int) -> str:
 
 def _parse_pair(pair: str) -> tuple[str, str]:
     if "=" not in pair:
-        raise click.ClickException(
-            f"expected LABEL=SUBSTRING, got {pair!r}"
-        )
+        raise click.ClickException(f"expected LABEL=SUBSTRING, got {pair!r}")
     label, substring = pair.split("=", 1)
     return label, substring
 

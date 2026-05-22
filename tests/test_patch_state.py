@@ -1,5 +1,6 @@
 """Unit tests for `mimir.patch_state.patch_state_for_article`: the
 helper feeding the message-page state card (#208)."""
+
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -73,7 +74,8 @@ def _add_alpha_article(s, message_id, subject, *, trailers=(), date=None, paths=
     Returns the persisted Article."""
     alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
     art = Article(
-        message_id=message_id, subject=subject,
+        message_id=message_id,
+        subject=subject,
         author="Maintainer <m@example.com>",
         date=date or datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc),
         thread_parent=None,
@@ -82,7 +84,9 @@ def _add_alpha_article(s, message_id, subject, *, trailers=(), date=None, paths=
         files=[ArticleFile(path=p) for p in paths],
         trailers=[
             ArticleTrailer(
-                role=role, name=name, address=addr,
+                role=role,
+                name=name,
+                address=addr,
                 address_normalized=addr.lower(),
             )
             for role, name, addr in trailers
@@ -100,7 +104,8 @@ def test_patch_state_for_non_patch_returns_empty(seeded_db):
         art = _add_alpha_article(s, "non-patch@x", "just a discussion")
         s.commit()
         state = patch_state_for_article(
-            s, art,
+            s,
+            art,
             thread_dates=[art.date],
             subsystem_ids=[],
             inbox_name="alpha",
@@ -118,7 +123,9 @@ def test_patch_state_trailer_roll_up_groups_by_role(seeded_db):
     out in `INDEXED_TRAILER_ROLES` order, not insertion order."""
     with seeded_db() as s:
         art = _add_alpha_article(
-            s, "rollup@x", "[PATCH 1/2] foo: do bar",
+            s,
+            "rollup@x",
+            "[PATCH 1/2] foo: do bar",
             trailers=[
                 ("Reviewed-by", "Alice", "alice@example.com"),
                 ("Reviewed-by", "Bob", "bob@example.com"),
@@ -130,8 +137,11 @@ def test_patch_state_trailer_roll_up_groups_by_role(seeded_db):
         )
         s.commit()
         state = patch_state_for_article(
-            s, art,
-            thread_dates=[art.date], subsystem_ids=[], inbox_name="alpha",
+            s,
+            art,
+            thread_dates=[art.date],
+            subsystem_ids=[],
+            inbox_name="alpha",
             force=True,
         )
     assert state.is_patch is True
@@ -139,7 +149,9 @@ def test_patch_state_trailer_roll_up_groups_by_role(seeded_db):
     assert counts == {"Reviewed-by": 3, "Acked-by": 1, "Tested-by": 2}
     # Ordering follows the canonical role tuple, not insertion order.
     assert [t.role for t in state.trailers] == [
-        "Reviewed-by", "Acked-by", "Tested-by",
+        "Reviewed-by",
+        "Acked-by",
+        "Tested-by",
     ]
 
 
@@ -150,29 +162,41 @@ def test_patch_state_trailer_marks_maintainer_attestations(seeded_db):
     with seeded_db() as s:
         sub = Subsystem(name="FOOBAR", status="Supported")
         sub.paths.append(SubsystemPath(glob="fs/foo/", is_exclude=False))
-        sub.maintainers.append(SubsystemMaintainer(
-            role="M", name="Alice", address="alice@example.com",
-        ))
-        sub.maintainers.append(SubsystemMaintainer(
-            role="R", name="Bob", address="bob@example.com",
-        ))
+        sub.maintainers.append(
+            SubsystemMaintainer(
+                role="M",
+                name="Alice",
+                address="alice@example.com",
+            )
+        )
+        sub.maintainers.append(
+            SubsystemMaintainer(
+                role="R",
+                name="Bob",
+                address="bob@example.com",
+            )
+        )
         s.add(sub)
         s.flush()
         art = _add_alpha_article(
-            s, "maint@x", "[PATCH 1/2] foo: fix it",
+            s,
+            "maint@x",
+            "[PATCH 1/2] foo: fix it",
             trailers=[
                 ("Reviewed-by", "Alice", "alice@example.com"),  # M:
-                ("Reviewed-by", "Bob", "bob@example.com"),      # R:
+                ("Reviewed-by", "Bob", "bob@example.com"),  # R:
                 ("Reviewed-by", "Carol", "carol@example.com"),  # random
-                ("Acked-by", "Dave", "dave@example.com"),       # random
+                ("Acked-by", "Dave", "dave@example.com"),  # random
             ],
             paths=("fs/foo/file.c",),
         )
         s.commit()
         state = patch_state_for_article(
-            s, art,
+            s,
+            art,
             thread_dates=[art.date],
-            subsystem_ids=[sub.id], inbox_name="alpha",
+            subsystem_ids=[sub.id],
+            inbox_name="alpha",
             force=True,
         )
     rev = next(t for t in state.trailers if t.role == "Reviewed-by")
@@ -190,9 +214,11 @@ def test_patch_state_no_trailers_no_subsystems_skips_row(seeded_db):
         art = _add_alpha_article(s, "naked@x", "[PATCH 1/2] foo: do bar")
         s.commit()
         state = patch_state_for_article(
-            s, art,
+            s,
+            art,
             thread_dates=[art.date],
-            subsystem_ids=[], inbox_name="alpha",
+            subsystem_ids=[],
+            inbox_name="alpha",
             force=True,
         )
     assert state.trailers == []
@@ -203,16 +229,21 @@ def test_patch_state_surfaces_mainline_landing(seeded_db):
     message_id surfaces in `mainline_landings`."""
     with seeded_db() as s:
         art = _add_alpha_article(s, "landed@x", "[PATCH 1/2] foo: land")
-        s.add(MainlineCommit(
-            commit_sha="deadbeef" * 5,
-            tree_name="linus",
-            message_id="landed@x",
-            committed_at=datetime(2024, 7, 1, 0, 0, tzinfo=timezone.utc),
-        ))
+        s.add(
+            MainlineCommit(
+                commit_sha="deadbeef" * 5,
+                tree_name="linus",
+                message_id="landed@x",
+                committed_at=datetime(2024, 7, 1, 0, 0, tzinfo=timezone.utc),
+            )
+        )
         s.commit()
         state = patch_state_for_article(
-            s, art,
-            thread_dates=[art.date], subsystem_ids=[], inbox_name="alpha",
+            s,
+            art,
+            thread_dates=[art.date],
+            subsystem_ids=[],
+            inbox_name="alpha",
             force=True,
         )
     assert len(state.mainline_landings) == 1
@@ -231,8 +262,11 @@ def test_patch_state_landing_row_empty_when_not_landed(seeded_db):
         art = _add_alpha_article(s, "in-flight@x", "[PATCH 1/2] foo: WIP")
         s.commit()
         state = patch_state_for_article(
-            s, art,
-            thread_dates=[art.date], subsystem_ids=[], inbox_name="alpha",
+            s,
+            art,
+            thread_dates=[art.date],
+            subsystem_ids=[],
+            inbox_name="alpha",
             force=True,
         )
     assert state.mainline_landings == []
@@ -255,9 +289,13 @@ def test_patch_state_series_timeline_with_diff_links(seeded_db):
                 subject_normalized=f"[patch {version} 0/2] common series title",
                 patch_series_key="testkeyseries",
                 patch_series_version=version,
-                lists=[ArticleList(
-                    inbox_id=alpha.id, epoch="0.git", commit_sha="bb" * 20,
-                )],
+                lists=[
+                    ArticleList(
+                        inbox_id=alpha.id,
+                        epoch="0.git",
+                        commit_sha="bb" * 20,
+                    )
+                ],
             )
 
         v1 = _cover("v1-cv@x", "v1", datetime(2024, 6, 1, tzinfo=timezone.utc))
@@ -272,9 +310,13 @@ def test_patch_state_series_timeline_with_diff_links(seeded_db):
             subject_normalized="[patch v2 0/2] common series title",
             patch_series_key="testkeyseries",
             patch_series_version="v2",
-            lists=[ArticleList(
-                inbox_id=alpha.id, epoch="0.git", commit_sha="cc" * 20,
-            )],
+            lists=[
+                ArticleList(
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="cc" * 20,
+                )
+            ],
         )
         # v1 also needs a series_key + version; the helper here writes
         # them since we're bypassing ingest.
@@ -284,9 +326,11 @@ def test_patch_state_series_timeline_with_diff_links(seeded_db):
         s.commit()
         # Pretend we're viewing v2 (the latest revision).
         state = patch_state_for_article(
-            s, v2,
+            s,
+            v2,
             thread_dates=[v2.date],
-            subsystem_ids=[], inbox_name="alpha",
+            subsystem_ids=[],
+            inbox_name="alpha",
             force=True,
         )
     versions = [e.version for e in state.series]
@@ -315,17 +359,22 @@ def test_patch_state_series_timeline_renders_on_in_series_patch(seeded_db):
         # 1/3 rows, not the 2/3 siblings.
         rows = [
             Article(
-                message_id=mid, subject=subj, author="A <a@x>",
+                message_id=mid,
+                subject=subj,
+                author="A <a@x>",
                 date=datetime(2024, 6, day, tzinfo=timezone.utc),
                 thread_parent=None,
                 subject_normalized=subj.lower(),
                 patch_series_key="sk",
                 patch_series_version=ver,
                 patch_series_position=pos,
-                lists=[ArticleList(
-                    inbox_id=alpha.id, epoch="0.git",
-                    commit_sha=str(day).zfill(2) * 20,
-                )],
+                lists=[
+                    ArticleList(
+                        inbox_id=alpha.id,
+                        epoch="0.git",
+                        commit_sha=str(day).zfill(2) * 20,
+                    )
+                ],
             )
             for mid, subj, ver, pos, day in [
                 ("v1-1of3@x", "[PATCH 1/3] foo: A", "v1", 1, 1),
@@ -338,9 +387,11 @@ def test_patch_state_series_timeline_renders_on_in_series_patch(seeded_db):
         s.commit()
         v2_1of3 = next(r for r in rows if r.message_id == "v2-1of3@x")
         state = patch_state_for_article(
-            s, v2_1of3,
+            s,
+            v2_1of3,
             thread_dates=[v2_1of3.date],
-            subsystem_ids=[], inbox_name="alpha",
+            subsystem_ids=[],
+            inbox_name="alpha",
             force=True,
         )
     # Two entries: v1 and v2 of position 1/3. The 2/3 siblings are
@@ -377,9 +428,11 @@ def test_patch_state_series_empty_for_solo_revision(seeded_db):
         s.add(v1)
         s.commit()
         state = patch_state_for_article(
-            s, v1,
+            s,
+            v1,
             thread_dates=[v1.date],
-            subsystem_ids=[], inbox_name="alpha",
+            subsystem_ids=[],
+            inbox_name="alpha",
             force=True,
         )
     assert state.series == []
@@ -392,9 +445,11 @@ def test_patch_state_activity_no_replies(seeded_db):
         art = _add_alpha_article(s, "lonely@x", "[PATCH 1/2] foo: solo")
         s.commit()
         state = patch_state_for_article(
-            s, art,
+            s,
+            art,
             thread_dates=[art.date],
-            subsystem_ids=[], inbox_name="alpha",
+            subsystem_ids=[],
+            inbox_name="alpha",
             force=True,
         )
     assert state.days_since_last_reply is None
@@ -407,14 +462,18 @@ def test_patch_state_activity_computes_days_since_last_reply(seeded_db):
         post_date = datetime.now(timezone.utc) - timedelta(days=10)
         reply_date = datetime.now(timezone.utc) - timedelta(days=3)
         art = _add_alpha_article(
-            s, "with-replies@x", "[PATCH 1/2] foo: do bar",
+            s,
+            "with-replies@x",
+            "[PATCH 1/2] foo: do bar",
             date=post_date,
         )
         s.commit()
         state = patch_state_for_article(
-            s, art,
+            s,
+            art,
             thread_dates=[post_date, reply_date],
-            subsystem_ids=[], inbox_name="alpha",
+            subsystem_ids=[],
+            inbox_name="alpha",
             force=True,
         )
     # Allow ±1 day slack for timing variance crossing midnight UTC
@@ -427,17 +486,25 @@ def test_patch_state_is_cached(seeded_db):
     the cache shape so a future encoder change surfaces here."""
     with seeded_db() as s:
         art = _add_alpha_article(
-            s, "cached@x", "[PATCH 1/2] foo: do bar",
+            s,
+            "cached@x",
+            "[PATCH 1/2] foo: do bar",
             trailers=[("Reviewed-by", "A", "a@example.com")],
         )
         s.commit()
         first = patch_state_for_article(
-            s, art,
-            thread_dates=[art.date], subsystem_ids=[], inbox_name="alpha",
+            s,
+            art,
+            thread_dates=[art.date],
+            subsystem_ids=[],
+            inbox_name="alpha",
         )
         second = patch_state_for_article(
-            s, art,
-            thread_dates=[art.date], subsystem_ids=[], inbox_name="alpha",
+            s,
+            art,
+            thread_dates=[art.date],
+            subsystem_ids=[],
+            inbox_name="alpha",
         )
     # Same shape; cache round-trip didn't lose information.
     assert first.is_patch == second.is_patch
@@ -451,6 +518,7 @@ def test_patch_state_trailer_count_is_serializable_dataclass():
     properly typed (the cache encoder iterates `dataclasses.fields`
     and would fail for a non-dataclass)."""
     import dataclasses
+
     assert dataclasses.is_dataclass(StateTrailerCount)
     assert dataclasses.is_dataclass(StateMainlineLanding)
     assert dataclasses.is_dataclass(StateSeriesEntry)

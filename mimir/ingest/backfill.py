@@ -19,6 +19,7 @@ NULL-date rows, which `nullslast()` used to bucket at the very end,
 now fall in their natural id position. They were rare and carry
 no list-address signal anyway.
 """
+
 import logging
 import time
 from datetime import datetime, timezone
@@ -54,6 +55,7 @@ class BackfillResult(BaseModel):
     `partial` + `continuation` carry the cooperative-scheduling handoff
     between broker chunks (Phase 2.2). Direct (non-broker) callers
     always see `partial=False, continuation=None`."""
+
     examined: int = 0
     resolved: int = 0
     unresolved: int = 0
@@ -119,12 +121,20 @@ def backfill_canonicals(
 
     def refresh_address_map(session: Session) -> None:
         nonlocal address_to_inbox_id, demoted_inbox_ids
-        address_to_inbox_id = dict(session.execute(
-            select(Inbox.list_address, Inbox.id).where(Inbox.list_address.isnot(None))
-        ).all())
-        demoted_inbox_ids = frozenset(session.execute(
-            select(Inbox.id).where(Inbox.name.in_(settings.canonical_demoted_inboxes))
-        ).scalars())
+        address_to_inbox_id = dict(
+            session.execute(
+                select(Inbox.list_address, Inbox.id).where(
+                    Inbox.list_address.isnot(None)
+                )
+            ).all()
+        )
+        demoted_inbox_ids = frozenset(
+            session.execute(
+                select(Inbox.id).where(
+                    Inbox.name.in_(settings.canonical_demoted_inboxes)
+                )
+            ).scalars()
+        )
 
     def get_inbox(session: Session, inbox_id: int) -> Inbox:
         ix = inbox_cache.get(inbox_id)
@@ -157,8 +167,7 @@ def backfill_canonicals(
     # between the backfill's read of the next article batch and its
     # write of canonical_inbox_id / inbox_address_observations.
     label = (
-        f"backfill_canonicals:{inbox_filter}"
-        if inbox_filter else "backfill_canonicals"
+        f"backfill_canonicals:{inbox_filter}" if inbox_filter else "backfill_canonicals"
     )
     deadline: float | None = (
         time.monotonic() + max_seconds if max_seconds is not None else None
@@ -180,9 +189,11 @@ def backfill_canonicals(
             if not reprocess:
                 q = q.where(Article.canonical_inbox_id.is_(None))
             if inbox_filter is not None:
-                q = q.join(ArticleList, ArticleList.article_id == Article.id) \
-                     .join(Inbox, Inbox.id == ArticleList.inbox_id) \
-                     .where(Inbox.name == inbox_filter)
+                q = (
+                    q.join(ArticleList, ArticleList.article_id == Article.id)
+                    .join(Inbox, Inbox.id == ArticleList.inbox_id)
+                    .where(Inbox.name == inbox_filter)
+                )
             if cursor is not None:
                 q = q.where(Article.id < cursor)
             batch = list(session.execute(q).scalars())
@@ -202,11 +213,13 @@ def backfill_canonicals(
                 # have one ArticleList row per inbox, all pointing at
                 # the same logical message; first try the lowest-id
                 # inbox.
-                links = list(session.execute(
-                    select(ArticleList.inbox_id)
-                    .where(ArticleList.article_id == article.id)
-                    .order_by(ArticleList.inbox_id)
-                ).scalars())
+                links = list(
+                    session.execute(
+                        select(ArticleList.inbox_id)
+                        .where(ArticleList.article_id == article.id)
+                        .order_by(ArticleList.inbox_id)
+                    ).scalars()
+                )
 
                 parsed = None
                 for inbox_id in links:
@@ -217,13 +230,17 @@ def backfill_canonicals(
                     except MessageNotFound as exc:
                         logger.debug(
                             "backfill: %s blob not in %s: %s",
-                            article.message_id, ix.name, exc,
+                            article.message_id,
+                            ix.name,
+                            exc,
                         )
                         continue
                     except Exception as exc:
                         logger.warning(
                             "backfill: parse failed for %s in %s: %r",
-                            article.message_id, ix.name, exc,
+                            article.message_id,
+                            ix.name,
+                            exc,
                         )
                         continue
                 if parsed is None:
@@ -247,7 +264,9 @@ def backfill_canonicals(
                                 bucket[addr] = (cnt + 1, max(ts, obs_time))
 
                 new_canonical = pick_canonical_inbox_id(
-                    list_addrs, address_to_inbox_id, demoted_inbox_ids,
+                    list_addrs,
+                    address_to_inbox_id,
+                    demoted_inbox_ids,
                 )
                 if new_canonical != article.canonical_inbox_id:
                     article.canonical_inbox_id = new_canonical

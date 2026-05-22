@@ -8,6 +8,7 @@ knowing the date. Both routes 301-redirect to the canonical URL:
   explicit choice; the destination page's `<link rel="canonical">`
   still points at the canonical for crawlers).
 """
+
 from flask import abort, redirect
 from sqlalchemy import select
 
@@ -34,11 +35,13 @@ def message_id_lookup(message_id: str):
         ).scalar_one_or_none()
         if article is None:
             abort(404)
-        links = list(session.execute(
-            select(Inbox.id, Inbox.name)
-            .join(ArticleList, ArticleList.inbox_id == Inbox.id)
-            .where(ArticleList.article_id == article.id)
-        ).all())
+        links = list(
+            session.execute(
+                select(Inbox.id, Inbox.name)
+                .join(ArticleList, ArticleList.inbox_id == Inbox.id)
+                .where(ArticleList.article_id == article.id)
+            ).all()
+        )
         if not links:
             abort(404)
     inbox_name = _canonical_inbox_name(article, links)

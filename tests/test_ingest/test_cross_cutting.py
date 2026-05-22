@@ -5,7 +5,6 @@ backfill). Filed here rather than in any one ingest
 submodule because the SQL runs against the schema, not
 through the ingest pipeline."""
 
-
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -31,12 +30,14 @@ def test_migration_backfill_sql_populates_last_article_date(seeded_db):
     SQL inline and verify both inboxes pick up the right max."""
     from datetime import datetime
     from sqlalchemy import text
+
     with seeded_db() as s:
         # Simulate the pre-upgrade state.
         s.execute(text("UPDATE inboxes SET last_article_date = NULL"))
         # Verbatim from alembic/versions/...
-        s.execute(text(
-            """
+        s.execute(
+            text(
+                """
             UPDATE inboxes
             SET last_article_date = (
                 SELECT MAX(a.date)
@@ -45,12 +46,11 @@ def test_migration_backfill_sql_populates_last_article_date(seeded_db):
                 WHERE al.inbox_id = inboxes.id
             )
             """
-        ))
+            )
+        )
         s.commit()
     with seeded_db() as s:
-        rows = s.execute(
-            select(Inbox.name, Inbox.last_article_date)
-        ).all()
+        rows = s.execute(select(Inbox.name, Inbox.last_article_date)).all()
     by_name = {n: d for n, d in rows}
     assert _naive_utc(by_name["alpha"]) == datetime(2024, 3, 1, 12, 0)
     assert _naive_utc(by_name["beta"]) == datetime(2024, 3, 1, 12, 0)
@@ -62,6 +62,7 @@ def test_migration_backfill_sets_position_zero_on_keyed_covers(seeded_db):
     (Slice 1 only keyed covers). Pins the upgrade-against-populated-DB
     path without re-running alembic."""
     from sqlalchemy import text
+
     with seeded_db() as s:
         # Seed a "pre-#212" cover: key set, position NULL.
         cover = Article(
@@ -78,13 +79,15 @@ def test_migration_backfill_sets_position_zero_on_keyed_covers(seeded_db):
         s.add(cover)
         s.commit()
         # Verbatim from alembic/versions/...patch_series_position.py
-        s.execute(text(
-            """
+        s.execute(
+            text(
+                """
             UPDATE articles
             SET patch_series_position = 0
             WHERE patch_series_key IS NOT NULL
             """
-        ))
+            )
+        )
         s.commit()
     with seeded_db() as s:
         reloaded = s.execute(

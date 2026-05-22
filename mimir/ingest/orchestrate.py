@@ -5,6 +5,7 @@ walks them one at a time and runs `ANALYZE` once enough rows have moved
 to invalidate the SQLite query planner's `sqlite_stat1`. `ingest_all`
 fans out across every configured inbox.
 """
+
 import logging
 from pathlib import Path
 
@@ -111,15 +112,22 @@ def ingest_inbox(
         # call mutates last_article_date in this session. Used below
         # to decide whether this run is an empty-to-non-empty
         # transition that should bust the per-inbox cache.
-        was_empty = session.execute(
-            select(Inbox.last_article_date).where(Inbox.id == attached.id)
-        ).scalar_one() is None
+        was_empty = (
+            session.execute(
+                select(Inbox.last_article_date).where(Inbox.id == attached.id)
+            ).scalar_one()
+            is None
+        )
         for epoch_path in discover_epochs(Path(attached.mirror_path)):
             if remaining is not None and remaining <= 0:
                 break
             r = ingest_epoch(
-                session, attached, epoch_path.name, epoch_path,
-                limit=remaining, workers=workers,
+                session,
+                attached,
+                epoch_path.name,
+                epoch_path,
+                limit=remaining,
+                workers=workers,
             )
             results.append(r)
             if remaining is not None:
@@ -181,7 +189,8 @@ def ingest_inbox(
         except Exception:
             logger.warning(
                 "post-ingest cache warm failed for %s",
-                inbox.name, exc_info=True,
+                inbox.name,
+                exc_info=True,
             )
 
     return results
@@ -195,6 +204,7 @@ def ingest_all(
     """Ingest every supplied inbox. Returns {inbox_name: [IngestResult, ...]}."""
     if inboxes is None:
         from mimir.inboxes import bootstrap_inboxes
+
         inboxes = bootstrap_inboxes()
 
     out: dict[str, list[IngestResult]] = {}

@@ -125,7 +125,8 @@ def test_server_warns_on_slow_rpc(seeded_db, caplog, monkeypatch):
             c.close()
 
     slow_warnings = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelno == logging.WARNING and "broker slow rpc" in r.getMessage()
     ]
     assert slow_warnings, (
@@ -171,12 +172,11 @@ def test_server_does_not_warn_when_threshold_disabled(seeded_db, caplog, monkeyp
             c.close()
 
     slow_warnings = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelno == logging.WARNING and "broker slow rpc" in r.getMessage()
     ]
-    assert not slow_warnings, (
-        "threshold=0 must disable slow-rpc warnings"
-    )
+    assert not slow_warnings, "threshold=0 must disable slow-rpc warnings"
 
 
 def test_server_serves_two_clients_concurrently(seeded_db):
@@ -242,6 +242,7 @@ def test_server_serves_many_clients_concurrently(seeded_db):
     with broker_running(sp):
         clients = [BrokerClient(sp) for _ in range(n_clients)]
         try:
+
             def _worker(cid: int) -> None:
                 c = clients[cid]
                 for i in range(rpcs_per_client):

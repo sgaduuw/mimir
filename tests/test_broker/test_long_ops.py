@@ -12,6 +12,7 @@ Covers:
 - The two-worker design lets a cache op flow even while the long
   worker is busy with a deliberately slow op.
 """
+
 import threading
 import time
 
@@ -28,8 +29,11 @@ def test_classify_op_recognises_cache_ops():
     `cache_purge_expired`, and `ping` are all cache ops; they must
     NOT show up in `LONG_OPS`."""
     for op in (
-        "cache_set", "cache_delete", "cache_delete_for_inbox",
-        "cache_purge_expired", "ping",
+        "cache_set",
+        "cache_delete",
+        "cache_delete_for_inbox",
+        "cache_purge_expired",
+        "ping",
     ):
         assert op not in handlers.LONG_OPS
 
@@ -53,9 +57,9 @@ def test_classify_op_returns_none_on_malformed_or_unknown():
     """Malformed JSON or missing `op` returns None so the reader
     routes the line to the cache queue, and `dispatch` produces a
     structured failure reply on the regular path."""
-    assert handlers.classify_op(b'not json') is None
-    assert handlers.classify_op(b'{}') is None
-    assert handlers.classify_op(b'[1, 2, 3]') is None  # JSON, but not a dict
+    assert handlers.classify_op(b"not json") is None
+    assert handlers.classify_op(b"{}") is None
+    assert handlers.classify_op(b"[1, 2, 3]") is None  # JSON, but not a dict
     assert handlers.classify_op(b'{"op": 123}') is None  # op is not a string
 
 
@@ -87,9 +91,7 @@ def test_bootstrap_inboxes_via_broker_reconciles_inboxes(seeded_db):
 
     # The seeded inboxes survive (idempotent semantics).
     with SessionLocal() as s:
-        names = {
-            row.name for row in s.execute(select(Inbox)).scalars().all()
-        }
+        names = {row.name for row in s.execute(select(Inbox)).scalars().all()}
     assert "alpha" in names
     assert "beta" in names
 
@@ -179,14 +181,18 @@ def test_ingest_inbox_via_broker_runs_to_completion(seeded_db, tmp_path):
 
     # Articles actually landed in the DB.
     with SessionLocal() as s:
-        alpha = s.execute(
-            select(Inbox).where(Inbox.name == "alpha")
-        ).scalar_one()
-        article_count = s.execute(
-            select(Article).join(Article.lists).where(
-                Article.lists.any(inbox_id=alpha.id),
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        article_count = (
+            s.execute(
+                select(Article)
+                .join(Article.lists)
+                .where(
+                    Article.lists.any(inbox_id=alpha.id),
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(article_count) >= 3, (
         f"expected the broker-run ingest to land >=3 articles linked "
         f"to alpha; got {len(article_count)}"
@@ -233,7 +239,8 @@ def test_cache_set_writes_direct_inside_broker_process(seeded_db, monkeypatch):
     from pathlib import Path
 
     monkeypatch.setattr(
-        settings, "broker_socket_path",
+        settings,
+        "broker_socket_path",
         Path("/tmp/mimir-test-no-such-broker.sock"),
     )
     monkeypatch.setattr(settings, "mimir_role", "broker")
@@ -319,7 +326,9 @@ def test_long_worker_does_not_block_cache_worker(seeded_db, monkeypatch):
                 # 0.5s. With two workers, it returns immediately.
                 t0 = time.perf_counter()
                 cache_client.cache_set(
-                    cache._ns("two-workers-test"), '"v"', 60,
+                    cache._ns("two-workers-test"),
+                    '"v"',
+                    60,
                 )
                 cache_elapsed_ms = (time.perf_counter() - t0) * 1000.0
                 # Generous bound: typical cache_set is single-

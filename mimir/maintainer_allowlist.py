@@ -33,6 +33,7 @@ purposes. Including them here would surface list addresses on
 From-line redaction surfaces, where the redaction posture is
 about *personal* email visibility.
 """
+
 import logging
 
 from sqlalchemy import distinct, func, select

@@ -2,8 +2,6 @@
 (list with --epoch filter, replay happy path + still-failing
 + unknown-inbox + epoch-isolation)."""
 
-
-
 from click.testing import CliRunner
 from dulwich.repo import Repo
 from sqlalchemy import select
@@ -14,7 +12,12 @@ from mimir.cli import (
 )
 from mimir.models import Inbox, ParseFailure
 
-from tests.test_cli._helpers import _build_pubinbox_repo, _repoint_inbox, _rfc5322_msg, _seed_parse_failure
+from tests.test_cli._helpers import (
+    _build_pubinbox_repo,
+    _repoint_inbox,
+    _rfc5322_msg,
+    _seed_parse_failure,
+)
 
 
 def test_admin_failures_list_empty_says_so(seeded_db):
@@ -49,7 +52,9 @@ def test_admin_failures_replay_unknown_inbox_clickexception(seeded_db):
 
 
 def test_admin_failures_replay_happy_path_recovers_and_clears(
-    seeded_db, tmp_path, monkeypatch,
+    seeded_db,
+    tmp_path,
+    monkeypatch,
 ):
     """The replay happy path: stage a failure for a real parseable
     blob, invoke the CLI, assert the summary line reports
@@ -68,9 +73,12 @@ def test_admin_failures_replay_happy_path_recovers_and_clears(
     # Build a real repo so replay_failures can fetch the blob.
     mirror_root = tmp_path / "replay-cli-mirror"
     mirror_root.mkdir()
-    _build_pubinbox_repo(mirror_root / "0.git", [
-        _rfc5322_msg("cli-replay@example.com", body=b"x" * 500),
-    ])
+    _build_pubinbox_repo(
+        mirror_root / "0.git",
+        [
+            _rfc5322_msg("cli-replay@example.com", body=b"x" * 500),
+        ],
+    )
     _repoint_inbox("alpha", mirror_root)
 
     # Stage a failure for the real commit_sha so replay finds work.
@@ -79,16 +87,18 @@ def test_admin_failures_replay_happy_path_recovers_and_clears(
     now = _dt.datetime.now(_dt.timezone.utc)
     with SessionLocal() as s:
         ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        s.add(ParseFailure(
-            inbox_id=ix.id,
-            epoch="0.git",
-            commit_sha=sha,
-            error_class="MessageTooLarge",
-            error_message="prior cap was too tight",
-            first_seen=now,
-            last_attempt=now,
-            attempts=1,
-        ))
+        s.add(
+            ParseFailure(
+                inbox_id=ix.id,
+                epoch="0.git",
+                commit_sha=sha,
+                error_class="MessageTooLarge",
+                error_message="prior cap was too tight",
+                first_seen=now,
+                last_attempt=now,
+                attempts=1,
+            )
+        )
         s.commit()
 
     # Ensure parser MAX_RAW_MESSAGE_BYTES doesn't reject the blob.
@@ -101,7 +111,8 @@ def test_admin_failures_replay_happy_path_recovers_and_clears(
     # The failure row is gone.
     with SessionLocal() as s:
         remaining = s.execute(
-            select(func.count()).select_from(ParseFailure)
+            select(func.count())
+            .select_from(ParseFailure)
             .where(ParseFailure.commit_sha == sha)
         ).scalar_one()
     assert remaining == 0
@@ -123,22 +134,35 @@ def test_admin_failures_replay_epoch_filter_isolates_one_epoch(seeded_db):
     now = _dt.datetime.now(_dt.timezone.utc)
     with SessionLocal() as s:
         ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        s.add_all([
-            ParseFailure(
-                inbox_id=ix.id, epoch="0.git", commit_sha="aa" * 20,
-                error_class="X", error_message="x", first_seen=now,
-                last_attempt=now, attempts=1,
-            ),
-            ParseFailure(
-                inbox_id=ix.id, epoch="1.git", commit_sha="bb" * 20,
-                error_class="X", error_message="x", first_seen=now,
-                last_attempt=now, attempts=1,
-            ),
-        ])
+        s.add_all(
+            [
+                ParseFailure(
+                    inbox_id=ix.id,
+                    epoch="0.git",
+                    commit_sha="aa" * 20,
+                    error_class="X",
+                    error_message="x",
+                    first_seen=now,
+                    last_attempt=now,
+                    attempts=1,
+                ),
+                ParseFailure(
+                    inbox_id=ix.id,
+                    epoch="1.git",
+                    commit_sha="bb" * 20,
+                    error_class="X",
+                    error_message="x",
+                    first_seen=now,
+                    last_attempt=now,
+                    attempts=1,
+                ),
+            ]
+        )
         s.commit()
 
     result = CliRunner().invoke(
-        admin_failures_replay_command, ["alpha", "--epoch", "0.git"],
+        admin_failures_replay_command,
+        ["alpha", "--epoch", "0.git"],
     )
     assert result.exit_code == 0, result.output
     # Mirror is absent, so 0.git's row gets `skipped`, not `recovered`.
@@ -152,9 +176,11 @@ def test_admin_failures_replay_epoch_filter_isolates_one_epoch(seeded_db):
     # The filter assertion is the `attempted=1` count above; this
     # secondary check pins that no row was silently consumed.
     with SessionLocal() as s:
-        epochs = set(s.execute(
-            select(ParseFailure.epoch).select_from(ParseFailure)
-        ).scalars().all())
+        epochs = set(
+            s.execute(select(ParseFailure.epoch).select_from(ParseFailure))
+            .scalars()
+            .all()
+        )
     assert epochs == {"0.git", "1.git"}
 
 

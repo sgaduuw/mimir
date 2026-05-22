@@ -1,6 +1,7 @@
 """Unit tests for `mimir.trailers.extract_trailers`, the
 review-attestation extractor used at ingest and by the backfill CLI.
 """
+
 from mimir.trailers import extract_trailers
 
 
@@ -10,11 +11,7 @@ def test_extract_returns_empty_for_none_or_empty():
 
 
 def test_extract_returns_empty_for_prose():
-    body = (
-        "Hi all,\n\n"
-        "I think we should review the wakeup logic.\n\n"
-        "Thanks,\nA\n"
-    )
+    body = "Hi all,\n\nI think we should review the wakeup logic.\n\nThanks,\nA\n"
     assert extract_trailers(body) == []
 
 
@@ -51,11 +48,7 @@ def test_extract_canonicalises_role_casing():
     """Bodies seen in the wild carry mixed casing: `reviewed-by:`,
     `Reviewed-By:`. The extractor returns the canonical capitalisation
     from `INDEXED_TRAILER_ROLES` regardless of what landed."""
-    body = (
-        "reviewed-by: a@x.com\n"
-        "REVIEWED-BY: b@x.com\n"
-        "Reviewed-By: c@x.com\n"
-    )
+    body = "reviewed-by: a@x.com\nREVIEWED-BY: b@x.com\nReviewed-By: c@x.com\n"
     rows = extract_trailers(body)
     assert all(role == "Reviewed-by" for role, _, _ in rows)
     assert {addr for _, _, addr in rows} == {"a@x.com", "b@x.com", "c@x.com"}
@@ -109,10 +102,7 @@ def test_extract_handles_co_developed_by_and_compound_roles():
     """`Co-developed-by:` and `Reported-and-tested-by:` both contain
     hyphens; verify the literal-alternation regex matches them
     without needing word-boundary tricks."""
-    body = (
-        "Co-developed-by: A <a@x.com>\n"
-        "Reported-and-tested-by: B <b@x.com>\n"
-    )
+    body = "Co-developed-by: A <a@x.com>\nReported-and-tested-by: B <b@x.com>\n"
     rows = extract_trailers(body)
     assert ("Co-developed-by", "A", "a@x.com") in rows
     assert ("Reported-and-tested-by", "B", "b@x.com") in rows

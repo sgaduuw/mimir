@@ -11,6 +11,23 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [1.40.0], 2026-05-22
+
+### Added
+
+- **Operator-managed `/robots.txt` via `admin robots …`.** The
+  file is now rendered from a new `robots_rules` table on every
+  request, so operators can add per-bot stanzas, tune Disallow
+  paths, and adjust Crawl-delay without a redeploy. Six CLI
+  commands (`list`, `show`, `add`, `update`, `remove`, `reset`)
+  match the shape of `admin inbox`. Mutations route through the
+  broker when `BROKER_SOCKET_PATH` is set; reads stay direct
+  under `query_only=1`. The migration seeds the `*` stanza with
+  the previous hardcoded values (`Crawl-delay: 5`,
+  `Disallow: /*/attachment/`), so fresh deploys serve a
+  byte-identical default. `remove '*'` is refused; use
+  `reset --yes` to restore defaults if `*` has wandered.
+
 ## [1.39.0], 2026-05-21
 
 ### Added

@@ -18,6 +18,7 @@ swapping the engine for a fresh one without re-registering) would
 only show up on a production lock incident. These tests assert the
 contract directly so the regression surfaces in CI instead.
 """
+
 from sqlalchemy import event, text
 
 from mimir.config import settings
@@ -264,9 +265,9 @@ def test_write_transaction_slow_log_fires_on_commit(caplog, monkeypatch):
         session.commit()
 
     slow = [
-        r for r in caplog.records
-        if r.levelno == logging.WARNING
-        and "write_transaction slow" in r.getMessage()
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "write_transaction slow" in r.getMessage()
     ]
     assert slow, (
         "expected a slow-write WARNING; "
@@ -301,7 +302,8 @@ def test_write_transaction_slow_log_fires_on_rollback(caplog, monkeypatch):
         pass
 
     slow = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelno == logging.WARNING
         and "write_transaction slow rollback" in r.getMessage()
     ]
@@ -326,10 +328,7 @@ def test_write_transaction_below_threshold_is_silent(caplog, monkeypatch):
         session.execute(text("SELECT 1"))
         session.commit()
 
-    slow = [
-        r for r in caplog.records
-        if "write_transaction slow" in r.getMessage()
-    ]
+    slow = [r for r in caplog.records if "write_transaction slow" in r.getMessage()]
     assert not slow, "fast commits must not log a slow-write WARNING"
 
 
@@ -347,10 +346,7 @@ def test_write_transaction_zero_threshold_disables_log(caplog, monkeypatch):
         _time.sleep(0.02)
         session.commit()
 
-    slow = [
-        r for r in caplog.records
-        if "write_transaction slow" in r.getMessage()
-    ]
+    slow = [r for r in caplog.records if "write_transaction slow" in r.getMessage()]
     assert not slow, "threshold=0 must disable slow-write log"
 
 
@@ -370,10 +366,7 @@ def test_write_transaction_unlabelled_default(caplog, monkeypatch):
         _time.sleep(0.05)
         session.commit()
 
-    slow = [
-        r for r in caplog.records
-        if "write_transaction slow" in r.getMessage()
-    ]
+    slow = [r for r in caplog.records if "write_transaction slow" in r.getMessage()]
     assert slow, "expected a slow-write WARNING"
     assert "label=(unlabelled)" in slow[0].getMessage()
 
@@ -403,4 +396,5 @@ def test_analyze_limit_default_is_4000():
     # `settings.analyze_limit` reflects the final value, which
     # may differ. So we read the model field's default directly.
     from mimir.config import Settings
+
     assert Settings.model_fields["analyze_limit"].default == 4000

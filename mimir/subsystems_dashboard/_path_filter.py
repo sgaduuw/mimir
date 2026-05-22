@@ -7,11 +7,13 @@ Split out of `reads.py` as part of the one-concern-per-file pass
 (the reads.py docstring used to read "fan-outs AND the path-filter
 builder", the literal "and" being the load-bearing signal).
 """
+
 from mimir.models import Subsystem
 
 
 def _subsystem_path_filter_sql(
-    subsystem: Subsystem, prefix: str = "ssp",
+    subsystem: Subsystem,
+    prefix: str = "ssp",
 ) -> tuple[str, dict] | None:
     """Return `(sql, params)` where `sql` is a SELECT that enumerates
     article IDs matching the subsystem's F: globs and not vetoed by
@@ -75,9 +77,7 @@ def _subsystem_path_filter_sql(
             pname = _add(f"{prefix}_exc_eq_{i}", g)
             exc_parts.append(f"path = :{pname}")
         # else: wildcard skipped (slice 1/2)
-    exc_clause = (
-        " AND NOT (" + " OR ".join(exc_parts) + ")" if exc_parts else ""
-    )
+    exc_clause = " AND NOT (" + " OR ".join(exc_parts) + ")" if exc_parts else ""
 
     branches: list[str] = []
     for i, g in enumerate(includes):
@@ -185,9 +185,7 @@ def _subsystem_path_filter_exists_sql(
         elif not any(c in g for c in "*?["):
             pname = _add(f"{prefix}_exc_eq_{i}", g)
             exc_parts.append(f"af.path = :{pname}")
-    exc_clause = (
-        f" AND NOT ({' OR '.join(exc_parts)})" if exc_parts else ""
-    )
+    exc_clause = f" AND NOT ({' OR '.join(exc_parts)})" if exc_parts else ""
 
     predicate = (
         f"EXISTS (SELECT 1 FROM article_files af "

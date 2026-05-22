@@ -12,6 +12,7 @@ across feeds (readers that key on `<id>` won't show duplicates).
 Lazy-imports `mimir.web` display helpers inside the function body to
 avoid an import-time cycle.
 """
+
 from datetime import datetime, timezone
 from xml.etree.ElementTree import Element, SubElement, tostring
 
@@ -49,10 +50,10 @@ def atom_response(
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring).
     from mimir.web import _allowlisted_email, _display_name_filter, _msg_url
-    feed_updated = (
-        max((e.date for e in entries if e.date), default=None)
-        or datetime.now(timezone.utc)
-    )
+
+    feed_updated = max(
+        (e.date for e in entries if e.date), default=None
+    ) or datetime.now(timezone.utc)
     canonical_map = canonical_inbox_by_article or {}
 
     feed = Element("feed", xmlns="http://www.w3.org/2005/Atom")
@@ -71,15 +72,17 @@ def atom_response(
         # readers that key on <id> won't show duplicates.
         date_str = a.date.strftime("%Y-%m-%d") if a.date else "1970-01-01"
         canonical_inbox_name = canonical_map.get(a.id, inbox_name)
-        SubElement(entry, "id").text = (
-            f"tag:{_TAG_URI_AUTHORITY},{date_str}:{canonical_inbox_name}/{a.id}"
-        )
+        SubElement(
+            entry, "id"
+        ).text = f"tag:{_TAG_URI_AUTHORITY},{date_str}:{canonical_inbox_name}/{a.id}"
         SubElement(entry, "title").text = a.subject or "(no subject)"
         if a.date is not None:
             SubElement(entry, "updated").text = a.date.strftime("%Y-%m-%dT%H:%M:%SZ")
         SubElement(
-            entry, "link",
-            rel="alternate", type="text/html",
+            entry,
+            "link",
+            rel="alternate",
+            type="text/html",
             href=msg_base + _msg_url(a, canonical_inbox_name),
         )
         if a.author:
@@ -96,8 +99,7 @@ def atom_response(
             if author_email:
                 SubElement(author_el, "email").text = author_email
 
-    body = (
-        '<?xml version="1.0" encoding="utf-8"?>\n'
-        + tostring(feed, encoding="unicode")
+    body = '<?xml version="1.0" encoding="utf-8"?>\n' + tostring(
+        feed, encoding="unicode"
     )
     return Response(body, mimetype="application/atom+xml; charset=utf-8")

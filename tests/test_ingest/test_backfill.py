@@ -3,8 +3,6 @@ over already-ingested articles, the `--limit` /
 `--inbox-filter` / `--reprocess` flags, the missing-blob
 skip path, and the observation tally re-derivation."""
 
-
-
 from sqlalchemy import delete, select
 
 from mimir.ingest import (
@@ -17,14 +15,23 @@ from mimir.models import (
     InboxAddressObservation,
 )
 
-from tests.test_ingest._helpers import _alpha, _build_pubinbox_repo, _clear_seed_articles, _ingest_with_to, _rfc5322
+from tests.test_ingest._helpers import (
+    _alpha,
+    _build_pubinbox_repo,
+    _clear_seed_articles,
+    _ingest_with_to,
+    _rfc5322,
+)
 
 
 def test_backfill_resolves_canonical_when_to_matches_known_address(seeded_db, tmp_path):
     _clear_seed_articles(seeded_db)
     alpha = _alpha(seeded_db)
     _ingest_with_to(
-        seeded_db, tmp_path, alpha, "bf1@example.com",
+        seeded_db,
+        tmp_path,
+        alpha,
+        "bf1@example.com",
         to="linux-fsdevel@vger.kernel.org",
     )
     with seeded_db() as s:
@@ -51,7 +58,10 @@ def test_backfill_unresolved_when_no_address_matches(seeded_db, tmp_path):
     _clear_seed_articles(seeded_db)
     alpha = _alpha(seeded_db)
     _ingest_with_to(
-        seeded_db, tmp_path, alpha, "bf-noop@example.com",
+        seeded_db,
+        tmp_path,
+        alpha,
+        "bf-noop@example.com",
         to="alice@example.com",
     )
 
@@ -89,7 +99,10 @@ def test_backfill_inbox_filter_restricts_walk(seeded_db, tmp_path):
     _clear_seed_articles(seeded_db)
     alpha = _alpha(seeded_db)
     _ingest_with_to(
-        seeded_db, tmp_path, alpha, "bf-filter@example.com",
+        seeded_db,
+        tmp_path,
+        alpha,
+        "bf-filter@example.com",
         to="linux-fsdevel@vger.kernel.org",
     )
 
@@ -101,7 +114,10 @@ def test_backfill_skip_when_blob_missing(seeded_db, tmp_path):
     _clear_seed_articles(seeded_db)
     alpha = _alpha(seeded_db)
     _ingest_with_to(
-        seeded_db, tmp_path, alpha, "bf-gone@example.com",
+        seeded_db,
+        tmp_path,
+        alpha,
+        "bf-gone@example.com",
         to="linux-fsdevel@vger.kernel.org",
     )
 
@@ -120,7 +136,10 @@ def test_backfill_reprocess_re_examines_already_set(seeded_db, tmp_path):
     _clear_seed_articles(seeded_db)
     alpha = _alpha(seeded_db)
     _ingest_with_to(
-        seeded_db, tmp_path, alpha, "bf-rep@example.com",
+        seeded_db,
+        tmp_path,
+        alpha,
+        "bf-rep@example.com",
         to="linux-fsdevel@vger.kernel.org",
     )
 

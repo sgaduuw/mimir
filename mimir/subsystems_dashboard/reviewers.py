@@ -7,6 +7,7 @@ Reported-and-tested-by) and shape them either as one entry per
 attestation (`articles_reviewed_by`) or aggregated per reviewer
 (`active_reviewers_in_subsystem`).
 """
+
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -54,6 +55,7 @@ class ReviewerStat:
     `mimir.cache` which round-trips registered types via
     `dataclasses.fields`.
     """
+
     name: str
     address: str
     address_normalized: str
@@ -79,6 +81,7 @@ class ReviewEntry:
     inbox-scoped, but cross-posted articles still get the right
     canonical link.
     """
+
     article_id: int
     message_id: str
     subject: str | None
@@ -98,8 +101,11 @@ REVIEWS_PER_PAGE_LIMIT = 100
 
 
 def articles_reviewed_by(
-    session: Session, inbox: Inbox, address_normalized: str,
-    limit: int = REVIEWS_PER_PAGE_LIMIT, force: bool = False,
+    session: Session,
+    inbox: Inbox,
+    address_normalized: str,
+    limit: int = REVIEWS_PER_PAGE_LIMIT,
+    force: bool = False,
 ) -> list[ReviewEntry]:
     """All attestations by `address_normalized` on articles linked
     to `inbox`, newest-first.
@@ -113,6 +119,7 @@ def articles_reviewed_by(
     the threads helper. Cache key uses the address verbatim, it's
     already lowercased so casing collisions are impossible.
     """
+
     def compute() -> list[ReviewEntry]:
         # Earlier shape JOINed against a MATERIALIZE'd derived table
         # that computed MIN(inbox.name) per article across the *entire*
@@ -180,8 +187,12 @@ def articles_reviewed_by(
 
 
 def active_reviewers_in_subsystem(
-    session: Session, inbox: Inbox, subsystem: Subsystem,
-    days: int = 30, limit: int = 10, force: bool = False,
+    session: Session,
+    inbox: Inbox,
+    subsystem: Subsystem,
+    days: int = 30,
+    limit: int = 10,
+    force: bool = False,
 ) -> list[ReviewerStat]:
     """Most-active reviewers in `inbox` over the last `days` days
     among messages whose paths match `subsystem`'s F: globs (minus
@@ -204,6 +215,7 @@ def active_reviewers_in_subsystem(
     attestations. Cached per `(inbox, subsystem, days, limit)` for
     the same TTL as the threads helper.
     """
+
     def compute() -> list[ReviewerStat]:
         path_filter = _subsystem_path_filter_sql(subsystem, prefix="arss")
         if path_filter is None:

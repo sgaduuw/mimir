@@ -14,6 +14,7 @@ module's `sync_epochs` and `ingest_all` names; that's why these
 imports stay at module scope (so they can be replaced) and aren't
 deferred into the commands' bodies.
 """
+
 import logging
 from pathlib import Path
 
@@ -61,6 +62,7 @@ def _ingest_all_dispatch(
         return ingest_all(inboxes=inboxes, limit=limit, workers=workers)
 
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+
     client = get_broker_client()
     out: dict = {}
     remaining = limit
@@ -69,22 +71,20 @@ def _ingest_all_dispatch(
             break
         try:
             results = client.ingest_inbox(
-                name, limit=remaining, workers=workers,
+                name,
+                limit=remaining,
+                workers=workers,
             )
         except BrokerUnavailable as exc:
             # Hard fail: this is the scheduler-side ingest loop,
             # silently falling back to direct writes would re-
             # introduce the cross-process contention this phase
             # was built to eliminate. Surface to the operator.
-            raise click.ClickException(
-                f"broker ingest_inbox({name}) failed: {exc}"
-            )
+            raise click.ClickException(f"broker ingest_inbox({name}) failed: {exc}")
         out[name] = results
         if remaining is not None:
             for r in results:
-                remaining -= (
-                    r.new + r.linked + r.dup_batch + r.dup_db + r.failed
-                )
+                remaining -= r.new + r.linked + r.dup_batch + r.dup_db + r.failed
     return out
 
 
@@ -125,7 +125,9 @@ def ingest_command(
     _configure_logging(verbose)
     inboxes = _select_inboxes(inbox_filter)
     results_by_name = _ingest_all_dispatch(
-        inboxes=inboxes, limit=limit, workers=workers,
+        inboxes=inboxes,
+        limit=limit,
+        workers=workers,
     )
     for name, results in results_by_name.items():
         for r in results:
@@ -143,8 +145,8 @@ def ingest_command(
     "--from-scratch",
     is_flag=True,
     help="Delete this epoch's existing rows before re-walking. Without "
-         "this flag, just rewinds IngestState and lets dedup skip messages "
-         "already saved (useful for backfilling parse failures).",
+    "this flag, just rewinds IngestState and lets dedup skip messages "
+    "already saved (useful for backfilling parse failures).",
 )
 @click.option(
     "-v",
@@ -160,7 +162,11 @@ def ingest_command(
     help="Parallel parsers (process pool). Set to 1 for sequential.",
 )
 def reindex_command(
-    inbox_name: str, epoch: str, from_scratch: bool, verbose: int, workers: int,
+    inbox_name: str,
+    epoch: str,
+    from_scratch: bool,
+    verbose: int,
+    workers: int,
 ) -> None:
     """Re-walk a single epoch in INBOX from the beginning.
 
@@ -195,7 +201,9 @@ def reindex_command(
                     ArticleList.epoch == epoch,
                 )
             ).rowcount
-            click.echo(f"deleted {deleted} existing inbox-links for {inbox_name}/{epoch}")
+            click.echo(
+                f"deleted {deleted} existing inbox-links for {inbox_name}/{epoch}"
+            )
 
         state = session.get(IngestState, (inbox.id, epoch))
         if state is not None:
@@ -219,8 +227,12 @@ def reindex_command(
     default=None,
     help="Restrict to one configured inbox by name. Default: all configured inboxes.",
 )
-@click.option("--skip-clone", is_flag=True, help="Don't fetch the manifest or clone new epochs.")
-@click.option("--skip-fetch", is_flag=True, help="Don't `git fetch` existing local epochs.")
+@click.option(
+    "--skip-clone", is_flag=True, help="Don't fetch the manifest or clone new epochs."
+)
+@click.option(
+    "--skip-fetch", is_flag=True, help="Don't `git fetch` existing local epochs."
+)
 @click.option("--skip-ingest", is_flag=True, help="Don't run ingest after sync.")
 @click.option(
     "--workers",
@@ -270,7 +282,9 @@ def update_command(
         return
 
     results_by_name = _ingest_all_dispatch(
-        inboxes=inboxes, limit=None, workers=workers,
+        inboxes=inboxes,
+        limit=None,
+        workers=workers,
     )
     new_message_ids: list[str] = []
     for name, results in results_by_name.items():
@@ -299,7 +313,8 @@ def _push_indexnow(message_ids: list[str]) -> None:
         logger.warning(
             "indexnow: %d new URLs this tick exceeds INDEXNOW_MAX_PER_TICK=%d "
             "  skipping push, relying on sitemap",
-            len(message_ids), cap,
+            len(message_ids),
+            cap,
         )
         return
     base = (settings.site_base_url or "").rstrip("/")

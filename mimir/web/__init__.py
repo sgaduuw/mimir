@@ -8,6 +8,7 @@ context processor; it also re-exports the names that callers
 have always imported from `mimir.web`, so the split is a pure
 refactor at the import boundary.
 """
+
 from mimir.web._blueprint import bp_web
 
 # Import order matters: `filters` and `hooks` attach decorators to

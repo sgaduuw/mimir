@@ -10,6 +10,7 @@ Seed recap (from conftest.py):
 - beta:  art2 (2024-02-01), art3 (2024-03-01)
 - art3 is cross-posted between alpha and beta.
 """
+
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -38,9 +39,7 @@ def _ids_by_message_id(seeded_db) -> dict[str, int]:
     look up the expected ints from the seed via this helper."""
     with seeded_db() as s:
         return {
-            mid: aid for mid, aid in s.execute(
-                select(Article.message_id, Article.id)
-            )
+            mid: aid for mid, aid in s.execute(select(Article.message_id, Article.id))
         }
 
 
@@ -62,8 +61,16 @@ def test_archive_stats_first_and_last_date(seeded_db):
     # SQLite stores DATETIME as text without tz; the helper coerces
     # back via fromisoformat. Compare on (year, month, day, hour).
     assert stats.first_date is not None and stats.last_date is not None
-    assert (stats.first_date.year, stats.first_date.month, stats.first_date.day) == (2024, 1, 1)
-    assert (stats.last_date.year, stats.last_date.month, stats.last_date.day) == (2024, 3, 1)
+    assert (stats.first_date.year, stats.first_date.month, stats.first_date.day) == (
+        2024,
+        1,
+        1,
+    )
+    assert (stats.last_date.year, stats.last_date.month, stats.last_date.day) == (
+        2024,
+        3,
+        1,
+    )
 
 
 def test_archive_stats_respects_min_plausible_date(seeded_db):
@@ -72,15 +79,24 @@ def test_archive_stats_respects_min_plausible_date(seeded_db):
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
         backdated = Article(
-            message_id="ancient@example.com", subject="hello",
+            message_id="ancient@example.com",
+            subject="hello",
             author="X",
             # 1991, before lkml itself existed.
             date=datetime(1991, 1, 1, tzinfo=timezone.utc),
-            thread_parent=None, subject_normalized="hello",
+            thread_parent=None,
+            subject_normalized="hello",
         )
         s.add(backdated)
         s.flush()
-        s.add(ArticleList(article_id=backdated.id, inbox_id=alpha.id, epoch="0.git", commit_sha="ff" * 20))
+        s.add(
+            ArticleList(
+                article_id=backdated.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="ff" * 20,
+            )
+        )
         s.commit()
         stats = archive_stats(s, alpha, force=True)
     # Total count includes the row; first_date does NOT pull back
@@ -151,12 +167,14 @@ def test_daily_volume_max_count(seeded_db):
             )
             s.add(art)
             s.flush()
-            s.add(ArticleList(
-                article_id=art.id,
-                inbox_id=alpha.id,
-                epoch="0.git",
-                commit_sha="ee" * 20,
-            ))
+            s.add(
+                ArticleList(
+                    article_id=art.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="ee" * 20,
+                )
+            )
         s.commit()
 
         vol = daily_volume(s, alpha, days=30, force=True)
@@ -282,10 +300,14 @@ def test_monthly_volume_year_boundary(seeded_db):
         )
         s.add(art)
         s.flush()
-        s.add(ArticleList(
-            article_id=art.id, inbox_id=alpha.id,
-            epoch="0.git", commit_sha="bd" * 20,
-        ))
+        s.add(
+            ArticleList(
+                article_id=art.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="bd" * 20,
+            )
+        )
         s.commit()
 
         vol_2022 = monthly_volume(s, alpha, year=2022, force=True)
@@ -342,6 +364,7 @@ def test_search_articles_cache_key_case_folds(seeded_db):
     cache key, each distinct casing would write its own row,
     burning cache space proportional to user-typed variation."""
     from mimir import cache
+
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
         # First call (capitalised) writes the cache row.
@@ -379,14 +402,24 @@ def test_search_articles_escapes_percent_wildcard(seeded_db):
     with seeded_db() as s:
         # Seed an article whose subject contains a literal '%'.
         art_pct = Article(
-            message_id="pct@example.com", subject="100% complete",
-            author="X", date=datetime(2024, 4, 1, tzinfo=timezone.utc),
-            thread_parent=None, subject_normalized="100% complete",
+            message_id="pct@example.com",
+            subject="100% complete",
+            author="X",
+            date=datetime(2024, 4, 1, tzinfo=timezone.utc),
+            thread_parent=None,
+            subject_normalized="100% complete",
         )
         s.add(art_pct)
         s.flush()
         pct_id = art_pct.id
-        s.add(ArticleList(article_id=pct_id, inbox_id=alpha.id, epoch="0.git", commit_sha="bf" * 20))
+        s.add(
+            ArticleList(
+                article_id=pct_id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="bf" * 20,
+            )
+        )
         s.commit()
 
         # Query for "100%" as substring; with proper escape, only
@@ -442,14 +475,23 @@ def test_latest_pull_requests_matches_subject_prefix(seeded_db):
     with seeded_db() as s:
         pull = Article(
             message_id="pull@example.com",
-            subject="[GIT PULL] something", author="Maintainer",
+            subject="[GIT PULL] something",
+            author="Maintainer",
             date=recent,
-            thread_parent=None, subject_normalized="[git pull] something",
+            thread_parent=None,
+            subject_normalized="[git pull] something",
         )
         s.add(pull)
         s.flush()
         pull_id = pull.id
-        s.add(ArticleList(article_id=pull_id, inbox_id=alpha.id, epoch="0.git", commit_sha="cf" * 20))
+        s.add(
+            ArticleList(
+                article_id=pull_id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="cf" * 20,
+            )
+        )
         s.commit()
         results = latest_pull_requests(s, alpha, force=True)
     assert {r.id for r in results} == {pull_id}
@@ -461,18 +503,30 @@ def test_latest_pull_requests_recency_floor_excludes_old(seeded_db):
     scan instead of walking the full inbox proving the negative when
     fewer than `limit` matches exist."""
     from mimir.dashboard import LISTING_RECENCY_FLOOR_DAYS
+
     alpha = _inbox(seeded_db, "alpha")
-    too_old = datetime.now(timezone.utc) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS + 30)
+    too_old = datetime.now(timezone.utc) - timedelta(
+        days=LISTING_RECENCY_FLOOR_DAYS + 30
+    )
     with seeded_db() as s:
         pull = Article(
             message_id="oldpull@example.com",
-            subject="[GIT PULL] ancient", author="Maintainer",
+            subject="[GIT PULL] ancient",
+            author="Maintainer",
             date=too_old,
-            thread_parent=None, subject_normalized="[git pull] ancient",
+            thread_parent=None,
+            subject_normalized="[git pull] ancient",
         )
         s.add(pull)
         s.flush()
-        s.add(ArticleList(article_id=pull.id, inbox_id=alpha.id, epoch="0.git", commit_sha="ce" * 20))
+        s.add(
+            ArticleList(
+                article_id=pull.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="ce" * 20,
+            )
+        )
         s.commit()
         results = latest_pull_requests(s, alpha, force=True)
     assert results == []
@@ -485,14 +539,23 @@ def test_latest_stable_releases_matches_glob(seeded_db):
     with seeded_db() as s:
         rel = Article(
             message_id="rel@example.com",
-            subject="Linux 6.10 released", author="Maintainer",
+            subject="Linux 6.10 released",
+            author="Maintainer",
             date=recent,
-            thread_parent=None, subject_normalized="linux 6.10 released",
+            thread_parent=None,
+            subject_normalized="linux 6.10 released",
         )
         s.add(rel)
         s.flush()
         rel_id = rel.id
-        s.add(ArticleList(article_id=rel_id, inbox_id=alpha.id, epoch="0.git", commit_sha="df" * 20))
+        s.add(
+            ArticleList(
+                article_id=rel_id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="df" * 20,
+            )
+        )
         s.commit()
         results = latest_stable_releases(s, alpha, force=True)
     assert {r.id for r in results} == {rel_id}
@@ -501,18 +564,30 @@ def test_latest_stable_releases_matches_glob(seeded_db):
 def test_latest_stable_releases_recency_floor_excludes_old(seeded_db):
     """Release announcements older than the recency floor must not appear."""
     from mimir.dashboard import LISTING_RECENCY_FLOOR_DAYS
+
     alpha = _inbox(seeded_db, "alpha")
-    too_old = datetime.now(timezone.utc) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS + 30)
+    too_old = datetime.now(timezone.utc) - timedelta(
+        days=LISTING_RECENCY_FLOOR_DAYS + 30
+    )
     with seeded_db() as s:
         rel = Article(
             message_id="oldrel@example.com",
-            subject="Linux 4.0 released", author="Maintainer",
+            subject="Linux 4.0 released",
+            author="Maintainer",
             date=too_old,
-            thread_parent=None, subject_normalized="linux 4.0 released",
+            thread_parent=None,
+            subject_normalized="linux 4.0 released",
         )
         s.add(rel)
         s.flush()
-        s.add(ArticleList(article_id=rel.id, inbox_id=alpha.id, epoch="0.git", commit_sha="dd" * 20))
+        s.add(
+            ArticleList(
+                article_id=rel.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="dd" * 20,
+            )
+        )
         s.commit()
         results = latest_stable_releases(s, alpha, force=True)
     assert results == []
@@ -553,13 +628,19 @@ def test_this_day_in_history_returns_articles_summary(seeded_db, frozen_clock):
         )
         s.add(art)
         s.flush()
-        s.add(ArticleList(
-            article_id=art.id, inbox_id=alpha.id,
-            epoch="0.git", commit_sha="hd" * 20,
-        ))
+        s.add(
+            ArticleList(
+                article_id=art.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="hd" * 20,
+            )
+        )
         s.commit()
 
-        results = this_day_in_history(s, alpha, years_ago=years_ago, limit=10, force=True)
+        results = this_day_in_history(
+            s, alpha, years_ago=years_ago, limit=10, force=True
+        )
     assert isinstance(results, list)
     for r in results:
         assert isinstance(r, ArticleSummary)
@@ -582,12 +663,18 @@ def test_this_day_in_history_returns_articles_summary(seeded_db, frozen_clock):
         )
         s.add(out)
         s.flush()
-        s.add(ArticleList(
-            article_id=out.id, inbox_id=alpha.id,
-            epoch="0.git", commit_sha="hw" * 20,
-        ))
+        s.add(
+            ArticleList(
+                article_id=out.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="hw" * 20,
+            )
+        )
         s.commit()
-        results2 = this_day_in_history(s, alpha, years_ago=years_ago, limit=10, force=True)
+        results2 = this_day_in_history(
+            s, alpha, years_ago=years_ago, limit=10, force=True
+        )
     assert not any(r.subject == "out of window" for r in results2)
 
 

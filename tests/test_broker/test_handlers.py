@@ -29,9 +29,15 @@ def test_dispatch_cache_set_writes_to_db(seeded_db):
     cache.get, which would otherwise hide a missing row by going
     through the broker dispatch we're testing)."""
     nskey = cache._ns("test_dispatch_set")
-    reply = dispatch(_line(CacheSetRequest(
-        key=nskey, value_json='"hello"', ttl=60,
-    )))
+    reply = dispatch(
+        _line(
+            CacheSetRequest(
+                key=nskey,
+                value_json='"hello"',
+                ttl=60,
+            )
+        )
+    )
     assert reply.ok is True
     # cache.get expects an un-namespaced key but `_direct_set` was
     # called with a namespaced one, so we round-trip via the public
@@ -115,6 +121,6 @@ def test_dispatch_handler_does_not_crash_on_bad_value_type(seeded_db):
     """A non-dict JSON top-level (e.g. a list) shouldn't crash
     dispatch; UnknownOp is the right shape since op cannot be
     extracted."""
-    reply = dispatch(b'[1, 2, 3]')
+    reply = dispatch(b"[1, 2, 3]")
     assert reply.ok is False
     assert reply.error == "UnknownOp"

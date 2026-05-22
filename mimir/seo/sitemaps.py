@@ -5,6 +5,7 @@ Three cached surfaces feeding `/sitemap.xml`, `/meta-sitemap.xml`, and
 `cache.NAMESPACE_VERSION` invalidates everything if a payload shape
 changes, so per-route expiry is purely about freshness.
 """
+
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import func, select
@@ -29,7 +30,9 @@ def _build_sitemap_xml(entries: list[tuple[str, str | None]]) -> str:
         SubElement(url_el, "loc").text = loc
         if lastmod:
             SubElement(url_el, "lastmod").text = lastmod
-    return '<?xml version="1.0" encoding="utf-8"?>\n' + tostring(root, encoding="unicode")
+    return '<?xml version="1.0" encoding="utf-8"?>\n' + tostring(
+        root, encoding="unicode"
+    )
 
 
 def _build_sitemap_index_xml(entries: list[tuple[str, str | None]]) -> str:
@@ -37,15 +40,15 @@ def _build_sitemap_index_xml(entries: list[tuple[str, str | None]]) -> str:
     `(loc, lastmod)` shape as `_build_sitemap_xml`; the schema and
     element names differ, `<sitemapindex>` of `<sitemap>` rather
     than `<urlset>` of `<url>`."""
-    root = Element(
-        "sitemapindex", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
-    )
+    root = Element("sitemapindex", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
     for loc, lastmod in entries:
         sm = SubElement(root, "sitemap")
         SubElement(sm, "loc").text = loc
         if lastmod:
             SubElement(sm, "lastmod").text = lastmod
-    return '<?xml version="1.0" encoding="utf-8"?>\n' + tostring(root, encoding="unicode")
+    return '<?xml version="1.0" encoding="utf-8"?>\n' + tostring(
+        root, encoding="unicode"
+    )
 
 
 def _per_inbox_latest_date(session) -> dict[str, str | None]:
@@ -67,41 +70,47 @@ def sitemap_index_xml(session: Session, base: str, *, force: bool = False) -> st
     `/<inbox>/sitemap.xml` per configured inbox. Same cache key as the
     route uses (`sitemap:index`) so `warm-cache` can pre-populate it
     via `force=True`."""
+
     def compute() -> str:
         per_inbox_latest = _per_inbox_latest_date(session)
-        global_latest = max(
-            (d for d in per_inbox_latest.values() if d), default=None
-        )
+        global_latest = max((d for d in per_inbox_latest.values() if d), default=None)
         entries: list[tuple[str, str | None]] = [
             (f"{base}/meta-sitemap.xml", global_latest),
         ]
-        inboxes = session.execute(
-            select(Inbox).order_by(Inbox.name)
-        ).scalars().all()
+        inboxes = session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
         for inbox in inboxes:
-            entries.append((
-                f"{base}/{inbox.name}/sitemap.xml",
-                per_inbox_latest.get(inbox.name),
-            ))
+            entries.append(
+                (
+                    f"{base}/{inbox.name}/sitemap.xml",
+                    per_inbox_latest.get(inbox.name),
+                )
+            )
         return _build_sitemap_index_xml(entries)
 
     return cache.get_or_compute(
-        session, "sitemap:index", SITEMAP_TTL_SEC, compute, force=force,
+        session,
+        "sitemap:index",
+        SITEMAP_TTL_SEC,
+        compute,
+        force=force,
     )
 
 
 def meta_sitemap_xml(session: Session, base: str, *, force: bool = False) -> str:
     """Cached body of `/meta-sitemap.xml`. One-URL urlset covering `/`
     with the global-max article date as lastmod."""
+
     def compute() -> str:
         per_inbox_latest = _per_inbox_latest_date(session)
-        global_latest = max(
-            (d for d in per_inbox_latest.values() if d), default=None
-        )
+        global_latest = max((d for d in per_inbox_latest.values() if d), default=None)
         return _build_sitemap_xml([(base + "/", global_latest)])
 
     return cache.get_or_compute(
-        session, "sitemap:meta", SITEMAP_TTL_SEC, compute, force=force,
+        session,
+        "sitemap:meta",
+        SITEMAP_TTL_SEC,
+        compute,
+        force=force,
     )
 
 
@@ -111,6 +120,7 @@ def inbox_sitemap_xml(
     """Cached body of `/<inbox>/sitemap.xml`. Dashboard + year/month
     archives that actually have data + the SITEMAP_RECENT_PER_INBOX
     most-recent article URLs in this inbox."""
+
     def compute() -> str:
         entries: list[tuple[str, str | None]] = []
 
@@ -122,9 +132,7 @@ def inbox_sitemap_xml(
                 Article.date.is_not(None),
             )
         )
-        inbox_latest = (
-            inbox_latest_dt.strftime("%Y-%m-%d") if inbox_latest_dt else None
-        )
+        inbox_latest = inbox_latest_dt.strftime("%Y-%m-%d") if inbox_latest_dt else None
         entries.append((f"{base}/{inbox.name}/", inbox_latest))
 
         # Distinct (year, month) pairs that actually have data, in
@@ -167,13 +175,18 @@ def inbox_sitemap_xml(
             .limit(SITEMAP_RECENT_PER_INBOX)
         ).all()
         for art_id, date in recent:
-            entries.append((
-                f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}",
-                date.strftime("%Y-%m-%d"),
-            ))
+            entries.append(
+                (
+                    f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}",
+                    date.strftime("%Y-%m-%d"),
+                )
+            )
         return _build_sitemap_xml(entries)
 
     return cache.get_or_compute(
-        session, f"sitemap:inbox:{inbox.name}", SITEMAP_TTL_SEC, compute,
+        session,
+        f"sitemap:inbox:{inbox.name}",
+        SITEMAP_TTL_SEC,
+        compute,
         force=force,
     )

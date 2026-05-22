@@ -2,8 +2,6 @@
 default-silent vs verbose-on-`-v` output shape (the
 scheduler-verbosity rework)."""
 
-
-
 from click.testing import CliRunner
 
 from mimir.cli import (
@@ -21,14 +19,23 @@ def test_update_default_silent_on_no_op(seeded_db, monkeypatch):
 
     def _fake_sync(*_a, **_kw):
         return sync_mod.SyncResult(cloned=[], fetched=[], failed=[])
+
     def _fake_ingest_all(inboxes, limit=None, workers=1):
         return {
-            name: [IngestResult(
-                epoch="0.git", new=0, linked=0, dup_batch=3,
-                dup_db=2, failed=0, last_commit_sha="aa" * 20,
-            )]
+            name: [
+                IngestResult(
+                    epoch="0.git",
+                    new=0,
+                    linked=0,
+                    dup_batch=3,
+                    dup_db=2,
+                    failed=0,
+                    last_commit_sha="aa" * 20,
+                )
+            ]
             for name in inboxes
         }
+
     monkeypatch.setattr(cli, "sync_epochs", _fake_sync)
     monkeypatch.setattr(cli, "ingest_all", _fake_ingest_all)
 
@@ -45,16 +52,25 @@ def test_update_verbose_prints_no_op_lines(seeded_db, monkeypatch):
     from mimir.ingest import IngestResult
 
     monkeypatch.setattr(
-        cli, "sync_epochs",
+        cli,
+        "sync_epochs",
         lambda *_a, **_kw: sync_mod.SyncResult(cloned=[], fetched=[], failed=[]),
     )
     monkeypatch.setattr(
-        cli, "ingest_all",
+        cli,
+        "ingest_all",
         lambda inboxes, limit=None, workers=1: {
-            name: [IngestResult(
-                epoch="0.git", new=0, linked=0, dup_batch=1,
-                dup_db=1, failed=0, last_commit_sha="bb" * 20,
-            )]
+            name: [
+                IngestResult(
+                    epoch="0.git",
+                    new=0,
+                    linked=0,
+                    dup_batch=1,
+                    dup_db=1,
+                    failed=0,
+                    last_commit_sha="bb" * 20,
+                )
+            ]
             for name in inboxes
         },
     )

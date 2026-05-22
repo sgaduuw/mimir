@@ -5,6 +5,7 @@ at import time. The `cli` package `__init__.py` imports each submodule
 to trigger the registration, then exposes `admin_group` for
 `register_cli` to attach to the Flask app.
 """
+
 import click
 
 
@@ -18,3 +19,4 @@ def admin_group() -> None:
 from mimir.cli.admin import inbox as _inbox  # noqa: F401, E402
 from mimir.cli.admin import failures as _failures  # noqa: F401, E402
 from mimir.cli.admin import canonicals as _canonicals  # noqa: F401, E402
+from mimir.cli.admin import robots as _robots  # noqa: F401, E402

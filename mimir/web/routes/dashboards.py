@@ -5,6 +5,7 @@ per-subsystem `/<inbox>/subsystem/<name>/` page.
 load-more endpoint (`api_recent` in `api.py`) consume it; the latter
 imports it from here.
 """
+
 import re
 
 from flask import abort, redirect, render_template, url_for
@@ -82,13 +83,17 @@ def _fetch_recent(session: Session, inbox: Inbox, offset: int, limit: int):
         )
         .exists()
     )
-    rows = session.execute(
-        select(Article)
-        .where(in_inbox)
-        .order_by(Article.date.desc().nulls_last())
-        .offset(offset)
-        .limit(limit + 1)
-    ).scalars().all()
+    rows = (
+        session.execute(
+            select(Article)
+            .where(in_inbox)
+            .order_by(Article.date.desc().nulls_last())
+            .offset(offset)
+            .limit(limit + 1)
+        )
+        .scalars()
+        .all()
+    )
     has_more = len(rows) > limit
     return rows[:limit], has_more
 
@@ -110,21 +115,23 @@ def index():
         inbox_summaries = []
         for inbox in inboxes:
             stats = archive_stats(session, inbox)
-            inbox_summaries.append({
-                "name": inbox.name,
-                "stats": stats,
-                "pinned": inbox.name in pin_rank,
-                # Relative-time string for the visible "Last activity"
-                # line. None when the inbox has no messages yet (the
-                # template falls back to the empty-state copy).
-                "last_activity_rel": (
-                    _relative_time(stats.last_date) if stats.last_date else None
-                ),
-                # 30-day sparkline. Always renders so cards line up
-                # vertically even on dormant inboxes (zero-filled
-                # series → flat bar row).
-                "spark": daily_volume(session, inbox, days=30),
-            })
+            inbox_summaries.append(
+                {
+                    "name": inbox.name,
+                    "stats": stats,
+                    "pinned": inbox.name in pin_rank,
+                    # Relative-time string for the visible "Last activity"
+                    # line. None when the inbox has no messages yet (the
+                    # template falls back to the empty-state copy).
+                    "last_activity_rel": (
+                        _relative_time(stats.last_date) if stats.last_date else None
+                    ),
+                    # 30-day sparkline. Always renders so cards line up
+                    # vertically even on dormant inboxes (zero-filled
+                    # series → flat bar row).
+                    "spark": daily_volume(session, inbox, days=30),
+                }
+            )
         # Cross-inbox subsystem teaser. Surfaces the most active
         # subsystems across every configured inbox so a reader on
         # `/` can drill into a hot subsystem without first picking
@@ -141,7 +148,10 @@ def index():
         # refresh; warm-cache keeps the row populated in normal
         # operation.
         active_subsystems = most_active_subsystems_global(
-            session, days=7, limit=12, compute_on_miss=False,
+            session,
+            days=7,
+            limit=12,
+            compute_on_miss=False,
         )
     base = _site_base()
     return render_template(
@@ -162,7 +172,11 @@ def inbox_dashboard(inbox_name: str):
         inbox = _get_inbox_or_404(session, inbox_name)
         active = active_threads(session, inbox, days=7, limit=10)
         trackers = [
-            {"label": label, "substr": substr, "messages": author_recent(session, inbox, substr, 5)}
+            {
+                "label": label,
+                "substr": substr,
+                "messages": author_recent(session, inbox, substr, 5),
+            }
             for label, substr in (inbox.tracked_authors or {}).items()
         ]
         pulls = latest_pull_requests(session, inbox, limit=5)
@@ -183,14 +197,16 @@ def inbox_dashboard(inbox_name: str):
         # a busy inbox, fine for warm-cache but request-path-blocking
         # under the gateway timeout if it lands during the TTL gap.
         active_subsystems = most_active_subsystems_in_inbox(
-            session, inbox, days=7, limit=10, compute_on_miss=False,
+            session,
+            inbox,
+            days=7,
+            limit=10,
+            compute_on_miss=False,
         )
     base = _site_base()
     year_decades: list[tuple[int, list[int]]] = []
     if stats and stats.first_date and stats.last_date:
-        year_decades = _year_decade_groups(
-            stats.first_date.year, stats.last_date.year
-        )
+        year_decades = _year_decade_groups(stats.first_date.year, stats.last_date.year)
     return render_template(
         "inbox.html",
         inbox_name=inbox.name,
@@ -264,23 +280,42 @@ def subsystem_dashboard(inbox_name: str, name: str):
         if subsystem is None:
             abort(404)
         recent = recent_articles_in_subsystem(
-            session, inbox, subsystem,
+            session,
+            inbox,
+            subsystem,
             limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
         )
         active = active_threads_in_subsystem(
-            session, inbox, subsystem, days=7, limit=10,
+            session,
+            inbox,
+            subsystem,
+            days=7,
+            limit=10,
         )
         spark = daily_volume_in_subsystem(
-            session, inbox, subsystem, days=30,
+            session,
+            inbox,
+            subsystem,
+            days=30,
         )
         reviewers = active_reviewers_in_subsystem(
-            session, inbox, subsystem, days=30, limit=10,
+            session,
+            inbox,
+            subsystem,
+            days=30,
+            limit=10,
         )
         needs_attention = needs_attention_patches_in_subsystem(
-            session, inbox, subsystem, limit=10,
+            session,
+            inbox,
+            subsystem,
+            limit=10,
         )
         quiet = quiet_patches_in_subsystem(
-            session, inbox, subsystem, limit=10,
+            session,
+            inbox,
+            subsystem,
+            limit=10,
         )
     return render_template(
         "subsystem.html",
