@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [1.41.0], 2026-05-22
+
 ### Added
 
 - **Content Signals on `robots_rules`.** Operators can now express
