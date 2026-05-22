@@ -11,6 +11,25 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [1.42.0], 2026-05-22
+
+### Added
+
+- **TDM-reservation preamble on `/robots.txt`.** Patterned on
+  Cloudflare's AI Crawl Control output but reframed for what a
+  mailing-list mirror operator has standing to claim. The header
+  comment block now: (a) acknowledges that copyright in individual
+  messages belongs to their authors, (b) explains the meaning of
+  the `Content-Signal` directives below, and (c) reserves the
+  operator's rights in the compilation (index, deduplication,
+  threading, cross-list resolution, rendering) under EU Directive
+  96/9/EC on the legal protection of databases (the sui generis
+  database right, distinct from Article 4 of Directive 2019/790
+  which would presume operator ownership of the underlying
+  content). Suppressed when no rule carries `Content-Signal` so a
+  signal-less file doesn't carry a glossary describing directives
+  that don't appear below.
+
 ## [1.41.1], 2026-05-22
 
 ### Changed
