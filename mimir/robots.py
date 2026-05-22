@@ -302,15 +302,79 @@ def _format_content_signals(signals: dict[str, str]) -> str:
     return ", ".join(parts)
 
 
+# Operator-facing preamble emitted above the stanzas when at least
+# one rule carries Content-Signal directives. Patterned on
+# Cloudflare's AI Crawl Control output
+# (https://blog.cloudflare.com/content-signals-policy/) but reframed
+# to match what a mailing-list mirror operator actually has standing
+# to reserve: rights in the compilation (index, dedup, threading,
+# rendering) under EU Directive 96/9/EC, NOT Article 4 of Directive
+# 2019/790 on the underlying message content (which belongs to the
+# individual authors). See the 2026-05-22 session for the
+# rights-holder-vs-operator analysis that produced this wording.
+_ROBOTS_PREAMBLE = """\
+# This archive mirrors and indexes content from public mailing lists.
+# Copyright in individual messages belongs to their authors, who may
+# grant or withhold AI-related permissions independently of what is
+# stated here.
+#
+# The Content-Signal directives below express two things on top of
+# the messages themselves:
+#
+# 1. The operator's preferences for how this archive is accessed and
+#    used.
+# 2. A reservation of any rights the operator holds in the
+#    compilation (index, deduplication, threading, cross-list
+#    resolution, rendering), including sui generis database rights
+#    under EU Directive 96/9/EC on the legal protection of databases.
+#
+# As a condition of accessing this site, you agree to abide by the
+# following content signals:
+#
+# (a)  If a Content-Signal = yes, you may collect content for the
+#      corresponding use.
+# (b)  If a Content-Signal = no, you may not collect content for the
+#      corresponding use.
+# (c)  If a Content-Signal is not set for a use, the operator
+#      expresses no preference for that use.
+#
+# The content signals and their meanings are:
+#
+# search:   building a search index and providing search results
+#           (returning hyperlinks and short excerpts from this site's
+#           contents). Search does not include providing AI-generated
+#           search summaries.
+# ai-input: inputting content into one or more AI models (e.g.,
+#           retrieval-augmented generation, grounding, or other
+#           real-time taking of content for generative AI search
+#           answers).
+# ai-train: training or fine-tuning AI models.
+
+"""
+
+
 def render_robots_txt(session: Session, sitemap_url: str) -> str:
-    """Produce the rendered robots.txt body. Stanzas are emitted in
-    `list_rules` order (`*` first, then alphabetical); blank line
-    between stanzas; trailing `Sitemap:` line. Inside each stanza:
-    `User-agent:`, `Content-Signal:` (when set), `Crawl-delay:`
-    (when set), then any `Disallow:` lines."""
+    """Produce the rendered robots.txt body.
+
+    File shape, top to bottom:
+
+    1. Preamble: emitted iff at least one rule has Content-Signal
+       directives. Otherwise suppressed so a file with no signals
+       doesn't carry a glossary explaining directives that don't
+       appear below.
+    2. Per-UA stanzas in `list_rules` order (`*` first, then
+       alphabetical), blank line between. Inside each stanza:
+       `User-agent:`, `Content-Signal:` (when set), `Crawl-delay:`
+       (when set), then any `Disallow:` lines.
+    3. Trailing `Sitemap:` line."""
+    rules = list_rules(session)
+    has_signals = any(rule.content_signals for rule in rules)
+
     out = StringIO()
+    if has_signals:
+        out.write(_ROBOTS_PREAMBLE)
     first = True
-    for rule in list_rules(session):
+    for rule in rules:
         paths = rule.disallow_paths or []
         signals = rule.content_signals or {}
         # Skip degenerate rows (no crawl_delay AND no disallow paths
