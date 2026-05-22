@@ -1,6 +1,6 @@
 [project]
 name = "mimir"
-version = "1.41.1"
+version = "1.42.0"
 description = "toy project for reading lkml"
 authors = [{name = "Eelco Wesemann", email = "6771014+sgaduuw@users.noreply.github.com"}]
 license = "MIT"
