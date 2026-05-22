@@ -1,6 +1,7 @@
 """Unit tests for `mimir.patches.extract_touched_paths`, the
 diff-header path-extraction used at ingest and by the backfill CLI.
 """
+
 from mimir.patches import extract_touched_paths
 
 
@@ -47,7 +48,8 @@ def test_extract_multiple_files_in_one_patch():
         "-x\n+y\n"
     )
     assert extract_touched_paths(body) == {
-        "fs/foo/a.c", "include/uapi/foo.h",
+        "fs/foo/a.c",
+        "include/uapi/foo.h",
     }
 
 

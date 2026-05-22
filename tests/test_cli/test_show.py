@@ -3,8 +3,6 @@ row + parsed blob, no-body suppression, body-char truncation
 marker, unknown-msgid + inbox-filter ClickException
 branches."""
 
-
-
 from click.testing import CliRunner
 
 from mimir.cli import (
@@ -12,7 +10,12 @@ from mimir.cli import (
     show_command,
 )
 
-from tests.test_cli._helpers import _build_pubinbox_repo, _ingest_one_for_show, _repoint_inbox, _rfc5322_msg
+from tests.test_cli._helpers import (
+    _build_pubinbox_repo,
+    _ingest_one_for_show,
+    _repoint_inbox,
+    _rfc5322_msg,
+)
 
 
 def test_show_prints_db_row_and_parsed_blob(seeded_db, tmp_path):
@@ -45,9 +48,12 @@ def test_show_body_chars_truncates_with_marker(seeded_db, tmp_path):
     long_body = b"x" * 200
     msgid = "show-trunc@example.com"
     mirror = tmp_path / "alpha-mirror"
-    _build_pubinbox_repo(mirror / "2.git", [
-        _rfc5322_msg(msgid, body=long_body),
-    ])
+    _build_pubinbox_repo(
+        mirror / "2.git",
+        [
+            _rfc5322_msg(msgid, body=long_body),
+        ],
+    )
     _repoint_inbox("alpha", mirror)
     CliRunner().invoke(ingest_command, ["--inbox", "alpha"])
 

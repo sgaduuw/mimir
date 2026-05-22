@@ -1,4 +1,5 @@
 """Unit tests for `mimir.patch_series`. Detection + key stability."""
+
 from mimir.patch_series import (
     CoverLetter,
     parse_cover_letter,

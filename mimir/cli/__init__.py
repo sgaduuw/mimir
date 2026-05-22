@@ -16,6 +16,7 @@ callers (tests, the legacy `mimir.cli` import path) used to import
 from `mimir.cli` are re-exported here so the cutover is a pure
 refactor.
 """
+
 import click
 from flask import Flask
 from flask.cli import FlaskGroup
@@ -147,6 +148,7 @@ def _create_app_for_cli(info=None):
     import is local to dodge a top-of-module circular: `mimir.cli` is
     imported by `mimir.__init__` via `register_cli` during `create_app`."""
     from mimir import create_app
+
     return create_app()
 
 

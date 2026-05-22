@@ -7,6 +7,7 @@ carry secrets, exfiltrating the body).
 
 These are pure unit tests, no network, no Settings fixture.
 """
+
 import http.client
 import io
 from urllib.error import HTTPError

@@ -16,6 +16,7 @@ SoB is the author's own DCO chain-of-custody marker, not a *review*
 signal, and the author is already on Article.author. Cc/To/From in
 trailer position are routing leftovers, not attestations.
 """
+
 import logging
 import re
 from typing import Callable
@@ -103,11 +104,12 @@ class BackfillResult(BaseModel):
     handoff between broker chunks (Phase 2.2). Direct (non-broker)
     callers always see `partial=False, continuation=None`.
     """
+
     examined: int = 0
-    indexed: int = 0      # body parsed and one or more trailer rows landed
+    indexed: int = 0  # body parsed and one or more trailer rows landed
     no_trailers: int = 0  # body parsed but no indexed-role trailers
-    skipped: int = 0      # already had rows, or unreadable
-    failed: int = 0       # parse error reading the blob
+    skipped: int = 0  # already had rows, or unreadable
+    failed: int = 0  # parse error reading the blob
     partial: bool = False
     continuation: int | None = None
 
@@ -148,10 +150,14 @@ def backfill_article_trailers(
     for the chunk/resume contract. Direct callers leave both None."""
     result = BackfillResult()
     partial, continuation = walk_articles(
-        result, _process_one,
-        limit=limit, reprocess=reprocess, progress=progress,
+        result,
+        _process_one,
+        limit=limit,
+        reprocess=reprocess,
+        progress=progress,
         label="backfill_article_trailers",
-        max_seconds=max_seconds, start_cursor=start_cursor,
+        max_seconds=max_seconds,
+        start_cursor=start_cursor,
     )
     result.partial = partial
     result.continuation = continuation
@@ -160,17 +166,21 @@ def backfill_article_trailers(
 
 def _process_one(session, article: Article, reprocess: bool) -> str:
     """Handle one article. Returns the bucket name it lands in."""
-    has_rows = session.execute(
-        select(ArticleTrailer.id)
-        .where(ArticleTrailer.article_id == article.id)
-        .limit(1)
-    ).first() is not None
+    has_rows = (
+        session.execute(
+            select(ArticleTrailer.id)
+            .where(ArticleTrailer.article_id == article.id)
+            .limit(1)
+        ).first()
+        is not None
+    )
     if has_rows and not reprocess:
         return "skipped"
     if has_rows and reprocess:
         session.execute(
-            ArticleTrailer.__table__.delete()
-            .where(ArticleTrailer.__table__.c.article_id == article.id)
+            ArticleTrailer.__table__.delete().where(
+                ArticleTrailer.__table__.c.article_id == article.id
+            )
         )
 
     # Prefer canonical_inbox (deterministic for cross-posts) over
@@ -186,13 +196,15 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
 
     try:
         parsed = read_message(session, inbox, article.message_id)
-    except (MessageNotFound, KeyError):
+    except MessageNotFound, KeyError:
         # Mirror unreachable on this host; defer rather than fail.
         return "skipped"
     except Exception as exc:
         logger.warning(
             "backfill: parse failure for article %d (%s): %r",
-            article.id, article.message_id, exc,
+            article.id,
+            article.message_id,
+            exc,
         )
         return "failed"
 
@@ -200,13 +212,15 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
     if not trailers:
         return "no_trailers"
     for role, name, address in trailers:
-        session.add(ArticleTrailer(
-            article_id=article.id,
-            role=role,
-            name=name,
-            address=address,
-            address_normalized=address.lower(),
-        ))
+        session.add(
+            ArticleTrailer(
+                article_id=article.id,
+                role=role,
+                name=name,
+                address=address,
+                address_normalized=address.lower(),
+            )
+        )
     return "indexed"
 
 

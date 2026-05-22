@@ -16,6 +16,7 @@ the walking. The chunk seconds dial is
 `BROKER_BACKFILL_CHUNK_SECONDS` (default 10 s); shorter dials
 yield finer interleaving with queued cache writes / ingest ticks.
 """
+
 import click
 
 from mimir import patch_series, patches, trailers
@@ -38,21 +39,28 @@ def _verbose_broker_hint(verbose: int) -> None:
 
 @click.command("backfill-article-files")
 @click.option(
-    "--limit", type=int, default=None,
+    "--limit",
+    type=int,
+    default=None,
     help="Cap the number of articles examined this session.",
 )
 @click.option(
-    "--reprocess", is_flag=True,
+    "--reprocess",
+    is_flag=True,
     help="Re-extract for articles that already have rows (deletes "
-         "existing rows first). Use after an extractor change.",
+    "existing rows first). Use after an extractor change.",
 )
 @click.option(
-    "-v", "--verbose", count=True,
+    "-v",
+    "--verbose",
+    count=True,
     help="-v: progress every batch (direct mode only; broker mode "
-         "logs to the broker process).",
+    "logs to the broker process).",
 )
 def backfill_article_files_command(
-    limit: int | None, reprocess: bool, verbose: int,
+    limit: int | None,
+    reprocess: bool,
+    verbose: int,
 ) -> None:
     """One-shot walker that fills `article_files` for articles
     ingested before the extractor landed.
@@ -67,27 +75,31 @@ def backfill_article_files_command(
     if settings.broker_socket_path is not None:
         _verbose_broker_hint(verbose)
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+
         client = get_broker_client()
         try:
             result = _broker_backfill_loop(
                 client.backfill_article_files,
-                limit=limit, reprocess=reprocess,
+                limit=limit,
+                reprocess=reprocess,
             )
         except BrokerUnavailable as exc:
-            raise click.ClickException(
-                f"broker backfill_article_files failed: {exc}"
-            )
+            raise click.ClickException(f"broker backfill_article_files failed: {exc}")
     else:
         progress_fn = None
         if verbose:
+
             def progress_fn(r):  # noqa: E306
                 click.echo(
                     f"... examined={r.examined} indexed={r.indexed} "
                     f"no_diff={r.no_diff} skipped={r.skipped} "
                     f"failed={r.failed}"
                 )
+
         result = patches.backfill_article_files(
-            limit=limit, reprocess=reprocess, progress=progress_fn,
+            limit=limit,
+            reprocess=reprocess,
+            progress=progress_fn,
         )
     click.echo(
         f"backfill complete: examined={result.examined} "
@@ -98,21 +110,28 @@ def backfill_article_files_command(
 
 @click.command("backfill-article-trailers")
 @click.option(
-    "--limit", type=int, default=None,
+    "--limit",
+    type=int,
+    default=None,
     help="Cap the number of articles examined this session.",
 )
 @click.option(
-    "--reprocess", is_flag=True,
+    "--reprocess",
+    is_flag=True,
     help="Re-extract for articles that already have rows (deletes "
-         "existing rows first). Use after an extractor change.",
+    "existing rows first). Use after an extractor change.",
 )
 @click.option(
-    "-v", "--verbose", count=True,
+    "-v",
+    "--verbose",
+    count=True,
     help="-v: progress every batch (direct mode only; broker mode "
-         "logs to the broker process).",
+    "logs to the broker process).",
 )
 def backfill_article_trailers_command(
-    limit: int | None, reprocess: bool, verbose: int,
+    limit: int | None,
+    reprocess: bool,
+    verbose: int,
 ) -> None:
     """One-shot walker that fills `article_trailers` for articles
     ingested before the extractor landed.
@@ -124,11 +143,13 @@ def backfill_article_trailers_command(
     if settings.broker_socket_path is not None:
         _verbose_broker_hint(verbose)
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+
         client = get_broker_client()
         try:
             result = _broker_backfill_loop(
                 client.backfill_article_trailers,
-                limit=limit, reprocess=reprocess,
+                limit=limit,
+                reprocess=reprocess,
             )
         except BrokerUnavailable as exc:
             raise click.ClickException(
@@ -137,14 +158,18 @@ def backfill_article_trailers_command(
     else:
         progress_fn = None
         if verbose:
+
             def progress_fn(r):  # noqa: E306
                 click.echo(
                     f"... examined={r.examined} indexed={r.indexed} "
                     f"no_trailers={r.no_trailers} skipped={r.skipped} "
                     f"failed={r.failed}"
                 )
+
         result = trailers.backfill_article_trailers(
-            limit=limit, reprocess=reprocess, progress=progress_fn,
+            limit=limit,
+            reprocess=reprocess,
+            progress=progress_fn,
         )
     click.echo(
         f"backfill complete: examined={result.examined} "
@@ -155,21 +180,28 @@ def backfill_article_trailers_command(
 
 @click.command("backfill-patch-series")
 @click.option(
-    "--limit", type=int, default=None,
+    "--limit",
+    type=int,
+    default=None,
     help="Cap the number of articles examined this session.",
 )
 @click.option(
-    "--reprocess", is_flag=True,
+    "--reprocess",
+    is_flag=True,
     help="Re-detect for articles whose key is already set (clears "
-         "stale rows that no longer parse as cover letters).",
+    "stale rows that no longer parse as cover letters).",
 )
 @click.option(
-    "-v", "--verbose", count=True,
+    "-v",
+    "--verbose",
+    count=True,
     help="-v: progress every batch (direct mode only; broker mode "
-         "logs to the broker process).",
+    "logs to the broker process).",
 )
 def backfill_patch_series_command(
-    limit: int | None, reprocess: bool, verbose: int,
+    limit: int | None,
+    reprocess: bool,
+    verbose: int,
 ) -> None:
     """One-shot walker that fills `patch_series_key` and
     `patch_series_version` on articles ingested before the
@@ -184,19 +216,20 @@ def backfill_patch_series_command(
     if settings.broker_socket_path is not None:
         _verbose_broker_hint(verbose)
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+
         client = get_broker_client()
         try:
             result = _broker_backfill_loop(
                 client.backfill_patch_series,
-                limit=limit, reprocess=reprocess,
+                limit=limit,
+                reprocess=reprocess,
             )
         except BrokerUnavailable as exc:
-            raise click.ClickException(
-                f"broker backfill_patch_series failed: {exc}"
-            )
+            raise click.ClickException(f"broker backfill_patch_series failed: {exc}")
     else:
         progress_fn = None
         if verbose:
+
             def progress_fn(r):  # noqa: E306
                 click.echo(
                     f"... examined={r.examined} indexed={r.indexed} "
@@ -204,8 +237,11 @@ def backfill_patch_series_command(
                     f"in_series_orphan={r.in_series_orphan} "
                     f"not_cover={r.not_cover} skipped={r.skipped}"
                 )
+
         result = patch_series.backfill_patch_series(
-            limit=limit, reprocess=reprocess, progress=progress_fn,
+            limit=limit,
+            reprocess=reprocess,
+            progress=progress_fn,
         )
     click.echo(
         f"backfill complete: examined={result.examined} "

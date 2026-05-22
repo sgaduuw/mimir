@@ -7,6 +7,7 @@ attempts/last_attempt and refresh the error fields. Used by both the
 `admin failures replay` CLI command and any operator-driven cleanup
 after a parser change.
 """
+
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,10 +32,11 @@ logger = logging.getLogger(__name__)
 
 class ReplayResult(BaseModel):
     """Outcome of replaying persisted parse failures for one inbox."""
+
     attempted: int = 0
-    recovered: int = 0   # parsed cleanly; row deleted, article inserted/linked.
+    recovered: int = 0  # parsed cleanly; row deleted, article inserted/linked.
     still_failed: int = 0  # parse still raises; row's last_attempt + attempts updated.
-    skipped: int = 0     # blob couldn't be fetched (mirror missing, ref pruned).
+    skipped: int = 0  # blob couldn't be fetched (mirror missing, ref pruned).
 
 
 def replay_failures(
@@ -73,7 +75,7 @@ def replay_failures(
                 if repo is None:
                     try:
                         repo = Repo(str(repo_path))
-                    except (NotGitRepository, FileNotFoundError):
+                    except NotGitRepository, FileNotFoundError:
                         out.skipped += 1
                         continue
                     repo_cache[row.epoch] = repo
@@ -83,7 +85,9 @@ def replay_failures(
                     tree = repo[commit.tree]
                     _mode, blob_sha = tree[b"m"]
                     raw = repo[blob_sha].data
-                    commit_time = datetime.fromtimestamp(commit.commit_time, timezone.utc)
+                    commit_time = datetime.fromtimestamp(
+                        commit.commit_time, timezone.utc
+                    )
                 except KeyError:
                     # Commit or `m` blob missing, mirror was pruned or
                     # rewound. Leave the row in place; surface to operator.
@@ -104,11 +108,16 @@ def replay_failures(
                     select(Article.id).where(Article.message_id == parsed.message_id)
                 ).scalar_one_or_none()
                 if existing_id is None:
-                    session.add(_to_article(
-                        parsed, inbox_id=attached.id, epoch=row.epoch,
-                        commit_sha=row.commit_sha, date=commit_time,
-                        session=session,
-                    ))
+                    session.add(
+                        _to_article(
+                            parsed,
+                            inbox_id=attached.id,
+                            epoch=row.epoch,
+                            commit_sha=row.commit_sha,
+                            date=commit_time,
+                            session=session,
+                        )
+                    )
                 else:
                     # Cross-post: link if not already linked. We only ever
                     # have a failure row for a SHA whose article wasn't
@@ -121,12 +130,14 @@ def replay_failures(
                         )
                     ).scalar_one_or_none()
                     if already_linked is None:
-                        session.add(ArticleList(
-                            article_id=existing_id,
-                            inbox_id=attached.id,
-                            epoch=row.epoch,
-                            commit_sha=row.commit_sha,
-                        ))
+                        session.add(
+                            ArticleList(
+                                article_id=existing_id,
+                                inbox_id=attached.id,
+                                epoch=row.epoch,
+                                commit_sha=row.commit_sha,
+                            )
+                        )
                 session.delete(row)
                 out.recovered += 1
             session.commit()

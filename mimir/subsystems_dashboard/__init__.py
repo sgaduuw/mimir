@@ -38,6 +38,7 @@ Cache-key conventions are documented inline per helper; bumping
 `cache.NAMESPACE_VERSION` invalidates everything if a payload
 shape changes.
 """
+
 from mimir.subsystems_dashboard.activity import (
     MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
     MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,

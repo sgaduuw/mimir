@@ -26,6 +26,7 @@ A standalone module (rather than a helper inside `parser.py` or
 datetime might cross a comparison boundary, import `aware_utc` from
 here. One concern per file, per CLAUDE.md.
 """
+
 from datetime import datetime, timezone
 
 

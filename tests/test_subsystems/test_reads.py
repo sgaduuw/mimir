@@ -3,13 +3,14 @@ subsystem read fan-outs that power the subsystem
 dashboard (`recent_articles_in_subsystem`,
 `active_threads_in_subsystem`, `daily_volume_in_subsystem`)."""
 
-
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 
 from mimir.models import (
-    Article, ArticleFile, Inbox,
+    Article,
+    ArticleFile,
+    Inbox,
 )
 from mimir.subsystems_dashboard import (
     active_threads_in_subsystem,
@@ -17,7 +18,11 @@ from mimir.subsystems_dashboard import (
     recent_articles_in_subsystem,
 )
 
-from tests.test_subsystems._helpers import _add_patch_article, _add_recent_thread_root, _add_subsystem
+from tests.test_subsystems._helpers import (
+    _add_patch_article,
+    _add_recent_thread_root,
+    _add_subsystem,
+)
 
 
 def test_recent_articles_in_subsystem_basic_match(seeded_db):
@@ -84,7 +89,9 @@ def test_recent_articles_in_subsystem_respects_exclude_globs(seeded_db):
     header semantics."""
     with seeded_db() as s:
         sub = _add_subsystem(
-            s, "BTRFS-MAIN", "Maintained",
+            s,
+            "BTRFS-MAIN",
+            "Maintained",
             files=["fs/btrfs/"],
             excludes=["fs/btrfs/tests/"],
         )
@@ -104,13 +111,20 @@ def test_recent_articles_in_subsystem_keeps_article_with_one_in_scope_path(
     articles whose paths are *all* excluded."""
     with seeded_db() as s:
         sub = _add_subsystem(
-            s, "BTRFS-MAIN", "Maintained",
+            s,
+            "BTRFS-MAIN",
+            "Maintained",
             files=["fs/btrfs/"],
             excludes=["fs/btrfs/tests/"],
         )
-        _add_patch_article(s, "mixed@x", [
-            "fs/btrfs/extent.c", "fs/btrfs/tests/runner.c",
-        ])
+        _add_patch_article(
+            s,
+            "mixed@x",
+            [
+                "fs/btrfs/extent.c",
+                "fs/btrfs/tests/runner.c",
+            ],
+        )
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         out = recent_articles_in_subsystem(s, alpha, sub)
@@ -121,10 +135,8 @@ def test_recent_articles_in_subsystem_scoped_to_inbox(seeded_db):
     """Articles linked only to the other inbox don't appear."""
     with seeded_db() as s:
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
-        _add_patch_article(s, "in-alpha@x", ["fs/bcachefs/super.c"],
-                           inbox_name="alpha")
-        _add_patch_article(s, "in-beta@x", ["fs/bcachefs/io.c"],
-                           inbox_name="beta")
+        _add_patch_article(s, "in-alpha@x", ["fs/bcachefs/super.c"], inbox_name="alpha")
+        _add_patch_article(s, "in-beta@x", ["fs/bcachefs/io.c"], inbox_name="beta")
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
@@ -140,6 +152,7 @@ def test_recent_articles_in_subsystem_orders_by_date_desc(seeded_db):
     with seeded_db() as s:
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
         from mimir.models import ArticleList
+
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         for i, day in enumerate([10, 5, 15]):
             art = Article(
@@ -147,10 +160,12 @@ def test_recent_articles_in_subsystem_orders_by_date_desc(seeded_db):
                 subject=f"patch {i}",
                 author="a@x",
                 date=datetime(2024, 6, day, tzinfo=timezone.utc),
-                thread_parent=None, subject_normalized=f"patch {i}",
+                thread_parent=None,
+                subject_normalized=f"patch {i}",
                 canonical_inbox_id=alpha.id,
-                lists=[ArticleList(inbox_id=alpha.id, epoch="0.git",
-                                   commit_sha="f" * 40)],
+                lists=[
+                    ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="f" * 40)
+                ],
                 files=[ArticleFile(path="fs/bcachefs/super.c")],
             )
             s.add(art)
@@ -213,10 +228,12 @@ def test_active_threads_in_subsystem_returns_threads_with_matching_path(
     not."""
     with seeded_db() as s:
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
-        _add_recent_thread_root(s, "bch@x", ["fs/bcachefs/super.c"],
-                                subject="bcachefs work")
-        _add_recent_thread_root(s, "other@x", ["fs/btrfs/extent.c"],
-                                subject="btrfs work")
+        _add_recent_thread_root(
+            s, "bch@x", ["fs/bcachefs/super.c"], subject="bcachefs work"
+        )
+        _add_recent_thread_root(
+            s, "other@x", ["fs/btrfs/extent.c"], subject="btrfs work"
+        )
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         out = active_threads_in_subsystem(s, alpha, sub, force=True)
@@ -231,13 +248,16 @@ def test_active_threads_in_subsystem_respects_excludes(seeded_db):
     recent-patches surface."""
     with seeded_db() as s:
         sub = _add_subsystem(
-            s, "BTRFS-MAIN", "Maintained",
-            files=["fs/btrfs/"], excludes=["fs/btrfs/tests/"],
+            s,
+            "BTRFS-MAIN",
+            "Maintained",
+            files=["fs/btrfs/"],
+            excludes=["fs/btrfs/tests/"],
         )
-        _add_recent_thread_root(s, "main@x", ["fs/btrfs/extent.c"],
-                                subject="main work")
-        _add_recent_thread_root(s, "tests@x", ["fs/btrfs/tests/runner.c"],
-                                subject="tests work")
+        _add_recent_thread_root(s, "main@x", ["fs/btrfs/extent.c"], subject="main work")
+        _add_recent_thread_root(
+            s, "tests@x", ["fs/btrfs/tests/runner.c"], subject="tests work"
+        )
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         out = active_threads_in_subsystem(s, alpha, sub, force=True)
@@ -248,10 +268,8 @@ def test_active_threads_in_subsystem_respects_excludes(seeded_db):
 def test_active_threads_in_subsystem_scoped_to_inbox(seeded_db):
     with seeded_db() as s:
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
-        _add_recent_thread_root(s, "a-side@x", ["fs/bcachefs/a.c"],
-                                inbox_name="alpha")
-        _add_recent_thread_root(s, "b-side@x", ["fs/bcachefs/b.c"],
-                                inbox_name="beta")
+        _add_recent_thread_root(s, "a-side@x", ["fs/bcachefs/a.c"], inbox_name="alpha")
+        _add_recent_thread_root(s, "b-side@x", ["fs/bcachefs/b.c"], inbox_name="beta")
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()

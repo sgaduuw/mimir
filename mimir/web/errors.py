@@ -22,6 +22,7 @@ passed into the template so `base.html` skips the canonical link
 "this 404 is authoritative") and emits `<meta name="robots"
 content="noindex">` so crawlers don't index typo URLs.
 """
+
 from flask import render_template
 
 from mimir.web._blueprint import bp_web
@@ -61,8 +62,7 @@ def _gone(_e):
     return _render_error(
         410,
         "Gone",
-        "The page you requested has been deliberately removed and "
-        "isn't coming back.",
+        "The page you requested has been deliberately removed and isn't coming back.",
     )
 
 

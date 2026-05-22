@@ -7,6 +7,7 @@ Phase B runs serially after Phase A's barrier so the cross-inbox
 aggregator (`most_active_subsystems_global`) reads the just-warmed
 per-inbox cache rows instead of re-doing the underlying SQL.
 """
+
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -99,64 +100,94 @@ def _build_inbox_targets(
     without changing wall time.
     """
     targets: list[tuple[str, object]] = [
-        (f"{inbox.name} active_threads (7d, 10)",
-         lambda s, ib=inbox: active_threads(s, ib, days=7, limit=10)),
-        (f"{inbox.name} threads_for_day (today)",
-         lambda s, ib=inbox: threads_for_day(s, ib, today)),
-        (f"{inbox.name} threads_for_day (yesterday)",
-         lambda s, ib=inbox: threads_for_day(s, ib, yesterday)),
-        (f"{inbox.name} daily_volume (30d)",
-         lambda s, ib=inbox: daily_volume(s, ib, days=30)),
-        (f"{inbox.name} archive_stats",
-         lambda s, ib=inbox: archive_stats(s, ib)),
-        (f"{inbox.name} latest_pull_requests",
-         lambda s, ib=inbox: latest_pull_requests(s, ib, limit=5)),
-        (f"{inbox.name} latest_stable_releases",
-         lambda s, ib=inbox: latest_stable_releases(s, ib, limit=5)),
-        (f"{inbox.name} this_day_in_history",
-         lambda s, ib=inbox: this_day_in_history(s, ib, years_ago=5, limit=3)),
+        (
+            f"{inbox.name} active_threads (7d, 10)",
+            lambda s, ib=inbox: active_threads(s, ib, days=7, limit=10),
+        ),
+        (
+            f"{inbox.name} threads_for_day (today)",
+            lambda s, ib=inbox: threads_for_day(s, ib, today),
+        ),
+        (
+            f"{inbox.name} threads_for_day (yesterday)",
+            lambda s, ib=inbox: threads_for_day(s, ib, yesterday),
+        ),
+        (
+            f"{inbox.name} daily_volume (30d)",
+            lambda s, ib=inbox: daily_volume(s, ib, days=30),
+        ),
+        (f"{inbox.name} archive_stats", lambda s, ib=inbox: archive_stats(s, ib)),
+        (
+            f"{inbox.name} latest_pull_requests",
+            lambda s, ib=inbox: latest_pull_requests(s, ib, limit=5),
+        ),
+        (
+            f"{inbox.name} latest_stable_releases",
+            lambda s, ib=inbox: latest_stable_releases(s, ib, limit=5),
+        ),
+        (
+            f"{inbox.name} this_day_in_history",
+            lambda s, ib=inbox: this_day_in_history(s, ib, years_ago=5, limit=3),
+        ),
         # Atom feed source. Different cache key from the
         # dashboard "Recent messages" loader because the limit
         # is the cache key, feeds need 50, the dashboard's
         # initial paint uses 10.
-        (f"{inbox.name} recent_articles ({FEED_ENTRY_LIMIT})",
-         lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT)),
+        (
+            f"{inbox.name} recent_articles ({FEED_ENTRY_LIMIT})",
+            lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT),
+        ),
         # Per-inbox subsystem discoverability widget. One
         # warm target per inbox: the cache key is limit-less
         # since v1.19.3, so every caller (front-page top-12,
         # inbox dashboard top-10, cross-inbox aggregator)
         # slices from the same cached top-100 payload.
-        (f"{inbox.name} most_active_subsystems_in_inbox (7d)",
-         lambda s, ib=inbox: most_active_subsystems_in_inbox(s, ib, days=7)),
+        (
+            f"{inbox.name} most_active_subsystems_in_inbox (7d)",
+            lambda s, ib=inbox: most_active_subsystems_in_inbox(s, ib, days=7),
+        ),
         # Per-subsystem dashboard helpers, top-N most active
         # subsystems only. Coarse-grained: one warm target per
         # inbox covering 4 helpers × top-N subsystems internally.
         # Long-tail subsystems pay one cold load per hour.
-        (f"{inbox.name} subsystem dashboards (top {WARM_TOP_SUBSYSTEMS_PER_INBOX})",
-         lambda s, ib=inbox: _warm_subsystem_dashboards(
-             s, ib, WARM_TOP_SUBSYSTEMS_PER_INBOX,
-         )),
+        (
+            f"{inbox.name} subsystem dashboards (top {WARM_TOP_SUBSYSTEMS_PER_INBOX})",
+            lambda s, ib=inbox: _warm_subsystem_dashboards(
+                s,
+                ib,
+                WARM_TOP_SUBSYSTEMS_PER_INBOX,
+            ),
+        ),
     ]
     for label, substr in (inbox.tracked_authors or {}).items():
         # Dashboard tracker tile (limit=5) AND per-author atom
         # feed (limit=FEED_ENTRY_LIMIT) hit different cache
         # keys; warm both so the first feed poll per hour
         # gets a cache-hit just like the dashboard.
-        targets.append((
-            f"{inbox.name} tracker:{label}",
-            lambda s, ib=inbox, sub=substr: author_recent(s, ib, sub, 5),
-        ))
-        targets.append((
-            f"{inbox.name} tracker:{label} (feed)",
-            lambda s, ib=inbox, sub=substr: author_recent(
-                s, ib, sub, FEED_ENTRY_LIMIT,
-            ),
-        ))
+        targets.append(
+            (
+                f"{inbox.name} tracker:{label}",
+                lambda s, ib=inbox, sub=substr: author_recent(s, ib, sub, 5),
+            )
+        )
+        targets.append(
+            (
+                f"{inbox.name} tracker:{label} (feed)",
+                lambda s, ib=inbox, sub=substr: author_recent(
+                    s,
+                    ib,
+                    sub,
+                    FEED_ENTRY_LIMIT,
+                ),
+            )
+        )
     if sitemap_base:
-        targets.append((
-            f"sitemap:inbox:{inbox.name}",
-            lambda s, ib=inbox, base=sitemap_base: inbox_sitemap_xml(s, ib, base),
-        ))
+        targets.append(
+            (
+                f"sitemap:inbox:{inbox.name}",
+                lambda s, ib=inbox, base=sitemap_base: inbox_sitemap_xml(s, ib, base),
+            )
+        )
     return targets
 
 
@@ -173,19 +204,27 @@ def _build_global_targets(
     the helper caches a body keyed implicitly on the base URL, so
     warming with an empty base would poison the cache against
     what the route emits at request time."""
-    targets: list[tuple[str, object]] = [(
-        "most_active_subsystems_global (7d)",
-        lambda s: most_active_subsystems_global(s, days=7),
-    )]
+    targets: list[tuple[str, object]] = [
+        (
+            "most_active_subsystems_global (7d)",
+            lambda s: most_active_subsystems_global(s, days=7),
+        )
+    ]
     if sitemap_base:
-        targets.insert(0, (
-            "sitemap:index",
-            lambda s, base=sitemap_base: sitemap_index_xml(s, base),
-        ))
-        targets.insert(1, (
-            "sitemap:meta",
-            lambda s, base=sitemap_base: meta_sitemap_xml(s, base),
-        ))
+        targets.insert(
+            0,
+            (
+                "sitemap:index",
+                lambda s, base=sitemap_base: sitemap_index_xml(s, base),
+            ),
+        )
+        targets.insert(
+            1,
+            (
+                "sitemap:meta",
+                lambda s, base=sitemap_base: meta_sitemap_xml(s, base),
+            ),
+        )
     return targets
 
 
@@ -217,11 +256,15 @@ def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
     # instead of N. The helpers below access `subsystem.paths` for the
     # F:/X: glob filters.
     sub_ids = [row.id for row in top]
-    subs = session.execute(
-        select(Subsystem)
-        .options(selectinload(Subsystem.paths))
-        .where(Subsystem.id.in_(sub_ids))
-    ).scalars().all()
+    subs = (
+        session.execute(
+            select(Subsystem)
+            .options(selectinload(Subsystem.paths))
+            .where(Subsystem.id.in_(sub_ids))
+        )
+        .scalars()
+        .all()
+    )
     sub_by_id = {s.id: s for s in subs}
     reviewer_addrs: set[str] = set()
     for row in top:
@@ -232,7 +275,10 @@ def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
         # these falls through to a no-op when the cached row is far
         # from expiry.
         recent_articles_in_subsystem(
-            session, inbox, sub, limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+            session,
+            inbox,
+            sub,
+            limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
         )
         active_threads_in_subsystem(session, inbox, sub, days=7, limit=10)
         daily_volume_in_subsystem(session, inbox, sub, days=30)
@@ -243,7 +289,11 @@ def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
         # Collect addresses so we can warm the per-reviewer page each
         # one links to from this subsystem's "Active reviewers" list.
         for r in active_reviewers_in_subsystem(
-            session, inbox, sub, days=30, limit=10,
+            session,
+            inbox,
+            sub,
+            days=30,
+            limit=10,
         ):
             reviewer_addrs.add(r.address_normalized)
     # Warm articles_reviewed_by for each unique reviewer surfaced
@@ -252,7 +302,10 @@ def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
     # or the cache key diverges and the warmed row never hits.
     for addr in reviewer_addrs:
         articles_reviewed_by(
-            session, inbox, addr, limit=REVIEWS_PER_PAGE_LIMIT,
+            session,
+            inbox,
+            addr,
+            limit=REVIEWS_PER_PAGE_LIMIT,
         )
 
 
@@ -289,6 +342,7 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from contextvars import copy_context
+
     today = datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
     inboxes = bootstrap_inboxes()
@@ -303,13 +357,13 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
     # no work runs in this process beyond JSON encode/decode.
     if settings.broker_socket_path is not None:
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+
         client = get_broker_client()
         total_keys = 0
         try:
             with ThreadPoolExecutor(max_workers=worker_count) as pool:
                 futures = {
-                    pool.submit(client.warm_inbox, name): name
-                    for name in inboxes
+                    pool.submit(client.warm_inbox, name): name for name in inboxes
                 }
                 for fut in as_completed(futures):
                     name = futures[fut]
@@ -334,9 +388,7 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
                     f"{global_result.get('elapsed_ms', 0)} ms"
                 )
         except BrokerUnavailable as exc:
-            raise click.ClickException(
-                f"broker warm-cache failed: {exc}"
-            )
+            raise click.ClickException(f"broker warm-cache failed: {exc}")
         total_ms = (time.perf_counter() - total_start) * 1000
         click.echo(
             f"warm-cache: {len(inboxes)} inbox{'' if len(inboxes) == 1 else 'es'}, "
@@ -344,10 +396,7 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
         )
         purged = cache_mod.purge_expired()
         if purged:
-            click.echo(
-                f"purged {purged} expired cache row"
-                f"{'' if purged == 1 else 's'}"
-            )
+            click.echo(f"purged {purged} expired cache row{'' if purged == 1 else 's'}")
         return
 
     # Direct (non-broker) path: build target lists locally and run

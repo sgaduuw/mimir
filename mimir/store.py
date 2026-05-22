@@ -32,9 +32,7 @@ def _read_blob(epoch_path: Path, commit_sha: str) -> bytes:
         ) from exc
 
 
-def read_message(
-    session: Session, inbox: Inbox, message_id: str
-) -> ParsedArticle:
+def read_message(session: Session, inbox: Inbox, message_id: str) -> ParsedArticle:
     """Re-parse a stored article's original RFC 5322 bytes from this
     inbox's mirror. Joins articles → article_lists to find the
     (epoch, commit_sha) pointer for THIS inbox (cross-posts have one

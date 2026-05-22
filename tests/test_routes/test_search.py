@@ -3,7 +3,6 @@ endpoint (form rendering, LIKE-substring matching, the
 too-short guard, pagination behaviour, meta-description
 shape)."""
 
-
 from tests.test_routes._helpers import _json_ld_blocks, _meta_value, _title_of
 
 
@@ -11,7 +10,7 @@ def test_inbox_search_form_renders_with_no_query(client, inbox_name):
     """`/search` (no q) renders the search input field; doesn't
     error or show stale results."""
     body = client.get(f"/{inbox_name}/search").data.decode()
-    assert '<input' in body and 'name="q"' in body
+    assert "<input" in body and 'name="q"' in body
 
 
 def test_inbox_search_with_query_echoes_query(client, inbox_name):
@@ -27,12 +26,14 @@ def test_inbox_search_form_has_visible_submit_button(client, inbox_name):
     keyboard but isn't obvious on touch. A `<button type="submit">`
     inside the form fixes that. Flagged in the 2026-05-12 review."""
     import re
+
     body = client.get(f"/{inbox_name}/search").data.decode()
     # Slice down to the search form so a stray <button> elsewhere on
     # the page (none today, but defends future drift) doesn't satisfy
     # the assertion.
-    form_match = re.search(r"<form[^>]*\baction=\"/[^\"]*search\"[^>]*>(.*?)</form>",
-                           body, re.DOTALL)
+    form_match = re.search(
+        r"<form[^>]*\baction=\"/[^\"]*search\"[^>]*>(.*?)</form>", body, re.DOTALL
+    )
     assert form_match is not None, "search form missing"
     form_html = form_match.group(1)
     assert re.search(r'<button[^>]+type="submit"', form_html), (
@@ -47,6 +48,7 @@ def test_search_and_author_pages_lead_with_h1(client, inbox_name):
     review nit). Pin both content pages so a future template tweak
     that drops the h1 back to h2 fails loudly."""
     import re
+
     for url in (f"/{inbox_name}/search", f"/{inbox_name}/author/torvalds"):
         body = client.get(url).data.decode()
         # Slice from <main> so the nav / footer don't satisfy the
@@ -71,9 +73,7 @@ def test_search_too_short(client, inbox_name):
 
 
 def test_search_title_includes_query(client, inbox_name):
-    title = _title_of(
-        client.get(f"/{inbox_name}/search?q=Linux").data.decode()
-    )
+    title = _title_of(client.get(f"/{inbox_name}/search?q=Linux").data.decode())
     assert title == f"Search 'Linux' | {inbox_name} | mimir"
 
 
@@ -99,9 +99,7 @@ def test_search_page_emits_no_json_ld_without_results(client, inbox_name):
     form, no SearchResultsPage payload, emitting it would tell
     crawlers "this is a results page" when it isn't. The seed
     corpus has no `Linux`-shaped subjects."""
-    blocks = _json_ld_blocks(
-        client.get(f"/{inbox_name}/search?q=Linux").data.decode()
-    )
+    blocks = _json_ld_blocks(client.get(f"/{inbox_name}/search?q=Linux").data.decode())
     assert blocks == []
     # Same for the empty-q and too-short forms.
     assert _json_ld_blocks(client.get(f"/{inbox_name}/search").data.decode()) == []
@@ -114,9 +112,7 @@ def test_search_page_emits_searchresultspage_with_results(client, inbox_name):
     signal. `url` mirrors the `<link rel="canonical">` (bare
     `/<inbox>/search`, no query) so individual `?q=` URLs stay out
     of the index. Suggested in the 2026-05-13 review."""
-    blocks = _json_ld_blocks(
-        client.get(f"/{inbox_name}/search?q=hello").data.decode()
-    )
+    blocks = _json_ld_blocks(client.get(f"/{inbox_name}/search?q=hello").data.decode())
     assert len(blocks) == 1
     payload = blocks[0]
     assert payload["@type"] == "SearchResultsPage"

@@ -77,14 +77,40 @@ def _thread_summary(thread) -> dict:
 
 
 _TEXT_LIKE_EXTENSIONS = {
-    ".c", ".h", ".cpp", ".cc", ".hpp", ".rs", ".go",
-    ".py", ".sh", ".bash", ".pl", ".rb", ".js", ".ts",
-    ".patch", ".diff",
-    ".txt", ".md", ".rst", ".cfg", ".ini", ".conf",
-    ".yaml", ".yml", ".json", ".xml", ".toml",
-    ".s", ".S", ".asm",
-    ".dts", ".dtsi",
-    ".mk", ".cmake",
+    ".c",
+    ".h",
+    ".cpp",
+    ".cc",
+    ".hpp",
+    ".rs",
+    ".go",
+    ".py",
+    ".sh",
+    ".bash",
+    ".pl",
+    ".rb",
+    ".js",
+    ".ts",
+    ".patch",
+    ".diff",
+    ".txt",
+    ".md",
+    ".rst",
+    ".cfg",
+    ".ini",
+    ".conf",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".xml",
+    ".toml",
+    ".s",
+    ".S",
+    ".asm",
+    ".dts",
+    ".dtsi",
+    ".mk",
+    ".cmake",
 }
 
 
@@ -93,7 +119,12 @@ def _is_previewable(att) -> bool:
     ct = (att.content_type or "").lower()
     if ct.startswith("text/"):
         return True
-    if ct in {"application/x-patch", "application/x-diff", "application/json", "application/xml"}:
+    if ct in {
+        "application/x-patch",
+        "application/x-diff",
+        "application/json",
+        "application/xml",
+    }:
         return True
     if att.filename:
         for ext in _TEXT_LIKE_EXTENSIONS:
@@ -130,13 +161,12 @@ def _is_allowlisted(address: str) -> bool:
     and the cache layer's own coordination handles repeats.
     """
     addr_lower = address.lower()
-    if any(
-        token.lower() in addr_lower for token in settings.email_allowlist
-    ):
+    if any(token.lower() in addr_lower for token in settings.email_allowlist):
         return True
     try:
         cached = g.setdefault(
-            "_maintainer_addresses", maintainer_allowlist.maintainer_addresses(),
+            "_maintainer_addresses",
+            maintainer_allowlist.maintainer_addresses(),
         )
     except RuntimeError:
         # Outside a Flask request context; fall through to a direct
@@ -173,7 +203,10 @@ def _msg_url_filter(article: Article, inbox_name: str) -> str:
 
 @bp_web.app_template_filter("render_body")
 def _render_body_filter(
-    body, msgid_urls=None, parent_url=None, lore_mirror_urls=None,
+    body,
+    msgid_urls=None,
+    parent_url=None,
+    lore_mirror_urls=None,
 ):
     return render_body(
         body,

@@ -4,6 +4,7 @@ Phase 2.0 (1.35.0) routes this CLI through the broker when
 `BROKER_SOCKET_PATH` is set. Tests pin both paths so a future
 regression in either surfaces in CI.
 """
+
 from click.testing import CliRunner
 
 from mimir.cli import bootstrap_inboxes_command
@@ -45,7 +46,8 @@ def test_bootstrap_inboxes_via_broker(seeded_db, monkeypatch):
 
 
 def test_bootstrap_inboxes_broker_unavailable_fails_cleanly(
-    seeded_db, monkeypatch,
+    seeded_db,
+    monkeypatch,
 ):
     """When `BROKER_SOCKET_PATH` is set but no broker is listening,
     the CLI exits non-zero with a clear error message. Hard-fail

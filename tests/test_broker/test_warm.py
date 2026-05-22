@@ -17,6 +17,7 @@ Covers:
   concurrent warm_inbox RPCs make progress in parallel rather
   than serialising on a single worker.
 """
+
 from __future__ import annotations
 
 import time
@@ -90,10 +91,14 @@ def test_dispatch_warm_inbox_targets_narrows_set(seeded_db):
     """`targets=[label]` warms only the labelled subset. The post-
     ingest warm shape uses this to refresh just the front-page-
     critical helpers, not the whole per-inbox sweep."""
-    reply = dispatch(_line(WarmInboxRequest(
-        inbox_name="alpha",
-        targets=["alpha archive_stats"],
-    )))
+    reply = dispatch(
+        _line(
+            WarmInboxRequest(
+                inbox_name="alpha",
+                targets=["alpha archive_stats"],
+            )
+        )
+    )
     assert reply.ok is True
     # Only the requested label landed.
     assert reply.result["warmed"] == ["alpha archive_stats"]
@@ -103,6 +108,7 @@ def test_dispatch_warm_inbox_captures_per_target_errors(seeded_db, monkeypatch):
     """A target that raises must NOT fail the whole RPC; the
     exception is captured in `errors` and the other targets keep
     going. Mirrors `_warm_after_ingest`'s best-effort posture."""
+
     def boom(_s):
         raise RuntimeError("synthetic warm failure")
 
@@ -113,6 +119,7 @@ def test_dispatch_warm_inbox_captures_per_target_errors(seeded_db, monkeypatch):
         ]
 
     import mimir.cli.cache as cli_cache
+
     monkeypatch.setattr(cli_cache, "_build_inbox_targets", fake_build)
 
     reply = dispatch(_line(WarmInboxRequest(inbox_name="alpha")))
@@ -243,7 +250,8 @@ def test_warm_workers_drain_in_parallel(seeded_db, monkeypatch):
 
 
 def test_warm_cache_command_broker_mode_dispatches_via_rpc(
-    seeded_db, monkeypatch,
+    seeded_db,
+    monkeypatch,
 ):
     """`mimir warm-cache` in broker mode fans warm_inbox RPCs per
     configured inbox and exits, plus one warm_global. Asserts the
@@ -261,7 +269,8 @@ def test_warm_cache_command_broker_mode_dispatches_via_rpc(
     # broker socket path doesn't need to be real because we patch
     # the client at the singleton accessor.
     monkeypatch.setattr(
-        live_settings, "broker_socket_path",
+        live_settings,
+        "broker_socket_path",
         Path("/tmp/mimir-test-warm-cli.sock"),
     )
 
@@ -283,7 +292,8 @@ def test_warm_cache_command_broker_mode_dispatches_via_rpc(
             return 0
 
     monkeypatch.setattr(
-        broker_client_mod, "get_broker_client",
+        broker_client_mod,
+        "get_broker_client",
         lambda: FakeClient(),
     )
     # Also patch via the CLI's import name since `warm_cache_command`

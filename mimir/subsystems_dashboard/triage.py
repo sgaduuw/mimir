@@ -12,6 +12,7 @@ so the path-side cost is the same as the other per-subsystem
 helpers. Both cached for `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC` to
 ride out repeat dashboard hits within a refresh window.
 """
+
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
@@ -39,6 +40,7 @@ class PatchAttention(BaseModel):
     `trailer_summary` is non-empty for needs-attention (e.g.
     "3 Reviewed-by, 1 Tested-by") and empty for the quiet list
     (which by definition has no trailers)."""
+
     article_id: int
     message_id: str
     subject: str | None
@@ -66,7 +68,8 @@ _MAINTAINER_PICKUP_ROLE = "Acked-by"
 
 
 def _filter_maintainer_acked(
-    session: Session, article_ids: list[int],
+    session: Session,
+    article_ids: list[int],
 ) -> set[int]:
     """Return the subset of `article_ids` whose `article_trailers`
     include an Acked-by from any address that's also a maintainer
@@ -94,11 +97,14 @@ def _filter_maintainer_acked(
     # join to be index-friendly on the trailer side and tolerant of
     # case drift on the maintainer side.
     rows = session.execute(
-        select(ArticleTrailer.article_id).distinct().join(
+        select(ArticleTrailer.article_id)
+        .distinct()
+        .join(
             SubsystemMaintainer,
             SubsystemMaintainer.address.collate("NOCASE")
-                == ArticleTrailer.address_normalized,
-        ).where(
+            == ArticleTrailer.address_normalized,
+        )
+        .where(
             ArticleTrailer.role == _MAINTAINER_PICKUP_ROLE,
             SubsystemMaintainer.role.in_(("M", "R")),
             ArticleTrailer.article_id.in_(article_ids),
@@ -108,7 +114,8 @@ def _filter_maintainer_acked(
 
 
 def _trailer_summary(
-    session: Session, article_ids: list[int],
+    session: Session,
+    article_ids: list[int],
 ) -> dict[int, str]:
     """Build a human-readable per-article trailer count summary
     keyed by article_id. Empty articles produce empty strings.
@@ -225,7 +232,8 @@ def _candidate_query_needs_attention(
     return sql, {
         "inbox_id": inbox.id,
         "cutoff_date": cutoff_date,
-        "min_date": cutoff_date - timedelta(
+        "min_date": cutoff_date
+        - timedelta(
             days=settings.subsystem_triage_max_age_days,
         ),
         "overfetch": overfetch,
@@ -272,7 +280,8 @@ def _candidate_query_quiet(
     return sql, {
         "inbox_id": inbox.id,
         "cutoff_date": cutoff_date,
-        "min_date": cutoff_date - timedelta(
+        "min_date": cutoff_date
+        - timedelta(
             days=settings.subsystem_triage_max_age_days,
         ),
         "limit": limit,
@@ -287,7 +296,8 @@ def _run_triage(
     cutoff_date: datetime,
     limit: int,
     build_query: Callable[
-        [Inbox, Subsystem, datetime, int], tuple[str, dict] | None,
+        [Inbox, Subsystem, datetime, int],
+        tuple[str, dict] | None,
     ],
     *,
     drop_maintainer_acked: bool,
@@ -319,15 +329,17 @@ def _run_triage(
     for r in rows:
         if r.article_id in drop_ids:
             continue
-        out.append(PatchAttention(
-            article_id=r.article_id,
-            message_id=r.message_id,
-            subject=r.subject,
-            author=r.author,
-            date=_coerce_dt(r.art_date),
-            inbox_name=inbox.name,
-            trailer_summary=summaries.get(r.article_id, ""),
-        ))
+        out.append(
+            PatchAttention(
+                article_id=r.article_id,
+                message_id=r.message_id,
+                subject=r.subject,
+                author=r.author,
+                date=_coerce_dt(r.art_date),
+                inbox_name=inbox.name,
+                trailer_summary=summaries.get(r.article_id, ""),
+            )
+        )
         if len(out) >= limit:
             break
     return out
@@ -354,7 +366,11 @@ def needs_attention_patches_in_subsystem(
 
     def compute() -> list[PatchAttention]:
         return _run_triage(
-            session, inbox, subsystem, cutoff, limit,
+            session,
+            inbox,
+            subsystem,
+            cutoff,
+            limit,
             _candidate_query_needs_attention,
             drop_maintainer_acked=True,
             include_trailer_summary=True,
@@ -390,7 +406,11 @@ def quiet_patches_in_subsystem(
 
     def compute() -> list[PatchAttention]:
         return _run_triage(
-            session, inbox, subsystem, cutoff, limit,
+            session,
+            inbox,
+            subsystem,
+            cutoff,
+            limit,
             _candidate_query_quiet,
             drop_maintainer_acked=False,
             include_trailer_summary=False,

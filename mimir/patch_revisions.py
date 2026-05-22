@@ -22,6 +22,7 @@ Companion #212 will promote this resolver into a persisted
 validated against prod data; this module is the prototype that
 informs that schema decision.
 """
+
 import difflib
 import re
 from dataclasses import dataclass
@@ -64,6 +65,7 @@ class ParsedPatchSubject:
     series when patches are added or dropped.
     `canonical_subject` is the part after the bracket; matching across
     revisions compares this (case-folded + whitespace-collapsed)."""
+
     position: int
     total: int
     canonical_subject: str
@@ -102,10 +104,12 @@ def parse_in_series_patch_subject(subject: str | None) -> ParsedPatchSubject | N
     try:
         position = int(nom.group(1))
         total = int(nom.group(2))
-    except (ValueError, IndexError):
+    except ValueError, IndexError:
         return None
     return ParsedPatchSubject(
-        position=position, total=total, canonical_subject=title,
+        position=position,
+        total=total,
+        canonical_subject=title,
     )
 
 
@@ -124,6 +128,7 @@ class InSeriesPatch:
     (preloaded). Used by the matcher's file-overlap fallback when
     subjects don't line up across revisions. Empty for cover
     letters (they're prose, not patches)."""
+
     position: int
     article: Article
     canonical_subject: str
@@ -167,26 +172,32 @@ def resolve_series_patches(
         canonical_subject=(cover_article.subject or "").strip(),
         touched_paths=frozenset(f.path for f in (cover_article.files or [])),
     )
-    children = session.execute(
-        select(Article)
-        .options(selectinload(Article.files))
-        .join(ArticleList, ArticleList.article_id == Article.id)
-        .where(
-            Article.thread_parent == cover_article.message_id,
-            ArticleList.inbox_id == inbox.id,
+    children = (
+        session.execute(
+            select(Article)
+            .options(selectinload(Article.files))
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                Article.thread_parent == cover_article.message_id,
+                ArticleList.inbox_id == inbox.id,
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     in_series: list[InSeriesPatch] = []
     for child in children:
         parsed = parse_in_series_patch_subject(child.subject)
         if parsed is None:
             continue
-        in_series.append(InSeriesPatch(
-            position=parsed.position,
-            article=child,
-            canonical_subject=parsed.canonical_subject,
-            touched_paths=frozenset(f.path for f in (child.files or [])),
-        ))
+        in_series.append(
+            InSeriesPatch(
+                position=parsed.position,
+                article=child,
+                canonical_subject=parsed.canonical_subject,
+                touched_paths=frozenset(f.path for f in (child.files or [])),
+            )
+        )
     in_series.sort(key=lambda p: p.position)
     return [cover_entry, *in_series]
 
@@ -236,8 +247,7 @@ def match_revision_position(
     v1_norm = _normalize_subject(v1_match.canonical_subject)
     v2_candidates = [p for p in v2_patches if p.position > 0]
     subject_matches = [
-        p for p in v2_candidates
-        if _normalize_subject(p.canonical_subject) == v1_norm
+        p for p in v2_candidates if _normalize_subject(p.canonical_subject) == v1_norm
     ]
     if len(subject_matches) == 1:
         return (v1_match, subject_matches[0])
@@ -259,10 +269,7 @@ def _pick_by_file_overlap(
     the same nonzero overlap count."""
     if not v1_match.touched_paths or not candidates:
         return None
-    scored = [
-        (len(v1_match.touched_paths & c.touched_paths), c)
-        for c in candidates
-    ]
+    scored = [(len(v1_match.touched_paths & c.touched_paths), c) for c in candidates]
     scored = [(n, c) for n, c in scored if n > 0]
     if not scored:
         return None
@@ -291,6 +298,7 @@ class RevisionDiff:
     matching the project convention (see other `cache.register`
     consumers in `dashboard.py`, `subsystems_dashboard/`).
     """
+
     from_article_id: int
     to_article_id: int
     from_version: str
@@ -311,7 +319,9 @@ cache.register("RevisionDiff", RevisionDiff)
 # and adding a public helper there for one extra caller would be the
 # premature-abstraction trap. If a third caller appears, promote.
 _DIFF_LEXER = DiffLexer()
-_DIFF_FORMATTER = HtmlFormatter(noclasses=False, nobackground=True, cssclass="highlight")
+_DIFF_FORMATTER = HtmlFormatter(
+    noclasses=False, nobackground=True, cssclass="highlight"
+)
 
 
 def compute_revision_diff(
@@ -346,12 +356,15 @@ def compute_revision_diff(
     if is_identical:
         diff_html = ""
     else:
-        diff_lines = list(difflib.unified_diff(
-            a, b,
-            fromfile=f"v{from_version.lstrip('v')}",
-            tofile=f"v{to_version.lstrip('v')}",
-            lineterm="",
-        ))
+        diff_lines = list(
+            difflib.unified_diff(
+                a,
+                b,
+                fromfile=f"v{from_version.lstrip('v')}",
+                tofile=f"v{to_version.lstrip('v')}",
+                lineterm="",
+            )
+        )
         diff_text = "\n".join(diff_lines)
         diff_html = highlight(diff_text, _DIFF_LEXER, _DIFF_FORMATTER)
     return RevisionDiff(

@@ -10,6 +10,7 @@ underlying SQL involves LIKE / GLOB scans and is order-of-seconds on
 a multi-million-row inbox; warming the cache (see `flask --app mimir
 warm-cache`) keeps dashboard load times under cache-hit latency.
 """
+
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Sequence
@@ -48,6 +49,7 @@ class ArticleSummary:
     requests, stable releases, history). Carries just the fields
     templates and `_msg_url` need, so it round-trips through the
     cache without dragging the ORM along."""
+
     id: int
     subject: str | None
     author: str | None
@@ -67,6 +69,7 @@ class DailyVolume:
     """Per-day message counts for the activity sparkline. `days` is
     zero-filled for any calendar day with no messages, so the bars line up
     on a uniform timeline."""
+
     days: list[tuple[date, int]]
     max_count: int
 
@@ -76,6 +79,7 @@ class MonthlyVolume:
     """Per-month message counts for the year archive view. `months`
     is zero-filled for every month in the year so the year grid
     always renders 12 cells."""
+
     year: int
     months: list[tuple[int, int]]  # (month_num 1..12, count)
     total: int
@@ -123,15 +127,20 @@ def author_recent(
     force: bool = False,
 ) -> list[ArticleSummary]:
     """Last N messages in `inbox` whose From contains the substring."""
+
     def compute() -> list[ArticleSummary]:
-        rows = session.execute(
-            _inbox_scoped(
-                select(Article).where(Article.author.ilike(f"%{email_substring}%")),
-                inbox,
+        rows = (
+            session.execute(
+                _inbox_scoped(
+                    select(Article).where(Article.author.ilike(f"%{email_substring}%")),
+                    inbox,
+                )
+                .order_by(Article.date.desc().nulls_last())
+                .limit(limit)
             )
-            .order_by(Article.date.desc().nulls_last())
-            .limit(limit)
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return _summarize(rows)
 
     return cache.get_or_compute(
@@ -150,16 +159,20 @@ def latest_pull_requests(
     floor = datetime.now(timezone.utc) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
 
     def compute() -> list[ArticleSummary]:
-        rows = session.execute(
-            _inbox_scoped(
-                select(Article)
-                .where(Article.subject.ilike("[GIT PULL]%"))
-                .where(Article.date >= floor),
-                inbox,
+        rows = (
+            session.execute(
+                _inbox_scoped(
+                    select(Article)
+                    .where(Article.subject.ilike("[GIT PULL]%"))
+                    .where(Article.date >= floor),
+                    inbox,
+                )
+                .order_by(Article.date.desc().nulls_last())
+                .limit(limit)
             )
-            .order_by(Article.date.desc().nulls_last())
-            .limit(limit)
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return _summarize(rows)
 
     return cache.get_or_compute(
@@ -179,16 +192,20 @@ def latest_stable_releases(
     floor = datetime.now(timezone.utc) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
 
     def compute() -> list[ArticleSummary]:
-        rows = session.execute(
-            _inbox_scoped(
-                select(Article)
-                .where(text("subject GLOB 'Linux [0-9]*'"))
-                .where(Article.date >= floor),
-                inbox,
+        rows = (
+            session.execute(
+                _inbox_scoped(
+                    select(Article)
+                    .where(text("subject GLOB 'Linux [0-9]*'"))
+                    .where(Article.date >= floor),
+                    inbox,
+                )
+                .order_by(Article.date.desc().nulls_last())
+                .limit(limit)
             )
-            .order_by(Article.date.desc().nulls_last())
-            .limit(limit)
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return _summarize(rows)
 
     return cache.get_or_compute(
@@ -221,17 +238,21 @@ def this_day_in_history(
         target = datetime.now(timezone.utc) - timedelta(days=365 * years_ago)
         start = target.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=1)
-        rows = session.execute(
-            _inbox_scoped(
-                select(Article).where(
-                    Article.date >= start,
-                    Article.date < end,
-                ),
-                inbox,
+        rows = (
+            session.execute(
+                _inbox_scoped(
+                    select(Article).where(
+                        Article.date >= start,
+                        Article.date < end,
+                    ),
+                    inbox,
+                )
+                .order_by(Article.date.desc().nulls_last())
+                .limit(limit)
             )
-            .order_by(Article.date.desc().nulls_last())
-            .limit(limit)
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return _summarize(rows)
 
     return cache.get_or_compute(
@@ -248,6 +269,7 @@ def daily_volume(
 ) -> DailyVolume:
     """Daily message counts in `inbox` for the last `days` days,
     zero-filled. Cached per (inbox, days) key for 1 hour."""
+
     def compute() -> DailyVolume:
         # UTC date to match `Article.date`, which stores the public-inbox
         # commit time in UTC. `date.today()` would use the local date and
@@ -309,12 +331,17 @@ def recent_articles(
     the dashboard's "Load more" pattern; this helper is the
     feed/Atom data source.
     """
+
     def compute() -> list[ArticleSummary]:
-        rows = session.execute(
-            _inbox_scoped(select(Article), inbox)
-            .order_by(Article.date.desc().nulls_last())
-            .limit(limit)
-        ).scalars().all()
+        rows = (
+            session.execute(
+                _inbox_scoped(select(Article), inbox)
+                .order_by(Article.date.desc().nulls_last())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
         return _summarize(rows)
 
     return cache.get_or_compute(
@@ -344,21 +371,26 @@ def search_articles(
     responsible for length-bounding `query` and for asking only
     when the user typed something meaningful (≥2 chars).
     """
+
     def compute() -> list[ArticleSummary]:
         pattern = f"%{like_escape(query)}%"
-        rows = session.execute(
-            _inbox_scoped(
-                select(Article).where(
-                    or_(
-                        Article.subject.ilike(pattern, escape="\\"),
-                        Article.author.ilike(pattern, escape="\\"),
-                    )
-                ),
-                inbox,
+        rows = (
+            session.execute(
+                _inbox_scoped(
+                    select(Article).where(
+                        or_(
+                            Article.subject.ilike(pattern, escape="\\"),
+                            Article.author.ilike(pattern, escape="\\"),
+                        )
+                    ),
+                    inbox,
+                )
+                .order_by(Article.date.desc().nulls_last())
+                .limit(limit)
             )
-            .order_by(Article.date.desc().nulls_last())
-            .limit(limit)
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return _summarize(rows)
 
     return cache.get_or_compute(
@@ -381,6 +413,7 @@ def monthly_volume(
     1-hour TTL keeps the helper composable: warming and invalidating
     are uniform across years.
     """
+
     def compute() -> MonthlyVolume:
         rows = session.execute(
             text(
@@ -400,7 +433,7 @@ def monthly_volume(
             {
                 "inbox_id": inbox.id,
                 "year_start": f"{year:04d}-01-01 00:00:00",
-                "year_end":   f"{year + 1:04d}-01-01 00:00:00",
+                "year_end": f"{year + 1:04d}-01-01 00:00:00",
             },
         ).all()
         counts = {r.month: r.n for r in rows if r.month is not None}
@@ -420,9 +453,7 @@ def monthly_volume(
     )
 
 
-def archive_stats(
-    session: Session, inbox: Inbox, force: bool = False
-) -> ArchiveStats:
+def archive_stats(session: Session, inbox: Inbox, force: bool = False) -> ArchiveStats:
     """Total row count + date span + epoch count for `inbox`. Cached
     per-inbox for 24h. COUNT(*) over a single inbox still does a scan but
     is cheaper than across all inboxes.
@@ -434,6 +465,7 @@ def archive_stats(
     justifies the TTL; first_date / epochs drift on geological
     timescales by comparison.
     """
+
     def compute() -> ArchiveStats:
         row = session.execute(
             text(

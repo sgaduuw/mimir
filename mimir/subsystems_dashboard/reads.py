@@ -6,6 +6,7 @@ The shared path-filter SQL builder lives in `_path_filter.py` so this
 module covers one concern (read fan-outs) and the sibling
 `reviewers.py` can pull the builder from the same neutral home.
 """
+
 from collections import defaultdict
 from datetime import date as date_cls, datetime, timedelta, timezone
 
@@ -28,7 +29,10 @@ from mimir.threading import ActiveThread, _active_threads_query, _coerce_dt
 
 
 def recent_articles_in_subsystem(
-    session: Session, inbox: Inbox, subsystem: Subsystem, limit: int = 20,
+    session: Session,
+    inbox: Inbox,
+    subsystem: Subsystem,
+    limit: int = 20,
     *,
     force: bool = False,
 ) -> list[RelatedPatch]:
@@ -55,6 +59,7 @@ def recent_articles_in_subsystem(
     earlier shape ran tens of seconds cold on busy subsystems like
     NETWORKING (#198).
     """
+
     def compute() -> list[RelatedPatch]:
         path_filter = _subsystem_path_filter_sql(subsystem, prefix="rasf")
         if path_filter is None:
@@ -108,14 +113,16 @@ def recent_articles_in_subsystem(
                 canon_name = min(name for _, name in link_set)
             if canon_name is None:
                 continue
-            out.append(RelatedPatch(
-                article_id=r.article_id,
-                message_id=r.message_id,
-                subject=r.subject,
-                author=r.author,
-                date=_coerce_dt(r.art_date),
-                inbox_name=canon_name,
-            ))
+            out.append(
+                RelatedPatch(
+                    article_id=r.article_id,
+                    message_id=r.message_id,
+                    subject=r.subject,
+                    author=r.author,
+                    date=_coerce_dt(r.art_date),
+                    inbox_name=canon_name,
+                )
+            )
         return out
 
     return cache.get_or_compute(
@@ -128,8 +135,11 @@ def recent_articles_in_subsystem(
 
 
 def daily_volume_in_subsystem(
-    session: Session, inbox: Inbox, subsystem: Subsystem,
-    days: int = 30, force: bool = False,
+    session: Session,
+    inbox: Inbox,
+    subsystem: Subsystem,
+    days: int = 30,
+    force: bool = False,
 ) -> DailyVolume:
     """Daily message counts in `inbox` for articles whose paths
     match `subsystem`'s F: globs (minus X: vetoes) over the last
@@ -140,16 +150,14 @@ def daily_volume_in_subsystem(
     subsystem has no supported globs; the sparkline still renders,
     just flat.
     """
+
     def compute() -> DailyVolume:
         today = date_cls.today()
         start = today - timedelta(days=days - 1)
         path_filter = _subsystem_path_filter_sql(subsystem, prefix="dvss")
         if path_filter is None:
             return DailyVolume(
-                days=[
-                    (start + timedelta(days=i), 0)
-                    for i in range(days)
-                ],
+                days=[(start + timedelta(days=i), 0) for i in range(days)],
                 max_count=1,
             )
         path_sql, path_params = path_filter
@@ -186,8 +194,12 @@ def daily_volume_in_subsystem(
 
 
 def active_threads_in_subsystem(
-    session: Session, inbox: Inbox, subsystem: Subsystem,
-    days: int = 7, limit: int = 10, force: bool = False,
+    session: Session,
+    inbox: Inbox,
+    subsystem: Subsystem,
+    days: int = 7,
+    limit: int = 10,
+    force: bool = False,
 ) -> list[ActiveThread]:
     """Most-active threads in `inbox` over the last `days` days
     among messages whose paths match `subsystem`'s F: globs (minus
@@ -202,6 +214,7 @@ def active_threads_in_subsystem(
     `/<inbox>/subsystem/<name>/` are reading the page, not watching
     for live updates.
     """
+
     def compute() -> list[ActiveThread]:
         path_filter = _subsystem_path_filter_sql(subsystem, prefix="atss")
         if path_filter is None:
@@ -216,8 +229,12 @@ def active_threads_in_subsystem(
         # "open firmware and flattened device tree bindings" with
         # many F: globs. The temp-table form runs the lookup once.
         return _active_threads_query(
-            session, inbox, start, end,
-            order_by="score", limit=limit,
+            session,
+            inbox,
+            start,
+            end,
+            order_by="score",
+            limit=limit,
             extra_ctes_sql=f"path_articles AS MATERIALIZED ({path_sql}),",
             extra_seed_filter_sql=" AND a.id IN (SELECT article_id FROM path_articles)",
             extra_params=path_params,

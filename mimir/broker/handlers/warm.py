@@ -19,6 +19,7 @@ subsystem aggregators, etc.) are deferred into the handler bodies
 so the broker process's import-time graph stays lean, matching the
 pattern used by the long-op handlers.
 """
+
 import logging
 import time
 
@@ -65,7 +66,9 @@ def _run_targets(targets) -> tuple[list[str], list[str], int]:
                 warmed.append(label)
             except Exception as exc:
                 logger.warning(
-                    "broker warm: target %r failed: %r", label, exc,
+                    "broker warm: target %r failed: %r",
+                    label,
+                    exc,
                 )
                 errors.append(f"{label}: {exc!r}")
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
