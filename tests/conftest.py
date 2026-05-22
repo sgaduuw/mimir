@@ -117,6 +117,12 @@ def _reset_db():
         s.execute(delete(Subsystem))
         s.commit()
 
+    # Re-seed robots_rules to migration defaults so tests that mutate
+    # the table start each case from the same `*` baseline.
+    import mimir.robots
+
+    mimir.robots.reset_rules()
+
     mimir.inboxes._INBOX_NAMES[:] = []
 
     with SessionLocal() as s:

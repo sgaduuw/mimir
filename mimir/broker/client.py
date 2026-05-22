@@ -57,6 +57,10 @@ from mimir.broker.protocol import (
     IngestInboxRequest,
     PingRequest,
     Reply,
+    RobotsAddRequest,
+    RobotsRemoveRequest,
+    RobotsResetRequest,
+    RobotsUpdateRequest,
     UpdateMainlineRequest,
     VacuumRequest,
     WarmGlobalRequest,
@@ -634,6 +638,72 @@ class BrokerClient:
         if not reply.ok:
             raise BrokerUnavailable(f"inbox_clear_tracked_authors: {reply.error}")
         return (reply.result or {}).get("inbox", {})
+
+    def robots_add(
+        self,
+        user_agent: str,
+        *,
+        disallow: list[str] | None = None,
+        crawl_delay: int | None = None,
+        timeout: float = 60.0,
+    ) -> dict:
+        """Insert one robots_rules row via the broker. Returns the
+        resulting rule dict (`{user_agent, crawl_delay, disallow_paths}`)."""
+        req = RobotsAddRequest(
+            user_agent=user_agent,
+            disallow=list(disallow or []),
+            crawl_delay=crawl_delay,
+        )
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"robots_add: {reply.error}")
+        return (reply.result or {}).get("rule", {})
+
+    def robots_update(
+        self,
+        user_agent: str,
+        *,
+        add_disallow: list[str] | None = None,
+        remove_disallow: list[str] | None = None,
+        crawl_delay: int | None = None,
+        clear_crawl_delay: bool = False,
+        timeout: float = 60.0,
+    ) -> dict:
+        """Mutate one robots_rules row via the broker. `clear_crawl_delay`
+        is distinct from `crawl_delay=None`: the former writes NULL,
+        the latter leaves the column untouched."""
+        req = RobotsUpdateRequest(
+            user_agent=user_agent,
+            add_disallow=list(add_disallow or []),
+            remove_disallow=list(remove_disallow or []),
+            crawl_delay=crawl_delay,
+            clear_crawl_delay=clear_crawl_delay,
+        )
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"robots_update: {reply.error}")
+        return (reply.result or {}).get("rule", {})
+
+    def robots_remove(
+        self,
+        user_agent: str,
+        *,
+        timeout: float = 60.0,
+    ) -> None:
+        """Drop one robots_rules row via the broker. `*` is refused
+        server-side; use `robots_reset` to restore defaults."""
+        req = RobotsRemoveRequest(user_agent=user_agent)
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"robots_remove: {reply.error}")
+
+    def robots_reset(self, *, timeout: float = 60.0) -> None:
+        """Drop every robots_rules row and re-seed the `*` stanza
+        with the migration defaults."""
+        req = RobotsResetRequest()
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"robots_reset: {reply.error}")
 
     def failures_replay(
         self,
