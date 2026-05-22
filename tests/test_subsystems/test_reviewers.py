@@ -234,6 +234,43 @@ def test_articles_reviewed_by_plan_drops_materialize(seeded_db):
     )
 
 
+def test_articles_reviewed_by_caches_for_one_hour(seeded_db):
+    """Regression for 1.42.0's wrong-TTL bug: the helper was wired
+    to `ACTIVE_THREADS_CACHE_TTL_SEC` (300 s), shorter than the
+    warm cycle's `refresh_window` of 450 s. Every warm tick then
+    recomputed the full per-reviewer fan-out, costing ~6 minutes
+    of broker compute per minute on the production lkml corpus.
+
+    Pin to `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC` (1 hour, matching
+    the rest of the per-subsystem dashboard fan-out the same warm
+    cycle drives through this helper). 1 hour is comfortably above
+    450 s, so an `articles_reviewed_by` row sits in cache for ~58
+    min of each hour and only refreshes near expiry."""
+    import time
+
+    from sqlalchemy import select
+
+    from mimir.cache import _ns
+    from mimir.models import CacheEntry
+
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        # Address with no trailers seeded is fine; the helper still
+        # caches the empty list and we're inspecting the TTL the
+        # cache row was set with.
+        articles_reviewed_by(s, alpha, "noone@example.com", limit=100)
+        nskey = _ns("articles_reviewed_by:alpha:noone@example.com:100")
+        row = s.execute(select(CacheEntry).where(CacheEntry.key == nskey)).scalar_one()
+
+    delta = row.expires_at - int(time.time())
+    assert 3500 < delta < 3700, (
+        f"articles_reviewed_by TTL must be ~1h ({3600}s), got {delta}s. "
+        "Pre-1.42.1 this was wired to ACTIVE_THREADS_CACHE_TTL_SEC (300s) "
+        "which sat inside the warm cycle's refresh_window (450s) and "
+        "caused every warm tick to recompute the full fan-out."
+    )
+
+
 def test_articles_reviewed_by_canonical_null_uses_alphabetical_fallback(
     seeded_db,
 ):
