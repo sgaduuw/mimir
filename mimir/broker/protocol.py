@@ -365,6 +365,97 @@ class InboxClearTrackedAuthorsRequest(BaseModel):
         return _validate_inbox_name(v)
 
 
+# Mirror of `mimir.robots._UA_RE` / `_PATH_RE`. Duplicated here (rather
+# than imported) so the protocol module stays free of the heavy
+# `mimir.robots` → `mimir.extensions` import chain. The robots-side
+# validator is the canonical source; any change there should update
+# these in lockstep.
+_ROBOTS_UA_RE = re.compile(r"^[\x21-\x7e]{1,64}$")
+_ROBOTS_PATH_RE = re.compile(r"^[/*][\x21-\x7e]{0,255}$")
+
+
+def _validate_robots_user_agent(v: str) -> str:
+    if not _ROBOTS_UA_RE.fullmatch(v):
+        raise ValueError(
+            "user_agent must be 1-64 visible-ASCII characters with no whitespace"
+        )
+    return v
+
+
+def _validate_robots_paths(v: list[str]) -> list[str]:
+    for p in v:
+        if not _ROBOTS_PATH_RE.fullmatch(p):
+            raise ValueError(
+                f"disallow path {p!r} must start with '/' or '*', "
+                "1-256 visible-ASCII characters, no whitespace"
+            )
+    return v
+
+
+class RobotsAddRequest(BaseModel):
+    """Insert one new robots_rules row. Handler delegates to
+    `mimir.robots.add_rule`."""
+
+    op: Literal["robots_add"] = "robots_add"
+    user_agent: str = Field(min_length=1, max_length=64)
+    disallow: list[str] = Field(default_factory=list, max_length=64)
+    crawl_delay: int | None = Field(default=None, ge=0, le=86_400)
+
+    @field_validator("user_agent")
+    @classmethod
+    def _ua_ok(cls, v: str) -> str:
+        return _validate_robots_user_agent(v)
+
+    @field_validator("disallow")
+    @classmethod
+    def _paths_ok(cls, v: list[str]) -> list[str]:
+        return _validate_robots_paths(v)
+
+
+class RobotsUpdateRequest(BaseModel):
+    """Mutate one existing robots_rules row. Handler delegates to
+    `mimir.robots.update_rule`. `clear_crawl_delay=True` sets the
+    column to NULL (distinct from omitting `crawl_delay` which means
+    "don't touch")."""
+
+    op: Literal["robots_update"] = "robots_update"
+    user_agent: str = Field(min_length=1, max_length=64)
+    add_disallow: list[str] = Field(default_factory=list, max_length=64)
+    remove_disallow: list[str] = Field(default_factory=list, max_length=64)
+    crawl_delay: int | None = Field(default=None, ge=0, le=86_400)
+    clear_crawl_delay: bool = False
+
+    @field_validator("user_agent")
+    @classmethod
+    def _ua_ok(cls, v: str) -> str:
+        return _validate_robots_user_agent(v)
+
+    @field_validator("add_disallow", "remove_disallow")
+    @classmethod
+    def _paths_ok(cls, v: list[str]) -> list[str]:
+        return _validate_robots_paths(v)
+
+
+class RobotsRemoveRequest(BaseModel):
+    """Drop one robots_rules row. `*` is refused at the service
+    layer. Handler delegates to `mimir.robots.remove_rule`."""
+
+    op: Literal["robots_remove"] = "robots_remove"
+    user_agent: str = Field(min_length=1, max_length=64)
+
+    @field_validator("user_agent")
+    @classmethod
+    def _ua_ok(cls, v: str) -> str:
+        return _validate_robots_user_agent(v)
+
+
+class RobotsResetRequest(BaseModel):
+    """Drop every row and re-seed the `*` stanza with the migration's
+    defaults. Handler delegates to `mimir.robots.reset_rules`."""
+
+    op: Literal["robots_reset"] = "robots_reset"
+
+
 class VacuumRequest(BaseModel):
     """Run `VACUUM` (+ WAL checkpoint) on the broker. Holds the
     SQLite exclusive lock for the duration; cache writes from the
@@ -456,6 +547,10 @@ Request = Union[
     InboxAddTrackedAuthorRequest,
     InboxRemoveTrackedAuthorRequest,
     InboxClearTrackedAuthorsRequest,
+    RobotsAddRequest,
+    RobotsUpdateRequest,
+    RobotsRemoveRequest,
+    RobotsResetRequest,
     WarmInboxRequest,
     WarmGlobalRequest,
 ]
