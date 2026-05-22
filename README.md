@@ -340,6 +340,15 @@ omitting a key expresses no preference. The migration seeds the
 the "redaction is a friction layer" posture documented in
 `CONTEXT.md`.
 
+When any rule carries `Content-Signal` directives, the rendered
+`/robots.txt` is prefixed with an explanatory preamble: a glossary
+of what each signal means and a reservation of the operator's
+rights in the compilation (index, deduplication, threading,
+rendering) under EU Directive 96/9/EC on the legal protection of
+databases. The preamble is suppressed when no rule has signals.
+Copyright in individual messages is unaffected and belongs to
+their authors.
+
 The `*` stanza is structural; `remove '*'` is refused. Use
 `reset` to restore the seeded defaults if a `*` mutation has
 wandered.
