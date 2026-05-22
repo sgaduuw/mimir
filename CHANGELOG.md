@@ -11,6 +11,37 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [1.41.0], 2026-05-22
+
+### Added
+
+- **Content Signals on `robots_rules`.** Operators can now express
+  Cloudflare's proposed
+  ([blog](https://blog.cloudflare.com/content-signals-policy/))
+  `Content-Signal: search=yes, ai-train=no, ai-input=no` semantics
+  per User-agent stanza. New JSON column on `robots_rules`; the
+  migration backfills the seeded `*` row with
+  `search=yes, ai-train=no, ai-input=no` (matching mimir's existing
+  redaction-as-friction posture). CLI surface:
+  `admin robots add <ua> --content-signal KEY=VALUE` and
+  `admin robots update <ua> {--set-content-signal KEY=VALUE,
+  --clear-content-signal KEY, --clear-all-content-signals}`. The
+  rendered file emits `Content-Signal:` as a sibling line under
+  `User-agent:`, before `Crawl-delay:`/`Disallow:`. The
+  isitagentready.com `botAccessControl.contentSignals` check now
+  passes.
+
+### Fixed
+
+- **`/robots.txt` + `/security.txt` Content-Type duplication.** The
+  responses previously carried
+  `content-type: text/plain; charset=utf-8; charset=utf-8` because
+  the `Response(..., mimetype="text/plain; charset=utf-8")` call
+  passed an already-charsetted mimetype that Flask's response
+  builder then double-appended. Changed to
+  `mimetype="text/plain"` on both routes so Flask appends its
+  default charset exactly once.
+
 ## [1.40.0], 2026-05-22
 
 ### Added

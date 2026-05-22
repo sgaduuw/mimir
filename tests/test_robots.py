@@ -176,14 +176,20 @@ def test_reset_rules_drops_extras_and_reseeds_star():
     star = rules[0]
     assert star.crawl_delay == 5
     assert star.disallow_paths == ["/*/attachment/"]
+    assert star.content_signals == {
+        "search": "yes",
+        "ai-train": "no",
+        "ai-input": "no",
+    }
 
 
 # ----- render_robots_txt -------------------------------------------------
 
 
-def test_render_matches_previous_hardcoded_template_when_only_star():
-    """Byte-identical default output preserves the existing /robots.txt
-    contract (modulo the canonical sitemap URL the caller supplies)."""
+def test_render_matches_seeded_defaults():
+    """Default body after migration: `*` stanza with Content-Signal
+    (search/ai-input/ai-train), Crawl-delay, and the seeded Disallow
+    path, then Sitemap."""
     with SessionLocal() as session:
         body = robots.render_robots_txt(
             session,
@@ -191,6 +197,7 @@ def test_render_matches_previous_hardcoded_template_when_only_star():
         )
     assert body == (
         "User-agent: *\n"
+        "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
         "Crawl-delay: 5\n"
         "Disallow: /*/attachment/\n"
         "\n"
@@ -208,6 +215,7 @@ def test_render_emits_per_ua_stanzas():
     # `*` first, then alphabetical (ClaudeBot < GPTBot).
     expected = (
         "User-agent: *\n"
+        "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
         "Crawl-delay: 5\n"
         "Disallow: /*/attachment/\n"
         "\n"
@@ -225,14 +233,26 @@ def test_render_emits_per_ua_stanzas():
 
 
 def test_render_skips_degenerate_rows():
-    """A row with no crawl_delay AND no disallow paths is meaningless;
-    rendering produces no stanza for it."""
-    robots.add_rule("EmptyBot")  # no disallow, no crawl_delay
+    """A row with no crawl_delay AND no disallow paths AND no
+    content_signals is meaningless; rendering produces no stanza."""
+    robots.add_rule("EmptyBot")  # nothing at all
 
     with SessionLocal() as session:
         body = robots.render_robots_txt(session, "https://example.com/sm.xml")
 
     assert "EmptyBot" not in body
+
+
+def test_render_keeps_stanza_with_only_content_signals():
+    """A row carrying ONLY content_signals (no disallow, no
+    crawl_delay) is still meaningful and must render."""
+    robots.add_rule("MysteryBot", content_signals={"ai-train": "no"})
+
+    with SessionLocal() as session:
+        body = robots.render_robots_txt(session, "https://example.com/sm.xml")
+
+    assert "User-agent: MysteryBot\n" in body
+    assert "Content-Signal: ai-train=no\n" in body
 
 
 def test_render_with_only_degenerate_rows_still_emits_sitemap():
@@ -244,9 +264,93 @@ def test_render_with_only_degenerate_rows_still_emits_sitemap():
         "*",
         remove_disallow=["/*/attachment/"],
         clear_crawl_delay=True,
+        clear_all_content_signals=True,
     )
 
     with SessionLocal() as session:
         body = robots.render_robots_txt(session, "https://example.com/sm.xml")
 
     assert body == "Sitemap: https://example.com/sm.xml\n"
+
+
+# ----- Content Signals --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"unknown": "yes"},
+        {"search": "maybe"},
+        {"": "yes"},
+    ],
+)
+def test_validate_content_signals_rejects_bad_input(bad):
+    with pytest.raises(robots.RobotsValidationError):
+        robots.validate_content_signals(bad)
+
+
+def test_validate_content_signals_normalises_case():
+    assert robots.validate_content_signals({"Search": "YES"}) == {"search": "yes"}
+
+
+def test_validate_content_signals_none_or_empty_passes_through():
+    assert robots.validate_content_signals(None) is None
+    assert robots.validate_content_signals({}) is None
+
+
+def test_add_rule_with_content_signals():
+    rule = robots.add_rule(
+        "Googlebot", content_signals={"search": "yes", "ai-train": "no"}
+    )
+    assert rule.content_signals == {"search": "yes", "ai-train": "no"}
+
+
+def test_update_rule_set_content_signal_upserts():
+    robots.update_rule("*", set_content_signal={"ai-train": "yes"})
+    with SessionLocal() as session:
+        rule = robots.get_rule(session, "*")
+    assert rule.content_signals["ai-train"] == "yes"
+    # Other seeded keys untouched.
+    assert rule.content_signals["search"] == "yes"
+    assert rule.content_signals["ai-input"] == "no"
+
+
+def test_update_rule_clear_content_signal_drops_specific_keys():
+    robots.update_rule("*", clear_content_signal=["ai-train"])
+    with SessionLocal() as session:
+        rule = robots.get_rule(session, "*")
+    assert "ai-train" not in rule.content_signals
+    assert "search" in rule.content_signals
+
+
+def test_update_rule_clear_all_content_signals_wipes_dict():
+    robots.update_rule("*", clear_all_content_signals=True)
+    with SessionLocal() as session:
+        rule = robots.get_rule(session, "*")
+    assert rule.content_signals is None
+
+
+def test_update_rule_rejects_clear_all_with_set():
+    with pytest.raises(robots.RobotsValidationError):
+        robots.update_rule(
+            "*",
+            set_content_signal={"search": "yes"},
+            clear_all_content_signals=True,
+        )
+
+
+def test_update_rule_rejects_unknown_clear_signal_key():
+    with pytest.raises(robots.RobotsValidationError):
+        robots.update_rule("*", clear_content_signal=["unknown"])
+
+
+def test_reset_rules_reseeds_content_signals():
+    robots.update_rule("*", clear_all_content_signals=True)
+    robots.reset_rules()
+    with SessionLocal() as session:
+        rule = robots.get_rule(session, "*")
+    assert rule.content_signals == {
+        "search": "yes",
+        "ai-train": "no",
+        "ai-input": "no",
+    }
