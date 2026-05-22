@@ -3,10 +3,6 @@ shared `_subsystem_path_filter_sql` builder, specifically
 the SQL-plan pin that asserts UNION-of-range-seeks (not
 the LIKE-with-ESCAPE shape that disabled the index)."""
 
-
-
-
-
 from tests.test_subsystems._helpers import _add_subsystem
 
 
@@ -28,7 +24,9 @@ def test_subsystem_path_filter_uses_index_seeks(seeded_db):
 
     with seeded_db() as s:
         sub = _add_subsystem(
-            s, "NETPLAN", "Supported",
+            s,
+            "NETPLAN",
+            "Supported",
             files=["net/", "include/linux/skbuff.h"],
             excludes=["net/bluetooth/"],
         )
@@ -39,9 +37,7 @@ def test_subsystem_path_filter_uses_index_seeks(seeded_db):
         # Must be a UNION of independent seeks, not OR-of-LIKEs.
         assert " UNION " in path_sql
         assert "LIKE" not in path_sql
-        plan_rows = s.execute(
-            text("EXPLAIN QUERY PLAN " + path_sql), path_params
-        ).all()
+        plan_rows = s.execute(text("EXPLAIN QUERY PLAN " + path_sql), path_params).all()
     plan = "\n".join(r[-1] for r in plan_rows)
     # Every article_files step should be an index SEARCH; no full
     # SCAN article_files should appear anywhere in the plan.

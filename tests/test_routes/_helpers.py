@@ -19,6 +19,7 @@ def _clear_sitemap_cache():
     from sqlalchemy import delete
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
+
     with SessionLocal() as s:
         s.execute(delete(CacheEntry))
         s.commit()
@@ -61,13 +62,16 @@ def _build_app_with_hops(monkeypatch, hops: int):
     """Re-create the Flask app with `trusted_proxy_hops` patched.
     `create_app()` decides ProxyFix wiring at construction time."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "trusted_proxy_hops", hops)
     from mimir import create_app
+
     return create_app()
 
 
 def _title_of(html: str) -> str:
     import re
+
     m = re.search(r"<title>(.*?)</title>", html, re.DOTALL)
     return m.group(1).strip() if m else ""
 
@@ -102,10 +106,7 @@ def _ingest_one_article(
         b"Message-ID: <" + message_id.encode() + b">\r\n"
         b"From: " + author.encode() + b"\r\n"
         b"Subject: " + subject.encode() + b"\r\n"
-        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
-        + extra +
-        b"\r\n"
-        + body
+        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n" + extra + b"\r\n" + body
     )
     repo_dir = tmp_path / "0.git"
     repo = Repo.init_bare(str(repo_dir), mkdir=True)
@@ -128,6 +129,7 @@ def _ingest_one_article(
     # that exercise URL date prefixes infer the year/month from
     # the returned URL rather than hardcoding 2023/11.
     import time as _time
+
     commit.commit_time = commit.author_time = int(_time.time()) - 86400
     commit.commit_timezone = commit.author_timezone = 0
     commit.encoding = b"UTF-8"
@@ -143,9 +145,7 @@ def _ingest_one_article(
         art = s.execute(
             select(Article).where(Article.message_id == message_id)
         ).scalar_one()
-        url = (
-            f"/{inbox_name}/{art.date.year}/{art.date.month:02d}/{art.id}"
-        )
+        url = f"/{inbox_name}/{art.date.year}/{art.date.month:02d}/{art.id}"
         return art.id, url
 
 
@@ -153,8 +153,10 @@ def _meta_value(html: str, name_or_property: str) -> str | None:
     """Extract a <meta> tag's content. Matches both `name=` and
     `property=` since OG uses property and the rest use name."""
     import re
+
     pattern = (
-        r'<meta\s+(?:property|name)="' + re.escape(name_or_property)
+        r'<meta\s+(?:property|name)="'
+        + re.escape(name_or_property)
         + r'"\s+content="([^"]*)"'
     )
     m = re.search(pattern, html)
@@ -168,6 +170,7 @@ def _data_attr_values(html: str) -> str:
     (Message-IDs, raw email addresses) that the visible HTML
     redacted."""
     import re
+
     return "\n".join(re.findall(r'data-[a-z0-9-]+="([^"]*)"', html))
 
 
@@ -175,10 +178,12 @@ def _json_ld_blocks(html: str) -> list[dict]:
     """Extract every <script type=application/ld+json> JSON payload."""
     import json
     import re
+
     out: list[dict] = []
     for m in re.finditer(
         r'<script type="application/ld\+json">(.*?)</script>',
-        html, re.DOTALL,
+        html,
+        re.DOTALL,
     ):
         out.append(json.loads(m.group(1)))
     return out
@@ -219,9 +224,7 @@ def _seed_three_message_thread(tmp_path, inbox_name):
             b"Message-ID: <" + message_id.encode() + b">\r\n"
             b"From: a@b.example\r\n"
             b"Subject: " + subject.encode() + b"\r\n"
-            b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
-            + extra +
-            b"\r\n"
+            b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n" + extra + b"\r\n"
             b"body"
         )
         blob = Blob.from_string(raw)
@@ -274,6 +277,7 @@ def _seed_subsystem(name, status, files, maintainers=()):
     between tests."""
     from mimir.extensions import SessionLocal
     from mimir.models import Subsystem, SubsystemMaintainer, SubsystemPath
+
     with SessionLocal() as s:
         sub = Subsystem(name=name, status=status)
         for f in files:
@@ -286,21 +290,25 @@ def _seed_subsystem(name, status, files, maintainers=()):
         s.commit()
 
 
-def _seed_mainline_commit(message_id, commit_sha="abc1234567890def" + "0" * 24,
-                          tree_name="linus", date=None):
+def _seed_mainline_commit(
+    message_id, commit_sha="abc1234567890def" + "0" * 24, tree_name="linus", date=None
+):
     """Insert a MainlineCommit row for a route test. The render
     side reads commit_sha (truncated to 12 chars), tree_name, and
     committed_at."""
     from datetime import datetime, timezone
     from mimir.extensions import SessionLocal
     from mimir.models import MainlineCommit
+
     with SessionLocal() as s:
-        s.add(MainlineCommit(
-            commit_sha=commit_sha,
-            message_id=message_id,
-            tree_name=tree_name,
-            committed_at=date or datetime(2024, 6, 1, tzinfo=timezone.utc),
-        ))
+        s.add(
+            MainlineCommit(
+                commit_sha=commit_sha,
+                message_id=message_id,
+                tree_name=tree_name,
+                committed_at=date or datetime(2024, 6, 1, tzinfo=timezone.utc),
+            )
+        )
         s.commit()
 
 
@@ -326,7 +334,7 @@ def _ingest_with_attachment(
 
     b64 = base64.b64encode(attachment_bytes).decode()
     # Chunk to RFC-compatible 76-char lines.
-    b64_chunked = "\r\n".join(b64[i:i + 76] for i in range(0, len(b64), 76))
+    b64_chunked = "\r\n".join(b64[i : i + 76] for i in range(0, len(b64), 76))
 
     raw = (
         b"Message-ID: <" + message_id.encode() + b">\r\n"
@@ -341,10 +349,11 @@ def _ingest_with_attachment(
         b"the body\r\n"
         b"--bnd\r\n"
         b"Content-Type: " + attachment_content_type.encode() + b"\r\n"
-        b'Content-Disposition: attachment; filename="' + attachment_filename.encode() + b'"\r\n'
+        b'Content-Disposition: attachment; filename="'
+        + attachment_filename.encode()
+        + b'"\r\n'
         b"Content-Transfer-Encoding: base64\r\n"
-        b"\r\n"
-        + b64_chunked.encode() + b"\r\n"
+        b"\r\n" + b64_chunked.encode() + b"\r\n"
         b"--bnd--\r\n"
     )
 
@@ -398,10 +407,14 @@ def _seed_author_article(inbox_name: str, *, author: str, message_id: str) -> in
         )
         s.add(art)
         s.flush()
-        s.add(ArticleList(
-            article_id=art.id, inbox_id=ix.id, epoch="0.git",
-            commit_sha="aa" * 20,
-        ))
+        s.add(
+            ArticleList(
+                article_id=art.id,
+                inbox_id=ix.id,
+                epoch="0.git",
+                commit_sha="aa" * 20,
+            )
+        )
         s.commit()
         return art.id
 
@@ -428,7 +441,9 @@ def _build_pubinbox_epoch(epoch_dir, messages):
             b"From: " + author.encode() + b"\r\n"
             b"Subject: " + subject.encode() + b"\r\n"
             b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
-            + extra + b"\r\n" + (body or b"")
+            + extra
+            + b"\r\n"
+            + (body or b"")
         )
         blob = Blob.from_string(raw)
         repo.object_store.add_object(blob)

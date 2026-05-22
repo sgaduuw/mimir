@@ -12,6 +12,7 @@ Those imports are done inside the function bodies to avoid an
 import-time cycle (web imports JSON-LD builders from this module at
 module load).
 """
+
 from datetime import timezone
 from urllib.parse import quote
 
@@ -73,6 +74,7 @@ def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
     # Lazy imports break a `web → seo → web` cycle: these helpers
     # live in web.py with the rest of the display filters.
     from mimir.web import _clean_subject_filter, _msg_url
+
     payload: dict = {
         "@context": "https://schema.org",
         "@type": "DiscussionForum",
@@ -169,15 +171,14 @@ def _json_ld_message(
         _display_name_filter,
         _redact_trailer_address,
     )
+
     raw_date = parsed.date or article.date
     if raw_date is not None and raw_date.tzinfo is None:
         # `-0000` Date headers come back tz-naive from
         # parsedate_to_datetime; emit aware UTC so consumers don't
         # see schema-invalid bare datetimes.
         raw_date = raw_date.replace(tzinfo=timezone.utc)
-    iso_date = (
-        raw_date.strftime("%Y-%m-%dT%H:%M:%S%z") if raw_date else None
-    )
+    iso_date = raw_date.strftime("%Y-%m-%dT%H:%M:%S%z") if raw_date else None
     subject = parsed.subject or "(no subject)"
     breadcrumb_subject = subject if len(subject) <= 80 else subject[:77] + "..."
     author_name = _display_name_filter(parsed.author)
@@ -212,7 +213,8 @@ def _json_ld_message(
     # data even though the rendered page redacts them.
     redacted_body = (
         redact_trailer_addresses(parsed.body, _redact_trailer_address)
-        if parsed.body else parsed.body
+        if parsed.body
+        else parsed.body
     )
     body_snippet = _json_ld_text_snippet(redacted_body)
     if body_snippet:
@@ -252,7 +254,10 @@ def _json_ld_message(
 
 
 def _json_ld_search(
-    base: str, inbox_name: str, query: str, canonical_url: str,
+    base: str,
+    inbox_name: str,
+    query: str,
+    canonical_url: str,
 ) -> dict:
     """schema.org `SearchResultsPage` for `/<inbox_name>/search?q=…`.
     Emitted only when the route is rendering actual results (the
@@ -275,7 +280,10 @@ def _json_ld_search(
 
 
 def _json_ld_author(
-    base: str, inbox_name: str, sub: str, canonical_url: str,
+    base: str,
+    inbox_name: str,
+    sub: str,
+    canonical_url: str,
 ) -> dict:
     """schema.org `ProfilePage` for `/<inbox_name>/author/<sub>`. The
     `mainEntity` is a `Person` whose `name` is the sender substring

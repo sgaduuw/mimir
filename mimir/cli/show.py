@@ -4,6 +4,7 @@ Threading-debug surface that pairs the DB-side row state (linked
 inboxes, indexed date, thread_parent) with the freshly re-parsed
 blob (full headers, body, attachments).
 """
+
 import click
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -23,8 +24,14 @@ from mimir.store import MessageNotFound, read_message
     default=None,
     help="Read the blob from this inbox's mirror. Default: first linked inbox.",
 )
-@click.option("--body-chars", type=int, default=2000, help="Truncate body output (-1 for full).")
-@click.option("--no-body", is_flag=True, help="Skip the body; useful for inspecting threading state alone.")
+@click.option(
+    "--body-chars", type=int, default=2000, help="Truncate body output (-1 for full)."
+)
+@click.option(
+    "--no-body",
+    is_flag=True,
+    help="Skip the body; useful for inspecting threading state alone.",
+)
 def show_command(
     message_id: str,
     inbox_filter: str | None,
@@ -45,11 +52,15 @@ def show_command(
         if article is None:
             raise click.ClickException(f"no article with message_id={message_id!r}")
 
-        links = session.execute(
-            select(ArticleList)
-            .where(ArticleList.article_id == article.id)
-            .options(selectinload(ArticleList.inbox))
-        ).scalars().all()
+        links = (
+            session.execute(
+                select(ArticleList)
+                .where(ArticleList.article_id == article.id)
+                .options(selectinload(ArticleList.inbox))
+            )
+            .scalars()
+            .all()
+        )
         if not links:
             raise click.ClickException(f"article {message_id!r} has no inbox links")
 
@@ -73,9 +84,14 @@ def show_command(
         # Resolve threading state: where does our parent point, and is it in DB?
         parent_present = None
         if article.thread_parent:
-            parent_present = session.execute(
-                select(Article.id).where(Article.message_id == article.thread_parent)
-            ).scalar_one_or_none() is not None
+            parent_present = (
+                session.execute(
+                    select(Article.id).where(
+                        Article.message_id == article.thread_parent
+                    )
+                ).scalar_one_or_none()
+                is not None
+            )
 
     click.echo("--- DB row ---")
     click.echo(f"id:            {article.id}")
@@ -84,8 +100,10 @@ def show_command(
     )
     click.echo(f"reading from:  {chosen.inbox.name}")
     click.echo(f"date:          {article.date.isoformat() if article.date else ''}")
-    click.echo(f"thread_parent: {article.thread_parent or '(none)'}"
-               + (f"  [in DB: {parent_present}]" if article.thread_parent else ""))
+    click.echo(
+        f"thread_parent: {article.thread_parent or '(none)'}"
+        + (f"  [in DB: {parent_present}]" if article.thread_parent else "")
+    )
     click.echo()
     click.echo("--- parsed blob ---")
     click.echo(f"Message-ID: {parsed.message_id}")
@@ -97,7 +115,9 @@ def show_command(
     if parsed.references:
         click.echo(f"References: {' '.join(parsed.references)}")
     for a in parsed.attachments:
-        click.echo(f"Attachment: {a.filename or '(no name)'} [{a.content_type}] {len(a.content)} bytes")
+        click.echo(
+            f"Attachment: {a.filename or '(no name)'} [{a.content_type}] {len(a.content)} bytes"
+        )
     if no_body:
         return
     click.echo()
@@ -105,4 +125,6 @@ def show_command(
         body = parsed.body if body_chars < 0 else parsed.body[:body_chars]
         click.echo(body)
         if body_chars >= 0 and len(parsed.body) > body_chars:
-            click.echo(f"\n... ({len(parsed.body) - body_chars} more chars truncated; pass --body-chars=-1 for full)")
+            click.echo(
+                f"\n... ({len(parsed.body) - body_chars} more chars truncated; pass --body-chars=-1 for full)"
+            )

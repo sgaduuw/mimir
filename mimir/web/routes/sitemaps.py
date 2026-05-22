@@ -5,6 +5,7 @@ global URL cap (1000) and a COALESCE join to pick the canonical inbox
 per cross-posted article. Per-inbox sitemaps don't need either; each
 one lists its own URLs.
 """
+
 from flask import Response
 
 from mimir.extensions import SessionLocal

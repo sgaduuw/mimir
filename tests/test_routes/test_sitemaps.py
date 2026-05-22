@@ -2,7 +2,6 @@
 per-inbox sitemap, `<lastmod>` correctness, cache invalidation
 after canonical-inbox flips."""
 
-
 from tests.test_routes._helpers import _clear_sitemap_cache
 
 
@@ -28,7 +27,11 @@ def test_sitemap_xml(client):
     # Every configured inbox gets a sub-sitemap. A future regression
     # that drops an inbox from the iteration would silently leave it
     # un-indexed.
-    expected_sub_sitemaps = {"/meta-sitemap.xml", "/alpha/sitemap.xml", "/beta/sitemap.xml"}
+    expected_sub_sitemaps = {
+        "/meta-sitemap.xml",
+        "/alpha/sitemap.xml",
+        "/beta/sitemap.xml",
+    }
     found_paths = {urlparse(loc).path for loc in locs}
     assert expected_sub_sitemaps.issubset(found_paths), (
         f"missing sub-sitemap(s): {expected_sub_sitemaps - found_paths}"

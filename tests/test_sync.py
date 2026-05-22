@@ -13,6 +13,7 @@ opener used by the production caller) rather than `urlopen`
 directly, so the no-redirect handler stays in the call path that
 the tests reason about.
 """
+
 import gzip
 import io
 import json
@@ -380,9 +381,11 @@ def test_sync_epochs_clones_new_and_fetches_existing(tmp_path):
         (mirror_path / f"{name}.git").mkdir()
         return mirror_path / f"{name}.git"
 
-    with patch("mimir.sync.discover_remote_epochs", return_value=remote), \
-         patch("mimir.sync.clone_epoch", side_effect=_clone) as clone, \
-         patch("mimir.sync.fetch_epoch") as fetch:
+    with (
+        patch("mimir.sync.discover_remote_epochs", return_value=remote),
+        patch("mimir.sync.clone_epoch", side_effect=_clone) as clone,
+        patch("mimir.sync.fetch_epoch") as fetch,
+    ):
         result = sync_epochs("https://example.test/lkml", tmp_path)
 
     assert isinstance(result, SyncResult)
@@ -415,9 +418,11 @@ def test_sync_epochs_captures_clone_failure_in_result(tmp_path):
         (mirror_path / f"{name}.git").mkdir()  # simulate successful clone
         return mirror_path / f"{name}.git"
 
-    with patch("mimir.sync.discover_remote_epochs", return_value=remote), \
-         patch("mimir.sync.clone_epoch", side_effect=_clone), \
-         patch("mimir.sync.fetch_epoch"):
+    with (
+        patch("mimir.sync.discover_remote_epochs", return_value=remote),
+        patch("mimir.sync.clone_epoch", side_effect=_clone),
+        patch("mimir.sync.fetch_epoch"),
+    ):
         result = sync_epochs("https://example.test/lkml", tmp_path)
 
     assert call_count == 2  # both attempted, despite the first failing
@@ -439,9 +444,11 @@ def test_sync_epochs_captures_clone_timeout_in_result(tmp_path):
     def _clone(name, url, mirror_path):
         raise subprocess.TimeoutExpired(["git"], timeout=1)
 
-    with patch("mimir.sync.discover_remote_epochs", return_value=remote), \
-         patch("mimir.sync.clone_epoch", side_effect=_clone), \
-         patch("mimir.sync.fetch_epoch"):
+    with (
+        patch("mimir.sync.discover_remote_epochs", return_value=remote),
+        patch("mimir.sync.clone_epoch", side_effect=_clone),
+        patch("mimir.sync.fetch_epoch"),
+    ):
         result = sync_epochs("https://example.test/lkml", tmp_path)
 
     assert "0" in result.failed
@@ -456,9 +463,11 @@ def test_sync_epochs_captures_fetch_timeout_in_result(tmp_path):
     def _fetch(path):
         raise subprocess.TimeoutExpired(["git"], timeout=1)
 
-    with patch("mimir.sync.discover_remote_epochs", return_value=[]), \
-         patch("mimir.sync.clone_epoch"), \
-         patch("mimir.sync.fetch_epoch", side_effect=_fetch):
+    with (
+        patch("mimir.sync.discover_remote_epochs", return_value=[]),
+        patch("mimir.sync.clone_epoch"),
+        patch("mimir.sync.fetch_epoch", side_effect=_fetch),
+    ):
         result = sync_epochs("https://example.test/lkml", tmp_path)
 
     assert "0" in result.failed
@@ -476,9 +485,11 @@ def test_sync_epochs_captures_fetch_failure_in_result(tmp_path):
         if path.name == "0.git":
             raise subprocess.CalledProcessError(128, ["git"])
 
-    with patch("mimir.sync.discover_remote_epochs", return_value=[]), \
-         patch("mimir.sync.clone_epoch"), \
-         patch("mimir.sync.fetch_epoch", side_effect=_fetch):
+    with (
+        patch("mimir.sync.discover_remote_epochs", return_value=[]),
+        patch("mimir.sync.clone_epoch"),
+        patch("mimir.sync.fetch_epoch", side_effect=_fetch),
+    ):
         result = sync_epochs("https://example.test/lkml", tmp_path)
 
     assert "0" in result.failed
@@ -495,9 +506,11 @@ def test_sync_epochs_swallows_manifest_fetch_failure(tmp_path):
     def _discover_raises(_url):
         raise OSError("unreachable")
 
-    with patch("mimir.sync.discover_remote_epochs", side_effect=_discover_raises), \
-         patch("mimir.sync.clone_epoch") as clone, \
-         patch("mimir.sync.fetch_epoch") as fetch:
+    with (
+        patch("mimir.sync.discover_remote_epochs", side_effect=_discover_raises),
+        patch("mimir.sync.clone_epoch") as clone,
+        patch("mimir.sync.fetch_epoch") as fetch,
+    ):
         result = sync_epochs("https://example.test/lkml", tmp_path)
 
     # Nothing cloned (we couldn't enumerate remotes).
@@ -515,10 +528,14 @@ def test_sync_epochs_discover_new_disabled(tmp_path):
     knows the local epoch set is complete and just wants to pull
     new commits."""
     (tmp_path / "0.git").mkdir()
-    with patch("mimir.sync.discover_remote_epochs") as discover, \
-         patch("mimir.sync.fetch_epoch"):
+    with (
+        patch("mimir.sync.discover_remote_epochs") as discover,
+        patch("mimir.sync.fetch_epoch"),
+    ):
         result = sync_epochs(
-            "https://example.test/lkml", tmp_path, discover_new=False,
+            "https://example.test/lkml",
+            tmp_path,
+            discover_new=False,
         )
 
     discover.assert_not_called()
@@ -533,11 +550,15 @@ def test_sync_epochs_fetch_existing_disabled(tmp_path):
     the discover+clone half."""
     remote = [("1", "https://example.test/lkml/git/1.git")]
     (tmp_path / "0.git").mkdir()  # existing local epoch
-    with patch("mimir.sync.discover_remote_epochs", return_value=remote), \
-         patch("mimir.sync.clone_epoch") as clone, \
-         patch("mimir.sync.fetch_epoch") as fetch:
+    with (
+        patch("mimir.sync.discover_remote_epochs", return_value=remote),
+        patch("mimir.sync.clone_epoch") as clone,
+        patch("mimir.sync.fetch_epoch") as fetch,
+    ):
         result = sync_epochs(
-            "https://example.test/lkml", tmp_path, fetch_existing=False,
+            "https://example.test/lkml",
+            tmp_path,
+            fetch_existing=False,
         )
 
     clone.assert_called_once()

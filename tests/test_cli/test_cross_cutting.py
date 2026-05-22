@@ -5,10 +5,7 @@ point help lists registered commands, and
 (works around `logging.basicConfig`'s first-call-only
 semantics)."""
 
-
-
 from click.testing import CliRunner
-
 
 
 def test_configure_logging_actually_changes_level_on_re_invocation():
@@ -71,9 +68,7 @@ def test_register_cli_attaches_every_module_level_command():
 
     attached = reachable(app.cli.commands)
 
-    declared = {
-        v for v in vars(cli_mod).values() if isinstance(v, click.Command)
-    }
+    declared = {v for v in vars(cli_mod).values() if isinstance(v, click.Command)}
     # `mimir` (the FlaskGroup-based standalone entry point introduced
     # in #221) is the OUTER group, not a subcommand of `app.cli`. It
     # discovers `app.cli` commands via `FlaskGroup.create_app`, so
@@ -95,6 +90,7 @@ def test_mimir_entry_point_help_lists_registered_commands():
     to `app.cli`. Hits `--help` via `CliRunner` so the test doesn't
     depend on the entry-point being on $PATH inside the test runner."""
     from mimir.cli import mimir as mimir_group
+
     result = CliRunner().invoke(mimir_group, ["--help"])
     assert result.exit_code == 0
     # Spot-check a few commands across the surface: a top-level

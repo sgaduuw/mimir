@@ -3,7 +3,6 @@ verbose vs default output, per-key dashboard / reviewer /
 atom-feed / sitemap targets), `analyze`, and `vacuum`
 (post-vacuum size reporting)."""
 
-
 from datetime import datetime, timedelta, timezone
 
 from click.testing import CliRunner
@@ -25,7 +24,8 @@ def test_warm_cache_workers_one_serial_path(seeded_db):
     result = CliRunner().invoke(warm_cache_command, ["--workers", "1", "-v"])
     assert result.exit_code == 0
     per_key_lines = [
-        line for line in result.output.splitlines()
+        line
+        for line in result.output.splitlines()
         if line.endswith(" ms") and "ms total" not in line
     ]
     assert len(per_key_lines) >= 5, result.output
@@ -78,11 +78,12 @@ def test_warm_cache_default_emits_only_summary(seeded_db):
     result = CliRunner().invoke(warm_cache_command, [])
     assert result.exit_code == 0
     lines = result.output.strip().splitlines()
-    assert any(line.startswith("warm-cache:") and "ms total" in line for line in lines), result.output
+    assert any(
+        line.startswith("warm-cache:") and "ms total" in line for line in lines
+    ), result.output
     # No per-key timing lines (those end with "<n> ms" without "total").
     per_key = [
-        line for line in lines
-        if line.endswith(" ms") and "ms total" not in line
+        line for line in lines if line.endswith(" ms") and "ms total" not in line
     ]
     assert per_key == [], f"unexpected per-key lines at default verbosity: {per_key}"
 
@@ -100,7 +101,8 @@ def test_warm_cache_verbose_keeps_per_key_timings(seeded_db):
     result = CliRunner().invoke(warm_cache_command, ["-v"])
     assert result.exit_code == 0
     per_key_lines = [
-        line for line in result.output.splitlines()
+        line
+        for line in result.output.splitlines()
         if line.endswith(" ms") and "ms total" not in line
     ]
     alpha_lines = [line for line in per_key_lines if line.startswith("alpha ")]
@@ -138,7 +140,9 @@ def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
 
     from mimir.extensions import SessionLocal
     from mimir.models import (
-        ArticleFile, CacheEntry, Subsystem,
+        ArticleFile,
+        CacheEntry,
+        Subsystem,
         SubsystemPath,
     )
 
@@ -156,18 +160,25 @@ def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
         s.flush()
         s.add(SubsystemPath(subsystem_id=sub.id, glob="fs/bcachefs/", is_exclude=False))
         art = Article(
-            message_id="warm-sub@x", subject="patch", author="A",
+            message_id="warm-sub@x",
+            subject="patch",
+            author="A",
             date=recent,
-            thread_parent=None, subject_normalized="patch",
+            thread_parent=None,
+            subject_normalized="patch",
         )
         s.add(art)
         s.flush()
         alpha = s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         s.add(ArticleFile(article_id=art.id, path="fs/bcachefs/super.c"))
-        s.add(ArticleList(
-            article_id=art.id, inbox_id=alpha.id, epoch="0.git",
-            commit_sha="ab" * 20,
-        ))
+        s.add(
+            ArticleList(
+                article_id=art.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="ab" * 20,
+            )
+        )
         s.commit()
         sub_id = sub.id
 
@@ -191,13 +202,17 @@ def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
         f"active_reviewers_in_subsystem:alpha:{sub_id}:30:10",
     ]
     from mimir.cache import _ns
+
     with SessionLocal() as s:
         present = {
-            row.key for row in s.execute(
+            row.key
+            for row in s.execute(
                 sa_select(CacheEntry).where(
                     CacheEntry.key.in_([_ns(k) for k in expected_keys])
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         }
     for k in expected_keys:
         assert _ns(k) in present, (
@@ -220,8 +235,11 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
 
     from mimir.extensions import SessionLocal
     from mimir.models import (
-        ArticleFile, ArticleTrailer, CacheEntry,
-        Subsystem, SubsystemPath,
+        ArticleFile,
+        ArticleTrailer,
+        CacheEntry,
+        Subsystem,
+        SubsystemPath,
     )
 
     # Seed: one subsystem, one recent in-subsystem article with one
@@ -235,12 +253,14 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
         sub = Subsystem(name="BCACHEFS", status="Supported")
         s.add(sub)
         s.flush()
-        s.add(SubsystemPath(
-            subsystem_id=sub.id, glob="fs/bcachefs/", is_exclude=False,
-        ))
-        alpha = s.execute(
-            sa_select(Inbox).where(Inbox.name == "alpha")
-        ).scalar_one()
+        s.add(
+            SubsystemPath(
+                subsystem_id=sub.id,
+                glob="fs/bcachefs/",
+                is_exclude=False,
+            )
+        )
+        alpha = s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         art = Article(
             message_id="reviewer-warm@x",
             subject="patch with reviewer",
@@ -252,15 +272,23 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
         s.add(art)
         s.flush()
         s.add(ArticleFile(article_id=art.id, path="fs/bcachefs/super.c"))
-        s.add(ArticleList(
-            article_id=art.id, inbox_id=alpha.id, epoch="0.git",
-            commit_sha="cd" * 20,
-        ))
-        s.add(ArticleTrailer(
-            article_id=art.id, role="Reviewed-by",
-            name="David Reviewer", address="david@kernel.org",
-            address_normalized="david@kernel.org",
-        ))
+        s.add(
+            ArticleList(
+                article_id=art.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="cd" * 20,
+            )
+        )
+        s.add(
+            ArticleTrailer(
+                article_id=art.id,
+                role="Reviewed-by",
+                name="David Reviewer",
+                address="david@kernel.org",
+                address_normalized="david@kernel.org",
+            )
+        )
         s.commit()
 
     # `--workers 1` for the same reason the sibling test uses it (avoid
@@ -269,6 +297,7 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
     assert result.exit_code == 0
 
     from mimir.cache import _ns
+
     expected_key = "articles_reviewed_by:alpha:david@kernel.org:100"
     with SessionLocal() as s:
         present = s.execute(
@@ -296,13 +325,12 @@ def test_warm_cache_includes_atom_feed_sources(seeded_db):
     assert "alpha tracker:Examples (feed)" in result.output
 
 
-def test_warm_cache_skips_sitemap_when_site_base_url_unset(
-    seeded_db, monkeypatch
-):
+def test_warm_cache_skips_sitemap_when_site_base_url_unset(seeded_db, monkeypatch):
     """Without SITE_BASE_URL, sitemap renders rely on `request.url_root`
     which isn't available from the CLI. Warm-cache skips them rather
     than poison the cache with relative-looking URLs."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "site_base_url", "")
     result = CliRunner().invoke(warm_cache_command, ["-v"])
     assert result.exit_code == 0
@@ -311,9 +339,7 @@ def test_warm_cache_skips_sitemap_when_site_base_url_unset(
     assert "sitemap:inbox:" not in result.output
 
 
-def test_warm_cache_includes_sitemap_when_site_base_url_set(
-    seeded_db, monkeypatch
-):
+def test_warm_cache_includes_sitemap_when_site_base_url_set(seeded_db, monkeypatch):
     """With SITE_BASE_URL set, warm-cache pre-renders the three
     sitemap surfaces, index, meta, and per-inbox, so the first
     crawler hit per hour gets a cache-hit."""
@@ -322,6 +348,7 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
     from mimir.config import settings
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
+
     monkeypatch.setattr(settings, "site_base_url", "https://example.test")
     # Clean slate so we can assert the entries exist post-run.
     with SessionLocal() as s:
@@ -344,6 +371,7 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
     # the right schema-namespaced root element. A "<?xml" prefix
     # check alone would pass on a malformed document.
     import xml.etree.ElementTree as ET
+
     ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
     expected_root = {
         "sitemap:index": "{%s}sitemapindex" % ns,

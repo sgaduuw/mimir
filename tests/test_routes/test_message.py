@@ -5,12 +5,20 @@ revalidation, body redactions, off-list-parent hints, the
 subject-normalized fallback grouping, and the 4-tuple URL
 identity contract)."""
 
-
-from tests.test_routes._helpers import _data_attr_values, _ingest_one_article, _json_ld_blocks, _seed_mainline_commit, _seed_subsystem, _seed_three_message_thread, _title_of
+from tests.test_routes._helpers import (
+    _data_attr_values,
+    _ingest_one_article,
+    _json_ld_blocks,
+    _seed_mainline_commit,
+    _seed_subsystem,
+    _seed_three_message_thread,
+    _title_of,
+)
 
 
 def test_message_url_four_tuple_identity_404s_on_mismatch(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """`/<inbox>/<YYYY>/<MM>/<article_id>` is a 4-tuple identity:
     inbox + year + month + id must ALL match the article's storage
@@ -24,7 +32,9 @@ def test_message_url_four_tuple_identity_404s_on_mismatch(
 
     Ingest a real article and then probe every mismatched corner."""
     art_id, real_url = _ingest_one_article(
-        tmp_path, "alpha", "four-tuple-identity@example.com",
+        tmp_path,
+        "alpha",
+        "four-tuple-identity@example.com",
     )
     # Sanity: the correct URL resolves.
     assert client.get(real_url).status_code == 200
@@ -61,7 +71,10 @@ def test_message_subject_truncated_to_80(client, tmp_path):
     rather than testing Jinja's filter in isolation."""
     long_subject = "x" * 200
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "trunc@example.com", subject=long_subject,
+        tmp_path,
+        "alpha",
+        "trunc@example.com",
+        subject=long_subject,
     )
     r = client.get(url)
     assert r.status_code == 200
@@ -118,7 +131,10 @@ def test_message_page_emits_vary_hx_request(client, tmp_path):
     on 2026-05-14. The Vary header keys the two response shapes
     separately so caches treat them as distinct entities."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "vary-test@example.com", subject="vary",
+        tmp_path,
+        "alpha",
+        "vary-test@example.com",
+        subject="vary",
     )
     # Full-page response.
     r = client.get(url)
@@ -131,14 +147,18 @@ def test_message_page_emits_vary_hx_request(client, tmp_path):
 
 
 def test_message_page_single_message_thread_skips_fold_scaffolding(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """When a thread has exactly one message and no off-list parent,
     the whole `.thread-context` block is omitted: no fold scaffolding,
     no toolbar, no `<html>`-level data attrs, no fold-controller
     script context."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "fold-solo@example.com", subject="solo",
+        tmp_path,
+        "alpha",
+        "fold-solo@example.com",
+        subject="solo",
     )
     body = client.get(url).data.decode()
     assert "thread-context" not in body
@@ -152,7 +172,8 @@ def test_message_page_single_message_thread_skips_fold_scaffolding(
 
 
 def test_message_page_thread_fold_context_is_root_when_viewing_root(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """Viewing the thread root sets data-thread-context="root" on
     <html>; the controller script reads that and defaults the fold
@@ -171,7 +192,8 @@ def test_message_page_thread_fold_context_is_root_when_viewing_root(
 
 
 def test_message_page_thread_fold_context_is_deep_for_replies(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """Viewing any non-root message in a thread sets
     data-thread-context="deep" -- the controller defaults to `closed`
@@ -184,7 +206,8 @@ def test_message_page_thread_fold_context_is_deep_for_replies(
 
 
 def test_message_page_thread_fold_active_marker_on_current_li(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """The tree <li> whose data-article-id matches the current view
     carries class="is-active"; the others carry no such class. The
@@ -199,14 +222,16 @@ def test_message_page_thread_fold_active_marker_on_current_li(
     # class="is-active". Use a regex-ish substring check; the exact
     # element ordering is set by the template.
     import re
+
     li_active_pattern = re.compile(
-        r'<li[^>]*data-article-id="' + re.escape(str(nested_id)) +
-        r'"[^>]*class="is-active"',
+        r'<li[^>]*data-article-id="'
+        + re.escape(str(nested_id))
+        + r'"[^>]*class="is-active"',
         re.DOTALL,
     )
     assert li_active_pattern.search(body) is not None, (
         "expected active <li> for current message; markup was: "
-        + body[body.find("thread-list"):body.find("</ul>")]
+        + body[body.find("thread-list") : body.find("</ul>")]
     )
 
     # No other <li> carries .is-active. There are three <li> total
@@ -221,7 +246,8 @@ def test_message_page_thread_fold_active_marker_on_current_li(
 
 
 def test_message_page_thread_tree_uses_data_depth_not_inline_style(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """Thread-tree depth used to be encoded as
     `<li style="padding-left: {N*1.5}rem">`; the security pass moved
@@ -237,6 +263,7 @@ def test_message_page_thread_tree_uses_data_depth_not_inline_style(
     thread shape (0/1/2 in this fixture).
     """
     import re
+
     msgs = _seed_three_message_thread(tmp_path, "alpha")
     body = client.get(msgs["root"][1]).data.decode()
 
@@ -248,23 +275,20 @@ def test_message_page_thread_tree_uses_data_depth_not_inline_style(
     assert len(lis) == 3, f"expected 3 tree <li>, got {len(lis)}"
     # Each <li> carries data-depth=, none carries an inline style.
     for li in lis:
-        assert "data-depth=" in li, (
-            f"thread-tree <li> missing data-depth attr: {li!r}"
-        )
+        assert "data-depth=" in li, f"thread-tree <li> missing data-depth attr: {li!r}"
         assert "style=" not in li, (
             f"thread-tree <li> still carries inline style: {li!r}"
         )
     # Depths attached should be exactly {0, 1, 2} for this fixture.
-    depths = sorted(
-        int(d) for d in re.findall(r'data-depth="(\d+)"', list_block)
-    )
+    depths = sorted(int(d) for d in re.findall(r'data-depth="(\d+)"', list_block))
     assert depths == [0, 1, 2], (
         f"expected depths [0,1,2] for the 3-msg thread, got {depths}"
     )
 
 
 def test_message_page_thread_fold_toolbar_summary_counts_match(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """The closed-state summary line ("N messages, M authors, Th ago")
     inside .thread-summary must reflect the real thread shape -- the
@@ -276,10 +300,12 @@ def test_message_page_thread_fold_toolbar_summary_counts_match(
     body = client.get(msgs["root"][1]).data.decode()
 
     import re
+
     # Extract the .thread-summary span contents.
     m = re.search(
         r'<span class="thread-summary">(.*?)</span>',
-        body, re.DOTALL,
+        body,
+        re.DOTALL,
     )
     assert m is not None, "thread-summary span missing"
     summary_text = " ".join(m.group(1).split())  # collapse whitespace
@@ -300,7 +326,8 @@ def test_message_page_thread_fold_toolbar_summary_counts_match(
 
 
 def test_message_page_thread_fold_links_carry_htmx_attrs(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """Every non-active tree <li> must carry an <a> with the full HTMX
     attribute set: hx-get, hx-target=#msg, hx-swap=outerHTML, and
@@ -310,13 +337,14 @@ def test_message_page_thread_fold_links_carry_htmx_attrs(
     body = client.get(msgs["root"][1]).data.decode()
 
     import re
+
     # All <a> inside the actual thread-list <ul>. Anchor on the element
     # open tag so the slice doesn't include the earlier `.thread-list`
     # CSS rule in the <style> block.
     ul_start = body.index('<ul class="thread-list"')
     ul_end = body.index("</ul>", ul_start)
     list_block = body[ul_start:ul_end]
-    anchors = re.findall(r'<a[^>]*>', list_block)
+    anchors = re.findall(r"<a[^>]*>", list_block)
     # Every <li> -- active or not -- carries an <a> with HTMX attrs.
     # The active treatment is class-on-<li> + CSS, not anchor suppression:
     # that keeps the JS controller's class-toggle-on-swap path simple
@@ -330,7 +358,8 @@ def test_message_page_thread_fold_links_carry_htmx_attrs(
 
 
 def test_message_page_thread_fold_script_loads_before_section(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """thread-fold.js is loaded from /static/ with a synchronous
     <script src=...> in <head>. It must execute *before* the
@@ -359,7 +388,9 @@ def test_message_page_htmx_request_returns_body_partial(client, tmp_path):
     wrapper: the headline/from/date header, the message body, and
     attachments if any."""
     art_id, url = _ingest_one_article(
-        tmp_path, "alpha", "htmx-swap@example.com",
+        tmp_path,
+        "alpha",
+        "htmx-swap@example.com",
         subject="swap test subject 12345",
     )
     r = client.get(url, headers={"HX-Request": "true"})
@@ -368,7 +399,7 @@ def test_message_page_htmx_request_returns_body_partial(client, tmp_path):
 
     # Outer shape: hx-swap=outerHTML on the link targets #msg, so the
     # response's root element must be <article id="msg" data-article-id=...>.
-    assert body.lstrip().startswith("<article id=\"msg\""), (
+    assert body.lstrip().startswith('<article id="msg"'), (
         "HTMX partial must start with the swap-target element so "
         "hx-swap=outerHTML replaces #msg cleanly"
     )
@@ -397,14 +428,18 @@ def test_message_page_htmx_request_returns_body_partial(client, tmp_path):
 
 
 def test_message_page_full_and_htmx_responses_share_article_content(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """Full page render and HX-Request render must contain identical
     content inside <article id="msg">. Regression guard: a refactor
     that diverges the two render paths (e.g. one uses _message_body.html
     and the other inlines) would silently break HTMX swap parity."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "parity@example.com", subject="parity check",
+        tmp_path,
+        "alpha",
+        "parity@example.com",
+        subject="parity check",
     )
     full = client.get(url).data.decode()
     partial = client.get(url, headers={"HX-Request": "true"}).data.decode()
@@ -417,13 +452,14 @@ def test_message_page_full_and_htmx_responses_share_article_content(
 
     assert article_block(full) == article_block(partial), (
         "Full-page and HTMX-partial responses must share the exact "
-        "<article id=\"msg\"> contents; divergence breaks intra-thread "
+        '<article id="msg"> contents; divergence breaks intra-thread '
         "swap parity."
     )
 
 
 def test_message_page_htmx_request_on_unknown_message_404s(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """HTMX requests at non-existent URLs must still 404 (not return an
     empty 200 partial). HTMX surfaces this to htmx:responseError so the
@@ -431,7 +467,10 @@ def test_message_page_htmx_request_on_unknown_message_404s(
     panel where the message should be."""
     # Seed one valid article so the inbox exists with a real mirror.
     _ingest_one_article(
-        tmp_path, "alpha", "valid@example.com", subject="valid",
+        tmp_path,
+        "alpha",
+        "valid@example.com",
+        subject="valid",
     )
     # Hit an article id that's 999999 above any real id; route 404s.
     r = client.get(
@@ -448,8 +487,12 @@ def test_message_page_emits_discussion_forum_posting(client, tmp_path):
     regression in canonical resolution would otherwise pass the
     `endswith(f"/{art_id}")` check while pointing at the wrong inbox."""
     import re
+
     art_id, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-fp@example.com", subject="hello world",
+        tmp_path,
+        "alpha",
+        "jsonld-fp@example.com",
+        subject="hello world",
     )
     blocks = _json_ld_blocks(client.get(url).data.decode())
     assert len(blocks) == 1
@@ -482,16 +525,19 @@ def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
     Pins the slice-3 happy path: subsystem_hits flows from view
     to template, the <details> block renders."""
     _seed_subsystem(
-        "BCACHEFS", "Maintained",
+        "BCACHEFS",
+        "Maintained",
         files=["fs/bcachefs/"],
         maintainers=[("M", "Kent Overstreet", "kent.overstreet@kernel.org")],
     )
     patch_body = (
-        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n"
     )
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "subsys-patch@example.com", body=patch_body,
+        tmp_path,
+        "alpha",
+        "subsys-patch@example.com",
+        body=patch_body,
     )
     body = client.get(url).data.decode()
     # Subsystem info renders inside the article <header> alongside
@@ -511,14 +557,18 @@ def test_message_page_no_subsystem_block_when_no_match(client, tmp_path):
     """A patch touching paths no Subsystem claims renders without
     the Subsystem header line."""
     _seed_subsystem(
-        "BCACHEFS", "Maintained", files=["fs/bcachefs/"],
+        "BCACHEFS",
+        "Maintained",
+        files=["fs/bcachefs/"],
     )
     patch_body = (
-        b"diff --git a/fs/unrelated/file.c b/fs/unrelated/file.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"diff --git a/fs/unrelated/file.c b/fs/unrelated/file.c\n@@ -1 +1 @@\n-x\n+y\n"
     )
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "no-match@example.com", body=patch_body,
+        tmp_path,
+        "alpha",
+        "no-match@example.com",
+        body=patch_body,
     )
     body = client.get(url).data.decode()
     assert "<strong>Subsystem:</strong>" not in body
@@ -530,7 +580,9 @@ def test_message_page_no_subsystem_block_for_prose_only(client, tmp_path):
     related-patches block."""
     _seed_subsystem("BCACHEFS", "Maintained", files=["fs/bcachefs/"])
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "prose@example.com",
+        tmp_path,
+        "alpha",
+        "prose@example.com",
         body=b"just a discussion, no diff\n",
     )
     body = client.get(url).data.decode()
@@ -539,7 +591,8 @@ def test_message_page_no_subsystem_block_for_prose_only(client, tmp_path):
 
 
 def test_message_page_shows_related_patches_touching_same_file(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """When two patches touch the same file, viewing one surfaces
     the other in the "Other recent patches touching these files"
@@ -552,8 +605,7 @@ def test_message_page_shows_related_patches_touching_same_file(
     its ArticleFile rows to land for the related-patches reverse
     lookup, which doesn't re-read the blob."""
     patch_body = (
-        b"diff --git a/fs/shared/file.c b/fs/shared/file.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"diff --git a/fs/shared/file.c b/fs/shared/file.c\n@@ -1 +1 @@\n-x\n+y\n"
     )
     # Ingest each into its own tmp subdir; `_ingest_one_article`
     # repoints the inbox's mirror_path each call, so only the
@@ -561,12 +613,18 @@ def test_message_page_shows_related_patches_touching_same_file(
     (tmp_path / "first").mkdir()
     (tmp_path / "second").mkdir()
     _, first_url = _ingest_one_article(
-        tmp_path / "first", "alpha", "first@example.com",
-        body=patch_body, subject="first touching shared",
+        tmp_path / "first",
+        "alpha",
+        "first@example.com",
+        body=patch_body,
+        subject="first touching shared",
     )
     _, second_url = _ingest_one_article(
-        tmp_path / "second", "alpha", "second@example.com",
-        body=patch_body, subject="second touching shared",
+        tmp_path / "second",
+        "alpha",
+        "second@example.com",
+        body=patch_body,
+        subject="second touching shared",
     )
     body = client.get(second_url).data.decode()
     assert "Other recent patches touching" in body
@@ -578,7 +636,8 @@ def test_message_page_shows_related_patches_touching_same_file(
 
 
 def test_message_page_lore_url_in_body_gets_local_mirror_link(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """When a message body links to lore.kernel.org/<slug>/<msgid>
     and mimir has that msgid in *any* indexed inbox, the route
@@ -591,7 +650,9 @@ def test_message_page_lore_url_in_body_gets_local_mirror_link(
     (tmp_path / "view").mkdir()
     referenced_msgid = "referenced@x.invalid"
     _, ref_url = _ingest_one_article(
-        tmp_path / "ref", "alpha", referenced_msgid,
+        tmp_path / "ref",
+        "alpha",
+        referenced_msgid,
         subject="the referenced one",
     )
     # Then ingest the message whose body links out to lore for the
@@ -602,35 +663,35 @@ def test_message_page_lore_url_in_body_gets_local_mirror_link(
         f"see https://lore.kernel.org/alpha/{referenced_msgid}/ for context"
     ).encode()
     _, view_url = _ingest_one_article(
-        tmp_path / "view", "alpha", "viewer@x.invalid",
-        body=body_bytes, subject="referrer",
+        tmp_path / "view",
+        "alpha",
+        "viewer@x.invalid",
+        body=body_bytes,
+        subject="referrer",
     )
     page = client.get(view_url).data.decode()
     # The lore anchor survives verbatim.
-    assert (
-        f'href="https://lore.kernel.org/alpha/{referenced_msgid}/"'
-        in page
-    )
+    assert f'href="https://lore.kernel.org/alpha/{referenced_msgid}/"' in page
     # The local mirror anchor is appended, routed to the referenced
     # article's per-inbox URL.
     assert f'href="{ref_url}">local</a>' in page
 
 
 def test_message_page_lore_url_unknown_msgid_no_mirror_link(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """Inverse: a lore URL pointing at a msgid mimir doesn't have
     renders as the bare external anchor, no `(local)` suffix."""
     _, view_url = _ingest_one_article(
-        tmp_path, "alpha", "lone@x.invalid",
+        tmp_path,
+        "alpha",
+        "lone@x.invalid",
         body=b"see https://lore.kernel.org/alpha/never-ingested@x.invalid/ here",
         subject="solo with lore link",
     )
     page = client.get(view_url).data.decode()
-    assert (
-        'href="https://lore.kernel.org/alpha/never-ingested@x.invalid/"'
-        in page
-    )
+    assert 'href="https://lore.kernel.org/alpha/never-ingested@x.invalid/"' in page
     assert "local</a>" not in page
 
 
@@ -639,7 +700,10 @@ def test_message_page_short_thread_does_not_get_sidebar_class(client, tmp_path):
     above-body layout, the sidebar modifier class is absent so the
     CSS grid rule doesn't fire."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "short-thread@example.com", subject="solo",
+        tmp_path,
+        "alpha",
+        "short-thread@example.com",
+        subject="solo",
     )
     body = client.get(url).data.decode()
     assert 'class="message-page-grid"' in body
@@ -655,13 +719,17 @@ def test_message_page_long_thread_gets_sidebar_class(client, tmp_path):
     from mimir.web import LONG_THREAD_SIDEBAR_THRESHOLD
     from mimir.extensions import SessionLocal
     from mimir.models import Article, ArticleList, Inbox
+
     # Build a thread of `threshold` messages all chained off one root.
     # The root article goes through the real ingest path so the
     # message view can read its body via the git mirror; the replies
     # are SQL-only -- they only need to inflate the thread count, the
     # view doesn't read their bodies.
     _, root_url = _ingest_one_article(
-        tmp_path, "alpha", "long-root@example.com", subject="long thread root",
+        tmp_path,
+        "alpha",
+        "long-root@example.com",
+        subject="long thread root",
     )
     with SessionLocal() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
@@ -673,8 +741,9 @@ def test_message_page_long_thread_gets_sidebar_class(client, tmp_path):
                 date=datetime(2024, 1, 1, 12, i, tzinfo=timezone.utc),
                 thread_parent="long-root@example.com",
                 subject_normalized="long thread root",
-                lists=[ArticleList(inbox_id=alpha.id, epoch="0.git",
-                                   commit_sha="d" * 40)],
+                lists=[
+                    ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="d" * 40)
+                ],
             )
             s.add(r)
         s.commit()
@@ -694,7 +763,9 @@ def test_message_page_renders_hunk_quote_with_jump_to_parent(client, tmp_path):
     parent_dir.mkdir()
     reply_dir.mkdir()
     _, parent_url = _ingest_one_article(
-        parent_dir, "alpha", "patch-parent@example.com",
+        parent_dir,
+        "alpha",
+        "patch-parent@example.com",
         subject="[PATCH] foo: fix bar",
         body=(
             b"This adds a thing.\n\n"
@@ -707,7 +778,9 @@ def test_message_page_renders_hunk_quote_with_jump_to_parent(client, tmp_path):
         ),
     )
     _, reply_url = _ingest_one_article(
-        reply_dir, "alpha", "patch-reply@example.com",
+        reply_dir,
+        "alpha",
+        "patch-reply@example.com",
         subject="Re: [PATCH] foo: fix bar",
         in_reply_to="patch-parent@example.com",
         body=(
@@ -728,21 +801,19 @@ def test_message_page_renders_hunk_quote_with_jump_to_parent(client, tmp_path):
 
 
 def test_message_page_hunk_quote_omits_jump_link_when_parent_off_list(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """A reply whose parent isn't in this archive (off-list ancestor)
     has no resolvable `parent_url`. The fold still happens, but the
     jump-to-hunk link is omitted rather than pointing at a dead URL."""
     _, reply_url = _ingest_one_article(
-        tmp_path, "alpha", "orphan-reply@example.com",
+        tmp_path,
+        "alpha",
+        "orphan-reply@example.com",
         subject="Re: missing patch",
         in_reply_to="off-list-patch@example.com",
-        body=(
-            b"> @@ -1 +1 @@\n"
-            b"> -a\n"
-            b"> +b\n\n"
-            b"My comment.\n"
-        ),
+        body=(b"> @@ -1 +1 @@\n> -a\n> +b\n\nMy comment.\n"),
     )
     body = client.get(reply_url).data.decode()
     assert '<details class="hunk-quote">' in body
@@ -750,7 +821,8 @@ def test_message_page_hunk_quote_omits_jump_link_when_parent_off_list(
 
 
 def test_maintainer_listed_address_surfaces_in_from_line(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """A From-line address that isn't in the static
     `email_allowlist` BUT is listed as M:/R: in `subsystem_maintainers`
@@ -761,21 +833,27 @@ def test_maintainer_listed_address_surfaces_in_from_line(
     from mimir import maintainer_allowlist
     from mimir.extensions import SessionLocal
     from mimir.models import Subsystem, SubsystemMaintainer
+
     with SessionLocal() as s:
         sub = Subsystem(name="OUTSIDE-CONTRIB", status="Maintained")
         s.add(sub)
         s.flush()
-        s.add(SubsystemMaintainer(
-            subsystem_id=sub.id, role="M",
-            name="Outside Contributor",
-            address="contrib@somecorp.example",
-        ))
+        s.add(
+            SubsystemMaintainer(
+                subsystem_id=sub.id,
+                role="M",
+                name="Outside Contributor",
+                address="contrib@somecorp.example",
+            )
+        )
         s.commit()
     maintainer_allowlist.invalidate()
 
     # Ingest one article with that address as the sender.
     _ingest_one_article(
-        tmp_path, "alpha", "from-test@example.com",
+        tmp_path,
+        "alpha",
+        "from-test@example.com",
         subject="patch from outside contributor",
         author="Outside Contributor <contrib@somecorp.example>",
     )
@@ -792,9 +870,12 @@ def test_non_maintainer_address_still_redacted(client, tmp_path):
     Without this, the union check would be silently leaking and we
     couldn't tell."""
     from mimir import maintainer_allowlist
+
     maintainer_allowlist.invalidate()  # ensure empty set
     _ingest_one_article(
-        tmp_path, "alpha", "from-test-2@example.com",
+        tmp_path,
+        "alpha",
+        "from-test-2@example.com",
         subject="patch from random",
         author="Random Sender <rando@somecorp.example>",
     )
@@ -805,7 +886,8 @@ def test_non_maintainer_address_still_redacted(client, tmp_path):
 
 
 def test_message_page_shows_applied_as_when_mainline_commit_matches(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """A patch whose Message-ID matches a `mainline_commits` row
     surfaces a "Landed:" line on the state card. Pins the
@@ -816,7 +898,9 @@ def test_message_page_shows_applied_as_when_mainline_commit_matches(
     walker's Link: trailers point at actual patches in practice,
     so this is the realistic scenario."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "applied-msg@example.com",
+        tmp_path,
+        "alpha",
+        "applied-msg@example.com",
         subject="[PATCH 1/2] foo: do bar",
     )
     _seed_mainline_commit(
@@ -832,13 +916,16 @@ def test_message_page_shows_applied_as_when_mainline_commit_matches(
 
 
 def test_message_page_no_applied_as_when_no_commit_matches(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """Articles without a mainline-commit reference render no
     "Landed:" line in the state card. Absence is non-informative
     (may simply not be indexed yet); the row is opt-in."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "unapplied@example.com",
+        tmp_path,
+        "alpha",
+        "unapplied@example.com",
         subject="[PATCH 1/2] foo: in flight",
     )
     body = client.get(url).data.decode()
@@ -848,7 +935,8 @@ def test_message_page_no_applied_as_when_no_commit_matches(
 
 
 def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_links(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """When a commit references the article via two `Link:` trailers
     (rare), or when two distinct commits apply the same patch (less
@@ -856,8 +944,11 @@ def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_lin
     Ordered by committed_at asc, the first application is the
     primary one."""
     from datetime import datetime, timezone
+
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "multi-app@example.com",
+        tmp_path,
+        "alpha",
+        "multi-app@example.com",
         subject="[PATCH 1/2] foo: backported",
     )
     _seed_mainline_commit(
@@ -890,12 +981,16 @@ def test_message_page_renders_patch_series_timeline(client, tmp_path):
     (tmp_path / "v2").mkdir()
     common_author = "Alice <a@example>"
     _, v1_url = _ingest_one_article(
-        tmp_path / "v1", "alpha", "v1-cover@example.com",
+        tmp_path / "v1",
+        "alpha",
+        "v1-cover@example.com",
         subject="[PATCH 0/3] improve foo handling",
         author=common_author,
     )
     _, v2_url = _ingest_one_article(
-        tmp_path / "v2", "alpha", "v2-cover@example.com",
+        tmp_path / "v2",
+        "alpha",
+        "v2-cover@example.com",
         subject="[PATCH v2 0/3] improve foo handling",
         author=common_author,
     )
@@ -913,13 +1008,16 @@ def test_message_page_renders_patch_series_timeline(client, tmp_path):
 
 
 def test_message_page_no_series_timeline_for_individual_patch(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """A `[PATCH v2 1/3]` subject is an individual patch, not a
     cover letter. The state card still renders (it's a patch) but
     the Series-revisions row is omitted in slice 1."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "patch-1of3@example.com",
+        tmp_path,
+        "alpha",
+        "patch-1of3@example.com",
         subject="[PATCH v2 1/3] foo: add bar",
     )
     body = client.get(url).data.decode()
@@ -927,7 +1025,8 @@ def test_message_page_no_series_timeline_for_individual_patch(
 
 
 def test_message_page_no_series_timeline_for_solo_cover_letter(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """A cover letter with no other revisions in the DB (only
     v1, no v2 yet) still gets the `patch_series_key` set but the
@@ -935,7 +1034,9 @@ def test_message_page_no_series_timeline_for_solo_cover_letter(
     revisions to be useful, and one row on its own would just say
     "v1 (this)" which is visual clutter."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "lonely-v1@example.com",
+        tmp_path,
+        "alpha",
+        "lonely-v1@example.com",
         subject="[PATCH 0/3] something nobody resent",
     )
     body = client.get(url).data.decode()
@@ -951,7 +1052,9 @@ def test_patch_state_card_renders_on_patch_subject(client, tmp_path):
     Activity row renders ("No replies") and the rest are
     silently skipped, the card scales from minimal to full."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "bare-patch@example.com",
+        tmp_path,
+        "alpha",
+        "bare-patch@example.com",
         subject="[PATCH 1/2] foo: add bar",
     )
     body = client.get(url).data.decode()
@@ -969,7 +1072,9 @@ def test_patch_state_card_absent_on_non_patch_subject(client, tmp_path):
     all. Pins the `is_patch` gate, the card is patch-only by design
     so non-patch articles don't ship an empty shell."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "prose@example.com",
+        tmp_path,
+        "alpha",
+        "prose@example.com",
         subject="thoughts on memory model wording",
     )
     body = client.get(url).data.decode()
@@ -982,7 +1087,9 @@ def test_patch_state_card_absent_on_git_pull(client, tmp_path):
     we're indexing, the bracket-token guard in `_is_patch_subject`
     keys on the literal `PATCH` word."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "pull@example.com",
+        tmp_path,
+        "alpha",
+        "pull@example.com",
         subject="[GIT PULL] urgent fixes for 6.13",
     )
     body = client.get(url).data.decode()
@@ -1002,7 +1109,9 @@ def test_patch_state_trailers_row_aggregates_by_role(client, tmp_path):
         b"Acked-by: Acker <a@example.com>\n"
     )
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "trailers@example.com",
+        tmp_path,
+        "alpha",
+        "trailers@example.com",
         subject="[PATCH] foo: do bar",
         body=body_bytes,
     )
@@ -1013,7 +1122,8 @@ def test_patch_state_trailers_row_aggregates_by_role(client, tmp_path):
 
 
 def test_patch_state_trailers_row_marks_maintainer_attestation(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """A trailer whose address matches an M:/R: row on a subsystem
     this patch touches is counted into the maintainer subset; the
@@ -1021,7 +1131,8 @@ def test_patch_state_trailers_row_marks_maintainer_attestation(
     maintainer aggregation against the subsystem-maintainer
     lookup."""
     _seed_subsystem(
-        "BCACHEFS", "Maintained",
+        "BCACHEFS",
+        "Maintained",
         files=["fs/bcachefs/"],
         maintainers=[("M", "Kent Overstreet", "kent.overstreet@kernel.org")],
     )
@@ -1032,7 +1143,9 @@ def test_patch_state_trailers_row_marks_maintainer_attestation(
         b"Reviewed-by: Random Reviewer <random@elsewhere.example>\n"
     )
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "maintainer-trailer@example.com",
+        tmp_path,
+        "alpha",
+        "maintainer-trailer@example.com",
         subject="[PATCH] bcachefs: tweak super",
         body=body_bytes,
     )
@@ -1043,7 +1156,8 @@ def test_patch_state_trailers_row_marks_maintainer_attestation(
 
 
 def test_patch_state_activity_row_shows_days_since_last_reply(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """When the article has a reply that's older than today, the
     Activity row reports a non-zero day count. The reply is
@@ -1053,8 +1167,11 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
     from sqlalchemy import select
     from mimir.extensions import SessionLocal
     from mimir.models import Article, ArticleList, Inbox
+
     art_id, url = _ingest_one_article(
-        tmp_path, "alpha", "with-reply@example.com",
+        tmp_path,
+        "alpha",
+        "with-reply@example.com",
         subject="[PATCH] foo: trigger reply",
     )
     # Re-anchor the article date 10 days ago so the reply we insert
@@ -1063,9 +1180,7 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
     # date and made the activity row skip the reply.
     reply_at = datetime.now(timezone.utc) - timedelta(days=3)
     with SessionLocal() as s:
-        ix = s.execute(
-            select(Inbox).where(Inbox.name == "alpha")
-        ).scalar_one()
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         art = s.get(Article, art_id)
         art.date = datetime.now(timezone.utc) - timedelta(days=10)
         reply = Article(
@@ -1077,10 +1192,14 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
         )
         s.add(reply)
         s.flush()
-        s.add(ArticleList(
-            article_id=reply.id, inbox_id=ix.id,
-            epoch="0.git", commit_sha="deadbeef",
-        ))
+        s.add(
+            ArticleList(
+                article_id=reply.id,
+                inbox_id=ix.id,
+                epoch="0.git",
+                commit_sha="deadbeef",
+            )
+        )
         s.commit()
     body = client.get(url).data.decode()
     assert "Activity:" in body
@@ -1096,7 +1215,9 @@ def test_patch_state_card_skips_empty_rows(client, tmp_path):
     Activity ("No replies") remains. Pins the row-skipping logic so
     the card doesn't degrade into a wall of empty labels."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "lone-cover@example.com",
+        tmp_path,
+        "alpha",
+        "lone-cover@example.com",
         subject="[PATCH 0/2] new feature",
     )
     body = client.get(url).data.decode()
@@ -1112,7 +1233,10 @@ def test_message_page_emits_breadcrumb_list(client, tmp_path):
     """The same @graph also carries a BreadcrumbList with the
     Site → Inbox → Subject chain."""
     art_id, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-bc@example.com", subject="brief subject",
+        tmp_path,
+        "alpha",
+        "jsonld-bc@example.com",
+        subject="brief subject",
     )
     blocks = _json_ld_blocks(client.get(url).data.decode())
     graph = blocks[0]["@graph"]
@@ -1135,7 +1259,10 @@ def test_message_breadcrumb_subject_truncated_to_80(client, tmp_path):
     SERP breadcrumb display doesn't blow out either."""
     long_subject = "y" * 200
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-bclong@example.com", subject=long_subject,
+        tmp_path,
+        "alpha",
+        "jsonld-bclong@example.com",
+        subject=long_subject,
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
     bc = next(g for g in graph if g["@type"] == "BreadcrumbList")
@@ -1145,16 +1272,21 @@ def test_message_breadcrumb_subject_truncated_to_80(client, tmp_path):
 
 
 def test_message_json_ld_author_strips_hidden_placeholder(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """JSON-LD author.name on a redacted sender is the display name
     only, no `<hidden>` placeholder. The placeholder is a rendering
     decision for the visible HTML; in structured data it reads as
     broken metadata. Flagged in the 2026-05-12 review."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "email_allowlist", [])  # nothing allowlisted
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-named@example.com",
+        tmp_path,
+        "alpha",
+        "jsonld-named@example.com",
         author="David Woodhouse <dwmw2@infradead.org>",
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
@@ -1163,17 +1295,22 @@ def test_message_json_ld_author_strips_hidden_placeholder(
 
 
 def test_message_json_ld_author_no_email_leak_for_bare_address(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """A From: line with only a bare address falls back to a neutral
     string in JSON-LD, not the email itself, which would defeat the
     visible HTML redaction the page already applied."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "email_allowlist", [])
     # _ingest_one_article's default `author=a@b.example` is a bare
     # address with no display name.
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-bare@example.com",
+        tmp_path,
+        "alpha",
+        "jsonld-bare@example.com",
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
     posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
@@ -1182,7 +1319,9 @@ def test_message_json_ld_author_no_email_leak_for_bare_address(
 
 
 def test_message_json_ld_author_includes_email_when_allowlisted(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """Allowlisted senders surface their full From-line in the
     visible HTML (institutional kernel.org accounts, MAINTAINERS-
@@ -1190,9 +1329,12 @@ def test_message_json_ld_author_includes_email_when_allowlisted(
     present iff the address is already on the rendered page, omitted
     otherwise. `name` stays display-name only across both surfaces."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "email_allowlist", ["@b.example"])
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-allow@example.com",
+        tmp_path,
+        "alpha",
+        "jsonld-allow@example.com",
         author="Allowed Person <allowed@b.example>",
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
@@ -1203,15 +1345,20 @@ def test_message_json_ld_author_includes_email_when_allowlisted(
 
 
 def test_message_json_ld_author_omits_email_when_not_allowlisted(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """Non-allowlisted senders: visible HTML hides the address and
     `Person.email` is absent. Crawlers see the same redaction state
     on both surfaces."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "email_allowlist", [])
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-hide@example.com",
+        tmp_path,
+        "alpha",
+        "jsonld-hide@example.com",
         author="Casual Sender <casual@example.org>",
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
@@ -1226,7 +1373,9 @@ def test_message_json_ld_includes_text_snippet(client, tmp_path):
     parsed body. Search Console flagged this as critical on
     2026-05-14."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-text@example.com",
+        tmp_path,
+        "alpha",
+        "jsonld-text@example.com",
         body=b"Hello world, this is the body of the message.",
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
@@ -1241,11 +1390,15 @@ def test_message_json_ld_text_truncated_at_word_boundary(client, tmp_path):
     falls on the last whitespace inside the cap and adds an
     ellipsis."""
     from mimir.seo import JSON_LD_TEXT_MAX
+
     # 4× the cap, all real words so collapsing whitespace doesn't
     # shrink it under the limit.
-    body = (b"alpha bravo " * (JSON_LD_TEXT_MAX // 6))
+    body = b"alpha bravo " * (JSON_LD_TEXT_MAX // 6)
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-text-long@example.com", body=body,
+        tmp_path,
+        "alpha",
+        "jsonld-text-long@example.com",
+        body=body,
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
     posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
@@ -1259,7 +1412,9 @@ def test_message_json_ld_text_truncated_at_word_boundary(client, tmp_path):
 
 
 def test_message_json_ld_text_redacts_dco_trailer_addresses(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """The JSON-LD `text` snippet must apply the same DCO trailer
     redaction as the visible HTML, otherwise non-allowlisted
@@ -1267,6 +1422,7 @@ def test_message_json_ld_text_redacts_dco_trailer_addresses(
     though the rendered page redacts them. CONTEXT.md flags
     cross-surface consistency as the rule."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "email_allowlist", ["@kernel.org"])
     body = (
         b"text body\n\n"
@@ -1274,12 +1430,15 @@ def test_message_json_ld_text_redacts_dco_trailer_addresses(
         b"Signed-off-by: Outsider <o@example.com>\n"
     )
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-text-dco@example.com", body=body,
+        tmp_path,
+        "alpha",
+        "jsonld-text-dco@example.com",
+        body=body,
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
     posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
     text = posting["text"]
-    assert "m@kernel.org" in text     # allowlisted survives
+    assert "m@kernel.org" in text  # allowlisted survives
     assert "o@example.com" not in text  # non-allowlisted redacted
     assert "<redacted>" in text
 
@@ -1289,7 +1448,9 @@ def test_message_json_ld_text_omitted_when_body_empty(client, tmp_path):
     empty string, which would re-fail the validator that flagged
     this in the first place."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-text-empty@example.com",
+        tmp_path,
+        "alpha",
+        "jsonld-text-empty@example.com",
         body=b"   \n\t  \n",
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
@@ -1304,9 +1465,12 @@ def test_message_json_ld_author_has_url(client, tmp_path, monkeypatch):
     from the message view) and percent-encodes the display name so
     spaces and other path-unsafe chars survive intact."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "email_allowlist", [])
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-author-url@example.com",
+        tmp_path,
+        "alpha",
+        "jsonld-author-url@example.com",
         author="David Woodhouse <dwmw2@infradead.org>",
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
@@ -1317,16 +1481,21 @@ def test_message_json_ld_author_has_url(client, tmp_path, monkeypatch):
 
 
 def test_message_json_ld_author_url_omitted_for_unknown_sender(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """A bare address with no display name renders as
     `unknown sender` (see `_display_name_filter`), which would
     match no one as a substring, omit the URL so we don't ship
     a stable link to a useless query."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "email_allowlist", [])
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "jsonld-author-url-bare@example.com",
+        tmp_path,
+        "alpha",
+        "jsonld-author-url-bare@example.com",
         # Bare address → parseaddr returns no display name.
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
@@ -1335,7 +1504,9 @@ def test_message_json_ld_author_url_omitted_for_unknown_sender(
 
 
 def test_message_page_visible_html_redacts_non_allowlisted_from_address(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """Visible-HTML side of the redaction posture: a non-allowlisted
     From: must surface as `<display-name> <hidden>` on the rendered
@@ -1346,9 +1517,12 @@ def test_message_page_visible_html_redacts_non_allowlisted_from_address(
     because the structured surfaces (JSON-LD, atom, data-*) have
     their own paths."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "email_allowlist", [])
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "visible-html-redact@example.com",
+        tmp_path,
+        "alpha",
+        "visible-html-redact@example.com",
         author="Joe User <joe@example.com>",
     )
     body = client.get(url).data.decode()
@@ -1358,16 +1532,21 @@ def test_message_page_visible_html_redacts_non_allowlisted_from_address(
 
 
 def test_message_page_visible_html_surfaces_allowlisted_from_address(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """Companion to the redaction test: allowlisted senders DO surface
     their address verbatim on the visible HTML page (kernel.org-shaped
     institutional accounts). Pinning both halves keeps the redaction
     posture explicit."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "email_allowlist", ["@b.example"])
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "visible-html-allow@example.com",
+        tmp_path,
+        "alpha",
+        "visible-html-allow@example.com",
         author="Allowed Person <allowed@b.example>",
     )
     body = client.get(url).data.decode()
@@ -1376,7 +1555,9 @@ def test_message_page_visible_html_surfaces_allowlisted_from_address(
 
 
 def test_message_page_dco_trailer_redacts_non_allowlisted_address(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """End-to-end of `_redact_trailer_address`: a `Signed-off-by:` in
     the body must surface allowlisted addresses verbatim and non-
@@ -1384,6 +1565,7 @@ def test_message_page_dco_trailer_redacts_non_allowlisted_address(
     the three display-time redaction invariants; previously had zero
     end-to-end coverage."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "email_allowlist", ["@kernel.org"])
     body = (
         b"text body\n\n"
@@ -1391,7 +1573,10 @@ def test_message_page_dco_trailer_redacts_non_allowlisted_address(
         b"Signed-off-by: Outsider <o@example.com>\n"
     )
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "dco-redact@example.com", body=body,
+        tmp_path,
+        "alpha",
+        "dco-redact@example.com",
+        body=body,
     )
     page = client.get(url).data.decode()
     # Allowlisted address survives verbatim.
@@ -1403,7 +1588,9 @@ def test_message_page_dco_trailer_redacts_non_allowlisted_address(
 
 
 def test_message_page_dco_trailer_no_xss_via_address_metacharacters(
-    client, tmp_path, monkeypatch,
+    client,
+    tmp_path,
+    monkeypatch,
 ):
     """Hostile-trailer XSS: an attacker-controlled DCO trailer with
     HTML metacharacters in the local-part must not land a live tag
@@ -1422,17 +1609,18 @@ def test_message_page_dco_trailer_no_xss_via_address_metacharacters(
     wires."""
     import re as _re
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "email_allowlist", ["kernel.org"])
     # Payload smuggles a real event-handler attribute through the
     # local-part. The `"` would break out of a quoted attribute if
     # the renderer ever rendered this in attribute context; here we
     # want to confirm it never reaches HTML at all.
-    body = (
-        b"text body\n\n"
-        b'Signed-off-by: Attacker <a"onmouseover=alert(1)@kernel.org>\n'
-    )
+    body = b'text body\n\nSigned-off-by: Attacker <a"onmouseover=alert(1)@kernel.org>\n'
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "dco-xss@example.com", body=body,
+        tmp_path,
+        "alpha",
+        "dco-xss@example.com",
+        body=body,
     )
     page = client.get(url).data.decode()
     # No live tag may carry the smuggled event-handler attribute.
@@ -1451,12 +1639,14 @@ def test_message_page_subsystem_header_is_clickable(client, tmp_path):
     URL takes the lowercased form; display keeps upstream casing."""
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
     body = (
-        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n"
-        b"@@ -1 +1 @@\n-x\n+y\n"
+        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n"
     )
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "bch-link@example.com",
-        subject="bcachefs link test", body=body,
+        tmp_path,
+        "alpha",
+        "bch-link@example.com",
+        subject="bcachefs link test",
+        body=body,
     )
     text = client.get(url).data.decode()
     # Link present with lowercased URL AND lowercased display
@@ -1472,15 +1662,15 @@ def test_off_list_parent_hint_surfaces_unindexed_list(client, tmp_path):
     add. The address rides in `data-tooltip=` rather than visible
     text so the line stays compact."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "hint-shown@example.com",
+        tmp_path,
+        "alpha",
+        "hint-shown@example.com",
         in_reply_to="missing-parent@example.com",
         to="linux-arm-kernel@lists.infradead.org",
     )
     body = client.get(url).data.decode()
     assert "off-list ancestor" in body
-    assert (
-        'data-tooltip="hint: linux-arm-kernel@lists.infradead.org"' in body
-    )
+    assert 'data-tooltip="hint: linux-arm-kernel@lists.infradead.org"' in body
     # Placed below the trigger to escape the .thread-box overflow clip
     # that hides the default top-positioned tooltip on the first row.
     assert 'data-placement="bottom"' in body
@@ -1500,7 +1690,9 @@ def test_off_list_parent_hint_skips_already_configured_lists(client, tmp_path):
         s.commit()
 
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "hint-suppressed@example.com",
+        tmp_path,
+        "alpha",
+        "hint-suppressed@example.com",
         in_reply_to="missing-parent-2@example.com",
         to="linux-arm-kernel@lists.infradead.org",
     )
@@ -1544,12 +1736,16 @@ def test_message_page_patch_series_revisions_does_not_n1_inbox(client, tmp_path)
     (tmp_path / "v2").mkdir()
     common_author = "Alice <a@example>"
     _, v1_url = _ingest_one_article(
-        tmp_path / "v1", "alpha", "n1-v1-cover@example.com",
+        tmp_path / "v1",
+        "alpha",
+        "n1-v1-cover@example.com",
         subject="[PATCH 0/3] eager-load chain",
         author=common_author,
     )
     _, v2_url = _ingest_one_article(
-        tmp_path / "v2", "alpha", "n1-v2-cover@example.com",
+        tmp_path / "v2",
+        "alpha",
+        "n1-v2-cover@example.com",
         subject="[PATCH v2 0/3] eager-load chain",
         author=common_author,
     )
@@ -1562,10 +1758,14 @@ def test_message_page_patch_series_revisions_does_not_n1_inbox(client, tmp_path)
             art = s.execute(
                 _sa_select(Article).where(Article.message_id == mid)
             ).scalar_one()
-            s.add(ArticleList(
-                article_id=art.id, inbox_id=beta.id,
-                epoch="0.git", commit_sha="ee" * 20,
-            ))
+            s.add(
+                ArticleList(
+                    article_id=art.id,
+                    inbox_id=beta.id,
+                    epoch="0.git",
+                    commit_sha="ee" * 20,
+                )
+            )
         s.commit()
 
     inbox_selects: list[str] = []
@@ -1604,7 +1804,9 @@ def test_message_page_sends_etag_and_no_cache(client, tmp_path):
     eliminate the within-cache-window stale-after-deploy problem
     while keeping repeated loads cheap via 304s."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "etag-headers@example.com",
+        tmp_path,
+        "alpha",
+        "etag-headers@example.com",
         subject="basic article",
     )
     resp = client.get(url)
@@ -1623,7 +1825,9 @@ def test_message_page_returns_304_on_matching_if_none_match(client, tmp_path):
     carry Cache-Control (RFC 7232) so the client knows when to
     revalidate next."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "etag-304@example.com",
+        tmp_path,
+        "alpha",
+        "etag-304@example.com",
         subject="basic article",
     )
     first = client.get(url)
@@ -1642,7 +1846,9 @@ def test_message_page_returns_200_when_if_none_match_does_not_match(client, tmp_
     response, not a misleading 304. Pins that the matcher does an
     actual comparison rather than blindly 304-ing."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "etag-mismatch@example.com",
+        tmp_path,
+        "alpha",
+        "etag-mismatch@example.com",
         subject="basic article",
     )
     resp = client.get(url, headers={"If-None-Match": '"deadbeef"'})
@@ -1675,7 +1881,9 @@ def test_message_page_etag_changes_when_thread_gains_a_reply(client, tmp_path):
     )
 
     root_id, root_url = _ingest_one_article(
-        tmp_path, "alpha", "etag-thread-root@example.com",
+        tmp_path,
+        "alpha",
+        "etag-thread-root@example.com",
         subject="root subject",
     )
     first = client.get(root_url)
@@ -1697,9 +1905,13 @@ def test_message_page_etag_changes_when_thread_gains_a_reply(client, tmp_path):
             date=(root_date or datetime.now(timezone.utc)) + timedelta(hours=1),
             thread_parent="etag-thread-root@example.com",
             subject_normalized="root subject",
-            lists=[_ArticleList(
-                inbox_id=alpha.id, epoch="0.git", commit_sha="ee" * 20,
-            )],
+            lists=[
+                _ArticleList(
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="ee" * 20,
+                )
+            ],
         )
         s.add(reply)
         # Bust the threading-helper cache so the next render reflects
@@ -1723,7 +1935,9 @@ def test_message_page_hx_request_has_distinct_etag(client, tmp_path):
     ETags so a browser that cached one can't reuse the cache entry
     for the other on a subsequent request of the opposite type."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "etag-hx@example.com",
+        tmp_path,
+        "alpha",
+        "etag-hx@example.com",
         subject="basic article",
     )
     full = client.get(url)

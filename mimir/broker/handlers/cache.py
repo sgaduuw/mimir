@@ -12,6 +12,7 @@ Imports the `_direct_*` helpers from `mimir.cache` rather than the
 public functions so the broker doesn't recurse into broker-mode
 dispatch and infinite-loop.
 """
+
 from mimir import cache
 from mimir.broker.protocol import (
     CacheDeleteForInboxRequest,

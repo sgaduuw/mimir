@@ -24,6 +24,7 @@ queued cache writes and other long ops can run between chunks.
 Direct (non-broker) callers pass `max_seconds=None` and ignore the
 return tuple, preserving the pre-2.2 shape.
 """
+
 import time
 from typing import Any, Callable
 
@@ -102,11 +103,7 @@ def walk_articles(
     with write_transaction(label), SessionLocal() as session:
         cursor: int | None = start_cursor
         while True:
-            q = (
-                select(Article)
-                .order_by(Article.id.desc())
-                .limit(batch_size)
-            )
+            q = select(Article).order_by(Article.id.desc()).limit(batch_size)
             if preload_lists:
                 q = q.options(
                     selectinload(Article.lists),

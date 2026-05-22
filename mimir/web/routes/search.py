@@ -5,6 +5,7 @@ listing.
 author-feed clamping in `feeds.py`; that module imports them from
 here.
 """
+
 import re
 from urllib.parse import quote
 
@@ -37,9 +38,7 @@ AUTHOR_VIEW_LIMIT = 100
 # trailer extractor accepts (mimir/trailers.py _TRAILER_NAME_ADDR_RE).
 # Anything outside this falls to 404, defends against hostile bytes
 # reaching the SQL parameter and keeps the canonical URL well-formed.
-_REVIEWER_ADDR_RE = re.compile(
-    r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+$"
-)
+_REVIEWER_ADDR_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+$")
 
 
 @bp_web.route("/<inbox_name>/search")
@@ -69,7 +68,10 @@ def search(inbox_name: str):
     if results:
         canonical_url = _site_base() + f"/{inbox.name}/search"
         page_json_ld = _json_ld_search(
-            _site_base(), inbox.name, q, canonical_url,
+            _site_base(),
+            inbox.name,
+            q,
+            canonical_url,
         )
 
     return render_template(
@@ -142,14 +144,18 @@ def reviewer_view(inbox_name: str, address: str):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         entries = articles_reviewed_by(
-            session, inbox, address_normalized,
+            session,
+            inbox,
+            address_normalized,
             limit=REVIEWS_PER_PAGE_LIMIT,
         )
     role_counts: dict[str, int] = {}
     for e in entries:
         role_counts[e.role] = role_counts.get(e.role, 0) + 1
     base = _site_base()
-    canonical_url = f"{base}/{inbox.name}/reviewer/{quote(address_normalized, safe='@')}"
+    canonical_url = (
+        f"{base}/{inbox.name}/reviewer/{quote(address_normalized, safe='@')}"
+    )
     return render_template(
         "reviewer.html",
         inbox_name=inbox.name,

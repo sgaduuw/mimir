@@ -28,6 +28,7 @@ Nack/NAK trailers are NOT in `trailers.INDEXED_TRAILER_ROLES` today
 and so don't surface in the roll-up. Indexing them needs a parser
 extension + a backfill; that's its own follow-up.
 """
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable
@@ -56,6 +57,7 @@ class StateTrailerCount:
     subset of `total` whose `address_normalized` matches an M:/R:
     address on any subsystem this patch touches; 0 when no
     attestation came from a recognised maintainer."""
+
     role: str
     total: int
     maintainer_count: int
@@ -66,6 +68,7 @@ class StateMainlineLanding:
     """One mainline-commit landing for the patch. Mirrors the
     fields the existing `mainline_applications` aside renders so
     we don't lose information when consolidating."""
+
     commit_sha: str
     tree_name: str
     committed_at: datetime | None
@@ -76,6 +79,7 @@ class StateSeriesEntry:
     """One revision in the series timeline. Carries everything the
     template needs to render either the bold current-revision marker
     or the link + `[diff vs current]` chip, without re-querying."""
+
     version: str
     article_id: int
     date: datetime | None
@@ -89,6 +93,7 @@ class PatchState:
     """The four-row state card for a patch's message page. `is_patch`
     drives whether the card renders at all (non-patch articles get
     no card). Empty list fields skip their respective rows."""
+
     is_patch: bool
     trailers: list[StateTrailerCount]
     mainline_landings: list[StateMainlineLanding]
@@ -148,8 +153,9 @@ def _trailer_roll_up(
     # relationship would also work; an explicit SELECT keeps the
     # session footprint predictable for the cache compute path.
     trailer_rows = session.execute(
-        select(ArticleTrailer.role, ArticleTrailer.address_normalized)
-        .where(ArticleTrailer.article_id == article.id)
+        select(ArticleTrailer.role, ArticleTrailer.address_normalized).where(
+            ArticleTrailer.article_id == article.id
+        )
     ).all()
     if not trailer_rows:
         return []
@@ -165,11 +171,7 @@ def _trailer_roll_up(
                 SubsystemMaintainer.role.in_(("M", "R")),
             )
         ).all()
-        maintainer_addrs = {
-            (addr or "").lower().strip()
-            for (addr,) in rows
-            if addr
-        }
+        maintainer_addrs = {(addr or "").lower().strip() for (addr,) in rows if addr}
 
     # Counts per (canonical role); maintainer subset per role.
     role_total: dict[str, int] = {}
@@ -191,16 +193,21 @@ def _trailer_roll_up(
 
 
 def _mainline_landings(
-    session: Session, article: Article,
+    session: Session,
+    article: Article,
 ) -> list[StateMainlineLanding]:
     """Mainline-tree commits referencing this article via `Link:`
     trailer. Mirrors the existing `mainline_applications` query;
     same ordering."""
-    rows = session.execute(
-        select(MainlineCommit)
-        .where(MainlineCommit.message_id == article.message_id)
-        .order_by(MainlineCommit.committed_at.asc())
-    ).scalars().all()
+    rows = (
+        session.execute(
+            select(MainlineCommit)
+            .where(MainlineCommit.message_id == article.message_id)
+            .order_by(MainlineCommit.committed_at.asc())
+        )
+        .scalars()
+        .all()
+    )
     return [
         StateMainlineLanding(
             commit_sha=c.commit_sha,
@@ -235,16 +242,18 @@ def _series_timeline(
     """
     if not article.patch_series_key:
         return []
-    revisions = list(session.execute(
-        select(Article)
-        .options(selectinload(Article.lists).selectinload(ArticleList.inbox))
-        .where(
-            Article.patch_series_key == article.patch_series_key,
-            # Same-position filter, see docstring.
-            Article.patch_series_position == article.patch_series_position,
-        )
-        .order_by(Article.date.asc().nulls_last())
-    ).scalars())
+    revisions = list(
+        session.execute(
+            select(Article)
+            .options(selectinload(Article.lists).selectinload(ArticleList.inbox))
+            .where(
+                Article.patch_series_key == article.patch_series_key,
+                # Same-position filter, see docstring.
+                Article.patch_series_position == article.patch_series_position,
+            )
+            .order_by(Article.date.asc().nulls_last())
+        ).scalars()
+    )
     if len(revisions) < 2:
         return []
     current_version = article.patch_series_version
@@ -269,19 +278,22 @@ def _series_timeline(
                 f"/diff?from={rev.patch_series_version}"
                 f"&to={current_version}&pos={pos_param}"
             )
-        out.append(StateSeriesEntry(
-            version=rev.patch_series_version or "?",
-            article_id=rev.id,
-            date=rev.date,
-            url=url,
-            is_current=is_current,
-            diff_url=diff_url,
-        ))
+        out.append(
+            StateSeriesEntry(
+                version=rev.patch_series_version or "?",
+                article_id=rev.id,
+                date=rev.date,
+                url=url,
+                is_current=is_current,
+                diff_url=diff_url,
+            )
+        )
     return out
 
 
 def _days_since_last_reply(
-    article: Article, thread_dates: Iterable[datetime | None],
+    article: Article,
+    thread_dates: Iterable[datetime | None],
 ) -> int | None:
     """Days between now (UTC) and the most recent thread message that
     isn't the article itself. None when the article has no replies
@@ -290,7 +302,8 @@ def _days_since_last_reply(
     score in `threading._active_threads_query`)."""
     article_date = aware_utc(article.date) if article.date else None
     later_dates = [
-        aware_utc(d) for d in thread_dates
+        aware_utc(d)
+        for d in thread_dates
         if d is not None and (article_date is None or aware_utc(d) > article_date)
     ]
     if not later_dates:
@@ -321,8 +334,11 @@ def patch_state_for_article(
     is_patch = _is_patch_subject(article.subject)
     if not is_patch:
         return PatchState(
-            is_patch=False, trailers=[], mainline_landings=[],
-            series=[], days_since_last_reply=None,
+            is_patch=False,
+            trailers=[],
+            mainline_landings=[],
+            series=[],
+            days_since_last_reply=None,
         )
 
     # Capture thread dates outside the cache closure. The iterable
@@ -338,7 +354,8 @@ def patch_state_for_article(
             mainline_landings=_mainline_landings(session, article),
             series=_series_timeline(session, article, inbox_name),
             days_since_last_reply=_days_since_last_reply(
-                article, thread_dates_list,
+                article,
+                thread_dates_list,
             ),
         )
 

@@ -2,6 +2,7 @@
 itself is exercised in `tests/test_patches.py`; ingest-time path
 extraction is exercised in `tests/test_ingest.py`. This file pins
 the backfill walker's idempotence + the bucket counters."""
+
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -70,9 +71,10 @@ def _ingest_articles_without_files(seeded_db, tmp_path, *bodies):
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         s.expunge(alpha)
     epoch_path = tmp_path / "0.git"
-    _build_pubinbox_repo(epoch_path, [
-        _rfc5322(f"m{i}@example.com", body) for i, body in enumerate(bodies)
-    ])
+    _build_pubinbox_repo(
+        epoch_path,
+        [_rfc5322(f"m{i}@example.com", body) for i, body in enumerate(bodies)],
+    )
     with seeded_db() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         alpha.mirror_path = str(tmp_path)
@@ -92,7 +94,10 @@ def test_backfill_indexes_patch_articles(seeded_db, tmp_path):
     IDs and bogus mirror SHAs so they'd otherwise dominate the
     `skipped` bucket and dilute the signal we care about)."""
     _ingest_articles_without_files(
-        seeded_db, tmp_path, _PATCH_BODY, _PROSE_BODY,
+        seeded_db,
+        tmp_path,
+        _PATCH_BODY,
+        _PROSE_BODY,
     )
 
     result = backfill_article_files(limit=2)
@@ -103,9 +108,11 @@ def test_backfill_indexes_patch_articles(seeded_db, tmp_path):
 
     with seeded_db() as s:
         rows = {
-            (a.message_id, f.path) for a, f in s.execute(
-                select(Article, ArticleFile)
-                .join(ArticleFile, ArticleFile.article_id == Article.id)
+            (a.message_id, f.path)
+            for a, f in s.execute(
+                select(Article, ArticleFile).join(
+                    ArticleFile, ArticleFile.article_id == Article.id
+                )
             ).all()
         }
     assert rows == {("m0@example.com", "fs/foo/a.c")}
@@ -141,10 +148,14 @@ def test_backfill_reprocess_re_extracts(seeded_db, tmp_path):
 def test_backfill_cli_prints_summary(seeded_db, tmp_path):
     """End-to-end CLI: runs without error, summary line in output."""
     _ingest_articles_without_files(
-        seeded_db, tmp_path, _PATCH_BODY, _PROSE_BODY,
+        seeded_db,
+        tmp_path,
+        _PATCH_BODY,
+        _PROSE_BODY,
     )
     result = CliRunner().invoke(
-        backfill_article_files_command, ["--limit", "2"],
+        backfill_article_files_command,
+        ["--limit", "2"],
     )
     assert result.exit_code == 0, result.output
     assert "examined=2" in result.output
@@ -156,7 +167,11 @@ def test_backfill_cli_honours_limit(seeded_db, tmp_path):
     """`--limit` caps the per-session examination so a huge archive
     can be backfilled in chunks."""
     _ingest_articles_without_files(
-        seeded_db, tmp_path, _PATCH_BODY, _PATCH_BODY, _PATCH_BODY,
+        seeded_db,
+        tmp_path,
+        _PATCH_BODY,
+        _PATCH_BODY,
+        _PATCH_BODY,
     )
     result = CliRunner().invoke(backfill_article_files_command, ["--limit", "2"])
     assert result.exit_code == 0
@@ -171,7 +186,11 @@ def test_backfill_limit_boundary_pins(seeded_db, tmp_path):
     ingested rows first, so each `limit=k` is well-scoped for
     `k <= 3`. `reprocess=True` resets per-row state between calls."""
     _ingest_articles_without_files(
-        seeded_db, tmp_path, _PATCH_BODY, _PROSE_BODY, _PATCH_BODY,
+        seeded_db,
+        tmp_path,
+        _PATCH_BODY,
+        _PROSE_BODY,
+        _PATCH_BODY,
     )
     assert backfill_article_files(limit=1).examined == 1
     assert backfill_article_files(limit=2, reprocess=True).examined == 2
@@ -225,10 +244,14 @@ def test_backfill_prefers_canonical_inbox_for_crossposts(seeded_db, tmp_path):
             select(Article).where(Article.message_id == "xpost-canon@example.com")
         ).scalar_one()
         article.canonical_inbox_id = beta.id
-        s.add(ArticleList(
-            article_id=article.id, inbox_id=alpha.id,
-            epoch="0.git", commit_sha="de" * 20,
-        ))
+        s.add(
+            ArticleList(
+                article_id=article.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="de" * 20,
+            )
+        )
         s.commit()
 
     result = backfill_article_files(limit=1)
@@ -240,7 +263,8 @@ def test_backfill_prefers_canonical_inbox_for_crossposts(seeded_db, tmp_path):
 
     with SessionLocal() as s:
         files = [
-            f.path for f in s.execute(
+            f.path
+            for f in s.execute(
                 select(ArticleFile)
                 .join(Article, Article.id == ArticleFile.article_id)
                 .where(Article.message_id == "xpost-canon@example.com")

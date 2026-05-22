@@ -21,6 +21,7 @@ direct path when broker mode is off (matches the cache module's
 shape). This is the canary migration for the long-op family; the
 remaining long ops follow in Phase 2.1+.
 """
+
 import click
 
 from mimir.config import settings
@@ -36,18 +37,15 @@ def bootstrap_inboxes_command() -> None:
         # the same `mimir.inboxes.bootstrap_inboxes()` we'd call
         # locally, just from inside the broker process.
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+
         try:
             count = get_broker_client().bootstrap_inboxes()
         except BrokerUnavailable as exc:
             # Hard fail: bootstrap-inboxes is a scheduler startup
             # step; the web tier gates on /data/.migrated and will
             # see an empty inboxes table if we silently swallow.
-            raise click.ClickException(
-                f"broker bootstrap_inboxes failed: {exc}"
-            )
-        click.echo(
-            f"bootstrap-inboxes: {count} inbox(es) reconciled (via broker)"
-        )
+            raise click.ClickException(f"broker bootstrap_inboxes failed: {exc}")
+        click.echo(f"bootstrap-inboxes: {count} inbox(es) reconciled (via broker)")
         return
     inboxes = bootstrap_inboxes()
     click.echo(f"bootstrap-inboxes: {len(inboxes)} inbox(es) reconciled")

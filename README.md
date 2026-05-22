@@ -294,6 +294,36 @@ reference the affected name (`mimir.cache.delete_for_inbox`) so
 subsequent reads don't return stale entries pointing at a now-
 defunct inbox.
 
+## Managing robots.txt
+
+`/robots.txt` is rendered from the `robots_rules` table on every
+request. The migration seeds a `*` stanza with the previous
+hardcoded values (`Crawl-delay: 5`, `Disallow: /*/attachment/`),
+so a fresh deploy serves the same body it always did. Operator
+mutates the table via:
+
+```sh
+mimir admin robots list
+mimir admin robots show <ua>
+mimir admin robots add <ua> [--disallow PATH ...] [--crawl-delay SECS]
+mimir admin robots update <ua> [--add-disallow PATH ...] [--remove-disallow PATH ...] \
+                              [--crawl-delay SECS | --clear-crawl-delay]
+mimir admin robots remove <ua>
+mimir admin robots reset --yes
+```
+
+Common shapes:
+
+- Block a bot entirely: `mimir admin robots add GPTBot --disallow /`.
+- Add an extra Disallow path to the default stanza:
+  `mimir admin robots update '*' --add-disallow '/private/'`.
+- Tune the global crawl delay:
+  `mimir admin robots update '*' --crawl-delay 10`.
+
+The `*` stanza is structural; `remove '*'` is refused. Use
+`reset` to restore the seeded defaults if a `*` mutation has
+wandered.
+
 ## Schema
 
 ```

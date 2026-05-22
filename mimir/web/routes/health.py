@@ -4,6 +4,7 @@ Liveness is cheap and has no DB dependency so load balancers can hit
 it on the seconds cadence; readiness probes the DB so it's right for
 the "serving traffic" decision, not for liveness restarts.
 """
+
 import logging
 
 from flask import Response
@@ -20,7 +21,9 @@ def healthz():
     """Cheap liveness probe, confirms the app factory ran. No DB
     work; load balancers / orchestrators can hit this on the seconds-
     cadence they want."""
-    return Response("ok\n", mimetype="text/plain", headers={"Cache-Control": "no-store"})
+    return Response(
+        "ok\n", mimetype="text/plain", headers={"Cache-Control": "no-store"}
+    )
 
 
 @bp_web.route("/readyz")
@@ -49,4 +52,6 @@ def readyz():
             mimetype="text/plain",
             headers={"Cache-Control": "no-store"},
         )
-    return Response("ok\n", mimetype="text/plain", headers={"Cache-Control": "no-store"})
+    return Response(
+        "ok\n", mimetype="text/plain", headers={"Cache-Control": "no-store"}
+    )

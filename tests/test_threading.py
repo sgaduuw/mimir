@@ -13,6 +13,7 @@ The conftest seed already gives us:
 
 Tests that need richer shapes add extra Articles inline.
 """
+
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -79,13 +80,23 @@ def test_find_thread_root_off_list_parent_stops_walk(seeded_db):
     with seeded_db() as s:
         # art_orphan replies to "off-list@x.com" which isn't in DB.
         orphan = Article(
-            message_id="orphan@example.com", subject="orphan",
-            author="X", date=datetime(2024, 4, 1, tzinfo=timezone.utc),
-            thread_parent="off-list@x.com", subject_normalized="orphan",
+            message_id="orphan@example.com",
+            subject="orphan",
+            author="X",
+            date=datetime(2024, 4, 1, tzinfo=timezone.utc),
+            thread_parent="off-list@x.com",
+            subject_normalized="orphan",
         )
         s.add(orphan)
         s.flush()
-        s.add(ArticleList(article_id=orphan.id, inbox_id=alpha.id, epoch="0.git", commit_sha="ee" * 20))
+        s.add(
+            ArticleList(
+                article_id=orphan.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="ee" * 20,
+            )
+        )
         s.commit()
         root = find_thread_root(s, alpha, "orphan@example.com")
     # off-list parent → orphan is its own root in our walk.
@@ -129,23 +140,39 @@ def test_get_thread_orders_siblings_by_date(seeded_db):
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
         reply_early = Article(
-            message_id="r1@example.com", subject="Re: cross-posted note",
-            author="E", date=datetime(2024, 3, 2, tzinfo=timezone.utc),
+            message_id="r1@example.com",
+            subject="Re: cross-posted note",
+            author="E",
+            date=datetime(2024, 3, 2, tzinfo=timezone.utc),
             thread_parent="art3@example.com",
             subject_normalized="cross-posted note",
         )
         reply_late = Article(
-            message_id="r2@example.com", subject="Re: cross-posted note",
-            author="L", date=datetime(2024, 3, 3, tzinfo=timezone.utc),
+            message_id="r2@example.com",
+            subject="Re: cross-posted note",
+            author="L",
+            date=datetime(2024, 3, 3, tzinfo=timezone.utc),
             thread_parent="art3@example.com",
             subject_normalized="cross-posted note",
         )
         s.add_all([reply_early, reply_late])
         s.flush()
-        s.add_all([
-            ArticleList(article_id=reply_early.id, inbox_id=alpha.id, epoch="0.git", commit_sha="11" * 20),
-            ArticleList(article_id=reply_late.id, inbox_id=alpha.id, epoch="0.git", commit_sha="12" * 20),
-        ])
+        s.add_all(
+            [
+                ArticleList(
+                    article_id=reply_early.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="11" * 20,
+                ),
+                ArticleList(
+                    article_id=reply_late.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="12" * 20,
+                ),
+            ]
+        )
         s.commit()
         thread = get_thread(s, alpha, "art3@example.com")
 
@@ -158,23 +185,39 @@ def test_get_thread_depth_for_nested_replies(seeded_db):
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
         depth2 = Article(
-            message_id="d2@example.com", subject="Re: hello alpha",
-            author="X", date=datetime(2024, 1, 3, tzinfo=timezone.utc),
+            message_id="d2@example.com",
+            subject="Re: hello alpha",
+            author="X",
+            date=datetime(2024, 1, 3, tzinfo=timezone.utc),
             thread_parent="art4@example.com",
             subject_normalized="hello alpha",
         )
         depth3 = Article(
-            message_id="d3@example.com", subject="Re: hello alpha",
-            author="Y", date=datetime(2024, 1, 4, tzinfo=timezone.utc),
+            message_id="d3@example.com",
+            subject="Re: hello alpha",
+            author="Y",
+            date=datetime(2024, 1, 4, tzinfo=timezone.utc),
             thread_parent="d2@example.com",
             subject_normalized="hello alpha",
         )
         s.add_all([depth2, depth3])
         s.flush()
-        s.add_all([
-            ArticleList(article_id=depth2.id, inbox_id=alpha.id, epoch="0.git", commit_sha="21" * 20),
-            ArticleList(article_id=depth3.id, inbox_id=alpha.id, epoch="0.git", commit_sha="22" * 20),
-        ])
+        s.add_all(
+            [
+                ArticleList(
+                    article_id=depth2.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="21" * 20,
+                ),
+                ArticleList(
+                    article_id=depth3.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="22" * 20,
+                ),
+            ]
+        )
         s.commit()
         thread = get_thread(s, alpha, "art1@example.com")
 
@@ -190,28 +233,44 @@ def test_find_thread_root_terminates_on_cycle(seeded_db):
     rather not have, but real-world archives have had loops before.
     The CTE caps recursion at MAX_DEPTH; without it, the walk would
     run forever. Build the cycle and assert the call returns within
-    bounded work (the test's mere completion is the assertion  
+    bounded work (the test's mere completion is the assertion
     pytest's per-test timeout would catch a true infinite loop)."""
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
         a = Article(
-            message_id="cycle-a@example.com", subject="a", author="x",
+            message_id="cycle-a@example.com",
+            subject="a",
+            author="x",
             date=datetime(2024, 5, 1, tzinfo=timezone.utc),
             thread_parent="cycle-b@example.com",
             subject_normalized="a",
         )
         b = Article(
-            message_id="cycle-b@example.com", subject="b", author="x",
+            message_id="cycle-b@example.com",
+            subject="b",
+            author="x",
             date=datetime(2024, 5, 2, tzinfo=timezone.utc),
             thread_parent="cycle-a@example.com",
             subject_normalized="b",
         )
         s.add_all([a, b])
         s.flush()
-        s.add_all([
-            ArticleList(article_id=a.id, inbox_id=alpha.id, epoch="0.git", commit_sha="ca" * 20),
-            ArticleList(article_id=b.id, inbox_id=alpha.id, epoch="0.git", commit_sha="cb" * 20),
-        ])
+        s.add_all(
+            [
+                ArticleList(
+                    article_id=a.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="ca" * 20,
+                ),
+                ArticleList(
+                    article_id=b.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="cb" * 20,
+                ),
+            ]
+        )
         s.commit()
         # The walk terminates; result is one of the cycle members
         # (which one depends on MAX_DEPTH parity). The contract is
@@ -234,7 +293,7 @@ def test_max_depth_value_is_sensible():
 
 
 def test_find_thread_root_handles_out_of_order_arrival(seeded_db):
-    """Cross-epoch ingest can deliver a reply before its parent  
+    """Cross-epoch ingest can deliver a reply before its parent
     the reply commits first, then a later ingest pass finds the
     parent. The recursive CTE must reflect the new shape on the
     next query without any backfill step (this was one of the
@@ -245,14 +304,23 @@ def test_find_thread_root_handles_out_of_order_arrival(seeded_db):
     # Step 1: insert the reply alone. Its parent doesn't exist yet.
     with seeded_db() as s:
         reply = Article(
-            message_id="ooo-reply@example.com", subject="Re: ooo", author="r",
+            message_id="ooo-reply@example.com",
+            subject="Re: ooo",
+            author="r",
             date=datetime(2024, 6, 2, tzinfo=timezone.utc),
             thread_parent="ooo-parent@example.com",
             subject_normalized="ooo",
         )
         s.add(reply)
         s.flush()
-        s.add(ArticleList(article_id=reply.id, inbox_id=alpha.id, epoch="0.git", commit_sha="01" * 20))
+        s.add(
+            ArticleList(
+                article_id=reply.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="01" * 20,
+            )
+        )
         s.commit()
         # Walk-up from the reply: parent is off-list → root is the reply.
         first = find_thread_root(s, alpha, "ooo-reply@example.com")
@@ -261,14 +329,23 @@ def test_find_thread_root_handles_out_of_order_arrival(seeded_db):
     # Step 2: parent arrives in a later ingest pass.
     with seeded_db() as s:
         parent = Article(
-            message_id="ooo-parent@example.com", subject="ooo", author="p",
+            message_id="ooo-parent@example.com",
+            subject="ooo",
+            author="p",
             date=datetime(2024, 6, 1, tzinfo=timezone.utc),
             thread_parent=None,
             subject_normalized="ooo",
         )
         s.add(parent)
         s.flush()
-        s.add(ArticleList(article_id=parent.id, inbox_id=alpha.id, epoch="0.git", commit_sha="02" * 20))
+        s.add(
+            ArticleList(
+                article_id=parent.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="02" * 20,
+            )
+        )
         s.commit()
         # Walk-up from the reply now: parent exists → root is the parent.
         second = find_thread_root(s, alpha, "ooo-reply@example.com")
@@ -297,7 +374,9 @@ def test_active_threads_query_returns_root_for_recent_reply(seeded_db):
     start = datetime(2024, 1, 1, tzinfo=timezone.utc)
     end = datetime(2024, 1, 31, tzinfo=timezone.utc)
     with seeded_db() as s:
-        results = _active_threads_query(s, alpha, start, end, order_by="last_activity", limit=None)
+        results = _active_threads_query(
+            s, alpha, start, end, order_by="last_activity", limit=None
+        )
     msgids = [r.message_id for r in results]
     # Exactly one row for art1 -- dedup is the contract.
     assert msgids.count("art1@example.com") == 1
@@ -344,10 +423,12 @@ def test_active_threads_score_clamps_future_dated_articles(seeded_db):
         # The clamp is in `_active_threads_query`'s SUM expression;
         # mirror it here to verify the math against a known
         # future-dated row.
-        result = s.execute(text(
-            "SELECT pow(0.5, MAX(julianday('now') - julianday(:date), 0)) "
-            "AS score"
-        ), {"date": future.strftime("%Y-%m-%d %H:%M:%S")}).scalar_one()
+        result = s.execute(
+            text(
+                "SELECT pow(0.5, MAX(julianday('now') - julianday(:date), 0)) AS score"
+            ),
+            {"date": future.strftime("%Y-%m-%d %H:%M:%S")},
+        ).scalar_one()
 
     # With the clamp, score is pow(0.5, 0) = 1.0 exactly.
     assert 0.0 < result <= 1.0, (
@@ -378,6 +459,7 @@ def test_threads_since_finds_recent_thread(seeded_db):
     """A thread with activity inside the (capped) since window shows
     up; an old thread outside the window doesn't."""
     from datetime import timedelta
+
     alpha = _inbox(seeded_db, "alpha")
     now = datetime.now(timezone.utc)
     with seeded_db() as s:
@@ -386,14 +468,19 @@ def test_threads_since_finds_recent_thread(seeded_db):
             subject="recent",
             author="X",
             date=now - timedelta(days=3),
-            thread_parent=None, subject_normalized="recent",
+            thread_parent=None,
+            subject_normalized="recent",
         )
         s.add(art)
         s.flush()
-        s.add(ArticleList(
-            article_id=art.id, inbox_id=alpha.id,
-            epoch="0.git", commit_sha="ee" * 20,
-        ))
+        s.add(
+            ArticleList(
+                article_id=art.id,
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="ee" * 20,
+            )
+        )
         s.commit()
     since = (now - timedelta(days=10)).date()
     with seeded_db() as s:
@@ -406,6 +493,7 @@ def test_threads_since_finds_recent_thread(seeded_db):
 
 def test_threads_since_future_returns_empty(seeded_db):
     from datetime import timedelta
+
     alpha = _inbox(seeded_db, "alpha")
     future = (datetime.now(timezone.utc) + timedelta(days=2)).date()
     with seeded_db() as s:
@@ -449,11 +537,19 @@ def test_threads_for_month_respects_limit(seeded_db):
                 subject=f"thread {i}",
                 author="X",
                 date=datetime(2024, 5, 1, 12, i, tzinfo=timezone.utc),
-                thread_parent=None, subject_normalized=f"thread {i}",
+                thread_parent=None,
+                subject_normalized=f"thread {i}",
             )
             s.add(art)
             s.flush()
-            s.add(ArticleList(article_id=art.id, inbox_id=alpha.id, epoch="0.git", commit_sha=f"{i:02d}" * 20))
+            s.add(
+                ArticleList(
+                    article_id=art.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha=f"{i:02d}" * 20,
+                )
+            )
         s.commit()
         results = threads_for_month(s, alpha, 2024, 5, limit=2, force=True)
     assert len(results) == 2
@@ -467,7 +563,10 @@ def test_threads_for_month_respects_limit(seeded_db):
 
 
 def _seed_thread_with_messages(
-    seeded_db, inbox_name: str, *, root_id_prefix: str,
+    seeded_db,
+    inbox_name: str,
+    *,
+    root_id_prefix: str,
     timestamps: list[datetime],
 ) -> str:
     """Build a root + replies for tests of the active-threads ranking.
@@ -477,30 +576,42 @@ def _seed_thread_with_messages(
         ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
         root_mid = f"{root_id_prefix}-root@example.com"
         root = Article(
-            message_id=root_mid, subject=f"{root_id_prefix} root",
-            author="t@x", date=timestamps[0],
-            thread_parent=None, subject_normalized=f"{root_id_prefix} root",
+            message_id=root_mid,
+            subject=f"{root_id_prefix} root",
+            author="t@x",
+            date=timestamps[0],
+            thread_parent=None,
+            subject_normalized=f"{root_id_prefix} root",
         )
         s.add(root)
         s.flush()
-        s.add(ArticleList(
-            article_id=root.id, inbox_id=ix.id, epoch="0.git",
-            commit_sha=f"{root_id_prefix[:2]}{root_id_prefix[:2]}" * 10,
-        ))
+        s.add(
+            ArticleList(
+                article_id=root.id,
+                inbox_id=ix.id,
+                epoch="0.git",
+                commit_sha=f"{root_id_prefix[:2]}{root_id_prefix[:2]}" * 10,
+            )
+        )
         for i, ts in enumerate(timestamps[1:], start=1):
             rep = Article(
                 message_id=f"{root_id_prefix}-r{i}@example.com",
                 subject=f"Re: {root_id_prefix} root",
-                author="t@x", date=ts,
+                author="t@x",
+                date=ts,
                 thread_parent=root_mid,
                 subject_normalized=f"{root_id_prefix} root",
             )
             s.add(rep)
             s.flush()
-            s.add(ArticleList(
-                article_id=rep.id, inbox_id=ix.id, epoch="0.git",
-                commit_sha=f"r{i:02d}" + ("f" * 38),
-            ))
+            s.add(
+                ArticleList(
+                    article_id=rep.id,
+                    inbox_id=ix.id,
+                    epoch="0.git",
+                    commit_sha=f"r{i:02d}" + ("f" * 38),
+                )
+            )
         s.commit()
         return root_mid
 
@@ -517,7 +628,8 @@ def test_active_threads_decay_ranks_recent_burst_above_older_chatter(seeded_db):
     now = datetime.now(timezone.utc)
     # Recent burst: a single message a few hours ago. Score ~ 1.0.
     _seed_thread_with_messages(
-        seeded_db, "alpha",
+        seeded_db,
+        "alpha",
         root_id_prefix="recent",
         timestamps=[now - timedelta(hours=2)],
     )
@@ -526,7 +638,8 @@ def test_active_threads_decay_ranks_recent_burst_above_older_chatter(seeded_db):
     # the recent thread's ~1.0.
     week_ago = now - timedelta(days=6, hours=12)
     _seed_thread_with_messages(
-        seeded_db, "alpha",
+        seeded_db,
+        "alpha",
         root_id_prefix="older",
         timestamps=[week_ago + timedelta(hours=i) for i in range(5)],
     )
@@ -574,8 +687,7 @@ def test_active_threads_uses_cache_and_force_bypasses(seeded_db):
     with seeded_db() as s:
         cached_result = active_threads(s, alpha, days=30, limit=5)
     assert cached_result == [], (
-        "second un-forced call must return the sentinel from cache, not "
-        "recompute"
+        "second un-forced call must return the sentinel from cache, not recompute"
     )
 
     # force=True bypasses the sentinel and recomputes; the real result

@@ -5,6 +5,7 @@ Per-epoch listings were rejected (epoch numbers are a public-inbox
 storage chunking artifact with no semantic meaning to a reader);
 date-scoped views are the right shape for "what happened on a day".
 """
+
 from datetime import date as date_cls, datetime, timedelta, timezone
 
 from flask import abort, render_template
@@ -86,7 +87,7 @@ def daily_yesterday(inbox_name: str):
 
 @bp_web.route("/<inbox_name>/since/<since_str>")
 def threads_since_view(inbox_name: str, since_str: str):
-    """"What I missed" view: every thread with activity from `since` to
+    """ "What I missed" view: every thread with activity from `since` to
     now. Window is clamped to `THREADS_SINCE_MAX_DAYS` (90 days) below
     the present; the template renders a notice when the requested
     `since` falls before the cap so the operator sees why the window
@@ -187,10 +188,12 @@ def month_archive(inbox_name: str, year: int, month: int):
         thread_cap=MONTH_THREAD_CAP,
         prev_url=(
             f"/{inbox.name}/{prev_year:04d}/{prev_month:02d}/"
-            if prev_year >= _MIN_ARCHIVE_YEAR else None
+            if prev_year >= _MIN_ARCHIVE_YEAR
+            else None
         ),
         next_url=(
             f"/{inbox.name}/{next_year:04d}/{next_month:02d}/"
-            if next_year <= _max_archive_year() else None
+            if next_year <= _max_archive_year()
+            else None
         ),
     )

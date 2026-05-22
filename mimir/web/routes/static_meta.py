@@ -6,12 +6,15 @@ referenced from both the route itself and the template-globals
 context processor in `hooks.py`; importing from this module avoids
 duplicating the values.
 """
+
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Response, abort, render_template, send_from_directory
 
+from mimir import robots
 from mimir.config import settings
+from mimir.extensions import SessionLocal
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _site_base
 
@@ -51,11 +54,14 @@ _FAVICON_SVG = (
 
 
 @bp_web.route("/robots.txt")
-def robots():
-    """Static robots.txt, disallows attachment downloads (saves bot
-    bandwidth on binaries) and points crawlers at the sitemap."""
+def robots_txt():
+    """DB-backed robots.txt. Rows in `robots_rules` produce one
+    stanza each; the `*` row is seeded by the migration with the
+    same values the previous hardcoded template used. Operator
+    mutates via `admin robots {add,update,remove,reset}`."""
     sitemap_url = _site_base() + "/sitemap.xml"
-    body = render_template("robots.txt", sitemap_url=sitemap_url)
+    with SessionLocal() as session:
+        body = robots.render_robots_txt(session, sitemap_url)
     return Response(body, mimetype="text/plain; charset=utf-8")
 
 
@@ -77,7 +83,9 @@ def security_txt():
     request time as `now + 1 year` so it never falls into the past."""
     if not settings.security_contact:
         abort(404)
-    expires = (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(timespec="seconds")
+    expires = (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(
+        timespec="seconds"
+    )
     body = render_template(
         "security.txt",
         contact=settings.security_contact,

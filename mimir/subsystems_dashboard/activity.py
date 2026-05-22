@@ -6,6 +6,7 @@ inverted-index walk over MAINTAINERS rules + a single Python pass
 that aggregates per-subsystem counts and per-day buckets for the
 inline sparklines. The global helper composes per-inbox results.
 """
+
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date as date_cls, datetime, timedelta, timezone
@@ -58,6 +59,7 @@ class SubsystemActivity:
     Dataclass (not pydantic) for `mimir.cache` round-trip
     compatibility, matching the project convention for cached
     value types."""
+
     id: int
     name: str
     inbox_name: str
@@ -101,8 +103,11 @@ MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP = 100
 
 
 def most_active_subsystems_in_inbox(
-    session: Session, inbox: Inbox,
-    days: int = 7, limit: int = 10, force: bool = False,
+    session: Session,
+    inbox: Inbox,
+    days: int = 7,
+    limit: int = 10,
+    force: bool = False,
     *,
     compute_on_miss: bool = True,
 ) -> list[SubsystemActivity]:
@@ -130,15 +135,20 @@ def most_active_subsystems_in_inbox(
     the per-inbox subsystem aggregation.
     """
     full = _most_active_subsystems_in_inbox_full(
-        session, inbox, days=days, force=force,
+        session,
+        inbox,
+        days=days,
+        force=force,
         compute_on_miss=compute_on_miss,
     )
     return full[:limit]
 
 
 def _most_active_subsystems_in_inbox_full(
-    session: Session, inbox: Inbox,
-    days: int = 7, force: bool = False,
+    session: Session,
+    inbox: Inbox,
+    days: int = 7,
+    force: bool = False,
     *,
     compute_on_miss: bool = True,
 ) -> list[SubsystemActivity]:
@@ -153,6 +163,7 @@ def _most_active_subsystems_in_inbox_full(
     aggregates per-subsystem counts + per-day buckets for the inline
     sparkline.
     """
+
     def compute() -> list[SubsystemActivity]:
         # Calendar-day window so the inline sparkline buckets line
         # up with how `daily_volume_in_subsystem` would have queried
@@ -195,12 +206,16 @@ def _most_active_subsystems_in_inbox_full(
         # F: / X: rules; has_include caps the search space to
         # subsystems with at least one *supported* (non-wildcard)
         # include rule, same convention as `_subsystem_path_filter_sql`.
-        subs = session.execute(
-            select(Subsystem).options(
-                selectinload(Subsystem.paths),
-                selectinload(Subsystem.maintainers),
+        subs = (
+            session.execute(
+                select(Subsystem).options(
+                    selectinload(Subsystem.paths),
+                    selectinload(Subsystem.maintainers),
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         subs_by_id: dict[int, Subsystem] = {}
         include_prefix: dict[str, set[int]] = defaultdict(set)
         include_exact: dict[str, set[int]] = defaultdict(set)
@@ -211,14 +226,10 @@ def _most_active_subsystems_in_inbox_full(
             for rule in sub.paths:
                 glob = rule.glob
                 if glob.endswith("/"):
-                    bucket = (
-                        exclude_prefix if rule.is_exclude else include_prefix
-                    )
+                    bucket = exclude_prefix if rule.is_exclude else include_prefix
                     bucket[glob[:-1]].add(sub.id)
                 elif not any(c in glob for c in "*?["):
-                    bucket = (
-                        exclude_exact if rule.is_exclude else include_exact
-                    )
+                    bucket = exclude_exact if rule.is_exclude else include_exact
                     bucket[glob].add(sub.id)
                 # else: wildcard rules skipped (slice 1/2 contract;
                 # the per-subsystem filter SQL skips them too).
@@ -304,16 +315,19 @@ def _most_active_subsystems_in_inbox_full(
                 key=lambda m: m.id,
             )
             top_maintainer = maintainers[0].name if maintainers else ""
-            out.append(SubsystemActivity(
-                id=sub_id, name=sub.name,
-                inbox_name=inbox.name,
-                message_count=len(article_set),
-                last_activity=last_activity[sub_id],
-                maintainer_name=top_maintainer,
-                multiple_maintainers=len(maintainers) > 1,
-                status=sub.status,
-                spark=_spark_for(sub_id),
-            ))
+            out.append(
+                SubsystemActivity(
+                    id=sub_id,
+                    name=sub.name,
+                    inbox_name=inbox.name,
+                    message_count=len(article_set),
+                    last_activity=last_activity[sub_id],
+                    maintainer_name=top_maintainer,
+                    multiple_maintainers=len(maintainers) > 1,
+                    status=sub.status,
+                    spark=_spark_for(sub_id),
+                )
+            )
         return out
 
     key = f"most_active_subsystems_in_inbox:{inbox.name}:{days}"
@@ -324,14 +338,19 @@ def _most_active_subsystems_in_inbox_full(
         cached = cache.get(key)
         return cached if cached is not None else []
     return cache.get_or_compute(
-        session, key, MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
-        compute, force=force,
+        session,
+        key,
+        MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
+        compute,
+        force=force,
     )
 
 
 def most_active_subsystems_global(
     session: Session,
-    days: int = 7, limit: int = 10, force: bool = False,
+    days: int = 7,
+    limit: int = 10,
+    force: bool = False,
     *,
     compute_on_miss: bool = True,
 ) -> list[SubsystemActivity]:
@@ -355,13 +374,18 @@ def most_active_subsystems_global(
     warm-cache refresh, and the rest of the page renders normally.
     """
     full = _most_active_subsystems_global_full(
-        session, days=days, force=force, compute_on_miss=compute_on_miss,
+        session,
+        days=days,
+        force=force,
+        compute_on_miss=compute_on_miss,
     )
     return full[:limit]
 
 
 def _most_active_subsystems_global_full(
-    session: Session, days: int = 7, force: bool = False,
+    session: Session,
+    days: int = 7,
+    force: bool = False,
     *,
     compute_on_miss: bool = True,
 ) -> list[SubsystemActivity]:
@@ -377,6 +401,7 @@ def _most_active_subsystems_global_full(
     inbox), merge by subsystem id, pick the busiest inbox per
     subsystem, re-sort globally, truncate to the internal cap.
     """
+
     def compute() -> list[SubsystemActivity]:
         inboxes = session.execute(select(Inbox)).scalars().all()
         agg: dict[int, dict] = {}
@@ -388,7 +413,10 @@ def _most_active_subsystems_global_full(
             # flagged this gap: the outer cache wrap bypasses, the
             # inner one silently doesn't.
             for row in _most_active_subsystems_in_inbox_full(
-                session, inbox, days=days, force=force,
+                session,
+                inbox,
+                days=days,
+                force=force,
             ):
                 entry = agg.get(row.id)
                 if entry is None:
@@ -442,6 +470,9 @@ def _most_active_subsystems_global_full(
         cached = cache.get(key)
         return cached if cached is not None else []
     return cache.get_or_compute(
-        session, key, MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
-        compute, force=force,
+        session,
+        key,
+        MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
+        compute,
+        force=force,
     )

@@ -10,6 +10,7 @@ that dropped the constraint (e.g. moving `secret_key` to `Optional`
 or relaxing the length) would silently let `flask --app mimir run`
 boot with a short or blank secret. Pin the constraint directly.
 """
+
 import pytest
 from pydantic import ValidationError
 

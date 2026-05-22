@@ -41,6 +41,10 @@ from mimir.broker.protocol import (
     InboxSetTrackedAuthorsRequest,
     InboxUpdateRequest,
     Reply,
+    RobotsAddRequest,
+    RobotsRemoveRequest,
+    RobotsResetRequest,
+    RobotsUpdateRequest,
     UpdateMainlineRequest,
     VacuumRequest,
 )
@@ -287,6 +291,92 @@ def handle_failures_replay(req: FailuresReplayRequest) -> Reply:
     return Reply(ok=True, result=result.model_dump(mode="json"))
 
 
+# ----- robots admin ------------------------------------------------------
+
+
+def _robots_error_reply(exc: Exception) -> Reply:
+    """Map a robots service-layer exception to a structured failure
+    Reply. The CLI shim picks the prefix apart and re-raises as
+    ClickException."""
+    from mimir.robots import RobotsRuleNotFound, RobotsValidationError
+
+    if isinstance(exc, RobotsRuleNotFound):
+        return Reply(ok=False, error=f"RobotsRuleNotFound:{exc}")
+    if isinstance(exc, RobotsValidationError):
+        return Reply(ok=False, error=f"InvalidRobotsRule:{exc}")
+    raise exc
+
+
+def _robots_rule_to_dict(rule) -> dict:
+    """Project a `RobotsRule` ORM row to the dict shape the admin
+    client methods reconstruct. Service-layer returns expunge before
+    handing back so attribute reads are safe outside a session."""
+    return {
+        "user_agent": rule.user_agent,
+        "crawl_delay": rule.crawl_delay,
+        "disallow_paths": list(rule.disallow_paths or []),
+    }
+
+
+def handle_robots_add(req: RobotsAddRequest) -> Reply:
+    from mimir.robots import (
+        RobotsRuleNotFound,
+        RobotsValidationError,
+        add_rule,
+    )
+
+    try:
+        rule = add_rule(
+            req.user_agent,
+            disallow=req.disallow,
+            crawl_delay=req.crawl_delay,
+        )
+    except (RobotsRuleNotFound, RobotsValidationError) as exc:
+        return _robots_error_reply(exc)
+    return Reply(ok=True, result={"rule": _robots_rule_to_dict(rule)})
+
+
+def handle_robots_update(req: RobotsUpdateRequest) -> Reply:
+    from mimir.robots import (
+        RobotsRuleNotFound,
+        RobotsValidationError,
+        update_rule,
+    )
+
+    try:
+        rule = update_rule(
+            req.user_agent,
+            add_disallow=req.add_disallow,
+            remove_disallow=req.remove_disallow,
+            crawl_delay=req.crawl_delay,
+            clear_crawl_delay=req.clear_crawl_delay,
+        )
+    except (RobotsRuleNotFound, RobotsValidationError) as exc:
+        return _robots_error_reply(exc)
+    return Reply(ok=True, result={"rule": _robots_rule_to_dict(rule)})
+
+
+def handle_robots_remove(req: RobotsRemoveRequest) -> Reply:
+    from mimir.robots import (
+        RobotsRuleNotFound,
+        RobotsValidationError,
+        remove_rule,
+    )
+
+    try:
+        remove_rule(req.user_agent)
+    except (RobotsRuleNotFound, RobotsValidationError) as exc:
+        return _robots_error_reply(exc)
+    return Reply(ok=True)
+
+
+def handle_robots_reset(req: RobotsResetRequest) -> Reply:
+    from mimir.robots import reset_rules
+
+    reset_rules()
+    return Reply(ok=True)
+
+
 __all__ = [
     "handle_update_mainline",
     "handle_analyze",
@@ -299,4 +389,8 @@ __all__ = [
     "handle_inbox_add_tracked_author",
     "handle_inbox_remove_tracked_author",
     "handle_inbox_clear_tracked_authors",
+    "handle_robots_add",
+    "handle_robots_update",
+    "handle_robots_remove",
+    "handle_robots_reset",
 ]

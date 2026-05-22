@@ -24,6 +24,7 @@ The submodules split by concern:
   connection wrapped in `write_transaction()`.
 - `client`: connection lifecycle + RPC API on the calling side.
 """
+
 from mimir.broker.client import BrokerClient, BrokerUnavailable, get_broker_client
 from mimir.broker.server import serve
 
