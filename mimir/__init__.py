@@ -24,14 +24,16 @@ def create_app() -> Flask:
     # the Werkzeug interactive debugger. Gunicorn runs the WSGI
     # callable so the debugger never spawns in production, but a
     # debug-true app still leaks tracebacks to the response body,
-    # which is dangerous on a public deploy. Refuse the combination
-    # when the process is tagged with one of the deploy roles, the
-    # CLI (`mimir_role unset`) still honours the flag for
-    # `flask run` debugging.
-    if settings.flask_debug and settings.mimir_role in {"web", "tasks", "broker"}:
+    # which is dangerous on a public deploy. The post-2.0.0 signal
+    # for "this is a deploy process" is `MIMIR_IS_BROKER=true` (the
+    # broker container) or a default-cased web/tasks container.
+    # `MIMIR_DEPLOY` is the explicit toggle for the deploy halves
+    # that aren't the broker itself; unset on dev / CLI invocations.
+    if settings.flask_debug and (settings.mimir_is_broker or settings.mimir_deploy):
         raise RuntimeError(
-            f"FLASK_DEBUG=true is refused under MIMIR_ROLE={settings.mimir_role!r}; "
-            "disable FLASK_DEBUG in the deploy env"
+            "FLASK_DEBUG=true is refused on deploy processes "
+            "(MIMIR_IS_BROKER=true or MIMIR_DEPLOY=true); disable "
+            "FLASK_DEBUG in the deploy env"
         )
     app.config["DEBUG"] = settings.flask_debug
     # Strip the whitespace that un-rendered `{% if %}` / `{% for %}`
