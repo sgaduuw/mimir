@@ -2,7 +2,6 @@
 `/<inbox>/yesterday`, `/<inbox>/since/<date>`, year and
 month archive routes, and the date-shaped 404 guards."""
 
-
 from tests.test_routes._helpers import _title_of
 
 
@@ -11,13 +10,17 @@ def test_inbox_today_route_renders_today_label(client, inbox_name, frozen_clock)
     template change that hardcoded a static label would pass the
     smoke status check but mislabel every daily view."""
     from datetime import datetime, timezone
+
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     body = client.get(f"/{inbox_name}/today").data.decode()
     assert today in body, f"today's date {today!r} missing from /today body"
 
 
-def test_inbox_yesterday_route_renders_yesterday_label(client, inbox_name, frozen_clock):
+def test_inbox_yesterday_route_renders_yesterday_label(
+    client, inbox_name, frozen_clock
+):
     from datetime import datetime, timedelta, timezone
+
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     body = client.get(f"/{inbox_name}/yesterday").data.decode()
     assert yesterday in body
@@ -28,6 +31,7 @@ def test_inbox_since_smoke_recent(client, inbox_name, frozen_clock):
     notice; the seeded archive is older than 90d so the body just
     says 'no messages in this window' but the route still 200s."""
     from datetime import datetime, timedelta, timezone
+
     recent = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
     r = client.get(f"/{inbox_name}/since/{recent}")
     assert r.status_code == 200
@@ -41,6 +45,7 @@ def test_inbox_since_caps_window_with_notice(client, inbox_name, frozen_clock):
     90-day floor and the template surfaces a notice so the operator
     sees why the window starts where it does."""
     from datetime import datetime, timedelta, timezone
+
     old = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
     r = client.get(f"/{inbox_name}/since/{old}")
     assert r.status_code == 200
@@ -59,6 +64,7 @@ def test_inbox_since_malformed_date_404(client, inbox_name):
 
 def test_inbox_since_future_date_404(client, inbox_name, frozen_clock):
     from datetime import datetime, timedelta, timezone
+
     future = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d")
     assert client.get(f"/{inbox_name}/since/{future}").status_code == 404
 
@@ -78,9 +84,20 @@ def test_inbox_month_archive_renders_month_label(client, inbox_name):
     # in some recognisable form. Pin "2024" + a month-name fragment.
     assert "2024" in body
     assert any(
-        m in body for m in (
-            "January", "February", "March", "April", "May", "June",
-            "July", "August", "September", "October", "November", "December",
+        m in body
+        for m in (
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
         )
     ), "month label missing"
 
@@ -117,6 +134,7 @@ def test_daily_today_title(client, inbox_name):
 
 def test_since_title_shape(client, inbox_name, frozen_clock):
     from datetime import datetime, timedelta, timezone
+
     recent = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
     title = _title_of(client.get(f"/{inbox_name}/since/{recent}").data.decode())
     assert title.endswith(f" | {inbox_name} | mimir")
@@ -160,12 +178,22 @@ def test_daily_view_counts_messages_in_window(client, frozen_clock):
         )
         s.add_all([today_art, yest_art])
         s.flush()
-        s.add_all([
-            ArticleList(article_id=today_art.id, inbox_id=alpha.id,
-                        epoch="0.git", commit_sha="aa" * 20),
-            ArticleList(article_id=yest_art.id, inbox_id=alpha.id,
-                        epoch="0.git", commit_sha="bb" * 20),
-        ])
+        s.add_all(
+            [
+                ArticleList(
+                    article_id=today_art.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="aa" * 20,
+                ),
+                ArticleList(
+                    article_id=yest_art.id,
+                    inbox_id=alpha.id,
+                    epoch="0.git",
+                    commit_sha="bb" * 20,
+                ),
+            ]
+        )
         s.commit()
 
     r = client.get("/alpha/today")
@@ -174,10 +202,9 @@ def test_daily_view_counts_messages_in_window(client, frozen_clock):
     # The total appears as "N messages across …"; pin the digit
     # without coupling to surrounding template prose.
     import re
+
     m = re.search(r"(\d+)\s+messages? across", body)
-    assert m is not None, (
-        f"didn't find message count in rendered body:\n{body[:400]}"
-    )
+    assert m is not None, f"didn't find message count in rendered body:\n{body[:400]}"
     count = int(m.group(1))
     assert count >= 1, (
         "today's article should be inside the window; the strftime-"
@@ -193,6 +220,7 @@ def test_daily_view_counts_messages_in_window(client, frozen_clock):
 
 def test_year_decade_groups_groups_by_decade():
     from mimir.web import _year_decade_groups
+
     out = _year_decade_groups(1996, 2026)
     decades = [decade for decade, _ in out]
     assert decades == [2020, 2010, 2000, 1990]
@@ -203,12 +231,14 @@ def test_year_decade_groups_groups_by_decade():
 
 def test_year_decade_groups_single_decade():
     from mimir.web import _year_decade_groups
+
     out = _year_decade_groups(2024, 2026)
     assert out == [(2020, [2026, 2025, 2024])]
 
 
 def test_year_decade_groups_single_year():
     from mimir.web import _year_decade_groups
+
     assert _year_decade_groups(2025, 2025) == [(2020, [2025])]
 
 
@@ -216,6 +246,7 @@ def test_year_decade_groups_handles_decade_boundary():
     """1999 → 2010 spans 3 decades; each gets exactly the years that
     belong to it (no off-by-one wrap)."""
     from mimir.web import _year_decade_groups
+
     out = _year_decade_groups(1999, 2010)
     assert out == [
         (2010, [2010]),
@@ -226,4 +257,5 @@ def test_year_decade_groups_handles_decade_boundary():
 
 def test_year_decade_groups_returns_empty_when_inverted():
     from mimir.web import _year_decade_groups
+
     assert _year_decade_groups(2026, 1996) == []

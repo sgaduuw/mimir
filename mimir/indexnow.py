@@ -62,9 +62,11 @@ def build_urls(session: Session, message_ids: list[str], base: str) -> list[str]
     """
     if not message_ids:
         return []
-    articles = list(session.execute(
-        select(Article).where(Article.message_id.in_(message_ids))
-    ).scalars())
+    articles = list(
+        session.execute(
+            select(Article).where(Article.message_id.in_(message_ids))
+        ).scalars()
+    )
     if not articles:
         return []
     # One bulk query for the (article_id, inbox_id, inbox_name)
@@ -158,24 +160,29 @@ def notify(urls: list[str]) -> int:
                 if status in (200, 202):
                     submitted += len(chunk)
                     logger.info(
-                        "indexnow: pushed %d URL(s), status=%d", len(chunk), status,
+                        "indexnow: pushed %d URL(s), status=%d",
+                        len(chunk),
+                        status,
                     )
                 else:
                     logger.warning(
                         "indexnow: unexpected status %d for %d URL(s)",
-                        status, len(chunk),
+                        status,
+                        len(chunk),
                     )
         except URLError as exc:
             logger.warning(
                 "indexnow: network error pushing %d URL(s): %s",
-                len(chunk), exc,
+                len(chunk),
+                exc,
             )
         except Exception as exc:
-            # Any other surprise (JSON encoding, socket weirdness)  
+            # Any other surprise (JSON encoding, socket weirdness)
             # log and keep going. The whole feature is best-effort;
             # the sitemap is the durable discovery path.
             logger.warning(
                 "indexnow: unexpected error pushing %d URL(s): %r",
-                len(chunk), exc,
+                len(chunk),
+                exc,
             )
     return submitted

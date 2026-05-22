@@ -2,20 +2,26 @@
 reviewer surfaces (`active_reviewers_in_subsystem`,
 `articles_reviewed_by`)."""
 
-
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 
 from mimir.models import (
-    Article, ArticleFile, ArticleList, ArticleTrailer, Inbox,
+    Article,
+    ArticleFile,
+    ArticleList,
+    ArticleTrailer,
+    Inbox,
 )
 from mimir.subsystems_dashboard import (
     active_reviewers_in_subsystem,
     articles_reviewed_by,
 )
 
-from tests.test_subsystems._helpers import _add_recent_patch_with_trailers, _add_subsystem
+from tests.test_subsystems._helpers import (
+    _add_recent_patch_with_trailers,
+    _add_subsystem,
+)
 
 
 def test_active_reviewers_groups_attestations_by_address(seeded_db):
@@ -24,11 +30,15 @@ def test_active_reviewers_groups_attestations_by_address(seeded_db):
     with seeded_db() as s:
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
         _add_recent_patch_with_trailers(
-            s, "p1@x", ["fs/bcachefs/super.c"],
+            s,
+            "p1@x",
+            ["fs/bcachefs/super.c"],
             [("Reviewed-by", "Alice", "alice@kernel.org")],
         )
         _add_recent_patch_with_trailers(
-            s, "p2@x", ["fs/bcachefs/io.c"],
+            s,
+            "p2@x",
+            ["fs/bcachefs/io.c"],
             [
                 ("Reviewed-by", "Alice", "alice@kernel.org"),
                 ("Acked-by", "Bob", "bob@kernel.org"),
@@ -52,29 +62,39 @@ def test_active_reviewers_orders_by_total_then_recency(seeded_db):
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
         # carol: 2 attestations, oldest activity 2 days ago
         _add_recent_patch_with_trailers(
-            s, "old1@x", ["fs/bcachefs/a.c"],
+            s,
+            "old1@x",
+            ["fs/bcachefs/a.c"],
             [("Reviewed-by", "Carol", "carol@kernel.org")],
             days_ago=2,
         )
         _add_recent_patch_with_trailers(
-            s, "old2@x", ["fs/bcachefs/b.c"],
+            s,
+            "old2@x",
+            ["fs/bcachefs/b.c"],
             [("Reviewed-by", "Carol", "carol@kernel.org")],
             days_ago=2,
         )
         # dave: 2 attestations, latest activity today
         _add_recent_patch_with_trailers(
-            s, "new1@x", ["fs/bcachefs/c.c"],
+            s,
+            "new1@x",
+            ["fs/bcachefs/c.c"],
             [("Reviewed-by", "Dave", "dave@kernel.org")],
             days_ago=0,
         )
         _add_recent_patch_with_trailers(
-            s, "new2@x", ["fs/bcachefs/d.c"],
+            s,
+            "new2@x",
+            ["fs/bcachefs/d.c"],
             [("Reviewed-by", "Dave", "dave@kernel.org")],
             days_ago=2,
         )
         # erin: 1 attestation, today, should rank below the two-counters
         _add_recent_patch_with_trailers(
-            s, "single@x", ["fs/bcachefs/e.c"],
+            s,
+            "single@x",
+            ["fs/bcachefs/e.c"],
             [("Reviewed-by", "Erin", "erin@kernel.org")],
         )
         s.commit()
@@ -92,15 +112,22 @@ def test_active_reviewers_respects_subsystem_excludes(seeded_db):
     helpers."""
     with seeded_db() as s:
         sub = _add_subsystem(
-            s, "BTRFS-MAIN", "Maintained",
-            files=["fs/btrfs/"], excludes=["fs/btrfs/tests/"],
+            s,
+            "BTRFS-MAIN",
+            "Maintained",
+            files=["fs/btrfs/"],
+            excludes=["fs/btrfs/tests/"],
         )
         _add_recent_patch_with_trailers(
-            s, "main@x", ["fs/btrfs/extent.c"],
+            s,
+            "main@x",
+            ["fs/btrfs/extent.c"],
             [("Reviewed-by", "Alice", "alice@kernel.org")],
         )
         _add_recent_patch_with_trailers(
-            s, "tests@x", ["fs/btrfs/tests/runner.c"],
+            s,
+            "tests@x",
+            ["fs/btrfs/tests/runner.c"],
             [("Reviewed-by", "Bob", "bob@kernel.org")],
         )
         s.commit()
@@ -117,12 +144,16 @@ def test_active_reviewers_scoped_to_inbox(seeded_db):
     with seeded_db() as s:
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
         _add_recent_patch_with_trailers(
-            s, "a@x", ["fs/bcachefs/x.c"],
+            s,
+            "a@x",
+            ["fs/bcachefs/x.c"],
             [("Reviewed-by", "Alpha-only", "ao@kernel.org")],
             inbox_name="alpha",
         )
         _add_recent_patch_with_trailers(
-            s, "b@x", ["fs/bcachefs/y.c"],
+            s,
+            "b@x",
+            ["fs/bcachefs/y.c"],
             [("Reviewed-by", "Beta-only", "bo@kernel.org")],
             inbox_name="beta",
         )
@@ -143,7 +174,9 @@ def test_active_reviewers_empty_when_no_supported_globs(seeded_db):
     with seeded_db() as s:
         sub = _add_subsystem(s, "ARCH-CSTAR", None, files=["arch/*/cstar/"])
         _add_recent_patch_with_trailers(
-            s, "wild@x", ["arch/x86/cstar/init.c"],
+            s,
+            "wild@x",
+            ["arch/x86/cstar/init.c"],
             [("Reviewed-by", "Anyone", "any@kernel.org")],
         )
         s.commit()
@@ -164,6 +197,7 @@ def test_articles_reviewed_by_plan_drops_materialize(seeded_db):
     plan so the regression is caught at PR time instead of in
     production cold misses."""
     from sqlalchemy import text
+
     with seeded_db() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         # Mirror the exact SQL `articles_reviewed_by` builds, the
@@ -225,10 +259,14 @@ def test_articles_reviewed_by_canonical_null_uses_alphabetical_fallback(
                 ArticleList(inbox_id=beta.id, epoch="0.git", commit_sha="b" * 40),
             ],
             files=[ArticleFile(path="fs/bcachefs/x.c")],
-            trailers=[ArticleTrailer(
-                role="Reviewed-by", name="A", address="a@kernel.org",
-                address_normalized="a@kernel.org",
-            )],
+            trailers=[
+                ArticleTrailer(
+                    role="Reviewed-by",
+                    name="A",
+                    address="a@kernel.org",
+                    address_normalized="a@kernel.org",
+                )
+            ],
         )
         s.add(art)
         s.commit()
@@ -247,7 +285,9 @@ def test_articles_reviewed_by_returns_one_entry_per_attestation(seeded_db):
     with seeded_db() as s:
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
         _add_recent_patch_with_trailers(
-            s, "p1@x", ["fs/bcachefs/super.c"],
+            s,
+            "p1@x",
+            ["fs/bcachefs/super.c"],
             [
                 ("Reported-by", "Alice", "alice@kernel.org"),
                 ("Tested-by", "Alice", "alice@kernel.org"),
@@ -277,6 +317,7 @@ def test_articles_reviewed_by_matches_address_case_insensitively(
         # Address stored with original-casing as it landed in the
         # trailer; address_normalized is lowercased.
         from mimir.models import ArticleList, ArticleTrailer
+
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         art = Article(
             message_id="case@x",
@@ -286,14 +327,16 @@ def test_articles_reviewed_by_matches_address_case_insensitively(
             thread_parent=None,
             subject_normalized="case-test",
             canonical_inbox_id=inbox.id,
-            lists=[ArticleList(inbox_id=inbox.id, epoch="0.git",
-                               commit_sha="f" * 40)],
+            lists=[ArticleList(inbox_id=inbox.id, epoch="0.git", commit_sha="f" * 40)],
             files=[ArticleFile(path="fs/bcachefs/x.c")],
-            trailers=[ArticleTrailer(
-                role="Reviewed-by", name="Mixed",
-                address="Mixed@KerneL.OrG",
-                address_normalized="mixed@kernel.org",
-            )],
+            trailers=[
+                ArticleTrailer(
+                    role="Reviewed-by",
+                    name="Mixed",
+                    address="Mixed@KerneL.OrG",
+                    address_normalized="mixed@kernel.org",
+                )
+            ],
         )
         s.add(art)
         s.commit()
@@ -307,12 +350,18 @@ def test_articles_reviewed_by_orders_by_date_desc(seeded_db):
     with seeded_db() as s:
         _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
         _add_recent_patch_with_trailers(
-            s, "old@x", ["fs/bcachefs/a.c"],
-            [("Reviewed-by", "A", "a@kernel.org")], days_ago=10,
+            s,
+            "old@x",
+            ["fs/bcachefs/a.c"],
+            [("Reviewed-by", "A", "a@kernel.org")],
+            days_ago=10,
         )
         _add_recent_patch_with_trailers(
-            s, "new@x", ["fs/bcachefs/b.c"],
-            [("Reviewed-by", "A", "a@kernel.org")], days_ago=0,
+            s,
+            "new@x",
+            ["fs/bcachefs/b.c"],
+            [("Reviewed-by", "A", "a@kernel.org")],
+            days_ago=0,
         )
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
@@ -327,12 +376,16 @@ def test_articles_reviewed_by_scoped_to_inbox(seeded_db):
     with seeded_db() as s:
         _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
         _add_recent_patch_with_trailers(
-            s, "a-side@x", ["fs/bcachefs/x.c"],
+            s,
+            "a-side@x",
+            ["fs/bcachefs/x.c"],
             [("Reviewed-by", "A", "a@kernel.org")],
             inbox_name="alpha",
         )
         _add_recent_patch_with_trailers(
-            s, "b-side@x", ["fs/bcachefs/y.c"],
+            s,
+            "b-side@x",
+            ["fs/bcachefs/y.c"],
             [("Reviewed-by", "A", "a@kernel.org")],
             inbox_name="beta",
         )
@@ -351,7 +404,9 @@ def test_articles_reviewed_by_respects_limit(seeded_db):
         _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
         for i in range(5):
             _add_recent_patch_with_trailers(
-                s, f"p{i}@x", ["fs/bcachefs/x.c"],
+                s,
+                f"p{i}@x",
+                ["fs/bcachefs/x.c"],
                 [("Reviewed-by", "A", "a@kernel.org")],
                 days_ago=i,
             )
@@ -386,10 +441,14 @@ def test_articles_reviewed_by_resolves_canonical_inbox(seeded_db):
                 ArticleList(inbox_id=beta.id, epoch="0.git", commit_sha="b" * 40),
             ],
             files=[ArticleFile(path="fs/bcachefs/x.c")],
-            trailers=[ArticleTrailer(
-                role="Reviewed-by", name="A", address="a@kernel.org",
-                address_normalized="a@kernel.org",
-            )],
+            trailers=[
+                ArticleTrailer(
+                    role="Reviewed-by",
+                    name="A",
+                    address="a@kernel.org",
+                    address_normalized="a@kernel.org",
+                )
+            ],
         )
         s.add(art)
         s.commit()
@@ -408,12 +467,16 @@ def test_active_reviewers_keeps_latest_display_name_per_address(seeded_db):
     with seeded_db() as s:
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
         _add_recent_patch_with_trailers(
-            s, "old@x", ["fs/bcachefs/a.c"],
+            s,
+            "old@x",
+            ["fs/bcachefs/a.c"],
             [("Reviewed-by", "Old Name", "person@kernel.org")],
             days_ago=2,
         )
         _add_recent_patch_with_trailers(
-            s, "new@x", ["fs/bcachefs/b.c"],
+            s,
+            "new@x",
+            ["fs/bcachefs/b.c"],
             [("Reviewed-by", "New Name", "person@kernel.org")],
             days_ago=0,
         )

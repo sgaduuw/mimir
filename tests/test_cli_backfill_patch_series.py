@@ -1,6 +1,7 @@
 """CLI + service test for `backfill-patch-series`. The parser is
 exercised in `tests/test_patch_series.py`; this pins the walker's
 idempotence + the bucket counters."""
+
 from click.testing import CliRunner
 from sqlalchemy import select
 
@@ -14,15 +15,18 @@ def _add_article(seeded_db, msgid, subject, author="A <a@x>"):
     backfill has something to do. Linked to the seeded `alpha`
     inbox for the route-side compatibility shape."""
     from datetime import datetime, timezone
+
     with seeded_db() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         art = Article(
-            message_id=msgid, subject=subject, author=author,
+            message_id=msgid,
+            subject=subject,
+            author=author,
             date=datetime(2024, 6, 1, tzinfo=timezone.utc),
-            thread_parent=None, subject_normalized=subject.lower(),
+            thread_parent=None,
+            subject_normalized=subject.lower(),
             canonical_inbox_id=inbox.id,
-            lists=[ArticleList(inbox_id=inbox.id, epoch="0.git",
-                               commit_sha="f" * 40)],
+            lists=[ArticleList(inbox_id=inbox.id, epoch="0.git", commit_sha="f" * 40)],
         )
         s.add(art)
         s.commit()
@@ -63,7 +67,7 @@ def test_backfill_is_idempotent_on_rerun(seeded_db):
     second = backfill_patch_series()
     assert first.indexed == 1
     assert second.indexed == 0
-    assert second.skipped == 1   # cover@x already has a key
+    assert second.skipped == 1  # cover@x already has a key
 
 
 def test_backfill_reprocess_clears_stale_keys(seeded_db):
@@ -108,16 +112,18 @@ def _add_article_with_parent(seeded_db, msgid, subject, parent_msgid):
     """Like `_add_article` but with `thread_parent` set so the
     backfill's in-series linker can walk up to the cover."""
     from datetime import datetime, timezone
+
     with seeded_db() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         art = Article(
-            message_id=msgid, subject=subject, author="A <a@x>",
+            message_id=msgid,
+            subject=subject,
+            author="A <a@x>",
             date=datetime(2024, 6, 1, tzinfo=timezone.utc),
             thread_parent=parent_msgid,
             subject_normalized=subject.lower(),
             canonical_inbox_id=inbox.id,
-            lists=[ArticleList(inbox_id=inbox.id, epoch="0.git",
-                               commit_sha="e" * 40)],
+            lists=[ArticleList(inbox_id=inbox.id, epoch="0.git", commit_sha="e" * 40)],
         )
         s.add(art)
         s.commit()
@@ -143,7 +149,8 @@ def test_backfill_links_in_series_via_thread_parent(seeded_db):
     and lands in the `in_series_indexed` bucket."""
     _add_article(seeded_db, "cover@x", "[PATCH v2 0/3] thread title")
     _add_article_with_parent(
-        seeded_db, "patch1of3@x",
+        seeded_db,
+        "patch1of3@x",
         "[PATCH v2 1/3] thread title: first patch",
         parent_msgid="cover@x",
     )
@@ -186,7 +193,8 @@ def test_backfill_relinks_orphan_when_cover_arrives_later(seeded_db):
     rather than "fully resolved"."""
     # First run: patch is orphaned (cover not yet in DB).
     _add_article_with_parent(
-        seeded_db, "early-patch@x",
+        seeded_db,
+        "early-patch@x",
         "[PATCH 1/3] title: first patch",
         parent_msgid="late-cover@x",  # parent not yet in DB
     )

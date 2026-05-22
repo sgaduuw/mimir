@@ -1,8 +1,6 @@
 """Tests for mimir/cli/admin/canonicals.py: the
 `admin canonicals backfill` command surface."""
 
-
-
 from click.testing import CliRunner
 
 from mimir.cli import (

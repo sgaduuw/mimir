@@ -10,6 +10,7 @@ The shared helpers (`_to_article`, `_flush_observations`,
 `_maybe_promote_list_address`) and the `IngestResult` model are also
 imported by `.replay`, `.backfill`, and `.orchestrate`.
 """
+
 import logging
 import os
 import time
@@ -86,6 +87,7 @@ PROMOTE_DOMINANCE = 0.7
 class IngestResult(BaseModel):
     """Per-epoch outcome counters. Every walked commit lands in
     exactly one of: new, linked, dup_batch, dup_db, failed."""
+
     epoch: str
     new: int = 0
     # Article existed in another inbox (cross-post): added a new
@@ -190,16 +192,18 @@ def _record_parse_failure(
             row.error_class = error_class
             row.error_message = error_message
             return
-    session.add(ParseFailure(
-        inbox_id=inbox_id,
-        epoch=epoch,
-        commit_sha=commit_sha,
-        error_class=error_class,
-        error_message=error_message,
-        first_seen=now,
-        last_attempt=now,
-        attempts=1,
-    ))
+    session.add(
+        ParseFailure(
+            inbox_id=inbox_id,
+            epoch=epoch,
+            commit_sha=commit_sha,
+            error_class=error_class,
+            error_message=error_message,
+            first_seen=now,
+            last_attempt=now,
+            attempts=1,
+        )
+    )
 
 
 def _to_article(
@@ -369,7 +373,9 @@ def _maybe_promote_list_address(session: Session, inbox_id: int) -> str | None:
     inbox.list_address = top_addr
     logger.info(
         "auto-promoted list_address: %s -> %s (n=%d, dominance=%.0f%%)",
-        inbox.name, top_addr, top_count,
+        inbox.name,
+        top_addr,
+        top_count,
         100 * top_count / max(top_count + second_count, 1),
     )
     return top_addr
@@ -402,27 +408,33 @@ def ingest_epoch(
     # (set is empty for never-failed epochs) and (b) clear the row when
     # a previously-failed commit now parses cleanly. Tiny set in
     # practice, typical clean parsers fail on <0.1% of messages.
-    failed_shas: set[str] = set(session.execute(
-        select(ParseFailure.commit_sha).where(
-            ParseFailure.inbox_id == inbox_id,
-            ParseFailure.epoch == epoch_name,
-        )
-    ).scalars())
+    failed_shas: set[str] = set(
+        session.execute(
+            select(ParseFailure.commit_sha).where(
+                ParseFailure.inbox_id == inbox_id,
+                ParseFailure.epoch == epoch_name,
+            )
+        ).scalars()
+    )
 
     # Snapshot of {list_address: inbox_id} for canonical resolution.
     # Refreshed at start; promotion that happens later in this run
     # affects future runs, not in-flight messages, acceptable lag for
     # bootstrap, and Phase 2's backfill CLI sweeps the gap.
-    address_to_inbox_id: dict[str, int] = dict(session.execute(
-        select(Inbox.list_address, Inbox.id).where(Inbox.list_address.isnot(None))
-    ).all())
+    address_to_inbox_id: dict[str, int] = dict(
+        session.execute(
+            select(Inbox.list_address, Inbox.id).where(Inbox.list_address.isnot(None))
+        ).all()
+    )
 
     # Inbox IDs to treat as firehoses during canonical pick (see
     # `pick_canonical_inbox_id`). Computed once per run; name list
     # comes from `Settings.canonical_demoted_inboxes`.
-    demoted_inbox_ids: frozenset[int] = frozenset(session.execute(
-        select(Inbox.id).where(Inbox.name.in_(settings.canonical_demoted_inboxes))
-    ).scalars())
+    demoted_inbox_ids: frozenset[int] = frozenset(
+        session.execute(
+            select(Inbox.id).where(Inbox.name.in_(settings.canonical_demoted_inboxes))
+        ).scalars()
+    )
 
     # Per-address observation deltas accumulated this batch; flushed to
     # `inbox_address_observations` on each commit so we don't issue a
@@ -446,7 +458,10 @@ def ingest_epoch(
 
     logger.info(
         "%s/%s: starting from %s (workers=%d)",
-        inbox_name, epoch_name, last_sha or "<beginning>", workers,
+        inbox_name,
+        epoch_name,
+        last_sha or "<beginning>",
+        workers,
     )
 
     def flush_batch() -> None:
@@ -488,10 +503,16 @@ def ingest_epoch(
             log = logger.debug if already_recorded else logger.warning
             log(
                 "epoch %s commit %s: parse failed: %r",
-                epoch_name, commit_sha[:12], parsed_or_exc,
+                epoch_name,
+                commit_sha[:12],
+                parsed_or_exc,
             )
             _record_parse_failure(
-                session, inbox_id, epoch_name, commit_sha, parsed_or_exc,
+                session,
+                inbox_id,
+                epoch_name,
+                commit_sha,
+                parsed_or_exc,
                 already_recorded=already_recorded,
             )
             failed_shas.add(commit_sha)
@@ -501,11 +522,13 @@ def ingest_epoch(
 
         # Previously failed, now parses cleanly, clear the row.
         if commit_sha in failed_shas:
-            session.execute(delete(ParseFailure).where(
-                ParseFailure.inbox_id == inbox_id,
-                ParseFailure.epoch == epoch_name,
-                ParseFailure.commit_sha == commit_sha,
-            ))
+            session.execute(
+                delete(ParseFailure).where(
+                    ParseFailure.inbox_id == inbox_id,
+                    ParseFailure.epoch == epoch_name,
+                    ParseFailure.commit_sha == commit_sha,
+                )
+            )
             failed_shas.discard(commit_sha)
 
         # Record list-shaped To/Cc addresses for this inbox. Done once
@@ -525,7 +548,12 @@ def ingest_epoch(
                     pending_obs[addr] = (cnt + 1, max(ts, obs_time))
 
         if parsed.message_id in seen_in_batch:
-            logger.debug("epoch %s commit %s: skip (in-batch dup) %s", epoch_name, commit_sha[:12], parsed.message_id)
+            logger.debug(
+                "epoch %s commit %s: skip (in-batch dup) %s",
+                epoch_name,
+                commit_sha[:12],
+                parsed.message_id,
+            )
             result.dup_batch += 1
             continue
 
@@ -540,7 +568,8 @@ def ingest_epoch(
         # is on the same row so no extra cost.
         existing_row = session.execute(
             select(
-                Article.id, Article.date,
+                Article.id,
+                Article.date,
                 ArticleList.article_id.label("linked_id"),
             )
             .select_from(Article)
@@ -559,16 +588,23 @@ def ingest_epoch(
             # (skip) or it's a cross-post first seen via another inbox
             # (add the link).
             if already_linked is not None:
-                logger.debug("%s/%s commit %s: skip (already linked) %s",
-                             inbox_name, epoch_name, commit_sha[:12], parsed.message_id)
+                logger.debug(
+                    "%s/%s commit %s: skip (already linked) %s",
+                    inbox_name,
+                    epoch_name,
+                    commit_sha[:12],
+                    parsed.message_id,
+                )
                 result.dup_db += 1
             else:
-                session.add(ArticleList(
-                    article_id=existing_article_id,
-                    inbox_id=inbox_id,
-                    epoch=epoch_name,
-                    commit_sha=commit_sha,
-                ))
+                session.add(
+                    ArticleList(
+                        article_id=existing_article_id,
+                        inbox_id=inbox_id,
+                        epoch=epoch_name,
+                        commit_sha=commit_sha,
+                    )
+                )
                 seen_in_batch.add(parsed.message_id)
                 result.linked += 1
                 # Cross-post: bump activity using the existing article's
@@ -578,19 +614,31 @@ def ingest_epoch(
                     link_date = aware_utc(existing_row.date)
                     if pending_max_date is None or link_date > pending_max_date:
                         pending_max_date = link_date
-                logger.debug("%s/%s commit %s: linked (cross-post) %s",
-                             inbox_name, epoch_name, commit_sha[:12], parsed.message_id)
+                logger.debug(
+                    "%s/%s commit %s: linked (cross-post) %s",
+                    inbox_name,
+                    epoch_name,
+                    commit_sha[:12],
+                    parsed.message_id,
+                )
             continue
 
         canonical_inbox_id = pick_canonical_inbox_id(
-            list_addrs, address_to_inbox_id, demoted_inbox_ids,
+            list_addrs,
+            address_to_inbox_id,
+            demoted_inbox_ids,
         )
-        session.add(_to_article(
-            parsed, inbox_id=inbox_id, epoch=epoch_name,
-            commit_sha=commit_sha, date=commit_time,
-            canonical_inbox_id=canonical_inbox_id,
-            session=session,
-        ))
+        session.add(
+            _to_article(
+                parsed,
+                inbox_id=inbox_id,
+                epoch=epoch_name,
+                commit_sha=commit_sha,
+                date=commit_time,
+                canonical_inbox_id=canonical_inbox_id,
+                session=session,
+            )
+        )
         seen_in_batch.add(parsed.message_id)
         result.new += 1
         result.new_message_ids.append(parsed.message_id)
@@ -598,13 +646,25 @@ def ingest_epoch(
         # value `_to_article` just persisted to `Article.date`.
         if pending_max_date is None or commit_time > pending_max_date:
             pending_max_date = commit_time
-        logger.debug("%s/%s commit %s: new %s", inbox_name, epoch_name, commit_sha[:12], parsed.message_id)
+        logger.debug(
+            "%s/%s commit %s: new %s",
+            inbox_name,
+            epoch_name,
+            commit_sha[:12],
+            parsed.message_id,
+        )
 
         if processed % PROGRESS_EVERY == 0:
             logger.info(
                 "%s/%s: processed=%d new=%d linked=%d dup_batch=%d dup_db=%d failed=%d",
-                inbox_name, epoch_name, processed,
-                result.new, result.linked, result.dup_batch, result.dup_db, result.failed,
+                inbox_name,
+                epoch_name,
+                processed,
+                result.new,
+                result.linked,
+                result.dup_batch,
+                result.dup_db,
+                result.failed,
             )
 
         # Commit at the message-count boundary (large bursts) OR

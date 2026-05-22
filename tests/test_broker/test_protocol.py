@@ -88,10 +88,14 @@ def test_op_tag_is_load_bearing():
     """Op tag is the discriminator. Decoding a `cache_set`-shaped
     body via `CacheDeleteRequest` must fail; otherwise the broker
     could silently dispatch a set as a delete and lose data."""
-    set_payload = json.dumps({
-        "op": "cache_set",
-        "key": "x", "value_json": '"v"', "ttl": 60,
-    })
+    set_payload = json.dumps(
+        {
+            "op": "cache_set",
+            "key": "x",
+            "value_json": '"v"',
+            "ttl": 60,
+        }
+    )
     with pytest.raises(ValidationError):
         CacheDeleteRequest.model_validate_json(set_payload)
 

@@ -8,6 +8,7 @@ notice if they regressed.
 Inputs are RFC 5322 byte strings constructed inline; nothing read
 from disk. Each test names the property it's locking down.
 """
+
 import pytest
 
 from mimir.parser import (
@@ -25,10 +26,7 @@ def _msg(extra_headers: bytes = b"", body: bytes = b"hello") -> bytes:
         b"Message-ID: <abc@example.com>\r\n"
         b"From: A. Person <a@example.com>\r\n"
         b"Subject: hi\r\n"
-        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
-        + extra_headers
-        + b"\r\n"
-        + body
+        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n" + extra_headers + b"\r\n" + body
     )
 
 
@@ -69,9 +67,11 @@ def test_message_id_picks_first_non_empty_when_duplicated():
 def test_in_reply_to_picks_first_non_empty_when_duplicated():
     """Same shape applies to In-Reply-To: an empty first header
     should not shadow a real follow-up; threading depends on it."""
-    art = parse_message(_msg(
-        extra_headers=b"In-Reply-To: \r\nIn-Reply-To: <parent@x.com>\r\n",
-    ))
+    art = parse_message(
+        _msg(
+            extra_headers=b"In-Reply-To: \r\nIn-Reply-To: <parent@x.com>\r\n",
+        )
+    )
     assert art.in_reply_to == "parent@x.com"
 
 
@@ -81,9 +81,7 @@ def test_in_reply_to_strips_angle_brackets():
 
 
 def test_references_split_and_stripped():
-    art = parse_message(
-        _msg(extra_headers=b"References: <a@x> <b@x>\r\n\t<c@x>\r\n")
-    )
+    art = parse_message(_msg(extra_headers=b"References: <a@x> <b@x>\r\n\t<c@x>\r\n"))
     assert art.references == ["a@x", "b@x", "c@x"]
 
 
@@ -94,9 +92,11 @@ def test_in_reply_to_picks_first_msgid_when_multi_token():
     silent threading-break: a value like `<a@x> <b@y>` was
     stored as `a@x> <b@y` which never joined to any real
     Message-ID. Pin: first msg-id wins."""
-    art = parse_message(_msg(
-        extra_headers=b"In-Reply-To: <first@x.com> <second@x.com>\r\n",
-    ))
+    art = parse_message(
+        _msg(
+            extra_headers=b"In-Reply-To: <first@x.com> <second@x.com>\r\n",
+        )
+    )
     assert art.in_reply_to == "first@x.com"
 
 
@@ -104,18 +104,22 @@ def test_in_reply_to_strips_cfws_comment():
     """RFC 5322 CFWS comments `(...)` can appear between tokens.
     Real-world examples are rare but exist; the comment text must
     not surface as the in_reply_to value."""
-    art = parse_message(_msg(
-        extra_headers=b"In-Reply-To: (some comment) <real@x.com>\r\n",
-    ))
+    art = parse_message(
+        _msg(
+            extra_headers=b"In-Reply-To: (some comment) <real@x.com>\r\n",
+        )
+    )
     assert art.in_reply_to == "real@x.com"
 
 
 def test_references_strips_cfws_comments():
     """CFWS comments between References tokens are dropped, not
     turned into junk reference entries that never join anywhere."""
-    art = parse_message(_msg(
-        extra_headers=b"References: <a@x> (comment) <b@x> (another) <c@x>\r\n",
-    ))
+    art = parse_message(
+        _msg(
+            extra_headers=b"References: <a@x> (comment) <b@x> (another) <c@x>\r\n",
+        )
+    )
     assert art.references == ["a@x", "b@x", "c@x"]
 
 
@@ -147,15 +151,13 @@ def test_decode_rfc2047_falls_back_and_logs_at_debug_on_unknown_charset(
     assert out == "=?totally-not-a-real-charset?Q?test?="
     # The log line lands at DEBUG, not WARN.
     matching = [
-        rec for rec in caplog.records
+        rec
+        for rec in caplog.records
         if "fallback" in rec.message.lower() or "verbatim" in rec.message.lower()
     ]
-    assert matching, (
-        f"expected a debug log; got: {[r.message for r in caplog.records]}"
-    )
+    assert matching, f"expected a debug log; got: {[r.message for r in caplog.records]}"
     assert all(rec.levelno == logging.DEBUG for rec in matching), (
-        f"expected DEBUG; got: "
-        f"{[(rec.levelname, rec.message) for rec in matching]}"
+        f"expected DEBUG; got: {[(rec.levelname, rec.message) for rec in matching]}"
     )
 
 
@@ -171,9 +173,7 @@ def test_subject_q_encoded():
 
 
 def test_subject_b_encoded():
-    raw = _msg().replace(
-        b"Subject: hi", b"Subject: =?UTF-8?B?Q2Fmw6k=?="
-    )
+    raw = _msg().replace(b"Subject: hi", b"Subject: =?UTF-8?B?Q2Fmw6k=?=")
     art = parse_message(raw)
     assert art.subject == "Café"
 
@@ -275,12 +275,7 @@ def test_malformed_date_does_not_raise():
 
 
 def test_missing_date_returns_none():
-    raw = (
-        b"Message-ID: <abc@example.com>\r\n"
-        b"From: a@b\r\n"
-        b"Subject: x\r\n"
-        b"\r\nbody"
-    )
+    raw = b"Message-ID: <abc@example.com>\r\nFrom: a@b\r\nSubject: x\r\n\r\nbody"
     art = parse_message(raw)
     assert art.date is None
 
@@ -370,7 +365,7 @@ def test_attachment_extracted():
         b"Content-Type: text/plain\r\n\r\n"
         b"body\r\n"
         b"--bbb\r\n"
-        b'Content-Type: application/octet-stream\r\n'
+        b"Content-Type: application/octet-stream\r\n"
         b'Content-Disposition: attachment; filename="x.bin"\r\n'
         b"Content-Transfer-Encoding: base64\r\n\r\n"
         b"aGVsbG8=\r\n"
@@ -393,6 +388,7 @@ def test_multipart_wrapper_not_treated_as_attachment(caplog):
     each such wrapper, which became dozens of lines per multi-list
     ingest. Skip wrappers outright: no attachment, no warning."""
     import logging
+
     raw = (
         b"Message-ID: <multipart-wrap@x>\r\n"
         b"From: a@b\r\n"
@@ -428,8 +424,7 @@ def test_multipart_wrapper_not_treated_as_attachment(caplog):
     # design conversation). What matters here: no false-positive
     # "dropping attachment" warning for the wrapper.
     assert all(
-        "dropping attachment" not in rec.getMessage()
-        for rec in caplog.records
+        "dropping attachment" not in rec.getMessage() for rec in caplog.records
     ), caplog.text
     assert all(a.content_type != "multipart/signed" for a in art.attachments)
     assert all(a.content_type != "multipart/mixed" for a in art.attachments)
@@ -500,19 +495,22 @@ def test_attachment_with_unknown_charset_survives():
 # Subject normalization
 
 
-@pytest.mark.parametrize("inp,expected", [
-    ("Re: foo", "foo"),
-    ("RE: foo", "foo"),
-    ("Re: Re: foo", "foo"),
-    ("Fwd: bar", "bar"),
-    ("Fw: bar", "bar"),
-    ("Aw: baz", "baz"),  # German "Antwort"
-    ("[PATCH v3] subject", "[patch v3] subject"),  # bracketed tag kept
-    ("Re: [PATCH] x", "[patch] x"),
-    ("  Re:   spaced  ", "spaced"),
-    ("", ""),
-    (None, ""),
-])
+@pytest.mark.parametrize(
+    "inp,expected",
+    [
+        ("Re: foo", "foo"),
+        ("RE: foo", "foo"),
+        ("Re: Re: foo", "foo"),
+        ("Fwd: bar", "bar"),
+        ("Fw: bar", "bar"),
+        ("Aw: baz", "baz"),  # German "Antwort"
+        ("[PATCH v3] subject", "[patch v3] subject"),  # bracketed tag kept
+        ("Re: [PATCH] x", "[patch] x"),
+        ("  Re:   spaced  ", "spaced"),
+        ("", ""),
+        (None, ""),
+    ],
+)
 def test_normalize_subject(inp, expected):
     assert normalize_subject(inp) == expected
 
@@ -564,7 +562,7 @@ def test_parsed_article_pickles_round_trip():
         b"Content-Type: text/plain\r\n\r\n"
         b"body text\r\n"
         b"--bbb\r\n"
-        b'Content-Type: application/octet-stream\r\n'
+        b"Content-Type: application/octet-stream\r\n"
         b'Content-Disposition: attachment; filename="x.bin"\r\n'
         b"Content-Transfer-Encoding: base64\r\n\r\n"
         b"aGVsbG8=\r\n"

@@ -4,6 +4,7 @@ Both share the same `atom_response` builder from `mimir.seo`; the
 author-feed clamping reuses the search-route bounds via the
 `mimir.web.routes.search` constants.
 """
+
 from urllib.parse import quote
 
 from flask import abort

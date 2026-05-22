@@ -4,6 +4,7 @@ can import it without circular dependencies on the package
 `__init__.py` (which itself imports submodules to trigger
 registration).
 """
+
 from flask import Blueprint
 
 bp_web = Blueprint("web", __name__)

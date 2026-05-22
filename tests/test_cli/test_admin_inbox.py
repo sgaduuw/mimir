@@ -5,8 +5,6 @@ ClickException branches on unknown inboxes / invalid args /
 malformed inputs and the remove --yes / --keep-orphans /
 missing-mirror branches."""
 
-
-
 from click.testing import CliRunner
 from sqlalchemy import select
 
@@ -56,13 +54,15 @@ def test_trackers_set_replaces_dict(seeded_db):
     )
     assert result.exit_code == 0
     assert get_inbox("alpha").tracked_authors == {
-        "Linus": "torvalds@", "Greg": "gregkh@",
+        "Linus": "torvalds@",
+        "Greg": "gregkh@",
     }
 
 
 def test_trackers_set_rejects_malformed_pair(seeded_db):
     result = CliRunner().invoke(
-        admin_inbox_trackers_set_command, ["alpha", "missing-equals"],
+        admin_inbox_trackers_set_command,
+        ["alpha", "missing-equals"],
     )
     assert result.exit_code != 0
     assert "LABEL=SUBSTRING" in result.output
@@ -95,14 +95,16 @@ def test_trackers_add_appends(seeded_db):
     )
     assert result.exit_code == 0
     assert get_inbox("alpha").tracked_authors == {
-        "Linus": "torvalds@", "Greg": "gregkh@",
+        "Linus": "torvalds@",
+        "Greg": "gregkh@",
     }
 
 
 def test_trackers_remove_drops_label(seeded_db):
     set_tracked_authors("alpha", {"Linus": "torvalds@", "Greg": "gregkh@"})
     result = CliRunner().invoke(
-        admin_inbox_trackers_remove_command, ["alpha", "Greg"],
+        admin_inbox_trackers_remove_command,
+        ["alpha", "Greg"],
     )
     assert result.exit_code == 0
     assert get_inbox("alpha").tracked_authors == {"Linus": "torvalds@"}
@@ -111,7 +113,8 @@ def test_trackers_remove_drops_label(seeded_db):
 def test_trackers_remove_missing_label_fails(seeded_db):
     set_tracked_authors("alpha", {"Linus": "torvalds@"})
     result = CliRunner().invoke(
-        admin_inbox_trackers_remove_command, ["alpha", "Greg"],
+        admin_inbox_trackers_remove_command,
+        ["alpha", "Greg"],
     )
     assert result.exit_code != 0
     assert "no tracker labelled" in result.output
@@ -120,7 +123,8 @@ def test_trackers_remove_missing_label_fails(seeded_db):
 def test_trackers_clear_writes_null(seeded_db):
     set_tracked_authors("alpha", {"Linus": "torvalds@"})
     result = CliRunner().invoke(
-        admin_inbox_trackers_clear_command, ["alpha"],
+        admin_inbox_trackers_clear_command,
+        ["alpha"],
     )
     assert result.exit_code == 0
     assert get_inbox("alpha").tracked_authors is None
@@ -139,11 +143,16 @@ def test_admin_inbox_list_shows_tracker_count(seeded_db):
 
 
 def test_admin_inbox_add_creates_inbox(seeded_db):
-    result = CliRunner().invoke(admin_inbox_add_command, [
-        "gamma",
-        "--mirror-path", "/tmp/gamma",
-        "--upstream-url", "https://example.com/gamma",
-    ])
+    result = CliRunner().invoke(
+        admin_inbox_add_command,
+        [
+            "gamma",
+            "--mirror-path",
+            "/tmp/gamma",
+            "--upstream-url",
+            "https://example.com/gamma",
+        ],
+    )
     assert result.exit_code == 0, result.output
     assert "created inbox 'gamma'" in result.output
     # Confirm it landed in the DB.
@@ -166,10 +175,14 @@ def test_admin_inbox_add_defaults_to_lore_layout(seeded_db):
 def test_admin_inbox_add_partial_override(seeded_db):
     """Either flag can override independently; the other still
     falls back to the default."""
-    result = CliRunner().invoke(admin_inbox_add_command, [
-        "linux-fsdevel-mirror",
-        "--mirror-path", "/srv/custom/fsdevel/git",
-    ])
+    result = CliRunner().invoke(
+        admin_inbox_add_command,
+        [
+            "linux-fsdevel-mirror",
+            "--mirror-path",
+            "/srv/custom/fsdevel/git",
+        ],
+    )
     assert result.exit_code == 0, result.output
     inbox = get_inbox("linux-fsdevel-mirror")
     assert inbox.mirror_path == "/srv/custom/fsdevel/git"
@@ -179,11 +192,16 @@ def test_admin_inbox_add_partial_override(seeded_db):
 def test_admin_inbox_add_invalid_url_clickexception(seeded_db):
     """`upstream_url` must be `https://...`; the validator raises
     InboxValidationError, which the CLI surfaces as a ClickException."""
-    result = CliRunner().invoke(admin_inbox_add_command, [
-        "gamma",
-        "--mirror-path", "/tmp/gamma",
-        "--upstream-url", "not-a-url",
-    ])
+    result = CliRunner().invoke(
+        admin_inbox_add_command,
+        [
+            "gamma",
+            "--mirror-path",
+            "/tmp/gamma",
+            "--upstream-url",
+            "not-a-url",
+        ],
+    )
     assert result.exit_code != 0
 
 
@@ -196,9 +214,14 @@ def test_admin_inbox_update_no_args_clickexception(seeded_db):
 
 
 def test_admin_inbox_update_changes_mirror_path(seeded_db):
-    result = CliRunner().invoke(admin_inbox_update_command, [
-        "alpha", "--mirror-path", "/tmp/alpha-new",
-    ])
+    result = CliRunner().invoke(
+        admin_inbox_update_command,
+        [
+            "alpha",
+            "--mirror-path",
+            "/tmp/alpha-new",
+        ],
+    )
     assert result.exit_code == 0, result.output
     assert "updated inbox 'alpha'" in result.output
     assert get_inbox("alpha").mirror_path == "/tmp/alpha-new"
@@ -233,9 +256,10 @@ def test_admin_inbox_remove_yes_drops_inbox_and_orphans(seeded_db):
 
     # Pre-state: alpha exists, art1+art4 are alpha-only.
     with SessionLocal() as s:
-        assert s.execute(
-            select(Inbox).where(Inbox.name == "alpha")
-        ).scalar_one_or_none() is not None
+        assert (
+            s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one_or_none()
+            is not None
+        )
         ids_before = set(s.execute(select(Article.message_id)).scalars().all())
     assert {"art1@example.com", "art4@example.com"} <= ids_before
 
@@ -245,9 +269,10 @@ def test_admin_inbox_remove_yes_drops_inbox_and_orphans(seeded_db):
     assert "article_lists rows deleted:" in result.output
 
     with SessionLocal() as s:
-        assert s.execute(
-            select(Inbox).where(Inbox.name == "alpha")
-        ).scalar_one_or_none() is None
+        assert (
+            s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one_or_none()
+            is None
+        )
         ids_after = set(s.execute(select(Article.message_id)).scalars().all())
     # art1 and art4 were alpha-only -> gone. art3 was cross-posted
     # with beta -> survives. art2 is beta-only -> survives.
@@ -260,9 +285,14 @@ def test_admin_inbox_remove_yes_drops_inbox_and_orphans(seeded_db):
 def test_admin_inbox_update_unknown_clickexception(seeded_db):
     """update on a non-existent inbox surfaces InboxNotFound as a
     ClickException (covers cli.py:1383-1384)."""
-    result = CliRunner().invoke(admin_inbox_update_command, [
-        "no-such-inbox", "--mirror-path", "/tmp/anywhere",
-    ])
+    result = CliRunner().invoke(
+        admin_inbox_update_command,
+        [
+            "no-such-inbox",
+            "--mirror-path",
+            "/tmp/anywhere",
+        ],
+    )
     assert result.exit_code != 0
     assert "no-such-inbox" in result.output
 
@@ -270,24 +300,34 @@ def test_admin_inbox_update_unknown_clickexception(seeded_db):
 def test_admin_inbox_update_invalid_value_clickexception(seeded_db):
     """update with an invalid upstream_url surfaces InboxValidationError
     as a ClickException (covers cli.py:1385-1386)."""
-    result = CliRunner().invoke(admin_inbox_update_command, [
-        "alpha", "--upstream-url", "not-a-url",
-    ])
+    result = CliRunner().invoke(
+        admin_inbox_update_command,
+        [
+            "alpha",
+            "--upstream-url",
+            "not-a-url",
+        ],
+    )
     assert result.exit_code != 0
 
 
 def test_admin_inbox_remove_unknown_clickexception(seeded_db):
     """remove on a non-existent inbox raises ClickException via the
     pre-flight get_inbox call (covers cli.py:1422-1423)."""
-    result = CliRunner().invoke(admin_inbox_remove_command, [
-        "no-such-inbox", "--yes",
-    ])
+    result = CliRunner().invoke(
+        admin_inbox_remove_command,
+        [
+            "no-such-inbox",
+            "--yes",
+        ],
+    )
     assert result.exit_code != 0
     assert "no-such-inbox" in result.output
 
 
 def test_admin_inbox_remove_inbox_data_skips_when_mirror_absent(
-    seeded_db, tmp_path,
+    seeded_db,
+    tmp_path,
 ):
     """--remove-inbox-data announces the rm target but skips the
     confirm prompt when the path doesn't exist on disk (covers
@@ -295,14 +335,24 @@ def test_admin_inbox_remove_inbox_data_skips_when_mirror_absent(
     which is absent in CI."""
     # Point alpha at a path that definitely doesn't exist.
     absent = tmp_path / "definitely-not-a-mirror"
-    result = CliRunner().invoke(admin_inbox_update_command, [
-        "alpha", "--mirror-path", str(absent),
-    ])
+    result = CliRunner().invoke(
+        admin_inbox_update_command,
+        [
+            "alpha",
+            "--mirror-path",
+            str(absent),
+        ],
+    )
     assert result.exit_code == 0, result.output
 
-    result = CliRunner().invoke(admin_inbox_remove_command, [
-        "alpha", "--yes", "--remove-inbox-data",
-    ])
+    result = CliRunner().invoke(
+        admin_inbox_remove_command,
+        [
+            "alpha",
+            "--yes",
+            "--remove-inbox-data",
+        ],
+    )
     assert result.exit_code == 0, result.output
     # Announcement happens regardless of existence.
     assert "--remove-inbox-data set" in result.output
@@ -315,9 +365,14 @@ def test_admin_inbox_remove_keep_orphans_preserves_articles(seeded_db):
     links intact (article_lists rows go either way)."""
     from mimir.extensions import SessionLocal
 
-    result = CliRunner().invoke(admin_inbox_remove_command, [
-        "alpha", "--yes", "--keep-orphan-articles",
-    ])
+    result = CliRunner().invoke(
+        admin_inbox_remove_command,
+        [
+            "alpha",
+            "--yes",
+            "--keep-orphan-articles",
+        ],
+    )
     assert result.exit_code == 0, result.output
     # Orphan-deleted line is suppressed under --keep-orphan-articles.
     assert "orphan articles deleted" not in result.output

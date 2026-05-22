@@ -4,6 +4,7 @@ The route smoke tests cover the happy-path read of these end-to-
 end. This file pins the error paths and the privacy / RFC-6266
 edge cases that would never surface from real-data smoke runs.
 """
+
 from sqlalchemy import select
 
 import pytest
@@ -68,9 +69,7 @@ def test_read_message_stale_commit_sha_raises(seeded_db, tmp_path):
     DulwichRepo.init_bare(str(epoch_dir), mkdir=True)
 
     with SessionLocal() as s:
-        ix = s.execute(
-            select(Inbox).where(Inbox.name == "alpha")
-        ).scalar_one()
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         ix.mirror_path = str(tmp_path)
         # art1 is alpha-only in the seeded DB; the seed left
         # commit_sha = "aa" * 20, which won't be in our empty bare
@@ -189,8 +188,8 @@ def test_redact_trailer_address_allowlisted_returns_visible_angle_form():
 
 def test_redact_trailer_address_non_allowlisted_returns_redacted():
     """Non-allowlisted addresses collapse to a single `<redacted>` token
-   , plain text, again rendered as visible characters after the
-    template's escaping pass."""
+    , plain text, again rendered as visible characters after the
+     template's escaping pass."""
     out = _redact_trailer_address("random@example.com")
     assert out == "<redacted>"
 
@@ -209,8 +208,7 @@ def test_canonical_inbox_names_falls_back_to_alphabetical_when_null(seeded_db):
 
     with seeded_db() as s:
         ids = {
-            row.message_id: row.id
-            for row in s.execute(select(Article)).scalars().all()
+            row.message_id: row.id for row in s.execute(select(Article)).scalars().all()
         }
         names = _canonical_inbox_names_for(s, list(ids.values()))
 
@@ -227,9 +225,7 @@ def test_canonical_inbox_names_prefers_pinned_canonical_over_fallback(seeded_db)
     from mimir.models import Article, Inbox
 
     with seeded_db() as s:
-        beta_id = s.execute(
-            select(Inbox.id).where(Inbox.name == "beta")
-        ).scalar_one()
+        beta_id = s.execute(select(Inbox.id).where(Inbox.name == "beta")).scalar_one()
         art3_id = s.execute(
             select(Article.id).where(Article.message_id == "art3@example.com")
         ).scalar_one()
@@ -253,10 +249,11 @@ def test_canonical_inbox_names_empty_input_returns_empty(seeded_db):
 
 def test_redact_trailer_address_substring_match_is_intentionally_loose(monkeypatch):
     """The allowlist uses substring matching, by design (see CONTEXT.md
-   , an allowlist token matches any address containing that substring).
-    This is intentional looseness for ergonomics; pin it here so a
-    future tightening is a conscious decision, not a silent drift."""
+    , an allowlist token matches any address containing that substring).
+     This is intentional looseness for ergonomics; pin it here so a
+     future tightening is a conscious decision, not a silent drift."""
     from mimir.config import settings
+
     # Set an explicit token to make the assertion deterministic, the
     # default allowlist contains the same token but pinning it here
     # keeps the test independent of the default's evolution.
