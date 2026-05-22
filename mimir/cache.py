@@ -148,41 +148,39 @@ def _now() -> int:
 
 def _should_dispatch_to_broker() -> bool:
     """True iff this process should send cache writes to the broker
-    via RPC. False inside the broker process itself (we'd be
-    RPC'ing to ourselves: socket round-trip + queue + dispatch +
-    direct write on the cache worker, vs just one direct write
-    here on the long worker), and false when broker mode is off
-    entirely.
+    via RPC. False inside the broker process itself (we'd be RPC'ing
+    to ourselves: socket round-trip + queue + dispatch + direct
+    write on the cache worker, vs just one direct write here on
+    the long worker).
 
-    Two short-circuit conditions:
+    Two short-circuit conditions for "this is the broker":
 
-    - `MIMIR_ROLE=broker` env, which the broker container sets in
-      production (and the `mimir broker` CLI entrypoint sets when
-      it runs `serve()`). Process-level marker.
+    - `MIMIR_IS_BROKER=true` env, which the broker container sets
+      in production (and the `mimir broker` CLI entrypoint sets
+      when it runs `serve()`). Process-level marker.
     - Thread-local "currently inside a broker handler" flag set by
       `mimir.broker.server`'s worker loops. Catches the in-process
       test shape where broker + CLI live in the same Python
-      process and `settings.mimir_role` is shared. Worker threads
-      set the flag on entry to a dispatch and clear it on exit, so
-      any cache/inboxes call reachable from a handler sees False
-      and falls through to the direct path.
+      process and `settings.mimir_is_broker` is shared. Worker
+      threads set the flag on entry to a dispatch and clear it on
+      exit, so any cache/inboxes call reachable from a handler
+      sees False and falls through to the direct path.
 
-    Phase 2.1+ matters because `ingest_inbox` now runs inside the
-    broker (the long worker); its `_warm_after_ingest` would
-    otherwise fire three self-RPCs per per-inbox tick. Phase 2.4
-    extends the same concern to `delete_inbox`, which calls
-    `cache.delete_for_inbox` after its DB writes commit.
+    Otherwise the answer is unconditionally True: 2.0.0 made the
+    broker the sole writer process, so every non-broker process
+    routes writes through it. There's no longer a "broker mode
+    off" branch; the dispatch is the contract.
     """
-    if settings.mimir_role == "broker":
+    if settings.mimir_is_broker:
         return False
     if _broker_handler_active():
         return False
-    return settings.broker_socket_path is not None
+    return True
 
 
 # Thread-local flag set by `mimir.broker.server`'s worker loops
 # while they're dispatching a request. `cache._should_dispatch_to_broker`
-# checks it (in addition to `settings.mimir_role`) to avoid a
+# checks it (in addition to `settings.mimir_is_broker`) to avoid a
 # self-RPC when broker + caller share a process (the in-process
 # test shape).
 _HANDLER_TLS = threading.local()
@@ -245,25 +243,16 @@ def _direct_set(nskey: str, payload: str, ttl: int) -> None:
 def set(key: str, value: Any, ttl: int) -> None:
     """Best-effort cache write.
 
-    SQLite write contention (scheduler ingest / vacuum overlapping a
-    request) raises `OperationalError("database is locked")` once the
-    `busy_timeout` window elapses. The page already rendered before
-    we got here, so a failed cache write must not propagate, it'd
-    500 a successful response. Log and move on; the next request
-    recomputes.
+    Forwards the write to the broker daemon via the RPC client.
+    `BrokerUnavailable` is logged + swallowed (best-effort
+    posture): the page already rendered before we got here, so a
+    failed cache write must not propagate, it'd 500 a successful
+    response. Next request recomputes.
 
-    Under `Settings.read_only_db` this becomes a no-op so the
-    maintenance-toggled web container doesn't log a warning per
-    request when its query_only pragma rejects the INSERT.
-
-    When `Settings.broker_socket_path` is set, forward the write to
-    the broker daemon via the RPC client instead of opening a local
-    DB session. `BrokerUnavailable` is logged + swallowed (same
-    best-effort posture as `OperationalError` below); next request
-    recomputes.
+    Inside the broker process itself the dispatch short-circuits
+    via `_should_dispatch_to_broker()` and writes directly via
+    `_direct_set`, avoiding a self-RPC.
     """
-    if settings.read_only_db:
-        return
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
     if len(payload) > MAX_CACHE_VALUE_BYTES:
@@ -364,16 +353,11 @@ def purge_expired() -> int:
     """Drop every expired row. Returns rows deleted. Cheap thanks to
     `ix_cache_expires_at`.
 
-    No-op under `Settings.read_only_db`; the scheduler sidecar (which
-    is not flagged) handles purges via the warm-cache tick.
-
-    When `Settings.broker_socket_path` is set, forward to the broker
-    daemon, which owns the cache table's data lifecycle end-to-end
-    (writes + purge). On `BrokerUnavailable`, log + return 0; the
-    broker's own internal periodic purge thread will catch up.
+    Forwards to the broker daemon, which owns the cache table's data
+    lifecycle end-to-end (writes + purge). On `BrokerUnavailable`,
+    log + return 0; the broker's own internal periodic purge thread
+    will catch up.
     """
-    if settings.read_only_db:
-        return 0
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
 
@@ -386,8 +370,8 @@ def purge_expired() -> int:
 
 
 def _direct_delete(nskey: str) -> int:
-    """Direct-SQLite delete of one cache row. Used by `delete()` when
-    broker mode is off, and by `mimir.broker.handlers`."""
+    """Direct-SQLite delete of one cache row. Used by `delete()`
+    inside the broker process, and by `mimir.broker.handlers`."""
     with SessionLocal() as session:
         result = session.execute(delete_stmt(CacheEntry).where(CacheEntry.key == nskey))
         session.commit()
@@ -407,15 +391,10 @@ def delete(key: str) -> int:
     value still ages out via TTL and a successful subsequent write
     overwrites whatever stale row survived.
 
-    No-op under `Settings.read_only_db`; admin CRUD that drives this
-    runs on the scheduler sidecar, not the flagged web container.
-
-    When `Settings.broker_socket_path` is set, forward to the broker
-    daemon. `BrokerUnavailable` is logged + returns 0 (cached value
-    still ages out via TTL).
+    Forwards to the broker daemon via RPC.
+    `BrokerUnavailable` is logged + returns 0 (cached value still
+    ages out via TTL).
     """
-    if settings.read_only_db:
-        return 0
     nskey = _ns(key)
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
@@ -434,8 +413,8 @@ def delete(key: str) -> int:
 
 def _direct_delete_for_inbox(inbox_name: str) -> int:
     """Direct-SQLite delete of every cache entry whose key references
-    `inbox_name`. Used by `delete_for_inbox()` when broker mode is off,
-    and by `mimir.broker.handlers`."""
+    `inbox_name`. Used by `delete_for_inbox()` inside the broker
+    process, and by `mimir.broker.handlers`."""
     suffix_pat = f"%:{inbox_name}"
     middle_pat = f"%:{inbox_name}:%"
     with SessionLocal() as session:
@@ -465,14 +444,9 @@ def delete_for_inbox(inbox_name: str) -> int:
     contain no LIKE-pattern metacharacters; the literal `%` and `_`
     cases that would need escaping can't occur.
 
-    No-op under `Settings.read_only_db`; admin CRUD that drives this
-    runs on the scheduler sidecar, not the flagged web container.
-
-    When `Settings.broker_socket_path` is set, forward to the broker
-    daemon. `BrokerUnavailable` is logged + returns 0.
+    Forwards to the broker daemon via RPC.
+    `BrokerUnavailable` is logged + returns 0.
     """
-    if settings.read_only_db:
-        return 0
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
 

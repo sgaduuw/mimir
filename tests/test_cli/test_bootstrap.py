@@ -10,18 +10,6 @@ from click.testing import CliRunner
 from mimir.cli import bootstrap_inboxes_command
 
 
-def test_bootstrap_inboxes_direct_path_works(seeded_db):
-    """With broker mode off (default in tests), the CLI calls
-    `mimir.inboxes.bootstrap_inboxes()` directly and echoes the
-    count. Smoke test for the pre-Phase-2 path that's still in the
-    code as the fallback."""
-    result = CliRunner().invoke(bootstrap_inboxes_command)
-    assert result.exit_code == 0
-    assert "inbox(es) reconciled" in result.output
-    # No "(via broker)" suffix in direct mode.
-    assert "via broker" not in result.output
-
-
 def test_bootstrap_inboxes_via_broker(seeded_db, monkeypatch):
     """With `BROKER_SOCKET_PATH` set, the CLI sends the
     `bootstrap_inboxes` RPC to the broker. End-to-end smoke: spin a

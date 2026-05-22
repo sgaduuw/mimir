@@ -1,36 +1,22 @@
 """`admin robots …`: CRUD on the `robots_rules` table.
 
-Thin click wrappers around `mimir.robots`'s service-layer functions.
-Mutating commands route through the broker when `BROKER_SOCKET_PATH`
-is set, matching the rest of the broker family; read commands
-(`list`, `show`) hit the DB directly via `query_only=1` connections.
+Thin click wrappers that dispatch writes via the broker (post-
+2.0.0 the broker is the sole writer process). Read commands
+(`list`, `show`) hit the DB directly via `query_only=1`
+connections.
 
-Broker error mapping mirrors `admin inbox`: the service-layer
-`RobotsRuleNotFound` / `RobotsValidationError` arrive over the wire
-as `Reply(ok=False, error="RobotsRuleNotFound:<msg>")` /
-`"InvalidRobotsRule:<msg>"`. `_robots_click_error` parses the prefix
-and re-raises as `ClickException`.
+Broker error mapping: the service-layer `RobotsRuleNotFound` /
+`RobotsValidationError` arrive over the wire as
+`Reply(ok=False, error="RobotsRuleNotFound:<msg>")` /
+`"InvalidRobotsRule:<msg>"`. `_robots_click_error` parses the
+prefix and re-raises as `ClickException`.
 """
 
 import click
 
 from mimir.cli.admin import admin_group
-from mimir.config import settings
 from mimir.extensions import SessionLocal
-from mimir.robots import (
-    RobotsRuleNotFound,
-    RobotsValidationError,
-    add_rule,
-    get_rule,
-    list_rules,
-    remove_rule,
-    reset_rules,
-    update_rule,
-)
-
-
-def _broker_dispatch_enabled() -> bool:
-    return settings.broker_socket_path is not None
+from mimir.robots import RobotsValidationError, get_rule, list_rules
 
 
 def _robots_click_error(exc) -> click.ClickException:
@@ -171,34 +157,17 @@ def admin_robots_add_command(
     consent with
     `admin robots add Googlebot --content-signal search=yes`."""
     signals = dict(_parse_content_signal_pair(s) for s in content_signal)
-    if _broker_dispatch_enabled():
-        from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.client import BrokerUnavailable, get_broker_client
 
-        try:
-            rule_dict = get_broker_client().robots_add(
-                user_agent,
-                disallow=list(disallow),
-                crawl_delay=crawl_delay,
-                content_signals=signals or None,
-            )
-        except BrokerUnavailable as exc:
-            raise _robots_click_error(exc)
-    else:
-        try:
-            rule = add_rule(
-                user_agent,
-                disallow=list(disallow),
-                crawl_delay=crawl_delay,
-                content_signals=signals or None,
-            )
-        except (RobotsRuleNotFound, RobotsValidationError) as exc:
-            raise click.ClickException(str(exc))
-        rule_dict = {
-            "user_agent": rule.user_agent,
-            "crawl_delay": rule.crawl_delay,
-            "disallow_paths": list(rule.disallow_paths or []),
-            "content_signals": dict(rule.content_signals or {}),
-        }
+    try:
+        rule_dict = get_broker_client().robots_add(
+            user_agent,
+            disallow=list(disallow),
+            crawl_delay=crawl_delay,
+            content_signals=signals or None,
+        )
+    except BrokerUnavailable as exc:
+        raise _robots_click_error(exc)
     click.echo(f"added rule for user_agent {rule_dict['user_agent']!r}:")
     for line in _format_rule(rule_dict):
         click.echo(f"  {line}")
@@ -256,42 +225,21 @@ def admin_robots_update_command(
 ) -> None:
     """Mutate an existing stanza in place."""
     set_signals = dict(_parse_content_signal_pair(s) for s in set_content_signal)
-    if _broker_dispatch_enabled():
-        from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.client import BrokerUnavailable, get_broker_client
 
-        try:
-            rule_dict = get_broker_client().robots_update(
-                user_agent,
-                add_disallow=list(add_disallow),
-                remove_disallow=list(remove_disallow),
-                crawl_delay=crawl_delay,
-                clear_crawl_delay=clear_crawl_delay,
-                set_content_signal=set_signals or None,
-                clear_content_signal=list(clear_content_signal),
-                clear_all_content_signals=clear_all_content_signals,
-            )
-        except BrokerUnavailable as exc:
-            raise _robots_click_error(exc)
-    else:
-        try:
-            rule = update_rule(
-                user_agent,
-                add_disallow=list(add_disallow),
-                remove_disallow=list(remove_disallow),
-                crawl_delay=crawl_delay,
-                clear_crawl_delay=clear_crawl_delay,
-                set_content_signal=set_signals or None,
-                clear_content_signal=list(clear_content_signal),
-                clear_all_content_signals=clear_all_content_signals,
-            )
-        except (RobotsRuleNotFound, RobotsValidationError) as exc:
-            raise click.ClickException(str(exc))
-        rule_dict = {
-            "user_agent": rule.user_agent,
-            "crawl_delay": rule.crawl_delay,
-            "disallow_paths": list(rule.disallow_paths or []),
-            "content_signals": dict(rule.content_signals or {}),
-        }
+    try:
+        rule_dict = get_broker_client().robots_update(
+            user_agent,
+            add_disallow=list(add_disallow),
+            remove_disallow=list(remove_disallow),
+            crawl_delay=crawl_delay,
+            clear_crawl_delay=clear_crawl_delay,
+            set_content_signal=set_signals or None,
+            clear_content_signal=list(clear_content_signal),
+            clear_all_content_signals=clear_all_content_signals,
+        )
+    except BrokerUnavailable as exc:
+        raise _robots_click_error(exc)
     click.echo(f"updated rule for user_agent {rule_dict['user_agent']!r}:")
     for line in _format_rule(rule_dict):
         click.echo(f"  {line}")
@@ -301,18 +249,12 @@ def admin_robots_update_command(
 @click.argument("user_agent")
 def admin_robots_remove_command(user_agent: str) -> None:
     """Drop one User-agent stanza. Refuses `*` (use `reset` instead)."""
-    if _broker_dispatch_enabled():
-        from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.client import BrokerUnavailable, get_broker_client
 
-        try:
-            get_broker_client().robots_remove(user_agent)
-        except BrokerUnavailable as exc:
-            raise _robots_click_error(exc)
-    else:
-        try:
-            remove_rule(user_agent)
-        except (RobotsRuleNotFound, RobotsValidationError) as exc:
-            raise click.ClickException(str(exc))
+    try:
+        get_broker_client().robots_remove(user_agent)
+    except BrokerUnavailable as exc:
+        raise _robots_click_error(exc)
     click.echo(f"removed rule for user_agent {user_agent!r}")
 
 
@@ -331,13 +273,10 @@ def admin_robots_reset_command(yes: bool) -> None:
             "`*` stanza with the migration defaults. Continue?",
             abort=True,
         )
-    if _broker_dispatch_enabled():
-        from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.client import BrokerUnavailable, get_broker_client
 
-        try:
-            get_broker_client().robots_reset()
-        except BrokerUnavailable as exc:
-            raise _robots_click_error(exc)
-    else:
-        reset_rules()
+    try:
+        get_broker_client().robots_reset()
+    except BrokerUnavailable as exc:
+        raise _robots_click_error(exc)
     click.echo("reset robots_rules to seeded defaults")
