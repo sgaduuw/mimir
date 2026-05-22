@@ -315,6 +315,7 @@ def _robots_rule_to_dict(rule) -> dict:
         "user_agent": rule.user_agent,
         "crawl_delay": rule.crawl_delay,
         "disallow_paths": list(rule.disallow_paths or []),
+        "content_signals": dict(rule.content_signals or {}),
     }
 
 
@@ -330,6 +331,7 @@ def handle_robots_add(req: RobotsAddRequest) -> Reply:
             req.user_agent,
             disallow=req.disallow,
             crawl_delay=req.crawl_delay,
+            content_signals=req.content_signals or None,
         )
     except (RobotsRuleNotFound, RobotsValidationError) as exc:
         return _robots_error_reply(exc)
@@ -350,6 +352,9 @@ def handle_robots_update(req: RobotsUpdateRequest) -> Reply:
             remove_disallow=req.remove_disallow,
             crawl_delay=req.crawl_delay,
             clear_crawl_delay=req.clear_crawl_delay,
+            set_content_signal=req.set_content_signal or None,
+            clear_content_signal=req.clear_content_signal or None,
+            clear_all_content_signals=req.clear_all_content_signals,
         )
     except (RobotsRuleNotFound, RobotsValidationError) as exc:
         return _robots_error_reply(exc)

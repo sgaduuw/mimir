@@ -585,6 +585,7 @@ def test_robots_add_via_broker_inserts_row(seeded_db):
         "user_agent": "GPTBot",
         "crawl_delay": 10,
         "disallow_paths": ["/"],
+        "content_signals": {},
     }
 
     from mimir import robots as svc
@@ -774,3 +775,77 @@ def test_cli_admin_robots_reset_dispatches_via_broker(seeded_db, monkeypatch):
             _client_mod.reset_broker_client()
     assert result.exit_code == 0, result.output
     assert "reset" in result.output
+
+
+def test_robots_add_with_content_signals_via_broker(seeded_db):
+    """Content-Signal dict rides through the wire and lands on the
+    row. End-to-end smoke for the Phase 2.4 robots family + Content
+    Signals (1.41.0)."""
+    from mimir.extensions import SessionLocal
+
+    sp = short_socket_path("robots-add-cs")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            payload = c.robots_add(
+                "Googlebot",
+                content_signals={"search": "yes", "ai-train": "no"},
+            )
+        finally:
+            c.close()
+
+    assert payload["content_signals"] == {"search": "yes", "ai-train": "no"}
+
+    from mimir import robots as svc
+
+    with SessionLocal() as s:
+        rule = svc.get_rule(s, "Googlebot")
+    assert rule is not None
+    assert rule.content_signals == {"search": "yes", "ai-train": "no"}
+
+
+def test_robots_update_content_signals_via_broker(seeded_db):
+    """set + clear-key + clear-all all reach the handler. Each
+    mutation tested in isolation against the seeded `*` row."""
+    from mimir import robots as svc
+    from mimir.extensions import SessionLocal
+
+    sp = short_socket_path("robots-update-cs")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            # 1) upsert a key
+            payload = c.robots_update("*", set_content_signal={"ai-train": "yes"})
+            assert payload["content_signals"]["ai-train"] == "yes"
+            assert payload["content_signals"]["search"] == "yes"
+            # 2) drop a specific key
+            payload = c.robots_update("*", clear_content_signal=["ai-input"])
+            assert "ai-input" not in payload["content_signals"]
+            # 3) wipe all
+            payload = c.robots_update("*", clear_all_content_signals=True)
+            assert payload["content_signals"] == {}
+        finally:
+            c.close()
+
+    with SessionLocal() as s:
+        rule = svc.get_rule(s, "*")
+    assert rule.content_signals is None
+
+
+def test_robots_update_invalid_content_signal_fails_at_client(seeded_db):
+    """Pydantic validation on the client side rejects an unknown
+    Content-Signal key before the RPC fires (fail-fast, saves the
+    round-trip). The wire validator on the broker side is the
+    defense-in-depth layer for hostile peers; client-driven CLI
+    invocations bounce here first."""
+    from pydantic import ValidationError
+
+    sp = short_socket_path("robots-update-cs-bad")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            with pytest.raises(ValidationError) as ei:
+                c.robots_update("*", set_content_signal={"unknown": "yes"})
+        finally:
+            c.close()
+    assert "content_signal key" in str(ei.value)

@@ -62,7 +62,7 @@ def robots_txt():
     sitemap_url = _site_base() + "/sitemap.xml"
     with SessionLocal() as session:
         body = robots.render_robots_txt(session, sitemap_url)
-    return Response(body, mimetype="text/plain; charset=utf-8")
+    return Response(body, mimetype="text/plain")
 
 
 @bp_web.route("/favicon.svg")
@@ -94,4 +94,4 @@ def security_txt():
         policy_url=settings.security_policy_url,
         encryption_url=settings.security_encryption_url,
     )
-    return Response(body, mimetype="text/plain; charset=utf-8")
+    return Response(body, mimetype="text/plain")
