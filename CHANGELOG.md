@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [1.40.0], 2026-05-22
+
 ### Added
 
 - **Operator-managed `/robots.txt` via `admin robots …`.** The
