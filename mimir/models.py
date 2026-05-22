@@ -411,6 +411,30 @@ class MainlineCommit(Base):
     committed_at: Mapped[datetime] = mapped_column()
 
 
+class RobotsRule(Base):
+    """One row per `User-agent:` stanza in the rendered `/robots.txt`.
+    The `*` stanza is the structural default (seeded by the migration
+    with `crawl_delay=5, disallow_paths=["/*/attachment/"]`, matching
+    the previous hardcoded template). Per-bot rows added via
+    `admin robots add <ua>` produce additional stanzas (e.g. a
+    `User-agent: GPTBot` block).
+
+    `disallow_paths` is a JSON list of strings; each renders as one
+    `Disallow:` line. NULL or `[]` plus NULL `crawl_delay` is a
+    no-op row (skipped at render time so a row never produces a
+    stanza with only `User-agent:` and nothing else).
+    """
+
+    __tablename__ = "robots_rules"
+
+    user_agent: Mapped[str] = mapped_column(String, primary_key=True)
+    crawl_delay: Mapped[int | None] = mapped_column(nullable=True)
+    disallow_paths: Mapped[list[str] | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+
+
 class ParseFailure(Base):
     """One row per (inbox, epoch, commit_sha) whose `m` blob couldn't
     be parsed. Persisted so the operator can enumerate them and replay

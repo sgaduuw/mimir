@@ -16,6 +16,31 @@ def test_robots_txt(client):
     assert "/sitemap.xml" in body
 
 
+def test_robots_txt_reflects_admin_added_rule(client):
+    """A row added via the service layer surfaces on the next
+    /robots.txt request. Pins the DB-backed render path."""
+    from mimir import robots
+
+    robots.add_rule("GPTBot", disallow=["/"])
+    body = client.get("/robots.txt").get_data(as_text=True)
+    assert "User-agent: GPTBot" in body
+    assert "Disallow: /" in body
+
+
+def test_robots_txt_reset_restores_default_body(client):
+    """After `reset_rules()`, the file matches the migration's
+    seeded `*` stanza only."""
+    from mimir import robots
+
+    robots.add_rule("GPTBot", disallow=["/"])
+    robots.reset_rules()
+    body = client.get("/robots.txt").get_data(as_text=True)
+    assert "GPTBot" not in body
+    assert "User-agent: *" in body
+    assert "Crawl-delay: 5" in body
+    assert "Disallow: /*/attachment/" in body
+
+
 def test_security_txt_404_when_unconfigured(client, monkeypatch):
     from mimir.config import settings
 
