@@ -17,21 +17,6 @@ from mimir.inboxes import set_tracked_authors
 from mimir.models import Article, ArticleList, Inbox
 
 
-def test_warm_cache_workers_one_serial_path(seeded_db):
-    """`--workers 1` forces the single-threaded path that bypasses the
-    thread pool. Behavior must match the parallel path: every key
-    still gets warmed, summary line still emits."""
-    result = CliRunner().invoke(warm_cache_command, ["--workers", "1", "-v"])
-    assert result.exit_code == 0
-    per_key_lines = [
-        line
-        for line in result.output.splitlines()
-        if line.endswith(" ms") and "ms total" not in line
-    ]
-    assert len(per_key_lines) >= 5, result.output
-    assert "warm-cache:" in result.output and "ms total" in result.output
-
-
 def test_warm_cache_parallel_propagates_refresh_window(seeded_db):
     """Worker threads must inherit the `refresh_window` contextvar
     via `copy_context()`. If they don't, a fresh-but-near-expiry
@@ -86,48 +71,6 @@ def test_warm_cache_default_emits_only_summary(seeded_db):
         line for line in lines if line.endswith(" ms") and "ms total" not in line
     ]
     assert per_key == [], f"unexpected per-key lines at default verbosity: {per_key}"
-
-
-def test_warm_cache_verbose_keeps_per_key_timings(seeded_db):
-    """-v restores the per-key timings on top of the summary line.
-
-    Structural: each seeded inbox must get *multiple* per-key timing
-    lines (one per cached helper -- archive_stats, active_threads,
-    daily_volume, etc.). Pinning the literal label names ties the
-    test to incidental cache-key strings; asserting "each inbox got
-    several timings" catches the only regression that matters --
-    warm-cache stopped iterating an inbox -- without flagging on a
-    benign rename."""
-    result = CliRunner().invoke(warm_cache_command, ["-v"])
-    assert result.exit_code == 0
-    per_key_lines = [
-        line
-        for line in result.output.splitlines()
-        if line.endswith(" ms") and "ms total" not in line
-    ]
-    alpha_lines = [line for line in per_key_lines if line.startswith("alpha ")]
-    beta_lines = [line for line in per_key_lines if line.startswith("beta ")]
-    # Lower bound, not exact: more helpers may join the warm-cache
-    # rotation; fewer means an inbox stopped being iterated.
-    assert len(alpha_lines) >= 5, (
-        f"alpha got only {len(alpha_lines)} per-key lines: {alpha_lines}"
-    )
-    assert len(beta_lines) >= 5, (
-        f"beta got only {len(beta_lines)} per-key lines: {beta_lines}"
-    )
-    # Summary line is still there.
-    assert "warm-cache:" in result.output and "ms total" in result.output
-
-
-def test_warm_cache_includes_subsystem_dashboard_targets(seeded_db):
-    """Per-subsystem dashboard helpers (recent_articles_in_subsystem +
-    three siblings) drive the slowest cold-load page. warm-cache must
-    iterate the top-N subsystems per inbox so the second visitor lands
-    on a warmed cache."""
-    result = CliRunner().invoke(warm_cache_command, ["-v"])
-    assert result.exit_code == 0
-    assert "alpha subsystem dashboards (top 20)" in result.output
-    assert "beta subsystem dashboards (top 20)" in result.output
 
 
 def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
@@ -314,15 +257,18 @@ def test_warm_cache_includes_atom_feed_sources(seeded_db):
     and `author_recent(..., limit=FEED_ENTRY_LIMIT)`, a different
     cache key from the dashboard's `limit=5/10` calls. Warm both so
     the first feed poll per hour returns a cache-hit too."""
+    from mimir import cache
+
     set_tracked_authors("alpha", {"Examples": "example.com"})
-    result = CliRunner().invoke(warm_cache_command, ["-v"])
+    result = CliRunner().invoke(warm_cache_command, [])
     assert result.exit_code == 0
-    # Recent feed flavour for each seeded inbox.
-    assert "alpha recent_articles (50)" in result.output
-    assert "beta recent_articles (50)" in result.output
-    # Tracker tile + feed flavour distinct lines.
-    assert "alpha tracker:Examples" in result.output
-    assert "alpha tracker:Examples (feed)" in result.output
+    # Feed-flavour and tracker rows must actually land in the cache
+    # (the legacy per-target verbose echo went into broker logs).
+    assert cache.get("recent_articles:alpha:50") is not None
+    assert cache.get("recent_articles:beta:50") is not None
+    # author_recent key uses the email substring directly, not the label.
+    assert cache.get("author_recent:alpha:example.com:5") is not None
+    assert cache.get("author_recent:alpha:example.com:50") is not None
 
 
 def test_warm_cache_skips_sitemap_when_site_base_url_unset(seeded_db, monkeypatch):
@@ -360,12 +306,8 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(seeded_db, monkeypat
     # CI flake this avoids: under default parallelism, worker-thread
     # cache writes can lag the main-thread reads below even after
     # `as_completed` reports done.
-    result = CliRunner().invoke(warm_cache_command, ["-v", "--workers", "1"])
+    result = CliRunner().invoke(warm_cache_command, ["--workers", "1"])
     assert result.exit_code == 0
-    assert "sitemap:index" in result.output
-    assert "sitemap:meta" in result.output
-    assert "sitemap:inbox:alpha" in result.output
-    assert "sitemap:inbox:beta" in result.output
 
     # Cache rows actually landed and decode to well-formed XML with
     # the right schema-namespaced root element. A "<?xml" prefix

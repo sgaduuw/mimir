@@ -11,10 +11,7 @@ import click
 from sqlalchemy import func, select
 
 from mimir.cli.admin import admin_group
-from mimir.config import settings
 from mimir.extensions import SessionLocal
-from mimir.inboxes import InboxNotFound, get_inbox
-from mimir.ingest import replay_failures
 from mimir.models import Inbox, ParseFailure
 
 
@@ -139,43 +136,27 @@ def admin_failures_replay_command(
         flask --app mimir admin failures replay lkml
         flask --app mimir admin failures replay lkml --epoch 0.git
     """
-    if settings.broker_socket_path is not None:
-        # Broker mode: dispatch via RPC. The broker handler looks
-        # the inbox up server-side and runs the same
-        # `replay_failures` inside the broker process.
-        from mimir.broker.client import BrokerUnavailable, get_broker_client
-
-        try:
-            payload = get_broker_client().failures_replay(
-                inbox_name,
-                epoch_filter=epoch_filter,
-                limit=limit,
-            )
-        except BrokerUnavailable as exc:
-            # Translate the broker's `InboxNotFound:<msg>` structured
-            # error back into the operator-facing text the direct
-            # path emits.
-            raw = str(exc)
-            _, _, reply_error = raw.partition(": ")
-            if reply_error.startswith("InboxNotFound:"):
-                raise click.ClickException(reply_error[len("InboxNotFound:") :])
-            raise click.ClickException(raw)
-        click.echo(
-            f"{inbox_name}: attempted={payload.get('attempted', 0)} "
-            f"recovered={payload.get('recovered', 0)} "
-            f"still_failed={payload.get('still_failed', 0)} "
-            f"skipped={payload.get('skipped', 0)}"
-        )
-        return
+    # The broker handler looks the inbox up server-side and runs
+    # `replay_failures` inside the broker process.
+    from mimir.broker.client import BrokerUnavailable, get_broker_client
 
     try:
-        inbox = get_inbox(inbox_name)
-    except InboxNotFound as exc:
-        raise click.ClickException(str(exc))
-
-    result = replay_failures(inbox, epoch_filter=epoch_filter, limit=limit)
+        payload = get_broker_client().failures_replay(
+            inbox_name,
+            epoch_filter=epoch_filter,
+            limit=limit,
+        )
+    except BrokerUnavailable as exc:
+        # Translate the broker's `InboxNotFound:<msg>` structured
+        # error back into the operator-facing text.
+        raw = str(exc)
+        _, _, reply_error = raw.partition(": ")
+        if reply_error.startswith("InboxNotFound:"):
+            raise click.ClickException(reply_error[len("InboxNotFound:") :])
+        raise click.ClickException(raw)
     click.echo(
-        f"{inbox_name}: attempted={result.attempted} "
-        f"recovered={result.recovered} still_failed={result.still_failed} "
-        f"skipped={result.skipped}"
+        f"{inbox_name}: attempted={payload.get('attempted', 0)} "
+        f"recovered={payload.get('recovered', 0)} "
+        f"still_failed={payload.get('still_failed', 0)} "
+        f"skipped={payload.get('skipped', 0)}"
     )
