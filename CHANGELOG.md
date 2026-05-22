@@ -11,6 +11,27 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [1.42.1], 2026-05-22
+
+### Fixed
+
+- **Warm-cache `articles_reviewed_by` fan-out recomputed every
+  tick.** The reviewer-attestation helper was wired to
+  `ACTIVE_THREADS_CACHE_TTL_SEC = 300 s` (5 min), shorter than
+  the warm cycle's 450 s refresh window. Every warm tick
+  recomputed the full per-reviewer fan-out for every inbox; on
+  the production lkml corpus, that's ~140 reviewers × ~2.4 s per
+  query ≈ 6 minutes of broker compute every minute, surfacing in
+  the broker log as a `slow rpc [warm-N]` line with a multi-
+  hundred-second `dispatch=` figure. Now uses
+  `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC = 3600 s` to match the rest
+  of the per-subsystem dashboard helpers the same warm cycle
+  drives through this code path. Reviewer pages don't change
+  faster than once an hour in practice (a new review only lands
+  when an article with that person's trailer is ingested), so the
+  hour-long TTL is honest. Regression pinned by
+  `test_articles_reviewed_by_caches_for_one_hour`.
+
 ## [1.42.0], 2026-05-22
 
 ### Added
