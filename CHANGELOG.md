@@ -11,6 +11,22 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [1.41.1], 2026-05-22
+
+### Changed
+
+- **`/robots.txt` Cache-Control TTL: 24h → 5min.** The route was
+  previously cached for one day at the edge, matching its
+  pre-1.40.0 static-file character. Since 1.40.0 it's been
+  operator-mutable at runtime via `admin robots`; a 24h edge
+  cache made an `admin robots add GPTBot --disallow /`
+  invisible to the world for up to a day. 300s matches the
+  sitemap.xml TTL for the same reason (underlying state is
+  mutable). Operators who already deployed 1.41.0 can purge
+  their CDN cache once to get instant propagation; from 1.41.1
+  forward, future mutations propagate within 5 minutes
+  automatically.
+
 ## [1.41.0], 2026-05-22
 
 ### Added
