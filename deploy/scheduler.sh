@@ -30,13 +30,11 @@
 # Sleeps 10s between ticks; tighter than the warm-cache cadence so the
 # loop is responsive after a task that took longer than its slot.
 #
-# alembic upgrade head runs once at start, followed by an ANALYZE so
-# any new index introduced by the just-applied migrations starts life
-# with planner stats instead of being silently invisible to the
-# optimiser until the next scheduled ANALYZE pass. This container is
-# the single owner of DDL, the web container has no migration step
-# and waits on this sidecar's healthcheck (which fires once the
-# sentinel `/data/.migrated` is touched, below). Idempotent.
+# 2.0.0: schema migration, inbox bootstrap, and post-migrate ANALYZE
+# moved to the broker container's self-bootstrap sequence. This
+# script no longer does any direct SQLite writes; it dispatches all
+# scheduled work to the broker via RPC and gates on the broker's
+# healthcheck via `depends_on` in compose.
 #
 # Ad-hoc pause: `touch /data/.scheduler-paused` quiesces the loop
 # (no warm-cache / update / update-mainline / analyze /
@@ -103,32 +101,20 @@ run() {
     fi
 }
 
-log "alembic: start"
-if alembic upgrade head; then
-    log "alembic: ok"
-else
-    log "alembic: failed (rc=$?), refusing to start sidecar loop"
-    exit 1
-fi
-
-# Seed env-configured inboxes into the `inboxes` table. The web
-# container's create_app() does not do this (writes belong on the
-# sidecar, alongside migrations); without this step a fresh deploy
-# would come up with an empty `inboxes` table and `/` would render
-# a blank meta-index. Idempotent via ON CONFLICT DO NOTHING; admin
-# edits to existing rows are never clobbered.
-run "bootstrap-inboxes" "" mimir bootstrap-inboxes
-
-# Post-migrate ANALYZE moved to the broker container as of 1.39.0
-# (Phase 2.4): on a fresh deploy with a new index landing in this
-# alembic stack, the broker's own startup runs a bounded ANALYZE
-# before flipping its own healthcheck. The web tier
-# `depends_on: mimir-broker (service_healthy)` so cold requests
-# after a deploy don't blindly walk new indexes.
+# Schema migration + inbox bootstrap + post-migrate ANALYZE all
+# moved to the broker container as of 2.0.0. The broker is now the
+# sole SQLite writer process; everything that touches the DB at
+# startup runs inside its self-bootstrap sequence (gated by
+# `.migrated`, `.bootstrapped`, and `.broker_initial_analyze`
+# sentinels respectively). The tasks container is read-only at
+# the SQLite level (every connection opens `query_only=1`) and
+# its job here is purely orchestration: pre-flight warm, initial
+# update, then the periodic loop firing RPCs at the broker.
 #
-# The scheduler sidecar's job here is now just to land the schema
-# + bootstrap inboxes + warm the read cache; the writer-side
-# `sqlite_stat1` refresh is owned by the broker process.
+# `depends_on: mimir-broker (service_healthy)` in compose.yaml
+# orders the chain: broker self-bootstraps to a healthy state,
+# THEN this container starts. So we can assume schema + inboxes
+# are already in place when this script runs.
 
 # Pre-flight warm so the web tier doesn't start serving until the
 # dashboard cache is hot. Without this, every container recreate
@@ -145,13 +131,11 @@ run "bootstrap-inboxes" "" mimir bootstrap-inboxes
 # shellcheck disable=SC2086  # SCHEDULER_VERBOSE is a flag string, intentionally unquoted to splat empty -> nothing.
 run "warm-cache (initial)" /data/.last_warm mimir warm-cache $SCHEDULER_VERBOSE
 
-# Healthcheck sentinel: the web container's depends_on uses
-# condition: service_healthy and a `test -f /data/.migrated` test,
-# so gunicorn waits for this file before it starts serving. Touched
-# only after migrations + inbox bootstrap + post-migrate ANALYZE +
-# pre-flight warm-cache, the four things the web tier needs to be
-# in place before serving.
-touch /data/.migrated
+# 2.0.0: `.migrated` is now touched by the broker container after
+# `alembic upgrade head` (see `mimir/broker/server.py`
+# `_migrate_if_needed`). The web container depends_on the broker
+# directly; this tasks container's only contribution to readiness is
+# the pre-flight warm above. Nothing to sentinel here.
 
 # Initial update so a fresh deployment has data to render before the
 # first UPDATE_EVERY tick. Runs after `.migrated` so the web tier is

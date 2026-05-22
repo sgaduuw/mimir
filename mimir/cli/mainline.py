@@ -1,22 +1,16 @@
 """`update-mainline`: sync Linus's `linux.git` and (re)build the
 MAINTAINERS-derived schema + the lore `Link:`-trailer index.
 
-Thin click wrapper around `mimir.mainline.update_mainline`. The
-heavy lifting (clone/fetch, MAINTAINERS reparse, Link-trailer
-walk) lives in the library module so the broker handler can call
-the same code path; this command just turns CLI flags into
-function args and echoes the structured result.
-
-Broker dispatch (Phase 2.3): when `BROKER_SOCKET_PATH` is set the
-RPC routes through the broker (which then calls the same library
-function inside the single-writer process). Falls back to the
-direct path when broker mode is off.
+Thin click wrapper that dispatches through the broker. The heavy
+lifting (clone/fetch, MAINTAINERS reparse, Link-trailer walk)
+lives in `mimir.mainline.update_mainline` and runs inside the
+broker's single-writer process; this command turns CLI flags
+into RPC arguments and echoes the structured result.
 """
 
 import click
 
 from mimir.cli._common import _configure_logging
-from mimir.config import settings
 
 
 @click.command("update-mainline")
@@ -80,41 +74,27 @@ def update_mainline_command(
     """
     _configure_logging(verbose)
 
-    if settings.broker_socket_path is not None:
-        # Broker mode: dispatch via RPC. The broker calls the same
-        # `update_mainline` library function inside its single-
-        # writer process, keeping the subsystems / mainline_commits
-        # writes out of cross-process contention.
-        from mimir.broker.client import BrokerUnavailable, get_broker_client
-
-        try:
-            payload = get_broker_client().update_mainline(
-                skip_fetch=skip_fetch,
-                skip_maintainers=skip_maintainers,
-                skip_commits=skip_commits,
-                force=force,
-            )
-        except BrokerUnavailable as exc:
-            raise click.ClickException(f"broker update_mainline failed: {exc}")
-        _echo_update_mainline_outcome(payload)
-        return
-
-    from mimir.mainline import update_mainline
+    from mimir.broker.client import BrokerUnavailable, get_broker_client
 
     try:
-        result = update_mainline(
+        payload = get_broker_client().update_mainline(
             skip_fetch=skip_fetch,
             skip_maintainers=skip_maintainers,
             skip_commits=skip_commits,
             force=force,
         )
-    except FileNotFoundError as exc:
-        # `load_maintainers` raises this when the tree has no
-        # MAINTAINERS file at HEAD (operator pointed at the wrong
-        # tree). Translate to a ClickException so the CLI exits
-        # with a clean message instead of a traceback.
-        raise click.ClickException(str(exc))
-    _echo_update_mainline_outcome(result.model_dump(mode="json"))
+    except BrokerUnavailable as exc:
+        # Unwrap the broker's `MainlineTreeMissing:<msg>` structured
+        # error back into the bare operator-facing text so a wrong-
+        # tree config surfaces as the inner FileNotFoundError message
+        # rather than getting buried in "broker update_mainline
+        # failed: HandlerCrashed."
+        raw = str(exc)
+        _, _, reply_error = raw.partition(": ")
+        if reply_error.startswith("MainlineTreeMissing:"):
+            raise click.ClickException(reply_error[len("MainlineTreeMissing:") :])
+        raise click.ClickException(f"broker update_mainline failed: {exc}")
+    _echo_update_mainline_outcome(payload)
 
 
 def _echo_update_mainline_outcome(payload: dict) -> None:

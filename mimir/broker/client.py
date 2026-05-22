@@ -759,13 +759,13 @@ _client: BrokerClient | None = None
 def get_broker_client() -> BrokerClient:
     """Return the process-singleton client, constructing it on
     first call. Reads `settings.broker_socket_path` at first call
-    time; if that's unset, raises (callers should check the
-    setting before reaching this)."""
+    time. The setting has a default of `/data/.broker.sock` post-
+    2.0.0; the only failure mode here is "socket path is empty
+    (operator override)" which `BrokerClient`'s connect retry will
+    surface as a `BrokerUnavailable` on the first RPC."""
     global _client
     with _client_lock:
         if _client is None:
-            if settings.broker_socket_path is None:
-                raise BrokerUnavailable("broker_socket_path unset")
             _client = BrokerClient(settings.broker_socket_path)
         return _client
 
