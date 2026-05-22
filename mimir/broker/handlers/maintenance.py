@@ -55,16 +55,26 @@ logger = logging.getLogger(__name__)
 def handle_update_mainline(req: UpdateMainlineRequest) -> Reply:
     """Run the full `update_mainline` flow inside the broker process.
     Returns the structured result so the CLI can echo the same
-    "loaded N subsystems" / "walked N commits" lines whether the
-    op went through the broker or ran directly."""
+    "loaded N subsystems" / "walked N commits" lines.
+
+    `load_maintainers` raises `FileNotFoundError` when the configured
+    mainline tree has no MAINTAINERS file at HEAD (operator pointed
+    at the wrong tree). Translate to a structured error so the CLI
+    shim can re-raise as `ClickException` with the bare operator
+    message intact; without this, generic exception-catching at the
+    dispatch boundary would bury the diagnostic under
+    `HandlerCrashed`."""
     from mimir.mainline import update_mainline
 
-    result = update_mainline(
-        skip_fetch=req.skip_fetch,
-        skip_maintainers=req.skip_maintainers,
-        skip_commits=req.skip_commits,
-        force=req.force,
-    )
+    try:
+        result = update_mainline(
+            skip_fetch=req.skip_fetch,
+            skip_maintainers=req.skip_maintainers,
+            skip_commits=req.skip_commits,
+            force=req.force,
+        )
+    except FileNotFoundError as exc:
+        return Reply(ok=False, error=f"MainlineTreeMissing:{exc}")
     return Reply(ok=True, result=result.model_dump(mode="json"))
 
 

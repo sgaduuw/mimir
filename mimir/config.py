@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -150,39 +149,15 @@ class Settings(BaseSettings):
     # it with a multi-minute hang. Override via SQLITE_BUSY_TIMEOUT_MS.
     sqlite_busy_timeout_ms: int = 5000
 
-    # Quiesce DB writes from this process for the lifetime of the
-    # container. Used as a maintenance toggle: when a long admin
-    # operation (e.g. `admin canonicals backfill --reprocess`) needs
-    # the writer lock to itself, set READ_ONLY_DB=true on the web
-    # container so its gunicorn workers stop competing for the lock
-    # via `cache.set`. The scheduler sidecar keeps the default (False)
-    # so it can still run migrations / ingest / cache hygiene.
-    #
-    # Two layers when enabled:
-    #   1. `cache.set` / `cache.delete` / `cache.purge_expired` /
-    #      `cache.delete_for_inbox` short-circuit to no-ops so the
-    #      best-effort write path doesn't log a warning per request.
-    #   2. `PRAGMA query_only=1` is issued on every connection as a
-    #      belt-and-braces safety net catching any non-cache write
-    #      path; offending statements raise `OperationalError:
-    #      attempt to write a readonly database`.
-    #
-    # Intentionally not persisted anywhere: the toggle is a runtime
-    # env var. A normal container restart (without READ_ONLY_DB set)
-    # restores read-write mode automatically. Override via
-    # READ_ONLY_DB.
-    read_only_db: bool = False
-
-    # Write-broker integration. When `broker_socket_path` is set,
-    # `cache.set` / `cache.delete` / `cache.delete_for_inbox` /
-    # `cache.purge_expired` forward to the broker daemon at the given
-    # UNIX-socket path instead of opening their own DB sessions. The
-    # broker (a separate `mimir broker` process) is then the sole
-    # writer to the cache table, eliminating SQLite writer-lock
-    # contention between gunicorn workers and the scheduler sidecar.
-    # Unset = direct-SQLite writes (today's behaviour). Override via
+    # Write-broker socket path. The broker daemon (`mimir broker
+    # --socket PATH`) is the sole SQLite writer process in mimir
+    # 2.0.0; every other process (web, tasks, CLI invocations)
+    # routes cache + admin writes through this UNIX socket and
+    # opens its own DB connections with `PRAGMA query_only=1`.
+    # Default `/data/.broker.sock` matches the canonical compose
+    # layout; operators on non-standard layouts override via
     # BROKER_SOCKET_PATH.
-    broker_socket_path: Path | None = None
+    broker_socket_path: Path = Path("/data/.broker.sock")
 
     # Slow-write-transaction WARNING threshold (milliseconds). When
     # a block wrapped in `mimir.extensions.write_transaction(label=...)`
@@ -233,17 +208,36 @@ class Settings(BaseSettings):
     # negative to disable. Override via BROKER_SLOW_RPC_WARN_MS.
     broker_slow_rpc_warn_ms: int = 100
 
-    # Per-process role tag. Drives broker-mode side effects on
-    # connection setup: when `broker_socket_path` is set AND
-    # `mimir_role` is `"web"`, every SQLAlchemy connection is opened
-    # with `PRAGMA query_only=1`. The scheduler sidecar
-    # (`mimir_role="tasks"`) and the broker itself
-    # (`mimir_role="broker"`) keep RW connections so their direct-
-    # write paths (ingest, backfill, broker handlers) still work.
-    # Unset = no role-based enforcement; broker mode then routes
-    # writes through the broker on every process indiscriminately.
-    # Override via MIMIR_ROLE.
-    mimir_role: Literal["web", "tasks", "broker"] | None = None
+    # True iff this process IS the broker daemon. The broker
+    # container sets MIMIR_IS_BROKER=true; every other process
+    # (web, tasks, dev CLI invocations) leaves it false. Drives
+    # two pieces of behaviour:
+    #
+    #   1. `extensions._sqlite_pragmas` opens every connection
+    #      with `PRAGMA query_only=1` unless `mimir_is_broker` is
+    #      true. The broker IS the writer; everyone else reads.
+    #
+    #   2. `cache._should_dispatch_to_broker` skips the RPC and
+    #      writes directly when the caller is inside the broker
+    #      process (otherwise the broker would self-RPC for its
+    #      own ingest/backfill/warm cache.set calls).
+    #
+    # 2.0.0 collapsed the previous three-valued `mimir_role`
+    # (web/tasks/broker) into this boolean: only the broker-vs-
+    # everyone-else distinction survives the cleanup. Override via
+    # MIMIR_IS_BROKER.
+    mimir_is_broker: bool = False
+
+    # True iff this process is one of the deploy containers (web,
+    # tasks, or broker), used by `create_app` to refuse
+    # `FLASK_DEBUG=true` on a deploy. Distinct from
+    # `mimir_is_broker`: web + tasks set MIMIR_DEPLOY=true without
+    # being the broker, and the broker container sets BOTH
+    # (MIMIR_DEPLOY=true marks the deploy posture; MIMIR_IS_BROKER
+    # marks "this is the writer process"). Dev / CLI invocations
+    # leave it false so `flask run` debugging stays available.
+    # Override via MIMIR_DEPLOY.
+    mimir_deploy: bool = False
 
     # SQLite `PRAGMA analysis_limit` (max rows sampled per index by
     # ANALYZE). Default 0 means "no limit" and ANALYZE scans every

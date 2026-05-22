@@ -89,13 +89,12 @@ jobs:
           poetry config virtualenvs.in-project true
           poetry install --no-interaction
 
-      - name: Migrate DB
-        # Creates a fresh SQLite at <repo>/mimir.db. bootstrap_inboxes
-        # then seeds the env-defined inboxes on first create_app(),
-        # so the route smoke tests find at least one inbox.
-        run: poetry run alembic upgrade head
-
       - name: Pytest
+        # The conftest's session-scoped `_migrate_db` fixture runs
+        # `alembic upgrade head` against the test process's temp DB
+        # (in tempfile.mkdtemp, not the repo root). A separate
+        # migrate step here is redundant, and post-2.0.0 it'd also
+        # fail because non-broker processes open `query_only=1`.
         run: poetry run pytest -v
 
   docker:

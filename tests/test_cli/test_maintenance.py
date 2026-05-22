@@ -20,7 +20,7 @@ def test_update_default_silent_on_no_op(seeded_db, monkeypatch):
     def _fake_sync(*_a, **_kw):
         return sync_mod.SyncResult(cloned=[], fetched=[], failed=[])
 
-    def _fake_ingest_all(inboxes, limit=None, workers=1):
+    def _fake_dispatch(inboxes, limit=None, workers=1):
         return {
             name: [
                 IngestResult(
@@ -37,7 +37,7 @@ def test_update_default_silent_on_no_op(seeded_db, monkeypatch):
         }
 
     monkeypatch.setattr(cli, "sync_epochs", _fake_sync)
-    monkeypatch.setattr(cli, "ingest_all", _fake_ingest_all)
+    monkeypatch.setattr(cli, "_ingest_all_dispatch", _fake_dispatch)
 
     result = CliRunner().invoke(update_command, [])
     assert result.exit_code == 0
@@ -58,7 +58,7 @@ def test_update_verbose_prints_no_op_lines(seeded_db, monkeypatch):
     )
     monkeypatch.setattr(
         cli,
-        "ingest_all",
+        "_ingest_all_dispatch",
         lambda inboxes, limit=None, workers=1: {
             name: [
                 IngestResult(

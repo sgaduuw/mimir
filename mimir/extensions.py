@@ -49,21 +49,15 @@ def _sqlite_pragmas(dbapi_conn, _conn_record) -> None:
     # value without re-validating EXPLAIN on the production
     # corpus, the SQLite docs default is not safe at scale.
     cur.execute(f"PRAGMA analysis_limit={settings.analyze_limit}")
-    # Maintenance toggle: when this container is flagged read-only,
-    # block writes at the SQLite layer so anything that slipped past
-    # the cache.set short-circuit raises instead of silently competing
-    # for the writer lock. See Settings.read_only_db.
-    if settings.read_only_db:
-        cur.execute("PRAGMA query_only=1")
-    # Broker mode: in broker mode the web container's role is
-    # read-only at the SQLite level (writes route through the broker
-    # over a UNIX socket). Enforce via PRAGMA query_only=1 so anything
-    # that slipped past the cache.set broker-dispatch raises instead
-    # of writing directly. Scheduler sidecar (MIMIR_ROLE=tasks) keeps
-    # RW so ingest/backfill/update-mainline still work; the broker
-    # itself (MIMIR_ROLE=broker) also keeps RW because it IS the
-    # writer.
-    elif settings.broker_socket_path is not None and settings.mimir_role == "web":
+    # Single-writer invariant: the broker process IS the SQLite
+    # writer; every other process (web, tasks, dev CLI) opens
+    # query_only=1 so any errant write path raises instead of
+    # silently bypassing the broker's serialised write queue.
+    # Anything that slipped past the cache.set broker-dispatch or
+    # got added without thinking about broker mode trips
+    # `OperationalError: attempt to write a readonly database`
+    # here.
+    if not settings.mimir_is_broker:
         cur.execute("PRAGMA query_only=1")
     cur.close()
 

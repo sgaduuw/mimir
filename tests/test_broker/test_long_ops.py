@@ -223,17 +223,17 @@ def test_ingest_inbox_via_broker_unknown_inbox_returns_clean_error(seeded_db):
 
 
 def test_cache_set_writes_direct_inside_broker_process(seeded_db, monkeypatch):
-    """When the calling process IS the broker (`MIMIR_ROLE=broker`),
+    """When the calling process IS the broker (`MIMIR_IS_BROKER=true`),
     `cache.set` must write directly via `_direct_set` rather than
-    sending an RPC to itself. Phase 2.1 made this load-bearing: now
-    that `ingest_inbox` runs inside the broker, the warm afterwards
-    fires three cache writes per inbox tick; if they all
-    self-RPC'd the broker's own cache_queue would fill up with
-    its own work.
+    sending an RPC to itself. Load-bearing because the broker's
+    own handlers (warm, ingest, backfill) fire cache writes; if
+    those all self-RPC'd the broker's own cache_queue would fill
+    up with its own work.
 
     The pin: set `broker_socket_path` to a NON-EXISTENT path (so
-    a real RPC would fail) + `mimir_role=broker`, then call
-    `cache.set` and confirm it landed via the direct path."""
+    a real RPC would fail), keep `mimir_is_broker=True` (the
+    conftest default), then call `cache.set` and confirm it
+    landed via the direct path."""
     from mimir import cache
     from mimir.config import settings
     from pathlib import Path
@@ -243,8 +243,7 @@ def test_cache_set_writes_direct_inside_broker_process(seeded_db, monkeypatch):
         "broker_socket_path",
         Path("/tmp/mimir-test-no-such-broker.sock"),
     )
-    monkeypatch.setattr(settings, "mimir_role", "broker")
-
+    assert settings.mimir_is_broker is True  # conftest default
     # `_should_dispatch_to_broker` must return False in this state
     # (we're "the broker"), and the write must land regardless of
     # the (non-existent) socket path.
@@ -254,22 +253,18 @@ def test_cache_set_writes_direct_inside_broker_process(seeded_db, monkeypatch):
 
 
 def test_cache_set_dispatches_outside_broker_process(monkeypatch):
-    """Inverse of the above: when `mimir_role` is anything other
-    than "broker" and `broker_socket_path` is set, dispatch goes
-    via the broker (the normal Phase 1+ path). Verifies that the
-    role check doesn't accidentally disable broker mode for
-    legitimate clients (web, tasks)."""
+    """Inverse of the above: when `mimir_is_broker=False`, dispatch
+    goes via the broker. Pins that the broker-self-RPC short-circuit
+    doesn't accidentally disable broker mode for legitimate clients
+    (web, tasks)."""
     from mimir import cache
     from mimir.config import settings
     from pathlib import Path
 
     sp = Path("/tmp/mimir-test-stub-broker.sock")
-    for role in ("web", "tasks", None):
-        monkeypatch.setattr(settings, "broker_socket_path", sp)
-        monkeypatch.setattr(settings, "mimir_role", role)
-        assert cache._should_dispatch_to_broker() is True, (
-            f"role={role!r}: expected broker dispatch, got direct"
-        )
+    monkeypatch.setattr(settings, "broker_socket_path", sp)
+    monkeypatch.setattr(settings, "mimir_is_broker", False)
+    assert cache._should_dispatch_to_broker() is True
 
 
 # ----- two-worker concurrency --------------------------------------------
