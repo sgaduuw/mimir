@@ -11,6 +11,64 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.0.0], 2026-05-22
+
+The broker becomes the sole SQLite writer process. The pre-2.0.0
+additive scaffolding that allowed direct + broker paths to
+coexist is gone; every other process opens connections with
+`PRAGMA query_only=1` and dispatches writes through the broker
+over a UNIX socket.
+
+### Breaking changes
+
+- **`Settings.read_only_db` removed.** The maintenance-toggle
+  flag is permanently subsumed by `mimir_is_broker`: web + tasks
+  containers are unconditionally read-only at the SQLite layer
+  now. Operators relying on `READ_ONLY_DB=true` should drop the
+  env var.
+- **`Settings.mimir_role` removed**, replaced by
+  `Settings.mimir_is_broker: bool` (env `MIMIR_IS_BROKER`). The
+  previous three-valued role (`web`/`tasks`/`broker`) collapses
+  to broker-vs-everyone-else. Set `MIMIR_IS_BROKER=true` on the
+  broker container.
+- **New `MIMIR_DEPLOY` env**, set `MIMIR_DEPLOY=true` on web +
+  tasks + broker containers. Drives the FLASK_DEBUG refusal
+  guard that previously keyed off `mimir_role`.
+- **`broker_socket_path` default = `/data/.broker.sock`** (was
+  `None`). Operators on non-standard layouts override via
+  `BROKER_SOCKET_PATH`.
+- **Per-CLI direct-path fallbacks removed.** Every CLI mutation
+  (`bootstrap-inboxes`, `update`, three patch backfills +
+  canonicals backfill, `analyze`, `vacuum`, `update-mainline`,
+  `warm-cache`, all `admin inbox` / `admin robots` / `admin
+  failures` subcommands) hard-fails with `ClickException` if
+  the broker is unavailable. No silent fall-back to direct
+  writes.
+- **Tasks container is read-only.** `scheduler.sh` no longer
+  runs `alembic upgrade head` or `bootstrap-inboxes` or the
+  post-migrate `analyze`. The broker container self-bootstraps
+  each (sentinel-gated at `/data/.migrated`, `.bootstrapped`,
+  `.broker_initial_analyze`) before flipping its healthcheck.
+
+### Migration notes for operators on 1.42.x
+
+1. Drop `READ_ONLY_DB` from your compose / env.
+2. Set `MIMIR_IS_BROKER=true` on the broker container.
+3. Set `MIMIR_DEPLOY=true` on web + tasks + broker containers.
+4. Leave `BROKER_SOCKET_PATH` unset to inherit the new
+   `/data/.broker.sock` default.
+
+Pull the new `compose.yaml` as a reference; the three-service
+layout (broker + web + tasks) is now the canonical shape, with
+`depends_on: mimir-broker (service_healthy)` on web + tasks.
+
+### Rollback
+
+Not supported. Once 2.0.0 is deployed, downgrade to a 1.x
+release requires reverting the compose layout and re-enabling
+the now-removed env knobs. The 1.x line remains available for
+new deploys.
+
 ## [1.42.1], 2026-05-22
 
 ### Fixed
