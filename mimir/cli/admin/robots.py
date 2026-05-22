@@ -45,12 +45,32 @@ def _robots_click_error(exc) -> click.ClickException:
     return click.ClickException(raw)
 
 
+def _parse_content_signal_pair(raw: str) -> tuple[str, str]:
+    """`KEY=VALUE` → `("key", "value")`. Click invokes this per
+    `--content-signal` and `--set-content-signal` value."""
+    if "=" not in raw:
+        raise click.BadParameter(
+            f"content-signal pair {raw!r} must be in KEY=VALUE form"
+        )
+    k, _, v = raw.partition("=")
+    return k.strip(), v.strip()
+
+
+def _format_content_signals(signals: dict[str, str]) -> str:
+    """Canonical-order rendering matching the service-layer."""
+    canonical_order = ("search", "ai-input", "ai-train")
+    parts = [f"{k}={signals[k]}" for k in canonical_order if k in signals]
+    return ", ".join(parts)
+
+
 def _format_rule(rule_dict: dict) -> list[str]:
     """Multi-line pretty-print of one rule dict (used by `show` and
-    the add/update success output). Matches the `User-agent:` /
-    `Crawl-delay:` / `Disallow:` shape of the rendered file so an
-    operator can eyeball the resulting stanza."""
+    the add/update success output). Matches the rendered file's
+    stanza shape so an operator can eyeball the resulting block."""
     lines = [f"User-agent: {rule_dict['user_agent']}"]
+    signals = rule_dict.get("content_signals") or {}
+    if signals:
+        lines.append(f"Content-Signal: {_format_content_signals(signals)}")
     if rule_dict.get("crawl_delay") is not None:
         lines.append(f"Crawl-delay: {rule_dict['crawl_delay']}")
     for p in rule_dict.get("disallow_paths") or []:
@@ -80,7 +100,11 @@ def admin_robots_list_command() -> None:
     for r in rules:
         delay = "-" if r.crawl_delay is None else str(r.crawl_delay)
         paths = ", ".join(r.disallow_paths or []) or "-"
-        click.echo(f"{r.user_agent:<{ua_w}}  crawl_delay={delay:<4}  disallow={paths}")
+        signals = _format_content_signals(r.content_signals or {}) or "-"
+        click.echo(
+            f"{r.user_agent:<{ua_w}}  crawl_delay={delay:<4}  "
+            f"disallow={paths}  content_signals={signals}"
+        )
 
 
 @admin_robots_group.command("show")
@@ -105,6 +129,14 @@ def admin_robots_show_command(user_agent: str) -> None:
             click.echo(f"  - {p}")
     else:
         click.echo("disallow_paths: (none)")
+    signals = dict(rule.content_signals or {})
+    if signals:
+        click.echo("content_signals:")
+        for k in ("search", "ai-input", "ai-train"):
+            if k in signals:
+                click.echo(f"  - {k}={signals[k]}")
+    else:
+        click.echo("content_signals: (none)")
 
 
 @admin_robots_group.command("add")
@@ -120,15 +152,25 @@ def admin_robots_show_command(user_agent: str) -> None:
     default=None,
     help="Crawl-delay seconds (omit to leave unset).",
 )
+@click.option(
+    "--content-signal",
+    multiple=True,
+    help="KEY=VALUE pair for Content-Signal (repeatable). "
+    "Keys: search, ai-input, ai-train. Values: yes, no.",
+)
 def admin_robots_add_command(
     user_agent: str,
     disallow: tuple[str, ...],
     crawl_delay: int | None,
+    content_signal: tuple[str, ...],
 ) -> None:
     """Insert a new User-agent stanza.
 
-    Common operational shape: block a misbehaving bot with
-    `admin robots add GPTBot --disallow /`."""
+    Common operational shapes: block a misbehaving bot with
+    `admin robots add GPTBot --disallow /`. Express per-bot AI
+    consent with
+    `admin robots add Googlebot --content-signal search=yes`."""
+    signals = dict(_parse_content_signal_pair(s) for s in content_signal)
     if _broker_dispatch_enabled():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
 
@@ -137,6 +179,7 @@ def admin_robots_add_command(
                 user_agent,
                 disallow=list(disallow),
                 crawl_delay=crawl_delay,
+                content_signals=signals or None,
             )
         except BrokerUnavailable as exc:
             raise _robots_click_error(exc)
@@ -146,6 +189,7 @@ def admin_robots_add_command(
                 user_agent,
                 disallow=list(disallow),
                 crawl_delay=crawl_delay,
+                content_signals=signals or None,
             )
         except (RobotsRuleNotFound, RobotsValidationError) as exc:
             raise click.ClickException(str(exc))
@@ -153,6 +197,7 @@ def admin_robots_add_command(
             "user_agent": rule.user_agent,
             "crawl_delay": rule.crawl_delay,
             "disallow_paths": list(rule.disallow_paths or []),
+            "content_signals": dict(rule.content_signals or {}),
         }
     click.echo(f"added rule for user_agent {rule_dict['user_agent']!r}:")
     for line in _format_rule(rule_dict):
@@ -182,14 +227,35 @@ def admin_robots_add_command(
     is_flag=True,
     help="Drop the Crawl-delay line from this stanza.",
 )
+@click.option(
+    "--set-content-signal",
+    multiple=True,
+    help="KEY=VALUE pair to upsert in Content-Signal (repeatable). "
+    "Keys: search, ai-input, ai-train. Values: yes, no.",
+)
+@click.option(
+    "--clear-content-signal",
+    multiple=True,
+    help="One Content-Signal KEY to drop (repeatable).",
+)
+@click.option(
+    "--clear-all-content-signals",
+    is_flag=True,
+    help="Drop the entire Content-Signal line from this stanza. "
+    "Mutually exclusive with --set-content-signal / --clear-content-signal.",
+)
 def admin_robots_update_command(
     user_agent: str,
     add_disallow: tuple[str, ...],
     remove_disallow: tuple[str, ...],
     crawl_delay: int | None,
     clear_crawl_delay: bool,
+    set_content_signal: tuple[str, ...],
+    clear_content_signal: tuple[str, ...],
+    clear_all_content_signals: bool,
 ) -> None:
     """Mutate an existing stanza in place."""
+    set_signals = dict(_parse_content_signal_pair(s) for s in set_content_signal)
     if _broker_dispatch_enabled():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
 
@@ -200,6 +266,9 @@ def admin_robots_update_command(
                 remove_disallow=list(remove_disallow),
                 crawl_delay=crawl_delay,
                 clear_crawl_delay=clear_crawl_delay,
+                set_content_signal=set_signals or None,
+                clear_content_signal=list(clear_content_signal),
+                clear_all_content_signals=clear_all_content_signals,
             )
         except BrokerUnavailable as exc:
             raise _robots_click_error(exc)
@@ -211,6 +280,9 @@ def admin_robots_update_command(
                 remove_disallow=list(remove_disallow),
                 crawl_delay=crawl_delay,
                 clear_crawl_delay=clear_crawl_delay,
+                set_content_signal=set_signals or None,
+                clear_content_signal=list(clear_content_signal),
+                clear_all_content_signals=clear_all_content_signals,
             )
         except (RobotsRuleNotFound, RobotsValidationError) as exc:
             raise click.ClickException(str(exc))
@@ -218,6 +290,7 @@ def admin_robots_update_command(
             "user_agent": rule.user_agent,
             "crawl_delay": rule.crawl_delay,
             "disallow_paths": list(rule.disallow_paths or []),
+            "content_signals": dict(rule.content_signals or {}),
         }
     click.echo(f"updated rule for user_agent {rule_dict['user_agent']!r}:")
     for line in _format_rule(rule_dict):
