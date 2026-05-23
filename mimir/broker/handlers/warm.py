@@ -43,10 +43,13 @@ logger = logging.getLogger(__name__)
 WARM_REFRESH_WITHIN_SEC = 450
 
 
-def _run_targets(targets) -> tuple[list[str], list[str], int]:
+def _run_targets(
+    targets,
+) -> tuple[list[str], list[str], int, list[tuple[str, int]]]:
     """Run a list of `(label, fn(session))` warm targets serially on
     a fresh session under `refresh_window(WARM_REFRESH_WITHIN_SEC)`.
-    Returns `(warmed, errors, elapsed_ms)`.
+    Returns `(warmed, errors, elapsed_ms, per_target)`, where
+    `per_target` is `[(label, ms), ...]` sorted desc by ms.
 
     Per-target exceptions go into `errors` as `f"{label}: {exc!r}"`
     so the broker's reply can report partial outcomes; the
@@ -55,12 +58,19 @@ def _run_targets(targets) -> tuple[list[str], list[str], int]:
     the warm-worker can hold this session for the duration of one
     inbox's warm without contending with other warm-workers
     (each worker has its own RPC and therefore its own session).
+
+    Per-target timings ride along on every reply so the operator
+    can attribute slow `warm_inbox` RPCs to a specific helper
+    (e.g. `active_threads` vs the per-inbox subsystem-dashboard
+    fan-out) without needing a separate `-v` repro.
     """
     warmed: list[str] = []
     errors: list[str] = []
+    per_target: list[tuple[str, int]] = []
     t0 = time.perf_counter()
     with refresh_window(WARM_REFRESH_WITHIN_SEC), SessionLocal() as session:
         for label, fn in targets:
+            t_target = time.perf_counter()
             try:
                 fn(session)
                 warmed.append(label)
@@ -71,8 +81,32 @@ def _run_targets(targets) -> tuple[list[str], list[str], int]:
                     exc,
                 )
                 errors.append(f"{label}: {exc!r}")
+            finally:
+                per_target.append((label, int((time.perf_counter() - t_target) * 1000)))
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    return warmed, errors, elapsed_ms
+    per_target.sort(key=lambda lm: lm[1], reverse=True)
+    return warmed, errors, elapsed_ms, per_target
+
+
+def _log_slow_breakdown(op: str, tag: str, elapsed_ms: int, per_target) -> None:
+    """Emit a WARNING listing the top-5 slowest targets when the
+    handler's own elapsed time crosses `broker_slow_rpc_warn_ms`.
+    Pairs with the server's existing `broker slow rpc` line: the
+    server tells you *that* the RPC was slow, this tells you
+    *which targets ate the budget*.
+    """
+    threshold = settings.broker_slow_rpc_warn_ms
+    if threshold <= 0 or elapsed_ms < threshold:
+        return
+    top = per_target[:5]
+    breakdown = ", ".join(f"{label}={ms}ms" for label, ms in top)
+    logger.warning(
+        "broker warm slow [%s] %s: %dms total; top: %s",
+        op,
+        tag,
+        elapsed_ms,
+        breakdown,
+    )
 
 
 def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
@@ -107,13 +141,15 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
     if req.targets is not None:
         wanted = set(req.targets)
         targets = [(label, fn) for label, fn in targets if label in wanted]
-    warmed, errors, elapsed_ms = _run_targets(targets)
+    warmed, errors, elapsed_ms, per_target = _run_targets(targets)
+    _log_slow_breakdown("warm_inbox", req.inbox_name, elapsed_ms, per_target)
     return Reply(
         ok=True,
         result={
             "warmed": warmed,
             "elapsed_ms": elapsed_ms,
             "errors": errors,
+            "per_target": [{"label": label, "ms": ms} for label, ms in per_target],
         },
     )
 
@@ -134,12 +170,14 @@ def handle_warm_global(req: WarmGlobalRequest) -> Reply:
 
     sitemap_base = (settings.site_base_url or "").rstrip("/")
     targets = _build_global_targets(sitemap_base)
-    warmed, errors, elapsed_ms = _run_targets(targets)
+    warmed, errors, elapsed_ms, per_target = _run_targets(targets)
+    _log_slow_breakdown("warm_global", "<global>", elapsed_ms, per_target)
     return Reply(
         ok=True,
         result={
             "warmed": warmed,
             "elapsed_ms": elapsed_ms,
             "errors": errors,
+            "per_target": [{"label": label, "ms": ms} for label, ms in per_target],
         },
     )
