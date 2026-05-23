@@ -203,9 +203,17 @@ def ingest_all(
 ) -> dict[str, list[IngestResult]]:
     """Ingest every supplied inbox. Returns {inbox_name: [IngestResult, ...]}."""
     if inboxes is None:
-        from mimir.inboxes import bootstrap_inboxes
+        # Read-only: the broker self-bootstraps `inboxes` on its
+        # startup and post-2.0.0 every other process opens
+        # `PRAGMA query_only=1`, so calling `bootstrap_inboxes()`
+        # here would raise on the readonly connection and abort
+        # the entire ingest tick (the LKML-stoppage incident on
+        # 2026-05-23). The CLI layer hands us the dict via
+        # `_select_inboxes`; this fallback is defensive for
+        # library-mode callers.
+        from mimir.inboxes import list_inboxes
 
-        inboxes = bootstrap_inboxes()
+        inboxes = {inbox.name: inbox for inbox in list_inboxes()}
 
     out: dict[str, list[IngestResult]] = {}
     remaining = limit

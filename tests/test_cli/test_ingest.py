@@ -63,6 +63,38 @@ def test_ingest_command_unknown_inbox_clickexception():
     assert "unknown inbox" in result.output
 
 
+def test_select_inboxes_does_not_call_bootstrap_inboxes(seeded_db, monkeypatch):
+    """Regression for the 2.0.0 readonly-bootstrap incident
+    (LKML stoppage 2026-05-23). `_select_inboxes` is called by
+    `mimir update` / `ingest` / `reindex` in the `mimir-tasks`
+    container, which opens `PRAGMA query_only=1` connections
+    post-2.0.0. The helper must read inbox rows via
+    `list_inboxes()`; the pre-fix call to `bootstrap_inboxes()`
+    raised `OperationalError: attempt to write a readonly
+    database` and aborted every `update` tick before any
+    inbox got fetched.
+    """
+    import mimir.cli._common as _common
+    import mimir.inboxes as inboxes_mod
+    from mimir.cli._common import _select_inboxes
+
+    def fail(*_a, **_kw):
+        raise AssertionError(
+            "_select_inboxes must not call bootstrap_inboxes; that would "
+            "OperationalError on the query_only=1 connections every "
+            "non-broker process opens post-2.0.0."
+        )
+
+    # Patch both the source module and any re-export `_common` might
+    # have imported, so a regression that reintroduces either form
+    # of the call trips the assertion.
+    monkeypatch.setattr(inboxes_mod, "bootstrap_inboxes", fail)
+    monkeypatch.setattr(_common, "bootstrap_inboxes", fail, raising=False)
+
+    inboxes = _select_inboxes(None)
+    assert "alpha" in inboxes
+
+
 # `reindex` -- single-epoch rewind, with and without --from-scratch.
 
 
