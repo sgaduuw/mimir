@@ -11,6 +11,19 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- CLI ingest paths no longer attempt a write on startup. `mimir
+  update` / `ingest` / `reindex` / `show` previously called
+  `bootstrap_inboxes()` defensively; the broker self-bootstraps
+  inboxes on its startup since 2.0.0 and every other process opens
+  `PRAGMA query_only=1`, so the defensive call raised
+  `OperationalError: attempt to write a readonly database` and
+  aborted every scheduler `update` tick before any inbox was
+  fetched (LKML stoppage 2026-05-23). The CLI now reads via
+  `list_inboxes()` and the orchestrate fallback follows the same
+  shape.
+
 ## [2.0.0], 2026-05-22
 
 The broker becomes the sole SQLite writer process. The pre-2.0.0

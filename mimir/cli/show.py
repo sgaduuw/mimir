@@ -10,7 +10,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from mimir.extensions import SessionLocal
-from mimir.inboxes import bootstrap_inboxes
 from mimir.models import Article, ArticleList
 from mimir.store import MessageNotFound, read_message
 
@@ -44,7 +43,6 @@ def show_command(
     and whether it's in the archive) alongside the freshly re-parsed blob
     (full headers, body, attachments). Designed for threading debug.
     """
-    bootstrap_inboxes()
     with SessionLocal() as session:
         article = session.execute(
             select(Article).where(Article.message_id == message_id)
