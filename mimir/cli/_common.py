@@ -11,7 +11,7 @@ import re
 
 import click
 
-from mimir.inboxes import bootstrap_inboxes
+from mimir.inboxes import list_inboxes
 from mimir.models import Inbox
 
 # Public-inbox epoch directory names are always `<N>.git` for
@@ -49,8 +49,18 @@ def _configure_logging(verbose: int) -> None:
 
 
 def _select_inboxes(only: str | None) -> dict[str, Inbox]:
-    """Bootstrap from env, then narrow to one inbox name if provided."""
-    inboxes = bootstrap_inboxes()
+    """Read the inbox table, then narrow to one inbox name if provided.
+
+    The broker self-bootstraps `inboxes` on its startup (post-2.0.0
+    every other process opens connections with `PRAGMA query_only=1`),
+    so any CLI invocation in `mimir-tasks` / `mimir` containers MUST
+    read here rather than re-running the bootstrap insert. The pre-
+    2.0.0 shape called `bootstrap_inboxes()` defensively; against a
+    read-only connection that raises `OperationalError: attempt to
+    write a readonly database` and the whole `update`/`ingest` tick
+    aborts before any inbox gets fetched.
+    """
+    inboxes = {inbox.name: inbox for inbox in list_inboxes()}
     if only is None:
         return inboxes
     if only not in inboxes:
