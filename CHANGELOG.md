@@ -21,6 +21,25 @@ changes, not internal refactors. Categories: **Added**,
   so a slow warm RPC in journalctl carries its own attribution
   rather than requiring a separate `-v` repro.
 
+## [2.0.1], 2026-05-23
+
+Hotfix for a 2.0.0 cleanup miss: every scheduler `update` tick was
+aborting before any inbox was fetched, so LKML (and every other
+inbox) stopped updating the moment 2.0.0 deployed. Upgrade
+immediately if you're on 2.0.0.
+
+### Fixed
+
+- CLI ingest paths no longer attempt a write on startup. `mimir
+  update` / `ingest` / `reindex` / `show` previously called
+  `bootstrap_inboxes()` defensively; the broker self-bootstraps
+  inboxes on its startup since 2.0.0 and every other process opens
+  `PRAGMA query_only=1`, so the defensive call raised
+  `OperationalError: attempt to write a readonly database` and
+  aborted every scheduler `update` tick before any inbox was
+  fetched. The CLI now reads via `list_inboxes()` and the
+  orchestrate fallback follows the same shape.
+
 ## [2.0.0], 2026-05-22
 
 The broker becomes the sole SQLite writer process. The pre-2.0.0
