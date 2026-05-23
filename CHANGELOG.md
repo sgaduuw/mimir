@@ -11,6 +11,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.0.1], 2026-05-23
+
+Hotfix for a 2.0.0 cleanup miss: every scheduler `update` tick was
+aborting before any inbox was fetched, so LKML (and every other
+inbox) stopped updating the moment 2.0.0 deployed. Upgrade
+immediately if you're on 2.0.0.
+
 ### Fixed
 
 - CLI ingest paths no longer attempt a write on startup. `mimir
@@ -20,9 +27,8 @@ changes, not internal refactors. Categories: **Added**,
   `PRAGMA query_only=1`, so the defensive call raised
   `OperationalError: attempt to write a readonly database` and
   aborted every scheduler `update` tick before any inbox was
-  fetched (LKML stoppage 2026-05-23). The CLI now reads via
-  `list_inboxes()` and the orchestrate fallback follows the same
-  shape.
+  fetched. The CLI now reads via `list_inboxes()` and the
+  orchestrate fallback follows the same shape.
 
 ## [2.0.0], 2026-05-22
 
