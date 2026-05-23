@@ -11,6 +11,21 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.1.0], 2026-05-23
+
+Adds an operator-diagnostic surface on the broker's warm path so a
+slow `warm_inbox` / `warm_global` RPC can be attributed to a
+specific helper without a separate `-v` repro.
+
+### Added
+
+- Broker warm handlers emit a top-5 per-target breakdown WARNING
+  when `warm_inbox` / `warm_global` elapsed time crosses
+  `broker_slow_rpc_warn_ms`, alongside a new `per_target` key on
+  the reply listing every target's elapsed milliseconds (sorted
+  desc). Pairs with the server's existing `broker slow rpc` line
+  so a slow warm RPC in journalctl carries its own attribution.
+
 ## [2.0.1], 2026-05-23
 
 Hotfix for a 2.0.0 cleanup miss: every scheduler `update` tick was
