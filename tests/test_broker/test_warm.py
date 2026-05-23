@@ -104,6 +104,54 @@ def test_dispatch_warm_inbox_targets_narrows_set(seeded_db):
     assert reply.result["warmed"] == ["alpha archive_stats"]
 
 
+def test_dispatch_warm_inbox_emits_slow_breakdown_log(seeded_db, monkeypatch, caplog):
+    """Per-target timings ride along on every reply, and when the
+    handler's elapsed time crosses `broker_slow_rpc_warn_ms` a
+    breakdown WARNING fires so an operator chasing a `broker slow
+    rpc warm_inbox` line in journalctl can see which helpers ate
+    the budget without a separate `-v` repro.
+    """
+
+    def slow(_s):
+        time.sleep(0.05)
+
+    def fast(_s):
+        pass
+
+    def fake_build(inbox, today, yesterday, sitemap_base):
+        return [
+            ("alpha fast", fast),
+            ("alpha slow", slow),
+        ]
+
+    import mimir.cli.cache as cli_cache
+    from mimir.config import settings
+
+    monkeypatch.setattr(cli_cache, "_build_inbox_targets", fake_build)
+    # Trip the breakdown log on the 50 ms sleep but stay above the
+    # 0 ms no-op so the absence-on-fast-paths invariant is testable
+    # by other tests in this file (which do not set a threshold and
+    # rely on the production default of 100 ms not firing on the
+    # tiny seeded corpus).
+    monkeypatch.setattr(settings, "broker_slow_rpc_warn_ms", 10)
+
+    caplog.set_level("WARNING", logger="mimir.broker.handlers.warm")
+    reply = dispatch(_line(WarmInboxRequest(inbox_name="alpha")))
+    assert reply.ok is True
+
+    per_target = reply.result["per_target"]
+    labels = [entry["label"] for entry in per_target]
+    assert labels == ["alpha slow", "alpha fast"]
+    assert per_target[0]["ms"] >= per_target[1]["ms"]
+
+    slow_records = [r for r in caplog.records if "broker warm slow" in r.getMessage()]
+    assert len(slow_records) == 1
+    msg = slow_records[0].getMessage()
+    assert "warm_inbox" in msg
+    assert "alpha" in msg
+    assert "alpha slow=" in msg
+
+
 def test_dispatch_warm_inbox_captures_per_target_errors(seeded_db, monkeypatch):
     """A target that raises must NOT fail the whole RPC; the
     exception is captured in `errors` and the other targets keep
