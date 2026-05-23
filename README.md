@@ -406,7 +406,9 @@ Models are defined as SQLAlchemy 2.0 typed `Mapped[]` classes in
 
 ```
 mimir/
-  __init__.py            Flask app factory; bootstraps inboxes from env
+  __init__.py            Flask app factory; read-only at the SQLite layer
+                         (the broker bootstraps inboxes on its own startup
+                         since 2.0.0).
   cli/                   Click commands, one submodule per concern group:
                          initdb, ingest, mainline, backfill, show, cache,
                          maintenance, devseed, bootstrap, broker,
