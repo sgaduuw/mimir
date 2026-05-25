@@ -170,8 +170,10 @@ def _most_active_subsystems_in_inbox_full(
         # them (today + (days-1) prior calendar days). The earlier
         # rolling 168-hour window meant a message from 10am 7 days
         # ago could be in the totals but the spark would render it
-        # in an off-by-one bucket.
-        today = date_cls.today()
+        # in an off-by-one bucket. UTC because `Article.date` is the
+        # public-inbox commit time in UTC; `date.today()` would
+        # advance at *local* midnight and drop boundary-day articles.
+        today = datetime.now(timezone.utc).date()
         start_day = today - timedelta(days=days - 1)
         start = datetime.combine(start_day, datetime.min.time(), tzinfo=timezone.utc)
         # One SQL: every (article_id, path, date) tuple for recent
