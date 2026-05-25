@@ -92,6 +92,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # for the same reason (the underlying state is mutable).
     "web.robots_txt": "public, max-age=300",
     "web.security_txt": "public, max-age=3600",
+    "web.privacy": "public, max-age=3600",
     "web.favicon_svg": "public, max-age=604800",
     "web.og_image_png": "public, max-age=604800",
     "web.sitemap": "public, max-age=300",
