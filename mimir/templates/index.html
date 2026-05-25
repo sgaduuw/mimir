@@ -3,13 +3,18 @@
 {% block content %}
 <section class="index-hero">
   <figure>
-    {# Substantive alt: the squirrel IS the brand identity beside the
-       wordmark, not pure decoration. og:image alt is for link-card
-       previews (crawler-side), it never reaches a screen-reader user
-       on the live page; the footer credit covers attribution, not
-       what the image depicts. External review 2026-05-16. #}
+    {# `alt` and `title` carry the same text: what the image depicts
+       plus its attribution. `alt` is the assistive-tech / fallback
+       surface; `title` is what browsers expose on mouse hover (they
+       do not surface `alt` on hover, only `title`). Identical text
+       means screen readers that announce both dedup naturally. The
+       attribution used to live in a global footer line that showed
+       on every page including ones where the image is not rendered,
+       removed in favour of putting the credit on the image itself. #}
+    {% set _ratatoskr_credit = "Ratatoskr, the messenger squirrel of Norse mythology, from a 17th-century Icelandic Edda manuscript, Árni Magnússon Institute (public domain)." %}
     <img src="{{ url_for('static', filename='img/ratatoskr.png') }}"
-         alt="Ratatoskr, the messenger squirrel of Norse mythology">
+         alt="{{ _ratatoskr_credit }}"
+         title="{{ _ratatoskr_credit }}">
   </figure>
   <hgroup>
     <h1>{{ site_name }}</h1>
