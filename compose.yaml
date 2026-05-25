@@ -83,7 +83,11 @@ services:
       # SECURITY_POLICY_URL: https://example.com/security
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:5000/healthz"]
+      # Probe via python (guaranteed present, it's the app's runtime)
+      # rather than wget (not in the python:3.x base image).
+      # urlopen raises on non-2xx or network failure, so the exit code
+      # mirrors `wget --tries=1 --spider`.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3

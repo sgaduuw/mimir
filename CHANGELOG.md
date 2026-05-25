@@ -11,6 +11,17 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- `mimir-web` container healthcheck no longer shells out to `wget`.
+  The base image is `python:3.x`-derived and does not ship `wget`,
+  so every probe failed with `executable file not found in $PATH`
+  and the container sat at `unhealthy` indefinitely despite gunicorn
+  serving normally. Replaced with a `python -c
+  urllib.request.urlopen` one-liner against the same `/healthz`
+  endpoint; urlopen raises on non-2xx or network failure, mirroring
+  `wget --tries=1 --spider` semantics.
+
 ## [2.3.0], 2026-05-25
 
 Single operator-facing change: the `mimir-web` container's gunicorn
