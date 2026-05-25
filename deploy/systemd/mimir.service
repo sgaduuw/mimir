@@ -22,10 +22,12 @@ ExecStartPre=/opt/mimir/.venv/bin/mimir bootstrap-inboxes
 
 # Two workers is plenty for a single-host SQLite archive; raise via
 # the environment file if you actually saturate them.
+# `--access-logfile` is deliberately omitted: the app emits its own
+# JSON access-log line per request via `mimir.web.hooks._log_request`.
+# Gunicorn's stock Apache-style line would duplicate every request.
 ExecStart=/opt/mimir/.venv/bin/gunicorn 'mimir:create_app()' \
     --bind 127.0.0.1:5000 \
     --workers 2 \
-    --access-logfile - \
     --error-logfile -
 
 Restart=on-failure
