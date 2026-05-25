@@ -547,15 +547,7 @@ def _post_migrate_analyze_if_needed(socket_path: Path) -> None:
     Gated on a sentinel file next to the broker socket. Once the
     first deploy has run the pass, subsequent broker restarts skip
     it. To force a re-run (e.g. after a manual schema change),
-    delete the sentinel.
-
-    Replaces the pre-Phase-2.4 shape where `scheduler.sh` ran
-    `mimir analyze` after `alembic upgrade head`, before touching
-    the `.migrated` healthcheck sentinel. With the broker owning
-    every other periodic write, the post-migrate ANALYZE was the
-    last direct-write path on the scheduler container; moving it
-    here closes that gap and sets up 2.0.0 to drop the
-    `MIMIR_ROLE=tasks` distinction entirely."""
+    delete the sentinel."""
     sentinel = socket_path.parent / ".broker_initial_analyze"
     if sentinel.exists():
         logger.debug(
