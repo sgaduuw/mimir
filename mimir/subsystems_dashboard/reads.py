@@ -152,7 +152,12 @@ def daily_volume_in_subsystem(
     """
 
     def compute() -> DailyVolume:
-        today = date_cls.today()
+        # `Article.date` is the public-inbox commit time in UTC (see
+        # CONTEXT.md "articles.date = public-inbox commit timestamp"),
+        # so the bucket window must use the UTC date too. `date.today()`
+        # would advance at *local* midnight, dropping boundary-day
+        # articles outside the range on any non-UTC TZ.
+        today = datetime.now(timezone.utc).date()
         start = today - timedelta(days=days - 1)
         path_filter = _subsystem_path_filter_sql(subsystem, prefix="dvss")
         if path_filter is None:

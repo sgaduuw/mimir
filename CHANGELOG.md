@@ -20,6 +20,18 @@ changes, not internal refactors. Categories: **Added**,
   Dutch supervisory-authority complaint route. Linked from the
   footer on every page.
 
+### Fixed
+
+- `daily_volume_in_subsystem` and `most_active_subsystems` now
+  build their date window from `datetime.now(timezone.utc).date()`
+  instead of `date.today()`. The local-TZ form silently dropped
+  boundary-day articles (the SQL bucket-key landed in UTC while
+  the zero-fill range was in local time) on any non-UTC container
+  or dev machine. Production deploys default Docker's TZ to UTC so
+  the bug was latent there, but it surfaced as a `pytest` failure
+  in `test_daily_volume_in_subsystem_counts_matching_articles`
+  during late-evening runs on West-Coast machines.
+
 ## [2.1.0], 2026-05-23
 
 Adds an operator-diagnostic surface on the broker's warm path so a
