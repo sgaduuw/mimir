@@ -257,13 +257,7 @@ def test_parse_blocks_keeps_interior_three_dash_delete_line():
     more diff content, that line is a real hunk line and must stay
     inside the diff block."""
     body = (
-        "diff --git a/x b/x\n"
-        "--- a/x\n"
-        "+++ b/x\n"
-        "@@ -1,3 +1,2 @@\n"
-        " before\n"
-        "---\n"
-        " after\n"
+        "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,3 +1,2 @@\n before\n---\n after\n"
     )
     blocks = parse_blocks(body)
     diff = next(b for b in blocks if b.kind == "diff")
