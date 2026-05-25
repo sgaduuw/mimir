@@ -11,6 +11,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.2.0], 2026-05-25
+
+Adds a GDPR transparency notice (`/privacy`) and fixes two small
+renderer / date-window bugs the production deploy surfaced. Also
+moves the Ratatoskr logo attribution out of the global footer onto
+the landing-page image where the logo actually lives.
+
 ### Added
 
 - `/privacy` GDPR Art. 13 transparency notice covering controller
