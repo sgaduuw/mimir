@@ -11,6 +11,16 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Web container / systemd unit no longer pass `--access-logfile -`
+  to gunicorn. Every request was being logged twice: once as
+  gunicorn's stock Apache-style line, once as the app's own JSON
+  line emitted by `mimir.web.hooks._log_request`. The JSON form
+  carries the same fields plus `request_id` and `duration_ms`, so
+  the gunicorn line was strictly redundant. `--error-logfile -`
+  stays, gunicorn-internal errors still surface.
+
 ## [2.2.0], 2026-05-25
 
 Adds a GDPR transparency notice (`/privacy`) and fixes two small
