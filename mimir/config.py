@@ -222,10 +222,7 @@ class Settings(BaseSettings):
     #      process (otherwise the broker would self-RPC for its
     #      own ingest/backfill/warm cache.set calls).
     #
-    # 2.0.0 collapsed the previous three-valued `mimir_role`
-    # (web/tasks/broker) into this boolean: only the broker-vs-
-    # everyone-else distinction survives the cleanup. Override via
-    # MIMIR_IS_BROKER.
+    # Override via MIMIR_IS_BROKER.
     mimir_is_broker: bool = False
 
     # True iff this process is one of the deploy containers (web,

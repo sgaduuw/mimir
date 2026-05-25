@@ -168,4 +168,27 @@ def parse_blocks(text: str) -> list[_Block]:
         in_diff = False
         push("text", raw_line)
 
+    # Strip trailing email-scissors lines off diff blocks. `b4 send`
+    # (and various manual workflows) put a bare `---` between the last
+    # hunk and the `base-commit:` / `change-id:` trailer block; the
+    # main-loop diff-continuation rule (line starts with " +-") pulls
+    # that line into the diff, which Pygments then renders as a
+    # `-<operator '--'>` ghost-deletion at the end of the patch. A
+    # *legitimate* `---` hunk-line (delete prefix + literal `--`
+    # content) is always followed by more diff content, so the
+    # "last-line" check distinguishes the two cases without look-ahead.
+    i = 0
+    while i < len(blocks):
+        block = blocks[i]
+        if block.kind == "diff" and block.lines and block.lines[-1].rstrip() == "---":
+            scissors = block.lines.pop()
+            if not block.lines:
+                blocks.pop(i)
+                continue
+            if i + 1 < len(blocks) and blocks[i + 1].kind == "text":
+                blocks[i + 1].lines.insert(0, scissors)
+            else:
+                blocks.insert(i + 1, _Block(kind="text", lines=[scissors]))
+        i += 1
+
     return blocks
