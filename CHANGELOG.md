@@ -11,6 +11,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.3.0], 2026-05-25
+
+Single operator-facing change: the `mimir-web` container's gunicorn
+no longer emits its stock Apache-style access log line. The app's
+own JSON access log (already richer; carries `request_id` +
+`duration_ms`) becomes the sole per-request record, dropping the
+duplicate entry that operators have been parsing around.
+
 ### Changed
 
 - Web container / systemd unit no longer pass `--access-logfile -`
