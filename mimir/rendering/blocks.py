@@ -180,11 +180,7 @@ def parse_blocks(text: str) -> list[_Block]:
     i = 0
     while i < len(blocks):
         block = blocks[i]
-        if (
-            block.kind == "diff"
-            and block.lines
-            and block.lines[-1].rstrip() == "---"
-        ):
+        if block.kind == "diff" and block.lines and block.lines[-1].rstrip() == "---":
             scissors = block.lines.pop()
             if not block.lines:
                 blocks.pop(i)
