@@ -67,11 +67,6 @@ def create_app() -> Flask:
     app.register_blueprint(bp_web)
     _register_indexnow_key_route(app)
     register_cli(app)
-    # No bootstrap_inboxes() here: writes belong on the scheduler
-    # sidecar (run via `mimir bootstrap-inboxes` in deploy/scheduler.sh,
-    # gated by the same `/data/.migrated` sentinel as `alembic upgrade
-    # head`). Web-tier startup must stay read-only so READ_ONLY_DB=true
-    # boots cleanly.
     return app
 
 

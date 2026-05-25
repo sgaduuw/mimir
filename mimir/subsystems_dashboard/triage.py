@@ -149,28 +149,6 @@ def _trailer_summary(
     return out
 
 
-def _resolve_canonical_inbox(
-    session: Session,
-    article_ids: list[int],
-    inbox: Inbox,
-) -> dict[int, str]:
-    """One bulk SELECT mapping article_id → canonical inbox name for
-    URL building. Uses `_canonical_inbox_names_for` from the web
-    helpers... except that's web-tier code and triage.py is data-
-    layer. Repeat the small query here: the helper itself is just a
-    canonical_inbox_id lookup + alphabetical fallback among an
-    article's link set, same shape as in `reads.py`."""
-    # In practice every article in the triage list is linked to
-    # `inbox` (the path-filter SELECT joined article_lists on
-    # `al.inbox_id = :inbox_id`), so the alphabetical fallback
-    # against the per-inbox name string is overkill, just use
-    # `inbox.name`. Keeping the helper around so the route's URL
-    # builder gets a per-article-name mapping rather than a
-    # hardcoded string, in case a future refactor cross-posts the
-    # triage list across inboxes.
-    return {aid: inbox.name for aid in article_ids}
-
-
 def _candidate_query_needs_attention(
     inbox: Inbox,
     subsystem: Subsystem,
