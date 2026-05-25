@@ -569,6 +569,12 @@ Routes:
   100 message URLs per inbox. Cached for 5 min.
 - `GET /security.txt` and `GET /.well-known/security.txt`  
   RFC 9116 contact info. 404 unless `SECURITY_CONTACT` is set.
+- `GET /privacy`, GDPR Art. 13 transparency notice: controller
+  identity, browser storage (Cloudflare cookies, `mimir.fold.*`
+  localStorage), server-side log retention, third parties in the
+  request path, the From-line / DCO-trailer redaction posture,
+  data-subject rights, and the Dutch supervisory-authority complaint
+  route. Linked from the footer on every page.
 
 The body rendering pipeline (`mimir/rendering/`) walks the body
 line by line, segments it into runs of *text*, *quote*, and *diff*,
