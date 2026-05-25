@@ -31,6 +31,15 @@ changes, not internal refactors. Categories: **Added**,
   the bug was latent there, but it surfaced as a `pytest` failure
   in `test_daily_volume_in_subsystem_counts_matching_articles`
   during late-evening runs on West-Coast machines.
+- Body renderer no longer pulls a trailing `---` scissors line into
+  the diff block. `b4 send` puts a bare `---` between the last hunk
+  and the `base-commit:` / `change-id:` trailers; the
+  diff-continuation rule (line starts with " +-") used to swallow
+  that line, which Pygments then rendered as a ghost
+  deletion-of-`--` at the end of the patch. `parse_blocks` now
+  strips a trailing `---` off each diff block (real hunk `---`
+  delete-lines are always followed by more diff content, so the
+  last-line check distinguishes the two cases safely).
 
 ## [2.1.0], 2026-05-23
 

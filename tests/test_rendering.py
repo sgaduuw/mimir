@@ -221,6 +221,50 @@ def test_parse_blocks_diff_runs():
     assert kinds[-1] == "text"
 
 
+def test_parse_blocks_drops_trailing_scissors_from_diff():
+    """`b4 send` emits a `---` scissors between the last hunk and the
+    `base-commit:` / `change-id:` trailer block. The old `[ +-]`-prefix
+    diff-continuation rule pulled that line into the diff so Pygments
+    rendered it as a `-<operator '--'>` ghost-deletion. Trailing bare
+    `---` (with optional whitespace) must fall out of the diff block."""
+    body = (
+        "diff --git a/x b/x\n"
+        "--- a/x\n"
+        "+++ b/x\n"
+        "@@ -1 +1 @@\n"
+        " context\n"
+        "-old\n"
+        "+new\n"
+        "\n"
+        "---\n"
+        "base-commit: deadbeef\n"
+        "change-id: abcd1234\n"
+    )
+    blocks = parse_blocks(body)
+    diff = next(b for b in blocks if b.kind == "diff")
+    assert "---" not in diff.lines
+    # The scissors lands in a text block after the diff, sharing the
+    # block with the b4 trailers so the rendered output reads as one
+    # contiguous footer.
+    tail_lines = [ln for b in blocks if b.kind == "text" for ln in b.lines]
+    assert "---" in tail_lines
+    assert "base-commit: deadbeef" in tail_lines
+
+
+def test_parse_blocks_keeps_interior_three_dash_delete_line():
+    """A hunk that legitimately deletes a source line whose content is
+    `--` produces a `---` line (delete prefix + `--`). When followed by
+    more diff content, that line is a real hunk line and must stay
+    inside the diff block."""
+    body = (
+        "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,3 +1,2 @@\n before\n---\n after\n"
+    )
+    blocks = parse_blocks(body)
+    diff = next(b for b in blocks if b.kind == "diff")
+    assert "---" in diff.lines
+    assert " after" in diff.lines
+
+
 # render_body, full pipeline
 
 
