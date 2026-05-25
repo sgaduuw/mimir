@@ -11,6 +11,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- `/privacy` GDPR Art. 13 transparency notice covering controller
+  identity, browser storage (Cloudflare cookies, `mimir.fold.*`
+  localStorage), server-side log retention, third parties in the
+  request path, redaction posture, data-subject rights, and the
+  Dutch supervisory-authority complaint route. Linked from the
+  footer on every page.
+
 ## [2.1.0], 2026-05-23
 
 Adds an operator-diagnostic surface on the broker's warm path so a

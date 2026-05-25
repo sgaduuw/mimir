@@ -1,5 +1,5 @@
 """Static-ish meta endpoints: `robots.txt`, `security.txt`,
-`favicon.svg`, `og-image.png`.
+`favicon.svg`, `og-image.png`, `privacy`.
 
 The OG image constants (`OG_IMAGE_*`) live here because they're
 referenced from both the route itself and the template-globals
@@ -73,6 +73,15 @@ def favicon_svg():
 @bp_web.route("/og-image.png")
 def og_image_png():
     return send_from_directory(_STATIC_IMG_DIR, OG_IMAGE_FILENAME, mimetype="image/png")
+
+
+@bp_web.route("/privacy")
+def privacy():
+    """GDPR Art. 13 transparency notice. Single static-shaped page
+    rendered into `base.html`; no per-request data, so the route is
+    a thin `render_template` call. Cache-Control comes from the
+    `_CACHE_CONTROL_BY_ENDPOINT` entry for `web.privacy`."""
+    return render_template("privacy.html")
 
 
 @bp_web.route("/security.txt")
