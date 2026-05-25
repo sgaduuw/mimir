@@ -11,6 +11,14 @@ builder", the literal "and" being the load-bearing signal).
 from mimir.models import Subsystem
 
 
+def _prefix_bounds(g: str) -> tuple[str, str]:
+    """Half-open `[lo, hi)` byte range covering every path that
+    starts with the directory prefix `g` (e.g. `arch/x86_64/`).
+    Bumping the trailing byte by one is sufficient because SQLite
+    compares TEXT as BLOB-style byte sequences."""
+    return g, g[:-1] + chr(ord(g[-1]) + 1)
+
+
 def _subsystem_path_filter_sql(
     subsystem: Subsystem,
     prefix: str = "ssp",
@@ -52,13 +60,6 @@ def _subsystem_path_filter_sql(
     def _add(name: str, value: str) -> str:
         params[name] = value
         return name
-
-    def _prefix_bounds(g: str) -> tuple[str, str]:
-        """Half-open `[lo, hi)` byte range covering every path that
-        starts with the directory prefix `g` (e.g. `arch/x86_64/`).
-        Bumping the trailing byte by one is sufficient because SQLite
-        compares TEXT as BLOB-style byte sequences."""
-        return g, g[:-1] + chr(ord(g[-1]) + 1)
 
     # Per-row NOT(exclude) predicate AND-ed into every UNION branch.
     # Small disjunction, only evaluated on rows already matched by an
@@ -147,9 +148,6 @@ def _subsystem_path_filter_exists_sql(
     def _add(name: str, value: str) -> str:
         params[name] = value
         return name
-
-    def _prefix_bounds(g: str) -> tuple[str, str]:
-        return g, g[:-1] + chr(ord(g[-1]) + 1)
 
     # Build the include OR-list. Skip wildcards (same slice-1/2
     # rationale as the sibling helper).

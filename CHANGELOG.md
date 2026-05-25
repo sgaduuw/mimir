@@ -11,6 +11,52 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.2.0], 2026-05-25
+
+Adds a GDPR transparency notice (`/privacy`) and fixes two small
+renderer / date-window bugs the production deploy surfaced. Also
+moves the Ratatoskr logo attribution out of the global footer onto
+the landing-page image where the logo actually lives.
+
+### Added
+
+- `/privacy` GDPR Art. 13 transparency notice covering controller
+  identity, browser storage (Cloudflare cookies, `mimir.fold.*`
+  localStorage), server-side log retention, third parties in the
+  request path, redaction posture, data-subject rights, and the
+  Dutch supervisory-authority complaint route. Linked from the
+  footer on every page.
+
+### Fixed
+
+- `daily_volume_in_subsystem` and `most_active_subsystems` now
+  build their date window from `datetime.now(timezone.utc).date()`
+  instead of `date.today()`. The local-TZ form silently dropped
+  boundary-day articles (the SQL bucket-key landed in UTC while
+  the zero-fill range was in local time) on any non-UTC container
+  or dev machine. Production deploys default Docker's TZ to UTC so
+  the bug was latent there, but it surfaced as a `pytest` failure
+  in `test_daily_volume_in_subsystem_counts_matching_articles`
+  during late-evening runs on West-Coast machines.
+- Body renderer no longer pulls a trailing `---` scissors line into
+  the diff block. `b4 send` puts a bare `---` between the last hunk
+  and the `base-commit:` / `change-id:` trailers; the
+  diff-continuation rule (line starts with " +-") used to swallow
+  that line, which Pygments then rendered as a ghost
+  deletion-of-`--` at the end of the patch. `parse_blocks` now
+  strips a trailing `---` off each diff block (real hunk `---`
+  delete-lines are always followed by more diff content, so the
+  last-line check distinguishes the two cases safely).
+
+### Changed
+
+- The Ratatoskr logo attribution moved from a global footer line
+  (visible on every page, including ones where the logo isn't
+  rendered) into the landing-page `<img>`'s `alt` and `title`
+  attributes. Hovering the image now reveals the credit, and screen
+  readers + image-fallback both surface it where the image actually
+  lives.
+
 ## [2.1.0], 2026-05-23
 
 Adds an operator-diagnostic surface on the broker's warm path so a

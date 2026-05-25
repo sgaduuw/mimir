@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Privacy | {{ site_name }}{% endblock %}
+{% block meta_description %}Privacy notice for {{ site_name }}: what is stored on your device, what is processed server-side, third parties in the request path, and your GDPR rights.{% endblock %}
+{% block content %}
+<section class="privacy">
+  <hgroup>
+    <h1>Privacy</h1>
+    <p><small><em>Last updated: 24 May 2026.</em></small></p>
+  </hgroup>
+
+  <h2>Controller</h2>
+  <p>
+    {{ site_name }} is a personal project run by Eelco Wesemann
+    (Netherlands). Privacy enquiries:
+    <a href="mailto:ratatoskr@init1.nl">ratatoskr@init1.nl</a>.
+  </p>
+
+  <h2>What {{ site_name }} is</h2>
+  <p>
+    A read-only web archive of public-inbox kernel mailing-list
+    mirrors (lkml and related). There are no accounts. Every
+    message displayed is already-public material from
+    <a href="https://lore.kernel.org/">lore.kernel.org</a>
+    and the other public-inbox mirrors; {{ site_name }} does not
+    introduce any new disclosure.
+  </p>
+
+  <h2>What gets stored in your browser</h2>
+  <p>Three Cloudflare cookies, set by the edge for security and availability:</p>
+  <ul>
+    <li><code>__cf_bm</code> (bot mitigation).</li>
+    <li><code>cf_use_ob</code> and <code>cf_ob_info</code>
+      (origin-failover, the Cloudflare &ldquo;Always Online&rdquo;
+      feature).</li>
+  </ul>
+  <p>
+    All three are strictly necessary for operating the service.
+    Under the ePrivacy Directive (Art. 5(3)(b)) and EDPB guidance,
+    strictly necessary cookies do not require consent. Cloudflare&rsquo;s
+    <a href="https://developers.cloudflare.com/fundamentals/reference/policies-compliances/cloudflare-cookies/">published
+    cookie list</a> documents them.
+  </p>
+  <p>One localStorage entry, set by {{ site_name }} itself:</p>
+  <ul>
+    <li><code>mimir.fold.&lt;id&gt;</code>: your fold-state
+      preference for that thread&rsquo;s reply tree. Written only
+      when you click the fold toggle. Stays in your browser,
+      never sent to the server.</li>
+  </ul>
+  <p>
+    No analytics. No tracking pixels. No advertising. No
+    third-party embeds beyond the static-asset CDNs listed below.
+  </p>
+
+  <h2>What gets processed server-side</h2>
+  <p>
+    Standard HTTP request metadata: IP address, User-Agent,
+    request path, response status, timestamp. Retained in
+    operator-side logs for two days, then deleted. Used for abuse
+    triage and debugging.
+  </p>
+  <p>
+    Legal basis: legitimate interest (GDPR Art. 6(1)(f)) in
+    operating and securing the service.
+  </p>
+
+  <h2>Third parties in the request path</h2>
+  <ul>
+    <li>
+      <strong>Cloudflare</strong> (US) fronts {{ site_name }} as
+      an edge proxy and bot-mitigation layer. It sees your IP
+      and request metadata. Cloudflare&rsquo;s Data Processing
+      Addendum and the EU Standard Contractual Clauses cover the
+      EU-to-US transfer.
+    </li>
+    <li>
+      <a href="https://www.jsdelivr.com/">jsdelivr.net</a> and
+      <a href="https://unpkg.com/">unpkg.com</a> serve the two
+      vendored frontend assets (Pico CSS, htmx). Visiting their
+      CDNs reveals your IP to them. Both files are integrity-pinned
+      (SRI), so their content cannot change without breaking the
+      page.
+    </li>
+    <li>
+      <strong>GitHub Container Registry</strong> hosts the
+      deployment image. Not visitor-facing.
+    </li>
+  </ul>
+
+  <h2>Email-address redaction</h2>
+  <p>
+    Visible HTML on message pages redacts non-allowlisted sender
+    addresses to <code>&lt;hidden&gt;</code> and DCO-trailer
+    addresses to <code>&lt;redacted&gt;</code>. This is a friction
+    layer, not a privacy guarantee. The same bytes are public via
+    lore.kernel.org and every other public-inbox mirror; a
+    determined scraper can fetch the original RFC 5322 message in
+    a single HTTP call. The redaction aims to make casual scraping
+    less rewarding, not to claim that {{ site_name }} hides the
+    addresses.
+  </p>
+
+  <h2>Your rights</h2>
+  <p>Under GDPR Art. 15&ndash;22 you may:</p>
+  <ul>
+    <li>request access to data processed about you,</li>
+    <li>request rectification or erasure,</li>
+    <li>request restriction of or object to processing,</li>
+    <li>request data portability.</li>
+  </ul>
+  <p>
+    Email
+    <a href="mailto:ratatoskr@init1.nl">ratatoskr@init1.nl</a>
+    to exercise any of these. Identity verification may be needed
+    before a response.
+  </p>
+
+  <h2>Supervisory authority</h2>
+  <p>
+    If you believe processing violates your rights, you may lodge
+    a complaint with the Dutch supervisory authority:
+    <a href="https://autoriteitpersoonsgegevens.nl/">Autoriteit
+    Persoonsgegevens</a>, Den Haag.
+  </p>
+
+  <h2>Changes</h2>
+  <p>
+    Substantive changes to this notice are recorded in the
+    <a href="https://github.com/sgaduuw/mimir/blob/main/CHANGELOG.md">CHANGELOG</a>.
+    The &ldquo;last updated&rdquo; date at the top reflects the
+    most recent change.
+  </p>
+</section>
+{% endblock %}
