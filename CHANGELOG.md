@@ -41,6 +41,15 @@ changes, not internal refactors. Categories: **Added**,
   delete-lines are always followed by more diff content, so the
   last-line check distinguishes the two cases safely).
 
+### Changed
+
+- The Ratatoskr logo attribution moved from a global footer line
+  (visible on every page, including ones where the logo isn't
+  rendered) into the landing-page `<img>`'s `alt` and `title`
+  attributes. Hovering the image now reveals the credit, and screen
+  readers + image-fallback both surface it where the image actually
+  lives.
+
 ## [2.1.0], 2026-05-23
 
 Adds an operator-diagnostic surface on the broker's warm path so a
