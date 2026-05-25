@@ -118,4 +118,9 @@ EXPOSE 5000
 # margin here exists for the rare outlier rather than as the steady
 # state. Tune via WORKER_TIMEOUT env if a deployment needs different
 # headroom.
-CMD ["sh", "-c", "exec gunicorn 'mimir:create_app()' --bind 0.0.0.0:5000 --workers ${WORKERS} --timeout ${WORKER_TIMEOUT} --access-logfile - --error-logfile -"]
+# `--access-logfile` is deliberately omitted: the app emits its own
+# JSON access-log line per request via `mimir.web.hooks._log_request`
+# (carries the same fields plus request_id + duration_ms). Letting
+# gunicorn also write its stock Apache-style line produced two
+# entries per request in the container log.
+CMD ["sh", "-c", "exec gunicorn 'mimir:create_app()' --bind 0.0.0.0:5000 --workers ${WORKERS} --timeout ${WORKER_TIMEOUT} --error-logfile -"]
