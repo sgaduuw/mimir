@@ -256,8 +256,7 @@ def test_patch_state_surfaces_mainline_landing(seeded_db):
 
 def test_patch_state_landing_row_empty_when_not_landed(seeded_db):
     """No mainline_commits row → empty `mainline_landings`. The
-    template skips the row rather than rendering "Not in mainline"
-    (deferred until mainline_state grows a timestamp column)."""
+    template skips the row rather than rendering "Not in mainline"."""
     with seeded_db() as s:
         art = _add_alpha_article(s, "in-flight@x", "[PATCH 1/2] foo: WIP")
         s.commit()
