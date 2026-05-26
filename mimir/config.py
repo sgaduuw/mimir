@@ -13,6 +13,18 @@ from mimir._outbound import validate_outbound_url
 # explicitly in any deployment that doesn't ship the tree as-is.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# Single source of truth for the Linus mainline tree URL and local
+# mirror path. Referenced by three distinct consumers:
+#   - Settings.mainline_tree_url / mainline_tree_path field defaults
+#   - _seed_trees() legacy-shim drift detection
+#   - _curated_default_trees() linus entry construction
+# Defining them once here prevents silent drift where a change to one
+# default leaves the others pointing at the old value.
+_LINUS_DEFAULT_URL = (
+    "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+)
+_LINUS_DEFAULT_PATH = Path("Mainline/linux.git")
+
 
 class InboxConfig(BaseModel):
     """Env-side description of an inbox. The matching ORM model is
@@ -31,10 +43,93 @@ class InboxConfig(BaseModel):
         return validate_outbound_url(v, allow_http=False)
 
 
+class TreeConfig(BaseModel):
+    """One git tree mimir indexes for `Link:` trailers feeding the
+    patch-lifecycle surfaces. The dict key on `Settings.trees`
+    becomes the user-facing tree slug (rendered on the patch-state
+    card, listing pill, lifecycle timeline)."""
+
+    url: str
+    path: Path
+    display_name: str | None = None
+    # Default "HEAD" means "use whatever the mirror's HEAD points at",
+    # which is fine for trees that publish their canonical branch as
+    # HEAD. Override per-tree for branches like akpm/mm's `mm-stable`
+    # where the canonical pickup signal isn't HEAD.
+    branch: str = "HEAD"
+    # True for trees that force-push (linux-next, daily). The walker
+    # DELETEs the tree's existing rows then re-walks from scratch,
+    # letting INSERT-OR-IGNORE absorb intra-walk dups.
+    rebases: bool = False
+    # Per-tree cadence: skip the tree on `update_mainline` ticks that
+    # arrive sooner than this since the last successful walk.
+    walk_every_seconds: int = 1500  # 25 min default (Linus)
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, v: str) -> str:
+        return validate_outbound_url(v, allow_http=False)
+
+
+def _curated_default_trees() -> dict[str, "TreeConfig"]:
+    """The 7-tree default set. Function (not module-level constant)
+    so each Settings() instantiation gets fresh TreeConfig objects;
+    avoids mutation across tests."""
+    return {
+        "linus": TreeConfig(
+            url=_LINUS_DEFAULT_URL,
+            path=_LINUS_DEFAULT_PATH,
+            display_name="mainline (Linus)",
+            walk_every_seconds=1500,
+            rebases=False,
+        ),
+        # linux-next force-pushes daily; full re-walks are heavier, so
+        # 24 h cadence + rebases=True is the right pairing.
+        "linux-next": TreeConfig(
+            url="https://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git",
+            path=Path("Mainline/linux-next.git"),
+            walk_every_seconds=86400,
+            rebases=True,
+        ),
+        "net-next": TreeConfig(
+            url="https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git",
+            path=Path("Mainline/net-next.git"),
+            walk_every_seconds=3600,
+        ),
+        "tip": TreeConfig(
+            url="https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git",
+            path=Path("Mainline/tip.git"),
+            walk_every_seconds=3600,
+        ),
+        "pci": TreeConfig(
+            url="https://git.kernel.org/pub/scm/linux/kernel/git/helgaas/pci.git",
+            path=Path("Mainline/pci.git"),
+            walk_every_seconds=3600,
+        ),
+        "mm": TreeConfig(
+            url="https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git",
+            path=Path("Mainline/mm.git"),
+            branch="mm-stable",
+            walk_every_seconds=3600,
+        ),
+        "bpf-next": TreeConfig(
+            url="https://git.kernel.org/pub/scm/linux/kernel/git/bpf/bpf-next.git",
+            path=Path("Mainline/bpf-next.git"),
+            walk_every_seconds=3600,
+        ),
+    }
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"),
         extra="ignore",
+        # `__` as nested delimiter enables `FIELD__subkey__subsubkey`
+        # env vars for dict-of-model fields like `trees` and `inboxes`.
+        # e.g. `TREES__net_next__URL=...` seeds a single-tree config.
+        # Existing scalar env vars (SECRET_KEY, DATABASE_URL, etc.) are
+        # unaffected; none of them contain `__`.
+        env_nested_delimiter="__",
     )
 
     flask_debug: bool = False
@@ -67,6 +162,11 @@ class Settings(BaseSettings):
     # mailing list; the schema and routes are list-aware. Override via
     # JSON in the INBOXES env var, e.g.
     #   INBOXES='{"lkml": {"mirror_path": "...", "upstream_url": "..."}, "linux-arm-kernel": {...}}'
+    # Because `env_nested_delimiter="__"` is active, pydantic-settings
+    # also accepts per-key env vars of the form
+    #   INBOXES__lkml__MIRROR_PATH=...  INBOXES__lkml__UPSTREAM_URL=...
+    # Important: ANY INBOXES__* env key REPLACES the whole default dict;
+    # pydantic-settings does not merge individual keys into the default.
     inboxes: dict[str, InboxConfig] = {
         "lkml": InboxConfig(
             mirror_path=Path("Inboxes/lkml/git"),
@@ -288,10 +388,47 @@ class Settings(BaseSettings):
     # `Inboxes/`; pick `Mainline/linux.git` so a typical deploy gets
     # `<data root>/Inboxes/<list>/git` and `<data root>/Mainline/linux.git`
     # side-by-side. Override via MAINLINE_TREE_PATH / MAINLINE_TREE_URL.
-    mainline_tree_path: Path = Path("Mainline/linux.git")
-    mainline_tree_url: str = (
-        "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
-    )
+    mainline_tree_path: Path = _LINUS_DEFAULT_PATH
+    mainline_tree_url: str = _LINUS_DEFAULT_URL
+
+    # Per-tree config for the multi-tree mainline lifecycle surfaces.
+    # Three-way seed:
+    #   1. TREES__<slug>__URL / TREES__<slug>__PATH env keys set -> take env
+    #      as-is. Uses `env_nested_delimiter="__"` in model_config; slugs
+    #      that contain dashes must be env-encoded with underscores
+    #      (e.g. `TREES__net_next__URL`) and are normalised back to dashes.
+    #      Important: ANY TREES__* env key REPLACES the whole default set;
+    #      pydantic-settings does not merge individual keys into the defaults.
+    #   2. Legacy MAINLINE_TREE_URL/PATH set -> seed only `linus`.
+    #   3. Neither -> seed the full curated default set.
+    # The legacy MAINLINE_TREE_URL / MAINLINE_TREE_PATH scalars
+    # above are deprecated; removed in the next major.
+    trees: dict[str, TreeConfig] = {}
+
+    @field_validator("trees", mode="after")
+    @classmethod
+    def _seed_trees(cls, v: dict, info) -> dict:
+        if v:
+            # Operator set TREES__* env keys -> use as-is.
+            # Normalise underscore-style slugs to dash-style for the
+            # user-facing labels.
+            return {k.replace("_", "-"): cfg for k, cfg in v.items()}
+
+        data = info.data
+        legacy_url = data.get("mainline_tree_url")
+        legacy_path = data.get("mainline_tree_path")
+        if (legacy_url and legacy_url != _LINUS_DEFAULT_URL) or (
+            legacy_path and legacy_path != _LINUS_DEFAULT_PATH
+        ):
+            return {
+                "linus": TreeConfig(
+                    url=legacy_url or _LINUS_DEFAULT_URL,
+                    path=legacy_path or _LINUS_DEFAULT_PATH,
+                    walk_every_seconds=1500,
+                ),
+            }
+
+        return _curated_default_trees()
 
     # IndexNow (https://www.indexnow.org/). Push-notification protocol
     # for new URLs, consumed by Bing/Yandex/Naver/Seznam/Yep. Google
