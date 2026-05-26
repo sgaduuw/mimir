@@ -304,6 +304,181 @@ def test_walk_commits_rewalks_when_cursor_missing(seeded_db, tmp_path):
     assert result.rows_inserted == 1
 
 
+def _make_fake_tree(tmp_path, commits):
+    """Build a minimal bare git repo at tmp_path/fake.git with the
+    given linear commits. `commits` is a list of (message, filename)
+    tuples; each becomes a commit whose tree has just that file."""
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+
+    repo_path = tmp_path / "fake.git"
+    repo = Repo.init_bare(str(repo_path), mkdir=True)
+    parent = None
+    for msg, filename in commits:
+        blob = Blob.from_string(b"x")
+        repo.object_store.add_object(blob)
+        tree = Tree()
+        tree.add(filename, 0o100644, blob.id)
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.message = msg.encode()
+        commit.author = commit.committer = b"Test <t@x>"
+        commit.author_time = commit.commit_time = 1700000000
+        commit.author_timezone = commit.commit_timezone = 0
+        if parent:
+            commit.parents = [parent]
+        repo.object_store.add_object(commit)
+        parent = commit.id
+    if parent is not None:
+        repo.refs[b"HEAD"] = parent
+    return repo_path
+
+
+def _make_fake_tree_with_branches(tmp_path, branches):
+    """Like _make_fake_tree but builds N independent branches. `branches`
+    is a dict {branch_name: [(message, filename), ...]} where the special
+    name "HEAD" goes on HEAD and any other name becomes a
+    `refs/heads/<name>` branch."""
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+
+    repo_path = tmp_path / "fake.git"
+    repo = Repo.init_bare(str(repo_path), mkdir=True)
+    for branch_name, commits in branches.items():
+        parent = None
+        for msg, filename in commits:
+            blob = Blob.from_string(b"x")
+            repo.object_store.add_object(blob)
+            tree = Tree()
+            tree.add(filename, 0o100644, blob.id)
+            repo.object_store.add_object(tree)
+            commit = Commit()
+            commit.tree = tree.id
+            commit.message = msg.encode()
+            commit.author = commit.committer = b"Test <t@x>"
+            commit.author_time = commit.commit_time = 1700000000
+            commit.author_timezone = commit.commit_timezone = 0
+            if parent:
+                commit.parents = [parent]
+            repo.object_store.add_object(commit)
+            parent = commit.id
+        if branch_name == "HEAD":
+            repo.refs[b"HEAD"] = parent
+        else:
+            repo.refs[f"refs/heads/{branch_name}".encode()] = parent
+    return repo_path
+
+
+def test_walk_commits_rebases_true_clears_old_rows_for_tree(seeded_db, tmp_path):
+    """rebases=True walker DELETEs existing rows for this tree before
+    walking. Stale SHAs from a prior force-pushed history don't
+    accumulate."""
+    from mimir.models import MainlineCommit
+
+    with seeded_db() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha="staleshastaleshastaleshastalesha000000000",
+                message_id="orphan@example.com",
+                tree_name="linux-next",
+                committed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        s.commit()
+
+    tree_path = _make_fake_tree(
+        tmp_path,
+        commits=[
+            (
+                "Some change\n\nLink: https://lore.kernel.org/r/live@example.com\n",
+                b"foo.c",
+            ),
+        ],
+    )
+    with seeded_db() as s:
+        walk_commits(s, tree_path, tree_name="linux-next", rebases=True)
+
+    with seeded_db() as s:
+        surviving = {
+            r.commit_sha
+            for r in s.execute(
+                select(MainlineCommit).where(MainlineCommit.tree_name == "linux-next")
+            ).scalars()
+        }
+        assert "staleshastaleshastaleshastalesha000000000" not in surviving
+        live_mids = {r.message_id for r in s.execute(select(MainlineCommit)).scalars()}
+        assert "live@example.com" in live_mids
+
+
+def test_walk_commits_rebases_false_keeps_other_tree_rows(seeded_db, tmp_path):
+    """rebases=False walking net-next does NOT touch linus rows."""
+    from mimir.models import MainlineCommit
+
+    other_sha = "linushashasalinushashasalinushashasalinush"
+    with seeded_db() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha=other_sha,
+                message_id="other@example.com",
+                tree_name="linus",
+                committed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        s.commit()
+
+    # Real commit list so the walker actually exercises its main loop;
+    # otherwise an empty repo short-circuits before any tree-isolation
+    # logic runs and the test proves nothing.
+    tree_path = _make_fake_tree(
+        tmp_path,
+        commits=[
+            ("net-next change\n\nLink: https://lore.kernel.org/r/netfix@x\n", b"f.c"),
+        ],
+    )
+    with seeded_db() as s:
+        walk_commits(s, tree_path, tree_name="net-next", rebases=False)
+
+    with seeded_db() as s:
+        survived = s.get(MainlineCommit, (other_sha, "other@example.com"))
+        assert survived is not None
+
+
+def test_walk_commits_branch_override(seeded_db, tmp_path):
+    """Non-default branch param walks that branch, not HEAD."""
+    from mimir.models import MainlineCommit
+
+    tree_path = _make_fake_tree_with_branches(
+        tmp_path,
+        branches={
+            "HEAD": [
+                (
+                    "HEAD-commit\n\nLink: https://lore.kernel.org/r/head@x\n",
+                    b"f.c",
+                )
+            ],
+            "mm-stable": [
+                (
+                    "mm-stable-commit\n\nLink: https://lore.kernel.org/r/stable@x\n",
+                    b"f.c",
+                )
+            ],
+        },
+    )
+    with seeded_db() as s:
+        walk_commits(s, tree_path, tree_name="mm", branch="mm-stable")
+
+    with seeded_db() as s:
+        mids = {
+            r.message_id
+            for r in s.execute(
+                select(MainlineCommit).where(MainlineCommit.tree_name == "mm")
+            ).scalars()
+        }
+    assert "stable@x" in mids
+    assert "head@x" not in mids
+
+
 def test_walk_commits_full_rewalk_is_idempotent_via_on_conflict(
     seeded_db,
     tmp_path,

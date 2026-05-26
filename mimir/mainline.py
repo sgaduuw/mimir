@@ -112,48 +112,111 @@ def walk_commits(
     session: Session,
     tree_path: Path,
     tree_name: str = "linus",
+    *,
+    branch: str = "HEAD",
+    rebases: bool = False,
 ) -> WalkResult:
     """Walk new commits on `tree_path`, extract `Link:` trailers,
-    insert `mainline_commits` rows. Resumable: starts after the
-    last walked SHA recorded on `MainlineState`, so steady-state
-    ticks only see the commits since the prior run.
+    insert `mainline_commits` rows.
 
-    First-run behaviour: walks the entire history. On a full Linus
-    tree that's ~1.5M commits and takes minutes. Operator can scope
-    the initial run by setting `commits_walked_to_sha` manually
-    (e.g. to a recent release tag) if they only care about
+    When `rebases=True`: DELETE the tree's existing rows first then
+    walk from `branch` to root with no exclude. Used for force-pushed
+    trees like linux-next where the SHA cursor would be invalidated
+    daily; INSERT-OR-IGNORE absorbs duplicates intra-walk.
+
+    When `rebases=False` (default): incremental SHA-cursor walk. The
+    cursor on `MainlineState.commits_walked_to_sha` is advanced past
+    the last seen SHA so the next tick only sees commits since the
+    prior run. Missing-cursor defensive rewalk stays in place.
+
+    `branch` selects which ref to walk. Defaults to HEAD; override
+    for trees like akpm/mm where the canonical pickup signal lives on
+    a non-HEAD branch (e.g. `mm-stable`). Missing branch falls back
+    to HEAD with a warning log.
+
+    First-run behaviour (rebases=False): walks the entire history. On
+    a full Linus tree that's ~1.5M commits and takes minutes. Operator
+    can scope the initial run by setting `commits_walked_to_sha`
+    manually (e.g. to a recent release tag) if they only care about
     recent history."""
     repo = Repo(str(tree_path))
     state = session.get(MainlineState, tree_name)
     if state is None:
         state = MainlineState(tree_name=tree_name)
         session.add(state)
-    head = repo.head()
-    since = state.commits_walked_to_sha
 
-    # dulwich's reverse=True walker emits oldest-first, which is
-    # what we want: we want to advance the cursor monotonically.
-    exclude: list[bytes] = []
-    if since:
+    # Resolve the branch ref. HEAD is the common case; named branches
+    # are used for trees like akpm/mm where the canonical work lives
+    # on a non-default ref. A missing named branch degrades gracefully
+    # to HEAD rather than crashing, because a tree config error should
+    # not halt other trees' indexing on the same tick. An empty repo
+    # (no commits at all) produces a WalkResult with zero commits.
+    branch_ref: bytes | None
+    if branch == "HEAD":
         try:
-            repo[since.encode()]
-            exclude = [since.encode()]
+            branch_ref = repo.head()
         except KeyError:
-            # Cursor points at a SHA that no longer exists in the
-            # repo (force-push, history rewrite, shouldn't happen
-            # on Linus's tree, but be defensive). Re-walk from
-            # scratch rather than crash.
+            branch_ref = None
+    else:
+        try:
+            branch_ref = repo.refs[f"refs/heads/{branch}".encode()]
+        except KeyError:
             logger.warning(
-                "mainline: cursor SHA %s missing from %s; rewalking",
-                since,
+                "mainline: branch %s missing in %s; falling back to HEAD",
+                branch,
                 tree_path,
             )
-            exclude = []
-    walker = repo.get_walker(include=[head], exclude=exclude, reverse=True)
+            try:
+                branch_ref = repo.head()
+            except KeyError:
+                branch_ref = None
 
-    result = WalkResult(last_walked_sha=since)
+    if branch_ref is None:
+        # Empty repo or missing ref: nothing to walk. Commit any
+        # pending session state (e.g. the new MainlineState row) and
+        # return early with zero counts. Note: the rebases=True DELETE
+        # has not been issued yet at this point; that block comes after
+        # this guard.
+        session.commit()
+        return WalkResult()
+
+    exclude: list[bytes] = []
+    if rebases:
+        # Force-pushed tree: wipe the tree's existing rows so stale
+        # SHAs don't accumulate. The full walk that follows re-inserts
+        # the live history; ON CONFLICT DO NOTHING absorbs any
+        # intra-walk duplicates from merge-graph re-emissions.
+        session.execute(
+            delete(MainlineCommit).where(MainlineCommit.tree_name == tree_name)
+        )
+    else:
+        # Incremental cursor walk. Skip commits already recorded in
+        # the prior run by excluding the last-seen SHA. If the cursor
+        # SHA no longer exists (force-push, shallow re-clone), re-walk
+        # from scratch: we'd rather re-insert against ON CONFLICT than
+        # crash and stall the tree.
+        since = state.commits_walked_to_sha
+        if since:
+            try:
+                repo[since.encode()]
+                exclude = [since.encode()]
+            except KeyError:
+                logger.warning(
+                    "mainline: cursor SHA %s missing from %s; rewalking",
+                    since,
+                    tree_path,
+                )
+
+    # dulwich's reverse=True walker emits oldest-first, which is what
+    # we want: advance the SHA cursor monotonically so the next tick
+    # only picks up commits appended after this one.
+    walker = repo.get_walker(include=[branch_ref], exclude=exclude, reverse=True)
+
+    result = WalkResult(
+        last_walked_sha=None if rebases else state.commits_walked_to_sha
+    )
     pending_rows: list[dict] = []
-    last_seen: str | None = since
+    last_seen: str | None = result.last_walked_sha
 
     def flush() -> None:
         if pending_rows:
@@ -207,10 +270,11 @@ def walk_commits(
         if result.commits_seen % _BATCH == 0:
             flush()
             logger.info(
-                "mainline: walked %d commits (%d linked, %d rows)",
+                "mainline: walked %d commits (%d linked, %d rows) on %s",
                 result.commits_seen,
                 result.linked,
                 result.rows_inserted,
+                tree_name,
             )
 
     flush()
