@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 
 from mimir.dashboard import monthly_volume
 from mimir.extensions import SessionLocal
+from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Article, ArticleList
 from mimir.threading import (
     THREADS_SINCE_MAX_DAYS,
@@ -62,6 +63,9 @@ def _daily_view(inbox_name: str, day: date_cls, heading: str):
                 Article.date < end,
             )
         )
+        lifecycle_status_by_id = lifecycle_status_for_articles(
+            session, [t.id for t in threads]
+        )
     return render_template(
         "daily.html",
         inbox_name=inbox.name,
@@ -70,6 +74,7 @@ def _daily_view(inbox_name: str, day: date_cls, heading: str):
         heading=heading,
         threads=threads,
         total_messages=total or 0,
+        lifecycle_status_by_id=lifecycle_status_by_id,
     )
 
 
@@ -117,6 +122,9 @@ def threads_since_view(inbox_name: str, since_str: str):
                 Article.date < end,
             )
         )
+        lifecycle_status_by_id = lifecycle_status_for_articles(
+            session, [t.id for t in threads]
+        )
     return render_template(
         "since.html",
         inbox_name=inbox.name,
@@ -127,6 +135,7 @@ def threads_since_view(inbox_name: str, since_str: str):
         max_days=THREADS_SINCE_MAX_DAYS,
         threads=threads,
         total_messages=total or 0,
+        lifecycle_status_by_id=lifecycle_status_by_id,
     )
 
 
@@ -166,6 +175,9 @@ def month_archive(inbox_name: str, year: int, month: int):
         # path off the COUNT(*) over the month's article rows.
         volume = monthly_volume(session, inbox, year)
         total = next((c for m, c in volume.months if m == month), 0)
+        lifecycle_status_by_id = lifecycle_status_for_articles(
+            session, [t.id for t in threads]
+        )
 
     if month == 1:
         prev_year, prev_month = year - 1, 12
@@ -196,4 +208,5 @@ def month_archive(inbox_name: str, year: int, month: int):
             if next_year <= _max_archive_year()
             else None
         ),
+        lifecycle_status_by_id=lifecycle_status_by_id,
     )

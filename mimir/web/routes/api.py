@@ -8,6 +8,7 @@ the route-rich `dashboards.py` further.
 from flask import abort, render_template, request
 
 from mimir.extensions import SessionLocal
+from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.web._blueprint import bp_web
 from mimir.web.routes.dashboards import RECENT_PAGE_SIZE, _fetch_recent
 from mimir.web.urls import _get_inbox_or_404
@@ -38,10 +39,14 @@ def api_recent(inbox_name: str):
         recent, recent_has_more = _fetch_recent(
             session, inbox, offset, RECENT_PAGE_SIZE
         )
+        lifecycle_status_by_id = lifecycle_status_for_articles(
+            session, [a.id for a in recent]
+        )
     return render_template(
         "_recent_items.html",
         inbox_name=inbox.name,
         recent=recent,
         recent_has_more=recent_has_more,
         recent_next_offset=offset + RECENT_PAGE_SIZE,
+        lifecycle_status_by_id=lifecycle_status_by_id,
     )

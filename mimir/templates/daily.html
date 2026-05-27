@@ -16,6 +16,8 @@
     <ul>
       {% for t in threads %}
       <li>
+        {%- set status = lifecycle_status_by_id.get(t.id) if lifecycle_status_by_id else None -%}
+        {% include "_lifecycle_pill.html" %}
         <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject|clean_subject or '(no subject)' }}</a>
         <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
           &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} {{ heading|lower }}
