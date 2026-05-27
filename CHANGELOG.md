@@ -11,6 +11,22 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Patch-page header redesign. The patch-state aside is dissolved
+  into two top-row badges (activity heat chip + lifecycle pill
+  with inline review counts). The "Lifecycle" timeline section
+  is removed; the same per-tree data lives in the lifecycle
+  pill's tooltip (commit hash + timestamp on top line, reviewer
+  names with `M ` prefix on maintainers one-per-line below).
+  The patch-revisions surface moves to a foldable Revisions
+  timeline below the From block, summary showing the count.
+  Listing rows switch to the same badge primitive; height +
+  typography unify across activity and lifecycle badges so the
+  row reads as a cohesive metadata pair instead of two competing
+  widgets. The trailers line drops; counts live in the pill's
+  `: N (XM)` suffix, per-reviewer names in the tooltip.
+
 ## [2.4.1], 2026-05-26
 
 ### Fixed
