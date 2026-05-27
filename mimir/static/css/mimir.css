@@ -668,3 +668,94 @@ pre.body-text-block {
   margin-bottom: 0.85rem;
 }
 .lifecycle-event-detail { color: var(--pico-muted-color); margin-left: 0.4em; }
+
+/* =====================================================================
+   Revisions fold
+   ---------------------------------------------------------------------
+   Foldable timeline that lives between the From block and the message
+   body on patch pages with >= 2 revisions. Summary line carries the
+   count so a maintainer sees revision-density at-a-glance; expanded
+   body renders one row per revision with a [diff vs current] link
+   (except on the current revision itself).
+   ===================================================================== */
+
+.revisions-fold {
+  margin: 0.5rem 0 1rem 0;
+}
+.revisions-fold summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+}
+.revisions-fold summary::-webkit-details-marker { display: none; }
+.revisions-fold summary::before {
+  content: '\25B8';
+  display: inline-block;
+  width: 1em;
+  transition: transform 0.15s ease;
+  opacity: 0.5;
+}
+.revisions-fold[open] summary::before { transform: rotate(90deg); }
+.revisions-fold .revisions-content { margin-top: 0.5rem; }
+
+.revisions-count {
+  opacity: 0.55;
+  font-weight: 500;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  margin-left: 0.25em;
+}
+
+.revisions-timeline {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+  border-left: 2px solid var(--pico-muted-border-color, rgba(127,127,127,0.25));
+}
+.revisions-timeline > li {
+  padding: 0.3em 0 0.3em 1em;
+  position: relative;
+  font-size: 0.9rem;
+}
+.revisions-timeline > li::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 0.8em;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.4;
+}
+.revisions-timeline > li.is-current::before { opacity: 1; }
+.revisions-timeline time {
+  display: inline-block;
+  min-width: 10em;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+}
+.revisions-timeline .rev-label {
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+}
+.revisions-timeline .rev-current-marker {
+  font-style: italic;
+  opacity: 0.6;
+  margin-left: 0.4em;
+  font-size: 0.9em;
+}
+.revisions-timeline a {
+  margin-left: 0.6em;
+  opacity: 0.75;
+  font-size: 0.85em;
+  font-family: ui-monospace, monospace;
+}
