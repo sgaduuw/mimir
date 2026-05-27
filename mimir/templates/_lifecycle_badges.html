@@ -1,0 +1,21 @@
+{# Listing-row badges: activity chip + (optional) lifecycle pill.
+
+   Caller passes `status` (LifecycleStatusInfo or None). Activity
+   chip always renders when status is set (every article has an
+   activity heat, even dormant). Lifecycle pill renders for every
+   state EXCEPT pending (pending = silence, no badge).
+
+   Contract: activity first, lifecycle second. Single line, inline-
+   flex so they sit on the same baseline.
+#}
+{%- if status -%}
+<span class="badge badge-activity-{{ status.activity_heat }}">
+  <span class="badge-dot" aria-hidden="true"></span>{{ status.activity_heat|upper }}<span class="badge-detail">{{ status.activity_detail }}</span>
+</span>
+{%- if status.state.value != 'pending' -%}
+<span class="badge badge-lifecycle-{{ status.state.value }}"
+      {%- if status.tooltip %} data-tooltip="{{ status.tooltip }}" tabindex="0"{% endif %}>
+  {{ status.pill_label }}{% if status.count_suffix %}<span class="badge-count">{{ status.count_suffix }}</span>{% endif %}
+</span>
+{%- endif -%}
+{%- endif -%}
