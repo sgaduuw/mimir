@@ -281,6 +281,10 @@ def test_format_pill_label_per_state():
     )
     assert _format_pill_label(LifecycleStatus.REVIEWED, tree=None) == "REVIEWED"
     assert _format_pill_label(LifecycleStatus.SUPERSEDED, tree=None) == "SUPERSEDED"
+    # PENDING returns "" so a defensive caller bypassing the
+    # template's `state.value != 'pending'` gate doesn't render
+    # a stray PENDING label.
+    assert _format_pill_label(LifecycleStatus.PENDING, tree=None) == ""
 
 
 def test_format_count_suffix_omits_when_zero():

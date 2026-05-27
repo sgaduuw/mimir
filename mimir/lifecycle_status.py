@@ -248,8 +248,12 @@ SELECT t.article_id,
 
 def _format_pill_label(state: LifecycleStatus, tree: str | None) -> str:
     """Build the uppercase pill label for a state. QUEUED reads
-    `IN <TREE>` (kebab-case slug uppercased). Other states use the
-    state name verbatim."""
+    `IN <TREE>` (kebab-case slug uppercased). LANDED / REVIEWED /
+    SUPERSEDED use the state name verbatim. PENDING returns "" so
+    a defensive caller that bypasses the template's `state.value
+    != 'pending'` gate never renders a stray label."""
+    if state == LifecycleStatus.PENDING:
+        return ""
     if state == LifecycleStatus.QUEUED:
         tree_label = (tree or "").upper()
         return f"IN {tree_label}".strip()
