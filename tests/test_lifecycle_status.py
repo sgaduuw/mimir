@@ -262,6 +262,7 @@ def test_lifecycle_status_info_carries_display_fields():
     activity_detail, pill_label, count_suffix, tooltip with
     defaults for older cache rows."""
     from mimir.lifecycle_status import LifecycleStatusInfo
+
     info = LifecycleStatusInfo(state_value="pending")
     assert info.activity_heat == "dormant"
     assert info.activity_detail == "no replies"
@@ -272,15 +273,19 @@ def test_lifecycle_status_info_carries_display_fields():
 
 def test_format_pill_label_per_state():
     from mimir.lifecycle_status import LifecycleStatus, _format_pill_label
+
     assert _format_pill_label(LifecycleStatus.LANDED, tree=None) == "LANDED"
     assert _format_pill_label(LifecycleStatus.QUEUED, tree="net-next") == "IN NET-NEXT"
-    assert _format_pill_label(LifecycleStatus.QUEUED, tree="linux-next") == "IN LINUX-NEXT"
+    assert (
+        _format_pill_label(LifecycleStatus.QUEUED, tree="linux-next") == "IN LINUX-NEXT"
+    )
     assert _format_pill_label(LifecycleStatus.REVIEWED, tree=None) == "REVIEWED"
     assert _format_pill_label(LifecycleStatus.SUPERSEDED, tree=None) == "SUPERSEDED"
 
 
 def test_format_count_suffix_omits_when_zero():
     from mimir.lifecycle_status import _format_count_suffix
+
     assert _format_count_suffix(0, 0) is None
     assert _format_count_suffix(1, 0) == ": 1 (0M)"
     assert _format_count_suffix(6, 3) == ": 6 (3M)"
@@ -289,9 +294,11 @@ def test_format_count_suffix_omits_when_zero():
 
 def test_format_tooltip_landed_with_reviewers():
     from mimir.lifecycle_status import (
-        LifecycleStatus, _format_tooltip,
+        LifecycleStatus,
+        _format_tooltip,
     )
     from datetime import datetime, timezone
+
     tip = _format_tooltip(
         state=LifecycleStatus.LANDED,
         linus_sha="feedface12345678",
@@ -311,12 +318,15 @@ def test_format_tooltip_landed_with_reviewers():
 def test_format_tooltip_queued_uses_earliest_other_tree():
     from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
     from datetime import datetime, timezone
+
     tip = _format_tooltip(
         state=LifecycleStatus.QUEUED,
-        linus_sha=None, linus_committed_at=None,
+        linus_sha=None,
+        linus_committed_at=None,
         earliest_other_sha="24be70885101abcd",
         earliest_other_at=datetime(2026, 5, 25, 14, 8, tzinfo=timezone.utc),
-        superseded_by_version=None, superseded_by_posted_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
         reviewers=[("Alice", True), ("Bob", False)],
     )
     assert tip.startswith("24be70885101 · 2026-05-25 14:08")
@@ -326,11 +336,15 @@ def test_format_tooltip_queued_uses_earliest_other_tree():
 
 def test_format_tooltip_reviewed_names_only():
     from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+
     tip = _format_tooltip(
         state=LifecycleStatus.REVIEWED,
-        linus_sha=None, linus_committed_at=None,
-        earliest_other_sha=None, earliest_other_at=None,
-        superseded_by_version=None, superseded_by_posted_at=None,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
         reviewers=[("Alice", True), ("Bob", False), ("Carol", True)],
     )
     # Maintainers first (alphabetical via input order), then non-
@@ -341,10 +355,13 @@ def test_format_tooltip_reviewed_names_only():
 def test_format_tooltip_superseded_uses_supersede_note():
     from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
     from datetime import datetime, timezone
+
     tip = _format_tooltip(
         state=LifecycleStatus.SUPERSEDED,
-        linus_sha=None, linus_committed_at=None,
-        earliest_other_sha=None, earliest_other_at=None,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
         superseded_by_version="4",
         superseded_by_posted_at=datetime(2026, 5, 18, tzinfo=timezone.utc),
         reviewers=[("Alice", True), ("Bob", False)],
@@ -356,12 +373,15 @@ def test_format_tooltip_superseded_uses_supersede_note():
 def test_format_tooltip_landed_no_reviewers():
     from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
     from datetime import datetime, timezone
+
     tip = _format_tooltip(
         state=LifecycleStatus.LANDED,
         linus_sha="cafebabe98765432",
         linus_committed_at=datetime(2026, 4, 14, 11, 8, tzinfo=timezone.utc),
-        earliest_other_sha=None, earliest_other_at=None,
-        superseded_by_version=None, superseded_by_posted_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
         reviewers=[],
     )
     # Single line: just the commit info; no newline at the end.
@@ -370,14 +390,95 @@ def test_format_tooltip_landed_no_reviewers():
 
 def test_format_tooltip_pending_returns_none():
     from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+
     tip = _format_tooltip(
         state=LifecycleStatus.PENDING,
-        linus_sha=None, linus_committed_at=None,
-        earliest_other_sha=None, earliest_other_at=None,
-        superseded_by_version=None, superseded_by_posted_at=None,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
         reviewers=[],
     )
     assert tip is None
+
+
+def test_bulk_uncached_returns_reviewer_counts(session):
+    """The bulk fetcher surfaces review-trailer counts (total +
+    maintainer-subset) per article alongside the state derivation."""
+    from mimir.lifecycle_status import _bulk_uncached
+    from mimir.models import Subsystem, SubsystemMaintainer
+
+    art = _seed_article(session, "rc@x")
+    # Add a Subsystem + Maintainer so the maintainer-subset count > 0.
+    sub = Subsystem(name="TEST", status="Maintained")
+    session.add(sub)
+    session.commit()
+    session.add(
+        SubsystemMaintainer(
+            subsystem_id=sub.id,
+            role="M",
+            name="Bob Maintainer",
+            address="bob@kernel.org",
+        )
+    )
+    # Three review trailers: 1 from maintainer, 2 from others.
+    for role, addr in [
+        ("Reviewed-by", "bob@kernel.org"),
+        ("Reviewed-by", "alice@example.com"),
+        ("Tested-by", "carol@example.com"),
+    ]:
+        session.add(
+            ArticleTrailer(
+                article_id=art.id,
+                role=role,
+                name="x",
+                address=addr,
+                address_normalized=addr.lower(),
+            )
+        )
+    session.commit()
+
+    got = _bulk_uncached(session, [art.id])
+    info = got[art.id]
+    assert info.count_suffix == ": 3 (1M)"
+
+
+def test_bulk_uncached_computes_thread_activity(session):
+    """The bulk fetcher computes days_since_last_reply per article
+    via the thread-tree max-date, so listings can render activity
+    heat without per-article thread walks in the route."""
+    from datetime import timedelta
+
+    from mimir.lifecycle_status import _bulk_uncached
+
+    root_date = datetime.now(timezone.utc) - timedelta(days=30)
+    root = _seed_article(session, "root@x", date=root_date)
+    inbox = session.execute(select(Inbox).where(Inbox.name == "lkml")).scalar_one()
+    today = datetime.now(timezone.utc)
+    reply = Article(
+        message_id="reply@x",
+        subject="Re: foo",
+        date=today,
+        author="r",
+        thread_parent=root.message_id,
+    )
+    session.add(reply)
+    session.commit()
+    session.add(
+        ArticleList(
+            article_id=reply.id,
+            inbox_id=inbox.id,
+            epoch="0.git",
+            commit_sha="x" * 40,
+        )
+    )
+    session.commit()
+
+    got = _bulk_uncached(session, [root.id])
+    assert got[root.id].activity_heat == "hot"
+    assert got[root.id].activity_detail == "today"
 
 
 def test_lifecycle_status_query_uses_index_seeks(session):
