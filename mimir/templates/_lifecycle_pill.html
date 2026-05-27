@@ -1,0 +1,19 @@
+{# Renders the listing-row lifecycle pill.
+   Caller passes `status` (LifecycleStatusInfo) and optionally
+   `compact=True`. Pending state renders no pill (default = silence).
+#}
+{%- if status and status.state.value != 'pending' -%}
+{%- set state_value = status.state.value -%}
+<mark class="lifecycle-pill lifecycle-{{ state_value }}"
+      {%- if status.tree %} data-tree="{{ status.tree }}"{% endif %}>
+  {%- if state_value == 'queued' and status.tree -%}
+    in {{ status.tree }}
+  {%- elif state_value == 'landed' -%}
+    landed
+  {%- elif state_value == 'superseded' -%}
+    superseded
+  {%- elif state_value == 'reviewed' -%}
+    reviewed
+  {%- endif -%}
+</mark>
+{%- endif -%}
