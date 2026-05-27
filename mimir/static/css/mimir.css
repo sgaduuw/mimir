@@ -488,37 +488,6 @@ pre.body-text-block {
 .year-month-tile--empty { opacity: 0.5; }
 .year-month-name { margin-bottom: 0.25rem; }
 
-
-/* Listing-row lifecycle pill. Compact `<mark>` variant; one per
-   article row in any listing-shaped template. Pending rows render
-   no pill (default = silence). Colours compose with Pico's light +
-   dark themes via currentColor and `--pico-...` variables. */
-
-.lifecycle-pill {
-  display: inline-block;
-  padding: 0 0.4em;
-  margin-right: 0.4em;
-  font-size: 0.75em;
-  font-weight: 600;
-  border-radius: 0.3em;
-  background: var(--pico-mark-background-color, #fef3c7);
-  color: var(--pico-mark-color, inherit);
-  vertical-align: middle;
-  white-space: nowrap;
-}
-
-.lifecycle-landed     { background: #d1fae5; color: #065f46; }
-.lifecycle-queued     { background: #dbeafe; color: #1e3a8a; }
-.lifecycle-reviewed   { background: #fef3c7; color: #92400e; }
-.lifecycle-superseded { background: #e5e7eb; color: #4b5563; }
-
-@media (prefers-color-scheme: dark) {
-  .lifecycle-landed     { background: #064e3b; color: #6ee7b7; }
-  .lifecycle-queued     { background: #1e3a8a; color: #93c5fd; }
-  .lifecycle-reviewed   { background: #78350f; color: #fcd34d; }
-  .lifecycle-superseded { background: #1f2937; color: #9ca3af; }
-}
-
 /* Lifecycle timeline section on the patch page. Two-column rows:
    date / event label + optional detail. */
 
