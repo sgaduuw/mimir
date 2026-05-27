@@ -479,6 +479,92 @@ def test_walk_commits_branch_override(seeded_db, tmp_path):
     assert "head@x" not in mids
 
 
+def test_walk_commits_exclude_from_skips_commits_reachable_from_ref(
+    seeded_db, tmp_path
+):
+    """exclude_from skips commits reachable from another tree's head.
+    Pragmatic optimisation: non-Linus trees cloned with
+    --reference linus.git can pass linus_head here and avoid walking
+    the shared history. INSERT-OR-IGNORE protects correctness if it
+    were ever applied incorrectly; this test pins the perf-side
+    behaviour (we actually skip the work, not just dedup it)."""
+    from dulwich.repo import Repo
+
+    from mimir.models import MainlineCommit
+
+    tree_path = _make_fake_tree(
+        tmp_path,
+        commits=[
+            ("c1\n\nLink: https://lore.kernel.org/r/c1@x\n", b"a.c"),
+            ("c2\n\nLink: https://lore.kernel.org/r/c2@x\n", b"a.c"),
+            ("c3\n\nLink: https://lore.kernel.org/r/c3@x\n", b"a.c"),
+            ("c4\n\nLink: https://lore.kernel.org/r/c4@x\n", b"a.c"),
+        ],
+    )
+    # Get the SHA of the second commit (c2); use it as exclude_from.
+    repo = Repo(str(tree_path))
+    walker = repo.get_walker(include=[repo.head()], reverse=True)
+    shas = [e.commit.id for e in walker]
+    c2_sha = shas[1]  # c1, c2, c3, c4 oldest-first
+
+    with seeded_db() as s:
+        walk_commits(
+            s,
+            tree_path,
+            tree_name="downstream",
+            exclude_from=c2_sha,
+        )
+
+    with seeded_db() as s:
+        mids = {
+            r.message_id
+            for r in s.execute(
+                select(MainlineCommit).where(MainlineCommit.tree_name == "downstream")
+            ).scalars()
+        }
+    # Only commits AFTER c2 emitted: c3 and c4. c1 and c2 excluded.
+    assert mids == {"c3@x", "c4@x"}
+
+
+def test_walk_commits_rebases_true_ignores_exclude_from(seeded_db, tmp_path):
+    """rebases=True trees keep their full DELETE-and-rewalk semantics
+    even when exclude_from is supplied. Applying the shortcut on a
+    daily linux-next rebase would erase intermediate-tree
+    mainline_commits rows for patches that transition into Linus that
+    day, losing the per-tree timeline event on the patch page."""
+    from dulwich.repo import Repo
+
+    from mimir.models import MainlineCommit
+
+    tree_path = _make_fake_tree(
+        tmp_path,
+        commits=[
+            ("c1\n\nLink: https://lore.kernel.org/r/c1@x\n", b"a.c"),
+            ("c2\n\nLink: https://lore.kernel.org/r/c2@x\n", b"a.c"),
+        ],
+    )
+    head = Repo(str(tree_path)).head()
+
+    with seeded_db() as s:
+        walk_commits(
+            s,
+            tree_path,
+            tree_name="rebase-tree",
+            rebases=True,
+            exclude_from=head,
+        )
+
+    with seeded_db() as s:
+        mids = {
+            r.message_id
+            for r in s.execute(
+                select(MainlineCommit).where(MainlineCommit.tree_name == "rebase-tree")
+            ).scalars()
+        }
+    # All commits walked: exclude_from is ignored when rebases=True.
+    assert mids == {"c1@x", "c2@x"}
+
+
 def test_ensure_tree_passes_reference_to_clone(tmp_path, monkeypatch):
     """When reference is set, git clone is invoked with --reference."""
     calls = []
