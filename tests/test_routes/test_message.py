@@ -912,7 +912,11 @@ def test_message_page_shows_applied_as_when_mainline_commit_matches(
     assert "Landed:" in body
     # SHA truncated to first 12 chars on display.
     assert "<code>abc123456789</code>" in body
-    assert "<code>linus</code>" in body
+    # Tree is now labelled via "Applied to <strong>…</strong>", not
+    # a bare <code> tag. The slug "linus" still appears in the body
+    # (as the tree_label fallback) but not wrapped in <code>.
+    assert "linus" in body
+    assert "<code>linus</code>" not in body
 
 
 def test_message_page_no_applied_as_when_no_commit_matches(
@@ -1943,3 +1947,82 @@ def test_message_page_hx_request_has_distinct_etag(client, tmp_path):
     full = client.get(url)
     partial = client.get(url, headers={"HX-Request": "true"})
     assert full.headers["ETag"] != partial.headers["ETag"]
+
+
+# --- Lifecycle timeline + tree-labelled landings (Task 12) ---
+
+
+def test_message_page_renders_lifecycle_timeline(client, tmp_path):
+    """A patch article with at least one timeline event (the 'Posted'
+    event is always present) renders the lifecycle-timeline section."""
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "lifecycle-patch@example.com",
+        subject="[PATCH 1/2] net: do thing",
+    )
+    r = client.get(url)
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert 'class="lifecycle-timeline"' in body
+    # The 'Posted' event is emitted for every patch with a date.
+    assert ">Posted<" in body
+
+
+def test_message_page_omits_timeline_on_non_patch(client, tmp_path):
+    """A non-patch article (no [PATCH] prefix) does NOT render the
+    lifecycle-timeline section."""
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "prose-msg@example.com",
+        subject="Thoughts on the scheduler",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="lifecycle-timeline"' not in body
+
+
+def test_message_page_card_landings_label_tree(client, tmp_path):
+    """Each landing entry on the patch-state card shows 'Applied to'
+    followed by the tree label, not just the raw tree_name slug."""
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "landed-patch@example.com",
+        subject="[PATCH 1/2] net: add feature",
+    )
+    _seed_mainline_commit(
+        message_id="landed-patch@example.com",
+        commit_sha="aabbccddeeff" + "00" * 14,
+        tree_name="linus",
+    )
+    body = client.get(url).data.decode()
+    assert "Applied to" in body
+    # tree_label for "linus" falls back to slug when no display_name is set.
+    assert "linus" in body
+    # The old bare `<code>linus</code>` shape (tree_name in code tag) must
+    # NOT appear; tree labelling now goes via the "Applied to <strong>"
+    # pattern.
+    assert "<code>linus</code>" not in body
+
+
+def test_message_page_lifecycle_timeline_shows_tree_landing_event(
+    client, tmp_path
+):
+    """When a patch has a mainline_commits row the timeline includes a
+    tree-pickup event with a label derived from the tree slug."""
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "tree-event@example.com",
+        subject="[PATCH 1/2] mm: fix leak",
+    )
+    _seed_mainline_commit(
+        message_id="tree-event@example.com",
+        commit_sha="deadbeef1234" + "00" * 14,
+        tree_name="linus",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="lifecycle-timeline"' in body
+    # The tree-pickup event label for "linus" is "Landed".
+    assert "Landed" in body
