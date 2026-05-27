@@ -458,10 +458,20 @@ def _check_peer_uid(sock: socket.socket) -> bool:
 
 
 def _migrate_if_needed(socket_path: Path) -> None:
-    """Run `alembic upgrade head` once on broker startup so the broker
-    can serve against a schema known to be current. Gated on a
-    sentinel file next to the broker socket; subsequent restarts
-    skip when the sentinel is present.
+    """Run `alembic upgrade head` on broker startup so the broker
+    can serve against a schema known to be current.
+
+    `alembic upgrade head` is idempotent and cheap when no
+    migrations are pending (one SELECT against `alembic_version`),
+    so we always run it. Pre-2.4.1 used `.migrated` as a "ran once,
+    skip forever" gate, which silently swallowed every new alembic
+    revision on long-lived deploys; 2.4.0 introduced
+    `mainline_state.last_walked_at` and the broker on an upgraded
+    deploy skipped it because the sentinel was present from 2.3.0,
+    so `update_mainline()` raised `OperationalError: no such
+    column`. The sentinel survives as a first-vs-subsequent-run
+    marker for operator log-reading, but its presence no longer
+    short-circuits the upgrade call.
 
     2.0.0 moved schema-migration ownership onto the broker because
     it's a write operation and broker is the sole writer process
@@ -469,20 +479,26 @@ def _migrate_if_needed(socket_path: Path) -> None:
     the tasks container as a startup-only direct write; consolidating
     here matches the single-writer invariant without exception."""
     sentinel = socket_path.parent / ".migrated"
-    if sentinel.exists():
-        logger.debug(
-            "broker: alembic-upgrade sentinel %s present, skipping migrate",
-            sentinel,
-        )
-        return
-    logger.info("broker: running alembic upgrade head")
+    first_run = not sentinel.exists()
+    logger.info(
+        "broker: running alembic upgrade head (%s)",
+        "first run" if first_run else "idempotent re-check",
+    )
     t0 = time.monotonic()
     try:
         from alembic import command
         from alembic.config import Config
 
-        cfg = Config("alembic.ini")
-        # Use the same DB URL the rest of the broker process opens.
+        # Construct Config programmatically rather than passing
+        # "alembic.ini": that ini carries [loggers] / [handlers] /
+        # [formatters] sections, and Config reading them invokes
+        # `logging.config.fileConfig` which clears every handler off
+        # the root logger, including pytest's caplog and any
+        # operator-set handlers. Loading the migration's required
+        # options directly side-steps the reconfiguration. The
+        # migrations live in `alembic/` per the project layout.
+        cfg = Config()
+        cfg.set_main_option("script_location", "alembic")
         cfg.set_main_option("sqlalchemy.url", settings.database_url)
         command.upgrade(cfg, "head")
     except Exception:
