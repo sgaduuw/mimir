@@ -759,10 +759,28 @@ mimir mirrors Linus's `linux.git` locally so it can read
 per-subsystem dashboards (`/<inbox>/subsystem/<name>/`), reviewer
 pages, attestation chips on patch views, the most-active-subsystems
 aggregation on `/`, and the MAINTAINERS-derived half of the email
-allowlist that drives From-line / DCO-trailer redaction. Tree path
-is configurable via `MAINLINE_TREE_PATH` (default
-`Mainline/linux.git` alongside the per-inbox mirrors) and
-`MAINLINE_TREE_URL`.
+allowlist that drives From-line / DCO-trailer redaction.
+
+### Mainline tree tracking
+
+`mimir` walks one or more git trees for `Link:` trailers feeding
+the patch-lifecycle surfaces. Defaults to Linus + `linux-next` +
+five `*-next` subsystem trees (net-next, tip, pci, mm-stable,
+bpf-next). Operators extend via:
+
+```sh
+export TREES__bcachefs__URL=https://example.com/bcachefs.git
+export TREES__bcachefs__PATH=Mainline/bcachefs.git
+export TREES__bcachefs__WALK_EVERY_SECONDS=3600
+```
+
+Or replace defaults entirely by setting one or more `TREES__*` env
+keys (any operator-curated set wins outright; defaults are not merged
+in).
+
+**Deprecated**: `MAINLINE_TREE_URL` / `MAINLINE_TREE_PATH`. Continue
+to work (seeds only the `linus` entry); will be removed in the
+next major release.
 
 ```sh
 # Clone (first run) or fetch + load:

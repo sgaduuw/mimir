@@ -11,6 +11,28 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- Multi-tree mainline tracking. Patches are now tracked through
+  subsystem `*-next` trees (`net-next`, `tip`, `pci`, `mm-stable`,
+  `bpf-next`), `linux-next`, and Linus's mainline. The patch-state
+  card on message pages labels each landing with its tree; a new
+  lifecycle timeline below the card renders the chronological
+  journey (post → review trailers → tree pickups → mainline merge).
+  Listing rows (recent / daily / inbox / search / subsystem /
+  month / author / reviewer / since) carry a status pill:
+  Landed / Superseded / Queued / Reviewed / Pending. Operators
+  extend the tree set via `TREES__<name>__URL` env. First
+  deploy may run a longer `update-mainline` tick as new trees
+  clone (`--reference linus.git` keeps marginal disk small).
+
+### Deprecated
+
+- `MAINLINE_TREE_URL` / `MAINLINE_TREE_PATH`. Continue to work
+  (auto-seed the `linus` entry); will be removed in the next
+  major release. Operators should migrate to
+  `TREES__linus__URL` / `TREES__linus__PATH`.
+
 ### Fixed
 
 - `mimir-web` container healthcheck no longer shells out to `wget`.

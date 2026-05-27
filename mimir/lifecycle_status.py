@@ -124,9 +124,7 @@ def _bulk_uncached(
     out: dict[int, LifecycleStatusInfo] = {}
     for row in rows:
         if row.in_linus and row.in_linus > 0:
-            out[row.id] = LifecycleStatusInfo(
-                state_value=LifecycleStatus.LANDED.value
-            )
+            out[row.id] = LifecycleStatusInfo(state_value=LifecycleStatus.LANDED.value)
         elif row.superseded:
             out[row.id] = LifecycleStatusInfo(
                 state_value=LifecycleStatus.SUPERSEDED.value
@@ -141,9 +139,7 @@ def _bulk_uncached(
                 state_value=LifecycleStatus.REVIEWED.value
             )
         else:
-            out[row.id] = LifecycleStatusInfo(
-                state_value=LifecycleStatus.PENDING.value
-            )
+            out[row.id] = LifecycleStatusInfo(state_value=LifecycleStatus.PENDING.value)
     return out
 
 

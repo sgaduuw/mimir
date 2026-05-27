@@ -270,11 +270,7 @@ def _lifecycle_timeline(
     ).all()
     role_earliest: dict[str, tuple[datetime, str | None]] = {}
     for role, name in trailer_rows:
-        when = (
-            aware_utc(article.date)
-            if article.date
-            else datetime.now(timezone.utc)
-        )
+        when = aware_utc(article.date) if article.date else datetime.now(timezone.utc)
         if role not in role_earliest or when < role_earliest[role][0]:
             role_earliest[role] = (when, name)
     for role, (when, name) in role_earliest.items():
