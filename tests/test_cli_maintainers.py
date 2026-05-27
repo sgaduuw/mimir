@@ -13,6 +13,7 @@ from sqlalchemy import select
 from mimir.cli import update_mainline_command
 from mimir.config import settings
 from mimir.models import MainlineState, Subsystem
+from tests.conftest import linus_tree as _linus_tree
 
 
 _SAMPLE_MAINTAINERS = (
@@ -81,7 +82,7 @@ def test_update_mainline_loads_subsystems_from_head_blob(
     matches the parsed entries; MainlineState records the HEAD."""
     repo_path = tmp_path / "linux.git"
     head_sha = _build_mainline_repo(repo_path, _SAMPLE_MAINTAINERS)
-    monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
 
     # --skip-fetch: the repo is local, no upstream to pull from.
     result = CliRunner().invoke(update_mainline_command, ["--skip-fetch"])
@@ -122,7 +123,7 @@ def test_update_mainline_is_noop_when_head_unchanged(
     that's the steady-state cheap path."""
     repo_path = tmp_path / "linux.git"
     _build_mainline_repo(repo_path, _SAMPLE_MAINTAINERS)
-    monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
 
     runner = CliRunner()
     assert runner.invoke(update_mainline_command, ["--skip-fetch"]).exit_code == 0
@@ -148,7 +149,7 @@ def test_update_mainline_force_reparses_even_on_unchanged_head(
     even when the cheap path would skip."""
     repo_path = tmp_path / "linux.git"
     _build_mainline_repo(repo_path, _SAMPLE_MAINTAINERS)
-    monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
 
     runner = CliRunner()
     assert runner.invoke(update_mainline_command, ["--skip-fetch"]).exit_code == 0
@@ -168,7 +169,7 @@ def test_update_mainline_picks_up_head_movement(
     BTRFS section is gone, the new XFS section landed."""
     repo_path = tmp_path / "linux.git"
     first = _build_mainline_repo(repo_path, _SAMPLE_MAINTAINERS)
-    monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
 
     runner = CliRunner()
     runner.invoke(update_mainline_command, ["--skip-fetch"])
@@ -242,7 +243,7 @@ def test_update_mainline_walks_link_trailers_in_commit_messages(
     )
     repo.object_store.add_object(extra)
     repo.refs[b"HEAD"] = extra.id
-    monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
 
     result = CliRunner().invoke(update_mainline_command, ["--skip-fetch"])
     assert result.exit_code == 0, result.output
@@ -265,7 +266,7 @@ def test_update_mainline_skip_commits_does_not_walk(
     refresh the subsystem schema."""
     repo_path = tmp_path / "linux.git"
     _build_mainline_repo(repo_path, _SAMPLE_MAINTAINERS)
-    monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
     result = CliRunner().invoke(
         update_mainline_command,
         ["--skip-fetch", "--skip-commits"],
@@ -314,7 +315,7 @@ def test_update_mainline_skip_maintainers_only_walks_commits(
     extra.message = b"x\n\nLink: https://lore.kernel.org/r/only-walk@x\n"
     repo.object_store.add_object(extra)
     repo.refs[b"HEAD"] = extra.id
-    monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
 
     result = CliRunner().invoke(
         update_mainline_command,
@@ -340,8 +341,16 @@ def test_update_mainline_errors_if_maintainers_blob_missing(
     monkeypatch,
 ):
     """If the tree at the configured path doesn't have a MAINTAINERS
-    file at HEAD, fail loudly, almost certainly the wrong tree was
-    configured. Better than silently loading zero subsystems."""
+    file at HEAD, the per-tree failure is surfaced in CLI output so
+    the operator learns the tree is misconfigured. The per-tree
+    dispatch design catches tree-level failures and records them so
+    other trees can still proceed; the CLI then echoes any per-tree
+    errors to stderr.
+
+    CliRunner in Click 8.4.0+ separates stderr; `result.stderr`
+    carries `click.echo(..., err=True)` output. The assertion checks
+    `result.stderr` directly. The CLI exits non-zero when any tree
+    failed so operators on systemd timers or cron get an alert."""
     # Build a bare repo with a different file at HEAD.
     repo_path = tmp_path / "linux.git"
     repo = Repo.init_bare(str(repo_path), mkdir=True)
@@ -361,7 +370,11 @@ def test_update_mainline_errors_if_maintainers_blob_missing(
     repo.object_store.add_object(commit)
     repo.refs[b"HEAD"] = commit.id
 
-    monkeypatch.setattr(settings, "mainline_tree_path", repo_path)
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
     result = CliRunner().invoke(update_mainline_command, ["--skip-fetch"])
+    # Per-tree isolation: the error surfaces in stderr so the operator
+    # learns which tree failed.
+    assert "no MAINTAINERS" in result.stderr
+    # CLI exit signaling: non-zero exit when any tree failed, so
+    # systemd timers and cron jobs get an alertable signal.
     assert result.exit_code != 0
-    assert "no MAINTAINERS" in result.output

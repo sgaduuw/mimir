@@ -27,13 +27,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dulwich.repo import Repo
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from mimir import maintainers
 from mimir.config import settings
+from mimir.datetime_utils import aware_utc
 
 if TYPE_CHECKING:
     from mimir.config import TreeConfig
@@ -285,11 +286,23 @@ def walk_commits(
     return result
 
 
+class TreeWalkResult(BaseModel):
+    """Per-tree outcome of one update_mainline tick."""
+
+    skipped: bool = False  # walk_every_seconds not yet elapsed
+    ok: bool = True  # False when an exception was caught
+    error: str | None = None
+    commits_seen: int = 0
+    commits_linked: int = 0
+    rows_inserted: int = 0
+
+
 class UpdateMainlineResult(BaseModel):
-    """Outcome of one `update_mainline` invocation. Fields are present
-    even when their phase was skipped, so callers can branch on
-    them without checking which mode was passed; the
-    `<phase>_ran` flags carry the dispositive bit."""
+    """Aggregate outcome of one `update_mainline` invocation across
+    every configured tree. Existing fields (`maintainers_ran`,
+    `subsystems_loaded`, `mainline_head`, etc.) survive for the
+    Linus-only MAINTAINERS reparse path. Per-tree details live in
+    `trees`."""
 
     maintainers_ran: bool = False
     maintainers_unchanged: bool = False
@@ -300,6 +313,8 @@ class UpdateMainlineResult(BaseModel):
     commits_seen: int = 0
     commits_linked: int = 0
     rows_inserted: int = 0
+
+    trees: dict[str, TreeWalkResult] = Field(default_factory=dict)
 
 
 def _ensure_tree(
@@ -478,57 +493,115 @@ def update_mainline(
     skip_commits: bool = False,
     force: bool = False,
 ) -> UpdateMainlineResult:
-    """Sync the mainline tree and refresh both derived surfaces.
+    """Sync every configured tree and refresh derived surfaces.
 
-    The two phases (MAINTAINERS reparse + Link-trailer walk) are
-    independent; either can be skipped via its flag. `force` only
-    affects MAINTAINERS (the commit walker is incremental against
-    a cursor, so "force" doesn't have an analogue there).
+    Iterates `Settings.trees`; per-tree decisions:
+      - cadence gate: skip if `now - last_walked_at < walk_every_seconds`
+      - linus only: load_maintainers() runs (MAINTAINERS is Linus-only)
+      - walker dispatch: rebases=True triggers DELETE+rewalk
+      - failure isolation: log + record per-tree, continue
 
-    Same body as the CLI command had before Phase 2.3; the CLI now
-    delegates to this function so the broker handler can call the
-    same code path without import gymnastics."""
-    from mimir.config import TreeConfig
-
-    # Stop-gap: construct a TreeConfig from the legacy scalar settings so the
-    # existing monkeypatch-based tests and the broker handler keep working.
-    # Task 5 rewrites this function for per-tree dispatch and removes this shim.
-    tree_name = "linus"
-    tree_cfg = TreeConfig(
-        url=settings.mainline_tree_url,
-        path=settings.mainline_tree_path,
-    )
-    tree_path = _ensure_tree(tree_cfg, reference=None, skip_fetch=skip_fetch)
+    Per-tree cadence: skip the tree on ticks that arrive sooner than
+    `walk_every_seconds` since the last *successful* walk. Failed walks
+    do not advance the cursor; the next tick retries. Any combination
+    of skip_maintainers / skip_commits is treated as a successful tick
+    if `_ensure_tree` succeeds and neither the MAINTAINERS nor commit
+    phases raised an exception.
+    """
+    from datetime import datetime, timezone
 
     result = UpdateMainlineResult()
+    now = datetime.now(timezone.utc)
 
-    if not skip_maintainers:
-        ran, loaded, head_sha = load_maintainers(
-            tree_path,
-            tree_name,
-            force=force,
-        )
-        result.maintainers_ran = ran
-        result.maintainers_unchanged = not ran
-        result.subsystems_loaded = loaded
-        result.mainline_head = head_sha
+    linus_path: Path | None = None
 
-    if not skip_commits:
-        with (
-            write_transaction("update_mainline:link_trailers"),
-            SessionLocal() as session,
+    # Linus first so its clone exists for --reference on subsequent
+    # trees in the same tick.
+    ordered_slugs = ["linus"] + [s for s in settings.trees if s != "linus"]
+    for slug in ordered_slugs:
+        tree = settings.trees.get(slug)
+        if tree is None:
+            continue
+        tr = TreeWalkResult()
+        result.trees[slug] = tr
+
+        # Cadence gate: skip trees whose last walk is still within
+        # the configured interval. This prevents re-walking
+        # force-pushed trees (linux-next) or slow trees (linus)
+        # on every scheduler tick regardless of their cadence.
+        with SessionLocal() as session:
+            state = session.get(MainlineState, slug)
+            last = state.last_walked_at if state else None
+        if (
+            last is not None
+            and (now - aware_utc(last)).total_seconds() < tree.walk_every_seconds
         ):
-            walk = walk_commits(session, tree_path, tree_name=tree_name)
-        result.commits_ran = True
-        result.commits_seen = walk.commits_seen
-        result.commits_linked = walk.linked
-        result.rows_inserted = walk.rows_inserted
+            tr.skipped = True
+            continue
+
+        try:
+            tree_path = _ensure_tree(
+                tree,
+                reference=linus_path if slug != "linus" else None,
+                skip_fetch=skip_fetch,
+            )
+            if slug == "linus":
+                linus_path = tree_path
+                if not skip_maintainers:
+                    ran, loaded, head_sha = load_maintainers(
+                        tree_path,
+                        tree_name=slug,
+                        force=force,
+                    )
+                    result.maintainers_ran = ran
+                    result.maintainers_unchanged = not ran
+                    result.subsystems_loaded = loaded
+                    result.mainline_head = head_sha
+
+            if not skip_commits:
+                with (
+                    write_transaction(f"update_mainline:walk:{slug}"),
+                    SessionLocal() as session,
+                ):
+                    walk = walk_commits(
+                        session,
+                        tree_path,
+                        tree_name=slug,
+                        branch=tree.branch,
+                        rebases=tree.rebases,
+                    )
+                    session.commit()
+                tr.commits_seen = walk.commits_seen
+                tr.commits_linked = walk.linked
+                tr.rows_inserted = walk.rows_inserted
+                result.commits_seen += walk.commits_seen
+                result.commits_linked += walk.linked
+                result.rows_inserted += walk.rows_inserted
+                result.commits_ran = True
+
+            # Advance the cadence cursor on any successful tick,
+            # regardless of which phases ran. Only failed walks (those
+            # that raised above) leave the cursor untouched so the next
+            # tick retries.
+            with SessionLocal() as session:
+                state = session.get(MainlineState, slug)
+                if state is None:
+                    state = MainlineState(tree_name=slug)
+                    session.add(state)
+                state.last_walked_at = now
+                session.commit()
+        except Exception as exc:
+            logger.warning("update_mainline: tree %s failed: %r", slug, exc)
+            tr.ok = False
+            tr.error = repr(exc)
+            continue
 
     return result
 
 
 __all__ = [
     "WalkResult",
+    "TreeWalkResult",
     "UpdateMainlineResult",
     "extract_message_ids",
     "walk_commits",
