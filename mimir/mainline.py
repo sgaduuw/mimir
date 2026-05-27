@@ -120,6 +120,7 @@ def walk_commits(
     *,
     branch: str = "HEAD",
     rebases: bool = False,
+    exclude_from: bytes | None = None,
 ) -> WalkResult:
     """Walk new commits on `tree_path`, extract `Link:` trailers,
     insert `mainline_commits` rows.
@@ -139,11 +140,33 @@ def walk_commits(
     a non-HEAD branch (e.g. `mm-stable`). Missing branch falls back
     to HEAD with a warning log.
 
-    First-run behaviour (rebases=False): walks the entire history. On
-    a full Linus tree that's ~1.5M commits and takes minutes. Operator
-    can scope the initial run by setting `commits_walked_to_sha`
-    manually (e.g. to a recent release tag) if they only care about
-    recent history."""
+    `exclude_from` (bytes SHA of another tree's HEAD): when set AND
+    `rebases=False` AND the SHA is reachable in this repo's
+    objectstore (typically via `--reference linus.git`'s alternates),
+    the walker also excludes commits reachable from this SHA. The
+    intended use is `linus_head`, so non-Linus trees walk only
+    commits divergent from Linus instead of the whole shared history.
+    Pure perf win on first walks; on subsequent cursor-based walks
+    the combined exclude is at least as tight as the cursor alone.
+
+    Not applied for `rebases=True` trees: the daily DELETE+rewalk
+    would erase intermediate-tree rows for patches that transition
+    into Linus that same day, losing per-tree timeline info on the
+    patch page. linux-next's daily O(history) walk is the cost of
+    preserving the journey for newly-landed patches.
+
+    Known trade-off (rebases=False): a patch picked up by Linus first
+    and back-merged into a subsystem tree later (e.g. a backport
+    into a -stable lane) won't get a row for the subsystem tree
+    because `exclude_from` blocks the back-merged commit. Acceptable
+    for the curated subsystem-tree set where forward flow dominates;
+    operators adding a stable / longterm tree should consider this.
+
+    First-run behaviour (rebases=False, no exclude_from): walks the
+    entire history. On a full Linus tree that's ~1.5M commits and
+    takes minutes. Operator can scope the initial run by setting
+    `commits_walked_to_sha` manually (e.g. to a recent release tag)
+    if they only care about recent history."""
     repo = Repo(str(tree_path))
     state = session.get(MainlineState, tree_name)
     if state is None:
@@ -191,6 +214,8 @@ def walk_commits(
         # SHAs don't accumulate. The full walk that follows re-inserts
         # the live history; ON CONFLICT DO NOTHING absorbs any
         # intra-walk duplicates from merge-graph re-emissions.
+        # `exclude_from` intentionally NOT applied here; see the
+        # docstring for the per-tree-timeline rationale.
         session.execute(
             delete(MainlineCommit).where(MainlineCommit.tree_name == tree_name)
         )
@@ -204,11 +229,27 @@ def walk_commits(
         if since:
             try:
                 repo[since.encode()]
-                exclude = [since.encode()]
+                exclude.append(since.encode())
             except KeyError:
                 logger.warning(
                     "mainline: cursor SHA %s missing from %s; rewalking",
                     since,
+                    tree_path,
+                )
+        # Additional shortcut: skip commits reachable from another
+        # tree's head when supplied (typically `linus_head` so non-
+        # Linus trees walk only divergent commits). KeyError means
+        # this repo's objectstore doesn't have the SHA, e.g. no
+        # --reference linus.git on clone; falling back to a full
+        # walk is the right safety net (slower, still correct).
+        if exclude_from is not None:
+            try:
+                repo[exclude_from]
+                exclude.append(exclude_from)
+            except KeyError:
+                logger.debug(
+                    "mainline: exclude_from %s not in %s; walking full history",
+                    exclude_from.decode("ascii", errors="replace"),
                     tree_path,
                 )
 
@@ -515,6 +556,31 @@ def update_mainline(
 
     linus_path: Path | None = None
 
+    # Read Linus's HEAD up front (if the clone exists on disk) so
+    # non-Linus walks can shortcut over commits already reachable
+    # from Linus. Reading off-disk works even when Linus is cadence-
+    # skipped this tick. On the very first deploy, Linus's clone
+    # doesn't exist yet; linus_head stays None and the shortcut is
+    # unavailable for that one tick, which is correct (non-Linus
+    # trees walk full history just like the pre-shortcut baseline).
+    linus_head: bytes | None = None
+    linus_cfg = settings.trees.get("linus")
+    if linus_cfg is not None:
+        linus_disk_path = linus_cfg.path
+        if not linus_disk_path.is_absolute():
+            from mimir.config import PROJECT_ROOT
+
+            linus_disk_path = PROJECT_ROOT / linus_disk_path
+        if linus_disk_path.exists():
+            try:
+                linus_head = Repo(str(linus_disk_path)).head()
+            except Exception as exc:
+                logger.debug(
+                    "mainline: could not read linus HEAD from %s: %r",
+                    linus_disk_path,
+                    exc,
+                )
+
     # Linus first so its clone exists for --reference on subsequent
     # trees in the same tick.
     ordered_slugs = ["linus"] + [s for s in settings.trees if s != "linus"]
@@ -569,6 +635,7 @@ def update_mainline(
                         tree_name=slug,
                         branch=tree.branch,
                         rebases=tree.rebases,
+                        exclude_from=linus_head if slug != "linus" else None,
                     )
                     session.commit()
                 tr.commits_seen = walk.commits_seen
