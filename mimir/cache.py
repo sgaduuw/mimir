@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # Bump when cached value shapes change (query rewrites, dataclass
 # field renames, encoder changes). Old rows fall through to a miss
 # and get cleaned up by `purge_expired`.
-NAMESPACE_VERSION = 2
+NAMESPACE_VERSION = 3
 
 # Proactive-refresh window threaded through to `get_or_compute` via a
 # context manager. Set by warm-cache so a still-fresh row that's about
