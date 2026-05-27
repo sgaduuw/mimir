@@ -24,6 +24,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from dulwich.repo import Repo
 from pydantic import BaseModel
@@ -33,6 +34,9 @@ from sqlalchemy.orm import Session
 
 from mimir import maintainers
 from mimir.config import settings
+
+if TYPE_CHECKING:
+    from mimir.config import TreeConfig
 from mimir.extensions import SessionLocal, write_transaction
 from mimir.models import (
     MainlineCommit,
@@ -298,53 +302,54 @@ class UpdateMainlineResult(BaseModel):
     rows_inserted: int = 0
 
 
-def _resolve_tree_path() -> Path:
-    """Read `Settings.mainline_tree_path` and absolutize against
-    PROJECT_ROOT when it's relative. Centralised so both the CLI
-    and the broker handler see the same path resolution rules."""
-    tree_path = Path(settings.mainline_tree_path)
+def _ensure_tree(
+    tree: "TreeConfig",
+    *,
+    reference: Path | None,
+    skip_fetch: bool,
+) -> Path:
+    """Clone the tree on first run, fetch otherwise. Returns the
+    resolved absolute tree path.
+
+    `reference`: when set (typically the Linus tree path for every
+    non-Linus tree), pass `--reference <reference>` to git clone so
+    objects are shared across alternates. Marginal disk per non-Linus
+    tree drops from ~10 GB to the divergent objects only. Caveat
+    documented in CONTEXT.md: a corrupted reference clone breaks every
+    dependent tree; recovery is re-cloning without --reference.
+
+    `skip_fetch`: when True on an existing clone, no `git fetch`. CLI
+    option for the operator who wants to re-run MAINTAINERS / Link-
+    trailer passes against current HEAD without a network round-trip.
+    """
+    tree_path = tree.path
     if not tree_path.is_absolute():
-        # Late import: `PROJECT_ROOT` is a config-module constant
-        # but importing it at module load creates a circular
-        # dependency with the `Settings` instance.
+        # Late import: `PROJECT_ROOT` is a config-module constant but
+        # importing it at module load creates a circular dependency with
+        # the `Settings` instance.
         from mimir.config import PROJECT_ROOT
 
         tree_path = PROJECT_ROOT / tree_path
-    return tree_path
 
-
-def _ensure_tree(tree_path: Path, *, skip_fetch: bool) -> None:
-    """Clone the mainline tree on first run, fetch otherwise. Skips
-    the fetch when `skip_fetch=True` (CLI option that lets an
-    operator re-run MAINTAINERS / Link-trailer passes against the
-    current HEAD without burning a network round-trip)."""
     if not tree_path.exists():
         tree_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info(
-            "mainline: cloning %s -> %s",
-            settings.mainline_tree_url,
-            tree_path,
-        )
-        # `--` stops git from interpreting an option-shaped URL as
-        # a flag (same defensive pattern as `mimir.sync.clone_epoch`).
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                "--mirror",
-                "--",
-                settings.mainline_tree_url,
-                str(tree_path),
-            ],
-            check=True,
-        )
-        return
+        cmd = ["git", "clone", "--mirror"]
+        if reference is not None:
+            cmd.extend(["--reference", str(reference)])
+        # `--` stops git from interpreting an option-shaped URL as a
+        # flag (same defensive pattern as `mimir.sync.clone_epoch`).
+        cmd.extend(["--", tree.url, str(tree_path)])
+        logger.info("mainline: cloning %s -> %s", tree.url, tree_path)
+        subprocess.run(cmd, check=True)
+        return tree_path
+
     if not skip_fetch:
         logger.debug("mainline: fetching %s", tree_path)
         subprocess.run(
             ["git", "-C", str(tree_path), "fetch", "--quiet", "--prune"],
             check=True,
         )
+    return tree_path
 
 
 def load_maintainers(
@@ -483,9 +488,17 @@ def update_mainline(
     Same body as the CLI command had before Phase 2.3; the CLI now
     delegates to this function so the broker handler can call the
     same code path without import gymnastics."""
-    tree_name = "linus"  # fixed slug; supports future linux-stable, etc.
-    tree_path = _resolve_tree_path()
-    _ensure_tree(tree_path, skip_fetch=skip_fetch)
+    from mimir.config import TreeConfig
+
+    # Stop-gap: construct a TreeConfig from the legacy scalar settings so the
+    # existing monkeypatch-based tests and the broker handler keep working.
+    # Task 5 rewrites this function for per-tree dispatch and removes this shim.
+    tree_name = "linus"
+    tree_cfg = TreeConfig(
+        url=settings.mainline_tree_url,
+        path=settings.mainline_tree_path,
+    )
+    tree_path = _ensure_tree(tree_cfg, reference=None, skip_fetch=skip_fetch)
 
     result = UpdateMainlineResult()
 
