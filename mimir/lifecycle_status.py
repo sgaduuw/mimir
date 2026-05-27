@@ -17,6 +17,8 @@ from enum import Enum
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
+from mimir import cache
+
 
 class LifecycleStatus(Enum):
     LANDED = "landed"
@@ -29,10 +31,25 @@ class LifecycleStatus(Enum):
 @dataclass
 class LifecycleStatusInfo:
     """One article's status + (for QUEUED) the earliest tree it
-    appeared in. Used by templates to pick a pill class + label."""
+    appeared in. Used by templates to pick a pill class + label.
 
-    state: LifecycleStatus
+    `state_value` stores the raw string (one of LifecycleStatus's
+    values) so the cache encoder round-trips it cleanly: the encoder
+    handles str but not Enum. `state` is a read-only property that
+    reconstructs the enum on access so callers don't shift.
+    """
+
+    state_value: str
     tree: str | None = None
+
+    @property
+    def state(self) -> LifecycleStatus:
+        return LifecycleStatus(self.state_value)
+
+
+cache.register("LifecycleStatusInfo", LifecycleStatusInfo)
+
+LIFECYCLE_STATUS_TTL_SEC = 300
 
 
 # Trailer roles that count as actionable review feedback. Mirrors
@@ -107,18 +124,26 @@ def _bulk_uncached(
     out: dict[int, LifecycleStatusInfo] = {}
     for row in rows:
         if row.in_linus and row.in_linus > 0:
-            out[row.id] = LifecycleStatusInfo(LifecycleStatus.LANDED)
+            out[row.id] = LifecycleStatusInfo(
+                state_value=LifecycleStatus.LANDED.value
+            )
         elif row.superseded:
-            out[row.id] = LifecycleStatusInfo(LifecycleStatus.SUPERSEDED)
+            out[row.id] = LifecycleStatusInfo(
+                state_value=LifecycleStatus.SUPERSEDED.value
+            )
         elif row.earliest_other:
             out[row.id] = LifecycleStatusInfo(
-                LifecycleStatus.QUEUED,
+                state_value=LifecycleStatus.QUEUED.value,
                 tree=row.earliest_other,
             )
         elif row.has_review:
-            out[row.id] = LifecycleStatusInfo(LifecycleStatus.REVIEWED)
+            out[row.id] = LifecycleStatusInfo(
+                state_value=LifecycleStatus.REVIEWED.value
+            )
         else:
-            out[row.id] = LifecycleStatusInfo(LifecycleStatus.PENDING)
+            out[row.id] = LifecycleStatusInfo(
+                state_value=LifecycleStatus.PENDING.value
+            )
     return out
 
 
@@ -128,18 +153,37 @@ def lifecycle_status_for_articles(
 ) -> dict[int, LifecycleStatusInfo]:
     """Bulk lifecycle-status fetch for a listing of articles.
 
-    Caching layer added in Task 8; this version is uncached and
-    delegates straight to `_bulk_uncached`. Empty input -> empty
-    dict. Missing IDs (e.g. articles not in the corpus) are absent
-    from the result.
+    Per-article cache rows with a 5-minute TTL. Cache key
+    `lifecycle_status:<id>`, backed by `cache.get_many` so a
+    single SELECT covers all hits. Misses are computed together
+    via one combined SQL call in `_bulk_uncached`. Empty input
+    -> empty dict. Missing IDs (e.g. articles not in the corpus)
+    are absent from the result.
     """
     if not article_ids:
         return {}
-    return _bulk_uncached(session, article_ids)
+    keys = [f"lifecycle_status:{a}" for a in article_ids]
+    cached = cache.get_many(keys)
+    out: dict[int, LifecycleStatusInfo] = {
+        int(k.split(":")[1]): v for k, v in cached.items()
+    }
+    missing_ids = [a for a in article_ids if a not in out]
+    if missing_ids:
+        computed = _bulk_uncached(session, missing_ids)
+        for article_id, info in computed.items():
+            cache.set(
+                f"lifecycle_status:{article_id}",
+                info,
+                ttl=LIFECYCLE_STATUS_TTL_SEC,
+            )
+            out[article_id] = info
+    return out
 
 
 __all__ = [
+    "LIFECYCLE_STATUS_TTL_SEC",
     "LifecycleStatus",
     "LifecycleStatusInfo",
+    "_bulk_uncached",
     "lifecycle_status_for_articles",
 ]
