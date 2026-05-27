@@ -26,6 +26,27 @@ from mimir.patch_state import (
 )
 
 
+def _seed_article(session, message_id):
+    """Seed a minimal patch article on the alpha inbox. Returns the
+    persisted Article. Uses the live session directly so callers can
+    add further rows (e.g. MainlineCommit) to the same transaction."""
+    alpha = session.execute(
+        select(Inbox).where(Inbox.name == "alpha")
+    ).scalar_one()
+    art = Article(
+        message_id=message_id,
+        subject="[PATCH 1/2] foo: do bar",
+        author="Author <a@example.com>",
+        date=datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc),
+        thread_parent=None,
+        subject_normalized="[patch 1/2] foo: do bar",
+        lists=[ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="fa" * 20)],
+    )
+    session.add(art)
+    session.flush()
+    return art
+
+
 # --- _is_patch_subject (pure function; no DB) ---
 
 
@@ -522,3 +543,38 @@ def test_patch_state_trailer_count_is_serializable_dataclass():
     assert dataclasses.is_dataclass(StateMainlineLanding)
     assert dataclasses.is_dataclass(StateSeriesEntry)
     assert dataclasses.is_dataclass(PatchState)
+
+
+def test_state_mainline_landing_has_tree_label(session):
+    """StateMainlineLanding carries a user-facing tree_label derived
+    from Settings.trees[tree_name].display_name (falls back to slug)."""
+    art = _seed_article(session, "tl@x")
+    session.add(MainlineCommit(
+        commit_sha="f" * 40,
+        message_id="tl@x",
+        tree_name="net-next",
+        committed_at=datetime.now(timezone.utc),
+    ))
+    session.commit()
+    from mimir.patch_state import _mainline_landings
+    landings = _mainline_landings(session, art)
+    assert landings[0].tree_name == "net-next"
+    # Display label: TreeConfig defaults set display_name=None for
+    # subsystem trees; falls back to the slug.
+    assert landings[0].tree_label == "net-next"
+
+
+def test_state_mainline_landing_uses_linus_display_name(session):
+    """Linus's TreeConfig sets display_name='mainline (Linus)';
+    the label uses it."""
+    art = _seed_article(session, "tl2@x")
+    session.add(MainlineCommit(
+        commit_sha="g" * 40,
+        message_id="tl2@x",
+        tree_name="linus",
+        committed_at=datetime.now(timezone.utc),
+    ))
+    session.commit()
+    from mimir.patch_state import _mainline_landings
+    landings = _mainline_landings(session, art)
+    assert landings[0].tree_label == "mainline (Linus)"
