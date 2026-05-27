@@ -890,15 +890,18 @@ def test_message_page_shows_applied_as_when_mainline_commit_matches(
     tmp_path,
 ):
     """A patch whose Message-ID matches a `mainline_commits` row
-    surfaces the landing via the lifecycle timeline (post-2.4.x;
-    earlier versions had a duplicate "Landed:" line on the patch-
-    state card too). Pins the issue-66 happy path: walker -> DB ->
-    render.
+    still renders the patch-state card. Pins the issue-66 happy
+    path: walker -> DB -> render.
 
     Card-gated on `is_patch`, so a non-patch article with a
     mainline_commits row would NOT render here. The mainline
     walker's Link: trailers point at actual patches in practice,
-    so this is the realistic scenario."""
+    so this is the realistic scenario.
+
+    Note: SHA truncation and tree-label rendering formerly asserted
+    here tested the lifecycle-timeline section, which was removed in
+    the badge redesign (the data moves to the lifecycle pill tooltip).
+    Those assertions are intentionally absent until the pill lands."""
     _, url = _ingest_one_article(
         tmp_path,
         "alpha",
@@ -911,13 +914,6 @@ def test_message_page_shows_applied_as_when_mainline_commit_matches(
     )
     body = client.get(url).data.decode()
     assert 'class="patch-state"' in body
-    # Landings live on the lifecycle timeline (not the card) post-2.4.x.
-    assert 'class="lifecycle-timeline"' in body
-    # SHA truncated to first 12 chars on display.
-    assert "abc123456789" in body
-    # Tree slug surfaces as the timeline label (no display_name
-    # override for the test inbox's tree).
-    assert "linus" in body
 
 
 def test_message_page_no_applied_as_when_no_commit_matches(
@@ -945,12 +941,12 @@ def test_message_page_shows_multiple_landings_across_trees(
 ):
     """A patch picked up by one subsystem tree first and later
     aggregated into another (typical of net-next -> linux-next ->
-    linus) surfaces every per-tree landing as its own lifecycle
-    timeline event, ordered by committed_at asc.
+    linus) still renders the patch-state card.
 
-    (Post-2.4.x: the timeline dedups per tree, so a single tree with
-    multiple cherry-pick SHAs surfaces only the first. The realistic
-    backport pattern uses different trees, which this test pins.)"""
+    Note: SHA ordering and per-tree label assertions formerly here
+    tested the lifecycle-timeline section, which was removed in the
+    badge redesign (the data moves to the lifecycle pill tooltip).
+    Those assertions are intentionally absent until the pill lands."""
     from datetime import datetime, timezone
 
     _, url = _ingest_one_article(
@@ -972,14 +968,7 @@ def test_message_page_shows_multiple_landings_across_trees(
         date=datetime(2024, 7, 1, tzinfo=timezone.utc),
     )
     body = client.get(url).data.decode()
-    # Both shas appear, ordered by date asc (net-next picked up in
-    # June before linus aggregated in July).
-    first_idx = body.index("111111111111")
-    second_idx = body.index("222222222222")
-    assert first_idx < second_idx
-    # Per-tree event labels render distinctly.
-    assert "Picked up on net-next" in body or "on net-next" in body
-    assert "Landed on" in body  # linus event has the "Landed on..." prefix
+    assert 'class="patch-state"' in body
 
 
 def test_message_page_renders_patch_series_timeline(client, tmp_path):
@@ -1959,47 +1948,11 @@ def test_message_page_hx_request_has_distinct_etag(client, tmp_path):
     assert full.headers["ETag"] != partial.headers["ETag"]
 
 
-# --- Lifecycle timeline + tree-labelled landings (Task 12) ---
-
-
-def test_message_page_renders_lifecycle_timeline(client, tmp_path):
-    """A patch article with at least one timeline event (the 'Posted'
-    event is always present) renders the lifecycle-timeline section."""
-    _, url = _ingest_one_article(
-        tmp_path,
-        "alpha",
-        "lifecycle-patch@example.com",
-        subject="[PATCH 1/2] net: do thing",
-    )
-    r = client.get(url)
-    assert r.status_code == 200
-    body = r.data.decode()
-    assert 'class="lifecycle-timeline"' in body
-    # The 'Posted' event is emitted for every patch with a date.
-    assert ">Posted<" in body
-
-
-def test_message_page_omits_timeline_on_non_patch(client, tmp_path):
-    """A non-patch article (no [PATCH] prefix) does NOT render the
-    lifecycle-timeline section."""
-    _, url = _ingest_one_article(
-        tmp_path,
-        "alpha",
-        "prose-msg@example.com",
-        subject="Thoughts on the scheduler",
-    )
-    body = client.get(url).data.decode()
-    assert 'class="lifecycle-timeline"' not in body
-
-
 def test_message_page_card_omits_landings_block(client, tmp_path):
-    """The patch-state card does NOT carry a per-tree landings block.
-    Landings live exclusively on the lifecycle timeline below the
-    card now (the card duplicating the same per-tree rows was visual
-    noise). The card retains trailers / series-revisions / activity.
-
-    Replaces the pre-2.4.x `test_message_page_card_landings_label_tree`
-    which asserted the inverse contract."""
+    """The patch-state card does NOT carry a per-tree landings block
+    as a "Landed:" row (the card duplicating the same per-tree rows
+    was visual noise removed in 2.4.x). The card retains trailers /
+    series-revisions / activity."""
     _, url = _ingest_one_article(
         tmp_path,
         "alpha",
@@ -2014,28 +1967,7 @@ def test_message_page_card_omits_landings_block(client, tmp_path):
     body = client.get(url).data.decode()
     # Card-level "Landed:" header is gone.
     assert "<strong>Landed:</strong>" not in body
-    # "Applied to" wording is gone too (was the card's verbiage; the
-    # timeline uses "Landed on mainline (Linus)" instead).
+    # "Applied to" wording is gone too (was the card's verbiage).
     assert "Applied to" not in body
-    # But the data IS still surfaced via the lifecycle timeline.
-    assert 'class="lifecycle-timeline"' in body
 
 
-def test_message_page_lifecycle_timeline_shows_tree_landing_event(client, tmp_path):
-    """When a patch has a mainline_commits row the timeline includes a
-    tree-pickup event with a label derived from the tree slug."""
-    _, url = _ingest_one_article(
-        tmp_path,
-        "alpha",
-        "tree-event@example.com",
-        subject="[PATCH 1/2] mm: fix leak",
-    )
-    _seed_mainline_commit(
-        message_id="tree-event@example.com",
-        commit_sha="deadbeef1234" + "00" * 14,
-        tree_name="linus",
-    )
-    body = client.get(url).data.decode()
-    assert 'class="lifecycle-timeline"' in body
-    # The tree-pickup event label for "linus" is "Landed".
-    assert "Landed" in body
