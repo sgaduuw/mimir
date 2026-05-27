@@ -11,6 +11,26 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Reviewer-name dedup in the lifecycle pill tooltip. A single
+  maintainer filing one `Reviewed-by:` per patch in a multi-patch
+  series previously rendered as one tooltip line per trailer (real
+  prod case: `REVIEWED: 11 (11M)` showed the same name 11 times).
+  First occurrence wins per case-insensitive name; if the same name
+  appears as both maintainer and non-maintainer the maintainer
+  variant carries the `M ` prefix. Pill counts (`N (XM)`) are
+  unchanged: the count reflects the trailer total, the tooltip
+  reflects unique people.
+- Activity-heat on the message-page badge is now sourced from the
+  same SQL recursive CTE that powers listing-row badges (single
+  source of truth in `lifecycle_status._BULK_SQL`). `PatchState`
+  no longer carries duplicate `activity_heat` / `activity_detail`
+  fields. Cache `NAMESPACE_VERSION` bumped 2 → 3 to invalidate
+  pre-bump `PatchState` rows so deserialisation can't trip on the
+  removed fields; brief cache cold-start window on the next deploy,
+  warm-cache cron repopulates on its next tick.
+
 ## [2.5.0], 2026-05-27
 
 ### Changed
