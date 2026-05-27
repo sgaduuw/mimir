@@ -2006,9 +2006,7 @@ def test_message_page_card_landings_label_tree(client, tmp_path):
     assert "<code>linus</code>" not in body
 
 
-def test_message_page_lifecycle_timeline_shows_tree_landing_event(
-    client, tmp_path
-):
+def test_message_page_lifecycle_timeline_shows_tree_landing_event(client, tmp_path):
     """When a patch has a mainline_commits row the timeline includes a
     tree-pickup event with a label derived from the tree slug."""
     _, url = _ingest_one_article(
