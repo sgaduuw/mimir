@@ -168,6 +168,10 @@ cython_debug/
 mimir.db*
 mimir-cache.pickle*
 Inboxes/
+# Mainline tree clones (Linus + linux-next + curated subsystem trees,
+# per `Settings.trees`). Populated at runtime by `mimir update-mainline`
+# under PROJECT_ROOT/Mainline/. Pure runtime data, never tracked.
+Mainline/
 
 # Agent docs, kept locally, not in the public repo
 CLAUDE.md
