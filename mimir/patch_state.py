@@ -107,7 +107,11 @@ class StateTimelineEvent:
 class PatchState:
     """The four-row state card for a patch's message page. `is_patch`
     drives whether the card renders at all (non-patch articles get
-    no card). Empty list fields skip their respective rows."""
+    no card). Empty list fields skip their respective rows.
+
+    `activity_heat` and `activity_detail` default to the "dormant"
+    values so existing cache rows deserialise cleanly during rollout
+    before they are recomputed with the new fields populated."""
 
     is_patch: bool
     trailers: list[StateTrailerCount]
@@ -115,6 +119,8 @@ class PatchState:
     series: list[StateSeriesEntry]
     days_since_last_reply: int | None
     timeline: list[StateTimelineEvent]
+    activity_heat: str = "dormant"  # heat-class from _activity_heat
+    activity_detail: str = "no replies"  # count-label from _activity_heat
 
 
 cache.register("StateTrailerCount", StateTrailerCount)
@@ -432,6 +438,29 @@ def _days_since_last_reply(
     return max(int(delta.days), 0)
 
 
+def _activity_heat(days_since_last_reply: int | None) -> tuple[str, str]:
+    """Map days-since-last-reply to (heat-class, count-label). Six
+    buckets calibrated to kernel patch-review cadence:
+    same-day = hot, within work-week = warm, within two work-weeks
+    = cooling, then degrading on month-scale.
+
+    Returns ("dormant", "no replies") when None (no replies yet),
+    distinct from "stale" (replies have stopped). The bucket
+    boundaries are inclusive on the upper end."""
+    if days_since_last_reply is None:
+        return ("dormant", "no replies")
+    d = days_since_last_reply
+    if d == 0:
+        return ("hot", "today")
+    if d <= 3:
+        return ("warm", f"{d}d")
+    if d <= 14:
+        return ("cooling", f"{d}d")
+    if d <= 60:
+        return ("cold", f"{d}d")
+    return ("stale", f"{d}d")
+
+
 def patch_state_for_article(
     session: Session,
     article: Article,
@@ -459,6 +488,8 @@ def patch_state_for_article(
             series=[],
             days_since_last_reply=None,
             timeline=[],
+            activity_heat="dormant",
+            activity_detail="no replies",
         )
 
     # Capture thread dates outside the cache closure. The iterable
@@ -468,16 +499,17 @@ def patch_state_for_article(
     subsystem_ids_list = list(subsystem_ids)
 
     def compute() -> PatchState:
+        days = _days_since_last_reply(article, thread_dates_list)
+        heat, detail = _activity_heat(days)
         return PatchState(
             is_patch=True,
             trailers=_trailer_roll_up(session, article, subsystem_ids_list),
             mainline_landings=_mainline_landings(session, article),
             series=_series_timeline(session, article, inbox_name),
-            days_since_last_reply=_days_since_last_reply(
-                article,
-                thread_dates_list,
-            ),
+            days_since_last_reply=days,
             timeline=_lifecycle_timeline(session, article),
+            activity_heat=heat,
+            activity_detail=detail,
         )
 
     # Cache key: per-article. Inbox name isn't keyed in because for

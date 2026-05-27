@@ -1,6 +1,7 @@
 """Unit tests for `mimir.patch_state.patch_state_for_article`: the
 helper feeding the message-page state card (#208)."""
 
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -648,3 +649,27 @@ def test_lifecycle_timeline_dedups_per_role(session):
     events = _lifecycle_timeline(session, art)
     # One "trailer:Reviewed-by" event, not two.
     assert sum(1 for e in events if e.kind == "trailer:Reviewed-by") == 1
+
+
+# --- _activity_heat (pure function; no DB) ---
+
+
+@pytest.mark.parametrize(
+    "days,expected",
+    [
+        (None, ("dormant", "no replies")),
+        (0, ("hot", "today")),
+        (1, ("warm", "1d")),
+        (3, ("warm", "3d")),
+        (4, ("cooling", "4d")),
+        (14, ("cooling", "14d")),
+        (15, ("cold", "15d")),
+        (60, ("cold", "60d")),
+        (61, ("stale", "61d")),
+        (365, ("stale", "365d")),
+    ],
+)
+def test_activity_heat_buckets(days, expected):
+    from mimir.patch_state import _activity_heat
+
+    assert _activity_heat(days) == expected
