@@ -548,6 +548,47 @@ def test_broker_self_bootstrap_analyze_skipped_when_sentinel_present(
             sentinel.unlink()
 
 
+# ----- broker self-bootstrap alembic upgrade ------------------------------
+
+
+def test_broker_runs_alembic_upgrade_even_when_migrated_sentinel_present(
+    seeded_db,
+    caplog,
+):
+    """Regression: pre-2.4.1 the broker treated `.migrated` as a
+    'ran once, skip forever' marker, so any release that introduced
+    a new alembic revision silently skipped its migration on upgrade
+    of a long-lived deploy (the symptom that broke 2.4.0 in prod:
+    `update_mainline()` raised OperationalError because
+    `mainline_state.last_walked_at` was missing).
+
+    `alembic upgrade head` is idempotent + cheap when no migrations
+    are pending, so the broker should always run it on startup. The
+    sentinel still gets touched for log-readability (so an operator
+    can see 'first-run vs. subsequent-restart' from disk state), but
+    its presence must NOT short-circuit the alembic call.
+    """
+    import logging
+
+    caplog.set_level(logging.INFO, logger="mimir.broker.server")
+    sp = short_socket_path("migrate-sentinel-present")
+    sentinel = sp.parent / ".migrated"
+    # Simulate the post-upgrade scenario: prior release already
+    # touched the sentinel.
+    sentinel.touch()
+    try:
+        with broker_running(sp):
+            pass
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("running alembic upgrade head" in m for m in msgs), (
+            "broker should run alembic upgrade head regardless of "
+            f"sentinel state; saw {msgs}"
+        )
+    finally:
+        if sentinel.exists():
+            sentinel.unlink()
+
+
 # ----- robots admin ------------------------------------------------------
 
 
