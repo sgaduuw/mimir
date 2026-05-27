@@ -890,13 +890,18 @@ def test_message_page_shows_applied_as_when_mainline_commit_matches(
     tmp_path,
 ):
     """A patch whose Message-ID matches a `mainline_commits` row
-    surfaces a "Landed:" line on the state card. Pins the
-    issue-66 happy path: walker -> DB -> render.
+    still renders the patch-state card. Pins the issue-66 happy
+    path: walker -> DB -> render.
 
     Card-gated on `is_patch`, so a non-patch article with a
     mainline_commits row would NOT render here. The mainline
     walker's Link: trailers point at actual patches in practice,
-    so this is the realistic scenario."""
+    so this is the realistic scenario.
+
+    Note: SHA truncation and tree-label rendering formerly asserted
+    here tested the lifecycle-timeline section, which was removed in
+    the badge redesign (the data moves to the lifecycle pill tooltip).
+    Those assertions are intentionally absent until the pill lands."""
     _, url = _ingest_one_article(
         tmp_path,
         "alpha",
@@ -908,15 +913,8 @@ def test_message_page_shows_applied_as_when_mainline_commit_matches(
         commit_sha="abc1234567890def1234567890abcdef12345678",
     )
     body = client.get(url).data.decode()
-    assert 'class="patch-state"' in body
-    assert "Landed:" in body
-    # SHA truncated to first 12 chars on display.
-    assert "<code>abc123456789</code>" in body
-    # Tree is now labelled via "Applied to <strong>…</strong>", not
-    # a bare <code> tag. The slug "linus" still appears in the body
-    # (as the tree_label fallback) but not wrapped in <code>.
-    assert "linus" in body
-    assert "<code>linus</code>" not in body
+    # Patch-state card became the badges row in the badge redesign.
+    assert 'class="msg-badges"' in body
 
 
 def test_message_page_no_applied_as_when_no_commit_matches(
@@ -938,15 +936,18 @@ def test_message_page_no_applied_as_when_no_commit_matches(
     assert "Applied as" not in body
 
 
-def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_links(
+def test_message_page_shows_multiple_landings_across_trees(
     client,
     tmp_path,
 ):
-    """When a commit references the article via two `Link:` trailers
-    (rare), or when two distinct commits apply the same patch (less
-    rare on backports), every mainline_commits row gets surfaced.
-    Ordered by committed_at asc, the first application is the
-    primary one."""
+    """A patch picked up by one subsystem tree first and later
+    aggregated into another (typical of net-next -> linux-next ->
+    linus) still renders the patch-state card.
+
+    Note: SHA ordering and per-tree label assertions formerly here
+    tested the lifecycle-timeline section, which was removed in the
+    badge redesign (the data moves to the lifecycle pill tooltip).
+    Those assertions are intentionally absent until the pill lands."""
     from datetime import datetime, timezone
 
     _, url = _ingest_one_article(
@@ -958,26 +959,26 @@ def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_lin
     _seed_mainline_commit(
         message_id="multi-app@example.com",
         commit_sha="11" * 20,
+        tree_name="net-next",
         date=datetime(2024, 6, 1, tzinfo=timezone.utc),
     )
     _seed_mainline_commit(
         message_id="multi-app@example.com",
         commit_sha="22" * 20,
+        tree_name="linus",
         date=datetime(2024, 7, 1, tzinfo=timezone.utc),
     )
     body = client.get(url).data.decode()
-    # Both shas appear, ordered by date asc (June before July).
-    first_idx = body.index("<code>111111111111</code>")
-    second_idx = body.index("<code>222222222222</code>")
-    assert first_idx < second_idx
+    # Patch-state card became the badges row in the badge redesign.
+    assert 'class="msg-badges"' in body
 
 
 def test_message_page_renders_patch_series_timeline(client, tmp_path):
     """When two cover letters share a `patch_series_key`, viewing
-    one renders the state card (`<aside class="patch-state">`)
-    with a Series-revisions row carrying both versions: the current
-    one as plain text (`<strong>v2</strong>`), the other as a link.
-    Pins the issue-65 happy path through the #208 card."""
+    one renders the revisions fold (badge redesign: series revisions
+    moved from `<aside class="patch-state">` into `_revisions_fold.html`).
+    The fold carries both versions: the current one marked `is-current`,
+    the other as a link. Pins the issue-65 happy path."""
     # Two cover-letter subjects, same author, same title → same
     # series. mkdir each subdir first; `_ingest_one_article`
     # creates `0.git` inside but doesn't make the parent.
@@ -999,16 +1000,18 @@ def test_message_page_renders_patch_series_timeline(client, tmp_path):
         author=common_author,
     )
     body = client.get(v2_url).data.decode()
-    assert 'class="patch-state"' in body
-    assert "Series revisions:" in body
-    # The current revision (v2) is rendered as bold, not as a link.
-    assert "<strong>v2</strong>" in body
-    # The prior revision (v1) is rendered as a link.
-    card = body.split('class="patch-state"')[1].split("</aside>")[0]
-    assert "<a href=" in card
-    assert ">v1</a>" in card
-    # Arrow between revisions.
-    assert "→" in card
+    # Series revisions moved into the revisions fold in the badge redesign.
+    assert 'class="revisions-fold"' in body
+    # The current revision (v2) is marked is-current.
+    assert "is-current" in body
+    # The revisions fold lists both versions as rev-label spans.
+    fold = body.split('class="revisions-fold"')[1].split("</details>")[0]
+    assert 'class="rev-label">v1' in fold
+    assert 'class="rev-label">v2' in fold
+    # The prior revision (v1) carries a diff link; v2 carries the
+    # "current" marker instead.
+    assert "[diff vs current]" in fold
+    assert "rev-current-marker" in fold
 
 
 def test_message_page_no_series_timeline_for_individual_patch(
@@ -1016,8 +1019,9 @@ def test_message_page_no_series_timeline_for_individual_patch(
     tmp_path,
 ):
     """A `[PATCH v2 1/3]` subject is an individual patch, not a
-    cover letter. The state card still renders (it's a patch) but
-    the Series-revisions row is omitted in slice 1."""
+    cover letter. The revisions fold is omitted. Badge redesign:
+    moved from `Series-revisions` in the aside to
+    `_revisions_fold.html`; checking fold absence is the right gate."""
     _, url = _ingest_one_article(
         tmp_path,
         "alpha",
@@ -1025,7 +1029,7 @@ def test_message_page_no_series_timeline_for_individual_patch(
         subject="[PATCH v2 1/3] foo: add bar",
     )
     body = client.get(url).data.decode()
-    assert "Series revisions:" not in body
+    assert 'class="revisions-fold"' not in body
 
 
 def test_message_page_no_series_timeline_for_solo_cover_letter(
@@ -1034,9 +1038,9 @@ def test_message_page_no_series_timeline_for_solo_cover_letter(
 ):
     """A cover letter with no other revisions in the DB (only
     v1, no v2 yet) still gets the `patch_series_key` set but the
-    Series-revisions row stays hidden, the timeline needs ≥2
-    revisions to be useful, and one row on its own would just say
-    "v1 (this)" which is visual clutter."""
+    revisions fold stays hidden; the fold needs >= 2 revisions.
+    Badge redesign: moved from `Series-revisions` in the aside to
+    `_revisions_fold.html`."""
     _, url = _ingest_one_article(
         tmp_path,
         "alpha",
@@ -1044,7 +1048,7 @@ def test_message_page_no_series_timeline_for_solo_cover_letter(
         subject="[PATCH 0/3] something nobody resent",
     )
     body = client.get(url).data.decode()
-    assert "Series revisions:" not in body
+    assert 'class="revisions-fold"' not in body
 
 
 # --- #208 patch-state card integration ---------------------------------------
@@ -1052,9 +1056,10 @@ def test_message_page_no_series_timeline_for_solo_cover_letter(
 
 def test_patch_state_card_renders_on_patch_subject(client, tmp_path):
     """A `[PATCH …]` subject opts the message page into the
-    consolidated state card. With no extra inputs, only the
-    Activity row renders ("No replies") and the rest are
-    silently skipped, the card scales from minimal to full."""
+    badges row. With no extra inputs, the activity chip renders
+    with a `dormant` heat. Trailers/landings/series are absent.
+    Badge redesign: `<aside class="patch-state">` replaced by
+    `<div class="msg-badges">`."""
     _, url = _ingest_one_article(
         tmp_path,
         "alpha",
@@ -1062,19 +1067,20 @@ def test_patch_state_card_renders_on_patch_subject(client, tmp_path):
         subject="[PATCH 1/2] foo: add bar",
     )
     body = client.get(url).data.decode()
-    assert 'class="patch-state"' in body
-    # Bare patch → only Activity. The other rows are absent.
-    assert "Activity:" in body
-    assert "No replies" in body
+    # Badge redesign: activity chip renders instead of the old card.
+    assert 'class="msg-badges"' in body
+    assert 'class="badge badge-activity-' in body
+    # Old card-level labels are gone.
     assert "Trailers:" not in body
     assert "Landed:" not in body
     assert "Series revisions:" not in body
 
 
 def test_patch_state_card_absent_on_non_patch_subject(client, tmp_path):
-    """A plain message (no `[PATCH …]` bracketing) gets no card at
-    all. Pins the `is_patch` gate, the card is patch-only by design
-    so non-patch articles don't ship an empty shell."""
+    """A plain message (no `[PATCH …]` bracketing) gets no badges
+    row at all. Pins the `is_patch` gate, the badges are patch-only
+    so non-patch articles don't ship an empty shell. Badge redesign:
+    `<aside class="patch-state">` replaced by `<div class="msg-badges">`."""
     _, url = _ingest_one_article(
         tmp_path,
         "alpha",
@@ -1082,14 +1088,15 @@ def test_patch_state_card_absent_on_non_patch_subject(client, tmp_path):
         subject="thoughts on memory model wording",
     )
     body = client.get(url).data.decode()
-    assert 'class="patch-state"' not in body
-    assert "Activity:" not in body
+    assert 'class="msg-badges"' not in body
+    assert 'class="badge badge-activity-' not in body
 
 
 def test_patch_state_card_absent_on_git_pull(client, tmp_path):
     """`[GIT PULL]` looks bracketed but isn't a patch in the sense
     we're indexing, the bracket-token guard in `_is_patch_subject`
-    keys on the literal `PATCH` word."""
+    keys on the literal `PATCH` word. Badge redesign: check the
+    badges row is absent rather than the old aside."""
     _, url = _ingest_one_article(
         tmp_path,
         "alpha",
@@ -1097,15 +1104,15 @@ def test_patch_state_card_absent_on_git_pull(client, tmp_path):
         subject="[GIT PULL] urgent fixes for 6.13",
     )
     body = client.get(url).data.decode()
-    assert 'class="patch-state"' not in body
+    assert 'class="msg-badges"' not in body
 
 
 def test_patch_state_trailers_row_aggregates_by_role(client, tmp_path):
-    """Trailers in the patch body group by canonical role, each
-    role rendered with its total count. Pins the per-role
-    aggregation: two Reviewed-by + one Acked-by yields the
-    bucketed shape "2 Reviewed-by, 1 Acked-by" rather than three
-    separate entries."""
+    """Badge redesign: the `Trailers:` row is dropped from the
+    message-page template (data moves to the lifecycle pill tooltip).
+    Pins the absence so it doesn't regress back in. The trailer
+    data still feeds `patch_state.trailers` (used by other surfaces);
+    only the message-page visual representation changed."""
     body_bytes = (
         b"diff --git a/file b/file\n@@ -1 +1 @@\n-x\n+y\n\n"
         b"Reviewed-by: Reviewer One <r1@example.com>\n"
@@ -1120,20 +1127,20 @@ def test_patch_state_trailers_row_aggregates_by_role(client, tmp_path):
         body=body_bytes,
     )
     body = client.get(url).data.decode()
-    assert "Trailers:" in body
-    assert "2 Reviewed-by" in body
-    assert "1 Acked-by" in body
+    # Trailers row dropped from message page in badge redesign.
+    assert "Trailers:" not in body
+    # Badges row still renders for patch articles.
+    assert 'class="msg-badges"' in body
 
 
 def test_patch_state_trailers_row_marks_maintainer_attestation(
     client,
     tmp_path,
 ):
-    """A trailer whose address matches an M:/R: row on a subsystem
-    this patch touches is counted into the maintainer subset; the
-    rendered chip reads "(N maintainer)". Pins the per-role
-    maintainer aggregation against the subsystem-maintainer
-    lookup."""
+    """Badge redesign: the `Trailers:` row is dropped from the
+    message-page template (data moves to the lifecycle pill tooltip).
+    Maintainer-trailer detection still feeds `patch_state.trailers`;
+    the message-page no longer surfaces it inline. Pins the absence."""
     _seed_subsystem(
         "BCACHEFS",
         "Maintained",
@@ -1154,19 +1161,21 @@ def test_patch_state_trailers_row_marks_maintainer_attestation(
         body=body_bytes,
     )
     body = client.get(url).data.decode()
-    assert "Trailers:" in body
-    # Two reviewers total, one of whom is a recognised maintainer.
-    assert "2 Reviewed-by (1 maintainer)" in body
+    # Trailers row dropped from message page in badge redesign.
+    assert "Trailers:" not in body
+    # Badges row still renders for patch articles.
+    assert 'class="msg-badges"' in body
 
 
 def test_patch_state_activity_row_shows_days_since_last_reply(
     client,
     tmp_path,
 ):
-    """When the article has a reply that's older than today, the
-    Activity row reports a non-zero day count. The reply is
-    inserted directly into the DB (date in the past) so we can
-    control the activity surface without depending on time."""
+    """When the article has a reply, the activity badge chip reflects a
+    non-dormant heat and a day-count detail. Badge redesign: activity
+    info moved from `<small><strong>Activity:</strong>` inside
+    `<aside>` into the `badge-activity-<heat>` chip in `msg-badges`.
+    The chip carries `activity_detail` ("3d" etc.) in `.badge-detail`."""
     from datetime import datetime, timedelta, timezone
     from sqlalchemy import select
     from mimir.extensions import SessionLocal
@@ -1181,7 +1190,7 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
     # Re-anchor the article date 10 days ago so the reply we insert
     # 3 days ago is plausibly *after* it. `_ingest_one_article`
     # defaults to "yesterday" (1.36.3), which was after the reply
-    # date and made the activity row skip the reply.
+    # date and made the activity chip stay dormant.
     reply_at = datetime.now(timezone.utc) - timedelta(days=3)
     with SessionLocal() as s:
         ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
@@ -1206,18 +1215,21 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
         )
         s.commit()
     body = client.get(url).data.decode()
-    assert "Activity:" in body
-    # Exact day count depends on rounding; either "3 days ago" or
-    # "2 days ago" depending on the now() boundary.
-    assert "Last reply" in body
-    assert "days ago" in body
+    # Badge redesign: activity chip rendered; heat is warm/cooling.
+    assert 'class="badge badge-activity-' in body
+    # The chip is not dormant (there are replies).
+    assert "badge-activity-dormant" not in body
+    # Day count detail rendered inside the chip (e.g. "3d").
+    assert 'class="badge-detail"' in body
 
 
 def test_patch_state_card_skips_empty_rows(client, tmp_path):
-    """A bare cover-letter render with no trailers, no landing, no
-    sibling revisions, no replies skips every optional row, only
-    Activity ("No replies") remains. Pins the row-skipping logic so
-    the card doesn't degrade into a wall of empty labels."""
+    """Badge redesign: a bare cover-letter render with no trailers,
+    no landing, no sibling revisions, and no replies renders the
+    dormant activity chip but no trailing labels. The old aside labels
+    (`Trailers:`, `Landed:`, `Series revisions:`, `Activity:`,
+    `No replies`) are gone from the page; the badges row is the
+    only patch-state surface. Pins the absence of the old rows."""
     _, url = _ingest_one_article(
         tmp_path,
         "alpha",
@@ -1225,12 +1237,14 @@ def test_patch_state_card_skips_empty_rows(client, tmp_path):
         subject="[PATCH 0/2] new feature",
     )
     body = client.get(url).data.decode()
-    card = body.split('class="patch-state"')[1].split("</aside>")[0]
-    assert "Trailers:" not in card
-    assert "Landed:" not in card
-    assert "Series revisions:" not in card
-    assert "Activity:" in card
-    assert "No replies" in card
+    # Old aside labels are all gone.
+    assert "Trailers:" not in body
+    assert "Landed:" not in body
+    assert "Series revisions:" not in body
+    assert "Activity:" not in body
+    # Badges row renders with the dormant activity chip.
+    assert 'class="msg-badges"' in body
+    assert "badge-activity-dormant" in body
 
 
 def test_message_page_emits_breadcrumb_list(client, tmp_path):
@@ -1949,42 +1963,11 @@ def test_message_page_hx_request_has_distinct_etag(client, tmp_path):
     assert full.headers["ETag"] != partial.headers["ETag"]
 
 
-# --- Lifecycle timeline + tree-labelled landings (Task 12) ---
-
-
-def test_message_page_renders_lifecycle_timeline(client, tmp_path):
-    """A patch article with at least one timeline event (the 'Posted'
-    event is always present) renders the lifecycle-timeline section."""
-    _, url = _ingest_one_article(
-        tmp_path,
-        "alpha",
-        "lifecycle-patch@example.com",
-        subject="[PATCH 1/2] net: do thing",
-    )
-    r = client.get(url)
-    assert r.status_code == 200
-    body = r.data.decode()
-    assert 'class="lifecycle-timeline"' in body
-    # The 'Posted' event is emitted for every patch with a date.
-    assert ">Posted<" in body
-
-
-def test_message_page_omits_timeline_on_non_patch(client, tmp_path):
-    """A non-patch article (no [PATCH] prefix) does NOT render the
-    lifecycle-timeline section."""
-    _, url = _ingest_one_article(
-        tmp_path,
-        "alpha",
-        "prose-msg@example.com",
-        subject="Thoughts on the scheduler",
-    )
-    body = client.get(url).data.decode()
-    assert 'class="lifecycle-timeline"' not in body
-
-
-def test_message_page_card_landings_label_tree(client, tmp_path):
-    """Each landing entry on the patch-state card shows 'Applied to'
-    followed by the tree label, not just the raw tree_name slug."""
+def test_message_page_card_omits_landings_block(client, tmp_path):
+    """The patch-state card does NOT carry a per-tree landings block
+    as a "Landed:" row (the card duplicating the same per-tree rows
+    was visual noise removed in 2.4.x). The card retains trailers /
+    series-revisions / activity."""
     _, url = _ingest_one_article(
         tmp_path,
         "alpha",
@@ -1997,30 +1980,104 @@ def test_message_page_card_landings_label_tree(client, tmp_path):
         tree_name="linus",
     )
     body = client.get(url).data.decode()
-    assert "Applied to" in body
-    # tree_label for "linus" falls back to slug when no display_name is set.
-    assert "linus" in body
-    # The old bare `<code>linus</code>` shape (tree_name in code tag) must
-    # NOT appear; tree labelling now goes via the "Applied to <strong>"
-    # pattern.
-    assert "<code>linus</code>" not in body
+    # Card-level "Landed:" header is gone.
+    assert "<strong>Landed:</strong>" not in body
+    # "Applied to" wording is gone too (was the card's verbiage).
+    assert "Applied to" not in body
 
 
-def test_message_page_lifecycle_timeline_shows_tree_landing_event(client, tmp_path):
-    """When a patch has a mainline_commits row the timeline includes a
-    tree-pickup event with a label derived from the tree slug."""
+# --- Task 11: badges row + revisions fold + drop patch-state aside -----------
+
+
+def test_message_page_renders_badges_row_under_subject(client, tmp_path):
+    """Activity + lifecycle badges render in a `msg-badges` row
+    placed between the subject heading and the From block."""
     _, url = _ingest_one_article(
         tmp_path,
         "alpha",
-        "tree-event@example.com",
-        subject="[PATCH 1/2] mm: fix leak",
-    )
-    _seed_mainline_commit(
-        message_id="tree-event@example.com",
-        commit_sha="deadbeef1234" + "00" * 14,
-        tree_name="linus",
+        "badges@x",
+        subject="[PATCH 1/2] foo: bar",
     )
     body = client.get(url).data.decode()
-    assert 'class="lifecycle-timeline"' in body
-    # The tree-pickup event label for "linus" is "Landed".
-    assert "Landed" in body
+    assert 'class="msg-badges"' in body
+    assert 'class="badge badge-activity-' in body
+
+
+def test_message_page_no_patch_state_aside(client, tmp_path):
+    """The old `<aside class="patch-state">` is gone; the
+    information moves into the badges row + revisions fold +
+    pill tooltip."""
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "no-aside@x",
+        subject="[PATCH] foo: bar",
+    )
+    body = client.get(url).data.decode()
+    assert '<aside class="patch-state"' not in body
+
+
+def test_message_page_revisions_fold_renders_when_multiple_versions(
+    client,
+    tmp_path,
+):
+    """When a patch has >= 2 revisions, a Revisions fold renders
+    with the count in the summary."""
+    from sqlalchemy import update
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    art_v1_id, _ = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "rev-v1@x",
+        subject="[PATCH 1/1] foo: bar",
+    )
+    (tmp_path / "v2").mkdir()
+    art_v2_id, url = _ingest_one_article(
+        tmp_path / "v2",
+        "alpha",
+        "rev-v2@x",
+        subject="[PATCH v2 1/1] foo: bar",
+    )
+    # Assign a shared patch_series_key and per-version metadata so
+    # patch_state_for_article sees both as related revisions.
+    shared_key = "rev-foo-key-0000"
+    with SessionLocal() as s:
+        s.execute(
+            update(Article)
+            .where(Article.id == art_v1_id)
+            .values(
+                patch_series_key=shared_key,
+                patch_series_position=1,
+                patch_series_version="v1",
+            )
+        )
+        s.execute(
+            update(Article)
+            .where(Article.id == art_v2_id)
+            .values(
+                patch_series_key=shared_key,
+                patch_series_position=1,
+                patch_series_version="v2",
+            )
+        )
+        s.commit()
+    body = client.get(url).data.decode()
+    assert 'class="revisions-fold"' in body
+    assert 'class="revisions-count">(2)' in body
+
+
+def test_message_page_revisions_fold_absent_for_single_revision(
+    client,
+    tmp_path,
+):
+    """Single-revision patches get NO Revisions fold."""
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "single-rev@x",
+        subject="[PATCH] foo: bar",
+    )
+    body = client.get(url).data.decode()
+    assert 'class="revisions-fold"' not in body

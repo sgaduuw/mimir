@@ -257,14 +257,242 @@ def test_lifecycle_status_uses_cache_for_hits(session, monkeypatch):
     assert call_count["n"] == 0, "cache hit should skip SQL"
 
 
+def test_lifecycle_status_info_carries_display_fields():
+    """Per spec: LifecycleStatusInfo carries activity_heat,
+    activity_detail, pill_label, count_suffix, tooltip with
+    defaults for older cache rows."""
+    from mimir.lifecycle_status import LifecycleStatusInfo
+
+    info = LifecycleStatusInfo(state_value="pending")
+    assert info.activity_heat == "dormant"
+    assert info.activity_detail == "no replies"
+    assert info.pill_label == ""
+    assert info.count_suffix is None
+    assert info.tooltip is None
+
+
+def test_format_pill_label_per_state():
+    from mimir.lifecycle_status import LifecycleStatus, _format_pill_label
+
+    assert _format_pill_label(LifecycleStatus.LANDED, tree=None) == "LANDED"
+    assert _format_pill_label(LifecycleStatus.QUEUED, tree="net-next") == "IN NET-NEXT"
+    assert (
+        _format_pill_label(LifecycleStatus.QUEUED, tree="linux-next") == "IN LINUX-NEXT"
+    )
+    assert _format_pill_label(LifecycleStatus.REVIEWED, tree=None) == "REVIEWED"
+    assert _format_pill_label(LifecycleStatus.SUPERSEDED, tree=None) == "SUPERSEDED"
+
+
+def test_format_count_suffix_omits_when_zero():
+    from mimir.lifecycle_status import _format_count_suffix
+
+    assert _format_count_suffix(0, 0) is None
+    assert _format_count_suffix(1, 0) == ": 1 (0M)"
+    assert _format_count_suffix(6, 3) == ": 6 (3M)"
+    assert _format_count_suffix(12, 4) == ": 12 (4M)"
+
+
+def test_format_tooltip_landed_with_reviewers():
+    from mimir.lifecycle_status import (
+        LifecycleStatus,
+        _format_tooltip,
+    )
+    from datetime import datetime, timezone
+
+    tip = _format_tooltip(
+        state=LifecycleStatus.LANDED,
+        linus_sha="feedface12345678",
+        linus_committed_at=datetime(2025, 11, 22, 9, 30, tzinfo=timezone.utc),
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
+        reviewers=[("Theodore Tso", True), ("Jan Kara", True)],
+    )
+    assert tip.startswith("feedface1234 · 2025-11-22 09:30")
+    lines = tip.split("\n")
+    assert lines[1] == "M Theodore Tso"
+    assert lines[2] == "M Jan Kara"
+
+
+def test_format_tooltip_queued_uses_earliest_other_tree():
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+    from datetime import datetime, timezone
+
+    tip = _format_tooltip(
+        state=LifecycleStatus.QUEUED,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha="24be70885101abcd",
+        earliest_other_at=datetime(2026, 5, 25, 14, 8, tzinfo=timezone.utc),
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
+        reviewers=[("Alice", True), ("Bob", False)],
+    )
+    assert tip.startswith("24be70885101 · 2026-05-25 14:08")
+    assert "\nM Alice" in tip
+    assert "\nBob" in tip
+
+
+def test_format_tooltip_reviewed_names_only():
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+
+    tip = _format_tooltip(
+        state=LifecycleStatus.REVIEWED,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
+        reviewers=[("Alice", True), ("Bob", False), ("Carol", True)],
+    )
+    # Maintainers first (alphabetical via input order), then non-
+    # maintainers. No leading commit line; no preamble.
+    assert tip == "M Alice\nM Carol\nBob"
+
+
+def test_format_tooltip_superseded_uses_supersede_note():
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+    from datetime import datetime, timezone
+
+    tip = _format_tooltip(
+        state=LifecycleStatus.SUPERSEDED,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version="4",
+        superseded_by_posted_at=datetime(2026, 5, 18, tzinfo=timezone.utc),
+        reviewers=[("Alice", True), ("Bob", False)],
+    )
+    assert tip.startswith("Superseded by v4 posted 2026-05-18")
+    assert "\nM Alice" in tip
+
+
+def test_format_tooltip_landed_no_reviewers():
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+    from datetime import datetime, timezone
+
+    tip = _format_tooltip(
+        state=LifecycleStatus.LANDED,
+        linus_sha="cafebabe98765432",
+        linus_committed_at=datetime(2026, 4, 14, 11, 8, tzinfo=timezone.utc),
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
+        reviewers=[],
+    )
+    # Single line: just the commit info; no newline at the end.
+    assert tip == "cafebabe9876 · 2026-04-14 11:08"
+
+
+def test_format_tooltip_pending_returns_none():
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+
+    tip = _format_tooltip(
+        state=LifecycleStatus.PENDING,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
+        reviewers=[],
+    )
+    assert tip is None
+
+
+def test_bulk_uncached_returns_reviewer_counts(session):
+    """The bulk fetcher surfaces review-trailer counts (total +
+    maintainer-subset) per article alongside the state derivation."""
+    from mimir.lifecycle_status import _bulk_uncached
+    from mimir.models import Subsystem, SubsystemMaintainer
+
+    art = _seed_article(session, "rc@x")
+    # Add a Subsystem + Maintainer so the maintainer-subset count > 0.
+    sub = Subsystem(name="TEST", status="Maintained")
+    session.add(sub)
+    session.commit()
+    session.add(
+        SubsystemMaintainer(
+            subsystem_id=sub.id,
+            role="M",
+            name="Bob Maintainer",
+            address="bob@kernel.org",
+        )
+    )
+    # Three review trailers: 1 from maintainer, 2 from others.
+    for role, addr in [
+        ("Reviewed-by", "bob@kernel.org"),
+        ("Reviewed-by", "alice@example.com"),
+        ("Tested-by", "carol@example.com"),
+    ]:
+        session.add(
+            ArticleTrailer(
+                article_id=art.id,
+                role=role,
+                name="x",
+                address=addr,
+                address_normalized=addr.lower(),
+            )
+        )
+    session.commit()
+
+    got = _bulk_uncached(session, [art.id])
+    info = got[art.id]
+    assert info.count_suffix == ": 3 (1M)"
+
+
+def test_bulk_uncached_computes_thread_activity(session):
+    """The bulk fetcher computes days_since_last_reply per article
+    via the thread-tree max-date, so listings can render activity
+    heat without per-article thread walks in the route."""
+    from datetime import timedelta
+
+    from mimir.lifecycle_status import _bulk_uncached
+
+    root_date = datetime.now(timezone.utc) - timedelta(days=30)
+    root = _seed_article(session, "root@x", date=root_date)
+    inbox = session.execute(select(Inbox).where(Inbox.name == "lkml")).scalar_one()
+    today = datetime.now(timezone.utc)
+    reply = Article(
+        message_id="reply@x",
+        subject="Re: foo",
+        date=today,
+        author="r",
+        thread_parent=root.message_id,
+    )
+    session.add(reply)
+    session.commit()
+    session.add(
+        ArticleList(
+            article_id=reply.id,
+            inbox_id=inbox.id,
+            epoch="0.git",
+            commit_sha="x" * 40,
+        )
+    )
+    session.commit()
+
+    got = _bulk_uncached(session, [root.id])
+    assert got[root.id].activity_heat == "hot"
+    assert got[root.id].activity_detail == "today"
+
+
 def test_lifecycle_status_query_uses_index_seeks(session):
-    """Pins the plan of the bulk lifecycle query: every LEFT JOIN
-    source must SEARCH USING INDEX, not SCAN. Guards against an
-    ANALYZE drift silently turning the listing-render hot path into
-    a multi-row scan.
+    """Pins the plan of the bulk lifecycle query: mainline_commits,
+    article_trailers, and subsystem_maintainers must SEARCH USING
+    INDEX. articles can scan (the recursive CTE for thread-activity
+    walk-up needs to scan the bounded `IN :ids` seed set; that cost
+    scales with listing size, not corpus size).
 
     Mirrors the shape of test_subsystem_path_filter_uses_index_seeks
-    and test_triage_queries_use_date_index_no_full_scans.
+    and test_triage_queries_use_date_index_no_full_scans, with the
+    persistent-table set extended to include subsystem_maintainers
+    (added in 2.5 for the badge-redesign tooltip's maintainer-flag
+    join).
 
     NOTE: SQLite's planner may SCAN tiny test-corpus tables (< ~100
     rows) regardless of indexes, because a full scan is genuinely
@@ -272,10 +500,10 @@ def test_lifecycle_status_query_uses_index_seeks(session):
     small dataset the test seeds 50 articles, runs ANALYZE so the
     planner has stats to work with, then asserts the relaxed
     condition: at least one index SEARCH appears in the plan AND no
-    load-bearing table is scanned. The per-table SCAN check is the
-    regression guard that matters in production; the "at least one
-    SEARCH" check ensures ANALYZE produced enough stats for the
-    planner to use indexes at all.
+    load-bearing persistent table is scanned. The per-table SCAN
+    check is the regression guard that matters in production; the
+    "at least one SEARCH" check ensures ANALYZE produced enough
+    stats for the planner to use indexes at all.
 
     If this test becomes flaky on CI because 50 rows is too few for
     the planner to pick index paths, raise the seed count or relax
@@ -306,19 +534,19 @@ def test_lifecycle_status_query_uses_index_seeks(session):
     plan_rows = session.execute(text("EXPLAIN QUERY PLAN " + raw_sql)).all()
     plan_text = "\n".join(r[3] for r in plan_rows).lower()
 
-    # No SCAN against the three load-bearing tables. On a 50-row
-    # corpus these tables are tiny, but ANALYZE should still push the
-    # planner toward index seeks on the message_id / article_id FKs.
-    # If the planner legitimately picks a scan on such a small corpus,
-    # this assertion fires; relax it to per-table row-count guards if
-    # that happens in CI.
-    for table in ("mainline_commits", "article_trailers", "articles"):
+    # These persistent tables must use indexes; full scans would
+    # bloom on prod-scale data. articles is excluded from this list
+    # because the recursive CTE for thread-activity walk-up
+    # legitimately scans the seed set (bounded by `IN :ids`; the
+    # cost scales with listing size, not corpus size).
+    for table in ("mainline_commits", "article_trailers", "subsystem_maintainers"):
         assert f"scan {table}" not in plan_text, (
             f"query plan should not SCAN {table}; got:\n{plan_text}"
         )
 
-    # At least one index SEARCH must appear (confirms ANALYZE ran and
-    # the planner has stats).
-    assert "search" in plan_text, (
-        f"query plan has no index SEARCH at all; got:\n{plan_text}"
+    # At least one index SEARCH or USING INDEX must appear (confirms
+    # ANALYZE ran and the planner is picking index access for the
+    # main read path).
+    assert "search" in plan_text or "using index" in plan_text, (
+        f"expected at least one index seek in the plan; got:\n{plan_text}"
     )

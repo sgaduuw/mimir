@@ -24,6 +24,7 @@ from mimir.models import (
     ArticleList,
     Inbox,
 )
+from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.patch_state import patch_state_for_article
 from mimir.rendering import URL_OR_MSGID_RE
 from mimir.rendering.linkify import _extract_lore_msgid
@@ -355,6 +356,9 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             inbox_name=inbox.name,
         )
 
+        lifecycle_status_by_id = lifecycle_status_for_articles(session, [article.id])
+        lifecycle_status = lifecycle_status_by_id.get(article.id)
+
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
     thread_summary = _thread_summary(thread)
 
@@ -399,6 +403,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             subsystem_hits=subsystem_hits,
             related_patches=related_patches,
             patch_state=patch_state,
+            lifecycle_status=lifecycle_status,
             long_thread=long_thread,
         )
     )

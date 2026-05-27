@@ -1,13 +1,14 @@
-"""Tests for the lifecycle-status pill wired into listing routes
-(Task 14 of the multi-tree-lifecycle work). The bulk fetcher
+"""Tests for the lifecycle-status badges wired into listing routes
+(Task 14 of the multi-tree-lifecycle work, updated in Task 12 to
+the .badge primitive). The bulk fetcher
 `mimir.lifecycle_status.lifecycle_status_for_articles` is called
 from every listing route; this module pins that at least one
-non-PENDING state produces a rendered pill in the listing HTML.
+non-PENDING state produces rendered badges in the listing HTML.
 
 Picking the per-inbox dashboard's "Recent messages" surface as the
 single integration point: it's the lowest-friction listing in the
 seeded fixture (alpha already carries `art1@example.com`), and the
-pill rendering through `_recent_items.html` exercises the same
+badge rendering through `_lifecycle_badges.html` exercises the same
 include partial that every other listing template uses.
 """
 
@@ -16,7 +17,7 @@ def test_recent_listing_renders_landed_pill_for_landed_article(client):
     """Seeding a `mainline_commits` row tagged `linus` for one of the
     seeded articles flips its lifecycle state from PENDING to
     LANDED; the per-inbox dashboard's Recent-messages list must
-    then render the `lifecycle-landed` pill.
+    then render the lifecycle-landed badge on the .badge primitive.
 
     The fixture `art1@example.com` lives on alpha and appears in
     the dashboard's Recent list. After seeding the landing, the
@@ -53,7 +54,11 @@ def test_recent_listing_renders_landed_pill_for_landed_article(client):
     r = client.get("/alpha/")
     assert r.status_code == 200
     body = r.data.decode()
-    # Pill class is built from the LANDED state value; the structural
-    # marker `lifecycle-pill lifecycle-landed` is what `_lifecycle_pill.html`
-    # emits when status.state.value == 'landed'.
-    assert 'class="lifecycle-pill lifecycle-landed"' in body
+    # New badge primitive: `_lifecycle_badges.html` emits a
+    # `badge-lifecycle-<state>` span when status.state.value != 'pending'.
+    assert 'class="badge badge-lifecycle-landed"' in body
+    # pill_label for LANDED is the state name uppercased; the template
+    # may insert whitespace before the label text but the word appears.
+    assert "LANDED" in body
+    # Activity chip always renders alongside the lifecycle badge.
+    assert 'class="badge badge-activity-' in body

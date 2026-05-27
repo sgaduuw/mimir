@@ -199,12 +199,14 @@ def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
         ).scalar_one()
         v2_url = f"/alpha/{v2_art.date.year}/{v2_art.date.month:02d}/{v2_art.id}"
     body = client.get(v2_url).data.decode()
-    card = body.split('class="patch-state"')[1].split("</aside>")[0]
-    assert "diff vs current" in card
-    assert f"/alpha/series/{series_key}/diff" in card
-    assert "from=v1" in card
-    assert "to=v2" in card
-    assert "pos=cover" in card
+    # Badge redesign: series revisions moved from the aside into
+    # `_revisions_fold.html`; scope the assertions to that fold.
+    fold = body.split('class="revisions-fold"')[1].split("</details>")[0]
+    assert "diff vs current" in fold
+    assert f"/alpha/series/{series_key}/diff" in fold
+    assert "from=v1" in fold
+    assert "to=v2" in fold
+    assert "pos=cover" in fold
 
 
 def test_series_diff_uses_indexed_lookup_without_thread_parent(

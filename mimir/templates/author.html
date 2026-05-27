@@ -23,7 +23,7 @@
   {% for a in results %}
   <li>
     {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-    {% include "_lifecycle_pill.html" %}
+    {% include "_lifecycle_badges.html" %}
     <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
     <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '????-??-??' }}
       &middot; {{ a.author|safe_from }}</small>
