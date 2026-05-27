@@ -208,6 +208,31 @@ def get(key: str) -> Any:
     return _decode(json.loads(row.value))
 
 
+def get_many(keys: list[str]) -> dict[str, Any]:
+    """Bulk read: returns the dict {key: decoded_value} for keys
+    present and unexpired. Missing or expired keys are simply
+    absent from the result. Single SELECT, used to fan out
+    per-row cache lookups across a listing render without N
+    round-trips."""
+    if not keys:
+        return {}
+    nskeys = [_ns(k) for k in keys]
+    now = _now()
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(CacheEntry.key, CacheEntry.value, CacheEntry.expires_at).where(
+                CacheEntry.key.in_(nskeys)
+            )
+        ).all()
+    ns_to_orig = dict(zip(nskeys, keys))
+    out: dict[str, Any] = {}
+    for nskey, value, expires_at in rows:
+        if expires_at < now:
+            continue
+        out[ns_to_orig[nskey]] = _decode(json.loads(value))
+    return out
+
+
 # Maximum JSON-encoded payload size accepted by `cache.set`. Defense
 # in depth against a buggy caller or an over-eager aggregator
 # producing huge cache rows; the per-call inputs are bounded by query
