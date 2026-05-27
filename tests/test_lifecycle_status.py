@@ -427,6 +427,38 @@ def test_format_tooltip_superseded_uses_supersede_note():
     assert "\nM Alice" in tip
 
 
+def test_format_tooltip_scrubs_control_bytes_from_names():
+    """Reviewer names flow into a `data-tooltip` attribute; bytes
+    that survive Jinja autoescape but break attribute rendering
+    (C0/C1 control range, surrogates) must be stripped first.
+    Same posture as `canonical.extract_list_addresses`.
+
+    Names that become empty after scrubbing are dropped entirely."""
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+
+    tip = _format_tooltip(
+        state=LifecycleStatus.REVIEWED,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
+        reviewers=[
+            # Embedded NUL byte gets stripped; surrounding text survives.
+            ("Alice\x00 Maintainer", True),
+            # Lone surrogate inside the name; stripped.
+            ("Bob \uD800Reviewer", False),
+            # Entire name is just control bytes; drops.
+            ("\x01\x02\x03", True),
+            # C1 control range (U+0080 - U+009F).
+            ("Carol\x85", False),
+        ],
+    )
+    # Names cleaned, control bytes gone, empty-after-scrub dropped.
+    assert tip == "M Alice Maintainer\nBob Reviewer\nCarol"
+
+
 def test_format_tooltip_landed_no_reviewers():
     from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
     from datetime import datetime, timezone

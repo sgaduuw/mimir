@@ -11,6 +11,7 @@ three LEFT JOIN sources stay on index seeks rather than scans
 (regression guard against an ANALYZE drift).
 """
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -20,6 +21,16 @@ from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.datetime_utils import aware_utc as _aware_utc
+
+# Strip control bytes + surrogates before flowing reviewer names
+# into the lifecycle pill's `data-tooltip` attribute. Same shape as
+# `mimir.canonical._UNSAFE_ATTR_CHARS_RE` (kept duplicated rather
+# than imported across module boundaries, both definitions are
+# private; promote to a shared utility module if a third use case
+# appears). Jinja autoescape covers `<`, `>`, `"`, `&`; this
+# regex catches C0/C1 control bytes + the surrogate range that
+# Jinja would happily pass through to break a rendered attribute.
+_UNSAFE_ATTR_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\ud800-\udfff]")
 
 
 def _coerce_dt(value) -> datetime | None:
@@ -313,11 +324,25 @@ def _format_tooltip(
     # First-seen wins; if the same name appears both as maintainer
     # and non-maintainer (parser quirk), the maintainer-flagged
     # entry takes precedence so we don't lose the `M ` prefix.
+    #
+    # Scrub control bytes from each name before it flows into the
+    # `data-tooltip` attribute (same posture as
+    # `canonical.extract_list_addresses` for similarly-routed
+    # data). Jinja autoescape handles `<`, `>`, `"`, `&`; the
+    # surrogate-escaped or C0/C1 control byte that survives
+    # autoescape but breaks the rendered attribute is what this
+    # filter covers. The parser already scrubs surrogates on the
+    # ParsedArticle side, but trailers come from message bodies
+    # and the trailer name is whatever bytes the contributor put
+    # after `Reviewed-by:` and before the `<address>` bracket.
     seen_as_maintainer: set[str] = set()
     seen_as_other: set[str] = set()
     maintainers: list[str] = []
     others: list[str] = []
-    for name, is_m in reviewers:
+    for raw_name, is_m in reviewers:
+        name = _UNSAFE_ATTR_CHARS_RE.sub("", raw_name or "").strip()
+        if not name:
+            continue
         if is_m:
             if name not in seen_as_maintainer:
                 seen_as_maintainer.add(name)
