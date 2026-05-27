@@ -270,6 +270,23 @@ def test_lifecycle_status_info_carries_display_fields():
     assert info.tooltip is None
 
 
+def test_format_pill_label_per_state():
+    from mimir.lifecycle_status import LifecycleStatus, _format_pill_label
+    assert _format_pill_label(LifecycleStatus.LANDED, tree=None) == "LANDED"
+    assert _format_pill_label(LifecycleStatus.QUEUED, tree="net-next") == "IN NET-NEXT"
+    assert _format_pill_label(LifecycleStatus.QUEUED, tree="linux-next") == "IN LINUX-NEXT"
+    assert _format_pill_label(LifecycleStatus.REVIEWED, tree=None) == "REVIEWED"
+    assert _format_pill_label(LifecycleStatus.SUPERSEDED, tree=None) == "SUPERSEDED"
+
+
+def test_format_count_suffix_omits_when_zero():
+    from mimir.lifecycle_status import _format_count_suffix
+    assert _format_count_suffix(0, 0) is None
+    assert _format_count_suffix(1, 0) == ": 1 (0M)"
+    assert _format_count_suffix(6, 3) == ": 6 (3M)"
+    assert _format_count_suffix(12, 4) == ": 12 (4M)"
+
+
 def test_lifecycle_status_query_uses_index_seeks(session):
     """Pins the plan of the bulk lifecycle query: every LEFT JOIN
     source must SEARCH USING INDEX, not SCAN. Guards against an
