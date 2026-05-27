@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.4.0], 2026-05-26
+
 ### Added
 
 - Multi-tree mainline tracking. Patches are now tracked through
