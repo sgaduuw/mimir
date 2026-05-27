@@ -231,3 +231,24 @@ def test_superseded_handles_double_digit_versions(session):
     got = lifecycle_status_for_articles(session, [v9.id, v10.id])
     assert got[v9.id].state == LifecycleStatus.SUPERSEDED
     assert got[v10.id].state == LifecycleStatus.PENDING
+
+
+def test_lifecycle_status_caches_per_article(session):
+    from mimir import cache
+    a = _seed_article(session, "cached@x")
+    lifecycle_status_for_articles(session, [a.id])
+    cached = cache.get(f"lifecycle_status:{a.id}")
+    assert cached is not None
+
+
+def test_lifecycle_status_uses_cache_for_hits(session, monkeypatch):
+    a = _seed_article(session, "hit@x")
+    lifecycle_status_for_articles(session, [a.id])
+    call_count = {"n": 0}
+    real_exec = session.execute
+    def counting_exec(*args, **kwargs):
+        call_count["n"] += 1
+        return real_exec(*args, **kwargs)
+    monkeypatch.setattr(session, "execute", counting_exec)
+    lifecycle_status_for_articles(session, [a.id])
+    assert call_count["n"] == 0, "cache hit should skip SQL"
