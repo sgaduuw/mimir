@@ -57,24 +57,18 @@ def handle_update_mainline(req: UpdateMainlineRequest) -> Reply:
     Returns the structured result so the CLI can echo the same
     "loaded N subsystems" / "walked N commits" lines.
 
-    `load_maintainers` raises `FileNotFoundError` when the configured
-    mainline tree has no MAINTAINERS file at HEAD (operator pointed
-    at the wrong tree). Translate to a structured error so the CLI
-    shim can re-raise as `ClickException` with the bare operator
-    message intact; without this, generic exception-catching at the
-    dispatch boundary would bury the diagnostic under
-    `HandlerCrashed`."""
+    Per-tree exceptions (including FileNotFoundError from a missing
+    MAINTAINERS file) are caught inside `update_mainline()` and
+    recorded as `result.trees[slug].error`; they do not propagate
+    here."""
     from mimir.mainline import update_mainline
 
-    try:
-        result = update_mainline(
-            skip_fetch=req.skip_fetch,
-            skip_maintainers=req.skip_maintainers,
-            skip_commits=req.skip_commits,
-            force=req.force,
-        )
-    except FileNotFoundError as exc:
-        return Reply(ok=False, error=f"MainlineTreeMissing:{exc}")
+    result = update_mainline(
+        skip_fetch=req.skip_fetch,
+        skip_maintainers=req.skip_maintainers,
+        skip_commits=req.skip_commits,
+        force=req.force,
+    )
     return Reply(ok=True, result=result.model_dump(mode="json"))
 
 

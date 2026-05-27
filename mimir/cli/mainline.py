@@ -84,15 +84,8 @@ def update_mainline_command(
             force=force,
         )
     except BrokerUnavailable as exc:
-        # Unwrap the broker's `MainlineTreeMissing:<msg>` structured
-        # error back into the bare operator-facing text so a wrong-
-        # tree config surfaces as the inner FileNotFoundError message
-        # rather than getting buried in "broker update_mainline
-        # failed: HandlerCrashed."
-        raw = str(exc)
-        _, _, reply_error = raw.partition(": ")
-        if reply_error.startswith("MainlineTreeMissing:"):
-            raise click.ClickException(reply_error[len("MainlineTreeMissing:") :])
+        # update_mainline() catches per-tree exceptions; FileNotFoundError
+        # from missing tree dirs surfaces in result.trees[slug].error.
         raise click.ClickException(f"broker update_mainline failed: {exc}")
     _echo_update_mainline_outcome(payload)
     # Signal failure to the calling process (systemd timer, cron) so

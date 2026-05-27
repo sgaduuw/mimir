@@ -765,7 +765,7 @@ allowlist that drives From-line / DCO-trailer redaction.
 
 `mimir` walks one or more git trees for `Link:` trailers feeding
 the patch-lifecycle surfaces. Defaults to Linus + `linux-next` +
-five `*-next` subsystem trees (net-next, tip, pci, mm-stable,
+five `*-next` subsystem trees (net-next, tip, pci, mm,
 bpf-next). Operators extend via:
 
 ```sh
