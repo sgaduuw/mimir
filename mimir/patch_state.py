@@ -90,6 +90,20 @@ class StateSeriesEntry:
 
 
 @dataclass
+class StateTimelineEvent:
+    """One ordered event in the patch's journey. `kind` is a stable
+    key (`posted`, `trailer:Reviewed-by`, `tree:linus`, ...); `label`
+    is the human-readable display; `detail` carries optional context
+    (e.g. "commit deadbeef...", "Bob (maintainer)"). Sortable by
+    `when`."""
+
+    kind: str
+    label: str
+    when: datetime
+    detail: str | None = None
+
+
+@dataclass
 class PatchState:
     """The four-row state card for a patch's message page. `is_patch`
     drives whether the card renders at all (non-patch articles get
@@ -100,11 +114,13 @@ class PatchState:
     mainline_landings: list[StateMainlineLanding]
     series: list[StateSeriesEntry]
     days_since_last_reply: int | None
+    timeline: list[StateTimelineEvent]
 
 
 cache.register("StateTrailerCount", StateTrailerCount)
 cache.register("StateMainlineLanding", StateMainlineLanding)
 cache.register("StateSeriesEntry", StateSeriesEntry)
+cache.register("StateTimelineEvent", StateTimelineEvent)
 cache.register("PatchState", PatchState)
 
 
@@ -203,6 +219,99 @@ def _resolve_tree_label(tree_name: str) -> str:
     if cfg is None or cfg.display_name is None:
         return tree_name
     return cfg.display_name
+
+
+# Per-tree label mapping for the timeline event display.
+_TREE_EVENT_LABEL = {
+    "linus": "Landed",
+    "linux-next": "Aggregated",
+}
+
+
+def _tree_event_label(tree_name: str) -> str:
+    """Tree pickups outside linus/-next display as 'Picked up'."""
+    return _TREE_EVENT_LABEL.get(tree_name, "Picked up")
+
+
+def _lifecycle_timeline(
+    session: Session,
+    article: Article,
+) -> list[StateTimelineEvent]:
+    """Build the chronological event list for the patch's journey.
+    Order: posted -> first review trailer (per role) -> per-tree
+    pickup (chronological). Per-role dedup means multiple
+    Reviewed-by trailers collapse to the earliest one.
+
+    ArticleTrailer has no `created_at` column; the article's own
+    `date` is used as the trailer-event timestamp. This means all
+    trailer events for a given article share the same `when` value,
+    which is imprecise but durable against schema evolution. The
+    sort key is stable enough for display purposes.
+    """
+    events: list[StateTimelineEvent] = []
+
+    if article.date is not None:
+        events.append(
+            StateTimelineEvent(
+                kind="posted",
+                label="Posted",
+                when=aware_utc(article.date),
+                detail=article.author,
+            )
+        )
+
+    # Per-role earliest trailer. ArticleTrailer carries no created_at;
+    # fall back to article.date as the trailer-event timestamp.
+    trailer_rows = session.execute(
+        select(
+            ArticleTrailer.role,
+            ArticleTrailer.name,
+        ).where(ArticleTrailer.article_id == article.id)
+    ).all()
+    role_earliest: dict[str, tuple[datetime, str | None]] = {}
+    for role, name in trailer_rows:
+        when = (
+            aware_utc(article.date)
+            if article.date
+            else datetime.now(timezone.utc)
+        )
+        if role not in role_earliest or when < role_earliest[role][0]:
+            role_earliest[role] = (when, name)
+    for role, (when, name) in role_earliest.items():
+        events.append(
+            StateTimelineEvent(
+                kind=f"trailer:{role}",
+                label=role,
+                when=when,
+                detail=name,
+            )
+        )
+
+    # Per-tree earliest landing.
+    landing_rows = session.execute(
+        select(
+            MainlineCommit.tree_name,
+            MainlineCommit.commit_sha,
+            MainlineCommit.committed_at,
+        ).where(MainlineCommit.message_id == article.message_id)
+    ).all()
+    tree_earliest: dict[str, tuple[datetime, str]] = {}
+    for tree_name, sha, committed_at in landing_rows:
+        when = aware_utc(committed_at)
+        if tree_name not in tree_earliest or when < tree_earliest[tree_name][0]:
+            tree_earliest[tree_name] = (when, sha)
+    for tree_name, (when, sha) in tree_earliest.items():
+        events.append(
+            StateTimelineEvent(
+                kind=f"tree:{tree_name}",
+                label=f"{_tree_event_label(tree_name)} on {_resolve_tree_label(tree_name)}",
+                when=when,
+                detail=f"commit {sha[:12]}",
+            )
+        )
+
+    events.sort(key=lambda e: e.when)
+    return events
 
 
 def _mainline_landings(
@@ -353,6 +462,7 @@ def patch_state_for_article(
             mainline_landings=[],
             series=[],
             days_since_last_reply=None,
+            timeline=[],
         )
 
     # Capture thread dates outside the cache closure. The iterable
@@ -371,6 +481,7 @@ def patch_state_for_article(
                 article,
                 thread_dates_list,
             ),
+            timeline=_lifecycle_timeline(session, article),
         )
 
     # Cache key: per-article. Inbox name isn't keyed in because for
@@ -393,6 +504,7 @@ __all__ = [
     "PatchState",
     "StateMainlineLanding",
     "StateSeriesEntry",
+    "StateTimelineEvent",
     "StateTrailerCount",
     "patch_state_for_article",
 ]
