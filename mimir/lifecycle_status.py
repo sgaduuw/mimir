@@ -30,17 +30,25 @@ class LifecycleStatus(Enum):
 
 @dataclass
 class LifecycleStatusInfo:
-    """One article's status + (for QUEUED) the earliest tree it
-    appeared in. Used by templates to pick a pill class + label.
+    """One article's lifecycle status + display data.
 
-    `state_value` stores the raw string (one of LifecycleStatus's
-    values) so the cache encoder round-trips it cleanly: the encoder
-    handles str but not Enum. `state` is a read-only property that
-    reconstructs the enum on access so callers don't shift.
-    """
+    `state_value` is the canonical state name (one of
+    `LifecycleStatus` values, stored as string for cache
+    round-trip). `tree` is the earliest non-Linus tree for the
+    QUEUED state, None otherwise.
+
+    The remaining display-derivation fields are pre-computed by
+    `_bulk_uncached` so templates render without further
+    Python-side logic. They default to dormant / empty so cache
+    rows from prior versions deserialize cleanly during rollout."""
 
     state_value: str
     tree: str | None = None
+    activity_heat: str = "dormant"
+    activity_detail: str = "no replies"
+    pill_label: str = ""
+    count_suffix: str | None = None
+    tooltip: str | None = None
 
     @property
     def state(self) -> LifecycleStatus:
