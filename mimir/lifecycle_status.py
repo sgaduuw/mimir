@@ -120,6 +120,25 @@ _BULK_SQL = text("""
 """).bindparams(bindparam("ids", expanding=True))
 
 
+def _format_pill_label(state: LifecycleStatus, tree: str | None) -> str:
+    """Build the uppercase pill label for a state. QUEUED reads
+    `IN <TREE>` (kebab-case slug uppercased). Other states use the
+    state name verbatim."""
+    if state == LifecycleStatus.QUEUED:
+        tree_label = (tree or "").upper()
+        return f"IN {tree_label}".strip()
+    return state.value.upper()
+
+
+def _format_count_suffix(total: int, maintainer_count: int) -> str | None:
+    """Build the inline count suffix `: N (XM)` for the pill, or
+    None when the count is zero (`LANDED` with no reviews is just
+    `LANDED`, no suffix)."""
+    if total == 0:
+        return None
+    return f": {total} ({maintainer_count}M)"
+
+
 def _bulk_uncached(
     session: Session,
     article_ids: list[int],
@@ -189,5 +208,7 @@ __all__ = [
     "LifecycleStatus",
     "LifecycleStatusInfo",
     "_bulk_uncached",
+    "_format_count_suffix",
+    "_format_pill_label",
     "lifecycle_status_for_articles",
 ]
