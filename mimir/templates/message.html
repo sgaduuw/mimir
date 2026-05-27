@@ -104,13 +104,12 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
     {%- endfor %}
   </small><br>
   {% endif %}
-  {% if patch_state.mainline_landings %}
-  <small><strong>Landed:</strong>
-    {% for app in patch_state.mainline_landings -%}
-      Applied to <strong>{{ app.tree_label }}</strong> as <code>{{ app.commit_sha[:12] }}</code>{% if app.committed_at %} on {{ app.committed_at.strftime('%Y-%m-%d') }}{% endif %}{% if not loop.last %}; {% endif %}
-    {%- endfor %}
-  </small><br>
-  {% endif %}
+  {# Per-tree landings live on the lifecycle timeline below
+     ('Aggregated on linux-next ...', 'Landed on mainline (Linus) ...',
+     etc.); duplicating them here on the card just doubled the
+     visual noise on patches with mainline_commits rows. The
+     timeline reads more naturally because each event carries a
+     date + a tree-specific verb. #}
   {% if patch_state.series %}
   <small><strong>Series revisions:</strong>
     {% for entry in patch_state.series -%}

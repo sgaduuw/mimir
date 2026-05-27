@@ -890,8 +890,10 @@ def test_message_page_shows_applied_as_when_mainline_commit_matches(
     tmp_path,
 ):
     """A patch whose Message-ID matches a `mainline_commits` row
-    surfaces a "Landed:" line on the state card. Pins the
-    issue-66 happy path: walker -> DB -> render.
+    surfaces the landing via the lifecycle timeline (post-2.4.x;
+    earlier versions had a duplicate "Landed:" line on the patch-
+    state card too). Pins the issue-66 happy path: walker -> DB ->
+    render.
 
     Card-gated on `is_patch`, so a non-patch article with a
     mainline_commits row would NOT render here. The mainline
@@ -909,14 +911,13 @@ def test_message_page_shows_applied_as_when_mainline_commit_matches(
     )
     body = client.get(url).data.decode()
     assert 'class="patch-state"' in body
-    assert "Landed:" in body
+    # Landings live on the lifecycle timeline (not the card) post-2.4.x.
+    assert 'class="lifecycle-timeline"' in body
     # SHA truncated to first 12 chars on display.
-    assert "<code>abc123456789</code>" in body
-    # Tree is now labelled via "Applied to <strong>…</strong>", not
-    # a bare <code> tag. The slug "linus" still appears in the body
-    # (as the tree_label fallback) but not wrapped in <code>.
+    assert "abc123456789" in body
+    # Tree slug surfaces as the timeline label (no display_name
+    # override for the test inbox's tree).
     assert "linus" in body
-    assert "<code>linus</code>" not in body
 
 
 def test_message_page_no_applied_as_when_no_commit_matches(
@@ -938,15 +939,18 @@ def test_message_page_no_applied_as_when_no_commit_matches(
     assert "Applied as" not in body
 
 
-def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_links(
+def test_message_page_shows_multiple_landings_across_trees(
     client,
     tmp_path,
 ):
-    """When a commit references the article via two `Link:` trailers
-    (rare), or when two distinct commits apply the same patch (less
-    rare on backports), every mainline_commits row gets surfaced.
-    Ordered by committed_at asc, the first application is the
-    primary one."""
+    """A patch picked up by one subsystem tree first and later
+    aggregated into another (typical of net-next -> linux-next ->
+    linus) surfaces every per-tree landing as its own lifecycle
+    timeline event, ordered by committed_at asc.
+
+    (Post-2.4.x: the timeline dedups per tree, so a single tree with
+    multiple cherry-pick SHAs surfaces only the first. The realistic
+    backport pattern uses different trees, which this test pins.)"""
     from datetime import datetime, timezone
 
     _, url = _ingest_one_article(
@@ -958,18 +962,24 @@ def test_message_page_shows_multiple_applied_as_when_commit_carries_multiple_lin
     _seed_mainline_commit(
         message_id="multi-app@example.com",
         commit_sha="11" * 20,
+        tree_name="net-next",
         date=datetime(2024, 6, 1, tzinfo=timezone.utc),
     )
     _seed_mainline_commit(
         message_id="multi-app@example.com",
         commit_sha="22" * 20,
+        tree_name="linus",
         date=datetime(2024, 7, 1, tzinfo=timezone.utc),
     )
     body = client.get(url).data.decode()
-    # Both shas appear, ordered by date asc (June before July).
-    first_idx = body.index("<code>111111111111</code>")
-    second_idx = body.index("<code>222222222222</code>")
+    # Both shas appear, ordered by date asc (net-next picked up in
+    # June before linus aggregated in July).
+    first_idx = body.index("111111111111")
+    second_idx = body.index("222222222222")
     assert first_idx < second_idx
+    # Per-tree event labels render distinctly.
+    assert "Picked up on net-next" in body or "on net-next" in body
+    assert "Landed on" in body  # linus event has the "Landed on..." prefix
 
 
 def test_message_page_renders_patch_series_timeline(client, tmp_path):
@@ -1982,9 +1992,14 @@ def test_message_page_omits_timeline_on_non_patch(client, tmp_path):
     assert 'class="lifecycle-timeline"' not in body
 
 
-def test_message_page_card_landings_label_tree(client, tmp_path):
-    """Each landing entry on the patch-state card shows 'Applied to'
-    followed by the tree label, not just the raw tree_name slug."""
+def test_message_page_card_omits_landings_block(client, tmp_path):
+    """The patch-state card does NOT carry a per-tree landings block.
+    Landings live exclusively on the lifecycle timeline below the
+    card now (the card duplicating the same per-tree rows was visual
+    noise). The card retains trailers / series-revisions / activity.
+
+    Replaces the pre-2.4.x `test_message_page_card_landings_label_tree`
+    which asserted the inverse contract."""
     _, url = _ingest_one_article(
         tmp_path,
         "alpha",
@@ -1997,13 +2012,13 @@ def test_message_page_card_landings_label_tree(client, tmp_path):
         tree_name="linus",
     )
     body = client.get(url).data.decode()
-    assert "Applied to" in body
-    # tree_label for "linus" falls back to slug when no display_name is set.
-    assert "linus" in body
-    # The old bare `<code>linus</code>` shape (tree_name in code tag) must
-    # NOT appear; tree labelling now goes via the "Applied to <strong>"
-    # pattern.
-    assert "<code>linus</code>" not in body
+    # Card-level "Landed:" header is gone.
+    assert "<strong>Landed:</strong>" not in body
+    # "Applied to" wording is gone too (was the card's verbiage; the
+    # timeline uses "Landed on mainline (Linus)" instead).
+    assert "Applied to" not in body
+    # But the data IS still surfaced via the lifecycle timeline.
+    assert 'class="lifecycle-timeline"' in body
 
 
 def test_message_page_lifecycle_timeline_shows_tree_landing_event(client, tmp_path):
