@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.6.0], 2026-05-27
+
 ### Changed
 
 - Reviewer-name dedup in the lifecycle pill tooltip. A single
