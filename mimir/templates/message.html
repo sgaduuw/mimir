@@ -93,18 +93,18 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    Placed under the Subject heading and above the From block; the
    eye reads "is this warm?" + "where is this on the path to
    mainline?" before falling into the article meta. Replaces the
-   pre-2.5 `<aside class="patch-state">`. #}
+   pre-2.5 `<aside class="patch-state">`.
+
+   Inner markup delegated to `_lifecycle_badges.html` (same partial
+   the listing templates use) so the badge primitive has a single
+   source of truth. The is_patch / lifecycle_status gating stays
+   here because the partial alone would render the activity chip
+   for any article with a lifecycle status, including non-patches. #}
 {% if patch_state and patch_state.is_patch and lifecycle_status %}
 <div class="msg-badges">
-  <span class="badge badge-activity-{{ patch_state.activity_heat }}">
-    <span class="badge-dot" aria-hidden="true"></span>{{ patch_state.activity_heat|upper }}<span class="badge-detail">{{ patch_state.activity_detail }}</span>
-  </span>
-  {%- if lifecycle_status.state.value != 'pending' %}
-  <span class="badge badge-lifecycle-{{ lifecycle_status.state.value }}"
-        {%- if lifecycle_status.tooltip %} data-tooltip="{{ lifecycle_status.tooltip }}" tabindex="0"{% endif %}>
-    {{ lifecycle_status.pill_label }}{% if lifecycle_status.count_suffix %}<span class="badge-count">{{ lifecycle_status.count_suffix }}</span>{% endif %}
-  </span>
-  {%- endif %}
+  {%- with status = lifecycle_status %}
+  {%- include "_lifecycle_badges.html" %}
+  {%- endwith %}
 </div>
 {% endif %}
 {% include "_revisions_fold.html" %}

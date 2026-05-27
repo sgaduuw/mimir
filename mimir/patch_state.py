@@ -91,21 +91,15 @@ class StateSeriesEntry:
 
 @dataclass
 class PatchState:
-    """The four-row state card for a patch's message page. `is_patch`
-    drives whether the card renders at all (non-patch articles get
-    no card). Empty list fields skip their respective rows.
-
-    `activity_heat` and `activity_detail` default to the "dormant"
-    values so existing cache rows deserialise cleanly during rollout
-    before they are recomputed with the new fields populated."""
+    """The state card for a patch's message page. `is_patch` drives
+    whether the card renders at all (non-patch articles get no
+    card). Empty list fields skip their respective rows."""
 
     is_patch: bool
     trailers: list[StateTrailerCount]
     mainline_landings: list[StateMainlineLanding]
     series: list[StateSeriesEntry]
     days_since_last_reply: int | None
-    activity_heat: str = "dormant"  # heat-class from _activity_heat
-    activity_detail: str = "no replies"  # count-label from _activity_heat
 
 
 cache.register("StateTrailerCount", StateTrailerCount)
@@ -382,8 +376,6 @@ def patch_state_for_article(
             mainline_landings=[],
             series=[],
             days_since_last_reply=None,
-            activity_heat="dormant",
-            activity_detail="no replies",
         )
 
     # Capture thread dates outside the cache closure. The iterable
@@ -393,16 +385,12 @@ def patch_state_for_article(
     subsystem_ids_list = list(subsystem_ids)
 
     def compute() -> PatchState:
-        days = _days_since_last_reply(article, thread_dates_list)
-        heat, detail = _activity_heat(days)
         return PatchState(
             is_patch=True,
             trailers=_trailer_roll_up(session, article, subsystem_ids_list),
             mainline_landings=_mainline_landings(session, article),
             series=_series_timeline(session, article, inbox_name),
-            days_since_last_reply=days,
-            activity_heat=heat,
-            activity_detail=detail,
+            days_since_last_reply=_days_since_last_reply(article, thread_dates_list),
         )
 
     # Cache key: per-article. Inbox name isn't keyed in because for

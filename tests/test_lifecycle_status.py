@@ -448,7 +448,7 @@ def test_format_tooltip_scrubs_control_bytes_from_names():
             # Embedded NUL byte gets stripped; surrounding text survives.
             ("Alice\x00 Maintainer", True),
             # Lone surrogate inside the name; stripped.
-            ("Bob \uD800Reviewer", False),
+            ("Bob \ud800Reviewer", False),
             # Entire name is just control bytes; drops.
             ("\x01\x02\x03", True),
             # C1 control range (U+0080 - U+009F).
