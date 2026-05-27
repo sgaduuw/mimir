@@ -302,10 +302,31 @@ def _format_tooltip(
         else:
             lines.append("Superseded")
 
-    # Reviewer names: maintainers first (preserve input order
-    # within each group), `M ` prefix on maintainer lines.
-    maintainers = [n for n, is_m in reviewers if is_m]
-    others = [n for n, is_m in reviewers if not is_m]
+    # Reviewer names: dedup by name (a single maintainer filing
+    # Reviewed-by once per patch in a multi-patch series surfaces
+    # as N copies of the same name in `reviewers`; the tooltip
+    # should show one line per human, not one per trailer row).
+    # First-seen wins; if the same name appears both as maintainer
+    # and non-maintainer (parser quirk), the maintainer-flagged
+    # entry takes precedence so we don't lose the `M ` prefix.
+    seen_as_maintainer: set[str] = set()
+    seen_as_other: set[str] = set()
+    maintainers: list[str] = []
+    others: list[str] = []
+    for name, is_m in reviewers:
+        if is_m:
+            if name not in seen_as_maintainer:
+                seen_as_maintainer.add(name)
+                maintainers.append(name)
+        else:
+            # Skip if we already accepted this name as a maintainer;
+            # otherwise add as non-maintainer (first-seen wins).
+            if name in seen_as_maintainer:
+                continue
+            if name not in seen_as_other:
+                seen_as_other.add(name)
+                others.append(name)
+
     for name in maintainers:
         lines.append(f"M {name}")
     for name in others:
