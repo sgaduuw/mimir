@@ -12,6 +12,7 @@ three LEFT JOIN sources stay on index seeks rather than scans
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 
 from sqlalchemy import bindparam, text
@@ -130,6 +131,68 @@ def _format_pill_label(state: LifecycleStatus, tree: str | None) -> str:
     return state.value.upper()
 
 
+def _format_tooltip(
+    *,
+    state: LifecycleStatus,
+    linus_sha: str | None,
+    linus_committed_at: datetime | None,
+    earliest_other_sha: str | None,
+    earliest_other_at: datetime | None,
+    superseded_by_version: str | None,
+    superseded_by_posted_at: datetime | None,
+    reviewers: list[tuple[str, bool]],
+) -> str | None:
+    """Per-state tooltip text for the lifecycle pill. None when
+    state is PENDING (no pill rendered, no tooltip).
+
+    Maintainers ordered first within the reviewer list (preserving
+    input order within each group); each line carries an `M `
+    prefix for maintainers, plain name otherwise.
+
+    Leading line by state:
+      - LANDED: `<linus_sha[:12]> · <linus_at YYYY-MM-DD HH:MM>`
+      - QUEUED: `<earliest_other_sha[:12]> · <earliest_other_at>`
+      - REVIEWED: (none; names start on line 1)
+      - SUPERSEDED: `Superseded by v<N> posted <date YYYY-MM-DD>`
+      - PENDING: returns None
+    """
+    if state == LifecycleStatus.PENDING:
+        return None
+
+    lines: list[str] = []
+    if state == LifecycleStatus.LANDED and linus_sha and linus_committed_at:
+        lines.append(
+            f"{linus_sha[:12]} · {linus_committed_at.strftime('%Y-%m-%d %H:%M')}"
+        )
+    elif (
+        state == LifecycleStatus.QUEUED
+        and earliest_other_sha
+        and earliest_other_at
+    ):
+        lines.append(
+            f"{earliest_other_sha[:12]} · {earliest_other_at.strftime('%Y-%m-%d %H:%M')}"
+        )
+    elif state == LifecycleStatus.SUPERSEDED:
+        if superseded_by_version and superseded_by_posted_at:
+            lines.append(
+                f"Superseded by v{superseded_by_version} "
+                f"posted {superseded_by_posted_at.strftime('%Y-%m-%d')}"
+            )
+        else:
+            lines.append("Superseded")
+
+    # Reviewer names: maintainers first (preserve input order
+    # within each group), `M ` prefix on maintainer lines.
+    maintainers = [n for n, is_m in reviewers if is_m]
+    others = [n for n, is_m in reviewers if not is_m]
+    for name in maintainers:
+        lines.append(f"M {name}")
+    for name in others:
+        lines.append(name)
+
+    return "\n".join(lines) if lines else None
+
+
 def _format_count_suffix(total: int, maintainer_count: int) -> str | None:
     """Build the inline count suffix `: N (XM)` for the pill, or
     None when the count is zero (`LANDED` with no reviews is just
@@ -210,5 +273,6 @@ __all__ = [
     "_bulk_uncached",
     "_format_count_suffix",
     "_format_pill_label",
+    "_format_tooltip",
     "lifecycle_status_for_articles",
 ]
