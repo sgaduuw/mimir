@@ -11,6 +11,30 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.4.1], 2026-05-26
+
+### Fixed
+
+- Broker now runs `alembic upgrade head` on every startup instead
+  of skipping when `.migrated` exists. Pre-2.4.1, the sentinel acted
+  as a "ran once, skip forever" gate, so any release that introduced
+  a new alembic revision silently swallowed its migration on the
+  upgrade of a long-lived deploy. 2.4.0 surfaced this in production:
+  `mimir update-mainline` raised `OperationalError: no such column:
+  mainline_state.last_walked_at` because the new migration never
+  applied. `alembic upgrade head` is idempotent and cheap when no
+  migrations are pending; the sentinel survives only as a first-vs-
+  subsequent-run marker for operator log reading.
+- Broker `_migrate_if_needed` now constructs `alembic.config.Config`
+  programmatically (script_location + sqlalchemy.url) instead of
+  reading `alembic.ini`. The ini's `[loggers]` / `[handlers]` /
+  `[formatters]` sections cause `logging.config.fileConfig()` to
+  fire, which strips every handler off the root logger (including
+  pytest's caplog and any operator-attached handlers). The
+  programmatic Config bypasses this. Operator-visible: any log
+  handlers attached before broker startup now survive the alembic
+  call.
+
 ## [2.4.0], 2026-05-26
 
 ### Added
