@@ -341,6 +341,21 @@ def seeded_db():
 
 
 @pytest.fixture
+def session():
+    """Yield an open SQLAlchemy session for the test DB. The
+    session is closed after the test; the autouse `_reset_db`
+    has already wiped + reseeded before this fixture is entered.
+
+    Use this when a test needs to pass a live session directly
+    to a service function rather than opening its own with
+    `with seeded_db() as s:`."""
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        yield s
+
+
+@pytest.fixture
 def client():
     """Flask test client. Function-scoped so the security.txt
     monkeypatch tests in test_routes don't bleed into other
