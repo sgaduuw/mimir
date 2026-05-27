@@ -21,6 +21,7 @@ from mimir.dashboard import (
     this_day_in_history,
 )
 from mimir.extensions import SessionLocal
+from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Article, ArticleList, Inbox, Subsystem
 from mimir.config import settings
 from mimir.seo import _json_ld_index, _json_ld_inbox
@@ -203,6 +204,19 @@ def inbox_dashboard(inbox_name: str):
             limit=10,
             compute_on_miss=False,
         )
+        # Collect IDs across every Article-shaped list the template
+        # renders with a pill: active threads, pulls, stable releases,
+        # tracker tiles, this-day-in-history, and recent. One bulk
+        # SELECT covers all of them via the per-id cache layer.
+        dashboard_ids: list[int] = []
+        dashboard_ids.extend(t.id for t in active)
+        dashboard_ids.extend(a.id for a in pulls)
+        dashboard_ids.extend(a.id for a in stable)
+        for t in trackers:
+            dashboard_ids.extend(a.id for a in t["messages"])
+        dashboard_ids.extend(a.id for a in history)
+        dashboard_ids.extend(a.id for a in recent)
+        lifecycle_status_by_id = lifecycle_status_for_articles(session, dashboard_ids)
     base = _site_base()
     year_decades: list[tuple[int, list[int]]] = []
     if stats and stats.first_date and stats.last_date:
@@ -225,6 +239,7 @@ def inbox_dashboard(inbox_name: str):
         active_subsystems=active_subsystems,
         canonical_url=f"{base}/{inbox.name}/",
         page_json_ld=_json_ld_inbox(base, inbox, active),
+        lifecycle_status_by_id=lifecycle_status_by_id,
     )
 
 
@@ -317,6 +332,17 @@ def subsystem_dashboard(inbox_name: str, name: str):
             subsystem,
             limit=10,
         )
+        # Subsystem page: gather IDs from every Article-shaped list
+        # the template attaches a pill to. `recent`, `needs_attention`,
+        # `quiet` carry `article_id`; `active` (ActiveThread) carries
+        # `id`. Reviewers (ReviewerStat) is per-reviewer aggregate
+        # and intentionally excluded.
+        subsystem_ids: list[int] = []
+        subsystem_ids.extend(t.id for t in active)
+        subsystem_ids.extend(p.article_id for p in recent)
+        subsystem_ids.extend(p.article_id for p in needs_attention)
+        subsystem_ids.extend(p.article_id for p in quiet)
+        lifecycle_status_by_id = lifecycle_status_for_articles(session, subsystem_ids)
     return render_template(
         "subsystem.html",
         inbox_name=inbox.name,
@@ -330,4 +356,5 @@ def subsystem_dashboard(inbox_name: str, name: str):
         needs_attention=needs_attention,
         quiet=quiet,
         quiet_days=settings.subsystem_quiet_days,
+        lifecycle_status_by_id=lifecycle_status_by_id,
     )

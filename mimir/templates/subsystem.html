@@ -52,6 +52,8 @@
   <ul>
     {% for t in active %}
     <li>
+      {%- set status = lifecycle_status_by_id.get(t.id) if lifecycle_status_by_id else None -%}
+      {% include "_lifecycle_pill.html" %}
       <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject|clean_subject or '(no subject)' }}</a>
       <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
         &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} in 7d
@@ -94,6 +96,8 @@
   <ul>
     {% for p in recent %}
     <li>
+      {%- set status = lifecycle_status_by_id.get(p.article_id) if lifecycle_status_by_id else None -%}
+      {% include "_lifecycle_pill.html" %}
       <a href="/{{ p.inbox_name }}/{{ p.date.year }}/{{ '%02d' % p.date.month }}/{{ p.article_id }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
       <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
         &middot; {{ p.author|safe_from }}</small>
@@ -114,6 +118,8 @@
   <ul>
     {% for p in needs_attention %}
     <li>
+      {%- set status = lifecycle_status_by_id.get(p.article_id) if lifecycle_status_by_id else None -%}
+      {% include "_lifecycle_pill.html" %}
       <a href="/{{ p.inbox_name }}/{{ p.date.year }}/{{ '%02d' % p.date.month }}/{{ p.article_id }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
       <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
         &middot; {{ p.author|safe_from }}
@@ -130,6 +136,8 @@
   <ul>
     {% for p in quiet %}
     <li>
+      {%- set status = lifecycle_status_by_id.get(p.article_id) if lifecycle_status_by_id else None -%}
+      {% include "_lifecycle_pill.html" %}
       <a href="/{{ p.inbox_name }}/{{ p.date.year }}/{{ '%02d' % p.date.month }}/{{ p.article_id }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
       <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
         &middot; {{ p.author|safe_from }}</small>
