@@ -302,6 +302,33 @@ def _reset_db():
     yield
 
 
+def linus_tree(repo_path) -> dict:
+    """Return a settings.trees dict containing only the linus entry
+    pointing at `repo_path`. Used by tests that monkeypatch
+    settings.trees to scope update_mainline to a single local repo
+    (no network round-trips, no other-tree cadence logic).
+
+    `url` points at a placeholder HTTPS target that passes URL
+    validation; since tests all pass `--skip-fetch`, _ensure_tree
+    never attempts a network round-trip.
+
+    `walk_every_seconds=0` disables the cadence gate so repeated
+    calls within a single test always execute (the gate checks
+    `now - last_walked_at < walk_every_seconds`; zero means always
+    due). Without this, the first call would write `last_walked_at`
+    and the second call in the same test would be skipped by the
+    gate, breaking tests that exercise two-tick sequences."""
+    from mimir.config import TreeConfig
+
+    return {
+        "linus": TreeConfig(
+            url="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
+            path=repo_path,
+            walk_every_seconds=0,
+        )
+    }
+
+
 @pytest.fixture
 def seeded_db():
     """Return the bound SessionLocal so tests can open scoped
@@ -311,6 +338,21 @@ def seeded_db():
     from mimir.extensions import SessionLocal
 
     return SessionLocal
+
+
+@pytest.fixture
+def session():
+    """Yield an open SQLAlchemy session for the test DB. The
+    session is closed after the test; the autouse `_reset_db`
+    has already wiped + reseeded before this fixture is entered.
+
+    Use this when a test needs to pass a live session directly
+    to a service function rather than opening its own with
+    `with seeded_db() as s:`."""
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        yield s
 
 
 @pytest.fixture

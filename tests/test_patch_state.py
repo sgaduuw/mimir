@@ -26,6 +26,25 @@ from mimir.patch_state import (
 )
 
 
+def _seed_article(session, message_id):
+    """Seed a minimal patch article on the alpha inbox. Returns the
+    persisted Article. Uses the live session directly so callers can
+    add further rows (e.g. MainlineCommit) to the same transaction."""
+    alpha = session.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+    art = Article(
+        message_id=message_id,
+        subject="[PATCH 1/2] foo: do bar",
+        author="Author <a@example.com>",
+        date=datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc),
+        thread_parent=None,
+        subject_normalized="[patch 1/2] foo: do bar",
+        lists=[ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="fa" * 20)],
+    )
+    session.add(art)
+    session.flush()
+    return art
+
+
 # --- _is_patch_subject (pure function; no DB) ---
 
 
@@ -256,8 +275,7 @@ def test_patch_state_surfaces_mainline_landing(seeded_db):
 
 def test_patch_state_landing_row_empty_when_not_landed(seeded_db):
     """No mainline_commits row → empty `mainline_landings`. The
-    template skips the row rather than rendering "Not in mainline"
-    (deferred until mainline_state grows a timestamp column)."""
+    template skips the row rather than rendering "Not in mainline"."""
     with seeded_db() as s:
         art = _add_alpha_article(s, "in-flight@x", "[PATCH 1/2] foo: WIP")
         s.commit()
@@ -523,3 +541,110 @@ def test_patch_state_trailer_count_is_serializable_dataclass():
     assert dataclasses.is_dataclass(StateMainlineLanding)
     assert dataclasses.is_dataclass(StateSeriesEntry)
     assert dataclasses.is_dataclass(PatchState)
+
+
+def test_state_mainline_landing_has_tree_label(session):
+    """StateMainlineLanding carries a user-facing tree_label derived
+    from Settings.trees[tree_name].display_name (falls back to slug)."""
+    art = _seed_article(session, "tl@x")
+    session.add(
+        MainlineCommit(
+            commit_sha="f" * 40,
+            message_id="tl@x",
+            tree_name="net-next",
+            committed_at=datetime.now(timezone.utc),
+        )
+    )
+    session.commit()
+    from mimir.patch_state import _mainline_landings
+
+    landings = _mainline_landings(session, art)
+    assert landings[0].tree_name == "net-next"
+    # Display label: TreeConfig defaults set display_name=None for
+    # subsystem trees; falls back to the slug.
+    assert landings[0].tree_label == "net-next"
+
+
+def test_state_mainline_landing_uses_linus_display_name(session):
+    """Linus's TreeConfig sets display_name='mainline (Linus)';
+    the label uses it."""
+    art = _seed_article(session, "tl2@x")
+    session.add(
+        MainlineCommit(
+            commit_sha="g" * 40,
+            message_id="tl2@x",
+            tree_name="linus",
+            committed_at=datetime.now(timezone.utc),
+        )
+    )
+    session.commit()
+    from mimir.patch_state import _mainline_landings
+
+    landings = _mainline_landings(session, art)
+    assert landings[0].tree_label == "mainline (Linus)"
+
+
+def test_lifecycle_timeline_includes_posted_event(session):
+    art = _seed_article(session, "lt@x")
+    from mimir.patch_state import _lifecycle_timeline
+
+    events = _lifecycle_timeline(session, art)
+    assert any(e.kind == "posted" for e in events)
+    assert events[0].kind == "posted"  # chronologically first
+
+
+def test_lifecycle_timeline_includes_trailer_and_tree_events(session):
+    art = _seed_article(session, "lt2@x")
+    session.add(
+        ArticleTrailer(
+            article_id=art.id,
+            role="Reviewed-by",
+            name="Bob",
+            address="b@x",
+            address_normalized="b@x",
+        )
+    )
+    session.add(
+        MainlineCommit(
+            commit_sha="g" * 40,
+            message_id="lt2@x",
+            tree_name="linus",
+            committed_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        )
+    )
+    session.commit()
+    from mimir.patch_state import _lifecycle_timeline
+
+    events = _lifecycle_timeline(session, art)
+    kinds = [e.kind for e in events]
+    assert "trailer:Reviewed-by" in kinds
+    assert "tree:linus" in kinds
+    assert events == sorted(events, key=lambda e: e.when)
+
+
+def test_lifecycle_timeline_dedups_per_role(session):
+    art = _seed_article(session, "lt3@x")
+    session.add(
+        ArticleTrailer(
+            article_id=art.id,
+            role="Reviewed-by",
+            name="Bob",
+            address="b@x",
+            address_normalized="b@x",
+        )
+    )
+    session.add(
+        ArticleTrailer(
+            article_id=art.id,
+            role="Reviewed-by",
+            name="Carol",
+            address="c@x",
+            address_normalized="c@x",
+        )
+    )
+    session.commit()
+    from mimir.patch_state import _lifecycle_timeline
+
+    events = _lifecycle_timeline(session, art)
+    # One "trailer:Reviewed-by" event, not two.
+    assert sum(1 for e in events if e.kind == "trailer:Reviewed-by") == 1

@@ -304,6 +304,332 @@ def test_walk_commits_rewalks_when_cursor_missing(seeded_db, tmp_path):
     assert result.rows_inserted == 1
 
 
+def _make_fake_tree(tmp_path, commits):
+    """Build a minimal bare git repo at tmp_path/fake.git with the
+    given linear commits. `commits` is a list of (message, filename)
+    tuples; each becomes a commit whose tree has just that file."""
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+
+    repo_path = tmp_path / "fake.git"
+    repo = Repo.init_bare(str(repo_path), mkdir=True)
+    parent = None
+    for msg, filename in commits:
+        blob = Blob.from_string(b"x")
+        repo.object_store.add_object(blob)
+        tree = Tree()
+        tree.add(filename, 0o100644, blob.id)
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.message = msg.encode()
+        commit.author = commit.committer = b"Test <t@x>"
+        commit.author_time = commit.commit_time = 1700000000
+        commit.author_timezone = commit.commit_timezone = 0
+        if parent:
+            commit.parents = [parent]
+        repo.object_store.add_object(commit)
+        parent = commit.id
+    if parent is not None:
+        repo.refs[b"HEAD"] = parent
+    return repo_path
+
+
+def _make_fake_tree_with_branches(tmp_path, branches):
+    """Like _make_fake_tree but builds N independent branches. `branches`
+    is a dict {branch_name: [(message, filename), ...]} where the special
+    name "HEAD" goes on HEAD and any other name becomes a
+    `refs/heads/<name>` branch."""
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+
+    repo_path = tmp_path / "fake.git"
+    repo = Repo.init_bare(str(repo_path), mkdir=True)
+    for branch_name, commits in branches.items():
+        parent = None
+        for msg, filename in commits:
+            blob = Blob.from_string(b"x")
+            repo.object_store.add_object(blob)
+            tree = Tree()
+            tree.add(filename, 0o100644, blob.id)
+            repo.object_store.add_object(tree)
+            commit = Commit()
+            commit.tree = tree.id
+            commit.message = msg.encode()
+            commit.author = commit.committer = b"Test <t@x>"
+            commit.author_time = commit.commit_time = 1700000000
+            commit.author_timezone = commit.commit_timezone = 0
+            if parent:
+                commit.parents = [parent]
+            repo.object_store.add_object(commit)
+            parent = commit.id
+        if branch_name == "HEAD":
+            repo.refs[b"HEAD"] = parent
+        else:
+            repo.refs[f"refs/heads/{branch_name}".encode()] = parent
+    return repo_path
+
+
+def test_walk_commits_rebases_true_clears_old_rows_for_tree(seeded_db, tmp_path):
+    """rebases=True walker DELETEs existing rows for this tree before
+    walking. Stale SHAs from a prior force-pushed history don't
+    accumulate."""
+    from mimir.models import MainlineCommit
+
+    with seeded_db() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha="staleshastaleshastaleshastalesha000000000",
+                message_id="orphan@example.com",
+                tree_name="linux-next",
+                committed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        s.commit()
+
+    tree_path = _make_fake_tree(
+        tmp_path,
+        commits=[
+            (
+                "Some change\n\nLink: https://lore.kernel.org/r/live@example.com\n",
+                b"foo.c",
+            ),
+        ],
+    )
+    with seeded_db() as s:
+        walk_commits(s, tree_path, tree_name="linux-next", rebases=True)
+
+    with seeded_db() as s:
+        surviving = {
+            r.commit_sha
+            for r in s.execute(
+                select(MainlineCommit).where(MainlineCommit.tree_name == "linux-next")
+            ).scalars()
+        }
+        assert "staleshastaleshastaleshastalesha000000000" not in surviving
+        live_mids = {r.message_id for r in s.execute(select(MainlineCommit)).scalars()}
+        assert "live@example.com" in live_mids
+
+
+def test_walk_commits_rebases_false_keeps_other_tree_rows(seeded_db, tmp_path):
+    """rebases=False walking net-next does NOT touch linus rows."""
+    from mimir.models import MainlineCommit
+
+    other_sha = "linushashasalinushashasalinushashasalinush"
+    with seeded_db() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha=other_sha,
+                message_id="other@example.com",
+                tree_name="linus",
+                committed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        s.commit()
+
+    # Real commit list so the walker actually exercises its main loop;
+    # otherwise an empty repo short-circuits before any tree-isolation
+    # logic runs and the test proves nothing.
+    tree_path = _make_fake_tree(
+        tmp_path,
+        commits=[
+            ("net-next change\n\nLink: https://lore.kernel.org/r/netfix@x\n", b"f.c"),
+        ],
+    )
+    with seeded_db() as s:
+        walk_commits(s, tree_path, tree_name="net-next", rebases=False)
+
+    with seeded_db() as s:
+        survived = s.get(MainlineCommit, (other_sha, "other@example.com"))
+        assert survived is not None
+
+
+def test_walk_commits_branch_override(seeded_db, tmp_path):
+    """Non-default branch param walks that branch, not HEAD."""
+    from mimir.models import MainlineCommit
+
+    tree_path = _make_fake_tree_with_branches(
+        tmp_path,
+        branches={
+            "HEAD": [
+                (
+                    "HEAD-commit\n\nLink: https://lore.kernel.org/r/head@x\n",
+                    b"f.c",
+                )
+            ],
+            "mm-stable": [
+                (
+                    "mm-stable-commit\n\nLink: https://lore.kernel.org/r/stable@x\n",
+                    b"f.c",
+                )
+            ],
+        },
+    )
+    with seeded_db() as s:
+        walk_commits(s, tree_path, tree_name="mm", branch="mm-stable")
+
+    with seeded_db() as s:
+        mids = {
+            r.message_id
+            for r in s.execute(
+                select(MainlineCommit).where(MainlineCommit.tree_name == "mm")
+            ).scalars()
+        }
+    assert "stable@x" in mids
+    assert "head@x" not in mids
+
+
+def test_walk_commits_exclude_from_skips_commits_reachable_from_ref(
+    seeded_db, tmp_path
+):
+    """exclude_from skips commits reachable from another tree's head.
+    Pragmatic optimisation: non-Linus trees cloned with
+    --reference linus.git can pass linus_head here and avoid walking
+    the shared history. INSERT-OR-IGNORE protects correctness if it
+    were ever applied incorrectly; this test pins the perf-side
+    behaviour (we actually skip the work, not just dedup it)."""
+    from dulwich.repo import Repo
+
+    from mimir.models import MainlineCommit
+
+    tree_path = _make_fake_tree(
+        tmp_path,
+        commits=[
+            ("c1\n\nLink: https://lore.kernel.org/r/c1@x\n", b"a.c"),
+            ("c2\n\nLink: https://lore.kernel.org/r/c2@x\n", b"a.c"),
+            ("c3\n\nLink: https://lore.kernel.org/r/c3@x\n", b"a.c"),
+            ("c4\n\nLink: https://lore.kernel.org/r/c4@x\n", b"a.c"),
+        ],
+    )
+    # Get the SHA of the second commit (c2); use it as exclude_from.
+    repo = Repo(str(tree_path))
+    walker = repo.get_walker(include=[repo.head()], reverse=True)
+    shas = [e.commit.id for e in walker]
+    c2_sha = shas[1]  # c1, c2, c3, c4 oldest-first
+
+    with seeded_db() as s:
+        walk_commits(
+            s,
+            tree_path,
+            tree_name="downstream",
+            exclude_from=c2_sha,
+        )
+
+    with seeded_db() as s:
+        mids = {
+            r.message_id
+            for r in s.execute(
+                select(MainlineCommit).where(MainlineCommit.tree_name == "downstream")
+            ).scalars()
+        }
+    # Only commits AFTER c2 emitted: c3 and c4. c1 and c2 excluded.
+    assert mids == {"c3@x", "c4@x"}
+
+
+def test_walk_commits_rebases_true_ignores_exclude_from(seeded_db, tmp_path):
+    """rebases=True trees keep their full DELETE-and-rewalk semantics
+    even when exclude_from is supplied. Applying the shortcut on a
+    daily linux-next rebase would erase intermediate-tree
+    mainline_commits rows for patches that transition into Linus that
+    day, losing the per-tree timeline event on the patch page."""
+    from dulwich.repo import Repo
+
+    from mimir.models import MainlineCommit
+
+    tree_path = _make_fake_tree(
+        tmp_path,
+        commits=[
+            ("c1\n\nLink: https://lore.kernel.org/r/c1@x\n", b"a.c"),
+            ("c2\n\nLink: https://lore.kernel.org/r/c2@x\n", b"a.c"),
+        ],
+    )
+    head = Repo(str(tree_path)).head()
+
+    with seeded_db() as s:
+        walk_commits(
+            s,
+            tree_path,
+            tree_name="rebase-tree",
+            rebases=True,
+            exclude_from=head,
+        )
+
+    with seeded_db() as s:
+        mids = {
+            r.message_id
+            for r in s.execute(
+                select(MainlineCommit).where(MainlineCommit.tree_name == "rebase-tree")
+            ).scalars()
+        }
+    # All commits walked: exclude_from is ignored when rebases=True.
+    assert mids == {"c1@x", "c2@x"}
+
+
+def test_ensure_tree_passes_reference_to_clone(tmp_path, monkeypatch):
+    """When reference is set, git clone is invoked with --reference."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        # Simulate a successful clone by creating the dir.
+        from pathlib import Path as _P
+
+        # Args after `--` are: url, path
+        dd_idx = cmd.index("--")
+        path = _P(cmd[dd_idx + 2])
+        path.mkdir(parents=True, exist_ok=True)
+
+        class _Result:
+            returncode = 0
+
+        return _Result()
+
+    monkeypatch.setattr("mimir.mainline.subprocess.run", fake_run)
+    from mimir.config import TreeConfig
+    from mimir.mainline import _ensure_tree
+
+    tree = TreeConfig(
+        url="https://example.com/foo.git",
+        path=tmp_path / "foo.git",
+    )
+    linus_path = tmp_path / "linus.git"
+    linus_path.mkdir()
+    _ensure_tree(tree, reference=linus_path, skip_fetch=False)
+    clone_cmd = calls[0]
+    assert "--reference" in clone_cmd
+    ref_idx = clone_cmd.index("--reference")
+    assert clone_cmd[ref_idx + 1] == str(linus_path)
+
+
+def test_ensure_tree_no_reference_for_linus(tmp_path, monkeypatch):
+    """reference=None -> no --reference flag in the git clone command."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        from pathlib import Path as _P
+
+        dd_idx = cmd.index("--")
+        path = _P(cmd[dd_idx + 2])
+        path.mkdir(parents=True, exist_ok=True)
+
+        class _Result:
+            returncode = 0
+
+        return _Result()
+
+    monkeypatch.setattr("mimir.mainline.subprocess.run", fake_run)
+    from mimir.config import TreeConfig
+    from mimir.mainline import _ensure_tree
+
+    tree = TreeConfig(
+        url="https://example.com/linus.git",
+        path=tmp_path / "linus.git",
+    )
+    _ensure_tree(tree, reference=None, skip_fetch=False)
+    assert "--reference" not in calls[0]
+
+
 def test_walk_commits_full_rewalk_is_idempotent_via_on_conflict(
     seeded_db,
     tmp_path,
@@ -342,3 +668,87 @@ def test_walk_commits_full_rewalk_is_idempotent_via_on_conflict(
     with seeded_db() as s:
         row_count = s.scalar(select(func.count(MainlineCommit.commit_sha)))
     assert row_count == 1
+
+
+def test_update_mainline_skips_tree_not_yet_due(seeded_db, monkeypatch, tmp_path):
+    """A tree whose last_walked_at is recent enough is skipped."""
+    from datetime import datetime, timezone
+
+    from mimir.config import TreeConfig, settings
+    from mimir.mainline import update_mainline
+    from mimir.models import MainlineState
+
+    # Override settings.trees with one fake tree for the test
+    monkeypatch.setattr(
+        settings,
+        "trees",
+        {
+            "fake": TreeConfig(
+                url="https://example.com/fake.git",
+                path=tmp_path / "fake.git",
+                walk_every_seconds=3600,
+                rebases=False,
+            ),
+        },
+    )
+    # last_walked_at = now -> skipped on next call
+    with seeded_db() as s:
+        state = MainlineState(
+            tree_name="fake",
+            last_walked_at=datetime.now(timezone.utc),
+        )
+        s.add(state)
+        s.commit()
+
+    # _ensure_tree must NOT be called (tree skipped).
+    called = {"ensure": False}
+
+    def fake_ensure(*a, **kw):
+        called["ensure"] = True
+        return tmp_path
+
+    monkeypatch.setattr("mimir.mainline._ensure_tree", fake_ensure)
+
+    result = update_mainline(skip_maintainers=True, skip_commits=False)
+    assert called["ensure"] is False, (
+        "ensure_tree should not be called for not-due tree"
+    )
+    assert "fake" in result.trees
+    assert result.trees["fake"].skipped is True
+
+
+def test_update_mainline_per_tree_failure_isolated(seeded_db, monkeypatch, tmp_path):
+    """One tree raising doesn't fail the others."""
+    from mimir.config import TreeConfig, settings
+    from mimir.mainline import WalkResult, update_mainline
+
+    monkeypatch.setattr(
+        settings,
+        "trees",
+        {
+            "bad": TreeConfig(
+                url="https://example.com/bad.git",
+                path=tmp_path / "bad.git",
+            ),
+            "good": TreeConfig(
+                url="https://example.com/good.git",
+                path=tmp_path / "good.git",
+            ),
+        },
+    )
+
+    def fake_ensure(tree, *, reference, skip_fetch):
+        if tree.url.endswith("bad.git"):
+            raise RuntimeError("clone failed")
+        from pathlib import Path as _P
+
+        _P(tree.path).mkdir(parents=True, exist_ok=True)
+        return tree.path
+
+    monkeypatch.setattr("mimir.mainline._ensure_tree", fake_ensure)
+    monkeypatch.setattr("mimir.mainline.walk_commits", lambda *a, **kw: WalkResult())
+
+    result = update_mainline(skip_maintainers=True)
+    assert result.trees["bad"].ok is False
+    assert result.trees["bad"].error is not None
+    assert result.trees["good"].ok is True

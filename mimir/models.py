@@ -379,6 +379,10 @@ class MainlineState(Base):
         String,
         nullable=True,
     )
+    last_walked_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
 
 
 class MainlineCommit(Base):
