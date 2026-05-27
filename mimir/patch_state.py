@@ -71,6 +71,7 @@ class StateMainlineLanding:
 
     commit_sha: str
     tree_name: str
+    tree_label: str  # user-facing display name; falls back to tree_name slug
     committed_at: datetime | None
 
 
@@ -192,6 +193,18 @@ def _trailer_roll_up(
     ]
 
 
+def _resolve_tree_label(tree_name: str) -> str:
+    """Look up `Settings.trees[tree_name].display_name`; fall back to
+    the slug itself when no display_name is set or the tree isn't in
+    config (e.g. mainline_commits row from a tree the operator removed)."""
+    from mimir.config import settings
+
+    cfg = settings.trees.get(tree_name)
+    if cfg is None or cfg.display_name is None:
+        return tree_name
+    return cfg.display_name
+
+
 def _mainline_landings(
     session: Session,
     article: Article,
@@ -212,6 +225,7 @@ def _mainline_landings(
         StateMainlineLanding(
             commit_sha=c.commit_sha,
             tree_name=c.tree_name,
+            tree_label=_resolve_tree_label(c.tree_name),
             committed_at=c.committed_at,
         )
         for c in rows
