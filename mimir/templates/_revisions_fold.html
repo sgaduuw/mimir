@@ -1,0 +1,26 @@
+{# Foldable Revisions timeline. Renders only when patch_state.series
+   has at least 2 entries (single-revision patches get no fold).
+   Summary shows the revision count; expanded body is a timeline
+   with one entry per revision: date, version label, and (for non-
+   current revisions) a [diff vs current] link.
+#}
+{%- if patch_state and patch_state.series and patch_state.series|length >= 2 -%}
+<details class="revisions-fold">
+  <summary>Revisions <span class="revisions-count">({{ patch_state.series|length }})</span></summary>
+  <div class="revisions-content">
+    <ol class="revisions-timeline">
+      {%- for entry in patch_state.series %}
+      <li class="{% if entry.is_current %}is-current{% endif %}">
+        <time datetime="{{ entry.date.isoformat() if entry.date else '' }}">{{ entry.date.strftime('%Y-%m-%d') if entry.date else '?' }}</time>
+        <span class="rev-label">{{ entry.version }}</span>
+        {%- if entry.is_current %}
+        <span class="rev-current-marker">current</span>
+        {%- elif entry.diff_url %}
+        <a href="{{ entry.diff_url }}" title="show what changed between {{ entry.version }} and the current revision">[diff vs current]</a>
+        {%- endif %}
+      </li>
+      {%- endfor %}
+    </ol>
+  </div>
+</details>
+{%- endif -%}

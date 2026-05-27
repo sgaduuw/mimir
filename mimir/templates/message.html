@@ -89,52 +89,25 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    controller needs. #}
 {% endif %}
 <div class="message-page-main">
-{# Patch state card (#208). Consolidates trailer roll-up, mainline-
-   landing status, patch-series timeline (with per-revision diff
-   links, carried over from #210), and thread activity into one
-   surface near the top of the message body. Hidden on non-patch
-   articles. Individual rows skipped when their data is empty so
-   the card scales from one-line minimal to four-line full. #}
-{% if patch_state and patch_state.is_patch %}
-<aside class="patch-state">
-  {% if patch_state.trailers %}
-  <small><strong>Trailers:</strong>
-    {% for t in patch_state.trailers -%}
-      {{ t.total }} {{ t.role }}{% if t.maintainer_count %} ({{ t.maintainer_count }} maintainer){% endif %}{% if not loop.last %}, {% endif %}
-    {%- endfor %}
-  </small><br>
-  {% endif %}
-  {# Per-tree landings live on the lifecycle timeline below
-     ('Aggregated on linux-next ...', 'Landed on mainline (Linus) ...',
-     etc.); duplicating them here on the card just doubled the
-     visual noise on patches with mainline_commits rows. The
-     timeline reads more naturally because each event carries a
-     date + a tree-specific verb. #}
-  {% if patch_state.series %}
-  <small><strong>Series revisions:</strong>
-    {% for entry in patch_state.series -%}
-      {% if entry.is_current %}<strong>{{ entry.version }}</strong>{% else %}<a href="{{ entry.url }}">{{ entry.version }}</a>{% endif %}
-      ({{ entry.date.strftime('%Y-%m-%d') if entry.date else '?' }}){% if entry.diff_url %}
-      <a href="{{ entry.diff_url }}" title="show what changed between {{ entry.version }} and the current revision">[diff vs current]</a>{% endif %}{% if not loop.last %} → {% endif %}
-    {%- endfor %}
-  </small><br>
-  {% endif %}
-  <small><strong>Activity:</strong>
-    {% if patch_state.days_since_last_reply is none %}
-      No replies
-    {% elif patch_state.days_since_last_reply == 0 %}
-      Last reply today
-    {% elif patch_state.days_since_last_reply == 1 %}
-      Last reply 1 day ago
-    {% else %}
-      Last reply {{ patch_state.days_since_last_reply }} days ago
-    {% endif %}
-  </small>
-</aside>
-{% if patch_state and patch_state.is_patch and patch_state.timeline %}
-  {% include "_lifecycle_timeline.html" %}
+{# Badges row: activity chip + lifecycle pill (with tooltip).
+   Placed under the Subject heading and above the From block; the
+   eye reads "is this warm?" + "where is this on the path to
+   mainline?" before falling into the article meta. Replaces the
+   pre-2.5 `<aside class="patch-state">`. #}
+{% if patch_state and patch_state.is_patch and lifecycle_status %}
+<div class="msg-badges">
+  <span class="badge badge-activity-{{ patch_state.activity_heat }}">
+    <span class="badge-dot" aria-hidden="true"></span>{{ patch_state.activity_heat|upper }}<span class="badge-detail">{{ patch_state.activity_detail }}</span>
+  </span>
+  {%- if lifecycle_status.state.value != 'pending' %}
+  <span class="badge badge-lifecycle-{{ lifecycle_status.state.value }}"
+        {%- if lifecycle_status.tooltip %} data-tooltip="{{ lifecycle_status.tooltip }}" tabindex="0"{% endif %}>
+    {{ lifecycle_status.pill_label }}{% if lifecycle_status.count_suffix %}<span class="badge-count">{{ lifecycle_status.count_suffix }}</span>{% endif %}
+  </span>
+  {%- endif %}
+</div>
 {% endif %}
-{% endif %}
+{% include "_revisions_fold.html" %}
 {% include "_message_body.html" %}
 {# Related patches: other recent articles touching at least one
    file this patch touches. The reverse-lookup side of the
