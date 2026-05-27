@@ -287,6 +287,99 @@ def test_format_count_suffix_omits_when_zero():
     assert _format_count_suffix(12, 4) == ": 12 (4M)"
 
 
+def test_format_tooltip_landed_with_reviewers():
+    from mimir.lifecycle_status import (
+        LifecycleStatus, _format_tooltip,
+    )
+    from datetime import datetime, timezone
+    tip = _format_tooltip(
+        state=LifecycleStatus.LANDED,
+        linus_sha="feedface12345678",
+        linus_committed_at=datetime(2025, 11, 22, 9, 30, tzinfo=timezone.utc),
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
+        reviewers=[("Theodore Tso", True), ("Jan Kara", True)],
+    )
+    assert tip.startswith("feedface1234 · 2025-11-22 09:30")
+    lines = tip.split("\n")
+    assert lines[1] == "M Theodore Tso"
+    assert lines[2] == "M Jan Kara"
+
+
+def test_format_tooltip_queued_uses_earliest_other_tree():
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+    from datetime import datetime, timezone
+    tip = _format_tooltip(
+        state=LifecycleStatus.QUEUED,
+        linus_sha=None, linus_committed_at=None,
+        earliest_other_sha="24be70885101abcd",
+        earliest_other_at=datetime(2026, 5, 25, 14, 8, tzinfo=timezone.utc),
+        superseded_by_version=None, superseded_by_posted_at=None,
+        reviewers=[("Alice", True), ("Bob", False)],
+    )
+    assert tip.startswith("24be70885101 · 2026-05-25 14:08")
+    assert "\nM Alice" in tip
+    assert "\nBob" in tip
+
+
+def test_format_tooltip_reviewed_names_only():
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+    tip = _format_tooltip(
+        state=LifecycleStatus.REVIEWED,
+        linus_sha=None, linus_committed_at=None,
+        earliest_other_sha=None, earliest_other_at=None,
+        superseded_by_version=None, superseded_by_posted_at=None,
+        reviewers=[("Alice", True), ("Bob", False), ("Carol", True)],
+    )
+    # Maintainers first (alphabetical via input order), then non-
+    # maintainers. No leading commit line; no preamble.
+    assert tip == "M Alice\nM Carol\nBob"
+
+
+def test_format_tooltip_superseded_uses_supersede_note():
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+    from datetime import datetime, timezone
+    tip = _format_tooltip(
+        state=LifecycleStatus.SUPERSEDED,
+        linus_sha=None, linus_committed_at=None,
+        earliest_other_sha=None, earliest_other_at=None,
+        superseded_by_version="4",
+        superseded_by_posted_at=datetime(2026, 5, 18, tzinfo=timezone.utc),
+        reviewers=[("Alice", True), ("Bob", False)],
+    )
+    assert tip.startswith("Superseded by v4 posted 2026-05-18")
+    assert "\nM Alice" in tip
+
+
+def test_format_tooltip_landed_no_reviewers():
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+    from datetime import datetime, timezone
+    tip = _format_tooltip(
+        state=LifecycleStatus.LANDED,
+        linus_sha="cafebabe98765432",
+        linus_committed_at=datetime(2026, 4, 14, 11, 8, tzinfo=timezone.utc),
+        earliest_other_sha=None, earliest_other_at=None,
+        superseded_by_version=None, superseded_by_posted_at=None,
+        reviewers=[],
+    )
+    # Single line: just the commit info; no newline at the end.
+    assert tip == "cafebabe9876 · 2026-04-14 11:08"
+
+
+def test_format_tooltip_pending_returns_none():
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+    tip = _format_tooltip(
+        state=LifecycleStatus.PENDING,
+        linus_sha=None, linus_committed_at=None,
+        earliest_other_sha=None, earliest_other_at=None,
+        superseded_by_version=None, superseded_by_posted_at=None,
+        reviewers=[],
+    )
+    assert tip is None
+
+
 def test_lifecycle_status_query_uses_index_seeks(session):
     """Pins the plan of the bulk lifecycle query: every LEFT JOIN
     source must SEARCH USING INDEX, not SCAN. Guards against an
