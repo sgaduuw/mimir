@@ -281,6 +281,10 @@ def test_format_pill_label_per_state():
     )
     assert _format_pill_label(LifecycleStatus.REVIEWED, tree=None) == "REVIEWED"
     assert _format_pill_label(LifecycleStatus.SUPERSEDED, tree=None) == "SUPERSEDED"
+    # PENDING returns "" so a defensive caller bypassing the
+    # template's `state.value != 'pending'` gate doesn't render
+    # a stray PENDING label.
+    assert _format_pill_label(LifecycleStatus.PENDING, tree=None) == ""
 
 
 def test_format_count_suffix_omits_when_zero():
@@ -352,6 +356,59 @@ def test_format_tooltip_reviewed_names_only():
     assert tip == "M Alice\nM Carol\nBob"
 
 
+def test_format_tooltip_dedups_repeated_reviewer():
+    """Real prod case (ratatoskr.run/lkml/2026/05/17037309): a
+    single maintainer files Reviewed-by once per patch in a
+    multi-patch series; the cover-letter's article_trailers row
+    count comes back as N copies of the same name. Listing the
+    same name N times in the tooltip is noise; dedup to one entry
+    per unique name. The pill count stays accurate (N trailer
+    rows), but the tooltip surfaces the human-distinct reviewer
+    list."""
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+
+    tip = _format_tooltip(
+        state=LifecycleStatus.REVIEWED,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
+        reviewers=[("Sudeep Holla", True)] * 11,
+    )
+    assert tip == "M Sudeep Holla"
+
+
+def test_format_tooltip_dedups_mixed_reviewers_preserving_order():
+    """Dedup is first-seen wins, preserving the maintainer-first
+    ordering. A name appearing both as maintainer and non-
+    maintainer (edge case: parser flagged some rows but not
+    others) keeps the maintainer-flagged entry."""
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+
+    tip = _format_tooltip(
+        state=LifecycleStatus.REVIEWED,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
+        reviewers=[
+            ("Alice", True),
+            ("Bob", False),
+            ("Alice", True),  # dup of first
+            ("Carol", False),
+            ("Bob", False),  # dup of second
+            ("Dave", True),
+        ],
+    )
+    # Maintainers first, then non-maintainers; each unique name
+    # appears once.
+    assert tip == "M Alice\nM Dave\nBob\nCarol"
+
+
 def test_format_tooltip_superseded_uses_supersede_note():
     from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
     from datetime import datetime, timezone
@@ -368,6 +425,38 @@ def test_format_tooltip_superseded_uses_supersede_note():
     )
     assert tip.startswith("Superseded by v4 posted 2026-05-18")
     assert "\nM Alice" in tip
+
+
+def test_format_tooltip_scrubs_control_bytes_from_names():
+    """Reviewer names flow into a `data-tooltip` attribute; bytes
+    that survive Jinja autoescape but break attribute rendering
+    (C0/C1 control range, surrogates) must be stripped first.
+    Same posture as `canonical.extract_list_addresses`.
+
+    Names that become empty after scrubbing are dropped entirely."""
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+
+    tip = _format_tooltip(
+        state=LifecycleStatus.REVIEWED,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
+        reviewers=[
+            # Embedded NUL byte gets stripped; surrounding text survives.
+            ("Alice\x00 Maintainer", True),
+            # Lone surrogate inside the name; stripped.
+            ("Bob \ud800Reviewer", False),
+            # Entire name is just control bytes; drops.
+            ("\x01\x02\x03", True),
+            # C1 control range (U+0080 - U+009F).
+            ("Carol\x85", False),
+        ],
+    )
+    # Names cleaned, control bytes gone, empty-after-scrub dropped.
+    assert tip == "M Alice Maintainer\nBob Reviewer\nCarol"
 
 
 def test_format_tooltip_landed_no_reviewers():
