@@ -1112,6 +1112,21 @@ def test_real_path_roundtrip_string_with_surrogate_escape_range():
         _drop_cache_key(key)
 
 
+def test_cache_get_many_returns_only_unexpired_present_keys():
+    cache.set("k1", {"a": 1}, ttl=60)
+    cache.set("k2", {"b": 2}, ttl=60)
+    # k3 not set
+    cache.set("k4", {"d": 4}, ttl=-1)  # already expired
+    got = cache.get_many(["k1", "k2", "k3", "k4"])
+    assert set(got.keys()) == {"k1", "k2"}
+    assert got["k1"] == {"a": 1}
+    assert got["k2"] == {"b": 2}
+
+
+def test_cache_get_many_empty_keys_returns_empty():
+    assert cache.get_many([]) == {}
+
+
 def test_cache_module_has_no_pickle_dependency():
     """Regression marker for the 2026-04-ish pickle-pivot. The original
     cache was a single pickle file; concurrent-write races dropped
