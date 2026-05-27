@@ -13,6 +13,7 @@ from flask import abort, render_template, request
 
 from mimir.dashboard import author_recent, search_articles
 from mimir.extensions import SessionLocal
+from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.seo import _json_ld_author, _json_ld_search
 from mimir.subsystems_dashboard import (
     REVIEWS_PER_PAGE_LIMIT,
@@ -57,6 +58,9 @@ def search(inbox_name: str):
         if len(q) >= SEARCH_QUERY_MIN_LEN:
             results = search_articles(session, inbox, q, limit=SEARCH_RESULT_CAP)
             truncated = len(results) >= SEARCH_RESULT_CAP
+        lifecycle_status_by_id = lifecycle_status_for_articles(
+            session, [a.id for a in results]
+        )
 
     # SearchResultsPage only when we're actually rendering results.
     # The no-query and too-short shapes are a bare search form, not a
@@ -86,6 +90,7 @@ def search(inbox_name: str):
         min_len=SEARCH_QUERY_MIN_LEN,
         max_len=SEARCH_QUERY_MAX_LEN,
         page_json_ld=page_json_ld,
+        lifecycle_status_by_id=lifecycle_status_by_id,
     )
 
 
@@ -100,6 +105,9 @@ def author_view(inbox_name: str, sub: str):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         results = author_recent(session, inbox, sub, limit=AUTHOR_VIEW_LIMIT)
+        lifecycle_status_by_id = lifecycle_status_for_articles(
+            session, [a.id for a in results]
+        )
     # Pin the canonical URL with `sub` percent-encoded so the page's
     # <link rel="canonical"> matches the <link rel="alternate"> for
     # the atom feed (which uses Jinja's `urlencode` filter on `sub`).
@@ -119,6 +127,7 @@ def author_view(inbox_name: str, sub: str):
         result_cap=AUTHOR_VIEW_LIMIT,
         canonical_url=canonical_url,
         page_json_ld=_json_ld_author(base, inbox.name, sub, canonical_url),
+        lifecycle_status_by_id=lifecycle_status_by_id,
     )
 
 
@@ -149,6 +158,9 @@ def reviewer_view(inbox_name: str, address: str):
             address_normalized,
             limit=REVIEWS_PER_PAGE_LIMIT,
         )
+        lifecycle_status_by_id = lifecycle_status_for_articles(
+            session, [e.article_id for e in entries]
+        )
     role_counts: dict[str, int] = {}
     for e in entries:
         role_counts[e.role] = role_counts.get(e.role, 0) + 1
@@ -167,4 +179,5 @@ def reviewer_view(inbox_name: str, address: str):
         truncated=len(entries) >= REVIEWS_PER_PAGE_LIMIT,
         result_cap=REVIEWS_PER_PAGE_LIMIT,
         canonical_url=canonical_url,
+        lifecycle_status_by_id=lifecycle_status_by_id,
     )
