@@ -479,6 +479,71 @@ def test_walk_commits_branch_override(seeded_db, tmp_path):
     assert "head@x" not in mids
 
 
+def test_ensure_tree_passes_reference_to_clone(tmp_path, monkeypatch):
+    """When reference is set, git clone is invoked with --reference."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        # Simulate a successful clone by creating the dir.
+        from pathlib import Path as _P
+
+        # Args after `--` are: url, path
+        dd_idx = cmd.index("--")
+        path = _P(cmd[dd_idx + 2])
+        path.mkdir(parents=True, exist_ok=True)
+
+        class _Result:
+            returncode = 0
+
+        return _Result()
+
+    monkeypatch.setattr("mimir.mainline.subprocess.run", fake_run)
+    from mimir.config import TreeConfig
+    from mimir.mainline import _ensure_tree
+
+    tree = TreeConfig(
+        url="https://example.com/foo.git",
+        path=tmp_path / "foo.git",
+    )
+    linus_path = tmp_path / "linus.git"
+    linus_path.mkdir()
+    _ensure_tree(tree, reference=linus_path, skip_fetch=False)
+    clone_cmd = calls[0]
+    assert "--reference" in clone_cmd
+    ref_idx = clone_cmd.index("--reference")
+    assert clone_cmd[ref_idx + 1] == str(linus_path)
+
+
+def test_ensure_tree_no_reference_for_linus(tmp_path, monkeypatch):
+    """reference=None -> no --reference flag in the git clone command."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        from pathlib import Path as _P
+
+        dd_idx = cmd.index("--")
+        path = _P(cmd[dd_idx + 2])
+        path.mkdir(parents=True, exist_ok=True)
+
+        class _Result:
+            returncode = 0
+
+        return _Result()
+
+    monkeypatch.setattr("mimir.mainline.subprocess.run", fake_run)
+    from mimir.config import TreeConfig
+    from mimir.mainline import _ensure_tree
+
+    tree = TreeConfig(
+        url="https://example.com/linus.git",
+        path=tmp_path / "linus.git",
+    )
+    _ensure_tree(tree, reference=None, skip_fetch=False)
+    assert "--reference" not in calls[0]
+
+
 def test_walk_commits_full_rewalk_is_idempotent_via_on_conflict(
     seeded_db,
     tmp_path,
