@@ -11,6 +11,43 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- Multi-tree mainline tracking. Patches are now tracked through
+  subsystem `*-next` trees (`net-next`, `tip`, `pci`, `mm`,
+  `bpf-next`), `linux-next`, and Linus's mainline. The `mm` tree
+  walks the `mm-stable` branch. The patch-state
+  card on message pages labels each landing with its tree; a new
+  lifecycle timeline below the card renders the chronological
+  journey (post → review trailers → tree pickups → mainline merge).
+  Listing rows (recent / daily / inbox / search / subsystem /
+  month / author / reviewer / since) carry a status pill:
+  Landed / Superseded / Queued / Reviewed / Pending. Operators
+  extend the tree set via `TREES__<name>__URL` env. First
+  deploy may run a longer `update-mainline` tick as new trees
+  clone (`--reference linus.git` keeps marginal disk small).
+
+### Deprecated
+
+- `MAINLINE_TREE_URL` / `MAINLINE_TREE_PATH`. Continue to work
+  (auto-seed the `linus` entry); will be removed in the next
+  major release. Operators should migrate to
+  `TREES__linus__URL` / `TREES__linus__PATH`.
+
+### Changed
+
+- `env_nested_delimiter="__"` is now active on `Settings`, enabling
+  `INBOXES__<name>__<field>` and `TREES__<name>__<field>` per-key env
+  overrides for both dict settings. Operators with pre-existing
+  `INBOXES__*` env var names (previously ignored) will now have
+  pydantic-settings parse them; ANY `INBOXES__*` key replaces the
+  default `inboxes` dict (no merging). Review env before upgrade.
+
+- `mimir update-mainline` CLI now exits non-zero when any tree's
+  walk fails (previously exited 0 with the error logged). Per-tree
+  isolation preserved: the operation still attempts every tree;
+  the exit code surfaces failures for systemd / cron alerting.
+
 ### Fixed
 
 - `mimir-web` container healthcheck no longer shells out to `wget`.

@@ -17,6 +17,7 @@ from mimir.broker import handlers
 from mimir.broker.client import BrokerClient
 from mimir.cli.maintenance import analyze_command, vacuum_command
 from mimir.config import settings
+from tests.conftest import linus_tree as _linus_tree
 from tests.test_broker._helpers import broker_running, short_socket_path
 
 
@@ -193,7 +194,7 @@ def test_update_mainline_via_broker_loads_maintainers(seeded_db, tmp_path, monke
     has its own coverage in test_mainline)."""
     repo_path = tmp_path / "linux.git"
     head_sha = _build_minimal_tree_with_maintainers(repo_path)
-    monkeypatch.setattr(settings, "mainline_tree_path", str(repo_path))
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
 
     sp = short_socket_path("update-mainline-rpc")
     with broker_running(sp):
@@ -209,6 +210,10 @@ def test_update_mainline_via_broker_loads_maintainers(seeded_db, tmp_path, monke
     # Skipped phase: commits_ran must be False so a future regression
     # that forgets to honor the skip flag surfaces here.
     assert result["commits_ran"] is False
+    # Per-tree result map must be present; a protocol regression that
+    # drops the `trees` field is caught here.
+    assert "linus" in result["trees"]
+    assert result["trees"]["linus"]["ok"] is True
 
 
 def test_update_mainline_via_broker_reports_unchanged_on_second_call(
@@ -219,7 +224,7 @@ def test_update_mainline_via_broker_reports_unchanged_on_second_call(
     Same shape the steady-state scheduler tick produces."""
     repo_path = tmp_path / "linux.git"
     _build_minimal_tree_with_maintainers(repo_path)
-    monkeypatch.setattr(settings, "mainline_tree_path", str(repo_path))
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
 
     sp = short_socket_path("update-mainline-unchanged")
     with broker_running(sp):
@@ -239,7 +244,7 @@ def test_update_mainline_via_broker_force_reloads(seeded_db, tmp_path, monkeypat
     the second call reloads even though HEAD hasn't moved."""
     repo_path = tmp_path / "linux.git"
     _build_minimal_tree_with_maintainers(repo_path)
-    monkeypatch.setattr(settings, "mainline_tree_path", str(repo_path))
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
 
     sp = short_socket_path("update-mainline-force")
     with broker_running(sp):
@@ -273,7 +278,7 @@ def test_cache_op_completes_while_maintenance_op_runs(seeded_db, tmp_path, monke
 
     repo_path = tmp_path / "linux.git"
     _build_minimal_tree_with_maintainers(repo_path)
-    monkeypatch.setattr(settings, "mainline_tree_path", str(repo_path))
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
 
     sp = short_socket_path("interleave")
     with broker_running(sp):

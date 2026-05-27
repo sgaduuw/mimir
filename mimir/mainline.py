@@ -24,15 +24,20 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from dulwich.repo import Repo
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from mimir import maintainers
 from mimir.config import settings
+from mimir.datetime_utils import aware_utc
+
+if TYPE_CHECKING:
+    from mimir.config import TreeConfig
 from mimir.extensions import SessionLocal, write_transaction
 from mimir.models import (
     MainlineCommit,
@@ -112,48 +117,152 @@ def walk_commits(
     session: Session,
     tree_path: Path,
     tree_name: str = "linus",
+    *,
+    branch: str = "HEAD",
+    rebases: bool = False,
+    exclude_from: bytes | None = None,
 ) -> WalkResult:
     """Walk new commits on `tree_path`, extract `Link:` trailers,
-    insert `mainline_commits` rows. Resumable: starts after the
-    last walked SHA recorded on `MainlineState`, so steady-state
-    ticks only see the commits since the prior run.
+    insert `mainline_commits` rows.
 
-    First-run behaviour: walks the entire history. On a full Linus
-    tree that's ~1.5M commits and takes minutes. Operator can scope
-    the initial run by setting `commits_walked_to_sha` manually
-    (e.g. to a recent release tag) if they only care about
-    recent history."""
+    When `rebases=True`: DELETE the tree's existing rows first then
+    walk from `branch` to root with no exclude. Used for force-pushed
+    trees like linux-next where the SHA cursor would be invalidated
+    daily; INSERT-OR-IGNORE absorbs duplicates intra-walk.
+
+    When `rebases=False` (default): incremental SHA-cursor walk. The
+    cursor on `MainlineState.commits_walked_to_sha` is advanced past
+    the last seen SHA so the next tick only sees commits since the
+    prior run. Missing-cursor defensive rewalk stays in place.
+
+    `branch` selects which ref to walk. Defaults to HEAD; override
+    for trees like akpm/mm where the canonical pickup signal lives on
+    a non-HEAD branch (e.g. `mm-stable`). Missing branch falls back
+    to HEAD with a warning log.
+
+    `exclude_from` (bytes SHA of another tree's HEAD): when set AND
+    `rebases=False` AND the SHA is reachable in this repo's
+    objectstore (typically via `--reference linus.git`'s alternates),
+    the walker also excludes commits reachable from this SHA. The
+    intended use is `linus_head`, so non-Linus trees walk only
+    commits divergent from Linus instead of the whole shared history.
+    Pure perf win on first walks; on subsequent cursor-based walks
+    the combined exclude is at least as tight as the cursor alone.
+
+    Not applied for `rebases=True` trees: the daily DELETE+rewalk
+    would erase intermediate-tree rows for patches that transition
+    into Linus that same day, losing per-tree timeline info on the
+    patch page. linux-next's daily O(history) walk is the cost of
+    preserving the journey for newly-landed patches.
+
+    Known trade-off (rebases=False): a patch picked up by Linus first
+    and back-merged into a subsystem tree later (e.g. a backport
+    into a -stable lane) won't get a row for the subsystem tree
+    because `exclude_from` blocks the back-merged commit. Acceptable
+    for the curated subsystem-tree set where forward flow dominates;
+    operators adding a stable / longterm tree should consider this.
+
+    First-run behaviour (rebases=False, no exclude_from): walks the
+    entire history. On a full Linus tree that's ~1.5M commits and
+    takes minutes. Operator can scope the initial run by setting
+    `commits_walked_to_sha` manually (e.g. to a recent release tag)
+    if they only care about recent history."""
     repo = Repo(str(tree_path))
     state = session.get(MainlineState, tree_name)
     if state is None:
         state = MainlineState(tree_name=tree_name)
         session.add(state)
-    head = repo.head()
-    since = state.commits_walked_to_sha
 
-    # dulwich's reverse=True walker emits oldest-first, which is
-    # what we want: we want to advance the cursor monotonically.
-    exclude: list[bytes] = []
-    if since:
+    # Resolve the branch ref. HEAD is the common case; named branches
+    # are used for trees like akpm/mm where the canonical work lives
+    # on a non-default ref. A missing named branch degrades gracefully
+    # to HEAD rather than crashing, because a tree config error should
+    # not halt other trees' indexing on the same tick. An empty repo
+    # (no commits at all) produces a WalkResult with zero commits.
+    branch_ref: bytes | None
+    if branch == "HEAD":
         try:
-            repo[since.encode()]
-            exclude = [since.encode()]
+            branch_ref = repo.head()
         except KeyError:
-            # Cursor points at a SHA that no longer exists in the
-            # repo (force-push, history rewrite, shouldn't happen
-            # on Linus's tree, but be defensive). Re-walk from
-            # scratch rather than crash.
+            branch_ref = None
+    else:
+        try:
+            branch_ref = repo.refs[f"refs/heads/{branch}".encode()]
+        except KeyError:
             logger.warning(
-                "mainline: cursor SHA %s missing from %s; rewalking",
-                since,
+                "mainline: branch %s missing in %s; falling back to HEAD",
+                branch,
                 tree_path,
             )
-            exclude = []
-    walker = repo.get_walker(include=[head], exclude=exclude, reverse=True)
+            try:
+                branch_ref = repo.head()
+            except KeyError:
+                branch_ref = None
 
-    result = WalkResult(last_walked_sha=since)
+    if branch_ref is None:
+        # Empty repo or missing ref: nothing to walk. Commit any
+        # pending session state (e.g. the new MainlineState row) and
+        # return early with zero counts. Note: the rebases=True DELETE
+        # has not been issued yet at this point; that block comes after
+        # this guard.
+        session.commit()
+        return WalkResult()
+
+    exclude: list[bytes] = []
+    if rebases:
+        # Force-pushed tree: wipe the tree's existing rows so stale
+        # SHAs don't accumulate. The full walk that follows re-inserts
+        # the live history; ON CONFLICT DO NOTHING absorbs any
+        # intra-walk duplicates from merge-graph re-emissions.
+        # `exclude_from` intentionally NOT applied here; see the
+        # docstring for the per-tree-timeline rationale.
+        session.execute(
+            delete(MainlineCommit).where(MainlineCommit.tree_name == tree_name)
+        )
+    else:
+        # Incremental cursor walk. Skip commits already recorded in
+        # the prior run by excluding the last-seen SHA. If the cursor
+        # SHA no longer exists (force-push, shallow re-clone), re-walk
+        # from scratch: we'd rather re-insert against ON CONFLICT than
+        # crash and stall the tree.
+        since = state.commits_walked_to_sha
+        if since:
+            try:
+                repo[since.encode()]
+                exclude.append(since.encode())
+            except KeyError:
+                logger.warning(
+                    "mainline: cursor SHA %s missing from %s; rewalking",
+                    since,
+                    tree_path,
+                )
+        # Additional shortcut: skip commits reachable from another
+        # tree's head when supplied (typically `linus_head` so non-
+        # Linus trees walk only divergent commits). KeyError means
+        # this repo's objectstore doesn't have the SHA, e.g. no
+        # --reference linus.git on clone; falling back to a full
+        # walk is the right safety net (slower, still correct).
+        if exclude_from is not None:
+            try:
+                repo[exclude_from]
+                exclude.append(exclude_from)
+            except KeyError:
+                logger.debug(
+                    "mainline: exclude_from %s not in %s; walking full history",
+                    exclude_from.decode("ascii", errors="replace"),
+                    tree_path,
+                )
+
+    # dulwich's reverse=True walker emits oldest-first, which is what
+    # we want: advance the SHA cursor monotonically so the next tick
+    # only picks up commits appended after this one.
+    walker = repo.get_walker(include=[branch_ref], exclude=exclude, reverse=True)
+
+    result = WalkResult(
+        last_walked_sha=None if rebases else state.commits_walked_to_sha
+    )
     pending_rows: list[dict] = []
-    last_seen: str | None = since
+    last_seen: str | None = result.last_walked_sha
 
     def flush() -> None:
         if pending_rows:
@@ -207,21 +316,34 @@ def walk_commits(
         if result.commits_seen % _BATCH == 0:
             flush()
             logger.info(
-                "mainline: walked %d commits (%d linked, %d rows)",
+                "mainline: walked %d commits (%d linked, %d rows) on %s",
                 result.commits_seen,
                 result.linked,
                 result.rows_inserted,
+                tree_name,
             )
 
     flush()
     return result
 
 
+class TreeWalkResult(BaseModel):
+    """Per-tree outcome of one update_mainline tick."""
+
+    skipped: bool = False  # walk_every_seconds not yet elapsed
+    ok: bool = True  # False when an exception was caught
+    error: str | None = None
+    commits_seen: int = 0
+    commits_linked: int = 0
+    rows_inserted: int = 0
+
+
 class UpdateMainlineResult(BaseModel):
-    """Outcome of one `update_mainline` invocation. Fields are present
-    even when their phase was skipped, so callers can branch on
-    them without checking which mode was passed; the
-    `<phase>_ran` flags carry the dispositive bit."""
+    """Aggregate outcome of one `update_mainline` invocation across
+    every configured tree. Existing fields (`maintainers_ran`,
+    `subsystems_loaded`, `mainline_head`, etc.) survive for the
+    Linus-only MAINTAINERS reparse path. Per-tree details live in
+    `trees`."""
 
     maintainers_ran: bool = False
     maintainers_unchanged: bool = False
@@ -233,54 +355,57 @@ class UpdateMainlineResult(BaseModel):
     commits_linked: int = 0
     rows_inserted: int = 0
 
+    trees: dict[str, TreeWalkResult] = Field(default_factory=dict)
 
-def _resolve_tree_path() -> Path:
-    """Read `Settings.mainline_tree_path` and absolutize against
-    PROJECT_ROOT when it's relative. Centralised so both the CLI
-    and the broker handler see the same path resolution rules."""
-    tree_path = Path(settings.mainline_tree_path)
+
+def _ensure_tree(
+    tree: "TreeConfig",
+    *,
+    reference: Path | None,
+    skip_fetch: bool,
+) -> Path:
+    """Clone the tree on first run, fetch otherwise. Returns the
+    resolved absolute tree path.
+
+    `reference`: when set (typically the Linus tree path for every
+    non-Linus tree), pass `--reference <reference>` to git clone so
+    objects are shared across alternates. Marginal disk per non-Linus
+    tree drops from ~10 GB to the divergent objects only. Caveat
+    documented in CONTEXT.md: a corrupted reference clone breaks every
+    dependent tree; recovery is re-cloning without --reference.
+
+    `skip_fetch`: when True on an existing clone, no `git fetch`. CLI
+    option for the operator who wants to re-run MAINTAINERS / Link-
+    trailer passes against current HEAD without a network round-trip.
+    """
+    tree_path = tree.path
     if not tree_path.is_absolute():
-        # Late import: `PROJECT_ROOT` is a config-module constant
-        # but importing it at module load creates a circular
-        # dependency with the `Settings` instance.
+        # Late import: `PROJECT_ROOT` is a config-module constant but
+        # importing it at module load creates a circular dependency with
+        # the `Settings` instance.
         from mimir.config import PROJECT_ROOT
 
         tree_path = PROJECT_ROOT / tree_path
-    return tree_path
 
-
-def _ensure_tree(tree_path: Path, *, skip_fetch: bool) -> None:
-    """Clone the mainline tree on first run, fetch otherwise. Skips
-    the fetch when `skip_fetch=True` (CLI option that lets an
-    operator re-run MAINTAINERS / Link-trailer passes against the
-    current HEAD without burning a network round-trip)."""
     if not tree_path.exists():
         tree_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info(
-            "mainline: cloning %s -> %s",
-            settings.mainline_tree_url,
-            tree_path,
-        )
-        # `--` stops git from interpreting an option-shaped URL as
-        # a flag (same defensive pattern as `mimir.sync.clone_epoch`).
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                "--mirror",
-                "--",
-                settings.mainline_tree_url,
-                str(tree_path),
-            ],
-            check=True,
-        )
-        return
+        cmd = ["git", "clone", "--mirror"]
+        if reference is not None:
+            cmd.extend(["--reference", str(reference)])
+        # `--` stops git from interpreting an option-shaped URL as a
+        # flag (same defensive pattern as `mimir.sync.clone_epoch`).
+        cmd.extend(["--", tree.url, str(tree_path)])
+        logger.info("mainline: cloning %s -> %s", tree.url, tree_path)
+        subprocess.run(cmd, check=True)
+        return tree_path
+
     if not skip_fetch:
         logger.debug("mainline: fetching %s", tree_path)
         subprocess.run(
             ["git", "-C", str(tree_path), "fetch", "--quiet", "--prune"],
             check=True,
         )
+    return tree_path
 
 
 def load_maintainers(
@@ -409,49 +534,141 @@ def update_mainline(
     skip_commits: bool = False,
     force: bool = False,
 ) -> UpdateMainlineResult:
-    """Sync the mainline tree and refresh both derived surfaces.
+    """Sync every configured tree and refresh derived surfaces.
 
-    The two phases (MAINTAINERS reparse + Link-trailer walk) are
-    independent; either can be skipped via its flag. `force` only
-    affects MAINTAINERS (the commit walker is incremental against
-    a cursor, so "force" doesn't have an analogue there).
+    Iterates `Settings.trees`; per-tree decisions:
+      - cadence gate: skip if `now - last_walked_at < walk_every_seconds`
+      - linus only: load_maintainers() runs (MAINTAINERS is Linus-only)
+      - walker dispatch: rebases=True triggers DELETE+rewalk
+      - failure isolation: log + record per-tree, continue
 
-    Same body as the CLI command had before Phase 2.3; the CLI now
-    delegates to this function so the broker handler can call the
-    same code path without import gymnastics."""
-    tree_name = "linus"  # fixed slug; supports future linux-stable, etc.
-    tree_path = _resolve_tree_path()
-    _ensure_tree(tree_path, skip_fetch=skip_fetch)
+    Per-tree cadence: skip the tree on ticks that arrive sooner than
+    `walk_every_seconds` since the last *successful* walk. Failed walks
+    do not advance the cursor; the next tick retries. Any combination
+    of skip_maintainers / skip_commits is treated as a successful tick
+    if `_ensure_tree` succeeds and neither the MAINTAINERS nor commit
+    phases raised an exception.
+    """
+    from datetime import datetime, timezone
 
     result = UpdateMainlineResult()
+    now = datetime.now(timezone.utc)
 
-    if not skip_maintainers:
-        ran, loaded, head_sha = load_maintainers(
-            tree_path,
-            tree_name,
-            force=force,
-        )
-        result.maintainers_ran = ran
-        result.maintainers_unchanged = not ran
-        result.subsystems_loaded = loaded
-        result.mainline_head = head_sha
+    linus_path: Path | None = None
 
-    if not skip_commits:
-        with (
-            write_transaction("update_mainline:link_trailers"),
-            SessionLocal() as session,
+    # Read Linus's HEAD up front (if the clone exists on disk) so
+    # non-Linus walks can shortcut over commits already reachable
+    # from Linus. Reading off-disk works even when Linus is cadence-
+    # skipped this tick. On the very first deploy, Linus's clone
+    # doesn't exist yet; linus_head stays None and the shortcut is
+    # unavailable for that one tick, which is correct (non-Linus
+    # trees walk full history just like the pre-shortcut baseline).
+    linus_head: bytes | None = None
+    linus_cfg = settings.trees.get("linus")
+    if linus_cfg is not None:
+        linus_disk_path = linus_cfg.path
+        if not linus_disk_path.is_absolute():
+            from mimir.config import PROJECT_ROOT
+
+            linus_disk_path = PROJECT_ROOT / linus_disk_path
+        if linus_disk_path.exists():
+            try:
+                linus_head = Repo(str(linus_disk_path)).head()
+            except Exception as exc:
+                logger.debug(
+                    "mainline: could not read linus HEAD from %s: %r",
+                    linus_disk_path,
+                    exc,
+                )
+
+    # Linus first so its clone exists for --reference on subsequent
+    # trees in the same tick.
+    ordered_slugs = ["linus"] + [s for s in settings.trees if s != "linus"]
+    for slug in ordered_slugs:
+        tree = settings.trees.get(slug)
+        if tree is None:
+            continue
+        tr = TreeWalkResult()
+        result.trees[slug] = tr
+
+        # Cadence gate: skip trees whose last walk is still within
+        # the configured interval. This prevents re-walking
+        # force-pushed trees (linux-next) or slow trees (linus)
+        # on every scheduler tick regardless of their cadence.
+        with SessionLocal() as session:
+            state = session.get(MainlineState, slug)
+            last = state.last_walked_at if state else None
+        if (
+            last is not None
+            and (now - aware_utc(last)).total_seconds() < tree.walk_every_seconds
         ):
-            walk = walk_commits(session, tree_path, tree_name=tree_name)
-        result.commits_ran = True
-        result.commits_seen = walk.commits_seen
-        result.commits_linked = walk.linked
-        result.rows_inserted = walk.rows_inserted
+            tr.skipped = True
+            continue
+
+        try:
+            tree_path = _ensure_tree(
+                tree,
+                reference=linus_path if slug != "linus" else None,
+                skip_fetch=skip_fetch,
+            )
+            if slug == "linus":
+                linus_path = tree_path
+                if not skip_maintainers:
+                    ran, loaded, head_sha = load_maintainers(
+                        tree_path,
+                        tree_name=slug,
+                        force=force,
+                    )
+                    result.maintainers_ran = ran
+                    result.maintainers_unchanged = not ran
+                    result.subsystems_loaded = loaded
+                    result.mainline_head = head_sha
+
+            if not skip_commits:
+                with (
+                    write_transaction(f"update_mainline:walk:{slug}"),
+                    SessionLocal() as session,
+                ):
+                    walk = walk_commits(
+                        session,
+                        tree_path,
+                        tree_name=slug,
+                        branch=tree.branch,
+                        rebases=tree.rebases,
+                        exclude_from=linus_head if slug != "linus" else None,
+                    )
+                    session.commit()
+                tr.commits_seen = walk.commits_seen
+                tr.commits_linked = walk.linked
+                tr.rows_inserted = walk.rows_inserted
+                result.commits_seen += walk.commits_seen
+                result.commits_linked += walk.linked
+                result.rows_inserted += walk.rows_inserted
+                result.commits_ran = True
+
+            # Advance the cadence cursor on any successful tick,
+            # regardless of which phases ran. Only failed walks (those
+            # that raised above) leave the cursor untouched so the next
+            # tick retries.
+            with SessionLocal() as session:
+                state = session.get(MainlineState, slug)
+                if state is None:
+                    state = MainlineState(tree_name=slug)
+                    session.add(state)
+                state.last_walked_at = now
+                session.commit()
+        except Exception as exc:
+            logger.warning("update_mainline: tree %s failed: %r", slug, exc)
+            tr.ok = False
+            tr.error = repr(exc)
+            continue
 
     return result
 
 
 __all__ = [
     "WalkResult",
+    "TreeWalkResult",
     "UpdateMainlineResult",
     "extract_message_ids",
     "walk_commits",

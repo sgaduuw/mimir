@@ -1,0 +1,18 @@
+{# Renders the chronological journey: posted -> trailers -> tree pickups.
+   Consumes patch_state.timeline (list[StateTimelineEvent]). Only
+   included when patch_state.is_patch and patch_state.timeline are
+   both truthy; the outer guard in message.html enforces that. #}
+<section class="lifecycle-timeline-section">
+  <h3>Lifecycle</h3>
+  <ol class="lifecycle-timeline">
+    {%- for ev in patch_state.timeline %}
+    <li class="lifecycle-event lifecycle-event-{{ ev.kind|replace(':', '-') }}">
+      <time datetime="{{ ev.when.isoformat() }}">{{ ev.when.strftime('%Y-%m-%d %H:%M') }}</time>
+      <span class="lifecycle-event-label">{{ ev.label }}</span>
+      {%- if ev.detail %}
+      <span class="lifecycle-event-detail">{{ ev.detail }}</span>
+      {%- endif %}
+    </li>
+    {%- endfor %}
+  </ol>
+</section>
