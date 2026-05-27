@@ -131,9 +131,6 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
     {% endif %}
   </small>
 </aside>
-{% if patch_state and patch_state.is_patch and patch_state.timeline %}
-  {% include "_lifecycle_timeline.html" %}
-{% endif %}
 {% endif %}
 {% include "_message_body.html" %}
 {# Related patches: other recent articles touching at least one
