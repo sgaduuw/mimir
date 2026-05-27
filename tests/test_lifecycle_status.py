@@ -235,6 +235,7 @@ def test_superseded_handles_double_digit_versions(session):
 
 def test_lifecycle_status_caches_per_article(session):
     from mimir import cache
+
     a = _seed_article(session, "cached@x")
     lifecycle_status_for_articles(session, [a.id])
     cached = cache.get(f"lifecycle_status:{a.id}")
@@ -246,9 +247,78 @@ def test_lifecycle_status_uses_cache_for_hits(session, monkeypatch):
     lifecycle_status_for_articles(session, [a.id])
     call_count = {"n": 0}
     real_exec = session.execute
+
     def counting_exec(*args, **kwargs):
         call_count["n"] += 1
         return real_exec(*args, **kwargs)
+
     monkeypatch.setattr(session, "execute", counting_exec)
     lifecycle_status_for_articles(session, [a.id])
     assert call_count["n"] == 0, "cache hit should skip SQL"
+
+
+def test_lifecycle_status_query_uses_index_seeks(session):
+    """Pins the plan of the bulk lifecycle query: every LEFT JOIN
+    source must SEARCH USING INDEX, not SCAN. Guards against an
+    ANALYZE drift silently turning the listing-render hot path into
+    a multi-row scan.
+
+    Mirrors the shape of test_subsystem_path_filter_uses_index_seeks
+    and test_triage_queries_use_date_index_no_full_scans.
+
+    NOTE: SQLite's planner may SCAN tiny test-corpus tables (< ~100
+    rows) regardless of indexes, because a full scan is genuinely
+    cheaper at that cardinality. To make the pin meaningful on a
+    small dataset the test seeds 50 articles, runs ANALYZE so the
+    planner has stats to work with, then asserts the relaxed
+    condition: at least one index SEARCH appears in the plan AND no
+    load-bearing table is scanned. The per-table SCAN check is the
+    regression guard that matters in production; the "at least one
+    SEARCH" check ensures ANALYZE produced enough stats for the
+    planner to use indexes at all.
+
+    If this test becomes flaky on CI because 50 rows is too few for
+    the planner to pick index paths, raise the seed count or relax
+    the per-table assertion to apply only to tables with > 100 rows
+    in the plan output.
+    """
+    from sqlalchemy import text
+
+    from mimir.lifecycle_status import _BULK_SQL, _bulk_uncached
+
+    # Seed enough rows that the planner has stats to work with.
+    for i in range(50):
+        _seed_article(session, f"plan{i}@x")
+    session.execute(text("ANALYZE"))
+    session.commit()
+
+    # Force a non-empty IN clause similar to a real listing.
+    ids = [r[0] for r in session.execute(text("SELECT id FROM articles LIMIT 20"))]
+    _bulk_uncached(session, ids)
+
+    # EXPLAIN QUERY PLAN against the compiled SQL. `_BULK_SQL` uses
+    # SQLAlchemy's expanding bindparam, which `literal_binds` can't
+    # inline for text() clauses. Instead, inline the id list directly
+    # into the raw SQL string (safe: ids are ints from our own DB, not
+    # user input) so EXPLAIN sees the real query shape.
+    ids_literal = "(" + ", ".join(str(i) for i in ids) + ")"
+    raw_sql = _BULK_SQL.text.replace(":ids", ids_literal)
+    plan_rows = session.execute(text("EXPLAIN QUERY PLAN " + raw_sql)).all()
+    plan_text = "\n".join(r[3] for r in plan_rows).lower()
+
+    # No SCAN against the three load-bearing tables. On a 50-row
+    # corpus these tables are tiny, but ANALYZE should still push the
+    # planner toward index seeks on the message_id / article_id FKs.
+    # If the planner legitimately picks a scan on such a small corpus,
+    # this assertion fires; relax it to per-table row-count guards if
+    # that happens in CI.
+    for table in ("mainline_commits", "article_trailers", "articles"):
+        assert f"scan {table}" not in plan_text, (
+            f"query plan should not SCAN {table}; got:\n{plan_text}"
+        )
+
+    # At least one index SEARCH must appear (confirms ANALYZE ran and
+    # the planner has stats).
+    assert "search" in plan_text, (
+        f"query plan has no index SEARCH at all; got:\n{plan_text}"
+    )
