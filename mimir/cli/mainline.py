@@ -95,13 +95,23 @@ def update_mainline_command(
             raise click.ClickException(reply_error[len("MainlineTreeMissing:") :])
         raise click.ClickException(f"broker update_mainline failed: {exc}")
     _echo_update_mainline_outcome(payload)
+    # Signal failure to the calling process (systemd timer, cron) so
+    # operators running periodic ticks get an alert when any tree failed
+    # rather than a silent zero exit with an error buried in the output.
+    if any(not tr.get("ok", True) for tr in (payload.get("trees") or {}).values()):
+        raise click.exceptions.Exit(1)
 
 
 def _echo_update_mainline_outcome(payload: dict) -> None:
     """Render the structured `UpdateMainlineResult` to operator-
     facing lines. Same shape whether the call went via broker (dict
     payload from RPC) or direct (model dump). State-change lines
-    only; steady-state ticks stay silent."""
+    only; steady-state ticks stay silent.
+
+    Per-tree failures are surfaced as Error lines so the operator
+    sees them in the terminal output even when the overall RPC
+    succeeded. A misconfigured tree (wrong URL, missing MAINTAINERS
+    blob) should not silently disappear into the broker log."""
     head = payload.get("mainline_head") or ""
     head_short = head[:12]
     if payload.get("maintainers_ran"):
@@ -120,3 +130,9 @@ def _echo_update_mainline_outcome(payload: dict) -> None:
             f"({payload.get('commits_linked', 0)} with lore Link:, "
             f"{payload.get('rows_inserted', 0)} rows indexed)"
         )
+    # Surface per-tree failures so the operator learns which tree
+    # failed rather than silently getting zero output for that tree.
+    for slug, tree_result in (payload.get("trees") or {}).items():
+        if not tree_result.get("ok", True):
+            err = tree_result.get("error") or "unknown error"
+            click.echo(f"update-mainline: tree {slug} failed: {err}", err=True)

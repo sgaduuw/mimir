@@ -582,3 +582,87 @@ def test_walk_commits_full_rewalk_is_idempotent_via_on_conflict(
     with seeded_db() as s:
         row_count = s.scalar(select(func.count(MainlineCommit.commit_sha)))
     assert row_count == 1
+
+
+def test_update_mainline_skips_tree_not_yet_due(seeded_db, monkeypatch, tmp_path):
+    """A tree whose last_walked_at is recent enough is skipped."""
+    from datetime import datetime, timezone
+
+    from mimir.config import TreeConfig, settings
+    from mimir.mainline import update_mainline
+    from mimir.models import MainlineState
+
+    # Override settings.trees with one fake tree for the test
+    monkeypatch.setattr(
+        settings,
+        "trees",
+        {
+            "fake": TreeConfig(
+                url="https://example.com/fake.git",
+                path=tmp_path / "fake.git",
+                walk_every_seconds=3600,
+                rebases=False,
+            ),
+        },
+    )
+    # last_walked_at = now -> skipped on next call
+    with seeded_db() as s:
+        state = MainlineState(
+            tree_name="fake",
+            last_walked_at=datetime.now(timezone.utc),
+        )
+        s.add(state)
+        s.commit()
+
+    # _ensure_tree must NOT be called (tree skipped).
+    called = {"ensure": False}
+
+    def fake_ensure(*a, **kw):
+        called["ensure"] = True
+        return tmp_path
+
+    monkeypatch.setattr("mimir.mainline._ensure_tree", fake_ensure)
+
+    result = update_mainline(skip_maintainers=True, skip_commits=False)
+    assert called["ensure"] is False, (
+        "ensure_tree should not be called for not-due tree"
+    )
+    assert "fake" in result.trees
+    assert result.trees["fake"].skipped is True
+
+
+def test_update_mainline_per_tree_failure_isolated(seeded_db, monkeypatch, tmp_path):
+    """One tree raising doesn't fail the others."""
+    from mimir.config import TreeConfig, settings
+    from mimir.mainline import WalkResult, update_mainline
+
+    monkeypatch.setattr(
+        settings,
+        "trees",
+        {
+            "bad": TreeConfig(
+                url="https://example.com/bad.git",
+                path=tmp_path / "bad.git",
+            ),
+            "good": TreeConfig(
+                url="https://example.com/good.git",
+                path=tmp_path / "good.git",
+            ),
+        },
+    )
+
+    def fake_ensure(tree, *, reference, skip_fetch):
+        if tree.url.endswith("bad.git"):
+            raise RuntimeError("clone failed")
+        from pathlib import Path as _P
+
+        _P(tree.path).mkdir(parents=True, exist_ok=True)
+        return tree.path
+
+    monkeypatch.setattr("mimir.mainline._ensure_tree", fake_ensure)
+    monkeypatch.setattr("mimir.mainline.walk_commits", lambda *a, **kw: WalkResult())
+
+    result = update_mainline(skip_maintainers=True)
+    assert result.trees["bad"].ok is False
+    assert result.trees["bad"].error is not None
+    assert result.trees["good"].ok is True
