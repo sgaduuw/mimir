@@ -257,6 +257,19 @@ def test_lifecycle_status_uses_cache_for_hits(session, monkeypatch):
     assert call_count["n"] == 0, "cache hit should skip SQL"
 
 
+def test_lifecycle_status_info_carries_display_fields():
+    """Per spec: LifecycleStatusInfo carries activity_heat,
+    activity_detail, pill_label, count_suffix, tooltip with
+    defaults for older cache rows."""
+    from mimir.lifecycle_status import LifecycleStatusInfo
+    info = LifecycleStatusInfo(state_value="pending")
+    assert info.activity_heat == "dormant"
+    assert info.activity_detail == "no replies"
+    assert info.pill_label == ""
+    assert info.count_suffix is None
+    assert info.tooltip is None
+
+
 def test_lifecycle_status_query_uses_index_seeks(session):
     """Pins the plan of the bulk lifecycle query: every LEFT JOIN
     source must SEARCH USING INDEX, not SCAN. Guards against an
