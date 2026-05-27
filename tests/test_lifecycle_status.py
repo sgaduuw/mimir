@@ -352,6 +352,59 @@ def test_format_tooltip_reviewed_names_only():
     assert tip == "M Alice\nM Carol\nBob"
 
 
+def test_format_tooltip_dedups_repeated_reviewer():
+    """Real prod case (ratatoskr.run/lkml/2026/05/17037309): a
+    single maintainer files Reviewed-by once per patch in a
+    multi-patch series; the cover-letter's article_trailers row
+    count comes back as N copies of the same name. Listing the
+    same name N times in the tooltip is noise; dedup to one entry
+    per unique name. The pill count stays accurate (N trailer
+    rows), but the tooltip surfaces the human-distinct reviewer
+    list."""
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+
+    tip = _format_tooltip(
+        state=LifecycleStatus.REVIEWED,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
+        reviewers=[("Sudeep Holla", True)] * 11,
+    )
+    assert tip == "M Sudeep Holla"
+
+
+def test_format_tooltip_dedups_mixed_reviewers_preserving_order():
+    """Dedup is first-seen wins, preserving the maintainer-first
+    ordering. A name appearing both as maintainer and non-
+    maintainer (edge case: parser flagged some rows but not
+    others) keeps the maintainer-flagged entry."""
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+
+    tip = _format_tooltip(
+        state=LifecycleStatus.REVIEWED,
+        linus_sha=None,
+        linus_committed_at=None,
+        earliest_other_sha=None,
+        earliest_other_at=None,
+        superseded_by_version=None,
+        superseded_by_posted_at=None,
+        reviewers=[
+            ("Alice", True),
+            ("Bob", False),
+            ("Alice", True),  # dup of first
+            ("Carol", False),
+            ("Bob", False),  # dup of second
+            ("Dave", True),
+        ],
+    )
+    # Maintainers first, then non-maintainers; each unique name
+    # appears once.
+    assert tip == "M Alice\nM Dave\nBob\nCarol"
+
+
 def test_format_tooltip_superseded_uses_supersede_note():
     from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
     from datetime import datetime, timezone
