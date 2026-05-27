@@ -7,18 +7,20 @@
 # Cadences (env-overridable, all in seconds):
 #   WARM_CACHE_EVERY      default 60     ; refresh dashboard helpers
 #   UPDATE_EVERY          default 300    ; sync upstream + ingest new commits
-#   UPDATE_MAINLINE_EVERY default 600    ; fetch linux.git + (re)parse MAINTAINERS
+#   UPDATE_MAINLINE_EVERY default 600    ; check every configured tree for due-ness (per-tree cadence inside the CLI)
 #   ANALYZE_EVERY         default 86400  ; refresh sqlite_stat1 (daily, bounded)
 #   ANALYZE_FULL_EVERY    default 604800 ; full-sample sqlite_stat1 (weekly)
 #   VACUUM_EVERY          default 604800 ; compact DB + collapse WAL (weekly)
 #
-# `update-mainline` no-ops cheaply when the mainline HEAD hasn't
-# moved (state.last_commit_sha == fetched HEAD short-circuits the
-# MAINTAINERS reparse; the Link-trailer walk is incremental). The
-# 10-min default is "small enough that a kernel-tree subsystem
-# rename or a new MAINTAINERS section propagates to the From-line
-# allowlist within one rebase cycle, large enough that the per-tick
-# git fetch on mainline.kernel.org stays polite."
+# `update-mainline` is now multi-tree aware: each invocation
+# iterates `Settings.trees` and walks every tree whose per-tree
+# `walk_every_seconds` budget has elapsed since its last successful
+# walk. Linus's cadence is ~25 min; subsystem trees hourly;
+# linux-next daily (it rebases). The scheduler's UPDATE_MAINLINE_EVERY
+# just bounds how often we check for due trees; the CLI handles the
+# per-tree gating internally via `mainline_state.last_walked_at`.
+# Skipped trees are cheap (one row read); HEAD-unchanged trees still
+# short-circuit MAINTAINERS reparse on Linus.
 #
 # Timing is wall-clock, persisted across container restarts via
 # `/data/.last_<task>` sentinel files. Without persistence, a release

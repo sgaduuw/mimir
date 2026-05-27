@@ -107,7 +107,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
   {% if patch_state.mainline_landings %}
   <small><strong>Landed:</strong>
     {% for app in patch_state.mainline_landings -%}
-      <code>{{ app.commit_sha[:12] }}</code> in <code>{{ app.tree_name }}</code>{% if app.committed_at %} on {{ app.committed_at.strftime('%Y-%m-%d') }}{% endif %}{% if not loop.last %}, {% endif %}
+      Applied to <strong>{{ app.tree_label }}</strong> as <code>{{ app.commit_sha[:12] }}</code>{% if app.committed_at %} on {{ app.committed_at.strftime('%Y-%m-%d') }}{% endif %}{% if not loop.last %}; {% endif %}
     {%- endfor %}
   </small><br>
   {% endif %}
@@ -132,6 +132,9 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
     {% endif %}
   </small>
 </aside>
+{% if patch_state and patch_state.is_patch and patch_state.timeline %}
+  {% include "_lifecycle_timeline.html" %}
+{% endif %}
 {% endif %}
 {% include "_message_body.html" %}
 {# Related patches: other recent articles touching at least one

@@ -11,6 +11,8 @@ or relaxing the length) would silently let `flask --app mimir run`
 boot with a short or blank secret. Pin the constraint directly.
 """
 
+import os
+
 import pytest
 from pydantic import ValidationError
 
@@ -42,3 +44,65 @@ def test_settings_accepts_exactly_min_length_secret_key():
 
     with pytest.raises(ValidationError):
         Settings(secret_key="a" * 15)
+
+
+def test_settings_trees_seeds_curated_defaults_on_fresh_deploy(monkeypatch):
+    """When neither TREES__* nor legacy MAINLINE_TREE_URL/PATH is set,
+    the validator seeds the full 7-tree curated default set."""
+    for k in list(os.environ):
+        if k.upper().startswith("TREES__") or k.startswith("MAINLINE_TREE"):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("SECRET_KEY", "x" * 32)
+    from mimir.config import Settings
+
+    s = Settings()
+    assert set(s.trees.keys()) == {
+        "linus",
+        "linux-next",
+        "net-next",
+        "tip",
+        "pci",
+        "mm",
+        "bpf-next",
+    }
+    assert s.trees["linus"].walk_every_seconds == 1500  # 25 min
+    assert s.trees["linux-next"].rebases is True
+    assert s.trees["mm"].branch == "mm-stable"
+
+
+def test_settings_trees_legacy_env_seeds_only_linus(monkeypatch):
+    """When MAINLINE_TREE_URL / MAINLINE_TREE_PATH are set and
+    TREES__* is unset, only the linus entry is seeded from
+    the legacy scalars. The curated extras stay opted out."""
+    for k in list(os.environ):
+        if k.upper().startswith("TREES__"):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("SECRET_KEY", "x" * 32)
+    monkeypatch.setenv("MAINLINE_TREE_URL", "https://example.com/legacy.git")
+    monkeypatch.setenv("MAINLINE_TREE_PATH", "Mainline/legacy.git")
+    from mimir.config import Settings
+
+    s = Settings()
+    assert set(s.trees.keys()) == {"linus"}
+    assert s.trees["linus"].url == "https://example.com/legacy.git"
+    assert s.trees["linus"].walk_every_seconds == 1500
+
+
+def test_settings_trees_env_override_wins(monkeypatch):
+    """When TREES__* env vars are set, take env as-is. Curated defaults
+    are NOT merged in. Slug `bcachefs` (no underscore) passes through
+    unchanged (the normaliser only converts underscore-to-dash for
+    slugs that were env-encoded with underscores in place of dashes)."""
+    for k in list(os.environ):
+        if k.upper().startswith("TREES__") or k.startswith("MAINLINE_TREE"):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("SECRET_KEY", "x" * 32)
+    monkeypatch.setenv(
+        "TREES__bcachefs__URL",
+        "https://example.com/bcachefs.git",
+    )
+    monkeypatch.setenv("TREES__bcachefs__PATH", "trees/bcachefs.git")
+    from mimir.config import Settings
+
+    s = Settings()
+    assert set(s.trees.keys()) == {"bcachefs"}

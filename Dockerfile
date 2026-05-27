@@ -12,11 +12,19 @@
 #     /data/Inboxes  , public-inbox mirrors. /app/Inboxes is a
 #                       symlink to this so the default relative
 #                       `INBOXES` config still resolves cleanly.
-#     /data/Mainline , Linus's linux.git (and other configured
-#                       upstream trees) for MAINTAINERS + Link:
-#                       trailer indexing. /app/Mainline symlinks
-#                       through so the default relative
-#                       MAINLINE_TREE_PATH resolves to here.
+#     /data/Mainline , Linus's linux.git plus any configured
+#                       subsystem-tree mirrors for MAINTAINERS +
+#                       Link: trailer indexing. Default curated
+#                       set: linus + linux-next + 5 *-next trees
+#                       (net-next, tip, pci, mm @ mm-stable,
+#                       bpf-next). Operators add trees via
+#                       `TREES__<name>__URL` / `__PATH` env;
+#                       paths land under /data/Mainline/<name>.git.
+#                       Non-Linus trees clone with
+#                       `--reference linus.git` so marginal disk
+#                       per tree is ~100-500 MB rather than ~10 GB.
+#                       /app/Mainline symlinks through so the
+#                       default relative tree paths resolve here.
 #
 # Operator must `chown -R 1001:1001 <host-data-dir>` before bringing
 # the container up (rootful podman / docker, no UID remapping).
