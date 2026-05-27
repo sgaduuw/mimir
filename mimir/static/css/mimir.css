@@ -488,37 +488,6 @@ pre.body-text-block {
 .year-month-tile--empty { opacity: 0.5; }
 .year-month-name { margin-bottom: 0.25rem; }
 
-/* Lifecycle timeline section on the patch page. Two-column rows:
-   date / event label + optional detail. */
-
-.lifecycle-timeline-section { margin-top: 1.5rem; }
-.lifecycle-timeline {
-  list-style: none;
-  padding-left: 0;
-  border-left: 2px solid var(--pico-muted-border-color);
-}
-.lifecycle-timeline > li {
-  padding: 0.25em 0 0.25em 1em;
-  position: relative;
-}
-.lifecycle-timeline > li::before {
-  content: '';
-  position: absolute;
-  left: -5px;
-  top: 0.6em;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--pico-muted-border-color);
-}
-.lifecycle-timeline time {
-  display: inline-block;
-  min-width: 11em;
-  color: var(--pico-muted-color);
-  font-variant-numeric: tabular-nums;
-}
-.lifecycle-event-label { font-weight: 600; }
-
 /* =====================================================================
    Badge primitive
    ---------------------------------------------------------------------
@@ -636,7 +605,6 @@ pre.body-text-block {
   gap: 0.45rem;
   margin-bottom: 0.85rem;
 }
-.lifecycle-event-detail { color: var(--pico-muted-color); margin-left: 0.4em; }
 
 /* =====================================================================
    Revisions fold
