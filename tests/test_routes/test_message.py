@@ -1218,7 +1218,7 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
     # Badge redesign: activity chip rendered; heat is warm/cooling.
     assert 'class="badge badge-activity-' in body
     # The chip is not dormant (there are replies).
-    assert 'badge-activity-dormant' not in body
+    assert "badge-activity-dormant" not in body
     # Day count detail rendered inside the chip (e.g. "3d").
     assert 'class="badge-detail"' in body
 
@@ -1244,7 +1244,7 @@ def test_patch_state_card_skips_empty_rows(client, tmp_path):
     assert "Activity:" not in body
     # Badges row renders with the dormant activity chip.
     assert 'class="msg-badges"' in body
-    assert 'badge-activity-dormant' in body
+    assert "badge-activity-dormant" in body
 
 
 def test_message_page_emits_breadcrumb_list(client, tmp_path):
@@ -1993,7 +1993,9 @@ def test_message_page_renders_badges_row_under_subject(client, tmp_path):
     """Activity + lifecycle badges render in a `msg-badges` row
     placed between the subject heading and the From block."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "badges@x",
+        tmp_path,
+        "alpha",
+        "badges@x",
         subject="[PATCH 1/2] foo: bar",
     )
     body = client.get(url).data.decode()
@@ -2006,7 +2008,9 @@ def test_message_page_no_patch_state_aside(client, tmp_path):
     information moves into the badges row + revisions fold +
     pill tooltip."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "no-aside@x",
+        tmp_path,
+        "alpha",
+        "no-aside@x",
         subject="[PATCH] foo: bar",
     )
     body = client.get(url).data.decode()
@@ -2014,7 +2018,8 @@ def test_message_page_no_patch_state_aside(client, tmp_path):
 
 
 def test_message_page_revisions_fold_renders_when_multiple_versions(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """When a patch has >= 2 revisions, a Revisions fold renders
     with the count in the summary."""
@@ -2023,12 +2028,16 @@ def test_message_page_revisions_fold_renders_when_multiple_versions(
     from mimir.models import Article
 
     art_v1_id, _ = _ingest_one_article(
-        tmp_path, "alpha", "rev-v1@x",
+        tmp_path,
+        "alpha",
+        "rev-v1@x",
         subject="[PATCH 1/1] foo: bar",
     )
     (tmp_path / "v2").mkdir()
     art_v2_id, url = _ingest_one_article(
-        tmp_path / "v2", "alpha", "rev-v2@x",
+        tmp_path / "v2",
+        "alpha",
+        "rev-v2@x",
         subject="[PATCH v2 1/1] foo: bar",
     )
     # Assign a shared patch_series_key and per-version metadata so
@@ -2060,11 +2069,14 @@ def test_message_page_revisions_fold_renders_when_multiple_versions(
 
 
 def test_message_page_revisions_fold_absent_for_single_revision(
-    client, tmp_path,
+    client,
+    tmp_path,
 ):
     """Single-revision patches get NO Revisions fold."""
     _, url = _ingest_one_article(
-        tmp_path, "alpha", "single-rev@x",
+        tmp_path,
+        "alpha",
+        "single-rev@x",
         subject="[PATCH] foo: bar",
     )
     body = client.get(url).data.decode()

@@ -584,6 +584,7 @@ def test_state_mainline_landing_uses_linus_display_name(session):
     landings = _mainline_landings(session, art)
     assert landings[0].tree_label == "mainline (Linus)"
 
+
 # --- _activity_heat (pure function; no DB) ---
 
 
