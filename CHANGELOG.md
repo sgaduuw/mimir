@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.5.0], 2026-05-27
+
 ### Changed
 
 - Patch-page header redesign. The patch-state aside is dissolved
