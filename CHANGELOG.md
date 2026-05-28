@@ -11,6 +11,17 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.7.0], 2026-05-28
+
+### Changed
+
+- Footer layout: the Privacy link moves to the right-hand side of
+  the footer, separated from the version + source link on the
+  left. Same destination (`/privacy`), same per-page placement,
+  just visually distinguished from the navigation pair so the
+  GDPR notice reads as a footer affordance rather than another
+  source link.
+
 ## [2.6.0], 2026-05-27
 
 ### Changed
