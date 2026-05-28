@@ -70,6 +70,16 @@ ul.year-decade-list { list-style: none; padding: 0; margin: 0.25rem 0; font-size
 ul.year-decade-list li { padding: 0.05rem 0; }
 ul.year-decade-list strong { display: inline-block; min-width: 4em; }
 
+/* Page footer: attribution-left, Privacy-right. Wraps to stacked
+   on narrow viewports so the Privacy link doesn't get crushed. */
+.footer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+}
+
 
 /* --- Front-page hero + inbox cards (from index.html, block 1) --- */
 
