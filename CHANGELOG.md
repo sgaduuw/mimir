@@ -11,6 +11,40 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.9.0], 2026-05-29
+
+### Changed
+
+- **Container image now runs CPython 3.14t (free-threaded,
+  PEP 703 / PEP 779)** so the broker's cache + long-op +
+  4-worker warm pool can use multiple cores in parallel
+  rather than timesharing on one under the GIL. PEP 779
+  lifted free-threading from "experimental" to "supported"
+  in 3.14, so this is no longer experimental from CPython's
+  side. Observable via `podman exec mimir-broker python -c
+  "import sys; print(sys._is_gil_enabled())"` returning
+  `False`.
+
+  Sourced from Astral's `python-build-standalone` release
+  `20260510` (x86_64-unknown-linux-gnu, install_only) because
+  the official `python:3.14t-slim` image doesn't exist on
+  Docker Hub yet (PEP 779 is supported in CPython core, but
+  docker-library/python is a separate maintenance track that
+  hasn't shipped a free-threaded variant).
+  python-build-standalone is the runtime uv ships and
+  conda-forge consumes; pinned via the `PBS_RELEASE`,
+  `PYTHON_VERSION`, and `PBS_ARCH` Dockerfile build args for
+  reproducibility.
+
+  Per-thread perf is ~5-15 % slower vs the GIL build, which
+  matters less for mimir's broker (multi-thread-CPU-bound,
+  pinned single-core pre-migration per `_claude/MEMORY.md`
+  2026-05-29) than the multi-core win. CI's new `test-ft`
+  job runs pytest under 3.14t alongside the regular 3.14
+  `test` job to guard against free-threading-unsafe code at
+  PR time. Applies to all three container roles (web,
+  broker, tasks) since they share the same image.
+
 ## [2.8.1], 2026-05-29
 
 ### Fixed
