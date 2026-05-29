@@ -11,6 +11,33 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.8.1], 2026-05-29
+
+### Fixed
+
+- Revert the subsystem-dashboard EXISTS-shape rewrite shipped
+  in [2.8.0]. The new plan regressed warm-cycle cost on inboxes
+  the original PR did not measure (observed in production:
+  lkml subsystem dashboards 351 s, netdev 107 s,
+  linux-arm-kernel 117 s, against a pre-fix worst case of
+  ~25 s). `ANALYZE` shifted cost estimates but did not
+  eliminate the bad plan because the EXISTS-driver-on-
+  `ix_articles_date` shape walks too many candidate rows on
+  broad-`F:`-rule subsystems (linux-arm-kernel covers
+  `arch/arm/`, `arch/arm64/`, plus a wall of devicetree
+  bindings). `cache_set` timeouts remained zero throughout,
+  so user-facing impact was nil; the regression was broker-
+  internal CPU + warm cycle wall time. The tini fix from
+  [2.8.0] is preserved. Reverts 344ae0d.
+
+  Re-attempting the warm-cycle optimisation will require
+  measuring against the worst-case inboxes
+  (linux-arm-kernel, netdev, dri-devel, kvm, linux-arm-msm)
+  rather than only the ones that showed improvement in
+  isolation; the original PR's measurements covered lkml,
+  linuxppc-dev, linux-tegra, and linux-trace-kernel, none of
+  which exhibited the regression pattern.
+
 ## [2.8.0], 2026-05-29
 
 ### Changed
