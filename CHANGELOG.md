@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.8.0], 2026-05-29
+
 ### Changed
 
 - **Subsystem-dashboard warm-cycle cost cut 3-7x by rewriting
