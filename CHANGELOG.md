@@ -11,6 +11,71 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.8.0], 2026-05-29
+
+### Changed
+
+- **Subsystem-dashboard warm-cycle cost cut 3-7x by rewriting
+  three path-filter helpers to the EXISTS shape.** The pre-fix
+  shape (`a.id IN (UNION-of-seeks)`) materialised the entire
+  archive's subsystem-paths article-id set before intersecting
+  with the inbox+date slice, dominating warm-cycle cold misses
+  on every medium-traffic inbox. On NETWORKING [GENERAL]
+  (1500+ MAINTAINERS rules) that materialisation alone was
+  ~1-4 s per call, depending on helper. The rewrite walks
+  `ix_articles_date` DESC in the date window and tests inbox +
+  path EXISTS per row, so the planner caps work at the
+  in-window candidate set instead. Affects:
+
+  1. `recent_articles_in_subsystem` — driver of the per-
+     subsystem "Recent patches" panel.
+  2. `daily_volume_in_subsystem` — driver of the per-
+     subsystem 30-day sparkline.
+  3. `active_reviewers_in_subsystem` — driver of the per-
+     subsystem "Active reviewers" list (also feeds the
+     deduped per-reviewer page warm targets).
+
+  Plans pinned via three sibling tests modelled on
+  `test_subsystem_path_filter_uses_index_seeks` /
+  `test_triage_queries_use_date_index_no_full_scans`. Combined
+  projected cold-cycle impact per the production measurements
+  on 2026-05-29: lkml 24.7 s → 3.4 s (7.3x), linux-trace-kernel
+  11.4 s → 3.6 s (3.2x), linuxppc-dev 11.2 s → 3.8 s (2.9x).
+
+  Sibling helpers `active_threads_in_subsystem` (recursive-CTE
+  shape, different optimisation surface) and the two triage
+  queues (`needs_attention_patches_in_subsystem` /
+  `quiet_patches_in_subsystem`, already EXISTS-shaped per
+  #209 but with a separate flat-baseline issue) are out of
+  scope for this PR.
+
+  `SUBSYSTEM_RECENT_MAX_AGE_DAYS` env-tunable (default 180),
+  same semantics + shape as `RECENT_PATCHES_MAX_AGE_DAYS` and
+  `SUBSYSTEM_TRIAGE_MAX_AGE_DAYS`. Caps the worst-case date-walk
+  on `recent_articles_in_subsystem` for sparse subsystems where
+  the LIMIT cutoff doesn't trigger; without a bound, a top-N
+  subsystem with a handful of historical articles in scope
+  would walk the date index back to the dawn of lkml.
+
+### Fixed
+
+- Container image now installs `tini` and uses it as the
+  ENTRYPOINT so PID 1 reaps orphaned grandchildren of
+  `git fetch` / `git clone` (`git-remote-https` and friends).
+  Without an init shim the broker runs as PID 1 and never
+  reaps these orphans, accumulating `[git]` zombies for the
+  life of the container (observed 2026-05-29: ~30 zombies
+  after 35 h uptime on the production broker, clustered in
+  groups of 6-7 per `update_mainline` tick matching
+  `Settings.trees`). tini is chosen over a `SIGCHLD = SIG_IGN`
+  in-process fix because the latter would also defeat
+  `subprocess.run(..., check=True)`'s ability to detect git
+  failures (`waitpid()` for any direct child returns ECHILD
+  under SIG_IGN on Linux, which CPython converts to
+  returncode=0 silently). The fix applies to all three
+  container roles (web, broker, tasks) since they share the
+  same image.
+
 ## [2.7.0], 2026-05-28
 
 ### Changed

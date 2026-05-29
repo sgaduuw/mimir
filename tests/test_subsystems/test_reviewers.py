@@ -525,6 +525,92 @@ def test_active_reviewers_keeps_latest_display_name_per_address(seeded_db):
     assert out[0].total == 2
 
 
+# EXPLAIN plan pin (load-bearing for warm-cycle cost).
+#
+# Sibling shape to the recent_articles / daily_volume pins in
+# tests/test_subsystems/test_reads.py: pin the outer-query shape
+# of `active_reviewers_in_subsystem` so the IN-list shape (which
+# materialised the entire archive's subsystem-paths UNION on
+# every cold miss) doesn't sneak back in.
+
+
+def test_active_reviewers_in_subsystem_uses_date_index_with_exists(seeded_db):
+    """`active_reviewers_in_subsystem` must drive on
+    `ix_articles_date` in the 30-day window, EXISTS for both
+    inbox and path filter, and join `article_trailers` per
+    surviving row via `ix_article_trailers_article_id`. Pre-
+    rewrite the IN-list shape materialised every article-id in
+    the archive matched by the subsystem's F: globs (millions of
+    rows for NETWORKING [GENERAL]) just to intersect with the
+    in-window inbox slice; that materialisation dominated the
+    warm-cycle cold miss on every medium-traffic inbox (~4 s
+    per call). Pin the plan so the regression is caught at PR
+    time rather than in the 'subsystem dashboards (top 20)'
+    broker warm-slow log."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import text
+
+    from mimir.subsystems_dashboard._path_filter import (
+        _subsystem_path_filter_exists_sql,
+    )
+    from tests.test_subsystems._helpers import _add_subsystem
+
+    with seeded_db() as s:
+        sub = _add_subsystem(
+            s,
+            "NETPLAN",
+            "Supported",
+            files=["net/", "include/linux/skbuff.h"],
+            excludes=["net/bluetooth/"],
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        pf = _subsystem_path_filter_exists_sql(sub, prefix="arss")
+        assert pf is not None
+        path_predicate, path_params = pf
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=30)
+        sql = f"""
+            SELECT t.role, t.name, t.address, t.address_normalized,
+                   a.date AS art_date
+            FROM articles a
+            JOIN article_trailers t ON t.article_id = a.id
+            WHERE a.date >= :start
+              AND EXISTS (
+                  SELECT 1 FROM article_lists al
+                  WHERE al.article_id = a.id AND al.inbox_id = :inbox_id
+              )
+              AND {path_predicate}
+            ORDER BY a.date DESC
+        """
+        params = {
+            "inbox_id": alpha.id,
+            "start": start.isoformat(),
+            **path_params,
+        }
+        plan_rows = s.execute(text("EXPLAIN QUERY PLAN " + sql), params).all()
+    plan = "\n".join(r[3] for r in plan_rows)
+    assert "SCAN articles" not in plan, (
+        f"active_reviewers plan fell back to full scan of articles:\n{plan}"
+    )
+    assert "SCAN article_files" not in plan, (
+        f"active_reviewers plan fell back to full scan of article_files:\n{plan}"
+    )
+    assert "SCAN article_lists" not in plan, (
+        f"active_reviewers plan fell back to full scan of article_lists:\n{plan}"
+    )
+    assert "SCAN article_trailers" not in plan, (
+        f"active_reviewers plan fell back to full scan of article_trailers:\n{plan}"
+    )
+    assert "ix_articles_date" in plan, (
+        f"active_reviewers plan does not use ix_articles_date:\n{plan}"
+    )
+    assert "MATERIALIZE" not in plan, (
+        f"active_reviewers plan re-introduced an unfiltered MATERIALIZE:\n{plan}"
+    )
+
+
 # `most_active_subsystems_in_inbox` + `most_active_subsystems_global`
 # integration tests. Powers the subsystem discoverability surfaces
 # on the inbox dashboard and the front page.
