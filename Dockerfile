@@ -1,10 +1,18 @@
 # syntax=docker/dockerfile:1
 #
 # Multi-stage build:
+# - `python-3.14t`: Astral python-build-standalone install. The official
+#   `python:3.14t-slim` image doesn't exist on Docker Hub yet (PEP 779 is
+#   supported in CPython core as of 3.14, but docker-library/python is a
+#   separate maintenance track that hasn't shipped a free-threaded
+#   variant), so we pull the reproducible CPython distribution Astral /
+#   uv use directly. Pinned by `PBS_RELEASE` for reproducible builds.
 # - `builder`: install dependencies via Poetry into a project-local
 #   venv. Poetry stays in this stage; only the venv ships.
-# - `runtime`: clean python:3.14-slim with the venv + source, runs
-#   gunicorn as a non-root user.
+# - `runtime`: clean stage with the venv + source, runs gunicorn as a
+#   non-root user. Derives from the same `python-3.14t` base as builder
+#   so the venv's shebangs (which point at `/opt/python/bin/python3`)
+#   stay valid in the runtime image.
 #
 # Default volume:
 #   /data, single state directory. Holds:
@@ -29,7 +37,37 @@
 # Operator must `chown -R 1001:1001 <host-data-dir>` before bringing
 # the container up (rootful podman / docker, no UID remapping).
 
-FROM python:3.14-slim AS builder
+ARG PBS_RELEASE=20260510
+ARG PYTHON_VERSION=3.14.5
+ARG PBS_ARCH=x86_64-unknown-linux-gnu
+ARG PBS_URL=https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/cpython-${PYTHON_VERSION}+${PBS_RELEASE}-${PBS_ARCH}-freethreaded-install_only.tar.gz
+
+
+FROM debian:trixie-slim AS python-3.14t
+
+# Pull Astral's python-build-standalone free-threaded CPython 3.14 into
+# /opt/python. The `install_only` tarball ships everything needed at
+# runtime (no debug symbols, no test suite); extracting under /opt
+# gives us `/opt/python/bin/python3` as the interpreter and
+# `/opt/python/bin/python3.14t` as the free-threaded-named symlink.
+# The build-time `sys._is_gil_enabled() is False` assertion is the
+# gate that catches a bad URL or a future tarball schema change at
+# build time rather than letting a GIL-enabled binary silently land in
+# production. Single RUN layer so the curl-purge + apt-list cleanup
+# actually shrinks the layer rather than leaving them in an earlier
+# layer that the final image inherits.
+ARG PBS_URL
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && curl -fsSL "${PBS_URL}" | tar -xz -C /opt \
+ && /opt/python/bin/python3 -c "import sys; assert sys._is_gil_enabled() is False, 'expected free-threaded build'" \
+ && apt-get purge -y --auto-remove curl \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/opt/python/bin:${PATH}"
+
+
+FROM python-3.14t AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -58,7 +96,7 @@ COPY alembic/ ./alembic/
 RUN poetry install --only-root
 
 
-FROM python:3.14-slim AS runtime
+FROM python-3.14t AS runtime
 
 # git: `mimir update` shells out to `git clone --mirror` / `git fetch`
 # to sync upstream public-inbox epochs. ca-certificates: HTTPS verify
