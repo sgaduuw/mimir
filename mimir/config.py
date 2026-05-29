@@ -514,5 +514,18 @@ class Settings(BaseSettings):
     # RECENT_PATCHES_MAX_AGE_DAYS.
     recent_patches_max_age_days: int = 180
 
+    # Date floor for `recent_articles_in_subsystem`: caps the worst-
+    # case date-walk on the rewritten EXISTS-shaped query so a top-N
+    # subsystem with only a handful of historical articles doesn't
+    # drag the planner back to the dawn of lkml hunting for the
+    # `LIMIT 30` cutoff. Same shape + same default rationale as
+    # `recent_patches_max_age_days` above: 180 days is a release-
+    # cycle's worth of context, comfortably covers any subsystem
+    # that earned a top-N slot in the warm cycle's 7-day window,
+    # and keeps the sparse-subsystem-deep-walk worst case bounded
+    # to ~200 ms instead of running the date index back to the
+    # dawn of lkml. Override via SUBSYSTEM_RECENT_MAX_AGE_DAYS.
+    subsystem_recent_max_age_days: int = 180
+
 
 settings = Settings()
