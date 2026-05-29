@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from mimir import cache
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
-from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_exists_sql
+from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
 from mimir.threading import _coerce_dt
 
 
@@ -224,38 +224,27 @@ def active_reviewers_in_subsystem(
     """
 
     def compute() -> list[ReviewerStat]:
-        path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="arss")
+        path_filter = _subsystem_path_filter_sql(subsystem, prefix="arss")
         if path_filter is None:
             return []
-        path_predicate, path_params = path_filter
+        path_sql, path_params = path_filter
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=days)
-        # EXISTS-shaped path filter: SQLite walks `ix_articles_date` in
-        # the `[start, now]` window and tests inbox+path EXISTS per row,
-        # joining the per-article trailers via `ix_article_trailers_article_id`.
-        # The earlier IN-list shape materialised every article-id in the
-        # archive matched by the subsystem's F: globs (millions of rows
-        # for NETWORKING [GENERAL]) just to intersect with the in-window
-        # inbox slice; that materialisation dominated the warm-cycle
-        # cold miss (~4 s per medium-traffic inbox call). EXISTS lets
-        # the planner cap work at the in-window candidate set instead.
-        # ORDER BY date DESC keeps the in-Python aggregator on the
-        # freshest-attestation-wins-the-display-name path. Plan pinned
-        # in `test_active_reviewers_in_subsystem_uses_date_index_with_exists`.
+        # Pull every matching trailer row for the window. ORDER BY
+        # date DESC so the in-Python aggregator sees the freshest
+        # attestation per reviewer first; that's the row whose
+        # `name` / `address` we keep as the display surface.
         rows = session.execute(
             text(
                 f"""
                 SELECT t.role, t.name, t.address, t.address_normalized,
                        a.date AS art_date
-                FROM articles a
-                JOIN article_trailers t ON t.article_id = a.id
-                WHERE a.date >= :start
-                  AND EXISTS (
-                      SELECT 1 FROM article_lists al
-                      WHERE al.article_id = a.id
-                        AND al.inbox_id = :inbox_id
-                  )
-                  AND {path_predicate}
+                FROM article_trailers t
+                JOIN articles a ON a.id = t.article_id
+                JOIN article_lists al ON al.article_id = a.id
+                WHERE al.inbox_id = :inbox_id
+                  AND a.date >= :start
+                  AND a.id IN ({path_sql})
                 ORDER BY a.date DESC
                 """
             ),
