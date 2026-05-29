@@ -62,9 +62,20 @@ FROM python:3.14-slim AS runtime
 
 # git: `mimir update` shells out to `git clone --mirror` / `git fetch`
 # to sync upstream public-inbox epochs. ca-certificates: HTTPS verify
-# against lore.kernel.org and other upstream hosts.
+# against lore.kernel.org and other upstream hosts. tini: minimal init
+# that runs as PID 1 and reaps orphaned grandchildren. `git fetch`
+# spawns helper grandchildren (`git-remote-https` and friends) that
+# reparent to PID 1 when the direct `git` child exits; without an
+# init shim the broker process (PID 1 in production) accumulates them
+# as zombies for the life of the container (observed 2026-05-29: ~30
+# `[git]` zombies after 35 h uptime, ~6-7 per `update_mainline` tick
+# matching the per-tick fetch count across `Settings.trees`). tini
+# reaps any orphan that reparents to PID 1, leaving the broker's own
+# `subprocess.run(..., check=True)` semantics intact (so a failing
+# `git fetch` still raises CalledProcessError instead of being
+# silently auto-reaped by a SIGCHLD=SIG_IGN disposition).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates \
+ && apt-get install -y --no-install-recommends git ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
 
 # Non-root user. UID/GID stable for predictable bind-mount perms.
@@ -110,6 +121,12 @@ RUN mkdir -p /data/db /data/Inboxes /data/Mainline \
 USER mimir
 
 EXPOSE 5000
+
+# tini wraps every container role launched from this image (web,
+# broker, tasks). The `--` separates tini's own args from the
+# downstream command so compose-level `command:` overrides still
+# compose correctly.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 
 # Web is migration-free at startup, alembic lives in the scheduler
 # sidecar (`deploy/scheduler.sh`) so there's a single place that

@@ -55,6 +55,25 @@ changes, not internal refactors. Categories: **Added**,
   subsystem with a handful of historical articles in scope
   would walk the date index back to the dawn of lkml.
 
+### Fixed
+
+- Container image now installs `tini` and uses it as the
+  ENTRYPOINT so PID 1 reaps orphaned grandchildren of
+  `git fetch` / `git clone` (`git-remote-https` and friends).
+  Without an init shim the broker runs as PID 1 and never
+  reaps these orphans, accumulating `[git]` zombies for the
+  life of the container (observed 2026-05-29: ~30 zombies
+  after 35 h uptime on the production broker, clustered in
+  groups of 6-7 per `update_mainline` tick matching
+  `Settings.trees`). tini is chosen over a `SIGCHLD = SIG_IGN`
+  in-process fix because the latter would also defeat
+  `subprocess.run(..., check=True)`'s ability to detect git
+  failures (`waitpid()` for any direct child returns ECHILD
+  under SIG_IGN on Linux, which CPython converts to
+  returncode=0 silently). The fix applies to all three
+  container roles (web, broker, tasks) since they share the
+  same image.
+
 ## [2.7.0], 2026-05-28
 
 ### Changed
