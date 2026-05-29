@@ -97,9 +97,48 @@ jobs:
         # fail because non-broker processes open `query_only=1`.
         run: poetry run pytest -v
 
+  test-ft:
+    runs-on: ubuntu-latest
+    env:
+      # Same dummy as the `test` job; production overrides via .env.
+      SECRET_KEY: ci-dummy-key-not-for-real-use-12345678
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python (free-threaded 3.14t)
+        # `python-version: '3.14t'` is the setup-python spec for the
+        # free-threaded build (PEP 703 / PEP 779). If a future
+        # setup-python release drops support for this spec, fall back
+        # to installing python-build-standalone directly via curl from
+        # https://github.com/astral-sh/python-build-standalone/releases
+        # (same source the Dockerfile uses; pin via release date).
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14t'
+
+      - name: Install Poetry
+        run: pipx install 'poetry>=2.0,<3.0'
+
+      - name: Cache Poetry venv
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ./.venv
+          key: poetry-${{ runner.os }}-py3.14t-${{ hashFiles('poetry.lock') }}
+
+      - name: Install deps
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --no-interaction
+
+      - name: Confirm GIL is off
+        run: poetry run python -c "import sys; assert sys._is_gil_enabled() is False, 'expected free-threaded build'"
+
+      - name: Pytest
+        run: poetry run pytest -v
+
   docker:
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, test-ft]
     # Skip on PRs from forks, no creds, and our build is single-arch.
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
