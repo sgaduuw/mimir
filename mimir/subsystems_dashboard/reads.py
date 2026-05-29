@@ -14,6 +14,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
+from mimir.config import settings
 from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume
 from mimir.models import (
     ArticleList,
@@ -24,7 +25,10 @@ from mimir.subsystems import (
     RelatedPatch,
     SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
 )
-from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
+from mimir.subsystems_dashboard._path_filter import (
+    _subsystem_path_filter_exists_sql,
+    _subsystem_path_filter_sql,
+)
 from mimir.threading import ActiveThread, _active_threads_query, _coerce_dt
 
 
@@ -53,18 +57,35 @@ def recent_articles_in_subsystem(
     can fold them in once the simple-glob case is shipping.
 
     Cached for `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC`. The path filter
-    delegates to `_subsystem_path_filter_sql` so the SQL-side X:
-    semantics ("at least one path is included and not excluded")
-    do the work without a Python overfetch + post-filter pass; the
-    earlier shape ran tens of seconds cold on busy subsystems like
-    NETWORKING (#198).
+    delegates to `_subsystem_path_filter_exists_sql` so SQLite walks
+    `ix_articles_date` DESC and tests inbox+path EXISTS per row, hitting
+    `LIMIT` after only the rows it needs rather than materialising the
+    full archive's subsystem-paths IN-list as the earlier
+    `a.id IN (UNION-of-seeks)` shape did. On 1500-rule subsystems like
+    NETWORKING [GENERAL] that IN-list was tens to hundreds of MB of
+    article-id tuples; warm-cycle cold misses on medium-traffic inboxes
+    (linux-tegra, linux-trace-kernel, etc.) spent ~1-2 s materialising
+    it per call. The EXISTS shape drops the per-call cost to ~100 ms
+    typical, ~500 ms worst case (sparse-subsystem-deep-walk). Pinned
+    by `test_recent_articles_in_subsystem_uses_date_index_with_exists`.
+
+    Bounded by `Settings.subsystem_recent_max_age_days` (default 180)
+    so date-walk worst-case is bounded for sparse subsystems where the
+    LIMIT cutoff never triggers; without a bound, a top-20 subsystem
+    that happens to have just a handful of articles in scope would
+    walk the entire date index back to the dawn of lkml. Same shape
+    + same default rationale as `recent_patches_max_age_days`.
     """
 
     def compute() -> list[RelatedPatch]:
-        path_filter = _subsystem_path_filter_sql(subsystem, prefix="rasf")
+        path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="rasf")
         if path_filter is None:
             return []
-        path_sql, path_params = path_filter
+        path_predicate, path_params = path_filter
+        # Date floor caps date-walk worst case on sparse subsystems.
+        start = datetime.now(timezone.utc) - timedelta(
+            days=settings.subsystem_recent_max_age_days
+        )
         rows = session.execute(
             text(
                 f"""
@@ -72,9 +93,13 @@ def recent_articles_in_subsystem(
                        a.author, a.date AS art_date,
                        a.canonical_inbox_id
                 FROM articles a
-                JOIN article_lists al ON al.article_id = a.id
-                WHERE al.inbox_id = :inbox_id
-                  AND a.id IN ({path_sql})
+                WHERE a.date >= :start
+                  AND EXISTS (
+                      SELECT 1 FROM article_lists al
+                      WHERE al.article_id = a.id
+                        AND al.inbox_id = :inbox_id
+                  )
+                  AND {path_predicate}
                 ORDER BY a.date DESC
                 LIMIT :limit
                 """
@@ -82,6 +107,7 @@ def recent_articles_in_subsystem(
             {
                 "inbox_id": inbox.id,
                 "limit": limit,
+                "start": start.isoformat(),
                 **path_params,
             },
         ).all()
@@ -159,21 +185,32 @@ def daily_volume_in_subsystem(
         # articles outside the range on any non-UTC TZ.
         today = datetime.now(timezone.utc).date()
         start = today - timedelta(days=days - 1)
-        path_filter = _subsystem_path_filter_sql(subsystem, prefix="dvss")
+        # EXISTS-shaped path filter: SQLite walks ix_articles_date in the
+        # `[start, now]` window and tests inbox+path EXISTS per row. The
+        # earlier IN-list shape materialised the entire archive's path-
+        # matched article ids before applying the inbox+date filter,
+        # spending seconds on busy subsystems like NETWORKING [GENERAL]
+        # on every warm-cycle pass. Plan pinned in
+        # `test_daily_volume_in_subsystem_uses_date_index_with_exists`.
+        path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="dvss")
         if path_filter is None:
             return DailyVolume(
                 days=[(start + timedelta(days=i), 0) for i in range(days)],
                 max_count=1,
             )
-        path_sql, path_params = path_filter
+        path_predicate, path_params = path_filter
         rows = session.execute(
             text(
                 f"""
                 SELECT date(a.date) AS day, COUNT(*) AS n
                 FROM articles a
-                JOIN article_lists al ON al.article_id = a.id
-                WHERE al.inbox_id = :inbox_id AND a.date >= :start
-                  AND a.id IN ({path_sql})
+                WHERE a.date >= :start
+                  AND EXISTS (
+                      SELECT 1 FROM article_lists al
+                      WHERE al.article_id = a.id
+                        AND al.inbox_id = :inbox_id
+                  )
+                  AND {path_predicate}
                 GROUP BY day
                 """
             ),

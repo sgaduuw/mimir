@@ -3,7 +3,7 @@ subsystem read fan-outs that power the subsystem
 dashboard (`recent_articles_in_subsystem`,
 `active_threads_in_subsystem`, `daily_volume_in_subsystem`)."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -148,18 +148,28 @@ def test_recent_articles_in_subsystem_scoped_to_inbox(seeded_db):
 
 def test_recent_articles_in_subsystem_orders_by_date_desc(seeded_db):
     """Newest articles first, operator wants "what's been happening
-    in this subsystem lately" at the top."""
+    in this subsystem lately" at the top.
+
+    Uses `days_ago`-style relative dates so the rewritten
+    EXISTS-shaped query's `subsystem_recent_max_age_days` floor
+    (default 365) doesn't drop them as out-of-window. Same
+    rationale as `_add_patch_article`'s relative-date default
+    documented in `tests/test_subsystems/_helpers.py`.
+    """
     with seeded_db() as s:
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
         from mimir.models import ArticleList
 
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        for i, day in enumerate([10, 5, 15]):
+        now = datetime.now(timezone.utc)
+        # Use distinct hour offsets to express "10/5/15 days ago"
+        # without committing to a fixed calendar day.
+        for i, days_ago in enumerate([10, 15, 5]):
             art = Article(
                 message_id=f"d{i}@x",
                 subject=f"patch {i}",
                 author="a@x",
-                date=datetime(2024, 6, day, tzinfo=timezone.utc),
+                date=now - timedelta(days=days_ago),
                 thread_parent=None,
                 subject_normalized=f"patch {i}",
                 canonical_inbox_id=alpha.id,
@@ -171,7 +181,9 @@ def test_recent_articles_in_subsystem_orders_by_date_desc(seeded_db):
             s.add(art)
         s.commit()
         out = recent_articles_in_subsystem(s, alpha, sub)
-    assert [p.date.day for p in out] == [15, 10, 5]
+    # `d2` is 5 days ago, `d0` 10 days ago, `d1` 15 days ago, so DESC
+    # order is d2, d0, d1.
+    assert [p.message_id for p in out] == ["d2@x", "d0@x", "d1@x"]
 
 
 def test_recent_articles_in_subsystem_exact_path_glob(seeded_db):
@@ -360,6 +372,176 @@ def test_daily_volume_in_subsystem_returns_zero_series_for_zero_paths(
     assert len(spark.days) == 5
     assert all(c == 0 for _, c in spark.days)
     assert recents == []
+
+
+# EXPLAIN plan pins (load-bearing for warm-cycle cost).
+#
+# Sibling shape to test_subsystem_path_filter_uses_index_seeks
+# (which pins the path-filter UNION-of-seeks itself) and
+# test_triage_queries_use_date_index_no_full_scans (which pins
+# the triage candidate queries' date-walk shape). These pin the
+# outer-query shape of the rewritten path-filter helpers, which
+# is where the warm-cycle "subsystem dashboards (top 20)" target
+# spends its time.
+
+
+def _read_pinned_recent_sql(subsystem, inbox_id):
+    """Mirror what `recent_articles_in_subsystem` emits, so the
+    EXPLAIN we inspect is the literal SQL the helper runs.
+
+    The cache wrapper closes over the `(inbox, subsystem, limit)`
+    tuple, so we reproduce the bind shape here rather than calling
+    through the cached entry point (which would skip the plan we
+    want to inspect)."""
+    from datetime import datetime, timedelta, timezone
+
+    from mimir.config import settings
+    from mimir.subsystems_dashboard._path_filter import (
+        _subsystem_path_filter_exists_sql,
+    )
+
+    pf = _subsystem_path_filter_exists_sql(subsystem, prefix="rasf")
+    assert pf is not None, "test seeded a subsystem with no supported globs"
+    path_predicate, path_params = pf
+    start = datetime.now(timezone.utc) - timedelta(
+        days=settings.subsystem_recent_max_age_days
+    )
+    sql = f"""
+        SELECT a.id, a.message_id, a.subject, a.author, a.date,
+               a.canonical_inbox_id
+        FROM articles a
+        WHERE a.date >= :start
+          AND EXISTS (
+              SELECT 1 FROM article_lists al
+              WHERE al.article_id = a.id AND al.inbox_id = :inbox_id
+          )
+          AND {path_predicate}
+        ORDER BY a.date DESC
+        LIMIT :limit
+    """
+    return sql, {
+        "inbox_id": inbox_id,
+        "limit": 30,
+        "start": start.isoformat(),
+        **path_params,
+    }
+
+
+def _read_pinned_daily_sql(subsystem, inbox_id):
+    from datetime import datetime, timedelta, timezone
+
+    from mimir.subsystems_dashboard._path_filter import (
+        _subsystem_path_filter_exists_sql,
+    )
+
+    pf = _subsystem_path_filter_exists_sql(subsystem, prefix="dvss")
+    assert pf is not None
+    path_predicate, path_params = pf
+    today = datetime.now(timezone.utc).date()
+    start = today - timedelta(days=29)
+    sql = f"""
+        SELECT date(a.date) AS day, COUNT(*) AS n
+        FROM articles a
+        WHERE a.date >= :start
+          AND EXISTS (
+              SELECT 1 FROM article_lists al
+              WHERE al.article_id = a.id AND al.inbox_id = :inbox_id
+          )
+          AND {path_predicate}
+        GROUP BY day
+    """
+    return sql, {"inbox_id": inbox_id, "start": start.isoformat(), **path_params}
+
+
+def test_recent_articles_in_subsystem_uses_date_index_with_exists(seeded_db):
+    """`recent_articles_in_subsystem` must drive on `ix_articles_date`
+    DESC with per-row EXISTS for inbox + path. The earlier IN-list
+    shape (`a.id IN (UNION-of-seeks)`) materialised the entire
+    archive's path-filter result before applying the inbox+date
+    filter; for NETWORKING [GENERAL] (1500+ rules) that
+    materialisation dominated warm-cycle cold misses on every
+    medium-traffic inbox (~1-2 s per call). Pin the plan so the
+    regression is caught at PR time rather than in the
+    'subsystem dashboards (top 20)' broker warm-slow log.
+
+    Tests the three load-bearing properties:
+    - driver is `SEARCH a USING INDEX ix_articles_date`
+    - no SCAN of `articles` / `article_files` / `article_lists`
+    - no MATERIALIZE / TEMP B-TREE of an unfiltered path-union
+    """
+    from sqlalchemy import text
+
+    with seeded_db() as s:
+        sub = _add_subsystem(
+            s,
+            "NETPLAN",
+            "Supported",
+            files=["net/", "include/linux/skbuff.h"],
+            excludes=["net/bluetooth/"],
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        sql, params = _read_pinned_recent_sql(sub, alpha.id)
+        plan_rows = s.execute(text("EXPLAIN QUERY PLAN " + sql), params).all()
+    plan = "\n".join(r[3] for r in plan_rows)
+    assert "SCAN articles" not in plan, (
+        f"recent_articles plan fell back to full scan of articles:\n{plan}"
+    )
+    assert "SCAN article_files" not in plan, (
+        f"recent_articles plan fell back to full scan of article_files:\n{plan}"
+    )
+    assert "SCAN article_lists" not in plan, (
+        f"recent_articles plan fell back to full scan of article_lists:\n{plan}"
+    )
+    assert "ix_articles_date" in plan, (
+        f"recent_articles plan does not use ix_articles_date:\n{plan}"
+    )
+    # The pre-rewrite shape materialised the path-union into a temp
+    # b-tree before joining; the EXISTS shape must not.
+    assert "MATERIALIZE" not in plan, (
+        f"recent_articles plan re-introduced an unfiltered MATERIALIZE:\n{plan}"
+    )
+
+
+def test_daily_volume_in_subsystem_uses_date_index_with_exists(seeded_db):
+    """Same shape contract for `daily_volume_in_subsystem`: drive on
+    `ix_articles_date` over the 30-day window, EXISTS for both
+    inbox and path filter, no full scans. Pre-rewrite this helper
+    was the second-biggest warm-cycle cost after
+    `active_reviewers`; on medium-traffic inboxes (linux-tegra,
+    linuxppc-dev, linux-trace-kernel) it spent ~4 s per call
+    materialising a global subsystem-paths UNION just to
+    intersect with the in-window inbox slice."""
+    from sqlalchemy import text
+
+    with seeded_db() as s:
+        sub = _add_subsystem(
+            s,
+            "NETPLAN",
+            "Supported",
+            files=["net/", "include/linux/skbuff.h"],
+            excludes=["net/bluetooth/"],
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        sql, params = _read_pinned_daily_sql(sub, alpha.id)
+        plan_rows = s.execute(text("EXPLAIN QUERY PLAN " + sql), params).all()
+    plan = "\n".join(r[3] for r in plan_rows)
+    assert "SCAN articles" not in plan, (
+        f"daily_volume plan fell back to full scan of articles:\n{plan}"
+    )
+    assert "SCAN article_files" not in plan, (
+        f"daily_volume plan fell back to full scan of article_files:\n{plan}"
+    )
+    assert "SCAN article_lists" not in plan, (
+        f"daily_volume plan fell back to full scan of article_lists:\n{plan}"
+    )
+    assert "ix_articles_date" in plan, (
+        f"daily_volume plan does not use ix_articles_date:\n{plan}"
+    )
+    assert "MATERIALIZE" not in plan, (
+        f"daily_volume plan re-introduced an unfiltered MATERIALIZE:\n{plan}"
+    )
 
 
 # `active_reviewers_in_subsystem` integration, slice 2 of #97.
