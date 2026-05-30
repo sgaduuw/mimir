@@ -47,6 +47,31 @@ changes, not internal refactors. Categories: **Added**,
   handlers still dispatch via the writer); in-process test setups
   with a session-scoped active context no longer take the writer
   path from test threads. No operator-visible change.
+- **Broker two-pool restructure, Phase 3c (the four patch-metadata
+  backfills migration).** `backfill_article_files`,
+  `backfill_article_trailers`, `backfill_patch_series`, and
+  `backfill_canonicals` no longer hold `write_transaction(label)` for
+  the full walk. Per-batch work splits: read/compute phase runs on a
+  `query_only` session from the active `ReadSessionPool` and
+  accumulates per-article pending-writes payloads (`_ArticleFilesPending`
+  / `_ArticleTrailersPending` / `_PatchSeriesPending` /
+  `_CanonicalPending` in the new `mimir/_pending_backfill.py`); at each
+  batch boundary one composite `WriteOp` is submitted through the
+  active `WriterThread` and awaited via `.result()` before composing
+  the next batch. The three patch-metadata backfills share the
+  restructured `mimir/_backfill.py::walk_articles` shell (now takes a
+  `flush_batch(writer, payloads)` callable); `backfill_canonicals`
+  keeps its own walk because of the interleaved periodic
+  `_maybe_promote_list_address` sweep (now its own WriteOp via
+  `_submit_promote_list_address_sweep`). Per-batch writer-lock hold
+  drops from one continuous transaction per backfill walk (minutes
+  on `--reprocess` runs of the full corpus) to N short bursts (~tens
+  of ms each); concurrent `cache.set` RPCs drain between batches.
+  Idempotency is by predicate (`WHERE NOT EXISTS ...`,
+  `WHERE canonical_inbox_id IS NULL`, `WHERE patch_series_position
+  IS NULL`), same shape as today. No env-var or CLI surface changes;
+  the existing `BROKER_BACKFILL_CHUNK_SECONDS` cooperative-scheduling
+  knob keeps its semantics.
 
 ## [2.12.0], 2026-05-29
 
