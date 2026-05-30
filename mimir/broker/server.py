@@ -62,7 +62,9 @@ from pathlib import Path
 
 from mimir import cache
 from mimir.broker.handlers import LONG_OPS, WARM_OPS, classify_op, dispatch
+from mimir.broker.pools import ReadSessionPool
 from mimir.broker.protocol import Reply
+from mimir.broker.writes import WriterThread
 from mimir.config import settings
 
 logger = logging.getLogger(__name__)
@@ -185,6 +187,16 @@ class _BrokerServer(socketserver.UnixStreamServer):
         self._cache_worker_thread: threading.Thread | None = None
         self._long_worker_thread: threading.Thread | None = None
         self._warm_worker_threads: list[threading.Thread] = []
+        # Phase 1 of the two-pool restructure
+        # (_claude/specs/2026-05-29-broker-two-pool-design.md): parallel
+        # infrastructure, no handler uses these yet. Future Phase 2+
+        # patches migrate handlers to dispatch reads through
+        # `self.read_pool.session()` and writes via
+        # `self.writer.submit(op)`. Owned by the server so lifecycle
+        # ordering (start before accept, stop after drain) is
+        # explicit.
+        self.read_pool = ReadSessionPool.from_settings()
+        self.writer = WriterThread.from_settings()
 
     def process_request(self, request, client_address) -> None:
         """Override of `BaseServer.process_request` so each accepted
@@ -677,6 +689,8 @@ def serve(socket_path: Path) -> None:
     server = build_server(socket_path)
     sp = Path(socket_path)
 
+    server.writer.start()
+
     purge_thread = threading.Thread(
         target=_purge_loop,
         args=(server.stop_event,),
@@ -701,6 +715,9 @@ def serve(socket_path: Path) -> None:
         server.server_close()
         if sp.exists():
             sp.unlink()
+        purge_thread.join(timeout=5.0)
+        server.writer.stop(timeout=10.0)
+        server.read_pool.close()
         logger.info("broker: shut down cleanly")
 
 

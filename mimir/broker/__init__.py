@@ -28,9 +28,20 @@ The submodules split by concern:
 from mimir.broker.client import BrokerClient, BrokerUnavailable, get_broker_client
 from mimir.broker.server import serve
 
+# Phase 1 of the two-pool restructure
+# (_claude/specs/2026-05-29-broker-two-pool-design.md). Parallel
+# infrastructure: no caller uses these yet; Phase 2+ migrates
+# handlers to dispatch reads through ReadSessionPool and writes
+# through WriterThread.submit().
+from mimir.broker.pools import ReadSessionPool
+from mimir.broker.writes import WriteOp, WriterThread
+
 __all__ = [
     "BrokerClient",
     "BrokerUnavailable",
     "get_broker_client",
     "serve",
+    "ReadSessionPool",
+    "WriteOp",
+    "WriterThread",
 ]
