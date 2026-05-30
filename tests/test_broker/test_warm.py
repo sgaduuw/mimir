@@ -403,3 +403,27 @@ def test_handle_warm_inbox_uses_active_read_pool_session(monkeypatch):
     # so the handler should succeed without falling back to SessionLocal.
     reply = handle_warm_inbox(WarmInboxRequest(inbox_name="alpha", targets=None))
     assert reply.ok is True
+
+
+def test_handle_warm_global_uses_active_read_pool_session(monkeypatch):
+    """handle_warm_global should NOT touch SessionLocal. It should
+    check its read session out of the active pool (directly or via
+    _run_targets, depending on the function structure). Verifies by
+    monkeypatching SessionLocal to raise and checking the handler
+    still works when the active pool is registered."""
+    from mimir.broker.handlers.warm import handle_warm_global
+    from mimir.broker.protocol import WarmGlobalRequest
+
+    def explode(*a, **kw):
+        raise AssertionError("handler must use the active pool, not SessionLocal")
+
+    # Patch the canonical source. If any code path imports SessionLocal
+    # from mimir.extensions and calls it during the handler invocation,
+    # the test fails loudly. This catches future regressions where
+    # someone re-imports SessionLocal into warm.py.
+    monkeypatch.setattr("mimir.extensions.SessionLocal", explode)
+
+    # The _active_broker_context fixture has already set up the pool,
+    # so the handler should succeed without falling back to SessionLocal.
+    reply = handle_warm_global(WarmGlobalRequest())
+    assert reply.ok is True
