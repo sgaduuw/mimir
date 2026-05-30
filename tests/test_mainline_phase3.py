@@ -5,11 +5,15 @@ restructure (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
 Run alongside the existing test_mainline tests; kept in a separate
 file so the Phase 3 PR audit is easy."""
 
+import functools
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
 
-from mimir.broker.writes import WriterThread
+from mimir.broker.writes import WriteOp, WriterThread
 from mimir.config import settings
 from mimir.mainline import _submit_mainline_batch
 
@@ -431,3 +435,162 @@ def test_update_mainline_uses_writer_thread_via_active_context(seeded_db, monkey
         _context.clear_active()
         writer.stop(timeout=10)
         pool.close()
+
+
+def test_cache_writes_drain_between_mainline_batches(seeded_db, tmp_path):
+    """Phase 3 contract: while walk_commits dispatches batches through
+    the writer, concurrent cache-set writes drain between batches
+    instead of head-of-line-stalling for the full walk.
+
+    Pre-Phase 3 held the writer lock in one continuous transaction for
+    the entire walk. Phase 3 turns that into N short per-batch
+    transactions, so cache.set-shaped WriteOps submitted from other
+    threads see only one batch worth of lock hold, not the whole walk.
+
+    Asserts: max per-cache-write wall time < 5 s (generous; on a
+    healthy laptop the real numbers are tens of ms). The point is the
+    absence of head-of-line stalls, not a wall-time speedup."""
+    from dulwich.objects import Commit, Tree
+    from dulwich.repo import Repo
+
+    from mimir.mainline import walk_commits
+
+    # --- build a 20-commit bare repo with Link: trailers -----------------
+    # batch_size=5 gives 4 batches of 5 commits each.  Each batch's
+    # WriteOp commits independently, releasing the writer lock before the
+    # next batch starts.  The gap between batches is where concurrent
+    # cache-set WriteOps can drain.
+    repo_path = tmp_path / "ft-stress.git"
+    repo = Repo.init_bare(str(repo_path), mkdir=True)
+
+    def _build_commit(repo: Repo, msg: bytes, parent: bytes | None = None) -> bytes:
+        tree = Tree()
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.parents = [parent] if parent else []
+        commit.author = commit.committer = b"test <t@x>"
+        commit.commit_time = commit.author_time = 1700000000
+        commit.commit_timezone = commit.author_timezone = 0
+        commit.encoding = b"UTF-8"
+        commit.message = msg
+        repo.object_store.add_object(commit)
+        repo.refs[b"HEAD"] = commit.id
+        return commit.id
+
+    prev = None
+    for idx in range(1, 21):
+        prev = _build_commit(
+            repo,
+            f"Fix {idx}.\n\nLink: https://lore.kernel.org/r/ft{idx}@test\n".encode(),
+            parent=prev,
+        )
+
+    tree_name = "ft-stress"
+
+    # --- set up WriterThread and read session ----------------------------
+    writer = WriterThread.from_settings()
+    writer.start()
+
+    # A writable engine for cleanup; reads come from seeded_db sessions.
+    engine = create_engine(settings.database_url, future=True)
+
+    cache_durations: list[float] = []
+    cache_errors: list[Exception] = []
+
+    def _cache_set_fn(conn, key: str) -> None:
+        # Mimic the shape of cache._direct_set: a single INSERT OR REPLACE
+        # into the cache table.  expires_at is set to a far-future unix
+        # timestamp so the row doesn't collide with real cache logic.
+        conn.execute(
+            text(
+                "INSERT OR REPLACE INTO cache (key, value, expires_at) "
+                "VALUES (:k, :v, :e)"
+            ),
+            {"k": key, "v": '{"x": 1}', "e": 9999999999},
+        )
+
+    def _submit_cache(i: int) -> None:
+        key = f"phase3_ft_stress_{i}"
+        t0 = time.perf_counter()
+        try:
+            writer.submit(
+                WriteOp(
+                    label=f"cache:set:{key}",
+                    fn=functools.partial(_cache_set_fn, key=key),
+                )
+            ).result(timeout=10)
+        except Exception as exc:
+            cache_errors.append(exc)
+        cache_durations.append(time.perf_counter() - t0)
+
+    # --- drive the walk in a background thread ---------------------------
+    walk_done = threading.Event()
+    walk_exc: list[Exception] = []
+
+    def _walk() -> None:
+        try:
+            with seeded_db() as session:
+                walk_commits(
+                    session,
+                    repo_path,
+                    tree_name=tree_name,
+                    writer=writer,
+                    batch_size=5,
+                    branch="HEAD",
+                )
+        except Exception as exc:
+            walk_exc.append(exc)
+        finally:
+            walk_done.set()
+
+    walk_thread = threading.Thread(target=_walk, daemon=True)
+    walk_thread.start()
+
+    # --- fire 50 cache-set WriteOps from a thread pool -------------------
+    # The pool submits each write as soon as a worker is free.  The 8
+    # workers compete for the writer queue alongside the walk's batches.
+    with ThreadPoolExecutor(max_workers=8) as pool_executor:
+        for i in range(50):
+            pool_executor.submit(_submit_cache, i)
+    # All 50 .result() calls have returned by here (pool_executor.__exit__
+    # joins all futures before leaving the block).
+
+    walk_done.wait(timeout=60)
+
+    # --- cleanup ---------------------------------------------------------
+    # Remove the test rows regardless of assertion outcome so other tests
+    # start with a clean state.
+    try:
+        with engine.connect() as c:
+            c.execute(
+                text("DELETE FROM mainline_commits WHERE tree_name = :t"),
+                {"t": tree_name},
+            )
+            c.execute(
+                text("DELETE FROM mainline_state WHERE tree_name = :t"),
+                {"t": tree_name},
+            )
+            # Remove the synthetic cache rows inserted by the test.
+            for i in range(50):
+                c.execute(
+                    text("DELETE FROM cache WHERE key = :k"),
+                    {"k": f"phase3_ft_stress_{i}"},
+                )
+            c.commit()
+    finally:
+        engine.dispose()
+        writer.stop(timeout=10)
+
+    # --- assertions ------------------------------------------------------
+    assert not walk_exc, f"walk_commits failed: {walk_exc[0]!r}"
+    assert not cache_errors, f"cache WriteOps errored: {cache_errors}"
+    assert cache_durations, "no cache durations collected"
+
+    max_latency = max(cache_durations)
+    assert max_latency < 5.0, (
+        f"cache.set tail latency was {max_latency:.2f} s. Phase 3 "
+        "promises bounded tails (well under the ~62 s pre-Phase-3 "
+        "stall); a >5 s tail suggests the walker is holding the "
+        "writer lock across batches instead of committing per batch."
+    )
