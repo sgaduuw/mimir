@@ -17,11 +17,17 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import delete, insert as sa_insert, update
+from sqlalchemy import delete, func, insert as sa_insert, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mimir.broker.writes import WriteFuture, WriteOp
-from mimir.models import Article, ArticleFile, ArticleTrailer
+from mimir.models import (
+    Article,
+    ArticleFile,
+    ArticleTrailer,
+    Inbox,
+    InboxAddressObservation,
+)
 
 
 @dataclass
@@ -206,3 +212,101 @@ def _submit_patch_series_batch(
             )
 
     return writer.submit(WriteOp(label="backfill:patch_series:batch", fn=_fn))
+
+
+def _submit_canonical_batch(writer, payloads: list[_CanonicalPending]) -> WriteFuture:
+    """Compose the per-batch composite WriteOp for `backfill_canonicals`.
+
+    Per payload:
+    - UPDATE articles SET canonical_inbox_id = ? WHERE id = ?
+      AND canonical_inbox_id IS NOT ? (so no-op resolutions don't churn).
+    - For each (inbox_id, address, (count, last_seen)) in observation_deltas:
+      `INSERT ... ON CONFLICT (inbox_id, address) DO UPDATE SET
+       count = inbox_address_observations.count + excluded.count,
+       last_seen = MAX(inbox_address_observations.last_seen, excluded.last_seen)`
+    """
+    if not payloads:
+        f: Future = Future()
+        f.set_result(None)
+        return f
+
+    def _fn(conn):
+        for p in payloads:
+            conn.execute(
+                update(Article)
+                .where(
+                    Article.id == p.article_id,
+                    Article.canonical_inbox_id.is_not(p.new_canonical_inbox_id),
+                )
+                .values(canonical_inbox_id=p.new_canonical_inbox_id)
+            )
+            for inbox_id, by_addr in p.observation_deltas.items():
+                for address, (count, last_seen) in by_addr.items():
+                    stmt = sqlite_insert(InboxAddressObservation).values(
+                        inbox_id=inbox_id,
+                        address=address,
+                        count=count,
+                        last_seen=last_seen,
+                    )
+                    conn.execute(
+                        stmt.on_conflict_do_update(
+                            index_elements=["inbox_id", "address"],
+                            set_={
+                                "count": (
+                                    InboxAddressObservation.count + stmt.excluded.count
+                                ),
+                                "last_seen": func.max(
+                                    InboxAddressObservation.last_seen,
+                                    stmt.excluded.last_seen,
+                                ),
+                            },
+                        )
+                    )
+
+    return writer.submit(WriteOp(label="backfill:canonicals:batch", fn=_fn))
+
+
+def _submit_promote_list_address_sweep(writer) -> WriteFuture:
+    """Compose the periodic promotion-sweep WriteOp for `backfill_canonicals`.
+
+    Iterates every Inbox with `list_address IS NULL` and applies the
+    same promotion check (top-two ratio + minimum-observation threshold)
+    that Phase 3b's `_submit_promote_list_address(writer, inbox_id)`
+    runs for a single inbox.
+
+    No refactor of `mimir/canonical.py` is needed; this closure is
+    Phase 3b's `_submit_promote_list_address` closure body looped
+    over every NULL-list_address inbox in one transaction. Same
+    constants imported from the same place.
+    """
+    from mimir.ingest.epoch import MIN_PROMOTE_OBSERVATIONS, PROMOTE_DOMINANCE
+
+    def _fn(conn):
+        candidate_ids = (
+            conn.execute(select(Inbox.id).where(Inbox.list_address.is_(None)))
+            .scalars()
+            .all()
+        )
+        for inbox_id in candidate_ids:
+            rows = conn.execute(
+                select(
+                    InboxAddressObservation.address,
+                    InboxAddressObservation.count,
+                )
+                .where(InboxAddressObservation.inbox_id == inbox_id)
+                .order_by(InboxAddressObservation.count.desc())
+                .limit(2)
+            ).all()
+            if not rows:
+                continue
+            top_addr, top_count = rows[0]
+            if top_count < MIN_PROMOTE_OBSERVATIONS:
+                continue
+            second_count = rows[1][1] if len(rows) > 1 else 0
+            if top_count / max(top_count + second_count, 1) < PROMOTE_DOMINANCE:
+                continue
+            conn.execute(
+                update(Inbox).where(Inbox.id == inbox_id).values(list_address=top_addr)
+            )
+
+    return writer.submit(WriteOp(label="backfill:canonicals:promote_sweep", fn=_fn))
