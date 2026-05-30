@@ -79,22 +79,27 @@ on exit, not one per tick. Tasks that became due during the pause fire
 in the next tick after resume; the cadence isn't reset.
 
 The sentinel gates only the in-loop ticks; the boot-time
-`alembic upgrade head` + `bootstrap-inboxes` + `(initial)`
-warm-cache/update passes ignore it. If you need to restart the
-sidecar mid-maintenance, drop the sentinel first.
+backgrounded warm-cache and the loop's first tick (which fires
+every due task immediately on a fresh deploy because the sentinels
+do not yet exist) ignore it. If you need to restart the sidecar
+mid-maintenance, drop the sentinel first.
 
-The sidecar owns schema: `alembic upgrade head` runs once on start
-(before the loop) and is the single place that touches DDL.
-`bootstrap-inboxes` follows so env-configured inboxes exist before
-the web tier comes up. Finally a pre-flight `warm-cache` runs so
-the dashboard cache is hot before serving. The web container's
-`depends_on: { mimir-tasks: { condition: service_healthy } }`
-gates gunicorn on the `/data/.migrated` healthcheck sentinel
-(touched only after those passes succeed), so a fresh `/data`
-volume migrates before serving any requests. systemd deployments
-are unaffected, `mimir.service` runs its own
-`ExecStartPre=alembic upgrade head` and an
-`ExecStartPre=mimir bootstrap-inboxes`.
+Boot sequence under 2.0.0+: the broker container owns schema and
+inbox bootstrap. It runs `alembic upgrade head`, then
+`bootstrap-inboxes`, then the bounded post-migrate `ANALYZE`,
+gated by `/data/.migrated`, `/data/.bootstrapped`, and
+`/data/.broker_initial_analyze` sentinels respectively, before
+flipping its own healthcheck green. The web container's
+`depends_on: { mimir-broker: { condition: service_healthy } }`
+gates gunicorn on the broker, so a fresh `/data` volume is fully
+prepared before any request is served. This sidecar's only boot
+contribution is the warm-cache pre-flight, which starts in the
+background and runs in parallel with the periodic loop: the loop's
+`update`, `update-mainline`, `analyze`, and `vacuum` ticks fire
+on cadence from t=0 instead of waiting up to ~2 h behind a
+fully-cold warm-cache pass. systemd deployments are unaffected,
+`mimir.service` runs its own `ExecStartPre=alembic upgrade head`
+and an `ExecStartPre=mimir bootstrap-inboxes`.
 
 **Post-migrate ANALYZE**: under broker mode (see below) the
 broker container runs a bounded `ANALYZE` on first start, gated
