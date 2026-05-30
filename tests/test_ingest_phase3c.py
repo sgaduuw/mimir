@@ -459,3 +459,31 @@ def test_submit_promote_list_address_sweep_promotes_eligible_inbox(writer, seede
             select(Inbox.list_address).where(Inbox.id == beta_id)
         ).scalar_one()
     assert post == "dominant@vger.kernel.org"
+
+
+def test_backfill_article_files_uses_writer_thread_via_active_context(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """Phase 3c contract: `backfill_article_files` must NOT call
+    `write_transaction`. Pre-3c held a write_transaction for the
+    whole walk; Phase 3c dispatches via the active WriterThread.
+    Monkeypatching `write_transaction` to raise asserts the new
+    code path never reaches it.
+    """
+    import mimir.extensions as ext_mod
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError(
+            "write_transaction must not be called by "
+            "backfill_article_files after Phase 3c"
+        )
+
+    monkeypatch.setattr(ext_mod, "write_transaction", _forbidden)
+
+    from mimir.patches import backfill_article_files
+
+    result = backfill_article_files(limit=10)
+    assert result.examined > 0, (
+        "the test relies on the walker visiting at least one article; "
+        "if it returned 0, the structural assertion is meaningless"
+    )
