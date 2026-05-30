@@ -11,6 +11,26 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- **Broker two-pool restructure, Phase 1 (infrastructure).** The
+  broker now constructs a `ReadSessionPool` (query_only=1
+  SQLAlchemy sessions, sized by `BROKER_READ_POOL_SIZE`,
+  default `os.cpu_count()`) and a `WriterThread` (single-thread
+  actor with a bounded queue sized by `BROKER_WRITER_QUEUE_DEPTH`,
+  default 256, that commits one `WriteOp` per BEGIN IMMEDIATE
+  transaction). No handler is migrated yet, so steady-state
+  behaviour is unchanged; the new primitives sit parallel to the
+  existing single-writer path. Phases 2 to 6 migrate one write
+  surface per release (warm-cache first, then long-ops, web-tier
+  `cache.set`, admin ops, cleanup). The motivation is to let the
+  broker actually use multiple cores under CPython 3.14t
+  free-threading; see `_claude/MEMORY.md` 2026-05-29 for the
+  observation that 3.14t alone did not move `broker_cpu` off its
+  single-core pin, and
+  `_claude/specs/2026-05-29-broker-two-pool-design.md` for the
+  full rollout.
+
 ## [2.9.0], 2026-05-29
 
 ### Changed
