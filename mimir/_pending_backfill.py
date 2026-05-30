@@ -17,11 +17,11 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import delete, insert as sa_insert
+from sqlalchemy import delete, insert as sa_insert, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mimir.broker.writes import WriteFuture, WriteOp
-from mimir.models import ArticleFile, ArticleTrailer
+from mimir.models import Article, ArticleFile, ArticleTrailer
 
 
 @dataclass
@@ -173,3 +173,36 @@ def _submit_article_trailers_batch(
                 )
 
     return writer.submit(WriteOp(label="backfill:article_trailers:batch", fn=_fn))
+
+
+def _submit_patch_series_batch(
+    writer, payloads: list[_PatchSeriesPending]
+) -> WriteFuture:
+    """Compose the per-batch composite WriteOp for `backfill_patch_series`.
+
+    The closure issues N `UPDATE articles SET patch_series_key=?,
+    patch_series_version=?, patch_series_position=? WHERE id=?` in
+    payload order (the caller is responsible for sorting by
+    `article_id` ascending when ordering matters; SQLite's writer
+    lock makes intra-broker races impossible, so order is purely
+    a defensive consideration). NULL values overwrite previously-set
+    values (used by the orphan-clear / not-a-cover paths).
+    """
+    if not payloads:
+        f: Future = Future()
+        f.set_result(None)
+        return f
+
+    def _fn(conn):
+        for p in payloads:
+            conn.execute(
+                update(Article)
+                .where(Article.id == p.article_id)
+                .values(
+                    patch_series_key=p.patch_series_key,
+                    patch_series_version=p.patch_series_version,
+                    patch_series_position=p.patch_series_position,
+                )
+            )
+
+    return writer.submit(WriteOp(label="backfill:patch_series:batch", fn=_fn))
