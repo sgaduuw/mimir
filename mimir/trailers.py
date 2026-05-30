@@ -148,10 +148,13 @@ def backfill_article_trailers(
     `max_seconds` + `start_cursor` enable broker-side cooperative
     scheduling (Phase 2.2); see `mimir.patches.backfill_article_files`
     for the chunk/resume contract. Direct callers leave both None."""
+    from mimir._pending_backfill import _submit_article_trailers_batch
+
     result = BackfillResult()
     partial, continuation = walk_articles(
         result,
         _process_one,
+        _submit_article_trailers_batch,
         limit=limit,
         reprocess=reprocess,
         progress=progress,
@@ -164,8 +167,22 @@ def backfill_article_trailers(
     return result
 
 
-def _process_one(session, article: Article, reprocess: bool) -> str:
-    """Handle one article. Returns the bucket name it lands in."""
+def _process_one(session, article: Article, reprocess: bool) -> tuple[str, object]:
+    """Per-article work for `backfill_article_trailers`. Returns
+    `(bucket, pending_payload)` where pending_payload is None for
+    no-write buckets, otherwise an `_ArticleTrailersPending` instance.
+
+    The return-type annotation is `tuple[str, object]` (not the more
+    precise `tuple[str, _ArticleTrailersPending | None]`) because
+    `_ArticleTrailersPending` is imported lazily inside the function;
+    ruff F821 would flag the precise annotation as undefined at
+    module scope.
+    """
+    from mimir._pending_backfill import (
+        _ArticleTrailerInsert,
+        _ArticleTrailersPending,
+    )
+
     has_rows = (
         session.execute(
             select(ArticleTrailer.id)
@@ -175,30 +192,20 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
         is not None
     )
     if has_rows and not reprocess:
-        return "skipped"
-    if has_rows and reprocess:
-        session.execute(
-            ArticleTrailer.__table__.delete().where(
-                ArticleTrailer.__table__.c.article_id == article.id
-            )
-        )
+        return "skipped", None
 
-    # Prefer canonical_inbox (deterministic for cross-posts) over
-    # the SQLA-load-ordering-dependent `article.lists[0]`. See the
-    # matching helper in `mimir.patches` for the rationale.
     inbox: Inbox | None = article.canonical_inbox
     if inbox is None:
         if not article.lists:
-            return "skipped"
+            return "skipped", None
         inbox = session.get(Inbox, article.lists[0].inbox_id)
     if inbox is None:
-        return "skipped"
+        return "skipped", None
 
     try:
         parsed = read_message(session, inbox, article.message_id)
     except MessageNotFound, KeyError:
-        # Mirror unreachable on this host; defer rather than fail.
-        return "skipped"
+        return "skipped", None
     except Exception as exc:
         logger.warning(
             "backfill: parse failure for article %d (%s): %r",
@@ -206,22 +213,19 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
             article.message_id,
             exc,
         )
-        return "failed"
+        return "failed", None
 
     trailers = extract_trailers(parsed.body)
     if not trailers:
-        return "no_trailers"
-    for role, name, address in trailers:
-        session.add(
-            ArticleTrailer(
-                article_id=article.id,
-                role=role,
-                name=name,
-                address=address,
-                address_normalized=address.lower(),
-            )
-        )
-    return "indexed"
+        return "no_trailers", None
+
+    return "indexed", _ArticleTrailersPending(
+        article_id=article.id,
+        delete_first=(has_rows and reprocess),
+        trailers=[
+            _ArticleTrailerInsert(role=r, name=n, address=a) for r, n, a in trailers
+        ],
+    )
 
 
 __all__ = [

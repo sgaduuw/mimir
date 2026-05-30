@@ -154,10 +154,13 @@ def backfill_article_files(
      chunk per RPC, then returns `partial=True, continuation=<last id>`
      so the CLI loops with a follow-up RPC. Direct callers leave
      both None and get the original full-walk behaviour."""
+    from mimir._pending_backfill import _submit_article_files_batch
+
     result = BackfillResult()
     partial, continuation = walk_articles(
         result,
         _process_one,
+        _submit_article_files_batch,
         limit=limit,
         reprocess=reprocess,
         progress=progress,
@@ -170,8 +173,12 @@ def backfill_article_files(
     return result
 
 
-def _process_one(session, article: Article, reprocess: bool) -> str:
-    """Handle one article. Returns the bucket name it lands in."""
+def _process_one(session, article: Article, reprocess: bool) -> tuple[str, object]:
+    """Per-article work for `backfill_article_files`. Returns
+    `(bucket, pending_payload)` where pending_payload is an
+    `_ArticleFilesPending` or None for buckets that produce no writes."""
+    from mimir._pending_backfill import _ArticleFilesPending
+
     # Existing-rows check. `article.files` would also work but
     # selectinload didn't preload it; a COUNT is cheap and avoids
     # pulling the rows.
@@ -184,13 +191,7 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
         is not None
     )
     if has_rows and not reprocess:
-        return "skipped"
-    if has_rows and reprocess:
-        session.execute(
-            ArticleFile.__table__.delete().where(
-                ArticleFile.__table__.c.article_id == article.id
-            )
-        )
+        return "skipped", None
 
     # Pick the canonical inbox to re-read the body. For cross-posts
     # this is the authoritative attribution; `article.lists[0]` is
@@ -202,10 +203,10 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
     inbox: Inbox | None = article.canonical_inbox
     if inbox is None:
         if not article.lists:
-            return "skipped"
+            return "skipped", None
         inbox = session.get(Inbox, article.lists[0].inbox_id)
     if inbox is None:
-        return "skipped"
+        return "skipped", None
 
     try:
         parsed = read_message(session, inbox, article.message_id)
@@ -215,7 +216,7 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
         # Common in dev and after a partial-mirror rebuild; defer
         # the work rather than fail loudly, a re-run from a host
         # with the full mirror picks the article up.
-        return "skipped"
+        return "skipped", None
     except Exception as exc:
         logger.warning(
             "backfill: parse failure for article %d (%s): %r",
@@ -223,14 +224,17 @@ def _process_one(session, article: Article, reprocess: bool) -> str:
             article.message_id,
             exc,
         )
-        return "failed"
+        return "failed", None
 
     paths = extract_touched_paths(parsed.body)
     if not paths:
-        return "no_diff"
-    for path in sorted(paths):
-        session.add(ArticleFile(article_id=article.id, path=path))
-    return "indexed"
+        return "no_diff", None
+
+    return "indexed", _ArticleFilesPending(
+        article_id=article.id,
+        delete_first=(has_rows and reprocess),
+        paths=sorted(paths),
+    )
 
 
 # Re-export for callers (CLI) so the import surface stays tight.
