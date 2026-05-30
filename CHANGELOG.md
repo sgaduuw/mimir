@@ -11,6 +11,43 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- **Broker two-pool restructure, Phase 3b (`ingest_inbox` long-op
+  migration).** `ingest_inbox()` + `ingest_epoch()` no longer hold
+  `write_transaction("ingest_inbox:<name>")` for one continuous
+  epoch-long window. Per-batch work splits: read/compute phase runs
+  on a `query_only` session from the active `ReadSessionPool` and
+  builds a `_PendingWrites` accumulator; at each
+  `INGEST_BATCH_FLUSH_SECONDS` interval (new env var, default 0.5 s)
+  the accumulator is submitted as one composite WriteOp via
+  `_submit_ingest_batch` and the walker awaits `.result()` before
+  composing the next batch. The Article INSERTs use `RETURNING id`
+  so ArticleList / ArticleFile / ArticleTrailer rows land their
+  FKs in the same closure. `promote_list_address` and
+  `auto_analyze` migrate as small single-statement WriteOps too.
+  Resume semantics preserved: the `IngestState.last_commit_sha`
+  cursor advance is the FINAL statement of each batch's closure,
+  so a crash between two batches leaves the cursor at the prior
+  batch and the next tick re-walks from there. Idempotency via
+  `articles.message_id` UNIQUE + `article_lists` composite PK on
+  `(article_id, inbox_id, epoch, commit_sha)`. Writer-lock hold per
+  batch drops from one continuous transaction per epoch (tens of
+  seconds on backlogged ingests) to N short bursts (~tens of ms
+  each), so concurrent `cache.set` RPCs from the web tier drain
+  between batches instead of head-of-line stalling. Phase 3b is
+  narrowed to ingest; the four backfills are deferred to Phase 3c.
+  New env var: `INGEST_BATCH_FLUSH_SECONDS` (float, default 0.5).
+- **`cache.set` writer-path gate.** The in-process WriterThread
+  shortcut (Phase 2, 2.11.0) is now gated on
+  `_broker_handler_active()` (the thread-local flag the broker's
+  worker loops set on entry, clear on exit) rather than on the
+  global active-context registration. Production behaviour
+  unchanged (broker workers always set the flag, so warm + ingest
+  handlers still dispatch via the writer); in-process test setups
+  with a session-scoped active context no longer take the writer
+  path from test threads. No operator-visible change.
+
 ## [2.12.0], 2026-05-29
 
 ### Changed
