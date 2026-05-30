@@ -31,11 +31,6 @@ from sqlalchemy.orm import Session
 from mimir.canonical import extract_list_addresses, pick_canonical_inbox_id
 from mimir.config import settings
 from mimir.datetime_utils import aware_utc
-from mimir.extensions import SessionLocal, write_transaction
-from mimir.ingest.epoch import (
-    _flush_observations,
-    _maybe_promote_list_address,
-)
 from mimir.models import Article, ArticleList, Inbox
 from mimir.store import MessageNotFound, read_message
 
@@ -113,11 +108,25 @@ def backfill_canonicals(
     with a follow-up RPC carrying `start_cursor=<last>`. Direct
     callers leave both None and get the historical full-walk behaviour.
     """
+    from mimir.broker._context import get_active_pool, get_active_writer
+    from mimir._pending_backfill import (
+        _CanonicalPending,
+        _submit_canonical_batch,
+        _submit_promote_list_address_sweep,
+    )
+
+    pool = get_active_pool()
+    writer = get_active_writer()
+
     out = BackfillResult()
     address_to_inbox_id: dict[str, int] = {}
     demoted_inbox_ids: frozenset[int] = frozenset()
-    pending_obs: dict[int, dict[str, tuple[int, datetime]]] = {}
     inbox_cache: dict[int, Inbox] = {}
+    batch_payloads: list[_CanonicalPending] = []
+    deadline: float | None = (
+        time.monotonic() + max_seconds if max_seconds is not None else None
+    )
+    last_processed: int | None = None
 
     def refresh_address_map(session: Session) -> None:
         nonlocal address_to_inbox_id, demoted_inbox_ids
@@ -145,36 +154,13 @@ def backfill_canonicals(
             inbox_cache[inbox_id] = ix
         return ix
 
-    def flush_pending(session: Session) -> None:
-        for inbox_id, obs in pending_obs.items():
-            if obs:
-                _flush_observations(session, inbox_id, obs)
-        pending_obs.clear()
+    def flush_batch_to_writer() -> None:
+        nonlocal batch_payloads
+        if batch_payloads:
+            _submit_canonical_batch(writer, batch_payloads).result(timeout=120)
+            batch_payloads = []
 
-    def maybe_promote_all(session: Session) -> bool:
-        """Run promotion for every inbox that's still NULL. Returns True
-        if any inbox got promoted (caller refreshes the address map)."""
-        promoted = False
-        for ix in session.execute(
-            select(Inbox).where(Inbox.list_address.is_(None))
-        ).scalars():
-            if _maybe_promote_list_address(session, ix.id) is not None:
-                promoted = True
-        return promoted
-
-    # BEGIN IMMEDIATE for every transaction in this block, avoids
-    # SQLITE_BUSY_SNAPSHOT when gunicorn cache.set commits a write
-    # between the backfill's read of the next article batch and its
-    # write of canonical_inbox_id / inbox_address_observations.
-    label = (
-        f"backfill_canonicals:{inbox_filter}" if inbox_filter else "backfill_canonicals"
-    )
-    deadline: float | None = (
-        time.monotonic() + max_seconds if max_seconds is not None else None
-    )
-    last_processed: int | None = None
-
-    with write_transaction(label), SessionLocal() as session:
+    with pool.session() as session:
         refresh_address_map(session)
 
         # Batched id-cursor pagination. id-desc rather than date-desc
@@ -249,19 +235,15 @@ def backfill_canonicals(
                     continue
 
                 list_addrs = extract_list_addresses(parsed.headers)
+                obs_deltas: dict[int, dict[str, tuple[int, datetime]]] = {}
                 if list_addrs:
                     obs_time = aware_utc(
                         parsed.date or article.date or datetime.now(timezone.utc)
                     )
                     for inbox_id in links:
-                        bucket = pending_obs.setdefault(inbox_id, {})
+                        obs_deltas.setdefault(inbox_id, {})
                         for addr in list_addrs:
-                            prev = bucket.get(addr)
-                            if prev is None:
-                                bucket[addr] = (1, obs_time)
-                            else:
-                                cnt, ts = prev
-                                bucket[addr] = (cnt + 1, max(ts, obs_time))
+                            obs_deltas[inbox_id][addr] = (1, obs_time)
 
                 new_canonical = pick_canonical_inbox_id(
                     list_addrs,
@@ -269,43 +251,47 @@ def backfill_canonicals(
                     demoted_inbox_ids,
                 )
                 if new_canonical != article.canonical_inbox_id:
-                    article.canonical_inbox_id = new_canonical
                     out.resolved += 1
                 else:
                     out.unresolved += 1
 
+                batch_payloads.append(
+                    _CanonicalPending(
+                        article_id=article.id,
+                        new_canonical_inbox_id=new_canonical,
+                        observation_deltas=obs_deltas,
+                    )
+                )
                 last_processed = article.id
 
+                # Periodic promotion sweep (every `promote_every` articles).
                 if out.examined % promote_every == 0:
-                    flush_pending(session)
+                    flush_batch_to_writer()
+                    _submit_promote_list_address_sweep(writer).result(timeout=60)
+                    # Release the read snapshot so refresh_address_map sees
+                    # any new list_address values the sweep just wrote.
                     session.commit()
-                    if maybe_promote_all(session):
-                        refresh_address_map(session)
-                        session.commit()
+                    refresh_address_map(session)
 
                 if progress is not None and out.examined % progress_every == 0:
                     progress(out)
 
-            # Batch boundary: flush any in-flight per-batch state and
-            # commit so partial progress survives a time-budget exit.
-            flush_pending(session)
+            # Batch boundary: flush the per-batch composite + release snapshot.
+            flush_batch_to_writer()
             session.commit()
 
             if limit_reached:
                 break
 
-            # Cooperative-scheduling deadline. Checked after the commit
-            # so the continuation cursor points at fully-persisted
-            # work.
+            # Cooperative-scheduling deadline. Checked after the batch
+            # commits so partial progress is always persisted.
             if deadline is not None and time.monotonic() >= deadline:
                 out.partial = True
                 out.continuation = last_processed
                 return out
 
-        # Walk completed naturally (no time budget hit). One final
-        # promotion sweep mirrors the pre-2.2 behaviour.
-        flush_pending(session)
-        maybe_promote_all(session)
-        session.commit()
+        # Walk completed naturally. Final promotion sweep + final batch flush.
+        flush_batch_to_writer()
+        _submit_promote_list_address_sweep(writer).result(timeout=60)
 
     return out

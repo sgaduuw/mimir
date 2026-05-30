@@ -529,3 +529,23 @@ def test_backfill_patch_series_uses_writer_thread_via_active_context(
 
     result = backfill_patch_series(limit=10)
     assert result.examined > 0
+
+
+def test_backfill_canonicals_uses_writer_thread_via_active_context(
+    seeded_db, monkeypatch, broker_active
+):
+    """Phase 3c contract: `backfill_canonicals` must NOT call
+    `write_transaction`."""
+    import mimir.extensions as ext_mod
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError(
+            "write_transaction must not be called by backfill_canonicals after Phase 3c"
+        )
+
+    monkeypatch.setattr(ext_mod, "write_transaction", _forbidden)
+
+    from mimir.ingest.backfill import backfill_canonicals
+
+    result = backfill_canonicals(limit=10)
+    assert result.examined > 0
