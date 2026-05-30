@@ -119,3 +119,72 @@ def test_writer_thread_stop_is_idempotent(seeded_db):
     writer.start()
     writer.stop(timeout=5)
     writer.stop(timeout=5)  # second call is a no-op, not an error
+
+
+def test_writer_thread_op_exception_sets_future_and_survives(seeded_db):
+    """An op that raises does NOT kill the writer. The future
+    receives the exception. A subsequent submit still commits."""
+    from mimir.config import settings
+
+    writer = WriterThread(database_url=settings.database_url, queue_depth=8)
+    writer.start()
+    try:
+
+        def bad_fn(c):
+            raise ValueError("boom")
+
+        bad_future = writer.submit(WriteOp(label="test:bad", fn=bad_fn))
+        with __import__("pytest").raises(ValueError, match="boom"):
+            bad_future.result(timeout=5)
+
+        # Writer should still be alive and accept the next op.
+        good_future = writer.submit(
+            WriteOp(
+                label="test:good-after-bad",
+                fn=lambda c: c.execute(
+                    text(
+                        "INSERT INTO cache (key, value, expires_at) "
+                        "VALUES ('after-bad', '{}', 9999999999)"
+                    )
+                ),
+            )
+        )
+        assert good_future.result(timeout=5) is None
+    finally:
+        writer.stop(timeout=5)
+
+
+def test_writer_thread_op_exception_rollbacks_transaction(seeded_db):
+    """If fn writes some rows then raises, none of the writes commit.
+    Verifies atomicity of the per-op transaction."""
+    from mimir.config import settings
+
+    writer = WriterThread(database_url=settings.database_url, queue_depth=8)
+    writer.start()
+    try:
+
+        def partial_then_bad(c):
+            c.execute(
+                text(
+                    "INSERT INTO cache (key, value, expires_at) "
+                    "VALUES ('partial', '{}', 9999999999)"
+                )
+            )
+            raise RuntimeError("rollback me")
+
+        future = writer.submit(WriteOp(label="test:partial", fn=partial_then_bad))
+        with __import__("pytest").raises(RuntimeError, match="rollback me"):
+            future.result(timeout=5)
+
+        # 'partial' should NOT be in the cache table.
+        from sqlalchemy import create_engine
+
+        engine = create_engine(settings.database_url, future=True)
+        with engine.connect() as c:
+            row = c.execute(
+                text("SELECT key FROM cache WHERE key = 'partial'")
+            ).scalar_one_or_none()
+            assert row is None
+        engine.dispose()
+    finally:
+        writer.stop(timeout=5)
