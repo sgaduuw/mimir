@@ -390,12 +390,14 @@ def test_handle_warm_inbox_uses_active_read_pool_session(monkeypatch):
     from mimir.broker.handlers.warm import handle_warm_inbox
     from mimir.broker.protocol import WarmInboxRequest
 
-    # Force SessionLocal to be unusable so a regression to it fails.
-    import mimir.broker.handlers.warm as warm_mod
-    if hasattr(warm_mod, "SessionLocal"):
-        def explode(*a, **kw):
-            raise AssertionError("handler must use the active pool, not SessionLocal")
-        monkeypatch.setattr(warm_mod, "SessionLocal", explode)
+    def explode(*a, **kw):
+        raise AssertionError("handler must use the active pool, not SessionLocal")
+
+    # Patch the canonical source. If any code path imports SessionLocal
+    # from mimir.extensions and calls it during the handler invocation,
+    # the test fails loudly. This catches future regressions where
+    # someone re-imports SessionLocal into warm.py.
+    monkeypatch.setattr("mimir.extensions.SessionLocal", explode)
 
     # The _active_broker_context fixture has already set up the pool,
     # so the handler should succeed without falling back to SessionLocal.
