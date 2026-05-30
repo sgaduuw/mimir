@@ -411,3 +411,89 @@ def test_submit_ingest_batch_last_article_date_conditional(writer, seeded_db):
     if date_after_new.tzinfo is None:
         date_after_new = date_after_new.replace(tzinfo=timezone.utc)
     assert date_after_new == newer
+
+
+# ---------------------------------------------------------------------------
+# _submit_promote_list_address and _submit_analyze tests (Phase 3b Task 5)
+# ---------------------------------------------------------------------------
+
+
+def test_submit_promote_list_address_runs_via_writer(writer, seeded_db):
+    """The promote helper executes the same SQL semantics as the legacy
+    _maybe_promote_list_address: observe address dominance threshold,
+    promote list_address from NULL to the dominant address.
+
+    Fixture: inbox with no list_address, seeded observations where one
+    address covers >= 70% of the top-two combined. Submit the helper;
+    assert the Inbox.list_address is set to the expected address.
+    """
+    import sqlalchemy as sa
+
+    from mimir.extensions import SessionLocal
+    from mimir.ingest._pending import _submit_promote_list_address
+    from mimir.models import Inbox, InboxAddressObservation
+
+    with SessionLocal() as s:
+        inbox_id = s.execute(
+            sa.select(Inbox.id).where(Inbox.name == "alpha")
+        ).scalar_one()
+        # Ensure list_address is NULL before the test.
+        s.execute(
+            sa.update(Inbox).where(Inbox.id == inbox_id).values(list_address=None)
+        )
+        s.commit()
+
+    # Seed observations: one inbox with one dominant address (70+ count),
+    # others far behind (15 and 5 count). Meets MIN_PROMOTE_OBSERVATIONS=50
+    # and PROMOTE_DOMINANCE=0.7 (70 / (70+15) = 0.82).
+    addr1 = "linux-kernel@vger.kernel.org"
+    addr2 = "other@vger.kernel.org"
+    addr3 = "minor@vger.kernel.org"
+
+    with SessionLocal() as s:
+        s.add_all(
+            [
+                InboxAddressObservation(
+                    inbox_id=inbox_id,
+                    address=addr1,
+                    count=70,
+                    last_seen=datetime(2026, 5, 30, tzinfo=timezone.utc),
+                ),
+                InboxAddressObservation(
+                    inbox_id=inbox_id,
+                    address=addr2,
+                    count=15,
+                    last_seen=datetime(2026, 5, 30, tzinfo=timezone.utc),
+                ),
+                InboxAddressObservation(
+                    inbox_id=inbox_id,
+                    address=addr3,
+                    count=5,
+                    last_seen=datetime(2026, 5, 30, tzinfo=timezone.utc),
+                ),
+            ]
+        )
+        s.commit()
+
+    # Submit the helper; verify the promotion ran.
+    future = _submit_promote_list_address(writer, inbox_id)
+    future.result(timeout=10)
+
+    with SessionLocal() as s:
+        inbox = s.get(Inbox, inbox_id)
+        assert inbox is not None
+        assert inbox.list_address == addr1
+
+
+def test_submit_analyze_runs_via_writer(writer, seeded_db):
+    """The analyze helper runs ANALYZE on the writer's connection.
+
+    ANALYZE's side effects are sqlite_stat1 internals, not directly
+    observable, so the assertion is just "no exception raised".
+    """
+    from mimir.ingest._pending import _submit_analyze
+
+    # Submit the helper with a valid inbox name.
+    future = _submit_analyze(writer, "alpha")
+    # Must complete without raising.
+    future.result(timeout=30)

@@ -15,7 +15,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, func, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mimir.broker.writes import WriteFuture, WriteOp
@@ -326,3 +326,74 @@ def _submit_ingest_batch(writer, pending: "_PendingWrites") -> WriteFuture:
     return writer.submit(
         WriteOp(label=f"ingest:{epoch}:batch", fn=_fn),
     )
+
+
+def _submit_promote_list_address(writer, inbox_id: int) -> WriteFuture:
+    """Phase 3b of the two-pool restructure.
+
+    Compose a WriteOp that runs the same promotion semantics as the
+    legacy _maybe_promote_list_address(session, inbox_id) helper from
+    mimir/ingest/epoch.py. Reads the observations tally, checks for a
+    clear modal winner that meets the dominance threshold, and promotes
+    Inbox.list_address from NULL to that address.
+
+    Returns the WriteFuture so callers can await .result() before the
+    next operation. Sub-ms execution time in practice.
+    """
+    # Import the constants from epoch.py where they live.
+    from mimir.ingest.epoch import MIN_PROMOTE_OBSERVATIONS, PROMOTE_DOMINANCE
+
+    def _fn(conn):
+        # Read the inbox row and observations to check the promotion
+        # threshold. Use scalar select of list_address to check if
+        # promotion is needed.
+        list_address = conn.execute(
+            select(Inbox.list_address).where(Inbox.id == inbox_id)
+        ).scalar_one_or_none()
+        if list_address is not None:
+            return None
+
+        rows = conn.execute(
+            select(
+                InboxAddressObservation.address,
+                InboxAddressObservation.count,
+            )
+            .where(InboxAddressObservation.inbox_id == inbox_id)
+            .order_by(InboxAddressObservation.count.desc())
+            .limit(2)
+        ).all()
+        if not rows:
+            return None
+
+        top_addr, top_count = rows[0]
+        if top_count < MIN_PROMOTE_OBSERVATIONS:
+            return None
+
+        second_count = rows[1][1] if len(rows) > 1 else 0
+        if top_count / max(top_count + second_count, 1) < PROMOTE_DOMINANCE:
+            return None
+
+        conn.execute(
+            update(Inbox).where(Inbox.id == inbox_id).values(list_address=top_addr)
+        )
+
+    return writer.submit(WriteOp(label=f"promote_list_address:{inbox_id}", fn=_fn))
+
+
+def _submit_analyze(writer, inbox_name: str) -> WriteFuture:
+    """Phase 3b of the two-pool restructure.
+
+    Compose a WriteOp whose closure runs ANALYZE on the writer's
+    connection. Replaces the auto-ANALYZE-after-ingest write_transaction
+    block in ingest_inbox(). The label carries the inbox name for
+    slow-write WARNING correlation (matching the legacy write_transaction
+    label shape).
+
+    Returns the WriteFuture so callers can await .result() before the
+    next operation.
+    """
+
+    def _fn(conn):
+        conn.execute(text("ANALYZE"))
+
+    return writer.submit(WriteOp(label=f"auto_analyze:{inbox_name}", fn=_fn))
