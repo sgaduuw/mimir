@@ -237,3 +237,98 @@ def test_submit_article_trailers_batch_delete_first_replaces_rows(writer, seeded
     assert rows == ["Fresh"], (
         "delete_first should have wiped the stale row; only Fresh survives"
     )
+
+
+def test_submit_patch_series_batch_updates_columns(writer, seeded_db):
+    """Happy path: payload's three columns land on the addressed
+    Article row. Other articles are untouched."""
+    from sqlalchemy import select
+
+    from mimir._pending_backfill import (
+        _PatchSeriesPending,
+        _submit_patch_series_batch,
+    )
+    from mimir.models import Article
+
+    with seeded_db() as s:
+        rows = (
+            s.execute(select(Article.id).order_by(Article.id).limit(2)).scalars().all()
+        )
+        a, b = rows
+
+    payloads = [
+        _PatchSeriesPending(
+            article_id=a,
+            patch_series_key="fs/foo-v2",
+            patch_series_version="v2",
+            patch_series_position=0,
+        ),
+        _PatchSeriesPending(
+            article_id=b,
+            patch_series_key="fs/foo-v2",
+            patch_series_version="v2",
+            patch_series_position=1,
+        ),
+    ]
+    _submit_patch_series_batch(writer, payloads).result(timeout=10)
+
+    with seeded_db() as s:
+        results = s.execute(
+            select(
+                Article.id,
+                Article.patch_series_key,
+                Article.patch_series_version,
+                Article.patch_series_position,
+            )
+            .where(Article.id.in_([a, b]))
+            .order_by(Article.id)
+        ).all()
+    assert results == [
+        (a, "fs/foo-v2", "v2", 0),
+        (b, "fs/foo-v2", "v2", 1),
+    ]
+
+
+def test_submit_patch_series_batch_nulls_overwrite_set_values(writer, seeded_db):
+    """`patch_series_key=None` overwrites a previously-set value, mirror
+    of the orphan-clear path in `_process_one`."""
+    from sqlalchemy import select, update
+
+    from mimir._pending_backfill import (
+        _PatchSeriesPending,
+        _submit_patch_series_batch,
+    )
+    from mimir.models import Article
+
+    with seeded_db() as s:
+        article_id = s.execute(select(Article.id).limit(1)).scalar_one()
+        s.execute(
+            update(Article)
+            .where(Article.id == article_id)
+            .values(
+                patch_series_key="old-key",
+                patch_series_version="v1",
+                patch_series_position=2,
+            )
+        )
+        s.commit()
+
+    payloads = [
+        _PatchSeriesPending(
+            article_id=article_id,
+            patch_series_key=None,
+            patch_series_version=None,
+            patch_series_position=None,
+        )
+    ]
+    _submit_patch_series_batch(writer, payloads).result(timeout=10)
+
+    with seeded_db() as s:
+        row = s.execute(
+            select(
+                Article.patch_series_key,
+                Article.patch_series_version,
+                Article.patch_series_position,
+            ).where(Article.id == article_id)
+        ).one()
+    assert row == (None, None, None)
