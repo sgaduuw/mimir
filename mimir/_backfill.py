@@ -3,26 +3,20 @@
 `patches.backfill_article_files`, `trailers.backfill_article_trailers`,
 and `patch_series.backfill_patch_series` all walk the same path: ID-
 cursor pagination over `articles` newest-first, in batches of
-`_BACKFILL_BATCH`, with the same `--limit` and `progress` semantics.
-The only per-helper specifics are which `BackfillResult` shape is
-returned, what `_process_one(session, article, reprocess)` does
-inside the loop, and whether `Article.lists` needs preloading (only
-the two body-re-reading helpers do).
+`batch_size`, with the same `--limit` and `progress` semantics.
+The per-helper specifics are which `BackfillResult` shape is returned,
+what `_process_one(session, article, reprocess)` returns (a (bucket,
+pending_payload) tuple where pending_payload is consumed by the caller-
+supplied `flush_batch(writer, payloads)` helper), and whether
+`Article.lists` needs preloading (only the two body-re-reading
+helpers do).
 
-Three callers across three modules clear the "second caller exists"
-threshold for sharing; the alternative would let the walker shells
-drift on every future change. Internal, not part of the public
-import surface (underscore-prefixed).
-
-`max_seconds` + `start_cursor` add cooperative scheduling for the
-broker (Phase 2.2): a chunk runs for at most `max_seconds`,
-checkpoints its progress by returning the last-processed `Article.id`
-as the continuation cursor, and the broker handler returns that to
-its CLI caller which resumes via a follow-up RPC. The full archive
-is processed across N chunks rather than one multi-hour RPC, so
-queued cache writes and other long ops can run between chunks.
-Direct (non-broker) callers pass `max_seconds=None` and ignore the
-return tuple, preserving the pre-2.2 shape.
+Phase 3c of the broker two-pool restructure: reads run on a
+query_only session from `_context.get_active_pool()`; writes go
+through the active `WriterThread` via the per-backfill `flush_batch`
+callable. The pre-3c `write_transaction(label) + SessionLocal()`
+block is gone; per-batch composite WriteOps replace the
+single-transaction-per-walk locking model.
 """
 
 import time
@@ -31,13 +25,13 @@ from typing import Any, Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from mimir.extensions import SessionLocal, write_transaction
 from mimir.models import Article
 
 
 def walk_articles(
     result: Any,
-    process_one: Callable[[Session, Article, bool], str],
+    process_one: Callable[[Session, Article, bool], tuple[str, Any]],
+    flush_batch: Callable[[Any, list[Any]], Any],
     *,
     limit: int | None = None,
     reprocess: bool = False,
@@ -49,58 +43,54 @@ def walk_articles(
     start_cursor: int | None = None,
 ) -> tuple[bool, int | None]:
     """Walk every Article newest-first, calling `process_one` per row
-    and bumping the matching bucket on `result`.
+    and dispatching one composite WriteOp per batch via `flush_batch`.
 
-    `process_one(session, article, reprocess)` returns a string that
-    matches a field name on `result` (e.g. `"indexed"`, `"skipped"`,
-    `"failed"`). The walker bumps `result.examined` once per row, then
-    `result.<bucket>` by the return value. Caller owns the
-    `BackfillResult` shape; the walker doesn't care what fields exist
-    so long as the return strings hit them.
+    `process_one(session, article, reprocess)` returns
+    `(bucket_name, pending_payload)`. The walker bumps `result.examined`
+    once per row, then `result.<bucket_name>` by one. Pending payloads
+    accumulate per batch; payloads of `None` are skipped (used by
+    backfills for buckets that produce no write).
+
+    `flush_batch(writer, payloads)` returns a `WriteFuture`. The walker
+    awaits `.result()` before composing the next batch and before
+    checking the time budget.
 
     `preload_lists=True` eager-loads `Article.lists` via selectinload
-    (needed by the body-re-reading helpers, patches and trailers
-    so the inbox lookup doesn't N+1). `patch_series` reads only the
-    `Article.subject` / `author` columns and sets `preload_lists=False`
-    to save the join.
+    (needed by the body-re-reading helpers, `patches` and `trailers`);
+    `patch_series` reads only `Article.subject` / `author` /
+    `thread_parent` and sets `preload_lists=False` to save the join.
 
-    `progress(result)` fires once per batch boundary. `limit` caps
-    `examined` (post-increment, pre-process), so `limit=k` produces
-    `examined=k` exactly across `k <= count`.
+    `progress(result)` fires once per batch boundary, after the
+    WriteOp commits.
 
-    `label` is threaded through to `write_transaction()` for the
-    slow-write WARNING; callers pass e.g. `"backfill_article_files"`
-    so a long lock-hold is identifiable in the broker-vs-scheduler
-    correlation log.
+    `label` is preserved for slow-write WARNING correlation in
+    callers (the writer thread does its own slow-write logging on
+    the composite WriteOp's wall time).
 
     `max_seconds`: when not None, time-bound this chunk. Deadline
-    checked at batch boundaries (after commit) so partial progress
-    is always persisted before returning. Returns
-    `(partial=True, continuation=<last id processed>)` if the
+    checked at batch boundaries (after `flush_batch(...).result()`)
+    so partial progress is always persisted before returning.
+    Returns `(partial=True, continuation=<last id processed>)` if the
     deadline elapses before the walk completes.
 
-    `start_cursor`: when not None, resume from this Article.id. The
-    walker reads `Article.id < start_cursor` on the first batch.
-    Used by the broker to continue a chunked walk; pair with the
-    `continuation` value the prior chunk returned.
+    `start_cursor`: when not None, resume from `Article.id < start_cursor`.
 
-    Return: `(partial, continuation)`. `partial=False, continuation=None`
-    when the walk completed naturally (either ran out of articles or
-    hit `limit`). `partial=True, continuation=N` when `max_seconds`
-    elapsed; resume by passing `start_cursor=N` to the next call.
+    Phase 3c: reads run on a query_only session from
+    `_context.get_active_pool()`; writes go through
+    `_context.get_active_writer()` via `flush_batch`.
     """
+    from mimir.broker._context import get_active_pool, get_active_writer
+
+    pool = get_active_pool()
+    writer = get_active_writer()
+
     examined_total = 0
     last_processed: int | None = None
     deadline: float | None = (
         time.monotonic() + max_seconds if max_seconds is not None else None
     )
 
-    # BEGIN IMMEDIATE per batch transaction. The walker reads the
-    # next batch of articles, mutates them in process_one, then
-    # commits; without IMMEDIATE the first commit-then-next-read
-    # interleave can trip SQLITE_BUSY_SNAPSHOT against the web
-    # tier's cache.set writes.
-    with write_transaction(label), SessionLocal() as session:
+    with pool.session() as session:
         cursor: int | None = start_cursor
         while True:
             q = select(Article).order_by(Article.id.desc()).limit(batch_size)
@@ -118,19 +108,30 @@ def walk_articles(
             batch = list(session.execute(q).scalars())
             if not batch:
                 return False, None
+
+            batch_payloads: list[Any] = []
+            limit_reached = False
             for article in batch:
                 cursor = article.id
                 examined_total += 1
                 if limit is not None and examined_total > limit:
+                    limit_reached = True
                     break
                 result.examined += 1
-                bucket = process_one(session, article, reprocess)
+                bucket, payload = process_one(session, article, reprocess)
                 setattr(result, bucket, getattr(result, bucket) + 1)
+                if payload is not None:
+                    batch_payloads.append(payload)
                 last_processed = article.id
+
+            flush_batch(writer, batch_payloads).result(timeout=120)
+            # Release the read snapshot so the next batch's SELECT sees
+            # the writes that just committed via the writer thread.
             session.commit()
+
             if progress is not None:
                 progress(result)
-            if limit is not None and examined_total > limit:
+            if limit_reached:
                 return False, None
             if deadline is not None and time.monotonic() >= deadline:
                 # Time budget elapsed. Everything we processed is

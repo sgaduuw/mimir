@@ -290,26 +290,29 @@ def set(key: str, value: Any, ttl: int) -> None:
     web tier's gunicorn workers calling cache.set via its own
     RPC path), the existing inline behaviour applies.
     """
-    # Route through the WriterThread when an active writer is registered
-    # in the calling context. In production this is set by the broker's
-    # serve() lifecycle (warm handlers use this path). Outside the broker
-    # (web tier, tests that don't register a writer) get_active_writer()
-    # raises RuntimeError and the code falls through to the direct path.
-    try:
-        from mimir.broker import _context
+    # Route through the WriterThread only when called from inside a
+    # broker handler thread (the broker's worker loop sets the
+    # thread-local flag on entry, clears on exit). Process-level context
+    # registration alone isn't enough: in-process test setups can have
+    # an active writer registered for the broker handler threads while
+    # test threads call cache.set with a monkeypatched SessionLocal,
+    # which the writer path would bypass.
+    if _broker_handler_active():
+        try:
+            from mimir.broker import _context
 
-        _writer = _context.get_active_writer()
-    except RuntimeError:
-        _writer = None
+            _writer = _context.get_active_writer()
+        except RuntimeError:
+            _writer = None
 
-    if _writer is not None:
-        # Fire-and-forget; matches cache.set's best-effort posture.
-        # Local import avoids a module-level circular dependency
-        # between cache.py and broker.writes (which imports cache).
-        from mimir.cache import set_via_writer  # noqa: PLC0415
+        if _writer is not None:
+            # Fire-and-forget; matches cache.set's best-effort posture.
+            # Local import avoids a module-level circular dependency
+            # between cache.py and broker.writes (which imports cache).
+            from mimir.cache import set_via_writer  # noqa: PLC0415
 
-        set_via_writer(_writer, key, value, ttl)
-        return
+            set_via_writer(_writer, key, value, ttl)
+            return
 
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
