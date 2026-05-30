@@ -13,8 +13,15 @@ Underscore-prefixed; not part of the public ingest / patches /
 trailers / patch_series surfaces.
 """
 
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime
+
+from sqlalchemy import delete
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+from mimir.broker.writes import WriteFuture, WriteOp
+from mimir.models import ArticleFile
 
 
 @dataclass
@@ -94,3 +101,36 @@ class _CanonicalPending:
     observation_deltas: dict[int, dict[str, tuple[int, datetime]]] = field(
         default_factory=dict
     )
+
+
+def _submit_article_files_batch(
+    writer, payloads: list[_ArticleFilesPending]
+) -> WriteFuture:
+    """Compose the per-batch composite WriteOp for `backfill_article_files`.
+
+    The closure iterates `payloads` in order. For each:
+    - if `delete_first`, issue `DELETE FROM article_files WHERE article_id = ?`.
+    - then issue `INSERT INTO article_files (article_id, path) VALUES (?, ?)
+      ON CONFLICT (article_id, path) DO NOTHING` for each path.
+
+    Empty payload list returns a pre-resolved future without queueing.
+    """
+    if not payloads:
+        f: Future = Future()
+        f.set_result(None)
+        return f
+
+    def _fn(conn):
+        for p in payloads:
+            if p.delete_first:
+                conn.execute(
+                    delete(ArticleFile).where(ArticleFile.article_id == p.article_id)
+                )
+            for path in p.paths:
+                conn.execute(
+                    sqlite_insert(ArticleFile)
+                    .values(article_id=p.article_id, path=path)
+                    .on_conflict_do_nothing(index_elements=["article_id", "path"])
+                )
+
+    return writer.submit(WriteOp(label="backfill:article_files:batch", fn=_fn))
