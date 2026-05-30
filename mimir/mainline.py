@@ -22,6 +22,7 @@ to learn two paths. Keeping it together follows the same shape as
 import logging
 import re
 import subprocess
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,6 +34,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from mimir import maintainers
+from mimir.broker.writes import WriteFuture, WriteOp
 from mimir.config import settings
 from mimir.datetime_utils import aware_utc
 
@@ -406,6 +408,48 @@ def _ensure_tree(
             check=True,
         )
     return tree_path
+
+
+def _submit_mainline_batch(writer, tree_name: str, batch: list[dict]) -> WriteFuture:
+    """Phase 3 of the two-pool restructure
+    (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
+
+    Compose a WriteOp wrapping INSERT OR IGNORE for a batch of
+    mainline commits and submit it to the writer. Returns the
+    WriteFuture so the caller can wait on the commit before
+    composing the next batch (preserves resume-from-cursor
+    semantics: the cursor only advances after a batch's submitted
+    future resolves).
+
+    `batch` is a list of dicts matching the `mainline_commits`
+    schema: `commit_sha`, `message_id`, `tree_name`, `committed_at`.
+    Per-batch size is operator-tunable via
+    `settings.mainline_commit_batch_size`.
+
+    Empty batches are no-ops -- return a pre-resolved future so
+    the caller's `.result()` doesn't block."""
+    if not batch:
+        f: Future = Future()
+        f.set_result(None)
+        return f
+
+    def _fn(conn):
+        # Mirror the inline path's SQL exactly so rows written here
+        # are indistinguishable from rows written by the existing
+        # walk_commits flush() closure (which we're displacing per
+        # Phase 3). Composite PK is (commit_sha, message_id);
+        # on_conflict_do_nothing handles the three dup scenarios
+        # documented in the inline path's comment.
+        stmt = (
+            sqlite_insert(MainlineCommit)
+            .values(batch)
+            .on_conflict_do_nothing(index_elements=["commit_sha", "message_id"])
+        )
+        conn.execute(stmt)
+
+    return writer.submit(
+        WriteOp(label=f"mainline:{tree_name}:batch", fn=_fn),
+    )
 
 
 def load_maintainers(
