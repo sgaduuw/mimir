@@ -452,6 +452,49 @@ def _submit_mainline_batch(writer, tree_name: str, batch: list[dict]) -> WriteFu
     )
 
 
+def _submit_mainline_cursor_update(
+    writer,
+    tree_name: str,
+    last_commit_sha: str,
+) -> WriteFuture:
+    """Phase 3 of the two-pool restructure
+    (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
+
+    Compose a WriteOp upserting the Link-trailer walker cursor
+    (`MainlineState.commits_walked_to_sha`) for one tree, submit
+    to the writer, return the future. Called AFTER all per-tree
+    batch WriteOps have committed (their futures resolved); the
+    cursor is the final WriteOp per tree so a crash between the
+    last batch and the cursor leaves the next tick re-walking
+    the just-inserted commits, which is idempotent because
+    mainline_commits uses on_conflict_do_nothing on the
+    (commit_sha, message_id) PK.
+
+    UPSERT: works whether MainlineState has a row for this tree
+    yet or not. tree_name is the PK; on conflict, only
+    commits_walked_to_sha is updated. last_commit_sha (the
+    MAINTAINERS HEAD cursor) and last_walked_at are not touched
+    here -- they have their own write paths."""
+
+    def _fn(conn):
+        stmt = (
+            sqlite_insert(MainlineState)
+            .values(
+                tree_name=tree_name,
+                commits_walked_to_sha=last_commit_sha,
+            )
+            .on_conflict_do_update(
+                index_elements=["tree_name"],
+                set_={"commits_walked_to_sha": last_commit_sha},
+            )
+        )
+        conn.execute(stmt)
+
+    return writer.submit(
+        WriteOp(label=f"mainline:{tree_name}:cursor", fn=_fn),
+    )
+
+
 def load_maintainers(
     tree_path: Path,
     tree_name: str = "linus",
