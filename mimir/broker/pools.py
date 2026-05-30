@@ -68,11 +68,16 @@ class ReadSessionPool:
     @contextlib.contextmanager
     def session(self):
         """Yield a query_only=1 session; close on exit. Raises
-        RuntimeError if the pool has been closed."""
+        RuntimeError if the pool has been closed.
+
+        The session is constructed while holding `_closed_lock` so a
+        concurrent `close()` cannot dispose the engine between the
+        closed-check and the sessionmaker call. The lock is released
+        before yielding, so session use itself does not block close()."""
         with self._closed_lock:
             if self._closed:
                 raise RuntimeError("ReadSessionPool is closed")
-        s: Session = self._sessionmaker()
+            s: Session = self._sessionmaker()
         try:
             yield s
         finally:
