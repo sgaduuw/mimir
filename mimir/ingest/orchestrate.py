@@ -46,14 +46,18 @@ def _warm_after_ingest(session: Session, inbox: Inbox) -> None:
     intact: a steady-state UPDATE_EVERY=300s tick doesn't re-run the
     multi-second COUNT(*) on every fire.
 
-    Runs *outside* `ingest_inbox`'s `write_transaction()` block on
-    purpose. `cache.set` opens its own write session (the cache module
-    is session-independent by design); if the warm ran under
-    `write_transaction()`, that helper's ContextVar would leak into
-    `cache.set`'s session, upgrade its `BEGIN` to `BEGIN IMMEDIATE`,
-    and self-deadlock against the writer lock the outer block already
-    holds. The read SELECT in this helper uses the normal deferred
-    BEGIN and doesn't contend with anything.
+    Runs on its own `SessionLocal()` session, not on `ingest_inbox`'s
+    `pool.session()` (which is `query_only=1` and would reject the
+    cache writes the helpers fire). `cache.set` opens its own write
+    session internally, so the warm helpers just need a readable
+    session to compute against.
+
+    Pre-Phase-3b this docstring documented why the warm ran *outside*
+    `ingest_inbox`'s `write_transaction()` block (to avoid leaking
+    the BEGIN IMMEDIATE ContextVar into `cache.set`'s session and
+    self-deadlocking). Phase 3b removed that block; the helper's
+    isolation rule is now simpler (private write session), but the
+    "best-effort, never crash the ingest tick" posture is unchanged.
 
     Scope is deliberately narrow: just the helpers that drive the meta-
     index `/` cards (`archive_stats`, `daily_volume`) and the per-inbox
