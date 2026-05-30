@@ -62,14 +62,10 @@ COMMIT_EVERY = 500
 # trips the 30 s gateway timeout on a cold front page. Capping
 # per-commit hold at 500 ms keeps that stack under ~5 s comfortably.
 #
-# Floor: even hot inboxes (`stable`, `linux-mm`) committing on the
-# message-count side already hit COMMIT_EVERY=500 well within this
-# wall budget, so the time cap only fires on the steady-state
-# few-hundred-messages-per-tick path that was holding the lock for
-# 1.7-2.2 s on production 1.36.0. Direct (non-broker) ingests are
-# unaffected: same number of commits, just more of them on hot
-# inboxes; commit overhead on SQLite WAL is single-digit ms.
-COMMIT_EVERY_SECONDS = 0.5
+# Phase 3b replaces COMMIT_EVERY_SECONDS with settings.ingest_batch_flush_seconds.
+# See _claude/plans/2026-05-30-broker-two-pool-phase-3b-ingest.md for context.
+# The value was previously a module constant; env-tunable default remains 0.5.
+# (The constant is deleted below per the step plan; callers read from settings.)
 DEFAULT_WORKERS = os.cpu_count() or 1
 PARSE_CHUNKSIZE = 50
 
@@ -448,9 +444,9 @@ def ingest_epoch(
     # doesn't ride the 24h `archive_stats` cache. See #216.
     pending_max_date: datetime | None = None
 
-    # Wall-clock anchor for the `COMMIT_EVERY_SECONDS` time cap. Reset
-    # to the current monotonic time inside `flush_batch` so every
-    # commit window starts fresh; an exception that propagates out
+    # Wall-clock anchor for the `settings.ingest_batch_flush_seconds` time
+    # cap. Reset to the current monotonic time inside `flush_batch` so
+    # every commit window starts fresh; an exception that propagates out
     # before `flush_batch` runs would leave a stale anchor, but the
     # surrounding `write_transaction` rolls back the in-flight batch
     # in that case so the stale value is moot.
@@ -671,10 +667,11 @@ def ingest_epoch(
         # when the wall-clock cap fires (steady-state hot inboxes
         # under broker mode, where the cache worker needs the writer
         # lock back regularly to serve cache.set RPCs). See the
-        # COMMIT_EVERY_SECONDS comment above for the why.
+        # Phase 3b plan for the rationale.
         if (
             processed % COMMIT_EVERY == 0
-            or (time.monotonic() - last_commit_at) >= COMMIT_EVERY_SECONDS
+            or (time.monotonic() - last_commit_at)
+            >= settings.ingest_batch_flush_seconds
         ):
             flush_batch()
 
