@@ -122,3 +122,90 @@ def test_submit_mainline_batch_empty_batch_is_noop(seeded_db):
         assert future.result() is None
     finally:
         writer.stop(timeout=5)
+
+
+def test_submit_mainline_cursor_update_advances_state_via_writer(seeded_db):
+    """_submit_mainline_cursor_update composes a WriteOp wrapping the
+    MainlineState upsert for a tree's commits_walked_to_sha cursor,
+    submits it to the writer, and the state row reflects the new
+    SHA after the writer drains.
+
+    UPSERT semantics: works whether the row exists or not.
+    """
+    from sqlalchemy import create_engine, text
+
+    from mimir.broker.writes import WriterThread
+    from mimir.config import settings
+    from mimir.mainline import _submit_mainline_cursor_update
+
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        # First update -- row may or may not exist for tree "linus"
+        # from a prior test; either way the upsert should leave the
+        # cursor at "d" * 40.
+        future = _submit_mainline_cursor_update(writer, "linus", "d" * 40)
+        future.result(timeout=5)
+
+        engine = create_engine(settings.database_url, future=True)
+        with engine.connect() as c:
+            sha = c.execute(
+                text(
+                    "SELECT commits_walked_to_sha FROM mainline_state "
+                    "WHERE tree_name = 'linus'"
+                )
+            ).scalar_one_or_none()
+            assert sha == "d" * 40
+            c.commit()
+
+            # Reset for other tests -- set cursor back to NULL.
+            c.execute(
+                text(
+                    "UPDATE mainline_state SET commits_walked_to_sha = NULL "
+                    "WHERE tree_name = 'linus'"
+                )
+            )
+            c.commit()
+        engine.dispose()
+    finally:
+        writer.stop(timeout=5)
+
+
+def test_submit_mainline_cursor_update_creates_row_when_missing(seeded_db):
+    """If MainlineState has no row for this tree yet, the upsert
+    creates one with the cursor set. Covers the "new tree" boot
+    case where MainlineState may be empty."""
+    from sqlalchemy import create_engine, text
+
+    from mimir.broker.writes import WriterThread
+    from mimir.config import settings
+    from mimir.mainline import _submit_mainline_cursor_update
+
+    writer = WriterThread.from_settings()
+    writer.start()
+    engine = create_engine(settings.database_url, future=True)
+    try:
+        # Ensure no row exists for tree "phase3-new".
+        with engine.connect() as c:
+            c.execute(text("DELETE FROM mainline_state WHERE tree_name = 'phase3-new'"))
+            c.commit()
+
+        future = _submit_mainline_cursor_update(writer, "phase3-new", "e" * 40)
+        future.result(timeout=5)
+
+        with engine.connect() as c:
+            sha = c.execute(
+                text(
+                    "SELECT commits_walked_to_sha FROM mainline_state "
+                    "WHERE tree_name = 'phase3-new'"
+                )
+            ).scalar_one()
+            assert sha == "e" * 40
+            c.commit()
+
+            # Cleanup.
+            c.execute(text("DELETE FROM mainline_state WHERE tree_name = 'phase3-new'"))
+            c.commit()
+    finally:
+        engine.dispose()
+        writer.stop(timeout=5)
