@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.12.0], 2026-05-29
+
 ### Changed
 
 - **`deploy/scheduler.sh` no longer blocks the loop on the initial
