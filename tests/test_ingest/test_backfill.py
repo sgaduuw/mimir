@@ -24,7 +24,9 @@ from tests.test_ingest._helpers import (
 )
 
 
-def test_backfill_resolves_canonical_when_to_matches_known_address(seeded_db, tmp_path):
+def test_backfill_resolves_canonical_when_to_matches_known_address(
+    seeded_db, tmp_path, broker_active
+):
     _clear_seed_articles(seeded_db)
     alpha = _alpha(seeded_db)
     _ingest_with_to(
@@ -54,7 +56,9 @@ def test_backfill_resolves_canonical_when_to_matches_known_address(seeded_db, tm
         assert art.canonical_inbox_id == alpha.id
 
 
-def test_backfill_unresolved_when_no_address_matches(seeded_db, tmp_path):
+def test_backfill_unresolved_when_no_address_matches(
+    seeded_db, tmp_path, broker_active
+):
     _clear_seed_articles(seeded_db)
     alpha = _alpha(seeded_db)
     _ingest_with_to(
@@ -77,7 +81,7 @@ def test_backfill_unresolved_when_no_address_matches(seeded_db, tmp_path):
         assert art.canonical_inbox_id is None
 
 
-def test_backfill_respects_limit(seeded_db, tmp_path):
+def test_backfill_respects_limit(seeded_db, tmp_path, broker_active):
     _clear_seed_articles(seeded_db)
     alpha = _alpha(seeded_db)
     msgs = [
@@ -95,7 +99,7 @@ def test_backfill_respects_limit(seeded_db, tmp_path):
     assert result.examined == 2
 
 
-def test_backfill_inbox_filter_restricts_walk(seeded_db, tmp_path):
+def test_backfill_inbox_filter_restricts_walk(seeded_db, tmp_path, broker_active):
     _clear_seed_articles(seeded_db)
     alpha = _alpha(seeded_db)
     _ingest_with_to(
@@ -110,7 +114,7 @@ def test_backfill_inbox_filter_restricts_walk(seeded_db, tmp_path):
     assert result.examined == 0
 
 
-def test_backfill_skip_when_blob_missing(seeded_db, tmp_path):
+def test_backfill_skip_when_blob_missing(seeded_db, tmp_path, broker_active):
     _clear_seed_articles(seeded_db)
     alpha = _alpha(seeded_db)
     _ingest_with_to(
@@ -132,7 +136,7 @@ def test_backfill_skip_when_blob_missing(seeded_db, tmp_path):
     assert result.resolved == 0
 
 
-def test_backfill_reprocess_re_examines_already_set(seeded_db, tmp_path):
+def test_backfill_reprocess_re_examines_already_set(seeded_db, tmp_path, broker_active):
     _clear_seed_articles(seeded_db)
     alpha = _alpha(seeded_db)
     _ingest_with_to(
@@ -175,7 +179,7 @@ def test_backfill_reprocess_re_examines_already_set(seeded_db, tmp_path):
         assert art.canonical_inbox_id == beta_id
 
 
-def test_backfill_records_observations(seeded_db, tmp_path):
+def test_backfill_records_observations(seeded_db, tmp_path, broker_active):
     _clear_seed_articles(seeded_db)
     alpha = _alpha(seeded_db)
     msgs = [

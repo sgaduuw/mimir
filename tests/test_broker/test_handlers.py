@@ -3,6 +3,8 @@ broker daemon, just `dispatch(line: bytes) -> Reply` against the
 seeded test DB. Covers the happy path for each op, plus the error
 boundary (malformed JSON / unknown op / invalid request)."""
 
+import json
+
 from mimir import cache
 from mimir.broker.handlers import dispatch
 from mimir.broker.protocol import (
@@ -47,7 +49,11 @@ def test_dispatch_cache_set_writes_to_db(seeded_db):
 
 def test_dispatch_cache_delete_removes_row(seeded_db):
     nskey = cache._ns("test_dispatch_delete")
-    cache.set("test_dispatch_delete", "x", ttl=60)
+    # Use _direct_set to bypass the fire-and-forget writer routing that
+    # activates when the session-scoped _session_broker fixture has registered
+    # an active writer. We need the value visible immediately for the
+    # pre-condition assertion.
+    cache._direct_set(nskey, json.dumps(cache._encode("x")), 60)
     assert cache.get("test_dispatch_delete") == "x"
 
     reply = dispatch(_line(CacheDeleteRequest(key=nskey)))

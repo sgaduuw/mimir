@@ -143,3 +143,20 @@ def test_settings_mainline_commit_batch_size_env_override(monkeypatch):
 
     s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.mainline_commit_batch_size == 50
+
+
+def test_settings_has_ingest_batch_flush_seconds_default():
+    """Default 0.5 s preserves the pre-Phase-3b COMMIT_EVERY_SECONDS value.
+    Operators tune via INGEST_BATCH_FLUSH_SECONDS."""
+    from mimir.config import Settings
+
+    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    assert s.ingest_batch_flush_seconds == 0.5
+
+
+def test_settings_ingest_batch_flush_seconds_env_override(monkeypatch):
+    monkeypatch.setenv("INGEST_BATCH_FLUSH_SECONDS", "2.5")
+    from mimir.config import Settings
+
+    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    assert s.ingest_batch_flush_seconds == 2.5

@@ -39,7 +39,7 @@ from tests.test_ingest._helpers import (
 )
 
 
-def test_ingest_new_message_creates_article(seeded_db, tmp_path):
+def test_ingest_new_message_creates_article(seeded_db, tmp_path, broker_active):
     alpha = _alpha(seeded_db)
     _build_pubinbox_repo(tmp_path / "0.git", [_rfc5322("fresh@example.com")])
 
@@ -67,7 +67,9 @@ def test_ingest_new_message_creates_article(seeded_db, tmp_path):
         assert link.epoch == "0.git"
 
 
-def test_ingest_new_message_ids_only_tracks_new_bucket(seeded_db, tmp_path):
+def test_ingest_new_message_ids_only_tracks_new_bucket(
+    seeded_db, tmp_path, broker_active
+):
     """`new_message_ids` is the IndexNow feed: only freshly-created
     Articles (the `new` bucket) belong in it. `linked` rows (cross-
     post: the Article already existed, just got a new ArticleList
@@ -97,6 +99,7 @@ def test_ingest_new_message_ids_only_tracks_new_bucket(seeded_db, tmp_path):
 def test_ingest_extracts_diff_touched_paths_for_patch_body(
     seeded_db,
     tmp_path,
+    broker_active,
 ):
     """Patch bodies get one ArticleFile row per `diff --git`
     header. The b/ side is stored; that's the path reviewers and
@@ -135,6 +138,7 @@ def test_ingest_extracts_diff_touched_paths_for_patch_body(
 def test_ingest_extracts_no_paths_for_prose_only_body(
     seeded_db,
     tmp_path,
+    broker_active,
 ):
     """Non-patch bodies create zero ArticleFile rows. The "other
     patches touching X" sidebar must not include discussion-only
@@ -160,7 +164,7 @@ def test_ingest_extracts_no_paths_for_prose_only_body(
     assert rows == []
 
 
-def test_ingest_extracts_review_trailers(seeded_db, tmp_path):
+def test_ingest_extracts_review_trailers(seeded_db, tmp_path, broker_active):
     """Bodies carrying `Reviewed-by:` / `Acked-by:` / etc. land
     one ArticleTrailer row per attestation. Address is stored
     verbatim; address_normalized is lowercased for case-insensitive
@@ -199,7 +203,9 @@ def test_ingest_extracts_review_trailers(seeded_db, tmp_path):
     ]
 
 
-def test_ingest_extracts_no_trailers_for_prose_only_body(seeded_db, tmp_path):
+def test_ingest_extracts_no_trailers_for_prose_only_body(
+    seeded_db, tmp_path, broker_active
+):
     """Prose bodies create zero ArticleTrailer rows."""
     alpha = _alpha(seeded_db)
     _build_pubinbox_repo(
@@ -224,6 +230,7 @@ def test_ingest_extracts_no_trailers_for_prose_only_body(seeded_db, tmp_path):
 def test_ingest_linked_cross_post_does_not_double_add_files(
     seeded_db,
     tmp_path,
+    broker_active,
 ):
     """When a message gets `linked` (already in another inbox),
     the existing Article retains its ArticleFile rows, the linked
@@ -276,6 +283,7 @@ def test_ingest_linked_cross_post_does_not_double_add_files(
 def test_ingest_records_patch_series_key_for_cover_letter(
     seeded_db,
     tmp_path,
+    broker_active,
 ):
     """A `[PATCH v2 0/3] <title>` subject lands a series key +
     version on the Article row. Non-cover-letter articles leave
@@ -318,7 +326,9 @@ def test_ingest_records_patch_series_key_for_cover_letter(
     assert patch.patch_series_position == 1
 
 
-def test_ingest_inseries_with_inreplyto_links_to_cover(seeded_db, tmp_path):
+def test_ingest_inseries_with_inreplyto_links_to_cover(
+    seeded_db, tmp_path, broker_active
+):
     """In-series patch carrying `In-Reply-To: <cover>` and ingested
     in the same walk as the cover (cover commits first → walked
     first → in DB when the patch is processed) inherits the cover's
@@ -372,6 +382,7 @@ def test_ingest_inseries_with_inreplyto_links_to_cover(seeded_db, tmp_path):
 def test_ingest_inseries_orphan_when_cover_not_yet_ingested(
     seeded_db,
     tmp_path,
+    broker_active,
 ):
     """An in-series patch arriving before its cover (rare across
     epoch boundaries, or when ingesting one epoch at a time) has
@@ -402,7 +413,9 @@ def test_ingest_inseries_orphan_when_cover_not_yet_ingested(
     assert patch.patch_series_version is None
 
 
-def test_ingest_groups_v1_and_v2_under_same_series_key(seeded_db, tmp_path):
+def test_ingest_groups_v1_and_v2_under_same_series_key(
+    seeded_db, tmp_path, broker_active
+):
     """Two cover letters with the same title + same author get the
     same `patch_series_key`. Pins the cross-revision linkage that
     drives the timeline render."""
@@ -442,7 +455,9 @@ def test_ingest_groups_v1_and_v2_under_same_series_key(seeded_db, tmp_path):
 # Bucket: linked (cross-post)
 
 
-def test_ingest_linked_when_message_id_already_in_other_inbox(seeded_db, tmp_path):
+def test_ingest_linked_when_message_id_already_in_other_inbox(
+    seeded_db, tmp_path, broker_active
+):
     """art2@example.com is in beta (seeded). Ingesting it into alpha
     must reuse the existing Article and add an article_lists row
     that's the `linked` bucket."""
@@ -474,7 +489,7 @@ def test_ingest_linked_when_message_id_already_in_other_inbox(seeded_db, tmp_pat
 # Bucket: dup_batch
 
 
-def test_ingest_dup_batch_skips_in_same_walk(seeded_db, tmp_path):
+def test_ingest_dup_batch_skips_in_same_walk(seeded_db, tmp_path, broker_active):
     """Two commits in the same batch carrying the same Message-ID:
     the second lands in dup_batch."""
     alpha = _alpha(seeded_db)
@@ -499,7 +514,9 @@ def test_ingest_dup_batch_skips_in_same_walk(seeded_db, tmp_path):
 # Bucket: dup_db (re-walk)
 
 
-def test_ingest_dup_db_when_rewalking_existing_inbox(seeded_db, tmp_path):
+def test_ingest_dup_db_when_rewalking_existing_inbox(
+    seeded_db, tmp_path, broker_active
+):
     """Run ingest_epoch twice against the same repo. After the
     first run, the article is in DB and linked to alpha; the second
     run, with rewound IngestState, sees it as `dup_db`."""
@@ -533,7 +550,7 @@ def test_ingest_dup_db_when_rewalking_existing_inbox(seeded_db, tmp_path):
 # Bucket: failed
 
 
-def test_ingest_failed_on_unparseable_message(seeded_db, tmp_path):
+def test_ingest_failed_on_unparseable_message(seeded_db, tmp_path, broker_active):
     """A message with no Message-ID raises ValueError inside
     parse_message, gets caught by the worker, counted as `failed`,
     and the walker advances past it."""
@@ -561,6 +578,7 @@ def test_ingest_failed_repeat_logs_at_debug_not_warning(
     seeded_db,
     tmp_path,
     caplog,
+    broker_active,
 ):
     """A previously-recorded parse failure (its commit_sha is loaded
     into `failed_shas` at the start of the run) should log at DEBUG
@@ -600,7 +618,9 @@ def test_ingest_failed_repeat_logs_at_debug_not_warning(
     assert levels_second == {"DEBUG"}, levels_second
 
 
-def test_ingest_failed_on_oversized_message(seeded_db, tmp_path, monkeypatch):
+def test_ingest_failed_on_oversized_message(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
     """A message above the size cap raises MessageTooLarge in
     parse_message; counted as failed."""
     import mimir.parser
@@ -626,7 +646,7 @@ def test_ingest_failed_on_oversized_message(seeded_db, tmp_path, monkeypatch):
 # IngestState resume
 
 
-def test_ingest_state_advances_on_each_batch(seeded_db, tmp_path):
+def test_ingest_state_advances_on_each_batch(seeded_db, tmp_path, broker_active):
     """After ingest, IngestState.last_commit_sha equals the HEAD of
     the repo we just walked."""
     alpha = _alpha(seeded_db)
@@ -647,7 +667,7 @@ def test_ingest_state_advances_on_each_batch(seeded_db, tmp_path):
     assert state.last_commit_sha == head
 
 
-def test_ingest_resume_skips_already_walked_commits(seeded_db, tmp_path):
+def test_ingest_resume_skips_already_walked_commits(seeded_db, tmp_path, broker_active):
     """A second ingest_epoch without rewinding state walks zero
     commits: the dulwich excludes-set covers HEAD."""
     alpha = _alpha(seeded_db)
@@ -668,7 +688,7 @@ def test_ingest_resume_skips_already_walked_commits(seeded_db, tmp_path):
 # Persisted parse failures
 
 
-def test_failed_parse_persists_parse_failures_row(seeded_db, tmp_path):
+def test_failed_parse_persists_parse_failures_row(seeded_db, tmp_path, broker_active):
     """A commit whose blob can't be parsed gets a row in
     parse_failures keyed by (inbox, epoch, commit_sha)."""
     alpha = _alpha(seeded_db)
@@ -694,7 +714,7 @@ def test_failed_parse_persists_parse_failures_row(seeded_db, tmp_path):
     assert row.first_seen == row.last_attempt
 
 
-def test_failed_parse_re_walked_increments_attempts(seeded_db, tmp_path):
+def test_failed_parse_re_walked_increments_attempts(seeded_db, tmp_path, broker_active):
     """A second walk over the same bad commit bumps `attempts` and
     `last_attempt`, leaves `first_seen` alone."""
     alpha = _alpha(seeded_db)
@@ -732,7 +752,7 @@ def test_failed_parse_re_walked_increments_attempts(seeded_db, tmp_path):
 
 
 def test_failed_then_succeeds_clears_parse_failures_row(
-    seeded_db, tmp_path, monkeypatch
+    seeded_db, tmp_path, monkeypatch, broker_active
 ):
     """A commit that failed under an old (artificially-tightened)
     parser parses cleanly after the constraint is relaxed: the
@@ -783,7 +803,7 @@ def test_failed_then_succeeds_clears_parse_failures_row(
 # replay_failures
 
 
-def test_ingest_records_list_address_observations(seeded_db, tmp_path):
+def test_ingest_records_list_address_observations(seeded_db, tmp_path, broker_active):
     """Each list-shaped To/Cc address surfaces as a row in
     inbox_address_observations, scoped to the ingesting inbox."""
     alpha = _alpha(seeded_db)
@@ -812,7 +832,9 @@ def test_ingest_records_list_address_observations(seeded_db, tmp_path):
     }
 
 
-def test_ingest_observations_accumulate_across_messages(seeded_db, tmp_path):
+def test_ingest_observations_accumulate_across_messages(
+    seeded_db, tmp_path, broker_active
+):
     """5 messages to the same list address should produce exactly one
     observation row with count=5 (not 5 rows of count=1, not 0/1, not
     a different address). last_seen must also be set (NOT NULL), since
@@ -852,7 +874,9 @@ def test_ingest_observations_accumulate_across_messages(seeded_db, tmp_path):
         assert obs.last_seen is not None
 
 
-def test_ingest_sets_canonical_when_to_address_matches_known_inbox(seeded_db, tmp_path):
+def test_ingest_sets_canonical_when_to_address_matches_known_inbox(
+    seeded_db, tmp_path, broker_active
+):
     """alpha already has list_address set; ingesting a message into
     beta whose To: points at alpha sets canonical_inbox_id=alpha.id."""
     with seeded_db() as s:
@@ -880,7 +904,7 @@ def test_ingest_sets_canonical_when_to_address_matches_known_inbox(seeded_db, tm
 
 
 def test_ingest_canonical_demotes_lkml_in_favour_of_topical(
-    seeded_db, tmp_path, monkeypatch
+    seeded_db, tmp_path, monkeypatch, broker_active
 ):
     """When `Settings.canonical_demoted_inboxes` lists an inbox and a
     cross-posted message hits both the demoted inbox and a topical
@@ -925,7 +949,9 @@ def test_ingest_canonical_demotes_lkml_in_favour_of_topical(
         )
 
 
-def test_ingest_canonical_null_when_no_known_address_matches(seeded_db, tmp_path):
+def test_ingest_canonical_null_when_no_known_address_matches(
+    seeded_db, tmp_path, broker_active
+):
     alpha = _alpha(seeded_db)
     raw = _rfc5322(
         "canon-null@example.com",
@@ -1071,7 +1097,9 @@ def test_promote_list_address_already_set_no_overwrite(seeded_db):
 # Backfill canonical-inbox + observations from historical blobs
 
 
-def test_ingest_handles_minus_0000_naive_date_in_observations(seeded_db, tmp_path):
+def test_ingest_handles_minus_0000_naive_date_in_observations(
+    seeded_db, tmp_path, broker_active
+):
     """Two messages with the same To address: one with +0000 (aware),
     one with -0000 (naive). Pre-fix, the second update of the
     pending_obs entry crashed on `max(aware, naive)` and rolled back
@@ -1124,7 +1152,7 @@ def test_ingest_handles_minus_0000_naive_date_in_observations(seeded_db, tmp_pat
 # --------------------------------------------------------------------------
 
 
-def test_ingest_with_multiple_workers_succeeds(seeded_db, tmp_path):
+def test_ingest_with_multiple_workers_succeeds(seeded_db, tmp_path, broker_active):
     """`workers=2` walks the epoch through a ProcessPoolExecutor.
     The parsed-message contract requires `parse_message` to pickle
     cleanly across the boundary; a regression that broke picklability
@@ -1149,6 +1177,7 @@ def test_ingest_with_multiple_workers_succeeds(seeded_db, tmp_path):
 def test_ingest_parser_failure_mid_worker_batch_preserves_order_and_resumes(
     seeded_db,
     tmp_path,
+    broker_active,
 ):
     """A parser-raising message buried inside a multi-chunk
     `ProcessPoolExecutor.map` run must not derail surrounding commits.
@@ -1259,7 +1288,9 @@ def test_ingest_parser_failure_mid_worker_batch_preserves_order_and_resumes(
 # --------------------------------------------------------------------------
 
 
-def test_kept_headers_filter_drops_received_dkim_spam(seeded_db, tmp_path):
+def test_kept_headers_filter_drops_received_dkim_spam(
+    seeded_db, tmp_path, broker_active
+):
     """The KEPT_HEADERS set is the load-bearing piece of the row-size
     invariant. Ingest a message with several headers in the dropped
     class (Received chains, DKIM-Signature, X-Spam-Status,
@@ -1328,6 +1359,7 @@ def test_kept_headers_filter_drops_received_dkim_spam(seeded_db, tmp_path):
 def test_ingest_bumps_inbox_last_article_date_on_new(
     seeded_db,
     tmp_path,
+    broker_active,
 ):
     """A fresh `new` ingest pushes `Inbox.last_article_date` to the
     commit time of the just-ingested message. Conftest seeds alpha at
@@ -1351,7 +1383,7 @@ def test_ingest_bumps_inbox_last_article_date_on_new(
     assert _naive_utc(ix.last_article_date) == datetime(2023, 11, 14, 22, 13, 20)
 
 
-def test_ingest_last_article_date_is_monotonic(seeded_db, tmp_path):
+def test_ingest_last_article_date_is_monotonic(seeded_db, tmp_path, broker_active):
     """A later ingest of an older-dated message doesn't push the
     field backward. Public-inbox commit times are monotonically
     increasing within an epoch, but re-walks, replays, and
@@ -1376,6 +1408,7 @@ def test_ingest_last_article_date_is_monotonic(seeded_db, tmp_path):
 def test_ingest_last_article_date_bumps_on_cross_post_link(
     seeded_db,
     tmp_path,
+    broker_active,
 ):
     """A cross-posted message that first landed in `beta` now landing
     in `alpha` bumps `alpha.last_article_date` too, using the
@@ -1412,7 +1445,7 @@ def test_commit_cadence_time_cap_fires_on_steady_state_hot_inbox(
     seeded_db,
     tmp_path,
     monkeypatch,
-    request,
+    broker_active,
 ):
     """1.36.1 regression: under broker mode (Phase 2.1+), the long
     worker holds the SQLite writer lock for the duration of each
@@ -1425,35 +1458,44 @@ def test_commit_cadence_time_cap_fires_on_steady_state_hot_inbox(
     multi-second waits, and the front page rendered cold for >100 s.
 
     The fix wraps the per-message commit decision in an OR with a
-    wall-clock cap (`COMMIT_EVERY_SECONDS`, 0.5 s by default), so
-    even sub-COMMIT_EVERY bursts release the writer lock at most
-    every 500 ms.
+    wall-clock cap (settings.ingest_batch_flush_seconds, 0.5 s by
+    default), so even sub-COMMIT_EVERY bursts release the writer lock
+    at most every 500 ms.
 
-    This test pins the property by forcing the time cap to fire on
-    every iteration (`COMMIT_EVERY_SECONDS=0`) and observing that
-    the engine commits N+1 times for N messages, rather than the
-    pre-1.36.1 single end-of-loop commit. The contrasting "default
-    cap, small burst" case is covered by the existing new/linked
-    tests above: 1-2 messages on the default 0.5 s cap commit once.
+    Phase 3b: commits go through the WriterThread's private engine, not
+    the module-level `engine` that the pre-3b test listened on. We count
+    flush-batch dispatches by spying on `_submit_ingest_batch`: with
+    `ingest_batch_flush_seconds=0` the time cap fires on every message,
+    so there must be N+1 submissions for N messages (N in-loop + 1 final).
+    The contrasting "default cap, small burst" case is covered by the
+    existing new/linked tests above: 1-2 messages on the default 0.5 s
+    cap flush once.
     """
-    from sqlalchemy import event
-
-    from mimir.extensions import engine
+    import mimir.ingest._pending as pending_mod
     from mimir.ingest import epoch as epoch_mod
 
     alpha = _alpha(seeded_db)
     msgs = [_rfc5322(f"tcap{i}@example.com") for i in range(5)]
     _build_pubinbox_repo(tmp_path / "0.git", msgs)
     monkeypatch.setattr(epoch_mod, "COMMIT_EVERY", 1000)
-    monkeypatch.setattr(epoch_mod, "COMMIT_EVERY_SECONDS", 0.0)
+    # Phase 3b: settings.ingest_batch_flush_seconds replaces
+    # the COMMIT_EVERY_SECONDS module constant.
+    from mimir.config import settings as config_settings
 
-    counter = [0]
+    monkeypatch.setattr(config_settings, "ingest_batch_flush_seconds", 0.0)
 
-    def _bump(_conn):
-        counter[0] += 1
+    # Count flush-batch dispatches by spying on _submit_ingest_batch.
+    # In Phase 3b the writer commits happen on the WriterThread's private
+    # engine (invisible to event.listen(engine, ...)), so we track the
+    # dispatch count directly.
+    submit_calls = [0]
+    real_submit = pending_mod._submit_ingest_batch
 
-    event.listen(engine, "commit", _bump)
-    request.addfinalizer(lambda: event.remove(engine, "commit", _bump))
+    def _spy(writer, pending):
+        submit_calls[0] += 1
+        return real_submit(writer, pending)
+
+    monkeypatch.setattr(pending_mod, "_submit_ingest_batch", _spy)
 
     with seeded_db() as s:
         result = epoch_mod.ingest_epoch(
@@ -1465,10 +1507,10 @@ def test_commit_cadence_time_cap_fires_on_steady_state_hot_inbox(
         )
 
     assert result.new == 5
-    # One commit per message (in-loop time-cap flushes) plus one
-    # final `flush_batch()` at end of loop = 6. Pre-1.36.1 this
+    # One _submit_ingest_batch call per message (in-loop time-cap flushes)
+    # plus one final flush_batch() at end of loop = 6. Pre-1.36.1 this
     # was 1 (only the final flush), regardless of message count.
-    assert counter[0] == 6, (
-        f"expected 6 commits (5 in-loop + 1 final) with "
-        f"COMMIT_EVERY_SECONDS=0; got {counter[0]}"
+    assert submit_calls[0] == 6, (
+        f"expected 6 _submit_ingest_batch calls (5 in-loop + 1 final) with "
+        f"ingest_batch_flush_seconds=0; got {submit_calls[0]}"
     )
