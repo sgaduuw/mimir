@@ -126,3 +126,20 @@ def test_settings_broker_writer_queue_depth_env_override(monkeypatch):
     monkeypatch.setenv("BROKER_WRITER_QUEUE_DEPTH", "1024")
     s = Settings(secret_key="test-secret-key-not-real-12345678")
     assert s.broker_writer_queue_depth == 1024
+
+
+def test_settings_has_mainline_commit_batch_size_default():
+    """Default 100 matches the Phase 3 spec walkthrough's batch
+    size. Operators tune via MAINLINE_COMMIT_BATCH_SIZE."""
+    from mimir.config import Settings
+
+    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    assert s.mainline_commit_batch_size == 100
+
+
+def test_settings_mainline_commit_batch_size_env_override(monkeypatch):
+    monkeypatch.setenv("MAINLINE_COMMIT_BATCH_SIZE", "50")
+    from mimir.config import Settings
+
+    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    assert s.mainline_commit_batch_size == 50
