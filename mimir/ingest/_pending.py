@@ -15,13 +15,15 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, insert as sa_insert, select, text, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mimir.broker.writes import WriteFuture, WriteOp
 from mimir.models import (
     Article,
+    ArticleFile,
     ArticleList,
+    ArticleTrailer,
     Inbox,
     InboxAddressObservation,
     IngestState,
@@ -33,7 +35,18 @@ from mimir.models import (
 class _ArticleInsert:
     """One row to insert into `articles`. id is None pre-INSERT; the
     composite WriteOp fills it from the RETURNING clause and the matching
-    `_ArticleListInsert` rows pick it up by index."""
+    `_ArticleListInsert` rows pick it up by index.
+
+    `touched_paths` carries the `diff --git b/<path>` paths from
+    `extract_touched_paths`; each becomes one `ArticleFile` row keyed on
+    the returned `article_id`. Empty list for non-patch articles.
+
+    `trailer_rows` carries `(role, name, address)` tuples from
+    `extract_trailers`; each becomes one `ArticleTrailer` row keyed on
+    the returned `article_id`. Empty list for articles with no review
+    attestation trailers. `address_normalized` is derived in the WriteOp
+    closure (lowercase of `address`) rather than carried here to keep the
+    dataclass lean."""
 
     message_id: str
     subject: str | None
@@ -45,6 +58,8 @@ class _ArticleInsert:
     patch_series_key: str | None = None
     patch_series_version: str | None = None
     patch_series_position: int | None = None
+    touched_paths: list[str] = field(default_factory=list)
+    trailer_rows: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -159,7 +174,10 @@ def _submit_ingest_batch(writer, pending: "_PendingWrites") -> WriteFuture:
     last_commit_sha = pending.last_commit_sha
 
     def _fn(conn):
-        # Step 1: INSERT articles, collect returned ids in order.
+        # Step 1: INSERT articles, collect returned ids in order. For
+        # each successfully inserted article, also insert its
+        # ArticleFile rows (diff-touched paths) and ArticleTrailer rows
+        # (review-attestation trailers) using the returned id as the FK.
         article_ids: list[int] = []
         for art in articles:
             row = conn.execute(
@@ -185,7 +203,39 @@ def _submit_ingest_batch(writer, pending: "_PendingWrites") -> WriteFuture:
             # so the index remains aligned with the articles list.
             # _ArticleListInsert rows that reference this index via
             # article_index should use existing_article_id instead.
-            article_ids.append(row[0] if row is not None else None)
+            article_id = row[0] if row is not None else None
+            article_ids.append(article_id)
+
+            # ArticleFile rows: one per diff-touched path. Composite
+            # (article_id, path) PK means repeated ingest of the same
+            # message is idempotent (on_conflict_do_nothing).
+            if article_id is not None and art.touched_paths:
+                for path in art.touched_paths:
+                    conn.execute(
+                        sqlite_insert(ArticleFile)
+                        .values(article_id=article_id, path=path)
+                        .on_conflict_do_nothing(index_elements=["article_id", "path"])
+                    )
+
+            # ArticleTrailer rows: one per review-attestation trailer.
+            # ArticleTrailer has an autoincrement `id` PK, not a
+            # composite natural key; we only insert when the article was
+            # freshly created (article_id not None means the INSERT did
+            # not hit on_conflict_do_nothing), so there is no duplicate
+            # risk: a second ingest of the same message lands a
+            # duplicate Article via on_conflict_do_nothing (article_id
+            # stays None) and we skip trailer insertion entirely.
+            if article_id is not None and art.trailer_rows:
+                for role, name, address in art.trailer_rows:
+                    conn.execute(
+                        sa_insert(ArticleTrailer).values(
+                            article_id=article_id,
+                            role=role,
+                            name=name,
+                            address=address,
+                            address_normalized=address.lower(),
+                        )
+                    )
 
         # Step 2: INSERT article_lists rows, resolving FKs by index.
         for al in article_lists:

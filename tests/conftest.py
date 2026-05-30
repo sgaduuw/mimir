@@ -79,6 +79,12 @@ def _migrate_db():
     # Tempdir is left for the OS to reap; no need to teardown.
 
 
+# References to the session broker's pool + writer, populated by
+# `_session_broker` at session start so the autouse re-registration
+# fixture can reinstate them after legacy tests that clear context.
+_SESSION_BROKER_REFS: dict = {}
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _session_broker(_migrate_db):
     """One in-process broker for the whole test session.
@@ -122,6 +128,16 @@ def _session_broker(_migrate_db):
     (sock_dir / ".broker_initial_analyze").touch()
 
     server = build_server(sock_path)
+    server.writer.start()
+    # Register the session broker's pool + writer so direct in-process
+    # callers (test helpers calling ingest_epoch/ingest_inbox without
+    # going through RPC) can resolve `_context.get_active_pool()` and
+    # `_context.get_active_writer()`. Safe for test-thread cache.set
+    # calls because cache.set gates the writer path on the broker
+    # handler thread-local flag, not on the global context.
+    from mimir.broker import _context as broker_context
+
+    broker_context.set_active(server.read_pool, server.writer)
     thread = threading.Thread(
         target=server.serve_forever,
         kwargs={"poll_interval": 0.05},
@@ -132,14 +148,21 @@ def _session_broker(_migrate_db):
 
     prev = settings.broker_socket_path
     settings.broker_socket_path = sock_path
+    # Expose the pool+writer for the autouse re-registration fixture
+    # so legacy tests that wipe the active context (without saving)
+    # can have it reinstated for the next test.
+    _SESSION_BROKER_REFS["pool"] = server.read_pool
+    _SESSION_BROKER_REFS["writer"] = server.writer
     try:
         yield sock_path
     finally:
         settings.broker_socket_path = prev
+        broker_context.clear_active()
         server.stop_event.set()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        server.writer.stop(timeout=10)
         server.read_pool.close()
         if sock_path.exists():
             sock_path.unlink()
@@ -147,6 +170,60 @@ def _session_broker(_migrate_db):
         for name in (".migrated", ".bootstrapped", ".broker_initial_analyze"):
             (sock_dir / name).unlink(missing_ok=True)
         sock_dir.rmdir()
+
+
+@pytest.fixture
+def broker_active(seeded_db):
+    """Per-test fixture: registers a fresh ReadSessionPool + WriterThread
+    as the active broker context for code that reaches _context accessors
+    (ingest_inbox, ingest_epoch, update_mainline, warm handlers). Cleared
+    after each test so the registration never leaks into subsequent tests.
+
+    This is the correct isolation boundary for Phase 3b (and 3a) tests
+    that call the context-dependent code paths. Session-scoped registration
+    would leak stale state into unrelated tests.
+
+    Saves and restores any pre-existing active context so the session-scoped
+    _session_broker fixture's registration survives across test files."""
+    from mimir.broker import _context
+    from mimir.broker.pools import ReadSessionPool
+    from mimir.broker.writes import WriterThread
+
+    saved_pool = _context._active_pool
+    saved_writer = _context._active_writer
+
+    pool = ReadSessionPool.from_settings()
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        _context.set_active(pool, writer)
+        yield
+    finally:
+        writer.stop(timeout=10)
+        pool.close()
+        # Restore the previous context (e.g. the session broker's
+        # registration) so subsequent tests are unaffected.
+        if saved_pool is not None and saved_writer is not None:
+            _context.set_active(saved_pool, saved_writer)
+        else:
+            _context.clear_active()
+
+
+@pytest.fixture(autouse=True)
+def _ensure_session_broker_context(_session_broker):
+    """Re-register the session broker's pool + writer in `_context`
+    after each test. Several legacy test fixtures (test_cli_maintainers,
+    test_mainline, etc.) call `_context.clear_active()` on teardown
+    without saving/restoring; this autouse fixture closes that hole
+    by reinstating the session broker's registration so the next test
+    finds a valid context."""
+    from mimir.broker import _context as broker_context
+
+    yield
+    if broker_context._active_pool is None or broker_context._active_writer is None:
+        broker_context.set_active(
+            _SESSION_BROKER_REFS["pool"], _SESSION_BROKER_REFS["writer"]
+        )
 
 
 @pytest.fixture(autouse=True)

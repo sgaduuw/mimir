@@ -692,7 +692,7 @@ def serve(socket_path: Path) -> None:
 
     server.writer.start()
     # Phase 2 of the two-pool restructure registers this server's
-    # pool + writer so handler functions (warm.py first) can reach
+    # pool + writer so handler functions (warm.py, ingest, etc.) can reach
     # them without a dispatcher refactor.
     _context.set_active(server.read_pool, server.writer)
 

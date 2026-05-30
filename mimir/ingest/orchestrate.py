@@ -11,17 +11,18 @@ from pathlib import Path
 
 from dulwich.errors import NotGitRepository
 from dulwich.repo import Repo
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mimir import cache
+from mimir.broker._context import get_active_pool, get_active_writer
 from mimir.config import settings
 from mimir.dashboard import archive_stats, daily_volume
-from mimir.extensions import SessionLocal, engine, write_transaction
+from mimir.extensions import SessionLocal
+from mimir.ingest._pending import _submit_analyze, _submit_promote_list_address
 from mimir.ingest.epoch import (
     DEFAULT_WORKERS,
     IngestResult,
-    _maybe_promote_list_address,
     ingest_epoch,
 )
 from mimir.models import Inbox
@@ -90,42 +91,51 @@ def ingest_inbox(
     limit: int | None = None,
     workers: int = DEFAULT_WORKERS,
 ) -> list[IngestResult]:
-    """Ingest every epoch under one inbox's mirror path."""
+    """Ingest every epoch under one inbox's mirror path.
+
+    Phase 3b: all writes go through the active WriterThread via WriteOps
+    (obtained from _context.get_active_writer()). Reads use a
+    query_only session from _context.get_active_pool(). No
+    write_transaction() block is held for the epoch walk duration.
+    """
+    pool = get_active_pool()
+    writer = get_active_writer()
+
     results: list[IngestResult] = []
     remaining = limit
-    # BEGIN IMMEDIATE on every transaction in this block. ingest_epoch
-    # interleaves SELECTs (dedup checks, list-address map refresh) with
-    # INSERTs (new articles, article_lists rows, observations), so a
-    # gunicorn cache.set committing between two of those statements
-    # would trip SQLITE_BUSY_SNAPSHOT and roll back the in-progress
-    # batch.
-    with (
-        write_transaction(f"ingest_inbox:{inbox.name}"),
-        SessionLocal() as session,
-    ):
-        # Re-attach the Inbox to this session so .id reads work after
-        # the caller's session was closed.
-        attached = session.merge(inbox)
-        # Capture the empty-vs-populated state *from the DB* (not via
-        # the merged ORM attribute, which would inherit a possibly-
-        # stale value from the input object) before any ingest_epoch
-        # call mutates last_article_date in this session. Used below
-        # to decide whether this run is an empty-to-non-empty
+
+    with pool.session() as session:
+        # Capture the empty-vs-populated state *from the DB* before any
+        # ingest_epoch call's batch commits mutate last_article_date. Used
+        # below to decide whether this run is an empty-to-non-empty
         # transition that should bust the per-inbox cache.
+        #
+        # We do NOT merge `inbox` into this session. Merging an ORM object
+        # into a query_only=1 session marks the object dirty (when the
+        # in-memory state differs from the DB, e.g. because a test updated
+        # the DB directly after fetching the object), and SQLAlchemy's
+        # autoflush fires on the next query attempt, raising
+        # OperationalError("attempt to write a readonly database").
+        #
+        # `inbox.id` is safe on a detached object (assigned at INSERT time
+        # and never cleared); `inbox.mirror_path` and `inbox.name` are
+        # plain column values that survive detachment. `ingest_epoch` only
+        # reads `inbox.id` and `inbox.name`, so no re-attach is needed.
         was_empty = (
             session.execute(
-                select(Inbox.last_article_date).where(Inbox.id == attached.id)
+                select(Inbox.last_article_date).where(Inbox.id == inbox.id)
             ).scalar_one()
             is None
         )
-        for epoch_path in discover_epochs(Path(attached.mirror_path)):
+        for epoch_path in discover_epochs(Path(inbox.mirror_path)):
             if remaining is not None and remaining <= 0:
                 break
             r = ingest_epoch(
                 session,
-                attached,
+                inbox,
                 epoch_path.name,
                 epoch_path,
+                writer=writer,
                 limit=remaining,
                 workers=workers,
             )
@@ -134,32 +144,22 @@ def ingest_inbox(
                 remaining -= r.new + r.linked + r.dup_batch + r.dup_db + r.failed
 
     # Promote `Inbox.list_address` if we now have enough observations.
-    # Cheap: at most two rows queried, one update if it fires.
-    with (
-        write_transaction(f"promote_list_address:{inbox.name}"),
-        SessionLocal() as session,
-    ):
-        _maybe_promote_list_address(session, inbox.id)
-        session.commit()
+    # Dispatched as a WriteOp through the writer, same semantics as
+    # the legacy write_transaction + _maybe_promote_list_address path.
+    _submit_promote_list_address(writer, inbox.id).result(timeout=30)
 
     # Refresh planner stats when we've moved enough rows that prior
     # `sqlite_stat1` can no longer be trusted, most importantly the
     # first ingest of a freshly-added inbox, which lands a whole archive
     # in one go and would otherwise leave the planner blind until the
-    # next scheduled ANALYZE.
+    # next scheduled ANALYZE. Dispatched as a WriteOp; the label
+    # `auto_analyze:<inbox>` matches the legacy write_transaction label
+    # shape for slow-write WARNING correlation.
     threshold = settings.analyze_after_ingest_rows
     moved = sum(r.new + r.linked for r in results)
     if threshold > 0 and moved >= threshold:
         logger.info("auto-ANALYZE after %s/%d rows ingested", inbox.name, moved)
-        # Wrap in write_transaction so the writer-lock-hold duration
-        # surfaces in the slow-write WARNING with a clear label. The
-        # ANALYZE itself can run tens of seconds on a multi-million-row
-        # corpus; without the label an operator sees a slow broker
-        # dispatch and has to triangulate to figure out it was the
-        # post-ingest ANALYZE rather than the ingest commits.
-        with write_transaction(f"auto_analyze:{inbox.name}"):
-            with engine.begin() as conn:
-                conn.execute(text("ANALYZE"))
+        _submit_analyze(writer, inbox.name).result(timeout=120)
 
     # First-ingest cache bust. `archive_stats:<inbox>` is cached for
     # 24h, so when a freshly-added inbox happened to be warmed in
@@ -176,11 +176,9 @@ def ingest_inbox(
     # the freshness gap between an ingest commit and the next
     # `warm-cache` tick (60s by default). Scope is the front-page-
     # critical per-inbox helpers only, see `_warm_after_ingest` for
-    # which and why. No `write_transaction()` wrap here on purpose:
-    # `cache.set` opens its own session, and the outer
-    # `write_transaction()`'s ContextVar would otherwise leak into it
-    # and self-deadlock on the writer lock. Best-effort; a failed
-    # warm doesn't fail the ingest tick.
+    # which and why. Uses a plain SessionLocal (not the read pool)
+    # because `cache.set` opens its own write session internally;
+    # the read pool's query_only=1 sessions would reject the write.
     if moved > 0:
         try:
             with SessionLocal() as warm_session:

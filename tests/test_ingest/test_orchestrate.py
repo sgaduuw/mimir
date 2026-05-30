@@ -18,20 +18,33 @@ from mimir.models import (
 
 from tests.test_ingest._helpers import (
     _build_pubinbox_repo,
+    _cache_set_direct,
+    _drain_writer,
     _rfc5322,
     _setup_alpha_with_messages,
-    _spy_text,
 )
 
 
 def test_ingest_inbox_runs_analyze_when_threshold_reached(
-    seeded_db, tmp_path, monkeypatch
+    seeded_db, tmp_path, monkeypatch, broker_active
 ):
     from mimir.config import settings
 
     alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
-    seen = _spy_text(monkeypatch)
     monkeypatch.setattr(settings, "analyze_after_ingest_rows", 2)
+
+    # Phase 3b: ANALYZE is dispatched via _submit_analyze imported into
+    # orchestrate.py's namespace. Spy at the orchestrate module level so
+    # the monkeypatch intercepts the call site (not just the source module).
+    analyze_calls = []
+    import mimir.ingest.orchestrate as orchestrate_mod
+    from mimir.ingest._pending import _submit_analyze as real_submit_analyze
+
+    def _spy_analyze(writer, inbox_name):
+        analyze_calls.append(inbox_name)
+        return real_submit_analyze(writer, inbox_name)
+
+    monkeypatch.setattr(orchestrate_mod, "_submit_analyze", _spy_analyze)
 
     results = ingest_inbox(alpha, workers=1)
 
@@ -39,37 +52,65 @@ def test_ingest_inbox_runs_analyze_when_threshold_reached(
     # `>= 2` lower bound would have masked a regression that
     # accidentally dropped one of the three to dup_batch / failed.
     assert sum(r.new + r.linked for r in results) == 3
-    assert "ANALYZE" in seen
+    assert analyze_calls, "ANALYZE should have been dispatched via _submit_analyze"
 
 
-def test_ingest_inbox_skips_analyze_below_threshold(seeded_db, tmp_path, monkeypatch):
+def test_ingest_inbox_skips_analyze_below_threshold(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
     from mimir.config import settings
+    from concurrent.futures import Future
 
     alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
-    seen = _spy_text(monkeypatch)
     monkeypatch.setattr(settings, "analyze_after_ingest_rows", 100)
 
+    analyze_calls = []
+    import mimir.ingest.orchestrate as orchestrate_mod
+
+    def _stub_analyze(writer, inbox_name):
+        analyze_calls.append(inbox_name)
+        f = Future()
+        f.set_result(None)
+        return f
+
+    monkeypatch.setattr(orchestrate_mod, "_submit_analyze", _stub_analyze)
+
     ingest_inbox(alpha, workers=1)
 
-    assert "ANALYZE" not in seen
+    assert not analyze_calls, "ANALYZE must not run below threshold"
 
 
-def test_ingest_inbox_skips_analyze_when_disabled(seeded_db, tmp_path, monkeypatch):
+def test_ingest_inbox_skips_analyze_when_disabled(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
     from mimir.config import settings
+    from concurrent.futures import Future
 
     alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
-    seen = _spy_text(monkeypatch)
     monkeypatch.setattr(settings, "analyze_after_ingest_rows", 0)
+
+    analyze_calls = []
+    import mimir.ingest.orchestrate as orchestrate_mod
+
+    def _stub_analyze(writer, inbox_name):
+        analyze_calls.append(inbox_name)
+        f = Future()
+        f.set_result(None)
+        return f
+
+    monkeypatch.setattr(orchestrate_mod, "_submit_analyze", _stub_analyze)
 
     ingest_inbox(alpha, workers=1)
 
-    assert "ANALYZE" not in seen
+    assert not analyze_calls, "ANALYZE must not run when disabled (threshold=0)"
 
 
 # Cache invalidation on empty-to-non-empty transition
 
 
-def test_ingest_inbox_invalidates_cache_on_first_ingest(seeded_db, tmp_path):
+def test_ingest_inbox_invalidates_cache_on_first_ingest(
+    seeded_db, tmp_path, broker_active
+):
     """When an inbox transitions from empty (`last_article_date IS
     NULL`) to populated: (1) `delete_for_inbox` drops the stale
     `total=0` row a warm-cache tick may have left behind between
@@ -92,10 +133,17 @@ def test_ingest_inbox_invalidates_cache_on_first_ingest(seeded_db, tmp_path):
 
     # Seed a cache row keyed under the inbox name (mimics the `total=0`
     # row a warm-cache tick would write between add and first ingest).
-    cache.set(f"archive_stats:{alpha.name}", "sentinel", ttl=86400)
+    # Use _cache_set_direct so the write is immediately visible to
+    # cache.get() without waiting for the WriterThread queue to drain
+    # (cache.set() is fire-and-forget async when broker_active is up).
+    _cache_set_direct(f"archive_stats:{alpha.name}", "sentinel", 86400)
     assert cache.get(f"archive_stats:{alpha.name}") == "sentinel"
 
     ingest_inbox(alpha, workers=1)
+    # The post-ingest warm dispatches cache writes via set_via_writer
+    # (fire-and-forget). Drain the WriterThread queue before asserting
+    # the rebuilt cache state so the warm's writes have committed.
+    _drain_writer()
 
     rebuilt = cache.get(f"archive_stats:{alpha.name}")
     assert rebuilt is not None and rebuilt != "sentinel", (
@@ -107,6 +155,7 @@ def test_ingest_inbox_invalidates_cache_on_first_ingest(seeded_db, tmp_path):
 def test_ingest_inbox_warms_per_inbox_cache_when_missing(
     seeded_db,
     tmp_path,
+    broker_active,
 ):
     """When the per-inbox cache rows are missing at the end of a
     moved>0 ingest tick, the post-ingest lazy warm should populate
@@ -124,6 +173,9 @@ def test_ingest_inbox_warms_per_inbox_cache_when_missing(
     assert cache.get(f"daily_volume:{alpha.name}:30") is None
 
     ingest_inbox(alpha, workers=1)
+    # Post-ingest warm writes are fire-and-forget via set_via_writer.
+    # Drain before asserting cache state.
+    _drain_writer()
 
     assert cache.get(f"archive_stats:{alpha.name}") is not None, (
         "post-ingest warm should have populated the missing archive_stats cache row"
@@ -136,6 +188,7 @@ def test_ingest_inbox_warms_per_inbox_cache_when_missing(
 def test_ingest_inbox_warm_preserves_existing_cache_row(
     seeded_db,
     tmp_path,
+    broker_active,
 ):
     """When the per-inbox cache row already exists at the end of a
     moved>0 ingest tick, the post-ingest warm should leave it
@@ -147,10 +200,16 @@ def test_ingest_inbox_warm_preserves_existing_cache_row(
 
     alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
 
-    cache.set(f"archive_stats:{alpha.name}", "sentinel", ttl=86400)
+    # Use _cache_set_direct so the sentinel is immediately readable
+    # (cache.set is async via WriterThread when broker_active is up).
+    _cache_set_direct(f"archive_stats:{alpha.name}", "sentinel", 86400)
     assert cache.get(f"archive_stats:{alpha.name}") == "sentinel"
 
     ingest_inbox(alpha, workers=1)
+    # Post-ingest warm finds the fresh cache row (force=False) and
+    # returns it without writing. Drain the writer to ensure no
+    # stale queue op overwrites the sentinel.
+    _drain_writer()
 
     assert cache.get(f"archive_stats:{alpha.name}") == "sentinel", (
         "post-ingest warm with a fresh cache row present must not "
@@ -158,7 +217,7 @@ def test_ingest_inbox_warm_preserves_existing_cache_row(
     )
 
 
-def test_ingest_inbox_does_not_warm_on_noop_tick(seeded_db, tmp_path):
+def test_ingest_inbox_does_not_warm_on_noop_tick(seeded_db, tmp_path, broker_active):
     """Re-ingesting an already-fully-ingested inbox (every commit
     already dedup_db'd) is a no-op tick: `moved == 0`. The post-ingest
     warm must not fire on those, otherwise an inbox whose cache row
@@ -170,6 +229,11 @@ def test_ingest_inbox_does_not_warm_on_noop_tick(seeded_db, tmp_path):
     alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
     # First ingest moves all 3 articles in.
     ingest_inbox(alpha, workers=1)
+    # Drain so the post-ingest warm's writes have committed before we
+    # delete the cache row (otherwise the delete could race a still-
+    # in-flight warm write that arrives after the delete and re-populates
+    # it before the second ingest runs).
+    _drain_writer()
 
     # Force-evict, then verify a second (no-op) ingest doesn't
     # re-populate.
@@ -189,6 +253,7 @@ def test_ingest_inbox_warm_failure_does_not_break_ingest(
     seeded_db,
     tmp_path,
     monkeypatch,
+    broker_active,
 ):
     """The post-ingest warm is best-effort: a failure in any of its
     helper calls is logged at warning and swallowed, so an unrelated
@@ -211,6 +276,7 @@ def test_ingest_inbox_warm_failure_does_not_break_ingest(
 def test_ingest_inbox_does_not_invalidate_cache_on_steady_state(
     seeded_db,
     tmp_path,
+    broker_active,
 ):
     """An already-populated inbox (last_article_date set) running its
     next ingest does NOT bust the per-inbox cache. Doing so would
@@ -229,10 +295,16 @@ def test_ingest_inbox_does_not_invalidate_cache_on_steady_state(
         ix.last_article_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
         s.commit()
 
-    cache.set(f"archive_stats:{alpha.name}", "sentinel", ttl=86400)
+    # Use _cache_set_direct so the sentinel is immediately readable
+    # (cache.set is async via WriterThread when broker_active is up).
+    _cache_set_direct(f"archive_stats:{alpha.name}", "sentinel", 86400)
     assert cache.get(f"archive_stats:{alpha.name}") == "sentinel"
 
     ingest_inbox(alpha, workers=1)
+    # Post-ingest warm finds the fresh cache row (force=False) and
+    # returns early without writing. Drain the writer to confirm no
+    # stale queued op can overwrite the sentinel.
+    _drain_writer()
 
     assert cache.get(f"archive_stats:{alpha.name}") == "sentinel", (
         "steady-state ingest should leave the per-inbox cache alone; "
@@ -272,7 +344,7 @@ def test_discover_epochs_empty_mirror_returns_empty(tmp_path):
     assert discover_epochs(mirror) == []
 
 
-def test_ingest_all_limit_decrements_across_inboxes(seeded_db, tmp_path):
+def test_ingest_all_limit_decrements_across_inboxes(seeded_db, tmp_path, broker_active):
     """`ingest_all(limit=N)` is a cross-inbox cap. With two inboxes
     each carrying 3 messages and `limit=2`, the first inbox should
     consume both slots and the second must be skipped entirely --
@@ -320,7 +392,7 @@ def test_ingest_all_limit_decrements_across_inboxes(seeded_db, tmp_path):
     assert alpha_total >= 2
 
 
-def test_ingest_all_no_limit_walks_all_inboxes(seeded_db, tmp_path):
+def test_ingest_all_no_limit_walks_all_inboxes(seeded_db, tmp_path, broker_active):
     """Sanity companion: with `limit=None`, every inbox gets ingested.
     Without this baseline, a passing `test_..._decrements_across_inboxes`
     could be masking a regression that just never walks beta."""
