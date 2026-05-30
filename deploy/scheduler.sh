@@ -118,36 +118,28 @@ run() {
 # THEN this container starts. So we can assume schema + inboxes
 # are already in place when this script runs.
 
-# Pre-flight warm so the web tier doesn't start serving until the
-# dashboard cache is hot. Without this, every container recreate
-# served the first wave of `/`, `/<inbox>/` requests cold: each
-# render miss writes back through the broker, and under broker mode
-# (1.36.0+) any concurrent ingest commit makes that cache.set wait
-# hundreds of ms. Multiplied by the ~8 cached surfaces a dashboard
-# composes, the first-wave renders stacked seconds of wait time and
-# tripped the gateway timeout. Pre-flight warm trades 30-60 s of
-# post-migrate boot latency for zero cold-cache requests served
-# after `.migrated` lands. Steady-state `warm-cache` ticks in the
-# loop below keep the cache fresh; this initial pass closes the
-# cold-start gap.
+# Pre-flight warm-cache runs in the BACKGROUND so the main loop
+# below stays responsive from t=0. The original justification was
+# "the web tier shouldn't start serving until the dashboard cache
+# is hot", but under 2.0.0 the web container `depends_on:
+# mimir-broker` only (see compose.yaml), so it starts serving the
+# moment the broker is healthy regardless of what this script is
+# doing. Synchronously warming on a populated /data took up to
+# ~2 h on a fully cold cache and blocked the loop's `update`,
+# `update-mainline`, `analyze`, and `vacuum` ticks for that entire
+# window: inbox sync stalled, mainline drifted, ANALYZE didn't run.
+# Backgrounding the initial warm preserves the cache-warmth intent
+# (the warm still runs from t=0) without serialising the rest of
+# the loop behind it. The loop's WARM_CACHE_EVERY tick catches up
+# on whatever the background pass hasn't reached yet.
+#
+# Initial `update` is no longer special-cased here either: the loop
+# below fires it on the first iteration because /data/.last_update
+# doesn't exist yet (sentinel_mtime returns 0, so now - 0 >=
+# UPDATE_EVERY is trivially true). One code path, no preamble drift.
 # shellcheck disable=SC2086  # SCHEDULER_VERBOSE is a flag string, intentionally unquoted to splat empty -> nothing.
-run "warm-cache (initial)" /data/.last_warm mimir warm-cache $SCHEDULER_VERBOSE
-
-# 2.0.0: `.migrated` is now touched by the broker container after
-# `alembic upgrade head` (see `mimir/broker/server.py`
-# `_migrate_if_needed`). The web container depends_on the broker
-# directly; this tasks container's only contribution to readiness is
-# the pre-flight warm above. Nothing to sentinel here.
-
-# Initial update so a fresh deployment has data to render before the
-# first UPDATE_EVERY tick. Runs after `.migrated` so the web tier is
-# already serving; an update that takes minutes on a backlogged
-# upstream doesn't gate web startup behind it. The per-inbox post-
-# ingest warm (in `mimir.ingest.orchestrate._warm_after_ingest`)
-# refreshes the cache for inboxes that received new messages during
-# this initial tick.
-# shellcheck disable=SC2086
-run "update (initial)" /data/.last_update mimir update $SCHEDULER_VERBOSE
+run "warm-cache (initial, backgrounded)" /data/.last_warm \
+    mimir warm-cache $SCHEDULER_VERBOSE &
 
 # Persisted-mtime initialisation: read each sentinel's last-touch
 # time off /data. Missing file → 0 → the next tick fires immediately
