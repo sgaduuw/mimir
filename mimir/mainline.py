@@ -349,18 +349,18 @@ def walk_commits(
     # Cursor update: submit the final WriteOp advancing
     # MainlineState.commits_walked_to_sha to the last commit seen. This
     # is the FINAL WriteOp per tree; submitting it after all batches
-    # have committed preserves resume semantics -- a crash between the
+    # have committed preserves resume semantics: a crash between the
     # last batch and the cursor leaves the cursor at the pre-walk value,
     # so the next tick re-walks the just-inserted commits idempotently
     # via on_conflict_do_nothing.
     #
     # Only submit when we actually advanced (last_seen_sha_for_cursor
     # differs from the initial value stored in result.last_walked_sha):
-    # - rebases=True, no commits: both are None -- skip.
+    # - rebases=True, no commits: both are None (skip).
     # - rebases=True, walked N commits: result.last_walked_sha is None,
-    #   last_seen_sha_for_cursor is the final SHA -- submit.
-    # - rebases=False, no new commits: both equal the old cursor -- skip.
-    # - rebases=False, walked N commits: they differ -- submit.
+    #   last_seen_sha_for_cursor is the final SHA (submit).
+    # - rebases=False, no new commits: both equal the old cursor (skip).
+    # - rebases=False, walked N commits: they differ (submit).
     if last_seen_sha_for_cursor is not None and (
         last_seen_sha_for_cursor != result.last_walked_sha
     ):
@@ -468,7 +468,7 @@ def _submit_mainline_batch(writer, tree_name: str, batch: list[dict]) -> WriteFu
     Per-batch size is operator-tunable via
     `settings.mainline_commit_batch_size`.
 
-    Empty batches are no-ops -- return a pre-resolved future so
+    Empty batches are no-ops: return a pre-resolved future so
     the caller's `.result()` doesn't block."""
     if not batch:
         f: Future = Future()
@@ -516,7 +516,7 @@ def _submit_mainline_cursor_update(
     yet or not. tree_name is the PK; on conflict, only
     commits_walked_to_sha is updated. last_commit_sha (the
     MAINTAINERS HEAD cursor) and last_walked_at are not touched
-    here -- they have their own write paths."""
+    here; they have their own write paths."""
 
     def _fn(conn):
         stmt = (
