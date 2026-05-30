@@ -332,3 +332,130 @@ def test_submit_patch_series_batch_nulls_overwrite_set_values(writer, seeded_db)
             ).where(Article.id == article_id)
         ).one()
     assert row == (None, None, None)
+
+
+def test_submit_canonical_batch_updates_canonical_and_observations(writer, seeded_db):
+    """Happy path: payload's canonical id lands on the article; observation
+    deltas land in inbox_address_observations with count + last_seen
+    aggregated via the UPSERT."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from mimir._pending_backfill import (
+        _CanonicalPending,
+        _submit_canonical_batch,
+    )
+    from mimir.models import Article, Inbox, InboxAddressObservation
+
+    with seeded_db() as s:
+        article_id = s.execute(select(Article.id).limit(1)).scalar_one()
+        alpha_id = s.execute(select(Inbox.id).where(Inbox.name == "alpha")).scalar_one()
+
+    ts = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+    payloads = [
+        _CanonicalPending(
+            article_id=article_id,
+            new_canonical_inbox_id=alpha_id,
+            observation_deltas={
+                alpha_id: {"list@example.com": (1, ts)},
+            },
+        )
+    ]
+    _submit_canonical_batch(writer, payloads).result(timeout=10)
+
+    with seeded_db() as s:
+        canonical = s.execute(
+            select(Article.canonical_inbox_id).where(Article.id == article_id)
+        ).scalar_one()
+        obs = s.execute(
+            select(
+                InboxAddressObservation.count,
+                InboxAddressObservation.last_seen,
+            ).where(
+                InboxAddressObservation.inbox_id == alpha_id,
+                InboxAddressObservation.address == "list@example.com",
+            )
+        ).one_or_none()
+
+    assert canonical == alpha_id
+    assert obs is not None
+    assert obs.count >= 1
+
+
+def test_submit_canonical_batch_no_canonical_change_skips_update(writer, seeded_db):
+    """When the resolved canonical equals what's already there, the
+    closure's UPDATE is a no-op (no row churn). Observations still land."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select, update
+
+    from mimir._pending_backfill import (
+        _CanonicalPending,
+        _submit_canonical_batch,
+    )
+    from mimir.models import Article, Inbox, InboxAddressObservation
+
+    with seeded_db() as s:
+        article_id = s.execute(select(Article.id).limit(1)).scalar_one()
+        alpha_id = s.execute(select(Inbox.id).where(Inbox.name == "alpha")).scalar_one()
+        s.execute(
+            update(Article)
+            .where(Article.id == article_id)
+            .values(canonical_inbox_id=alpha_id)
+        )
+        s.commit()
+
+    ts = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+    payloads = [
+        _CanonicalPending(
+            article_id=article_id,
+            new_canonical_inbox_id=alpha_id,
+            observation_deltas={alpha_id: {"a@x.example": (2, ts)}},
+        )
+    ]
+    _submit_canonical_batch(writer, payloads).result(timeout=10)
+
+    with seeded_db() as s:
+        obs_count = s.execute(
+            select(InboxAddressObservation.count).where(
+                InboxAddressObservation.inbox_id == alpha_id,
+                InboxAddressObservation.address == "a@x.example",
+            )
+        ).scalar_one()
+    assert obs_count == 2
+
+
+def test_submit_promote_list_address_sweep_promotes_eligible_inbox(writer, seeded_db):
+    """The sweep helper runs the promotion check for every inbox at
+    NULL `list_address`. An eligible inbox (top_count >= threshold
+    AND top/(top+second) >= dominance) gets its `list_address` set."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import insert, select, update
+
+    from mimir._pending_backfill import _submit_promote_list_address_sweep
+    from mimir.ingest.epoch import MIN_PROMOTE_OBSERVATIONS
+    from mimir.models import Inbox, InboxAddressObservation
+
+    with seeded_db() as s:
+        beta_id = s.execute(select(Inbox.id).where(Inbox.name == "beta")).scalar_one()
+        s.execute(update(Inbox).where(Inbox.id == beta_id).values(list_address=None))
+        ts = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+        s.execute(
+            insert(InboxAddressObservation).values(
+                inbox_id=beta_id,
+                address="dominant@vger.kernel.org",
+                count=MIN_PROMOTE_OBSERVATIONS + 10,
+                last_seen=ts,
+            )
+        )
+        s.commit()
+
+    _submit_promote_list_address_sweep(writer).result(timeout=10)
+
+    with seeded_db() as s:
+        post = s.execute(
+            select(Inbox.list_address).where(Inbox.id == beta_id)
+        ).scalar_one()
+    assert post == "dominant@vger.kernel.org"
