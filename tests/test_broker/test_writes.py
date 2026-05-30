@@ -45,7 +45,7 @@ def test_writer_thread_submit_commits_and_resolves_future(seeded_db):
                 label="test:upsert",
                 fn=lambda c: c.execute(
                     text(
-                        "INSERT INTO cache (key, value_json, expires_at) "
+                        "INSERT INTO cache (key, value, expires_at) "
                         "VALUES ('writer-thread-test-1', '{}', 9999999999)"
                     )
                 ),
@@ -83,7 +83,7 @@ def test_writer_thread_submit_returns_future_immediately(seeded_db):
             gate.wait(timeout=5)
             c.execute(
                 text(
-                    "INSERT INTO cache (key, value_json, expires_at) "
+                    "INSERT INTO cache (key, value, expires_at) "
                     "VALUES ('slow', '{}', 9999999999)"
                 )
             )
@@ -97,7 +97,7 @@ def test_writer_thread_submit_returns_future_immediately(seeded_db):
                 label="test:fast",
                 fn=lambda c: c.execute(
                     text(
-                        "INSERT INTO cache (key, value_json, expires_at) "
+                        "INSERT INTO cache (key, value, expires_at) "
                         "VALUES ('fast', '{}', 9999999999)"
                     )
                 ),
