@@ -42,7 +42,16 @@ def _active_broker_context(seeded_db):
     """Auto-register the active broker context for warm handlers.
     This fixture ensures every test in this file has the broker
     context set up so handlers can reach the active pool + writer.
-    Tear down after each test."""
+    Tear down after each test.
+
+    Saves and restores the pre-test active context so the session-
+    scoped _session_broker fixture's registration survives across
+    test files. Without the restore, every test in this file would
+    leave the global _context cleared, causing all subsequent tests
+    that rely on the session broker (e.g. test_cli/test_cache.py
+    warm-cache tests) to fail with "No active broker"."""
+    saved_pool = _context._active_pool
+    saved_writer = _context._active_writer
     pool = ReadSessionPool.from_settings()
     writer = WriterThread.from_settings()
     writer.start()
@@ -50,9 +59,13 @@ def _active_broker_context(seeded_db):
         _context.set_active(pool, writer)
         yield
     finally:
-        _context.clear_active()
         writer.stop(timeout=5)
         pool.close()
+        # Restore the session broker's registration.
+        if saved_pool is not None and saved_writer is not None:
+            _context.set_active(saved_pool, saved_writer)
+        else:
+            _context.clear_active()
 
 
 # ----- WARM_OPS routing ---------------------------------------------------

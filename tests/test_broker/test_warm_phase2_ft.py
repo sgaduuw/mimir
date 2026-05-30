@@ -19,6 +19,8 @@ def test_phase2_concurrent_warm_inbox_no_deadlock_or_race(seeded_db):
     active read pool + writer registered, all should complete
     successfully. Pin: no deadlock, no exception, no future left
     unresolved."""
+    saved_pool = _context._active_pool
+    saved_writer = _context._active_writer
     pool = ReadSessionPool.from_settings()
     writer = WriterThread.from_settings()
     writer.start()
@@ -41,6 +43,11 @@ def test_phase2_concurrent_warm_inbox_no_deadlock_or_race(seeded_db):
                 reply = f.result()
                 assert reply.ok is True
     finally:
-        _context.clear_active()
         writer.stop(timeout=10)
         pool.close()
+        # Restore the session broker's registration so subsequent
+        # tests can still reach the active pool.
+        if saved_pool is not None and saved_writer is not None:
+            _context.set_active(saved_pool, saved_writer)
+        else:
+            _context.clear_active()

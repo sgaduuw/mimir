@@ -26,7 +26,16 @@ def broker_running(socket_path: Path):
     `with broker_running(short_socket_path('foo')) as server: ...`.
     Tests must not call `mimir.broker.server.serve()` directly
     because signal handler registration only works in the main
-    thread."""
+    thread.
+
+    Saves and restores the module-level active pool + writer so the
+    session-scoped _session_broker fixture's registration survives.
+    Without the restore, every test that uses broker_running would
+    leave _context cleared, causing subsequent tests that rely on
+    the session broker (e.g. test_cli/test_cache.py warm-cache tests)
+    to fail with "No active broker; call set_active() first"."""
+    saved_pool = _context._active_pool
+    saved_writer = _context._active_writer
     server = build_server(socket_path)
     server.writer.start()
     # Phase 2 of the two-pool restructure: register active context
@@ -47,8 +56,13 @@ def broker_running(socket_path: Path):
         server.server_close()
         thread.join(timeout=5)
         server.writer.stop(timeout=10.0)
-        _context.clear_active()
         server.read_pool.close()
         sp = Path(socket_path)
         if sp.exists():
             sp.unlink()
+        # Restore the session broker's registration so subsequent
+        # tests can still reach the active pool.
+        if saved_pool is not None and saved_writer is not None:
+            _context.set_active(saved_pool, saved_writer)
+        else:
+            _context.clear_active()

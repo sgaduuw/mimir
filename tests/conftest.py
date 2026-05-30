@@ -121,7 +121,20 @@ def _session_broker(_migrate_db):
     (sock_dir / ".bootstrapped").touch()
     (sock_dir / ".broker_initial_analyze").touch()
 
+    from mimir.broker import _context
+
     server = build_server(sock_path)
+    # Mirror the broker_running helper in tests/test_broker/_helpers.py:
+    # start the WriterThread and register the active pool + writer so
+    # warm handlers (and any Phase 2+ handler) can reach them via
+    # _context.get_active_pool() / get_active_writer().  Without this
+    # the session broker serves warm_inbox / warm_global RPCs that
+    # immediately raise RuntimeError("No active broker") because
+    # set_active() was never called (build_server does not call it;
+    # serve() does, but tests cannot use serve() as it installs signal
+    # handlers).
+    server.writer.start()
+    _context.set_active(server.read_pool, server.writer)
     thread = threading.Thread(
         target=server.serve_forever,
         kwargs={"poll_interval": 0.05},
@@ -140,6 +153,9 @@ def _session_broker(_migrate_db):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        server.writer.stop(timeout=10.0)
+        _context.clear_active()
+        server.read_pool.close()
         if sock_path.exists():
             sock_path.unlink()
         # Sentinels + dir cleanup.
