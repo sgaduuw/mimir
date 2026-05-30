@@ -487,3 +487,24 @@ def test_backfill_article_files_uses_writer_thread_via_active_context(
         "the test relies on the walker visiting at least one article; "
         "if it returned 0, the structural assertion is meaningless"
     )
+
+
+def test_backfill_article_trailers_uses_writer_thread_via_active_context(
+    seeded_db, monkeypatch, broker_active
+):
+    """Phase 3c contract: `backfill_article_trailers` must NOT call
+    `write_transaction`."""
+    import mimir.extensions as ext_mod
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError(
+            "write_transaction must not be called by "
+            "backfill_article_trailers after Phase 3c"
+        )
+
+    monkeypatch.setattr(ext_mod, "write_transaction", _forbidden)
+
+    from mimir.trailers import backfill_article_trailers
+
+    result = backfill_article_trailers(limit=10)
+    assert result.examined > 0
