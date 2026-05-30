@@ -80,7 +80,7 @@ def _ingest_articles_without_trailers(seeded_db, tmp_path, *bodies):
         s.commit()
 
 
-def test_backfill_indexes_trailer_articles(seeded_db, tmp_path):
+def test_backfill_indexes_trailer_articles(seeded_db, tmp_path, broker_active):
     """Pre-extractor articles get re-walked: bodies with attestation
     trailers land ArticleTrailer rows; prose bodies don't.
 
@@ -116,7 +116,7 @@ def test_backfill_indexes_trailer_articles(seeded_db, tmp_path):
     ]
 
 
-def test_backfill_is_idempotent_on_rerun(seeded_db, tmp_path):
+def test_backfill_is_idempotent_on_rerun(seeded_db, tmp_path, broker_active):
     _ingest_articles_without_trailers(seeded_db, tmp_path, _TRAILER_BODY)
     backfill_article_trailers(limit=1)
     second = backfill_article_trailers(limit=1)
@@ -129,7 +129,7 @@ def test_backfill_is_idempotent_on_rerun(seeded_db, tmp_path):
     assert roles == ["Acked-by", "Reviewed-by"]
 
 
-def test_backfill_reprocess_re_extracts(seeded_db, tmp_path):
+def test_backfill_reprocess_re_extracts(seeded_db, tmp_path, broker_active):
     _ingest_articles_without_trailers(seeded_db, tmp_path, _TRAILER_BODY)
     backfill_article_trailers(limit=1)
     result = backfill_article_trailers(limit=1, reprocess=True)
@@ -138,7 +138,7 @@ def test_backfill_reprocess_re_extracts(seeded_db, tmp_path):
     assert result.skipped == 0
 
 
-def test_backfill_cli_prints_summary(seeded_db, tmp_path):
+def test_backfill_cli_prints_summary(seeded_db, tmp_path, broker_active):
     _ingest_articles_without_trailers(
         seeded_db,
         tmp_path,

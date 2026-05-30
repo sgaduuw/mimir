@@ -82,24 +82,36 @@ def _seed_extra_articles(n: int) -> list[int]:
 # ----- walk_articles time budget -----------------------------------------
 
 
-def test_walk_articles_returns_partial_when_deadline_expires(seeded_db):
+def test_walk_articles_returns_partial_when_deadline_expires(seeded_db, broker_active):
     """`max_seconds=0` makes the deadline fire at the first batch
     boundary; the walker returns `(partial=True, continuation=<last
     id processed>)` after committing what it touched. Use
     `batch_size=2` so the seeded 4-article corpus splits into two
     batches and we can prove the walker stopped at the FIRST
-    boundary (not after processing everything)."""
+    boundary (not after processing everything).
+
+    Phase 3c: `process_one` returns a `(bucket, payload)` tuple;
+    `flush_batch` is required. A no-op `flush_batch` is sufficient
+    here since we're testing the time-budget mechanics, not writes."""
+    from concurrent.futures import Future
+
     from mimir._backfill import walk_articles
     from mimir.patches import BackfillResult
 
     result = BackfillResult()
 
     def process(session, article, reprocess):
-        return "no_diff"
+        return ("no_diff", None)
+
+    def flush_batch(writer, payloads):
+        f = Future()
+        f.set_result(None)
+        return f
 
     partial, cont = walk_articles(
         result,
         process,
+        flush_batch,
         batch_size=2,
         label="test_walk_partial",
         max_seconds=0.0,
@@ -110,21 +122,30 @@ def test_walk_articles_returns_partial_when_deadline_expires(seeded_db):
     assert result.examined == 2
 
 
-def test_walk_articles_returns_full_completion_without_deadline(seeded_db):
+def test_walk_articles_returns_full_completion_without_deadline(
+    seeded_db, broker_active
+):
     """No `max_seconds` set: the walker runs to natural end and
-    returns `(partial=False, continuation=None)`. Pre-2.2 callers
-    that ignored the return value see no change in behaviour."""
+    returns `(partial=False, continuation=None)`.
+
+    Phase 3c: `process_one` returns a `(bucket, payload)` tuple;
+    `flush_batch` is required."""
+    from concurrent.futures import Future
+
     from mimir._backfill import walk_articles
     from mimir.patches import BackfillResult
 
     result = BackfillResult()
 
-    def process(session, article, reprocess):
-        return "no_diff"
+    def flush_batch(writer, payloads):
+        f = Future()
+        f.set_result(None)
+        return f
 
     partial, cont = walk_articles(
         result,
-        process,
+        lambda _s, _a, _r: ("no_diff", None),
+        flush_batch,
         batch_size=2,
         label="test_walk_full",
     )
@@ -133,19 +154,29 @@ def test_walk_articles_returns_full_completion_without_deadline(seeded_db):
     assert result.examined == 4  # all seeded articles
 
 
-def test_walk_articles_resumes_from_start_cursor(seeded_db):
+def test_walk_articles_resumes_from_start_cursor(seeded_db, broker_active):
     """`start_cursor=N` makes the walker pick up at `Article.id < N`
-    on its first batch — i.e. the same place the prior chunk left
-    off. Pair with `max_seconds=0` to confirm chunked resume reaches
-    every article across two RPCs."""
+    on its first batch. Pair with `max_seconds=0` to confirm chunked
+    resume reaches every article across two chunks.
+
+    Phase 3c: `process_one` returns a `(bucket, payload)` tuple;
+    `flush_batch` is required."""
+    from concurrent.futures import Future
+
     from mimir._backfill import walk_articles
     from mimir.patches import BackfillResult
+
+    def flush_batch(writer, payloads):
+        f = Future()
+        f.set_result(None)
+        return f
 
     # Chunk 1: deadline=0 forces a one-batch bail.
     result1 = BackfillResult()
     p1, c1 = walk_articles(
         result1,
-        lambda _s, _a, _r: "no_diff",
+        lambda _s, _a, _r: ("no_diff", None),
+        flush_batch,
         batch_size=2,
         label="test_resume_1",
         max_seconds=0.0,
@@ -158,7 +189,8 @@ def test_walk_articles_resumes_from_start_cursor(seeded_db):
     result2 = BackfillResult()
     p2, c2 = walk_articles(
         result2,
-        lambda _s, _a, _r: "no_diff",
+        lambda _s, _a, _r: ("no_diff", None),
+        flush_batch,
         batch_size=2,
         label="test_resume_2",
         start_cursor=c1,
