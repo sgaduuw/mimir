@@ -106,3 +106,23 @@ def test_settings_trees_env_override_wins(monkeypatch):
 
     s = Settings()
     assert set(s.trees.keys()) == {"bcachefs"}
+
+
+def test_settings_has_broker_read_pool_size_default():
+    """Default to os.cpu_count() so the pool sizes itself to the host by
+    default. Operators override via BROKER_READ_POOL_SIZE."""
+    s = Settings(secret_key="test-secret-key-not-real-12345678")
+    assert s.broker_read_pool_size == (os.cpu_count() or 4)
+
+
+def test_settings_has_broker_writer_queue_depth_default():
+    """Default 256 absorbs ~2-3 s of burst at typical write rates per the
+    Phase 1 spec. Operators override via BROKER_WRITER_QUEUE_DEPTH."""
+    s = Settings(secret_key="test-secret-key-not-real-12345678")
+    assert s.broker_writer_queue_depth == 256
+
+
+def test_settings_broker_writer_queue_depth_env_override(monkeypatch):
+    monkeypatch.setenv("BROKER_WRITER_QUEUE_DEPTH", "1024")
+    s = Settings(secret_key="test-secret-key-not-real-12345678")
+    assert s.broker_writer_queue_depth == 1024
