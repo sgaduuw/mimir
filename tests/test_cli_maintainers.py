@@ -5,15 +5,36 @@ clone/fetch/load wiring against a fake bare repo.
 
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 from dulwich.objects import Blob, Commit, Tree
 from dulwich.repo import Repo
 from sqlalchemy import select
 
+from mimir.broker import _context
+from mimir.broker.pools import ReadSessionPool
+from mimir.broker.writes import WriterThread
 from mimir.cli import update_mainline_command
 from mimir.config import settings
 from mimir.models import MainlineState, Subsystem
 from tests.conftest import linus_tree as _linus_tree
+
+
+@pytest.fixture(autouse=True)
+def _broker_context():
+    """Register a live ReadSessionPool + WriterThread in the module-level
+    _context for every test in this file. Phase 3 of the two-pool
+    restructure requires this because update_mainline now dispatches
+    walk_commits writes through the active writer thread rather than
+    write_transaction()."""
+    pool = ReadSessionPool.from_settings()
+    writer = WriterThread.from_settings()
+    writer.start()
+    _context.set_active(pool, writer)
+    yield
+    _context.clear_active()
+    writer.stop(timeout=10)
+    pool.close()
 
 
 _SAMPLE_MAINTAINERS = (

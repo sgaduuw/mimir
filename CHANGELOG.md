@@ -11,6 +11,50 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.12.0], 2026-05-29
+
+### Changed
+
+- **`deploy/scheduler.sh` no longer blocks the loop on the initial
+  warm-cache.** The pre-flight `warm-cache` now runs in the
+  background so the periodic loop is responsive from t=0; the
+  separate synchronous `update (initial)` block is gone too, the
+  loop's first tick fires update immediately because its sentinel
+  doesn't exist yet (`now - 0 >= UPDATE_EVERY`). Previously, on a
+  container recreate with a populated `/data` volume, the
+  synchronous initial warm could run for hours and serialised
+  every other loop tick behind it: inbox `update`, `update-mainline`,
+  `analyze`, and `vacuum` all sat idle until warm-cache returned.
+  This matches the actual compose dependency chain (web depends
+  only on the broker's healthcheck, not on tasks), so cold-cache
+  exposure for first-wave requests is unchanged. Affects
+  containerised deploys; systemd timers in `deploy/systemd/` are
+  unaffected.
+- **Broker two-pool restructure, Phase 3 (`update_mainline` long-op
+  migration).** `update_mainline()`'s per-tree walk no longer holds
+  `write_transaction()` for one continuous ~62 s window. The walker
+  reads on a `query_only` session from the active `ReadSessionPool`
+  and dispatches batched WriteOps through the active `WriterThread`:
+  each batch of `MAINLINE_COMMIT_BATCH_SIZE` rows (new env var,
+  default 100) goes through `_submit_mainline_batch` and is awaited
+  before composing the next; the per-tree cursor
+  (`MainlineState.commits_walked_to_sha`) is the FINAL WriteOp via
+  `_submit_mainline_cursor_update`; trees configured with
+  `rebases=True` also dispatch their pre-walk DELETE as its own
+  WriteOp. Resume-from-cursor semantics are preserved: a crash
+  between batch N and the cursor submit leaves the cursor at its
+  old position so the next tick re-walks from there, and
+  `on_conflict_do_nothing` on `mainline_commits` makes that replay
+  a no-op for batches that did commit pre-crash. Writer-lock hold
+  per batch drops to tens of ms, so concurrent `cache.set` RPCs
+  from the web tier drain between bursts instead of head-of-line
+  stalling for the full walk. Phase 3 is narrowed to
+  `update_mainline()`; ingest + backfills are deferred to a
+  later Phase 3b. `load_maintainers()` and the per-tree
+  `last_walked_at` cadence write continue to use their original
+  paths (out of Phase 3 scope). New env var:
+  `MAINLINE_COMMIT_BATCH_SIZE` (int, default 100).
+
 ## [2.11.0], 2026-05-30
 
 ### Changed
