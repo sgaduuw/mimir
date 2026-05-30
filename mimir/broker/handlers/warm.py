@@ -23,6 +23,7 @@ pattern used by the long-op handlers.
 import logging
 import time
 
+from mimir.broker import _context
 from mimir.broker.protocol import (
     Reply,
     WarmGlobalRequest,
@@ -30,7 +31,6 @@ from mimir.broker.protocol import (
 )
 from mimir.cache import refresh_window
 from mimir.config import settings
-from mimir.extensions import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,10 @@ def _run_targets(
     errors: list[str] = []
     per_target: list[tuple[str, int]] = []
     t0 = time.perf_counter()
-    with refresh_window(WARM_REFRESH_WITHIN_SEC), SessionLocal() as session:
+    with (
+        refresh_window(WARM_REFRESH_WITHIN_SEC),
+        _context.get_active_pool().session() as session,
+    ):
         for label, fn in targets:
             t_target = time.perf_counter()
             try:
@@ -127,7 +130,7 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
     from mimir.cli.cache import _build_inbox_targets
     from mimir.models import Inbox
 
-    with SessionLocal() as session:
+    with _context.get_active_pool().session() as session:
         inbox = session.execute(
             select(Inbox).where(Inbox.name == req.inbox_name)
         ).scalar_one_or_none()

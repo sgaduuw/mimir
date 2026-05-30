@@ -22,15 +22,37 @@ from __future__ import annotations
 
 import time
 
-from mimir.broker import handlers
+import pytest
+
+from mimir.broker import _context, handlers
 from mimir.broker.client import BrokerClient
 from mimir.broker.handlers import dispatch
+from mimir.broker.pools import ReadSessionPool
 from mimir.broker.protocol import WarmGlobalRequest, WarmInboxRequest
+from mimir.broker.writes import WriterThread
 from tests.test_broker._helpers import broker_running, short_socket_path
 
 
 def _line(req) -> bytes:
     return req.model_dump_json().encode("utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _active_broker_context(seeded_db):
+    """Auto-register the active broker context for warm handlers.
+    This fixture ensures every test in this file has the broker
+    context set up so handlers can reach the active pool + writer.
+    Tear down after each test."""
+    pool = ReadSessionPool.from_settings()
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        _context.set_active(pool, writer)
+        yield
+    finally:
+        _context.clear_active()
+        writer.stop(timeout=5)
+        pool.close()
 
 
 # ----- WARM_OPS routing ---------------------------------------------------
@@ -355,3 +377,27 @@ def test_warm_cache_command_broker_mode_dispatches_via_rpc(
     assert seen_global[0] == 1
     # Summary line still emits.
     assert "warm-cache:" in result.output and "ms total" in result.output
+
+
+# ----- Pool migration (Phase 2) -------------------------------------------
+
+
+def test_handle_warm_inbox_uses_active_read_pool_session(monkeypatch):
+    """handle_warm_inbox should check its session out of the active
+    ReadSessionPool, not SessionLocal. Verifies by monkeypatching
+    SessionLocal to raise and checking the handler still works
+    when the active pool is registered."""
+    from mimir.broker.handlers.warm import handle_warm_inbox
+    from mimir.broker.protocol import WarmInboxRequest
+
+    # Force SessionLocal to be unusable so a regression to it fails.
+    import mimir.broker.handlers.warm as warm_mod
+    if hasattr(warm_mod, "SessionLocal"):
+        def explode(*a, **kw):
+            raise AssertionError("handler must use the active pool, not SessionLocal")
+        monkeypatch.setattr(warm_mod, "SessionLocal", explode)
+
+    # The _active_broker_context fixture has already set up the pool,
+    # so the handler should succeed without falling back to SessionLocal.
+    reply = handle_warm_inbox(WarmInboxRequest(inbox_name="alpha", targets=None))
+    assert reply.ok is True
