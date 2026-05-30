@@ -211,6 +211,167 @@ def test_submit_mainline_cursor_update_creates_row_when_missing(seeded_db):
         writer.stop(timeout=5)
 
 
+def test_mid_walk_cursor_failure_leaves_cursor_at_old_position(
+    seeded_db, tmp_path, monkeypatch
+):
+    """Phase 3 contract: a crash between batch N and the cursor
+    submission leaves the cursor at its old position, so the next
+    tick re-walks from there. on_conflict_do_nothing on
+    (commit_sha, message_id) makes that replay a no-op for the
+    batches that committed pre-crash.
+
+    The test injects a failing _submit_mainline_cursor_update,
+    asserts that batches committed but the cursor stayed at NULL,
+    then replays the walk for real and asserts no duplicate rows
+    and the cursor lands at HEAD."""
+    from concurrent.futures import Future
+
+    import sqlalchemy as sa
+    from dulwich.objects import Commit, Tree
+    from dulwich.repo import Repo
+    from sqlalchemy import create_engine
+
+    import mimir.mainline as mainline_mod
+    from mimir.broker.writes import WriterThread
+    from mimir.config import settings
+    from mimir.mainline import walk_commits
+    from mimir.models import MainlineCommit, MainlineState
+
+    # Build a small bare repo with 5 commits that all carry Link: trailers.
+    # batch_size=2 gives us 2 full batches (commits 1+2, commits 3+4) and
+    # one tail batch (commit 5). The cursor update fires after the tail
+    # batch -- that is the injection point.
+    repo_path = tmp_path / "crash-test.git"
+    repo = Repo.init_bare(str(repo_path), mkdir=True)
+
+    def _build(repo: Repo, msg: bytes, parent: bytes | None = None) -> bytes:
+        tree = Tree()
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.parents = [parent] if parent else []
+        commit.author = commit.committer = b"test <t@x>"
+        commit.commit_time = commit.author_time = 1700000000
+        commit.commit_timezone = commit.author_timezone = 0
+        commit.encoding = b"UTF-8"
+        commit.message = msg
+        repo.object_store.add_object(commit)
+        repo.refs[b"HEAD"] = commit.id
+        return commit.id
+
+    prev = None
+    for i in range(1, 6):
+        prev = _build(
+            repo,
+            f"Fix {i}.\n\nLink: https://lore.kernel.org/r/m{i}@test\n".encode(),
+            parent=prev,
+        )
+
+    tree_name = "crash-test"
+
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        # Walk 1: inject a failing cursor helper. The batch WriteOps
+        # have already committed before the cursor fires (per Phase 3's
+        # "cursor is the final WriteOp" design), so some MainlineCommit
+        # rows should be present after the exception propagates.
+        def _failing_cursor(w, tn, last_sha):
+            f: Future = Future()
+            f.set_exception(RuntimeError("simulated crash before cursor commit"))
+            return f
+
+        monkeypatch.setattr(
+            mainline_mod, "_submit_mainline_cursor_update", _failing_cursor
+        )
+
+        import pytest as _pytest
+
+        with _pytest.raises(RuntimeError, match="simulated crash"):
+            with seeded_db() as session:
+                walk_commits(
+                    session,
+                    repo_path,
+                    tree_name=tree_name,
+                    writer=writer,
+                    batch_size=2,
+                    branch="HEAD",
+                )
+
+        # State A: some MainlineCommit rows committed (the batches before
+        # the cursor failed), but cursor still at the pre-walk value (NULL).
+        engine = create_engine(settings.database_url, future=True)
+        with engine.connect() as c:
+            rows_after_crash = c.execute(
+                sa.select(MainlineCommit.commit_sha).where(
+                    MainlineCommit.tree_name == tree_name
+                )
+            ).all()
+            state_after_crash = c.execute(
+                sa.select(MainlineState.commits_walked_to_sha).where(
+                    MainlineState.tree_name == tree_name
+                )
+            ).scalar_one_or_none()
+            c.commit()
+
+        assert len(rows_after_crash) > 0, (
+            "some batches should have committed before the cursor failure"
+        )
+        assert state_after_crash is None, (
+            "cursor must NOT have advanced if the final WriteOp failed"
+        )
+
+        # Walk 2: restore the real cursor helper and replay. The already-
+        # committed MainlineCommit rows are absorbed by on_conflict_do_nothing;
+        # the cursor should advance to HEAD.
+        monkeypatch.undo()
+
+        with seeded_db() as session:
+            walk_commits(
+                session,
+                repo_path,
+                tree_name=tree_name,
+                writer=writer,
+                batch_size=2,
+                branch="HEAD",
+            )
+
+        with engine.connect() as c:
+            rows_after_replay = c.execute(
+                sa.select(MainlineCommit.commit_sha).where(
+                    MainlineCommit.tree_name == tree_name
+                )
+            ).all()
+            state_after_replay = c.execute(
+                sa.select(MainlineState.commits_walked_to_sha).where(
+                    MainlineState.tree_name == tree_name
+                )
+            ).scalar_one_or_none()
+            c.commit()
+
+        # No duplicates: on_conflict_do_nothing absorbed the already-
+        # committed batches. The cursor advanced to HEAD.
+        assert len(rows_after_replay) == 5, (
+            f"expected exactly 5 rows (one per Link: commit), got {len(rows_after_replay)}"
+        )
+        assert state_after_replay is not None, (
+            "cursor should have advanced on the successful replay"
+        )
+
+        # Cleanup so other tests start clean.
+        with engine.connect() as c:
+            c.execute(
+                sa.delete(MainlineCommit).where(MainlineCommit.tree_name == tree_name)
+            )
+            c.execute(
+                sa.delete(MainlineState).where(MainlineState.tree_name == tree_name)
+            )
+            c.commit()
+        engine.dispose()
+    finally:
+        writer.stop(timeout=10)
+
+
 def test_update_mainline_uses_writer_thread_via_active_context(seeded_db, monkeypatch):
     """update_mainline should dispatch its writes through the active
     writer thread, NOT through write_transaction(). The walk-commits
