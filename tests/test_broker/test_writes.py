@@ -188,3 +188,46 @@ def test_writer_thread_op_exception_rollbacks_transaction(seeded_db):
         engine.dispose()
     finally:
         writer.stop(timeout=5)
+
+
+def test_writer_thread_submit_blocks_when_queue_full(seeded_db):
+    """With queue_depth=2 and the writer blocked on a slow op, the
+    next two submits fill the queue, and the THIRD submit blocks
+    until the slow op completes. This is the backpressure contract."""
+    from mimir.config import settings
+
+    writer = WriterThread(database_url=settings.database_url, queue_depth=2)
+    writer.start()
+    try:
+        gate = threading.Event()
+
+        def slow(c):
+            gate.wait(timeout=5)
+
+        # Op 1 enters the writer thread immediately (taken off the queue).
+        f1 = writer.submit(WriteOp(label="test:slow1", fn=slow))
+        # Ops 2 and 3 sit in the queue (depth=2).
+        f2 = writer.submit(WriteOp(label="test:queued1", fn=lambda c: None))
+        f3 = writer.submit(WriteOp(label="test:queued2", fn=lambda c: None))
+
+        # The 4th submit should BLOCK because the queue is full.
+        blocked = [False]
+
+        def attempt_blocked_submit():
+            f4 = writer.submit(WriteOp(label="test:should-block", fn=lambda c: None))
+            blocked[0] = True
+            return f4
+
+        t = threading.Thread(target=attempt_blocked_submit)
+        t.start()
+        time.sleep(0.2)
+        assert not blocked[0], "submit() did not block on full queue"
+
+        # Unblock the slow op; queue drains; 4th submit completes.
+        gate.set()
+        t.join(timeout=5)
+        assert blocked[0], "submit() never unblocked"
+        for f in (f1, f2, f3):
+            f.result(timeout=5)
+    finally:
+        writer.stop(timeout=5)
