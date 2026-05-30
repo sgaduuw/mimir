@@ -13,6 +13,21 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- **`deploy/scheduler.sh` no longer blocks the loop on the initial
+  warm-cache.** The pre-flight `warm-cache` now runs in the
+  background so the periodic loop is responsive from t=0; the
+  separate synchronous `update (initial)` block is gone too, the
+  loop's first tick fires update immediately because its sentinel
+  doesn't exist yet (`now - 0 >= UPDATE_EVERY`). Previously, on a
+  container recreate with a populated `/data` volume, the
+  synchronous initial warm could run for hours and serialised
+  every other loop tick behind it: inbox `update`, `update-mainline`,
+  `analyze`, and `vacuum` all sat idle until warm-cache returned.
+  This matches the actual compose dependency chain (web depends
+  only on the broker's healthcheck, not on tasks), so cold-cache
+  exposure for first-wave requests is unchanged. Affects
+  containerised deploys; systemd timers in `deploy/systemd/` are
+  unaffected.
 - **Broker two-pool restructure, Phase 3 (`update_mainline` long-op
   migration).** `update_mainline()`'s per-tree walk no longer holds
   `write_transaction()` for one continuous ~62 s window. The walker
