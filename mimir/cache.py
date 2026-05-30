@@ -277,7 +277,40 @@ def set(key: str, value: Any, ttl: int) -> None:
     Inside the broker process itself the dispatch short-circuits
     via `_should_dispatch_to_broker()` and writes directly via
     `_direct_set`, avoiding a self-RPC.
+
+    Phase 2 of the two-pool restructure
+    (`_claude/specs/2026-05-29-broker-two-pool-design.md`):
+    when the calling context is inside the broker (the broker's
+    serve() loop has registered an active writer), dispatch the
+    UPSERT through that writer thread instead of running it
+    inline. This keeps the writer-lock hold time short and lets
+    multiple read-pool threads' warm work proceed in parallel.
+
+    Outside the broker (no active writer registered; e.g. the
+    web tier's gunicorn workers calling cache.set via its own
+    RPC path), the existing inline behaviour applies.
     """
+    # Route through the WriterThread when an active writer is registered
+    # in the calling context. In production this is set by the broker's
+    # serve() lifecycle (warm handlers use this path). Outside the broker
+    # (web tier, tests that don't register a writer) get_active_writer()
+    # raises RuntimeError and the code falls through to the direct path.
+    try:
+        from mimir.broker import _context
+
+        _writer = _context.get_active_writer()
+    except RuntimeError:
+        _writer = None
+
+    if _writer is not None:
+        # Fire-and-forget; matches cache.set's best-effort posture.
+        # Local import avoids a module-level circular dependency
+        # between cache.py and broker.writes (which imports cache).
+        from mimir.cache import set_via_writer  # noqa: PLC0415
+
+        set_via_writer(_writer, key, value, ttl)
+        return
+
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
     if len(payload) > MAX_CACHE_VALUE_BYTES:
@@ -309,6 +342,45 @@ def set(key: str, value: Any, ttl: int) -> None:
         _direct_set(nskey, payload, ttl)
     except OperationalError as exc:
         logger.warning("cache write failed for %s: %s", nskey, exc)
+
+
+def set_via_writer(writer: Any, key: str, value: Any, ttl: int) -> Any:
+    """Phase 2 of the two-pool restructure
+    (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
+
+    Compose a WriteOp wrapping the same UPSERT that `_direct_set()` runs
+    today, submit it to the given WriterThread, and return the WriteFuture.
+    Fire-and-forget callers ignore the future; the rare caller that wants a
+    post-commit guarantee (e.g. an admin op) blocks on `.result()`.
+
+    Serialization (key namespace prefix, value encoder) MUST match
+    `set()` exactly so rows written here are readable via `get()`
+    and `get_or_compute()`.
+
+    Used by warm handlers in Phase 2. Other callers (web-tier RPC
+    handler, long-ops, admin) still use `set()`; their migration
+    is Phase 4 / Phase 5.
+    """
+    from sqlalchemy import text
+
+    from mimir.broker.writes import WriteOp
+
+    nskey = _ns(key)
+    payload = json.dumps(_encode(value), separators=(",", ":"))
+    expires_at = _now() + ttl
+
+    def _fn(conn: Any) -> None:
+        conn.execute(
+            text(
+                "INSERT INTO cache (key, value, expires_at) "
+                "VALUES (:k, :v, :e) "
+                "ON CONFLICT(key) DO UPDATE SET "
+                "value = excluded.value, expires_at = excluded.expires_at"
+            ),
+            {"k": nskey, "v": payload, "e": expires_at},
+        )
+
+    return writer.submit(WriteOp(label=f"cache.set:{key}", fn=_fn))
 
 
 def get_or_compute(

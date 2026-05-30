@@ -11,6 +11,28 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.11.0], 2026-05-30
+
+### Changed
+
+- **Broker two-pool restructure, Phase 2 (warm-cache migration).**
+  The warm handlers (`handle_warm_inbox`, `handle_warm_global`)
+  now check their read session out of the active
+  `ReadSessionPool` (added in 2.10.0). `cache.set()` calls issued
+  by warm-target helpers dispatch through the active
+  `WriterThread` via the new `cache.set_via_writer()` variant;
+  calls from outside the broker (web tier, tests without an
+  active broker) still run inline as before. The active broker
+  is registered in a small `mimir/broker/_context.py` module by
+  `serve()` at startup. With CPython 3.14t free-threading, this
+  means up to N read-pool threads can do warm compute work on
+  separate cores instead of serialising on the writer lock; the
+  observable signal is `broker_cpu` averaging higher (more cores
+  in use) while the 100+ s warm-cycle outliers should compress
+  toward the writer-lock-bounded floor. Phase 3 (long-ops) and
+  Phase 4 (web-tier `cache.set` RPC) still pending. No RPC
+  contract change in this release.
+
 ## [2.10.0], 2026-05-29
 
 ### Changed

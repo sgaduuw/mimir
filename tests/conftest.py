@@ -140,6 +140,7 @@ def _session_broker(_migrate_db):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        server.read_pool.close()
         if sock_path.exists():
             sock_path.unlink()
         # Sentinels + dir cleanup.
