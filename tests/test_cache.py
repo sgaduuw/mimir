@@ -1218,12 +1218,20 @@ def test_cache_set_routes_through_active_writer_when_registered(seeded_db):
     from mimir import cache
     from mimir.config import settings
 
+    saved_pool = _context._active_pool
+    saved_writer = _context._active_writer
     pool = ReadSessionPool.from_settings()
     writer = WriterThread.from_settings()
     writer.start()
     try:
         _context.set_active(pool, writer)
-        cache.set("via-active-writer-key", {"v": 1}, ttl=60)
+        # Simulate being inside a broker handler dispatch so cache.set
+        # takes the writer-routing path (gated on _broker_handler_active).
+        cache._set_broker_handler_active(True)
+        try:
+            cache.set("via-active-writer-key", {"v": 1}, ttl=60)
+        finally:
+            cache._set_broker_handler_active(False)
 
         deadline = _time.monotonic() + 5
         engine = create_engine(settings.database_url, future=True)
@@ -1245,9 +1253,14 @@ def test_cache_set_routes_through_active_writer_when_registered(seeded_db):
         finally:
             engine.dispose()
     finally:
-        _context.clear_active()
         writer.stop(timeout=5)
         pool.close()
+        # Restore the session broker's registration so subsequent
+        # tests can still reach the active pool.
+        if saved_pool is not None and saved_writer is not None:
+            _context.set_active(saved_pool, saved_writer)
+        else:
+            _context.clear_active()
 
 
 def test_cache_set_falls_back_to_inline_when_no_active_writer(seeded_db):
@@ -1260,13 +1273,24 @@ def test_cache_set_falls_back_to_inline_when_no_active_writer(seeded_db):
     from mimir import cache
     from mimir.config import settings
 
+    # Save and restore the active context: the session-scoped broker
+    # fixture in conftest.py has already registered a pool + writer.
+    # Clearing without restoring would leave every subsequent test in
+    # the session without an active broker, causing warm-handler tests
+    # to fail with "No active broker; call set_active() first".
+    saved_pool = _context._active_pool
+    saved_writer = _context._active_writer
     _context.clear_active()
-    cache.set("no-active-writer-key", {"v": 2}, ttl=60)
-    engine = create_engine(settings.database_url, future=True)
-    with engine.connect() as c:
-        row = c.execute(
-            text("SELECT key FROM cache WHERE key LIKE :p"),
-            {"p": "%no-active-writer-key"},
-        ).scalar_one_or_none()
-        assert row is not None
-    engine.dispose()
+    try:
+        cache.set("no-active-writer-key", {"v": 2}, ttl=60)
+        engine = create_engine(settings.database_url, future=True)
+        with engine.connect() as c:
+            row = c.execute(
+                text("SELECT key FROM cache WHERE key LIKE :p"),
+                {"p": "%no-active-writer-key"},
+            ).scalar_one_or_none()
+            assert row is not None
+        engine.dispose()
+    finally:
+        if saved_pool is not None and saved_writer is not None:
+            _context.set_active(saved_pool, saved_writer)

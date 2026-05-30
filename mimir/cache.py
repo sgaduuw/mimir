@@ -290,21 +290,32 @@ def set(key: str, value: Any, ttl: int) -> None:
     web tier's gunicorn workers calling cache.set via its own
     RPC path), the existing inline behaviour applies.
     """
-    try:
-        from mimir.broker import _context
+    # Route through the WriterThread ONLY when the active writer is
+    # registered AND we are currently executing inside a broker handler
+    # dispatch (i.e. the worker-loop's `_broker_handler_active=True`
+    # flag is set). Gating on the handler flag rather than just "writer
+    # is not None" prevents the async path from activating in test
+    # contexts or in non-broker callers that happen to share a process
+    # with a registered writer (e.g. the test session broker). In the
+    # actual production warm worker, `_broker_handler_active` is True
+    # for the duration of the handler invocation, so the gate is
+    # transparent to the production path.
+    if _broker_handler_active():
+        try:
+            from mimir.broker import _context
 
-        _writer = _context.get_active_writer()
-    except RuntimeError:
-        _writer = None
+            _writer = _context.get_active_writer()
+        except RuntimeError:
+            _writer = None
 
-    if _writer is not None:
-        # Fire-and-forget; matches cache.set's best-effort posture.
-        # Local import avoids a module-level circular dependency
-        # between cache.py and broker.writes (which imports cache).
-        from mimir.cache import set_via_writer  # noqa: PLC0415
+        if _writer is not None:
+            # Fire-and-forget; matches cache.set's best-effort posture.
+            # Local import avoids a module-level circular dependency
+            # between cache.py and broker.writes (which imports cache).
+            from mimir.cache import set_via_writer  # noqa: PLC0415
 
-        set_via_writer(_writer, key, value, ttl)
-        return
+            set_via_writer(_writer, key, value, ttl)
+            return
 
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
