@@ -80,3 +80,49 @@ def test_read_session_pool_close_releases_resources(seeded_db):
     with pytest.raises(RuntimeError, match="closed"):
         with pool.session():
             pass
+
+
+def test_read_session_pool_session_close_race(seeded_db):
+    """TOCTOU regression test: concurrent close() while another
+    thread is mid-session() must not produce a session bound to a
+    disposed engine. The session() call either succeeds (and we use
+    the session normally before close drains everything) or raises
+    `RuntimeError("closed")`. It MUST NOT return a session that then
+    throws an obscure SQLAlchemy error on first use."""
+    import threading
+
+    pool = ReadSessionPool.from_settings()
+    errors: list[str] = []
+
+    barrier = threading.Barrier(2)
+
+    def opener():
+        try:
+            barrier.wait(timeout=5)
+            with pool.session() as s:
+                # If we got a session, it must be usable.
+                row = s.execute(text("SELECT 1")).scalar_one()
+                assert row == 1
+        except RuntimeError as e:
+            if "closed" not in str(e):
+                errors.append(f"opener got unexpected RuntimeError: {e}")
+        except Exception as e:
+            errors.append(
+                f"opener got non-RuntimeError exception: {type(e).__name__}: {e}"
+            )
+
+    def closer():
+        try:
+            barrier.wait(timeout=5)
+            pool.close()
+        except Exception as e:
+            errors.append(f"closer raised: {e}")
+
+    t_open = threading.Thread(target=opener)
+    t_close = threading.Thread(target=closer)
+    t_open.start()
+    t_close.start()
+    t_open.join(timeout=5)
+    t_close.join(timeout=5)
+
+    assert not errors, f"race produced bad state: {errors}"
