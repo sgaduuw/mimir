@@ -562,3 +562,179 @@ def test_ingest_inbox_uses_writer_thread_via_active_context(
     assert sum(r.new for r in results) == 3, (
         "All 3 messages should have been ingested as new articles"
     )
+
+
+# ---------------------------------------------------------------------------
+# Crash-replay idempotency (Phase 3b Task 8)
+# ---------------------------------------------------------------------------
+
+
+def test_mid_epoch_batch_failure_leaves_cursor_at_old_position(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """Phase 3b cursor invariant: a crash between batch N and batch N+1
+    leaves `IngestState.last_commit_sha` at batch N's last sha (not at
+    batch N+1's, and not at NULL). The next tick re-walks from there;
+    `INSERT OR IGNORE` on `articles.message_id` and
+    `on_conflict_do_nothing` on `article_lists` make the replay a no-op
+    for rows that did commit pre-crash.
+
+    Mirrors Phase 3a's
+    `test_mid_walk_cursor_failure_leaves_cursor_at_old_position`,
+    adapted for the per-batch composite WriteOp shape: the injection
+    point is the SECOND `_submit_ingest_batch` call (the first batch
+    has already committed, including its terminal IngestState UPSERT,
+    so the cursor is non-NULL but stale after the crash).
+    """
+    from concurrent.futures import Future
+
+    from sqlalchemy import select
+
+    import mimir.ingest._pending as pending_mod
+    from mimir.config import settings
+    from mimir.models import Article, ArticleList, IngestState, Inbox
+    from tests.test_ingest._helpers import (
+        _build_pubinbox_repo,
+        _rfc5322,
+    )
+
+    # 4 messages → 4 batches when ingest_batch_flush_seconds=0 forces a
+    # flush after every message. The 2nd batch's WriteOp fails; batches
+    # 3+4 never run.
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    _build_pubinbox_repo(
+        mirror / "0.git",
+        [_rfc5322(f"phase3b-crash-{i}@example.com") for i in range(4)],
+    )
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.mirror_path = str(mirror)
+        s.commit()
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+    # Force per-message batches so we get >1 batch from 4 messages.
+    monkeypatch.setattr(settings, "ingest_batch_flush_seconds", 0.0)
+
+    real_submit = pending_mod._submit_ingest_batch
+    submit_call_count = {"n": 0}
+    first_batch_last_sha: dict[str, str | None] = {"sha": None}
+
+    def explode_on_second_call(writer, pending):
+        submit_call_count["n"] += 1
+        if submit_call_count["n"] == 2:
+            f: Future = Future()
+            f.set_exception(RuntimeError("simulated crash between batches"))
+            return f
+        # Record the first batch's cursor sha so the assertion below can
+        # check that the post-crash cursor matches it (and not the second
+        # batch's sha).
+        if submit_call_count["n"] == 1:
+            first_batch_last_sha["sha"] = pending.last_commit_sha
+        return real_submit(writer, pending)
+
+    monkeypatch.setattr(pending_mod, "_submit_ingest_batch", explode_on_second_call)
+
+    from mimir.ingest import ingest_inbox
+
+    # ingest_inbox propagates the RuntimeError up from the failed Future.
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        ingest_inbox(inbox, workers=1)
+
+    # State A: exactly the first batch's article(s) survived. Cursor is
+    # at batch 1's last sha (the FINAL WriteOp in the composite for
+    # batch 1 was the IngestState UPSERT), NOT at batch 2's sha and
+    # NOT at None.
+    with seeded_db() as s:
+        articles_after_crash = (
+            s.execute(
+                select(Article.message_id)
+                .where(Article.message_id.like("phase3b-crash-%"))
+                .order_by(Article.id)
+            )
+            .scalars()
+            .all()
+        )
+        cursor_after_crash = s.execute(
+            select(IngestState.last_commit_sha).where(
+                IngestState.inbox_id == inbox.id,
+                IngestState.epoch == "0.git",
+            )
+        ).scalar_one_or_none()
+        article_lists_after_crash = s.execute(
+            select(ArticleList.article_id, ArticleList.commit_sha)
+            .join(Article, Article.id == ArticleList.article_id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                Article.message_id.like("phase3b-crash-%"),
+            )
+        ).all()
+
+    assert len(articles_after_crash) >= 1, (
+        "the first batch must have committed before the crash"
+    )
+    assert len(articles_after_crash) < 4, (
+        "the crashing batch and everything after must NOT have committed"
+    )
+    assert cursor_after_crash is not None, (
+        "cursor must have advanced past the first batch (its IngestState "
+        "UPSERT lands as the FINAL step inside that batch's WriteOp)"
+    )
+    assert cursor_after_crash == first_batch_last_sha["sha"], (
+        "cursor must be at the first batch's last sha, not the failed batch's"
+    )
+    assert len(article_lists_after_crash) == len(articles_after_crash), (
+        "one article_lists row per committed article"
+    )
+
+    # Replay: undo the monkeypatch and run again. on_conflict_do_nothing
+    # on articles.message_id + article_lists' (article_id, inbox_id,
+    # epoch, commit_sha) PK absorbs the duplicate-row attempts; the
+    # remaining 3 batches commit cleanly; the cursor advances to HEAD.
+    monkeypatch.undo()
+
+    results = ingest_inbox(inbox, workers=1)
+
+    with seeded_db() as s:
+        articles_after_replay = (
+            s.execute(
+                select(Article.message_id)
+                .where(Article.message_id.like("phase3b-crash-%"))
+                .order_by(Article.id)
+            )
+            .scalars()
+            .all()
+        )
+        cursor_after_replay = s.execute(
+            select(IngestState.last_commit_sha).where(
+                IngestState.inbox_id == inbox.id,
+                IngestState.epoch == "0.git",
+            )
+        ).scalar_one()
+        article_lists_after_replay = s.execute(
+            select(ArticleList.article_id, ArticleList.commit_sha)
+            .join(Article, Article.id == ArticleList.article_id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                Article.message_id.like("phase3b-crash-%"),
+            )
+        ).all()
+
+    assert len(articles_after_replay) == 4, (
+        f"expected exactly 4 articles after replay, got {len(articles_after_replay)}"
+    )
+    assert len(article_lists_after_replay) == 4, (
+        f"expected exactly 4 article_lists rows after replay, "
+        f"got {len(article_lists_after_replay)}"
+    )
+    assert cursor_after_replay != first_batch_last_sha["sha"], (
+        "cursor should have advanced past the first batch on replay"
+    )
+    # Replay resumes from batch 1's cursor (commit 0's sha) so the walker
+    # only yields commits 1..3 — three new articles, no dup_db tally
+    # because the cursor advance means commit 0 is never re-walked.
+    total_new = sum(r.new for r in results)
+    assert total_new == 3, (
+        f"expected exactly 3 new articles on replay (commit 0 skipped via "
+        f"cursor), got new={total_new}"
+    )
