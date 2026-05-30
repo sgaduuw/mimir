@@ -1142,3 +1142,155 @@ def test_cache_module_has_no_pickle_dependency():
         "mimir.cache must not depend on pickle (concurrent-write races + "
         "RCE surface on read). See CONTEXT.md 'Cross-process cache'."
     )
+
+
+# --------------------------------------------------------------------------
+# Phase 2 warm-path: set_via_writer
+# --------------------------------------------------------------------------
+
+
+def test_cache_set_via_writer_commits_through_writer(seeded_db):
+    """set_via_writer() composes a WriteOp wrapping the UPSERT and
+    submits to the writer; the returned WriteFuture resolves once
+    the writer commits. The row is then readable via cache.get_or_compute()
+    from a fresh session."""
+    from mimir.broker.writes import WriterThread
+    from mimir.cache import get_or_compute, set_via_writer
+    from mimir.extensions import SessionLocal
+
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        future = set_via_writer(writer, "test-writer-key", {"v": 1}, ttl=60)
+        future.result(timeout=5)
+
+        # Read back via cache.get_or_compute (no compute should fire
+        # because the value is cached).
+        with SessionLocal() as s:
+            value = get_or_compute(
+                s,
+                "test-writer-key",
+                ttl=60,
+                fn=lambda: {"v": "MISS"},
+            )
+            assert value == {"v": 1}
+    finally:
+        writer.stop(timeout=5)
+
+
+def test_cache_set_via_writer_overwrites_existing_key(seeded_db):
+    """Second set_via_writer on the same key replaces the value
+    (UPSERT semantics)."""
+    from mimir.broker.writes import WriterThread
+    from mimir.cache import get_or_compute, set_via_writer
+    from mimir.extensions import SessionLocal
+
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        set_via_writer(writer, "overwrite-key", {"v": 1}, ttl=60).result(timeout=5)
+        set_via_writer(writer, "overwrite-key", {"v": 2}, ttl=60).result(timeout=5)
+
+        with SessionLocal() as s:
+            value = get_or_compute(
+                s,
+                "overwrite-key",
+                ttl=60,
+                fn=lambda: {"v": "MISS"},
+            )
+            assert value == {"v": 2}
+    finally:
+        writer.stop(timeout=5)
+
+
+def test_cache_set_routes_through_active_writer_when_registered(seeded_db):
+    """When _context.set_active() has registered a WriterThread,
+    cache.set() dispatches the UPSERT through it; the row is
+    readable after the writer drains. Verifies by registering a
+    writer, calling cache.set, and asserting the row commits."""
+    import time as _time
+
+    from sqlalchemy import create_engine, text
+
+    from mimir.broker import _context
+    from mimir.broker.pools import ReadSessionPool
+    from mimir.broker.writes import WriterThread
+    from mimir import cache
+    from mimir.config import settings
+
+    saved_pool = _context._active_pool
+    saved_writer = _context._active_writer
+    pool = ReadSessionPool.from_settings()
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        _context.set_active(pool, writer)
+        # Simulate being inside a broker handler dispatch so cache.set
+        # takes the writer-routing path (gated on _broker_handler_active).
+        cache._set_broker_handler_active(True)
+        try:
+            cache.set("via-active-writer-key", {"v": 1}, ttl=60)
+        finally:
+            cache._set_broker_handler_active(False)
+
+        deadline = _time.monotonic() + 5
+        engine = create_engine(settings.database_url, future=True)
+        try:
+            while _time.monotonic() < deadline:
+                with engine.connect() as c:
+                    # The cache namespace prefix is applied by cache.set,
+                    # so the row's key column starts with "v<N>:".
+                    row = c.execute(
+                        text("SELECT key FROM cache WHERE key LIKE :p"),
+                        {"p": "%via-active-writer-key"},
+                    ).scalar_one_or_none()
+                    if row is not None:
+                        return
+                _time.sleep(0.05)
+            raise AssertionError(
+                "cache.set did not commit through the active writer in 5s"
+            )
+        finally:
+            engine.dispose()
+    finally:
+        writer.stop(timeout=5)
+        pool.close()
+        # Restore the session broker's registration so subsequent
+        # tests can still reach the active pool.
+        if saved_pool is not None and saved_writer is not None:
+            _context.set_active(saved_pool, saved_writer)
+        else:
+            _context.clear_active()
+
+
+def test_cache_set_falls_back_to_inline_when_no_active_writer(seeded_db):
+    """Outside the broker (no active writer registered), cache.set
+    runs the UPSERT inline as today. The web tier still uses this
+    path."""
+    from sqlalchemy import create_engine, text
+
+    from mimir.broker import _context
+    from mimir import cache
+    from mimir.config import settings
+
+    # Save and restore the active context: the session-scoped broker
+    # fixture in conftest.py has already registered a pool + writer.
+    # Clearing without restoring would leave every subsequent test in
+    # the session without an active broker, causing warm-handler tests
+    # to fail with "No active broker; call set_active() first".
+    saved_pool = _context._active_pool
+    saved_writer = _context._active_writer
+    _context.clear_active()
+    try:
+        cache.set("no-active-writer-key", {"v": 2}, ttl=60)
+        engine = create_engine(settings.database_url, future=True)
+        with engine.connect() as c:
+            row = c.execute(
+                text("SELECT key FROM cache WHERE key LIKE :p"),
+                {"p": "%no-active-writer-key"},
+            ).scalar_one_or_none()
+            assert row is not None
+        engine.dispose()
+    finally:
+        if saved_pool is not None and saved_writer is not None:
+            _context.set_active(saved_pool, saved_writer)

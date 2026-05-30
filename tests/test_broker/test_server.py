@@ -345,3 +345,31 @@ def test_broker_serve_starts_and_stops_writer(seeded_db):
     with broker_running(sp):
         pass
     # No assertion needed beyond "the context manager exited cleanly".
+
+
+def test_serve_sets_active_context_during_run(seeded_db):
+    """While serve() is running, _context.get_active_pool() and
+    get_active_writer() return the server's instances. After
+    shutdown, the previous context is restored.
+
+    Note: the session-scoped _session_broker fixture in conftest.py
+    registers its pool+writer for the entire test session. The
+    broker_running context manager saves and restores the previous
+    context on exit, so after broker_running exits, the session
+    broker's context is back in place (not cleared)."""
+    from mimir.broker import _context
+    from tests.test_broker._helpers import broker_running, short_socket_path
+
+    # Capture the pre-test session-broker context.
+    pre_pool = _context._active_pool
+    pre_writer = _context._active_writer
+
+    sp = short_socket_path("phase2-ctx")
+    with broker_running(sp) as server:
+        assert _context.get_active_pool() is server.read_pool
+        assert _context.get_active_writer() is server.writer
+
+    # After context manager exits, context is restored to what it was
+    # before broker_running was entered (the session broker's context).
+    assert _context._active_pool is pre_pool
+    assert _context._active_writer is pre_writer
