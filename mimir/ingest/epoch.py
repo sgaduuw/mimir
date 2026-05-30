@@ -18,11 +18,18 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import TYPE_CHECKING, Iterable, Iterator
+
+if TYPE_CHECKING:
+    # Imported lazily at call-site to avoid a heavy circular import on the
+    # hot ingest path; imported here only so type-checkers and ruff can
+    # resolve the forward-reference string annotations.
+    from mimir.broker.writes import WriterThread
+    from mimir.ingest._pending import _ArticleInsert
 
 from dulwich.repo import Repo
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -377,22 +384,167 @@ def _maybe_promote_list_address(session: Session, inbox_id: int) -> str | None:
     return top_addr
 
 
+def _to_article_insert(
+    parsed: ParsedArticle,
+    inbox_id: int,
+    epoch: str,
+    commit_sha: str,
+    date: datetime,
+    canonical_inbox_id: int | None = None,
+    session: Session | None = None,
+    pending_articles: "list | None" = None,
+) -> "_ArticleInsert":
+    """Build an `_ArticleInsert` record for a new article without touching
+    the ORM session (except for the optional in-series patch-parent lookup).
+
+    Mirrors `_to_article` for the Phase 3b write path: same logic for
+    `thread_parent`, `subject_normalized`, and the patch-series identity
+    fields, but returns a plain dataclass rather than an ORM `Article`.
+
+    `session` is required only for in-series patch parent lookups (same
+    as `_to_article`). `pending_articles` is the current batch's list of
+    already-accumulated `_ArticleInsert` objects so the cover-letter in
+    the same batch can be found without a DB query.
+    """
+    from mimir.ingest._pending import _ArticleInsert
+
+    thread_parent = parsed.in_reply_to or (
+        parsed.references[-1] if parsed.references else None
+    )
+    series_key_val: str | None = None
+    series_version: str | None = None
+    series_position: int | None = None
+    cover = parse_cover_letter(parsed.subject)
+    if cover is not None:
+        series_key_val = series_key(cover.title, parsed.author)
+        series_version = cover.version
+        series_position = 0
+    else:
+        in_series = parse_in_series_patch_subject(parsed.subject)
+        if in_series is not None:
+            series_position = in_series.position
+            if session is not None and thread_parent is not None:
+                # Direct-reply linkage: look for the cover letter in the
+                # same batch first (same-batch pending Articles), then SQL.
+                pending_key = pending_version = None
+                if pending_articles is not None:
+                    for art in pending_articles:
+                        if (
+                            art.message_id == thread_parent
+                            and art.patch_series_key is not None
+                        ):
+                            pending_key = art.patch_series_key
+                            pending_version = art.patch_series_version
+                            break
+                if pending_key is not None:
+                    series_key_val = pending_key
+                    series_version = pending_version
+                else:
+                    row = session.execute(
+                        select(
+                            Article.patch_series_key,
+                            Article.patch_series_version,
+                        ).where(
+                            Article.message_id == thread_parent,
+                            Article.patch_series_key.isnot(None),
+                        )
+                    ).one_or_none()
+                    if row is not None:
+                        series_key_val = row.patch_series_key
+                        series_version = row.patch_series_version
+
+    # Extract diff-touched paths and review-attestation trailers from
+    # the body. Mirrors the extraction in `_to_article` so the Phase 3b
+    # write path produces the same ArticleFile / ArticleTrailer rows.
+    # The actual DB inserts happen in `_submit_ingest_batch` step 1
+    # using the returned article id; we just carry the data here.
+    touched_paths = sorted(extract_touched_paths(parsed.body))
+    trailer_rows = [
+        (role, name, address) for role, name, address in extract_trailers(parsed.body)
+    ]
+
+    return _ArticleInsert(
+        message_id=parsed.message_id,
+        subject=parsed.subject,
+        author=parsed.author,
+        date=date,
+        thread_parent=thread_parent,
+        subject_normalized=normalize_subject(parsed.subject),
+        canonical_inbox_id=canonical_inbox_id,
+        patch_series_key=series_key_val,
+        patch_series_version=series_version,
+        patch_series_position=series_position,
+        touched_paths=touched_paths,
+        trailer_rows=trailer_rows,
+    )
+
+
 def ingest_epoch(
     session: Session,
     inbox: Inbox,
     epoch_name: str,
     repo_path: Path,
+    *,
+    writer: "WriterThread | None" = None,
+    batch_flush_seconds: float | None = None,
     limit: int | None = None,
     workers: int = DEFAULT_WORKERS,
 ) -> IngestResult:
+    """Per-epoch ingest walk (Phase 3b).
+
+    `session` is a query_only read session (from the caller's
+    ReadSessionPool). Per-message decisions accumulate into a
+    `_PendingWrites` carrier; at each batch boundary the carrier is
+    submitted as one composite WriteOp via `_submit_ingest_batch` and
+    the walker awaits `.result()`. After the writer commits,
+    `session.commit()` releases the read snapshot so the next batch's
+    dedup SELECTs see the committed writes (Design Decision 7 from the
+    Phase 3b plan).
+
+    `writer` defaults to `_context.get_active_writer()` when None (the
+    normal production path, where `ingest_inbox` sets up the active
+    context). Pass explicitly when calling outside a broker context
+    (e.g. tests that want a specific WriterThread instance).
+
+    `batch_flush_seconds` defaults to `settings.ingest_batch_flush_seconds`
+    when None; keyword-only to avoid silent positional confusion.
+    """
+    from mimir.ingest._pending import (
+        _ArticleListInsert,
+        _ParseFailureRecord,
+        _PendingWrites,
+        _submit_ingest_batch,
+    )
+
+    # Import WriterThread type lazily to avoid a circular import at the
+    # module level (epoch.py is imported before the broker package in
+    # some test paths).
+    from mimir.broker.writes import WriterThread  # noqa: F401 (type hint)
+
+    # Resolve the writer from the active context when not passed explicitly.
+    if writer is None:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()  # raises RuntimeError when not set
+
+    flush_seconds = (
+        batch_flush_seconds
+        if batch_flush_seconds is not None
+        else settings.ingest_batch_flush_seconds
+    )
+
     inbox_id = inbox.id
     inbox_name = inbox.name
 
-    state = session.get(IngestState, (inbox_id, epoch_name))
-    if state is None:
-        state = IngestState(inbox_id=inbox_id, epoch=epoch_name)
-        session.add(state)
-    last_sha = state.last_commit_sha
+    # Read the resume cursor (or create an empty state row placeholder
+    # in the pending writes rather than in the session - the first
+    # flush_batch will upsert the state row).
+    last_sha = session.execute(
+        select(IngestState.last_commit_sha).where(
+            IngestState.inbox_id == inbox_id,
+            IngestState.epoch == epoch_name,
+        )
+    ).scalar_one_or_none()
 
     result = IngestResult(epoch=epoch_name, last_commit_sha=last_sha)
     last_seen = last_sha
@@ -400,10 +552,6 @@ def ingest_epoch(
     seen_in_batch: set[str] = set()
 
     # SHAs that previously failed to parse for this (inbox, epoch).
-    # Used to (a) skip the cleanup DELETE on the hot fresh-ingest path
-    # (set is empty for never-failed epochs) and (b) clear the row when
-    # a previously-failed commit now parses cleanly. Tiny set in
-    # practice, typical clean parsers fail on <0.1% of messages.
     failed_shas: set[str] = set(
         session.execute(
             select(ParseFailure.commit_sha).where(
@@ -414,42 +562,23 @@ def ingest_epoch(
     )
 
     # Snapshot of {list_address: inbox_id} for canonical resolution.
-    # Refreshed at start; promotion that happens later in this run
-    # affects future runs, not in-flight messages, acceptable lag for
-    # bootstrap, and Phase 2's backfill CLI sweeps the gap.
     address_to_inbox_id: dict[str, int] = dict(
         session.execute(
             select(Inbox.list_address, Inbox.id).where(Inbox.list_address.isnot(None))
         ).all()
     )
 
-    # Inbox IDs to treat as firehoses during canonical pick (see
-    # `pick_canonical_inbox_id`). Computed once per run; name list
-    # comes from `Settings.canonical_demoted_inboxes`.
+    # Inbox IDs to treat as firehoses during canonical pick.
     demoted_inbox_ids: frozenset[int] = frozenset(
         session.execute(
             select(Inbox.id).where(Inbox.name.in_(settings.canonical_demoted_inboxes))
         ).scalars()
     )
 
-    # Per-address observation deltas accumulated this batch; flushed to
-    # `inbox_address_observations` on each commit so we don't issue a
-    # write per message.
-    pending_obs: dict[str, tuple[int, datetime]] = {}
+    # Per-batch pending writes accumulator. Reset at each flush boundary.
+    pending = _PendingWrites(inbox_id=inbox_id, epoch=epoch_name)
 
-    # Max article date seen this batch (across `new` AND `linked`
-    # outcomes, so cross-posts first seen elsewhere still bump the
-    # destination inbox's "Last activity"). Flushed to
-    # `Inbox.last_article_date` on each commit so the front-page card
-    # doesn't ride the 24h `archive_stats` cache. See #216.
-    pending_max_date: datetime | None = None
-
-    # Wall-clock anchor for the `settings.ingest_batch_flush_seconds` time
-    # cap. Reset to the current monotonic time inside `flush_batch` so
-    # every commit window starts fresh; an exception that propagates out
-    # before `flush_batch` runs would leave a stale anchor, but the
-    # surrounding `write_transaction` rolls back the in-flight batch
-    # in that case so the stale value is moot.
+    # Wall-clock anchor for the batch_flush_seconds time cap.
     last_commit_at = time.monotonic()
 
     logger.info(
@@ -461,22 +590,17 @@ def ingest_epoch(
     )
 
     def flush_batch() -> None:
-        nonlocal pending_max_date, last_commit_at
-        if pending_obs:
-            _flush_observations(session, inbox_id, pending_obs)
-            pending_obs.clear()
-        if pending_max_date is not None:
-            # `inbox` may be detached (callers sometimes pass an Inbox
-            # fetched in another session); re-fetch by id so the mutation
-            # lands on a session-attached row that SQLAlchemy will flush.
-            ib = session.get(Inbox, inbox_id)
-            if ib is not None:
-                current = ib.last_article_date
-                if current is None or aware_utc(current) < pending_max_date:
-                    ib.last_article_date = pending_max_date
-            pending_max_date = None
-        state.last_commit_sha = last_seen
+        nonlocal pending, last_commit_at
+        pending.last_commit_sha = last_seen
+        _submit_ingest_batch(writer, pending).result(timeout=120)
+        # Release the read session's implicit READ TRANSACTION so the next
+        # batch's dedup SELECTs see the writes just committed on the
+        # writer's connection. SQLite readers stay on their frozen snapshot
+        # until session.commit() (a no-op for writes on a query_only=1
+        # session) closes the read txn; the next SELECT then opens a fresh
+        # snapshot. Design Decision 7 from the Phase 3b plan.
         session.commit()
+        pending = _PendingWrites(inbox_id=inbox_id, epoch=epoch_name)
         seen_in_batch.clear()
         last_commit_at = time.monotonic()
 
@@ -488,13 +612,10 @@ def ingest_epoch(
         last_seen = commit_sha
         processed += 1
         if isinstance(parsed_or_exc, Exception):
-            # First-time failures are WARNINGs (real new event the
-            # operator should know about); re-encounters of an already-
-            # recorded failure drop to DEBUG so a reindex pass over a
-            # long archive with a stable set of untriagable blobs (RFC
-            # 5322 violators, oversized payloads) doesn't drown the
-            # journal. The `parse_failures` row still tracks everything,
-            # this only governs the log line.
+            # First-time failures are WARNINGs; re-encounters of an
+            # already-recorded failure drop to DEBUG so a reindex pass
+            # over a long archive with untriagable blobs doesn't flood
+            # the journal.
             already_recorded = commit_sha in failed_shas
             log = logger.debug if already_recorded else logger.warning
             log(
@@ -503,45 +624,45 @@ def ingest_epoch(
                 commit_sha[:12],
                 parsed_or_exc,
             )
-            _record_parse_failure(
-                session,
-                inbox_id,
-                epoch_name,
-                commit_sha,
-                parsed_or_exc,
-                already_recorded=already_recorded,
+            pending.parse_failures.append(
+                _ParseFailureRecord(
+                    inbox_id=inbox_id,
+                    epoch=epoch_name,
+                    commit_sha=commit_sha,
+                    delete=False,
+                    error_class=type(parsed_or_exc).__name__,
+                    error_message=str(parsed_or_exc)[:1000],
+                    already_recorded=already_recorded,
+                )
             )
             failed_shas.add(commit_sha)
             result.failed += 1
             continue
         parsed = parsed_or_exc
 
-        # Previously failed, now parses cleanly, clear the row.
+        # Previously failed, now parses cleanly: emit a DELETE record.
         if commit_sha in failed_shas:
-            session.execute(
-                delete(ParseFailure).where(
-                    ParseFailure.inbox_id == inbox_id,
-                    ParseFailure.epoch == epoch_name,
-                    ParseFailure.commit_sha == commit_sha,
+            pending.parse_failures.append(
+                _ParseFailureRecord(
+                    inbox_id=inbox_id,
+                    epoch=epoch_name,
+                    commit_sha=commit_sha,
+                    delete=True,
                 )
             )
             failed_shas.discard(commit_sha)
 
-        # Record list-shaped To/Cc addresses for this inbox. Done once
-        # per parse so cross-posts contribute to *this* inbox's tally
-        # (each linked inbox sees the same message and counts the same
-        # addresses, which is what we want, the modal address per
-        # inbox surfaces correctly).
+        # Record list-shaped To/Cc addresses for this inbox.
         list_addrs = extract_list_addresses(parsed.headers)
         if list_addrs:
             obs_time = aware_utc(parsed.date or commit_time)
             for addr in list_addrs:
-                prev = pending_obs.get(addr)
+                prev = pending.address_observations.get(addr)
                 if prev is None:
-                    pending_obs[addr] = (1, obs_time)
+                    pending.address_observations[addr] = (1, obs_time)
                 else:
                     cnt, ts = prev
-                    pending_obs[addr] = (cnt + 1, max(ts, obs_time))
+                    pending.address_observations[addr] = (cnt + 1, max(ts, obs_time))
 
         if parsed.message_id in seen_in_batch:
             logger.debug(
@@ -554,14 +675,7 @@ def ingest_epoch(
             continue
 
         # One round-trip for "is the message known, and is it already
-        # linked to this inbox?" The LEFT JOIN means: zero rows → new
-        # article; one row with NULL `linked_id` → existing article
-        # not yet linked here (cross-post first seen elsewhere); one
-        # row with non-NULL `linked_id` → already linked (dup_db).
-        # Halves the query count on the 6M-row backfill cold path
-        # (was 1000/batch, now ~500). `Article.date` rides along to
-        # bump `Inbox.last_article_date` for cross-posts; the column
-        # is on the same row so no extra cost.
+        # linked to this inbox?"
         existing_row = session.execute(
             select(
                 Article.id,
@@ -580,9 +694,6 @@ def ingest_epoch(
         if existing_row is not None:
             existing_article_id = existing_row.id
             already_linked = existing_row.linked_id
-            # Already-known message. Either we re-ingested this inbox
-            # (skip) or it's a cross-post first seen via another inbox
-            # (add the link).
             if already_linked is not None:
                 logger.debug(
                     "%s/%s commit %s: skip (already linked) %s",
@@ -593,9 +704,11 @@ def ingest_epoch(
                 )
                 result.dup_db += 1
             else:
-                session.add(
-                    ArticleList(
-                        article_id=existing_article_id,
+                # Cross-post: link to existing article.
+                pending.article_lists.append(
+                    _ArticleListInsert(
+                        article_index=-1,
+                        existing_article_id=existing_article_id,
                         inbox_id=inbox_id,
                         epoch=epoch_name,
                         commit_sha=commit_sha,
@@ -603,13 +716,13 @@ def ingest_epoch(
                 )
                 seen_in_batch.add(parsed.message_id)
                 result.linked += 1
-                # Cross-post: bump activity using the existing article's
-                # date (the link is new to *this* inbox but the article
-                # already carries a real date from its first ingest).
                 if existing_row.date is not None:
                     link_date = aware_utc(existing_row.date)
-                    if pending_max_date is None or link_date > pending_max_date:
-                        pending_max_date = link_date
+                    if (
+                        pending.last_article_date_candidate is None
+                        or link_date > pending.last_article_date_candidate
+                    ):
+                        pending.last_article_date_candidate = link_date
                 logger.debug(
                     "%s/%s commit %s: linked (cross-post) %s",
                     inbox_name,
@@ -624,24 +737,35 @@ def ingest_epoch(
             address_to_inbox_id,
             demoted_inbox_ids,
         )
-        session.add(
-            _to_article(
-                parsed,
+        art_insert = _to_article_insert(
+            parsed,
+            inbox_id=inbox_id,
+            epoch=epoch_name,
+            commit_sha=commit_sha,
+            date=commit_time,
+            canonical_inbox_id=canonical_inbox_id,
+            session=session,
+            pending_articles=pending.articles,
+        )
+        article_index = len(pending.articles)
+        pending.articles.append(art_insert)
+        pending.article_lists.append(
+            _ArticleListInsert(
+                article_index=article_index,
+                existing_article_id=None,
                 inbox_id=inbox_id,
                 epoch=epoch_name,
                 commit_sha=commit_sha,
-                date=commit_time,
-                canonical_inbox_id=canonical_inbox_id,
-                session=session,
             )
         )
         seen_in_batch.add(parsed.message_id)
         result.new += 1
         result.new_message_ids.append(parsed.message_id)
-        # `commit_time` is already aware-UTC from `_walk_epoch`; same
-        # value `_to_article` just persisted to `Article.date`.
-        if pending_max_date is None or commit_time > pending_max_date:
-            pending_max_date = commit_time
+        if (
+            pending.last_article_date_candidate is None
+            or commit_time > pending.last_article_date_candidate
+        ):
+            pending.last_article_date_candidate = commit_time
         logger.debug(
             "%s/%s commit %s: new %s",
             inbox_name,
@@ -663,15 +787,12 @@ def ingest_epoch(
                 result.failed,
             )
 
-        # Commit at the message-count boundary (large bursts) OR
-        # when the wall-clock cap fires (steady-state hot inboxes
-        # under broker mode, where the cache worker needs the writer
-        # lock back regularly to serve cache.set RPCs). See the
-        # Phase 3b plan for the rationale.
+        # Flush at the message-count boundary (large bursts) OR when
+        # the wall-clock cap fires (keeps writer-lock-hold bounded so
+        # concurrent cache.set RPCs drain between batches).
         if (
             processed % COMMIT_EVERY == 0
-            or (time.monotonic() - last_commit_at)
-            >= settings.ingest_batch_flush_seconds
+            or (time.monotonic() - last_commit_at) >= flush_seconds
         ):
             flush_batch()
 

@@ -497,3 +497,68 @@ def test_submit_analyze_runs_via_writer(writer, seeded_db):
     future = _submit_analyze(writer, "alpha")
     # Must complete without raising.
     future.result(timeout=30)
+
+
+# ---------------------------------------------------------------------------
+# Structural-contract test (Phase 3b Tasks 6+7)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_inbox_uses_writer_thread_via_active_context(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """Phase 3b contract: `ingest_inbox` must NOT call `write_transaction`.
+
+    The previous implementation held a write_transaction for the full
+    epoch walk, blocking concurrent cache.set RPCs. Phase 3b restructures
+    to dispatch all writes as WriteOps through the active WriterThread so
+    the writer lock is held only for the brief per-batch commit, not the
+    full epoch walk.
+
+    This test monkeypatches `write_transaction` to raise RuntimeError and
+    verifies that a normal `ingest_inbox` call succeeds without ever
+    triggering the guard. Any call to the patched function indicates scope
+    creep back to the old write-per-transaction model.
+    """
+    from sqlalchemy import select
+
+    from mimir.models import Inbox
+    from tests.test_ingest._helpers import (
+        _build_pubinbox_repo,
+        _rfc5322,
+    )
+
+    # Build a small mirror for alpha.
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    _build_pubinbox_repo(
+        mirror / "0.git",
+        [_rfc5322(f"phase3b-contract-{i}@example.com") for i in range(3)],
+    )
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.mirror_path = str(mirror)
+        s.commit()
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+    # Patch write_transaction to explode: any call is a contract violation.
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError(
+            "write_transaction must not be called by ingest_inbox "
+            "after Phase 3b (Tasks 6+7); all writes go through WriterThread"
+        )
+
+    # write_transaction is imported into orchestrate.py at module level.
+    # After the Phase 3b rewrite it is no longer imported there, so we
+    # patch mimir.extensions directly as well.
+    import mimir.extensions as ext_mod
+
+    monkeypatch.setattr(ext_mod, "write_transaction", _forbidden)
+
+    from mimir.ingest import ingest_inbox
+
+    results = ingest_inbox(inbox, workers=1)
+    assert sum(r.new for r in results) == 3, (
+        "All 3 messages should have been ingested as new articles"
+    )

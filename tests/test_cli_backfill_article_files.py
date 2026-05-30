@@ -85,7 +85,7 @@ def _ingest_articles_without_files(seeded_db, tmp_path, *bodies):
         s.commit()
 
 
-def test_backfill_indexes_patch_articles(seeded_db, tmp_path):
+def test_backfill_indexes_patch_articles(seeded_db, tmp_path, broker_active):
     """Pre-extractor articles get re-walked: patch bodies land
     ArticleFile rows; prose bodies don't.
 
@@ -118,7 +118,7 @@ def test_backfill_indexes_patch_articles(seeded_db, tmp_path):
     assert rows == {("m0@example.com", "fs/foo/a.c")}
 
 
-def test_backfill_is_idempotent_on_rerun(seeded_db, tmp_path):
+def test_backfill_is_idempotent_on_rerun(seeded_db, tmp_path, broker_active):
     """Second run with no new articles → the freshly-indexed one
     lands in `skipped` (rows already exist). No duplicate rows."""
     _ingest_articles_without_files(seeded_db, tmp_path, _PATCH_BODY)
@@ -134,7 +134,7 @@ def test_backfill_is_idempotent_on_rerun(seeded_db, tmp_path):
     assert paths == ["fs/foo/a.c"]
 
 
-def test_backfill_reprocess_re_extracts(seeded_db, tmp_path):
+def test_backfill_reprocess_re_extracts(seeded_db, tmp_path, broker_active):
     """`--reprocess` deletes existing rows and re-extracts. Useful
     after an extractor change ships."""
     _ingest_articles_without_files(seeded_db, tmp_path, _PATCH_BODY)
@@ -145,7 +145,7 @@ def test_backfill_reprocess_re_extracts(seeded_db, tmp_path):
     assert result.skipped == 0
 
 
-def test_backfill_cli_prints_summary(seeded_db, tmp_path):
+def test_backfill_cli_prints_summary(seeded_db, tmp_path, broker_active):
     """End-to-end CLI: runs without error, summary line in output."""
     _ingest_articles_without_files(
         seeded_db,
@@ -163,7 +163,7 @@ def test_backfill_cli_prints_summary(seeded_db, tmp_path):
     assert "no_diff=1" in result.output
 
 
-def test_backfill_cli_honours_limit(seeded_db, tmp_path):
+def test_backfill_cli_honours_limit(seeded_db, tmp_path, broker_active):
     """`--limit` caps the per-session examination so a huge archive
     can be backfilled in chunks."""
     _ingest_articles_without_files(
@@ -178,7 +178,7 @@ def test_backfill_cli_honours_limit(seeded_db, tmp_path):
     assert "examined=2" in result.output
 
 
-def test_backfill_limit_boundary_pins(seeded_db, tmp_path):
+def test_backfill_limit_boundary_pins(seeded_db, tmp_path, broker_active):
     """Pins `examined == limit` across the small-integer boundary so
     a future refactor of the `examined_total > limit` break can't
     silently regress to a fence-post error. The seeded-conftest
@@ -209,7 +209,9 @@ def test_backfill_skips_articles_with_unreachable_mirror(seeded_db):
     assert result.skipped > 0
 
 
-def test_backfill_prefers_canonical_inbox_for_crossposts(seeded_db, tmp_path):
+def test_backfill_prefers_canonical_inbox_for_crossposts(
+    seeded_db, tmp_path, broker_active
+):
     """A cross-posted article has multiple ArticleList rows; the old
     behaviour picked `article.lists[0]` whose order depends on the
     SQLA loader. The fix is to read the canonical_inbox first and
