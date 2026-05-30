@@ -61,6 +61,7 @@ import time
 from pathlib import Path
 
 from mimir import cache
+from mimir.broker import _context
 from mimir.broker.handlers import LONG_OPS, WARM_OPS, classify_op, dispatch
 from mimir.broker.pools import ReadSessionPool
 from mimir.broker.protocol import Reply
@@ -690,6 +691,10 @@ def serve(socket_path: Path) -> None:
     sp = Path(socket_path)
 
     server.writer.start()
+    # Phase 2 of the two-pool restructure registers this server's
+    # pool + writer so handler functions (warm.py first) can reach
+    # them without a dispatcher refactor.
+    _context.set_active(server.read_pool, server.writer)
 
     purge_thread = threading.Thread(
         target=_purge_loop,
@@ -717,6 +722,7 @@ def serve(socket_path: Path) -> None:
             sp.unlink()
         purge_thread.join(timeout=5.0)
         server.writer.stop(timeout=10.0)
+        _context.clear_active()
         server.read_pool.close()
         logger.info("broker: shut down cleanly")
 

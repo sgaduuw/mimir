@@ -345,3 +345,22 @@ def test_broker_serve_starts_and_stops_writer(seeded_db):
     with broker_running(sp):
         pass
     # No assertion needed beyond "the context manager exited cleanly".
+
+
+def test_serve_sets_active_context_during_run(seeded_db):
+    """While serve() is running, _context.get_active_pool() and
+    get_active_writer() return the server's instances. After
+    shutdown, they raise."""
+    import pytest
+
+    from mimir.broker import _context
+    from tests.test_broker._helpers import broker_running, short_socket_path
+
+    sp = short_socket_path("phase2-ctx")
+    with broker_running(sp) as server:
+        assert _context.get_active_pool() is server.read_pool
+        assert _context.get_active_writer() is server.writer
+
+    # After context manager exits, registration is cleared.
+    with pytest.raises(RuntimeError, match="No active broker"):
+        _context.get_active_pool()
