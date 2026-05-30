@@ -231,3 +231,53 @@ def test_writer_thread_submit_blocks_when_queue_full(seeded_db):
             f.result(timeout=5)
     finally:
         writer.stop(timeout=5)
+
+
+def test_writer_thread_slow_commit_emits_warning(seeded_db, caplog):
+    """A commit that exceeds broker_slow_rpc_warn_ms emits a WARNING
+    line with the op label and elapsed ms."""
+    from mimir.config import settings
+
+    writer = WriterThread(
+        database_url=settings.database_url,
+        queue_depth=8,
+        slow_warn_ms=10,  # very low threshold so the test reliably triggers
+    )
+    writer.start()
+    try:
+
+        def slow(c):
+            time.sleep(0.05)  # 50ms > 10ms threshold
+
+        with caplog.at_level("WARNING", logger="mimir.broker.writes"):
+            f = writer.submit(WriteOp(label="test:slowcommit", fn=slow))
+            f.result(timeout=5)
+
+        slow_lines = [r for r in caplog.records if "slow write" in r.message]
+        assert slow_lines, (
+            f"expected slow-write warning, got: {[r.message for r in caplog.records]}"
+        )
+        msg = slow_lines[0].message
+        assert "test:slowcommit" in msg
+        # Format check: "broker slow write [<label>] (<ms>ms)"
+        assert "ms" in msg
+    finally:
+        writer.stop(timeout=5)
+
+
+def test_writer_thread_fast_commit_no_warning(seeded_db, caplog):
+    from mimir.config import settings
+
+    writer = WriterThread(
+        database_url=settings.database_url,
+        queue_depth=8,
+        slow_warn_ms=5000,  # high threshold so a fast op stays under it
+    )
+    writer.start()
+    try:
+        with caplog.at_level("WARNING", logger="mimir.broker.writes"):
+            f = writer.submit(WriteOp(label="test:fastcommit", fn=lambda c: None))
+            f.result(timeout=5)
+        assert not [r for r in caplog.records if "slow write" in r.message]
+    finally:
+        writer.stop(timeout=5)

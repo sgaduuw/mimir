@@ -19,11 +19,14 @@ import dataclasses
 import logging
 import queue
 import threading
+import time
 from concurrent.futures import Future
 from typing import Callable
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Connection
+
+from mimir.config import settings
 
 logger = logging.getLogger(__name__)
 WriteFuture = Future  # type alias; parametrised as Future[None] at the use site
@@ -56,12 +59,26 @@ class WriterThread:
     The writable connection lives entirely on the writer thread
     and is never touched by anyone else."""
 
-    def __init__(self, database_url: str, queue_depth: int) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        queue_depth: int,
+        slow_warn_ms: int = 2000,
+    ) -> None:
         self._database_url = database_url
         self._queue: queue.Queue = queue.Queue(maxsize=queue_depth)
+        self._slow_warn_ms = slow_warn_ms
         self._thread: threading.Thread | None = None
         self._stop_lock = threading.Lock()
         self._stopped = False
+
+    @classmethod
+    def from_settings(cls) -> "WriterThread":
+        return cls(
+            database_url=settings.database_url,
+            queue_depth=settings.broker_writer_queue_depth,
+            slow_warn_ms=settings.broker_slow_rpc_warn_ms,
+        )
 
     def start(self) -> None:
         if self._thread is not None:
@@ -109,6 +126,7 @@ class WriterThread:
             engine.dispose()
 
     def _run_one(self, conn, op: WriteOp, future: WriteFuture) -> None:
+        t0 = time.perf_counter()
         try:
             with conn.begin():
                 # SQLAlchemy 2.0 conn.begin() is the standard transaction
@@ -119,6 +137,13 @@ class WriterThread:
                 # Phase 2+ may switch to explicit BEGIN IMMEDIATE if
                 # contention with other writers becomes possible.
                 op.fn(conn)
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            if elapsed_ms >= self._slow_warn_ms:
+                logger.warning(
+                    "broker slow write [%s] (%dms)",
+                    op.label,
+                    elapsed_ms,
+                )
             future.set_result(None)
         except Exception as exc:  # noqa: BLE001
             future.set_exception(exc)
