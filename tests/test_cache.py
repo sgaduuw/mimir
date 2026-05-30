@@ -1201,3 +1201,72 @@ def test_cache_set_via_writer_overwrites_existing_key(seeded_db):
             assert value == {"v": 2}
     finally:
         writer.stop(timeout=5)
+
+
+def test_cache_set_routes_through_active_writer_when_registered(seeded_db):
+    """When _context.set_active() has registered a WriterThread,
+    cache.set() dispatches the UPSERT through it; the row is
+    readable after the writer drains. Verifies by registering a
+    writer, calling cache.set, and asserting the row commits."""
+    import time as _time
+
+    from sqlalchemy import create_engine, text
+
+    from mimir.broker import _context
+    from mimir.broker.pools import ReadSessionPool
+    from mimir.broker.writes import WriterThread
+    from mimir import cache
+    from mimir.config import settings
+
+    pool = ReadSessionPool.from_settings()
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        _context.set_active(pool, writer)
+        cache.set("via-active-writer-key", {"v": 1}, ttl=60)
+
+        deadline = _time.monotonic() + 5
+        engine = create_engine(settings.database_url, future=True)
+        try:
+            while _time.monotonic() < deadline:
+                with engine.connect() as c:
+                    # The cache namespace prefix is applied by cache.set,
+                    # so the row's key column starts with "v<N>:".
+                    row = c.execute(
+                        text("SELECT key FROM cache WHERE key LIKE :p"),
+                        {"p": "%via-active-writer-key"},
+                    ).scalar_one_or_none()
+                    if row is not None:
+                        return
+                _time.sleep(0.05)
+            raise AssertionError(
+                "cache.set did not commit through the active writer in 5s"
+            )
+        finally:
+            engine.dispose()
+    finally:
+        _context.clear_active()
+        writer.stop(timeout=5)
+        pool.close()
+
+
+def test_cache_set_falls_back_to_inline_when_no_active_writer(seeded_db):
+    """Outside the broker (no active writer registered), cache.set
+    runs the UPSERT inline as today. The web tier still uses this
+    path."""
+    from sqlalchemy import create_engine, text
+
+    from mimir.broker import _context
+    from mimir import cache
+    from mimir.config import settings
+
+    _context.clear_active()
+    cache.set("no-active-writer-key", {"v": 2}, ttl=60)
+    engine = create_engine(settings.database_url, future=True)
+    with engine.connect() as c:
+        row = c.execute(
+            text("SELECT key FROM cache WHERE key LIKE :p"),
+            {"p": "%no-active-writer-key"},
+        ).scalar_one_or_none()
+        assert row is not None
+    engine.dispose()

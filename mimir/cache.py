@@ -277,7 +277,35 @@ def set(key: str, value: Any, ttl: int) -> None:
     Inside the broker process itself the dispatch short-circuits
     via `_should_dispatch_to_broker()` and writes directly via
     `_direct_set`, avoiding a self-RPC.
+
+    Phase 2 of the two-pool restructure
+    (`_claude/specs/2026-05-29-broker-two-pool-design.md`):
+    when the calling context is inside the broker (the broker's
+    serve() loop has registered an active writer), dispatch the
+    UPSERT through that writer thread instead of running it
+    inline. This keeps the writer-lock hold time short and lets
+    multiple read-pool threads' warm work proceed in parallel.
+
+    Outside the broker (no active writer registered; e.g. the
+    web tier's gunicorn workers calling cache.set via its own
+    RPC path), the existing inline behaviour applies.
     """
+    try:
+        from mimir.broker import _context
+
+        _writer = _context.get_active_writer()
+    except RuntimeError:
+        _writer = None
+
+    if _writer is not None:
+        # Fire-and-forget; matches cache.set's best-effort posture.
+        # Local import avoids a module-level circular dependency
+        # between cache.py and broker.writes (which imports cache).
+        from mimir.cache import set_via_writer  # noqa: PLC0415
+
+        set_via_writer(_writer, key, value, ttl)
+        return
+
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
     if len(payload) > MAX_CACHE_VALUE_BYTES:
