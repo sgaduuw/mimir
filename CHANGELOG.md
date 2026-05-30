@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.11.0], 2026-05-30
+
 ### Changed
 
 - **Broker two-pool restructure, Phase 2 (warm-cache migration).**
