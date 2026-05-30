@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.14.0], 2026-05-30
+
 ### Changed
 
 - **Broker two-pool restructure, Phase 3b (`ingest_inbox` long-op
