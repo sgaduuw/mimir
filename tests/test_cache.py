@@ -1142,3 +1142,62 @@ def test_cache_module_has_no_pickle_dependency():
         "mimir.cache must not depend on pickle (concurrent-write races + "
         "RCE surface on read). See CONTEXT.md 'Cross-process cache'."
     )
+
+
+# --------------------------------------------------------------------------
+# Phase 2 warm-path: set_via_writer
+# --------------------------------------------------------------------------
+
+
+def test_cache_set_via_writer_commits_through_writer(seeded_db):
+    """set_via_writer() composes a WriteOp wrapping the UPSERT and
+    submits to the writer; the returned WriteFuture resolves once
+    the writer commits. The row is then readable via cache.get_or_compute()
+    from a fresh session."""
+    from mimir.broker.writes import WriterThread
+    from mimir.cache import get_or_compute, set_via_writer
+    from mimir.extensions import SessionLocal
+
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        future = set_via_writer(writer, "test-writer-key", {"v": 1}, ttl=60)
+        future.result(timeout=5)
+
+        # Read back via cache.get_or_compute (no compute should fire
+        # because the value is cached).
+        with SessionLocal() as s:
+            value = get_or_compute(
+                s,
+                "test-writer-key",
+                ttl=60,
+                fn=lambda: {"v": "MISS"},
+            )
+            assert value == {"v": 1}
+    finally:
+        writer.stop(timeout=5)
+
+
+def test_cache_set_via_writer_overwrites_existing_key(seeded_db):
+    """Second set_via_writer on the same key replaces the value
+    (UPSERT semantics)."""
+    from mimir.broker.writes import WriterThread
+    from mimir.cache import get_or_compute, set_via_writer
+    from mimir.extensions import SessionLocal
+
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        set_via_writer(writer, "overwrite-key", {"v": 1}, ttl=60).result(timeout=5)
+        set_via_writer(writer, "overwrite-key", {"v": 2}, ttl=60).result(timeout=5)
+
+        with SessionLocal() as s:
+            value = get_or_compute(
+                s,
+                "overwrite-key",
+                ttl=60,
+                fn=lambda: {"v": "MISS"},
+            )
+            assert value == {"v": 2}
+    finally:
+        writer.stop(timeout=5)
