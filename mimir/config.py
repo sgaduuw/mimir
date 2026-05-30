@@ -337,6 +337,19 @@ class Settings(BaseSettings):
     # Plan: _claude/plans/2026-05-30-broker-two-pool-phase-3-mainline.md.
     mainline_commit_batch_size: int = 100
 
+    # Phase 3b of the broker two-pool restructure (ingest rewrites):
+    # time budget per ingest batch before flushing pending writes via
+    # a composite WriteOp. The walker accumulates per-message work on
+    # the read session, then at this interval submits the whole batch
+    # as one WriteOp through the active WriterThread, awaits .result(),
+    # and resumes. Smaller values shorten writer-lock-hold per batch at
+    # the cost of more round-trips; larger values reduce overhead at the
+    # cost of longer head-of-line stalls for concurrent cache.set RPCs.
+    # Default 0.5 s preserves the pre-Phase-3b COMMIT_EVERY_SECONDS value.
+    # Operator override: INGEST_BATCH_FLUSH_SECONDS.
+    # Plan: _claude/plans/2026-05-30-broker-two-pool-phase-3b-ingest.md.
+    ingest_batch_flush_seconds: float = 0.5
+
     # True iff this process IS the broker daemon. The broker
     # container sets MIMIR_IS_BROKER=true; every other process
     # (web, tasks, dev CLI invocations) leaves it false. Drives

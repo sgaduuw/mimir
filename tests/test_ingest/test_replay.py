@@ -23,7 +23,9 @@ from mimir.models import (
 from tests.test_ingest._helpers import _alpha, _build_pubinbox_repo, _rfc5322
 
 
-def test_replay_failures_recovers_on_parser_fix(seeded_db, tmp_path, monkeypatch):
+def test_replay_failures_recovers_on_parser_fix(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
     """Ingest with a tight cap -> failure rows. Lift the cap, point
     the inbox's mirror_path at the test repo, replay -> rows cleared
     and articles inserted."""
@@ -93,7 +95,9 @@ def test_replay_failures_recovers_on_parser_fix(seeded_db, tmp_path, monkeypatch
             ).scalar_one()
 
 
-def test_replay_failures_still_fails_bumps_attempts(seeded_db, tmp_path, monkeypatch):
+def test_replay_failures_still_fails_bumps_attempts(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
     """Replay against an unfixed parser: the row's attempts/last_attempt
     advance but the row stays."""
     import mimir.parser
@@ -136,7 +140,9 @@ def test_replay_failures_still_fails_bumps_attempts(seeded_db, tmp_path, monkeyp
     assert after.last_attempt >= before_last
 
 
-def test_replay_failures_skips_when_mirror_missing(seeded_db, tmp_path, monkeypatch):
+def test_replay_failures_skips_when_mirror_missing(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
     """If the mirror has been wiped (or the row predates the current
     mirror layout), replay reports `skipped` and leaves the row."""
     import mimir.parser
@@ -266,6 +272,7 @@ def test_replay_failures_cross_post_links_existing_article(
     seeded_db,
     tmp_path,
     monkeypatch,
+    broker_active,
 ):
     """A message that's already an article in another inbox should
     replay into a new `article_lists` row in the failing inbox, not

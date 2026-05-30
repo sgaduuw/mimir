@@ -158,3 +158,45 @@ def _naive_utc(dt):
     """SQLite stores DateTime as TEXT without tz; round-trip strips
     tzinfo. Compare on the naive form for in-DB assertions."""
     return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
+def _cache_set_direct(key: str, value, ttl: int) -> None:
+    """Write a cache value synchronously, bypassing the active
+    WriterThread's async routing.
+
+    When `broker_active` is in effect, `cache.set()` routes writes
+    through `set_via_writer()` (fire-and-forget). Tests that need a
+    sentinel value to be readable *immediately* after the write (e.g.
+    to prove the post-ingest warm does not overwrite a fresh row) use
+    this helper instead of `cache.set()`.
+
+    Calls `cache._direct_set` with the pre-namespaced key and
+    pre-encoded payload, which opens its own SessionLocal and commits
+    synchronously."""
+    import json
+
+    from mimir import cache
+
+    nskey = cache._ns(key)
+    payload = json.dumps(cache._encode(value), separators=(",", ":"))
+    cache._direct_set(nskey, payload, ttl)
+
+
+def _drain_writer() -> None:
+    """Block until the active WriterThread has committed every op
+    submitted before this call.
+
+    The WriterThread processes ops sequentially. Submitting a no-op
+    WriteOp and blocking on its Future guarantees that all previously
+    queued ops (including fire-and-forget `set_via_writer` calls from
+    `cache.set`) have committed to SQLite by the time this returns.
+
+    Use after `ingest_inbox()` / `ingest_epoch()` in tests that
+    assert the post-ingest cache state (post-warm writes are
+    fire-and-forget and may not have committed yet when the ingest
+    call returns)."""
+    from mimir.broker import _context
+    from mimir.broker.writes import WriteOp
+
+    writer = _context.get_active_writer()
+    writer.submit(WriteOp(label="test:drain", fn=lambda conn: None)).result(timeout=10)
