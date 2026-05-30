@@ -33,7 +33,7 @@ def _add_article(seeded_db, msgid, subject, author="A <a@x>"):
         return art.id
 
 
-def test_backfill_indexes_cover_letters(seeded_db):
+def test_backfill_indexes_cover_letters(seeded_db, broker_active):
     """Pre-detector articles get re-walked: cover-letter subjects
     land keys, non-cover-letter subjects don't."""
     _add_article(seeded_db, "cover@x", "[PATCH v2 0/3] improve foo")
@@ -58,7 +58,7 @@ def test_backfill_indexes_cover_letters(seeded_db):
     assert patch.patch_series_key is None
 
 
-def test_backfill_is_idempotent_on_rerun(seeded_db):
+def test_backfill_is_idempotent_on_rerun(seeded_db, broker_active):
     """Second run with no new articles → cover-letter rows are
     `skipped`, non-cover-letters are `not_cover` again. No
     duplicate key writes."""
@@ -70,7 +70,7 @@ def test_backfill_is_idempotent_on_rerun(seeded_db):
     assert second.skipped == 1  # cover@x already has a key
 
 
-def test_backfill_reprocess_clears_stale_keys(seeded_db):
+def test_backfill_reprocess_clears_stale_keys(seeded_db, broker_active):
     """`--reprocess` clears keys on articles whose subject no
     longer parses as a cover letter. Useful after a parser
     regression fix."""
@@ -89,14 +89,14 @@ def test_backfill_reprocess_clears_stale_keys(seeded_db):
     assert a.patch_series_version is None
 
 
-def test_backfill_cli_prints_summary(seeded_db):
+def test_backfill_cli_prints_summary(seeded_db, broker_active):
     _add_article(seeded_db, "c@x", "[PATCH 0/3] improve foo")
     result = CliRunner().invoke(backfill_patch_series_command, [])
     assert result.exit_code == 0, result.output
     assert "indexed=1" in result.output
 
 
-def test_backfill_cli_honours_limit(seeded_db):
+def test_backfill_cli_honours_limit(seeded_db, broker_active):
     _add_article(seeded_db, "a@x", "[PATCH 0/3] one")
     _add_article(seeded_db, "b@x", "[PATCH 0/3] two")
     _add_article(seeded_db, "c@x", "[PATCH 0/3] three")
@@ -130,7 +130,7 @@ def _add_article_with_parent(seeded_db, msgid, subject, parent_msgid):
         return art.id
 
 
-def test_backfill_sets_position_zero_on_cover_letters(seeded_db):
+def test_backfill_sets_position_zero_on_cover_letters(seeded_db, broker_active):
     """A cover letter walked by backfill lands with
     `patch_series_position = 0`, the column #212 added."""
     _add_article(seeded_db, "cv@x", "[PATCH v2 0/3] improve foo")
@@ -143,7 +143,7 @@ def test_backfill_sets_position_zero_on_cover_letters(seeded_db):
     assert cover.patch_series_key is not None
 
 
-def test_backfill_links_in_series_via_thread_parent(seeded_db):
+def test_backfill_links_in_series_via_thread_parent(seeded_db, broker_active):
     """In-series patch with `thread_parent` set to a cover letter
     that's already backfilled inherits the cover's `(key, version)`
     and lands in the `in_series_indexed` bucket."""
@@ -169,7 +169,7 @@ def test_backfill_links_in_series_via_thread_parent(seeded_db):
     assert patch.patch_series_version == cover.patch_series_version
 
 
-def test_backfill_in_series_orphan_when_cover_missing(seeded_db):
+def test_backfill_in_series_orphan_when_cover_missing(seeded_db, broker_active):
     """In-series patch without a thread_parent pointing at an
     already-keyed cover lands in the `in_series_orphan` bucket:
     position set, key + version stay NULL."""
@@ -185,7 +185,7 @@ def test_backfill_in_series_orphan_when_cover_missing(seeded_db):
     assert patch.patch_series_version is None
 
 
-def test_backfill_relinks_orphan_when_cover_arrives_later(seeded_db):
+def test_backfill_relinks_orphan_when_cover_arrives_later(seeded_db, broker_active):
     """Re-running backfill after a previously-orphaned in-series
     patch's cover lands in the DB links them, without needing
     `--reprocess`. Pins the design: orphans are re-attempted every
