@@ -549,3 +549,56 @@ def test_backfill_canonicals_uses_writer_thread_via_active_context(
 
     result = backfill_canonicals(limit=10)
     assert result.examined > 0
+
+
+def test_batch_closure_failure_rolls_back_entire_batch(
+    seeded_db, monkeypatch, broker_active
+):
+    """The composite WriteOp closure is wrapped in BEGIN IMMEDIATE/COMMIT
+    by the writer thread. A failure between statements in the closure
+    must roll back every prior statement in that closure.
+
+    The test submits a custom WriteOp whose closure runs one INSERT and
+    then raises. The writer thread's transaction wrapper must roll back
+    the INSERT so the row never lands on disk.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+    from mimir.models import Article, ArticleFile
+
+    with seeded_db() as s:
+        article_id = s.execute(select(Article.id).limit(1)).scalar_one()
+
+    writer = get_active_writer()
+
+    def _fn(conn):
+        conn.execute(
+            sqlite_insert(ArticleFile)
+            .values(article_id=article_id, path="atomicity/early.c")
+            .on_conflict_do_nothing(index_elements=["article_id", "path"])
+        )
+        raise RuntimeError("simulated mid-batch crash")
+
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError, match="simulated mid-batch crash"):
+        writer.submit(WriteOp(label="test:atomicity", fn=_fn)).result(timeout=10)
+
+    with seeded_db() as s:
+        survived = (
+            s.execute(
+                select(ArticleFile.path).where(
+                    ArticleFile.article_id == article_id,
+                    ArticleFile.path == "atomicity/early.c",
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert survived == [], (
+        f"the mid-batch failure must have rolled back the early INSERT; "
+        f"found {survived!r}"
+    )
