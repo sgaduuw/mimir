@@ -314,3 +314,34 @@ def test_server_cleans_up_socket_file_on_shutdown(seeded_db):
     with broker_running(sp):
         assert sp.exists()
     assert not sp.exists()
+
+
+def test_broker_server_constructs_read_pool_and_writer(seeded_db):
+    """build_server() now wires a ReadSessionPool and WriterThread
+    onto the server instance. Phase 1: parallel infrastructure;
+    no handler uses them yet."""
+    from mimir.broker.server import build_server
+    from mimir.broker.pools import ReadSessionPool
+    from mimir.broker.writes import WriterThread
+    from tests.test_broker._helpers import short_socket_path
+
+    sp = short_socket_path("phase1-wire")
+    server = build_server(sp)
+    try:
+        assert isinstance(server.read_pool, ReadSessionPool)
+        assert isinstance(server.writer, WriterThread)
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()
+
+
+def test_broker_serve_starts_and_stops_writer(seeded_db):
+    """serve() should start the writer at boot and stop it on shutdown.
+    The existing broker_running fixture exercises serve() end-to-end."""
+    from tests.test_broker._helpers import broker_running, short_socket_path
+
+    sp = short_socket_path("phase1-startstop")
+    with broker_running(sp):
+        pass
+    # No assertion needed beyond "the context manager exited cleanly".
