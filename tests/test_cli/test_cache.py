@@ -5,9 +5,13 @@ atom-feed / sitemap targets), `analyze`, and `vacuum`
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from click.testing import CliRunner
 from sqlalchemy import select
 
+from mimir.broker import _context
+from mimir.broker.pools import ReadSessionPool
+from mimir.broker.writes import WriterThread
 from mimir.cli import (
     analyze_command,
     vacuum_command,
@@ -17,7 +21,43 @@ from mimir.inboxes import set_tracked_authors
 from mimir.models import Article, ArticleList, Inbox
 
 
-def test_warm_cache_parallel_propagates_refresh_window(seeded_db):
+@pytest.fixture
+def _active_broker_context():
+    """Register an active pool + writer for the duration of each test.
+
+    warm_cache_command dispatches warm_inbox / warm_global RPCs to the
+    session broker; those handlers call _context.get_active_pool() and
+    _context.get_active_writer(). Without a registration here, the warm
+    handlers raise "No active broker; call set_active() first". The
+    session-scoped _session_broker fixture provides the socket but does
+    NOT register a pool+writer (that is per-test scope, owned here).
+
+    Used as an explicit fixture argument on the tests that invoke
+    warm_cache_command (not autouse, to avoid polluting tests that
+    call cache.set() + cache.get() directly and need synchronous
+    commit semantics). Saves and restores the pre-test context so any
+    outer registration (from broker_running in other test modules) is
+    not silently lost."""
+    saved_pool = _context._active_pool
+    saved_writer = _context._active_writer
+    pool = ReadSessionPool.from_settings()
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        _context.set_active(pool, writer)
+        yield
+    finally:
+        writer.stop(timeout=5)
+        pool.close()
+        if saved_pool is not None and saved_writer is not None:
+            _context.set_active(saved_pool, saved_writer)
+        else:
+            _context.clear_active()
+
+
+def test_warm_cache_parallel_propagates_refresh_window(
+    seeded_db, _active_broker_context
+):
     """Worker threads must inherit the `refresh_window` contextvar
     via `copy_context()`. If they don't, a fresh-but-near-expiry
     cache row would *not* recompute under load, silently undoing
@@ -57,7 +97,7 @@ def test_warm_cache_parallel_propagates_refresh_window(seeded_db):
     )
 
 
-def test_warm_cache_default_emits_only_summary(seeded_db):
+def test_warm_cache_default_emits_only_summary(seeded_db, _active_broker_context):
     """Default verbosity collapses per-key timings into one summary
     line so the scheduler log doesn't scale with inbox count."""
     result = CliRunner().invoke(warm_cache_command, [])
@@ -73,7 +113,9 @@ def test_warm_cache_default_emits_only_summary(seeded_db):
     assert per_key == [], f"unexpected per-key lines at default verbosity: {per_key}"
 
 
-def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
+def test_warm_cache_subsystem_dashboards_populate_cache(
+    seeded_db, _active_broker_context
+):
     """When an inbox has at least one most-active subsystem, the warm
     target writes cache rows for all four per-subsystem helpers. A
     silent regression in the helper composition (one helper dropped,
@@ -166,6 +208,7 @@ def test_warm_cache_subsystem_dashboards_populate_cache(seeded_db):
 
 def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
     seeded_db,
+    _active_broker_context,
 ):
     """Per-reviewer page (`/<inbox>/reviewer/<addr>`) is reached via
     each per-subsystem dashboard's "Active reviewers" list. warm-cache
@@ -252,7 +295,7 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
     )
 
 
-def test_warm_cache_includes_atom_feed_sources(seeded_db):
+def test_warm_cache_includes_atom_feed_sources(seeded_db, _active_broker_context):
     """The atom routes use `recent_articles(limit=FEED_ENTRY_LIMIT)`
     and `author_recent(..., limit=FEED_ENTRY_LIMIT)`, a different
     cache key from the dashboard's `limit=5/10` calls. Warm both so
@@ -271,7 +314,9 @@ def test_warm_cache_includes_atom_feed_sources(seeded_db):
     assert cache.get("author_recent:alpha:example.com:50") is not None
 
 
-def test_warm_cache_skips_sitemap_when_site_base_url_unset(seeded_db, monkeypatch):
+def test_warm_cache_skips_sitemap_when_site_base_url_unset(
+    seeded_db, monkeypatch, _active_broker_context
+):
     """Without SITE_BASE_URL, sitemap renders rely on `request.url_root`
     which isn't available from the CLI. Warm-cache skips them rather
     than poison the cache with relative-looking URLs."""
@@ -285,7 +330,9 @@ def test_warm_cache_skips_sitemap_when_site_base_url_unset(seeded_db, monkeypatc
     assert "sitemap:inbox:" not in result.output
 
 
-def test_warm_cache_includes_sitemap_when_site_base_url_set(seeded_db, monkeypatch):
+def test_warm_cache_includes_sitemap_when_site_base_url_set(
+    seeded_db, monkeypatch, _active_broker_context
+):
     """With SITE_BASE_URL set, warm-cache pre-renders the three
     sitemap surfaces, index, meta, and per-inbox, so the first
     crawler hit per hour gets a cache-hit."""

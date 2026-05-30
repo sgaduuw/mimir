@@ -22,15 +22,50 @@ from __future__ import annotations
 
 import time
 
-from mimir.broker import handlers
+import pytest
+
+from mimir.broker import _context, handlers
 from mimir.broker.client import BrokerClient
 from mimir.broker.handlers import dispatch
+from mimir.broker.pools import ReadSessionPool
 from mimir.broker.protocol import WarmGlobalRequest, WarmInboxRequest
+from mimir.broker.writes import WriterThread
 from tests.test_broker._helpers import broker_running, short_socket_path
 
 
 def _line(req) -> bytes:
     return req.model_dump_json().encode("utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _active_broker_context(seeded_db):
+    """Auto-register the active broker context for warm handlers.
+    This fixture ensures every test in this file has the broker
+    context set up so handlers can reach the active pool + writer.
+    Tear down after each test.
+
+    Saves and restores the pre-test active context so the session-
+    scoped _session_broker fixture's registration survives across
+    test files. Without the restore, every test in this file would
+    leave the global _context cleared, causing all subsequent tests
+    that rely on the session broker (e.g. test_cli/test_cache.py
+    warm-cache tests) to fail with "No active broker"."""
+    saved_pool = _context._active_pool
+    saved_writer = _context._active_writer
+    pool = ReadSessionPool.from_settings()
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        _context.set_active(pool, writer)
+        yield
+    finally:
+        writer.stop(timeout=5)
+        pool.close()
+        # Restore the session broker's registration.
+        if saved_pool is not None and saved_writer is not None:
+            _context.set_active(saved_pool, saved_writer)
+        else:
+            _context.clear_active()
 
 
 # ----- WARM_OPS routing ---------------------------------------------------
@@ -355,3 +390,53 @@ def test_warm_cache_command_broker_mode_dispatches_via_rpc(
     assert seen_global[0] == 1
     # Summary line still emits.
     assert "warm-cache:" in result.output and "ms total" in result.output
+
+
+# ----- Pool migration (Phase 2) -------------------------------------------
+
+
+def test_handle_warm_inbox_uses_active_read_pool_session(monkeypatch):
+    """handle_warm_inbox should check its session out of the active
+    ReadSessionPool, not SessionLocal. Verifies by monkeypatching
+    SessionLocal to raise and checking the handler still works
+    when the active pool is registered."""
+    from mimir.broker.handlers.warm import handle_warm_inbox
+    from mimir.broker.protocol import WarmInboxRequest
+
+    def explode(*a, **kw):
+        raise AssertionError("handler must use the active pool, not SessionLocal")
+
+    # Patch the canonical source. If any code path imports SessionLocal
+    # from mimir.extensions and calls it during the handler invocation,
+    # the test fails loudly. This catches future regressions where
+    # someone re-imports SessionLocal into warm.py.
+    monkeypatch.setattr("mimir.extensions.SessionLocal", explode)
+
+    # The _active_broker_context fixture has already set up the pool,
+    # so the handler should succeed without falling back to SessionLocal.
+    reply = handle_warm_inbox(WarmInboxRequest(inbox_name="alpha", targets=None))
+    assert reply.ok is True
+
+
+def test_handle_warm_global_uses_active_read_pool_session(monkeypatch):
+    """handle_warm_global should NOT touch SessionLocal. It should
+    check its read session out of the active pool (directly or via
+    _run_targets, depending on the function structure). Verifies by
+    monkeypatching SessionLocal to raise and checking the handler
+    still works when the active pool is registered."""
+    from mimir.broker.handlers.warm import handle_warm_global
+    from mimir.broker.protocol import WarmGlobalRequest
+
+    def explode(*a, **kw):
+        raise AssertionError("handler must use the active pool, not SessionLocal")
+
+    # Patch the canonical source. If any code path imports SessionLocal
+    # from mimir.extensions and calls it during the handler invocation,
+    # the test fails loudly. This catches future regressions where
+    # someone re-imports SessionLocal into warm.py.
+    monkeypatch.setattr("mimir.extensions.SessionLocal", explode)
+
+    # The _active_broker_context fixture has already set up the pool,
+    # so the handler should succeed without falling back to SessionLocal.
+    reply = handle_warm_global(WarmGlobalRequest())
+    assert reply.ok is True
