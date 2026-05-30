@@ -219,17 +219,25 @@ def _resolve_in_series_link(
     return series_key(cover.title, parent.author), cover.version
 
 
-def _process_one(session, article, reprocess: bool) -> str:
-    """Per-article work for `backfill_patch_series`. Returns the
-    bucket name on `BackfillResult` to bump.
+def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
+    """Per-article work for `backfill_patch_series`. Returns
+    `(bucket, pending_payload)`; `pending_payload` is None when the
+    article is already fully-resolved (bucket="skipped") so no UPDATE
+    needs to fire. Otherwise it's a `_PatchSeriesPending` instance.
 
     Idempotency: an article is "fully resolved" when its
     `patch_series_position` is set AND (it's a cover with key, OR
     it's an in-series patch with key). An in-series patch with
     position but NULL key is an orphan that we try to re-link on
     every run, the cover may have arrived since the prior pass.
+
+    The return-type annotation is `tuple[str, object]` because
+    `_PatchSeriesPending` is imported lazily inside the function;
+    ruff F821 would flag the precise annotation as undefined at
+    module scope.
     """
-    # Fully-resolved articles skip on non-reprocess runs.
+    from mimir._pending_backfill import _PatchSeriesPending
+
     is_fully_resolved = article.patch_series_position is not None and (
         article.patch_series_position == 0
         and article.patch_series_key is not None
@@ -237,40 +245,48 @@ def _process_one(session, article, reprocess: bool) -> str:
         and article.patch_series_key is not None
     )
     if is_fully_resolved and not reprocess:
-        return "skipped"
+        return "skipped", None
 
     cover = parse_cover_letter(article.subject)
     if cover is not None:
-        article.patch_series_key = series_key(cover.title, article.author)
-        article.patch_series_version = cover.version
-        article.patch_series_position = 0
-        return "indexed"
+        return "indexed", _PatchSeriesPending(
+            article_id=article.id,
+            patch_series_key=series_key(cover.title, article.author),
+            patch_series_version=cover.version,
+            patch_series_position=0,
+        )
 
     in_series = parse_in_series_patch_subject(article.subject)
     if in_series is not None:
-        article.patch_series_position = in_series.position
         link = _resolve_in_series_link(session, article)
         if link is not None:
-            article.patch_series_key, article.patch_series_version = link
-            return "in_series_indexed"
-        # Orphan: clear key/version on reprocess (a prior pass may
-        # have linked, but the cover got rewritten or removed since).
-        if reprocess:
-            article.patch_series_key = None
-            article.patch_series_version = None
-        return "in_series_orphan"
+            key, version = link
+            return "in_series_indexed", _PatchSeriesPending(
+                article_id=article.id,
+                patch_series_key=key,
+                patch_series_version=version,
+                patch_series_position=in_series.position,
+            )
+        # Orphan: clear key/version on reprocess; keep position.
+        return "in_series_orphan", _PatchSeriesPending(
+            article_id=article.id,
+            patch_series_key=None if reprocess else article.patch_series_key,
+            patch_series_version=(None if reprocess else article.patch_series_version),
+            patch_series_position=in_series.position,
+        )
 
-    # Neither a cover nor an in-series patch. Reprocess clears any
-    # prior series row (subject may have changed, or our parsers
-    # tightened a previously-accepted shape).
+    # Neither cover nor in-series. On reprocess, clear any prior series row.
     if reprocess and (
         article.patch_series_key is not None
         or article.patch_series_position is not None
     ):
-        article.patch_series_key = None
-        article.patch_series_version = None
-        article.patch_series_position = None
-    return "not_cover"
+        return "not_cover", _PatchSeriesPending(
+            article_id=article.id,
+            patch_series_key=None,
+            patch_series_version=None,
+            patch_series_position=None,
+        )
+    return "not_cover", None
 
 
 def backfill_patch_series(
@@ -305,10 +321,13 @@ def backfill_patch_series(
     scheduling (Phase 2.2); see `mimir.patches.backfill_article_files`
     for the chunk/resume contract. Direct callers leave both None.
     """
+    from mimir._pending_backfill import _submit_patch_series_batch
+
     result = BackfillResult()
     partial, continuation = walk_articles(
         result,
         _process_one,
+        _submit_patch_series_batch,
         limit=limit,
         reprocess=reprocess,
         progress=progress,
