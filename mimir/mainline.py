@@ -120,6 +120,8 @@ def walk_commits(
     tree_path: Path,
     tree_name: str = "linus",
     *,
+    writer,
+    batch_size: int = 100,
     branch: str = "HEAD",
     rebases: bool = False,
     exclude_from: bytes | None = None,
@@ -127,10 +129,23 @@ def walk_commits(
     """Walk new commits on `tree_path`, extract `Link:` trailers,
     insert `mainline_commits` rows.
 
-    When `rebases=True`: DELETE the tree's existing rows first then
-    walk from `branch` to root with no exclude. Used for force-pushed
-    trees like linux-next where the SHA cursor would be invalidated
-    daily; INSERT-OR-IGNORE absorbs duplicates intra-walk.
+    Phase 3 of the two-pool restructure
+    (`_claude/specs/2026-05-29-broker-two-pool-design.md`): writes
+    dispatch through `writer` (a `WriterThread`) via
+    `_submit_mainline_batch` and `_submit_mainline_cursor_update`.
+    `batch_size` is operator-tunable via
+    `settings.mainline_commit_batch_size` (default 100); each
+    batch's future is waited before composing the next batch so
+    the writer lock hold per batch is short (~30-80 ms) rather
+    than one continuous multi-minute transaction.
+
+    `session` is a query_only SQLAlchemy session from the active
+    ReadSessionPool; it is used for reads only (MainlineState fetch,
+    branch-ref resolution) and must not be committed for writes here.
+
+    When `rebases=True`: a WriteOp deletes the tree's existing rows
+    first, then the full walk re-inserts; INSERT-OR-IGNORE absorbs
+    intra-walk duplicates.
 
     When `rebases=False` (default): incremental SHA-cursor walk. The
     cursor on `MainlineState.commits_walked_to_sha` is advanced past
@@ -202,12 +217,11 @@ def walk_commits(
                 branch_ref = None
 
     if branch_ref is None:
-        # Empty repo or missing ref: nothing to walk. Commit any
-        # pending session state (e.g. the new MainlineState row) and
-        # return early with zero counts. Note: the rebases=True DELETE
-        # has not been issued yet at this point; that block comes after
-        # this guard.
-        session.commit()
+        # Empty repo or missing ref: nothing to walk. The read-only
+        # session has no pending writes so no commit needed; return
+        # early with zero counts. Note: the rebases=True DELETE WriteOp
+        # has not been submitted yet at this point; that block comes
+        # after this guard.
         return WalkResult()
 
     exclude: list[bytes] = []
@@ -218,9 +232,15 @@ def walk_commits(
         # intra-walk duplicates from merge-graph re-emissions.
         # `exclude_from` intentionally NOT applied here; see the
         # docstring for the per-tree-timeline rationale.
-        session.execute(
-            delete(MainlineCommit).where(MainlineCommit.tree_name == tree_name)
-        )
+        #
+        # Phase 3: the DELETE becomes a WriteOp dispatched through
+        # the writer, matching every other write in this function.
+        def _delete_existing(conn, tn=tree_name):
+            conn.execute(delete(MainlineCommit).where(MainlineCommit.tree_name == tn))
+
+        writer.submit(
+            WriteOp(label=f"mainline:{tree_name}:delete-rebases", fn=_delete_existing),
+        ).result(timeout=60)
     else:
         # Incremental cursor walk. Skip commits already recorded in
         # the prior run by excluding the last-seen SHA. If the cursor
@@ -264,38 +284,35 @@ def walk_commits(
         last_walked_sha=None if rebases else state.commits_walked_to_sha
     )
     pending_rows: list[dict] = []
-    last_seen: str | None = result.last_walked_sha
+    # Tracks the SHA of the last commit processed; updated per commit
+    # in the main loop and used for the post-walk cursor WriteOp.
+    last_seen_sha_for_cursor: str | None = result.last_walked_sha
 
     def flush() -> None:
-        if pending_rows:
-            # INSERT OR IGNORE on the (commit_sha, message_id) UNIQUE
-            # so duplicate observations are silently dropped. Three
-            # ways a dup can arrive: (1) two `Link:` URL variants of
-            # the same msgid inside one commit message (already
-            # deduped at the extract layer in 1.15.1, but defence-
-            # in-depth doesn't hurt); (2) dulwich's reverse=True
-            # walker re-emitting the same commit from a merge graph
-            # within one walk; (3) a cursor-missing rewalk landing
-            # on commits already recorded in a prior run. Without
-            # ON CONFLICT, any of these aborts the batch and leaves
-            # the walker stuck.
-            stmt = (
-                sqlite_insert(MainlineCommit)
-                .values(pending_rows)
-                .on_conflict_do_nothing(
-                    index_elements=["commit_sha", "message_id"],
-                )
-            )
-            session.execute(stmt)
-            pending_rows.clear()
-        state.commits_walked_to_sha = last_seen
-        session.commit()
+        """Submit the current pending_rows batch via the writer and
+        wait for the commit before clearing the buffer.
+
+        Phase 3: writes go through _submit_mainline_batch rather than
+        inline session.execute + session.commit. The cursor update is
+        deferred to the post-walk submission so the cursor only
+        advances after ALL batches for this tree have committed."""
+        nonlocal pending_rows
+        if not pending_rows:
+            return
+        # _submit_mainline_batch handles the INSERT OR IGNORE for the
+        # three dup scenarios described in the helper's docstring. Wait
+        # on the future so we don't compose the next batch until this
+        # one has committed: preserves the resume-from-cursor invariant
+        # (last_seen_sha_for_cursor only advances after this batch is
+        # durable).
+        _submit_mainline_batch(writer, tree_name, pending_rows).result(timeout=60)
+        pending_rows = []
 
     for entry in walker:
         commit = entry.commit
         sha = commit.id.decode("ascii")
         result.commits_seen += 1
-        last_seen = sha
+        last_seen_sha_for_cursor = sha
 
         msgids = extract_message_ids(commit.message)
         if msgids:
@@ -315,7 +332,7 @@ def walk_commits(
                 )
                 result.rows_inserted += 1
 
-        if result.commits_seen % _BATCH == 0:
+        if result.commits_seen % batch_size == 0:
             flush()
             logger.info(
                 "mainline: walked %d commits (%d linked, %d rows) on %s",
@@ -325,7 +342,32 @@ def walk_commits(
                 tree_name,
             )
 
+    # Tail flush: submit any remaining rows that didn't fill a complete
+    # batch.
     flush()
+
+    # Cursor update: submit the final WriteOp advancing
+    # MainlineState.commits_walked_to_sha to the last commit seen. This
+    # is the FINAL WriteOp per tree; submitting it after all batches
+    # have committed preserves resume semantics -- a crash between the
+    # last batch and the cursor leaves the cursor at the pre-walk value,
+    # so the next tick re-walks the just-inserted commits idempotently
+    # via on_conflict_do_nothing.
+    #
+    # Only submit when we actually advanced (last_seen_sha_for_cursor
+    # differs from the initial value stored in result.last_walked_sha):
+    # - rebases=True, no commits: both are None -- skip.
+    # - rebases=True, walked N commits: result.last_walked_sha is None,
+    #   last_seen_sha_for_cursor is the final SHA -- submit.
+    # - rebases=False, no new commits: both equal the old cursor -- skip.
+    # - rebases=False, walked N commits: they differ -- submit.
+    if last_seen_sha_for_cursor is not None and (
+        last_seen_sha_for_cursor != result.last_walked_sha
+    ):
+        _submit_mainline_cursor_update(
+            writer, tree_name, last_seen_sha_for_cursor
+        ).result(timeout=60)
+
     return result
 
 
@@ -712,19 +754,28 @@ def update_mainline(
                     result.mainline_head = head_sha
 
             if not skip_commits:
-                with (
-                    write_transaction(f"update_mainline:walk:{slug}"),
-                    SessionLocal() as session,
-                ):
+                # Phase 3 of the two-pool restructure: reads from
+                # the active ReadSessionPool (query_only=1 session);
+                # writes dispatch through the active WriterThread via
+                # _submit_mainline_batch + _submit_mainline_cursor_update.
+                # No write_transaction needed here; the writer thread
+                # handles BEGIN IMMEDIATE internally per WriteOp.
+                from mimir.broker import _context
+
+                read_pool = _context.get_active_pool()
+                active_writer = _context.get_active_writer()
+
+                with read_pool.session() as session:
                     walk = walk_commits(
                         session,
                         tree_path,
                         tree_name=slug,
+                        writer=active_writer,
+                        batch_size=settings.mainline_commit_batch_size,
                         branch=tree.branch,
                         rebases=tree.rebases,
                         exclude_from=linus_head if slug != "linus" else None,
                     )
-                    session.commit()
                 tr.commits_seen = walk.commits_seen
                 tr.commits_linked = walk.linked
                 tr.rows_inserted = walk.rows_inserted

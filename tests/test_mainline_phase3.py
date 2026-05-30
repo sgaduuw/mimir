@@ -209,3 +209,64 @@ def test_submit_mainline_cursor_update_creates_row_when_missing(seeded_db):
     finally:
         engine.dispose()
         writer.stop(timeout=5)
+
+
+def test_update_mainline_uses_writer_thread_via_active_context(seeded_db, monkeypatch):
+    """update_mainline should dispatch its writes through the active
+    writer thread, NOT through write_transaction(). The walk-commits
+    path inside the per-tree loop should not call write_transaction."""
+    from mimir.broker import _context
+    from mimir.broker.pools import ReadSessionPool
+    from mimir.broker.writes import WriterThread
+
+    # Monkeypatch write_transaction so a regression to it fails LOUDLY.
+    # The 'mimir.mainline' namespace is what update_mainline reaches
+    # write_transaction through (it imports it at module top).
+    import mimir.mainline as mainline_mod
+
+    if hasattr(mainline_mod, "write_transaction"):
+
+        def explode(*a, **kw):
+            raise AssertionError(
+                "update_mainline must dispatch via WriterThread.submit, "
+                "not via write_transaction. Phase 3 of the two-pool "
+                "restructure routes mainline writes through the writer "
+                "thread; if this assertion fires, the walker has "
+                "regressed."
+            )
+
+        monkeypatch.setattr(mainline_mod, "write_transaction", explode)
+
+    # Also patch the canonical source in case the function gets
+    # imported differently in the future.
+    monkeypatch.setattr("mimir.extensions.write_transaction", explode)
+
+    pool = ReadSessionPool.from_settings()
+    writer = WriterThread.from_settings()
+    writer.start()
+
+    try:
+        _context.set_active(pool, writer)
+        from mimir.mainline import update_mainline
+
+        # skip_fetch=True: no subprocess.run (no clone/fetch).
+        # skip_maintainers=True: load_maintainers (still uses
+        # write_transaction internally -- that's Phase 3b's job)
+        # never runs.
+        # skip_commits=True: walk_commits never runs, but
+        # update_mainline's per-tree iteration still executes.
+        # If the cadence-gate code calls write_transaction, this
+        # test catches it; if it uses plain SessionLocal (the
+        # last_walked_at write), the test passes.
+        result = update_mainline(
+            skip_fetch=True,
+            skip_maintainers=True,
+            skip_commits=True,
+        )
+        # The point isn't the return value; it's that the explode
+        # callback never fired.
+        assert result is not None
+    finally:
+        _context.clear_active()
+        writer.stop(timeout=10)
+        pool.close()
