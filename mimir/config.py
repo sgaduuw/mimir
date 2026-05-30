@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
@@ -307,6 +308,23 @@ class Settings(BaseSettings):
     # (`cache_delete_for_inbox` on a huge table). Set to 0 or
     # negative to disable. Override via BROKER_SLOW_RPC_WARN_MS.
     broker_slow_rpc_warn_ms: int = 100
+
+    # Phase 1 of the broker two-pool restructure introduces
+    # ReadSessionPool sized by this field. `os.cpu_count()` is the
+    # natural starting default so the pool sizes itself to the host.
+    # On the production 4-core coruscant box: 4 read-pool threads +
+    # 1 writer = 5 threads total. With 3.14t free-threading, the
+    # 4 read-pool threads can occupy 4 cores. Operator override:
+    # BROKER_READ_POOL_SIZE. See
+    # _claude/plans/2026-05-29-broker-two-pool-phase-1-infrastructure.md.
+    broker_read_pool_size: int = Field(default_factory=lambda: os.cpu_count() or 4)
+
+    # Bounded queue depth for the Phase 1 WriterThread. submit()
+    # blocks if the queue is full; the blocking is the backpressure
+    # signal back to read-pool threads. Default 256 absorbs ~2-3 s
+    # of burst at typical write rates. Operator override:
+    # BROKER_WRITER_QUEUE_DEPTH.
+    broker_writer_queue_depth: int = 256
 
     # True iff this process IS the broker daemon. The broker
     # container sets MIMIR_IS_BROKER=true; every other process
