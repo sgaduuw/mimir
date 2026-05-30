@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.10.0], 2026-05-29
+
 ### Changed
 
 - **Broker two-pool restructure, Phase 1 (infrastructure).** The
