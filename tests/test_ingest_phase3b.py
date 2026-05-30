@@ -731,10 +731,148 @@ def test_mid_epoch_batch_failure_leaves_cursor_at_old_position(
         "cursor should have advanced past the first batch on replay"
     )
     # Replay resumes from batch 1's cursor (commit 0's sha) so the walker
-    # only yields commits 1..3 — three new articles, no dup_db tally
+    # only yields commits 1..3 (three new articles); no dup_db tally,
     # because the cursor advance means commit 0 is never re-walked.
     total_new = sum(r.new for r in results)
     assert total_new == 3, (
         f"expected exactly 3 new articles on replay (commit 0 skipped via "
         f"cursor), got new={total_new}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Free-threading stress (Phase 3b Task 9)
+# ---------------------------------------------------------------------------
+
+
+def test_cache_writes_drain_between_ingest_batches(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """Phase 3b contract: while `ingest_inbox` dispatches batches
+    through the writer, concurrent cache-set-shaped WriteOps drain
+    between batches instead of head-of-line-stalling for the whole
+    epoch walk.
+
+    Pre-Phase 3b held one continuous `write_transaction("ingest_inbox:
+    <name>")` for the entire walk. Phase 3b turns that into N short
+    per-batch composite WriteOps, so cache-set WriteOps submitted
+    from other threads see at most one batch worth of writer-lock
+    hold, not the whole walk.
+
+    Asserts: max per-cache-write wall time < 5 s (generous; on a
+    healthy laptop the real numbers are tens of ms). The point is
+    the absence of head-of-line stalls, not a wall-time speedup.
+
+    Mirrors Phase 3a's
+    `test_cache_writes_drain_between_mainline_batches` with the
+    ingest_inbox loop replacing walk_commits as the writer-side
+    driver.
+    """
+    import functools
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from sqlalchemy import select, text
+
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+    from mimir.config import settings
+    from mimir.models import Inbox
+    from tests.test_ingest._helpers import (
+        _build_pubinbox_repo,
+        _rfc5322,
+    )
+
+    # 20-message mirror with per-message flushes gives 20 batches; the
+    # gaps between batches are where the concurrent cache writes drain.
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    _build_pubinbox_repo(
+        mirror / "0.git",
+        [_rfc5322(f"phase3b-stress-{i}@example.com") for i in range(20)],
+    )
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.mirror_path = str(mirror)
+        s.commit()
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+    monkeypatch.setattr(settings, "ingest_batch_flush_seconds", 0.0)
+
+    writer = get_active_writer()
+    cache_durations: list[float] = []
+    cache_errors: list[Exception] = []
+
+    def _cache_set_fn(conn, key: str) -> None:
+        # Single INSERT OR REPLACE into the cache table. Mimics
+        # cache._direct_set's shape so the WriteOp shares the same
+        # writer-lock surface as a real cache.set.
+        conn.execute(
+            text(
+                "INSERT OR REPLACE INTO cache (key, value, expires_at) "
+                "VALUES (:k, :v, :e)"
+            ),
+            {"k": key, "v": '{"x": 1}', "e": 9999999999},
+        )
+
+    def _submit_cache(i: int) -> None:
+        key = f"phase3b_stress_{i}"
+        t0 = time.perf_counter()
+        try:
+            writer.submit(
+                WriteOp(
+                    label=f"cache:set:{key}",
+                    fn=functools.partial(_cache_set_fn, key=key),
+                )
+            ).result(timeout=10)
+        except Exception as exc:
+            cache_errors.append(exc)
+        cache_durations.append(time.perf_counter() - t0)
+
+    ingest_done = threading.Event()
+    ingest_exc: list[Exception] = []
+
+    def _ingest() -> None:
+        try:
+            from mimir.ingest import ingest_inbox
+
+            ingest_inbox(inbox, workers=1)
+        except Exception as exc:
+            ingest_exc.append(exc)
+        finally:
+            ingest_done.set()
+
+    ingest_thread = threading.Thread(target=_ingest, daemon=True)
+    ingest_thread.start()
+
+    # Fire 50 cache-set WriteOps across 8 threads; the pool blocks on
+    # __exit__ until every .result() returned. They race ingest's batches
+    # on the writer queue.
+    with ThreadPoolExecutor(max_workers=8) as pool_executor:
+        for i in range(50):
+            pool_executor.submit(_submit_cache, i)
+
+    ingest_done.wait(timeout=60)
+
+    # Cleanup: remove the synthetic cache rows so they don't trip
+    # subsequent tests' cache assertions.
+    with seeded_db() as s:
+        for i in range(50):
+            s.execute(
+                text("DELETE FROM cache WHERE key = :k"),
+                {"k": f"phase3b_stress_{i}"},
+            )
+        s.commit()
+
+    assert not ingest_exc, f"ingest_inbox failed: {ingest_exc[0]!r}"
+    assert not cache_errors, f"cache WriteOps errored: {cache_errors}"
+    assert cache_durations, "no cache durations collected"
+
+    max_latency = max(cache_durations)
+    assert max_latency < 5.0, (
+        f"cache.set tail latency was {max_latency:.2f} s. Phase 3b "
+        "promises bounded tails (well under the ~62 s pre-Phase-3b "
+        "stall); a >5 s tail suggests ingest_inbox is holding the "
+        "writer lock across batches instead of committing per batch."
     )
