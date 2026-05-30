@@ -326,6 +326,17 @@ class Settings(BaseSettings):
     # BROKER_WRITER_QUEUE_DEPTH.
     broker_writer_queue_depth: int = 256
 
+    # Phase 3 of the broker two-pool restructure
+    # (_claude/specs/2026-05-29-broker-two-pool-design.md): per-tree
+    # mainline walks now commit in batches of this many commits per
+    # WriteOp. Each batch commit holds the SQLite writer lock for
+    # ~30-80 ms at production scale (a few hundred INSERT OR IGNORE
+    # statements), letting cache.set RPCs from the web tier drain
+    # freely between batches. Default 100 matches the Phase 3 spec
+    # walkthrough. Operator override: MAINLINE_COMMIT_BATCH_SIZE.
+    # Plan: _claude/plans/2026-05-30-broker-two-pool-phase-3-mainline.md.
+    mainline_commit_batch_size: int = 100
+
     # True iff this process IS the broker daemon. The broker
     # container sets MIMIR_IS_BROKER=true; every other process
     # (web, tasks, dev CLI invocations) leaves it false. Drives
