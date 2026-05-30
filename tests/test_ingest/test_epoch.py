@@ -1425,12 +1425,12 @@ def test_commit_cadence_time_cap_fires_on_steady_state_hot_inbox(
     multi-second waits, and the front page rendered cold for >100 s.
 
     The fix wraps the per-message commit decision in an OR with a
-    wall-clock cap (`COMMIT_EVERY_SECONDS`, 0.5 s by default), so
-    even sub-COMMIT_EVERY bursts release the writer lock at most
-    every 500 ms.
+    wall-clock cap (settings.ingest_batch_flush_seconds, 0.5 s by
+    default), so even sub-COMMIT_EVERY bursts release the writer lock
+    at most every 500 ms.
 
     This test pins the property by forcing the time cap to fire on
-    every iteration (`COMMIT_EVERY_SECONDS=0`) and observing that
+    every iteration (ingest_batch_flush_seconds=0) and observing that
     the engine commits N+1 times for N messages, rather than the
     pre-1.36.1 single end-of-loop commit. The contrasting "default
     cap, small burst" case is covered by the existing new/linked
@@ -1445,7 +1445,11 @@ def test_commit_cadence_time_cap_fires_on_steady_state_hot_inbox(
     msgs = [_rfc5322(f"tcap{i}@example.com") for i in range(5)]
     _build_pubinbox_repo(tmp_path / "0.git", msgs)
     monkeypatch.setattr(epoch_mod, "COMMIT_EVERY", 1000)
-    monkeypatch.setattr(epoch_mod, "COMMIT_EVERY_SECONDS", 0.0)
+    # Phase 3b: settings.ingest_batch_flush_seconds replaces
+    # the COMMIT_EVERY_SECONDS module constant.
+    from mimir.config import settings as config_settings
+
+    monkeypatch.setattr(config_settings, "ingest_batch_flush_seconds", 0.0)
 
     counter = [0]
 
@@ -1470,5 +1474,5 @@ def test_commit_cadence_time_cap_fires_on_steady_state_hot_inbox(
     # was 1 (only the final flush), regardless of message count.
     assert counter[0] == 6, (
         f"expected 6 commits (5 in-loop + 1 final) with "
-        f"COMMIT_EVERY_SECONDS=0; got {counter[0]}"
+        f"ingest_batch_flush_seconds=0; got {counter[0]}"
     )
