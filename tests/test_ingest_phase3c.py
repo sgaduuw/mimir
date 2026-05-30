@@ -137,3 +137,103 @@ def test_submit_article_files_batch_empty_is_noop(writer):
     the writer queue."""
     future = _submit_article_files_batch(writer, [])
     future.result(timeout=1)
+
+
+def test_submit_article_trailers_batch_inserts_rows(writer, seeded_db):
+    """Happy path: 1 article with 2 trailers lands 2 rows with
+    address_normalized populated from lowercased address."""
+    from sqlalchemy import select
+
+    from mimir._pending_backfill import (
+        _ArticleTrailerInsert,
+        _ArticleTrailersPending,
+        _submit_article_trailers_batch,
+    )
+    from mimir.models import Article, ArticleTrailer
+
+    with seeded_db() as s:
+        article_id = s.execute(select(Article.id).limit(1)).scalar_one()
+
+    payloads = [
+        _ArticleTrailersPending(
+            article_id=article_id,
+            trailers=[
+                _ArticleTrailerInsert(
+                    role="Reviewed-by", name="Alice", address="Alice@Example.com"
+                ),
+                _ArticleTrailerInsert(
+                    role="Signed-off-by", name="Bob", address="bob@example.com"
+                ),
+            ],
+        )
+    ]
+    _submit_article_trailers_batch(writer, payloads).result(timeout=10)
+
+    with seeded_db() as s:
+        rows = s.execute(
+            select(
+                ArticleTrailer.role,
+                ArticleTrailer.name,
+                ArticleTrailer.address,
+                ArticleTrailer.address_normalized,
+            )
+            .where(ArticleTrailer.article_id == article_id)
+            .order_by(ArticleTrailer.name)
+        ).all()
+    assert rows == [
+        ("Reviewed-by", "Alice", "Alice@Example.com", "alice@example.com"),
+        ("Signed-off-by", "Bob", "bob@example.com", "bob@example.com"),
+    ]
+
+
+def test_submit_article_trailers_batch_delete_first_replaces_rows(writer, seeded_db):
+    """`delete_first=True` removes existing trailer rows for the article
+    before inserting fresh ones, mirror of the `--reprocess` semantics."""
+    from sqlalchemy import insert, select
+
+    from mimir._pending_backfill import (
+        _ArticleTrailerInsert,
+        _ArticleTrailersPending,
+        _submit_article_trailers_batch,
+    )
+    from mimir.models import Article, ArticleTrailer
+
+    with seeded_db() as s:
+        article_id = s.execute(select(Article.id).limit(1)).scalar_one()
+        s.execute(
+            insert(ArticleTrailer).values(
+                article_id=article_id,
+                role="Reviewed-by",
+                name="Stale",
+                address="stale@example.com",
+                address_normalized="stale@example.com",
+            )
+        )
+        s.commit()
+
+    payloads = [
+        _ArticleTrailersPending(
+            article_id=article_id,
+            delete_first=True,
+            trailers=[
+                _ArticleTrailerInsert(
+                    role="Tested-by", name="Fresh", address="fresh@example.com"
+                )
+            ],
+        )
+    ]
+    _submit_article_trailers_batch(writer, payloads).result(timeout=10)
+
+    with seeded_db() as s:
+        rows = (
+            s.execute(
+                select(ArticleTrailer.name)
+                .where(ArticleTrailer.article_id == article_id)
+                .order_by(ArticleTrailer.name)
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == ["Fresh"], (
+        "delete_first should have wiped the stale row; only Fresh survives"
+    )

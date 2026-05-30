@@ -17,11 +17,11 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import delete
+from sqlalchemy import delete, insert as sa_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mimir.broker.writes import WriteFuture, WriteOp
-from mimir.models import ArticleFile
+from mimir.models import ArticleFile, ArticleTrailer
 
 
 @dataclass
@@ -134,3 +134,42 @@ def _submit_article_files_batch(
                 )
 
     return writer.submit(WriteOp(label="backfill:article_files:batch", fn=_fn))
+
+
+def _submit_article_trailers_batch(
+    writer, payloads: list[_ArticleTrailersPending]
+) -> WriteFuture:
+    """Compose the per-batch composite WriteOp for
+    `backfill_article_trailers`.
+
+    Mirror of `_submit_article_files_batch`: per-payload DELETE if
+    `delete_first`, then INSERT per trailer. `address_normalized` is
+    derived in the closure as `address.lower()`. ArticleTrailer has an
+    autoincrement `id` PK with no natural UNIQUE on
+    (article_id, address, role), so the INSERT is a plain VALUES.
+    """
+    if not payloads:
+        f: Future = Future()
+        f.set_result(None)
+        return f
+
+    def _fn(conn):
+        for p in payloads:
+            if p.delete_first:
+                conn.execute(
+                    delete(ArticleTrailer).where(
+                        ArticleTrailer.article_id == p.article_id
+                    )
+                )
+            for t in p.trailers:
+                conn.execute(
+                    sa_insert(ArticleTrailer).values(
+                        article_id=p.article_id,
+                        role=t.role,
+                        name=t.name,
+                        address=t.address,
+                        address_normalized=t.address.lower(),
+                    )
+                )
+
+    return writer.submit(WriteOp(label="backfill:article_trailers:batch", fn=_fn))
