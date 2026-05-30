@@ -602,3 +602,152 @@ def test_batch_closure_failure_rolls_back_entire_batch(
         f"the mid-batch failure must have rolled back the early INSERT; "
         f"found {survived!r}"
     )
+
+
+def test_cache_writes_drain_between_backfill_batches(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """Phase 3c contract: while `backfill_article_files` dispatches batches
+    through the writer, concurrent cache-set-shaped WriteOps drain
+    between batches instead of head-of-line-stalling for the whole walk.
+
+    Pre-Phase-3c held one continuous `write_transaction("backfill_article_files")`
+    for the entire walk. Phase 3c turns that into N short per-batch
+    composite WriteOps; cache-set WriteOps submitted from other threads
+    see at most one batch worth of writer-lock hold.
+
+    Asserts: max per-cache-write wall time < 5 s. The point is the
+    absence of head-of-line stalls, not a wall-time speedup.
+    """
+    import functools
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+    from sqlalchemy import select, text
+
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+    from mimir.ingest import ingest_epoch
+    from mimir.models import ArticleFile, Inbox
+
+    _PATCH_BODY = (
+        b"Signed-off-by: A <a@example>\n\n"
+        b"diff --git a/fs/foo/a.c b/fs/foo/a.c\n"
+        b"@@ -1 +1 @@\n-x\n+y\n"
+    )
+
+    def _rfc5322_stress(msgid: str) -> bytes:
+        return (
+            b"Message-ID: <" + msgid.encode() + b">\r\n"
+            b"From: a@b.example\r\n"
+            b"Subject: t\r\n"
+            b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+            b"\r\n" + _PATCH_BODY
+        )
+
+    # Build a 20-article corpus of patch bodies. Ingest them so the
+    # backfill has work to do, then DROP the ArticleFile rows so the
+    # backfill walks them all.
+    repo_path: Path = tmp_path / "0.git"
+    repo = Repo.init_bare(str(repo_path), mkdir=True)
+    parent: bytes | None = None
+    for i in range(20):
+        blob = Blob.from_string(_rfc5322_stress(f"m{i}@stress.test"))
+        repo.object_store.add_object(blob)
+        tree = Tree()
+        tree.add(b"m", 0o100644, blob.id)
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.parents = [parent] if parent else []
+        commit.author = commit.committer = b"test <t@x>"
+        commit.commit_time = commit.author_time = 1700000000 + i
+        commit.commit_timezone = commit.author_timezone = 0
+        commit.encoding = b"UTF-8"
+        commit.message = f"add {i}".encode()
+        repo.object_store.add_object(commit)
+        parent = commit.id
+    repo.refs[b"HEAD"] = parent
+
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        alpha.mirror_path = str(tmp_path)
+        s.commit()
+        ingest_epoch(s, alpha, "0.git", repo_path, workers=1)
+        # Drop the ArticleFile rows ingest just created so backfill has work.
+        s.query(ArticleFile).delete()
+        s.commit()
+
+    writer = get_active_writer()
+    cache_durations: list[float] = []
+    cache_errors: list[Exception] = []
+
+    def _cache_set_fn(conn, key: str) -> None:
+        conn.execute(
+            text(
+                "INSERT OR REPLACE INTO cache (key, value, expires_at) "
+                "VALUES (:k, :v, :e)"
+            ),
+            {"k": key, "v": '{"x": 1}', "e": 9999999999},
+        )
+
+    def _submit_cache(i: int) -> None:
+        key = f"phase3c_stress_{i}"
+        t0 = time.perf_counter()
+        try:
+            writer.submit(
+                WriteOp(
+                    label=f"cache:set:{key}",
+                    fn=functools.partial(_cache_set_fn, key=key),
+                )
+            ).result(timeout=10)
+        except Exception as exc:
+            cache_errors.append(exc)
+        cache_durations.append(time.perf_counter() - t0)
+
+    backfill_done = threading.Event()
+    backfill_exc: list[Exception] = []
+
+    def _backfill() -> None:
+        try:
+            from mimir.patches import backfill_article_files
+
+            backfill_article_files()
+        except Exception as exc:
+            backfill_exc.append(exc)
+        finally:
+            backfill_done.set()
+
+    backfill_thread = threading.Thread(target=_backfill, daemon=True)
+    backfill_thread.start()
+
+    with ThreadPoolExecutor(max_workers=8) as pool_executor:
+        for i in range(50):
+            pool_executor.submit(_submit_cache, i)
+
+    backfill_done.wait(timeout=60)
+
+    # Cleanup synthetic cache rows so they don't trip subsequent tests.
+    with seeded_db() as s:
+        for i in range(50):
+            s.execute(
+                text("DELETE FROM cache WHERE key = :k"),
+                {"k": f"phase3c_stress_{i}"},
+            )
+        s.commit()
+
+    assert not backfill_exc, f"backfill failed: {backfill_exc[0]!r}"
+    assert not cache_errors, f"cache WriteOps errored: {cache_errors}"
+    assert cache_durations, "no cache durations collected"
+
+    max_latency = max(cache_durations)
+    assert max_latency < 5.0, (
+        f"cache.set tail latency was {max_latency:.2f} s. Phase 3c "
+        "promises bounded tails; a >5 s tail suggests backfill is "
+        "holding the writer lock across batches instead of committing "
+        "per batch."
+    )
