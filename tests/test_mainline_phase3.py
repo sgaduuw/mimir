@@ -78,7 +78,7 @@ def test_submit_mainline_batch_is_idempotent_on_replay(seeded_db):
             _row("c" * 40, "msg-c@kernel.org"),
         ]
         _submit_mainline_batch(writer, "linus", batch).result(timeout=5)
-        # Second submission -- should not raise; should be a no-op.
+        # Second submission: should not raise; should be a no-op.
         _submit_mainline_batch(writer, "linus", batch).result(timeout=5)
 
         engine = create_engine(settings.database_url, future=True)
@@ -141,7 +141,7 @@ def test_submit_mainline_cursor_update_advances_state_via_writer(seeded_db):
     writer = WriterThread.from_settings()
     writer.start()
     try:
-        # First update -- row may or may not exist for tree "linus"
+        # First update: row may or may not exist for tree "linus"
         # from a prior test; either way the upsert should leave the
         # cursor at "d" * 40.
         future = _submit_mainline_cursor_update(writer, "linus", "d" * 40)
@@ -158,7 +158,7 @@ def test_submit_mainline_cursor_update_advances_state_via_writer(seeded_db):
             assert sha == "d" * 40
             c.commit()
 
-            # Reset for other tests -- set cursor back to NULL.
+            # Reset for other tests: set cursor back to NULL.
             c.execute(
                 text(
                     "UPDATE mainline_state SET commits_walked_to_sha = NULL "
@@ -240,7 +240,7 @@ def test_mid_walk_cursor_failure_leaves_cursor_at_old_position(
     # Build a small bare repo with 5 commits that all carry Link: trailers.
     # batch_size=2 gives us 2 full batches (commits 1+2, commits 3+4) and
     # one tail batch (commit 5). The cursor update fires after the tail
-    # batch -- that is the injection point.
+    # batch (the injection point).
     repo_path = tmp_path / "crash-test.git"
     repo = Repo.init_bare(str(repo_path), mkdir=True)
 
@@ -412,7 +412,7 @@ def test_update_mainline_uses_writer_thread_via_active_context(seeded_db, monkey
 
         # skip_fetch=True: no subprocess.run (no clone/fetch).
         # skip_maintainers=True: load_maintainers (still uses
-        # write_transaction internally -- that's Phase 3b's job)
+        # write_transaction internally, that's Phase 3b's job)
         # never runs.
         # skip_commits=True: walk_commits never runs, but
         # update_mainline's per-tree iteration still executes.
