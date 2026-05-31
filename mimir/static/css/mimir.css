@@ -694,6 +694,15 @@ pre.body-text-block {
   font-weight: 600;
   font-family: ui-monospace, monospace;
 }
+/* When .rev-label is an <a> (non-current revision linking to its
+   page) the generic .revisions-timeline a rule below would shrink
+   + dim it like the [diff vs current] chip. Restore primary-label
+   weight + size for the link variant. */
+.revisions-timeline a.rev-label {
+  margin-left: 0;
+  opacity: 1;
+  font-size: 1em;
+}
 .revisions-timeline .rev-current-marker {
   font-style: italic;
   opacity: 0.6;
