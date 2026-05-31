@@ -1,0 +1,190 @@
+"""Phase 4 tests: broker cache handlers migrate from inline
+direct-SQLite writes (on the cache worker thread) to WriteOp
+dispatch through the active WriterThread.
+
+Pins the structural contract for Phase 4 of the broker two-pool
+restructure (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
+Kept in its own file so the Phase 4 PR audit is easy.
+"""
+
+import pytest
+
+from mimir.broker.writes import WriterThread
+
+
+@pytest.fixture
+def writer():
+    """Function-scoped WriterThread for via-writer helper tests.
+
+    Mirrors the `writer` fixture in tests/test_ingest_phase3c.py.
+    The autouse `_reset_db` fixture seeds the DB before this fixture
+    is entered, so writes against the seeded `cache` rows are safe.
+    """
+    wt = WriterThread.from_settings()
+    wt.start()
+    yield wt
+    wt.stop(timeout=10)
+
+
+def test_set_via_writer_for_nskey_inserts_row(writer, seeded_db):
+    """`_set_via_writer_for_nskey` upserts a pre-namespaced row with
+    pre-encoded JSON payload. Mirror of `_direct_set`'s signature."""
+    from sqlalchemy import select
+
+    from mimir.cache import _now, _set_via_writer_for_nskey
+    from mimir.models import CacheEntry
+
+    nskey = "v3:phase4-set-test"
+    payload = '{"x": 1}'
+    _set_via_writer_for_nskey(writer, nskey, payload, ttl=60).result(timeout=10)
+
+    with seeded_db() as s:
+        row = s.execute(
+            select(CacheEntry.value, CacheEntry.expires_at).where(
+                CacheEntry.key == nskey
+            )
+        ).one()
+    assert row.value == payload
+    # expires_at is now+ttl; allow generous wiggle for test slowness.
+    assert row.expires_at >= _now() + 30
+
+
+def test_set_via_writer_for_nskey_upserts_on_conflict(writer, seeded_db):
+    """Repeat call on the same nskey UPDATEs value + expires_at."""
+    from sqlalchemy import select
+
+    from mimir.cache import _set_via_writer_for_nskey
+    from mimir.models import CacheEntry
+
+    nskey = "v3:phase4-set-conflict"
+    _set_via_writer_for_nskey(writer, nskey, '"old"', ttl=60).result(timeout=10)
+    _set_via_writer_for_nskey(writer, nskey, '"new"', ttl=120).result(timeout=10)
+
+    with seeded_db() as s:
+        value = s.execute(
+            select(CacheEntry.value).where(CacheEntry.key == nskey)
+        ).scalar_one()
+    assert value == '"new"'
+
+
+def test_delete_via_writer_removes_row_and_returns_rowcount(writer, seeded_db):
+    """`delete_via_writer` removes the namespaced row and returns 1
+    via the WriteFuture. Repeat call returns 0 (idempotent)."""
+    from sqlalchemy import insert, select
+
+    from mimir.cache import delete_via_writer
+    from mimir.models import CacheEntry
+
+    nskey = "v3:phase4-delete-test"
+    with seeded_db() as s:
+        s.execute(
+            insert(CacheEntry).values(key=nskey, value="x", expires_at=9999999999)
+        )
+        s.commit()
+
+    n = delete_via_writer(writer, nskey).result(timeout=10)
+    assert n == 1
+
+    with seeded_db() as s:
+        present = s.execute(
+            select(CacheEntry.key).where(CacheEntry.key == nskey)
+        ).one_or_none()
+    assert present is None
+
+    n2 = delete_via_writer(writer, nskey).result(timeout=10)
+    assert n2 == 0
+
+
+def test_delete_for_inbox_via_writer_removes_matching_rows(writer, seeded_db):
+    """`delete_for_inbox_via_writer` removes every cache row whose key
+    references the named inbox (suffix `:{name}` or middle `:{name}:`).
+    Returns the rowcount via the WriteFuture."""
+    from sqlalchemy import insert, select
+
+    from mimir.cache import delete_for_inbox_via_writer
+    from mimir.models import CacheEntry
+
+    with seeded_db() as s:
+        s.execute(
+            insert(CacheEntry).values(
+                [
+                    {
+                        "key": "v3:foo:phase4inbox",
+                        "value": "1",
+                        "expires_at": 9999999999,
+                    },
+                    {
+                        "key": "v3:bar:phase4inbox:more",
+                        "value": "2",
+                        "expires_at": 9999999999,
+                    },
+                    {"key": "v3:baz:other", "value": "3", "expires_at": 9999999999},
+                ]
+            )
+        )
+        s.commit()
+
+    n = delete_for_inbox_via_writer(writer, "phase4inbox").result(timeout=10)
+    assert n == 2
+
+    with seeded_db() as s:
+        remaining = (
+            s.execute(
+                select(CacheEntry.key).where(
+                    CacheEntry.key.in_(
+                        [
+                            "v3:foo:phase4inbox",
+                            "v3:bar:phase4inbox:more",
+                            "v3:baz:other",
+                        ]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert "v3:baz:other" in remaining
+    assert "v3:foo:phase4inbox" not in remaining
+    assert "v3:bar:phase4inbox:more" not in remaining
+
+
+def test_purge_expired_via_writer_drops_expired_only(writer, seeded_db):
+    """`purge_expired_via_writer` removes rows whose
+    `expires_at < cutoff` (captured at submit time) and returns the
+    rowcount. Non-expired rows are untouched."""
+    from sqlalchemy import insert, select
+
+    from mimir.cache import _now, purge_expired_via_writer
+    from mimir.models import CacheEntry
+
+    now = _now()
+    with seeded_db() as s:
+        s.execute(
+            insert(CacheEntry).values(
+                [
+                    {"key": "v3:phase4-stale-1", "value": "a", "expires_at": now - 10},
+                    {"key": "v3:phase4-stale-2", "value": "b", "expires_at": now - 1},
+                    {"key": "v3:phase4-fresh", "value": "c", "expires_at": now + 3600},
+                ]
+            )
+        )
+        s.commit()
+
+    n = purge_expired_via_writer(writer).result(timeout=10)
+    # Other expired rows from the test session may exist; assert only
+    # that the two staged stale rows were among the deletions.
+    assert n >= 2
+
+    with seeded_db() as s:
+        fresh = s.execute(
+            select(CacheEntry.key).where(CacheEntry.key == "v3:phase4-fresh")
+        ).one_or_none()
+        stale_1 = s.execute(
+            select(CacheEntry.key).where(CacheEntry.key == "v3:phase4-stale-1")
+        ).one_or_none()
+        stale_2 = s.execute(
+            select(CacheEntry.key).where(CacheEntry.key == "v3:phase4-stale-2")
+        ).one_or_none()
+    assert fresh is not None
+    assert stale_1 is None
+    assert stale_2 is None
