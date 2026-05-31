@@ -106,7 +106,7 @@ def test_writer_fifo_ordering_under_concurrent_submit(seeded_db):
         wait(futures, timeout=10)
         for f in futures:
             assert f.exception() is None
-            assert f.result() is None
+            assert f.result() is not None  # CursorResult from execute()
 
         engine = create_engine(settings.database_url, future=True)
         with engine.begin() as c:
