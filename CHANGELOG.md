@@ -11,6 +11,33 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.15.1], 2026-05-31
+
+### Fixed
+
+- **Broker cache handlers swallow `TimeoutError` gracefully.** The
+  four Phase 4 broker cache handlers
+  (`handle_cache_set`, `handle_cache_delete`,
+  `handle_cache_delete_for_inbox`, `handle_cache_purge_expired`)
+  now catch `TimeoutError` from `.result(timeout=5)` and return
+  `Reply(ok=False, error="writer busy")` with a single WARNING
+  log line, instead of letting it bubble up to `dispatch`'s outer
+  exception handler (which logged each failure as an ERROR with
+  full traceback). Same client-visible outcome as before: the web
+  tier treats `ok=False` as a transient cache miss and the cached
+  value ages out via TTL.
+  
+  Surfaced on the production 2.15.0 deploy when the first
+  successful VACUUM cycle since 2026-05-23 (enabled by 2.14.1's
+  `SQLITE_TMPDIR` fix) held the writer lock for 127 seconds and
+  produced ~30 `ERROR broker: handler crashed on cache_set`
+  traceback lines as cache RPCs from the web tier timed out. The
+  failure mode (cache writes degraded during VACUUM) is the
+  documented "VACUUM holds the writer lock; accept that" posture
+  from CONTEXT.md; the fix is purely log-noise reduction. Pre-Phase-4
+  the same window raised `OperationalError("database is locked")`
+  which dispatch already handled gracefully as a WARNING.
+
 ## [2.15.0], 2026-05-31
 
 ### Changed
