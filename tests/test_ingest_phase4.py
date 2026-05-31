@@ -380,3 +380,87 @@ def test_cache_handlers_dispatch_under_long_op_load(
         "batches; a >5 s tail suggests a long-op batch is hogging the "
         "writer (Phase 3c per-batch contract regression)."
     )
+
+
+# ---------------------------------------------------------------------------
+# 2.15.1 hotfix: cache handlers swallow TimeoutError gracefully
+# ---------------------------------------------------------------------------
+
+
+def test_cache_handlers_swallow_timeout_error_during_writer_block(broker_active):
+    """2.15.1 hotfix contract: when the writer is blocked (e.g. by VACUUM)
+    and `.result(timeout=5)` raises `TimeoutError`, each cache handler
+    catches it and returns `Reply(ok=False, error="writer busy")` with a
+    WARNING log line instead of crashing loudly with a traceback.
+
+    Pre-hotfix behaviour: dispatch's outer exception handler caught the
+    TimeoutError and logged it as ERROR with full traceback per failure.
+    During a 127-second VACUUM cycle on the production deploy, that
+    produced ~30+ noisy traceback log entries before the queue drained.
+    The fix matches the pre-Phase-4 best-effort posture: the client
+    receives Reply(ok=False) and treats it as a transient cache miss
+    (cached value still ages out via TTL).
+    """
+    import logging
+    from concurrent.futures import Future
+    from unittest.mock import patch
+
+    from mimir.broker.handlers.cache import (
+        handle_cache_delete,
+        handle_cache_delete_for_inbox,
+        handle_cache_purge_expired,
+        handle_cache_set,
+    )
+    from mimir.broker.protocol import (
+        CacheDeleteForInboxRequest,
+        CacheDeleteRequest,
+        CachePurgeExpiredRequest,
+        CacheSetRequest,
+    )
+
+    def _never_resolving(*args, **kwargs):
+        # Return a Future pre-set with TimeoutError so .result(timeout=5)
+        # raises immediately (rather than waiting 5s real time per call).
+        # The handler catches TimeoutError regardless of whether the source
+        # is the .result() wait timeout or the future's exception state.
+        f: Future = Future()
+        f.set_exception(TimeoutError())
+        return f
+
+    caplog_handler = logging.Handler()
+    captured: list[logging.LogRecord] = []
+    caplog_handler.emit = captured.append
+    cache_handler_logger = logging.getLogger("mimir.broker.handlers.cache")
+    cache_handler_logger.addHandler(caplog_handler)
+    cache_handler_logger.setLevel(logging.WARNING)
+
+    try:
+        with patch("mimir.cache._set_via_writer_for_nskey", _never_resolving):
+            r = handle_cache_set(
+                CacheSetRequest(key="v3:hotfix-test", value_json='"x"', ttl=60)
+            )
+        assert r.ok is False
+        assert r.error == "writer busy"
+
+        with patch("mimir.cache.delete_via_writer", _never_resolving):
+            r = handle_cache_delete(CacheDeleteRequest(key="v3:hotfix-test"))
+        assert r.ok is False
+        assert r.error == "writer busy"
+
+        with patch("mimir.cache.delete_for_inbox_via_writer", _never_resolving):
+            r = handle_cache_delete_for_inbox(CacheDeleteForInboxRequest(name="alpha"))
+        assert r.ok is False
+        assert r.error == "writer busy"
+
+        with patch("mimir.cache.purge_expired_via_writer", _never_resolving):
+            r = handle_cache_purge_expired(CachePurgeExpiredRequest())
+        assert r.ok is False
+        assert r.error == "writer busy"
+
+        # All four handlers logged at WARNING (not ERROR), one line each.
+        assert len(captured) == 4
+        for record in captured:
+            assert record.levelno == logging.WARNING
+            assert "writer busy" in record.getMessage()
+    finally:
+        cache_handler_logger.removeHandler(caplog_handler)
