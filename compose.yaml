@@ -33,6 +33,23 @@ services:
       # checks `mimir_is_broker` and short-circuits).
       MIMIR_IS_BROKER: "true"
       MIMIR_DEPLOY: "true"
+      # Route SQLite's VACUUM temp file (a full copy of the live DB)
+      # to /data/db/ where the 92T pool lives, instead of the
+      # container's overlayfs /tmp (bounded by the storage pool's
+      # remaining headroom). Without this, VACUUM on a multi-GB DB
+      # fails with SQLITE_FULL once temp space runs out. Set on the
+      # broker only since the broker is the sole VACUUM caller.
+      SQLITE_TMPDIR: /data/db
+      # Keep the GIL disabled under the 3.14t free-threading build.
+      # CPython auto-re-enables the GIL when any C extension without
+      # a Py_GIL_DISABLED declaration is imported (SQLAlchemy's
+      # cyextension.collections is one such module). Setting PYTHON_GIL=0
+      # suppresses the re-enable; warnings still fire at import but the
+      # runtime stays GIL-free. Broker only: it is the multi-thread
+      # process (cache + long + 4 warm workers) where free-threading
+      # actually pays off. mimir-app is gunicorn sync workers (one
+      # thread each); mimir-tasks is the scheduler shelling out RPCs.
+      PYTHON_GIL: "0"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mimir", "broker-ping", "--socket", "/data/.broker.sock"]
