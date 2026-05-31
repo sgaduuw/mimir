@@ -548,7 +548,8 @@ Routes:
   two revisions; `pos=N` diffs the N-th in-series patch's body
   across revisions. The body diff covers both commit message and
   patch hunks. 24h cached, source emails are immutable in the
-  mirror. Linked from the state card's "Series revisions" row.
+  mirror. Linked from each non-current entry in the patch page's
+  Revisions fold (the `[diff vs current]` chip).
 - `GET /<inbox>/<YYYY>/<MM>/<article-id>/attachment/<n>`, binary
   download of the n-th attachment, served from the dulwich-fetched
   blob.

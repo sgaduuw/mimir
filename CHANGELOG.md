@@ -11,6 +11,24 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.16.0], 2026-05-31
+
+### Changed
+
+- **Revisions fold links non-current version labels.** On a patch
+  message page with multiple revisions, each prior revision's
+  version label (`v2`, `v3`, ...) in the Revisions fold is now a
+  link to that revision's article page. The current revision's
+  label stays plain text (no self-link). The data carrier
+  (`StateSeriesEntry`) already exposed the per-revision URL via
+  its `url` field; this release wires the template to use it.
+  The `[diff vs current]` chip beside each prior revision is
+  unchanged. The fix also includes a small CSS override so the
+  linked variant of `.rev-label` keeps the primary-text weight
+  and size, rather than inheriting the dimmed/shrunk treatment
+  the generic `.revisions-timeline a` rule applies to the diff
+  chip.
+
 ## [2.15.1], 2026-05-31
 
 ### Fixed
