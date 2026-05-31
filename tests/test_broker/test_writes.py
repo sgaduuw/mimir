@@ -34,7 +34,8 @@ def test_write_op_holds_label_and_fn():
 
 def test_writer_thread_submit_commits_and_resolves_future(seeded_db):
     """submit() returns a Future, the op runs inside BEGIN IMMEDIATE,
-    the COMMIT lands, and the future resolves with None."""
+    the COMMIT lands, and the future resolves with the closure's
+    return value (in this case the SQLAlchemy CursorResult from execute)."""
     from mimir.config import settings
 
     writer = WriterThread(database_url=settings.database_url, queue_depth=8)
@@ -52,7 +53,7 @@ def test_writer_thread_submit_commits_and_resolves_future(seeded_db):
             )
         )
         result = future.result(timeout=5)
-        assert result is None
+        assert result is not None  # CursorResult from execute()
 
         # Verify the row actually landed by opening a fresh connection.
         from sqlalchemy import create_engine
@@ -149,7 +150,8 @@ def test_writer_thread_op_exception_sets_future_and_survives(seeded_db):
                 ),
             )
         )
-        assert good_future.result(timeout=5) is None
+        result = good_future.result(timeout=5)
+        assert result is not None  # CursorResult from execute()
     finally:
         writer.stop(timeout=5)
 
@@ -281,3 +283,39 @@ def test_writer_thread_fast_commit_no_warning(seeded_db, caplog):
         assert not [r for r in caplog.records if "slow write" in r.message]
     finally:
         writer.stop(timeout=5)
+
+
+def test_write_future_propagates_closure_return_value(seeded_db):
+    """A WriteOp whose closure returns a value should expose that
+    value via WriteFuture.result(). Mirror of concurrent.futures.Future
+    semantics. Closures that return None implicitly are unaffected.
+
+    Phase 4 of the broker two-pool restructure relies on this so the
+    cache delete-family handlers can return rowcount in their RPC
+    reply without a captured-variable workaround.
+    """
+    from mimir.broker.writes import WriteOp, WriterThread
+
+    wt = WriterThread.from_settings()
+    wt.start()
+    try:
+
+        def _returns_value(conn):
+            return 42
+
+        fut = wt.submit(WriteOp(label="test:propagate", fn=_returns_value))
+        assert fut.result(timeout=10) == 42
+
+        def _returns_none(conn):
+            return None
+
+        fut2 = wt.submit(WriteOp(label="test:none", fn=_returns_none))
+        assert fut2.result(timeout=10) is None
+
+        def _no_return(conn):
+            pass  # implicit None return
+
+        fut3 = wt.submit(WriteOp(label="test:noreturn", fn=_no_return))
+        assert fut3.result(timeout=10) is None
+    finally:
+        wt.stop(timeout=10)

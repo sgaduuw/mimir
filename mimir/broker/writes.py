@@ -29,7 +29,7 @@ from sqlalchemy.engine import Connection
 from mimir.config import settings
 
 logger = logging.getLogger(__name__)
-WriteFuture = Future  # type alias; parametrised as Future[None] at the use site
+WriteFuture = Future  # type alias; parametrised as Future[T] at the use site (T is the WriteOp closure's return type; None for closures that don't return anything)
 
 # Sentinel object used to wake the writer loop on stop().
 _SHUTDOWN_SENTINEL: tuple[None, None] = (None, None)
@@ -136,7 +136,7 @@ class WriterThread:
                 # the only writer so the default DEFERRED is fine;
                 # Phase 2+ may switch to explicit BEGIN IMMEDIATE if
                 # contention with other writers becomes possible.
-                op.fn(conn)
+                result = op.fn(conn)
             elapsed_ms = int((time.perf_counter() - t0) * 1000)
             if elapsed_ms >= self._slow_warn_ms:
                 logger.warning(
@@ -144,6 +144,6 @@ class WriterThread:
                     op.label,
                     elapsed_ms,
                 )
-            future.set_result(None)
+            future.set_result(result)
         except Exception as exc:  # noqa: BLE001
             future.set_exception(exc)

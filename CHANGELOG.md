@@ -11,6 +11,31 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- **Broker two-pool restructure, Phase 4 (cache handlers
+  migration).** The four broker cache RPC handlers
+  (`handle_cache_set`, `handle_cache_delete`,
+  `handle_cache_delete_for_inbox`, `handle_cache_purge_expired`)
+  no longer run `cache._direct_*(...)` inline on the cache worker
+  thread wrapped in `write_transaction("broker:cache_*")`. Each
+  becomes a thin shim that dispatches a single-statement WriteOp
+  through the active WriterThread via
+  `cache.<op>_via_writer(writer, ...).result()`. Four new helpers
+  in `mimir/cache.py` (`_set_via_writer_for_nskey`,
+  `delete_via_writer`, `delete_for_inbox_via_writer`,
+  `purge_expired_via_writer`) parallel the `_direct_*` family's
+  pre-prepared-inputs signatures. The cache worker thread keeps
+  running but the actual SQLite write lands on the WriterThread;
+  after Phase 4 every SQLite write inside the broker funnels
+  through one WriterThread. Reply shapes preserved exactly: no
+  RPC contract change. Supporting change in
+  `mimir/broker/writes.py`: `_run_one` now propagates the
+  closure's return value into the WriteFuture so handlers can
+  return rowcount via `.result()` (backward-compatible; existing
+  closures returning `None` continue to behave identically). No
+  env-var or CLI surface change.
+
 ## [2.14.1], 2026-05-31
 
 ### Fixed

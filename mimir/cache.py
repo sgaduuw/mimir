@@ -386,6 +386,108 @@ def set_via_writer(writer: Any, key: str, value: Any, ttl: int) -> Any:
     return writer.submit(WriteOp(label=f"cache.set:{key}", fn=_fn))
 
 
+def _set_via_writer_for_nskey(
+    writer: Any, nskey: str, value_json: str, ttl: int
+) -> Any:
+    """Underscore-private sibling of `set_via_writer` for callers that
+    already hold a pre-namespaced key and a pre-JSON-encoded payload
+    (i.e. the broker's `handle_cache_set`, which receives both directly
+    on the wire from a web tier that already namespaced + encoded).
+
+    Composes the same UPSERT as `_direct_set` and `set_via_writer`,
+    submits to the writer, returns the WriteFuture. Closure returns
+    None.
+    """
+    from sqlalchemy import text
+
+    from mimir.broker.writes import WriteOp
+
+    expires_at = _now() + ttl
+
+    def _fn(conn: Any) -> None:
+        conn.execute(
+            text(
+                "INSERT INTO cache (key, value, expires_at) "
+                "VALUES (:k, :v, :e) "
+                "ON CONFLICT(key) DO UPDATE SET "
+                "value = excluded.value, expires_at = excluded.expires_at"
+            ),
+            {"k": nskey, "v": value_json, "e": expires_at},
+        )
+
+    return writer.submit(WriteOp(label=f"cache.set:{nskey}", fn=_fn))
+
+
+def delete_via_writer(writer: Any, nskey: str) -> Any:
+    """Compose a WriteOp wrapping the same DELETE that `_direct_delete()`
+    runs today. Closure returns the rowcount; `.result()` exposes it
+    for handlers/callers that need it.
+
+    `nskey` is the already-namespaced key (same contract as
+    `_direct_delete`); callers with a raw key should call `_ns(key)`
+    first.
+    """
+    from sqlalchemy import text
+
+    from mimir.broker.writes import WriteOp
+
+    def _fn(conn: Any) -> int:
+        result = conn.execute(text("DELETE FROM cache WHERE key = :k"), {"k": nskey})
+        return result.rowcount or 0
+
+    return writer.submit(WriteOp(label=f"cache.delete:{nskey}", fn=_fn))
+
+
+def delete_for_inbox_via_writer(writer: Any, inbox_name: str) -> Any:
+    """Compose a WriteOp wrapping the same DELETE-for-inbox that
+    `_direct_delete_for_inbox()` runs today. Closure returns the rowcount.
+
+    Mirrors `_direct_delete_for_inbox`'s LIKE-pattern shape exactly:
+    keys following the convention `<helper>:<inbox_name>[:<rest>]`
+    match if they end with `:{name}` or contain `:{name}:`.
+    """
+    from sqlalchemy import text
+
+    from mimir.broker.writes import WriteOp
+
+    suffix_pat = f"%:{inbox_name}"
+    middle_pat = f"%:{inbox_name}:%"
+
+    def _fn(conn: Any) -> int:
+        result = conn.execute(
+            text("DELETE FROM cache WHERE key LIKE :suffix OR key LIKE :middle"),
+            {"suffix": suffix_pat, "middle": middle_pat},
+        )
+        return result.rowcount or 0
+
+    return writer.submit(WriteOp(label=f"cache.delete_for_inbox:{inbox_name}", fn=_fn))
+
+
+def purge_expired_via_writer(writer: Any) -> Any:
+    """Compose a WriteOp wrapping the same expired-row DELETE that
+    `_direct_purge_expired()` runs today. Closure returns the rowcount.
+
+    `_now()` is captured at submit time so the cutoff is fixed; rows
+    that expire in the interim land on the next purge cycle. Same
+    semantics as `_direct_purge_expired` which also evaluates `_now()`
+    at call time.
+    """
+    from sqlalchemy import text
+
+    from mimir.broker.writes import WriteOp
+
+    cutoff = _now()
+
+    def _fn(conn: Any) -> int:
+        result = conn.execute(
+            text("DELETE FROM cache WHERE expires_at < :cutoff"),
+            {"cutoff": cutoff},
+        )
+        return result.rowcount or 0
+
+    return writer.submit(WriteOp(label="cache.purge_expired", fn=_fn))
+
+
 def get_or_compute(
     session: Session,
     key: str,
