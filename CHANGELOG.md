@@ -11,6 +11,32 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.14.1], 2026-05-31
+
+### Fixed
+
+- **`compose.yaml`: `SQLITE_TMPDIR=/data/db` on the broker.** SQLite
+  VACUUM writes a full temp copy of the live DB during the operation.
+  Default temp location is `/tmp`, which inside the broker container
+  lives on the overlayfs storage pool (bounded by remaining headroom).
+  On the production deploy where mimir.db is ~14 GB and the storage
+  pool had ~11 GB free, VACUUM failed with `SQLITE_FULL` (`sqlite3.
+  OperationalError: database or disk is full`) and the scheduled
+  weekly VACUUM hadn't completed since 2026-05-23. Routing temp to
+  `/data/db` (the 92 TB pool where the live DB also lives) eliminates
+  the constraint. Broker-only since the broker is the sole VACUUM
+  caller.
+- **`compose.yaml`: `PYTHON_GIL=0` on the broker.** CPython 3.14t
+  auto-re-enables the GIL when any C extension that hasn't declared
+  `Py_GIL_DISABLED` is imported. SQLAlchemy's
+  `cyextension.collections` is one such module, so the broker (which
+  imports SQLAlchemy at startup) was running with the GIL ON despite
+  being on the free-threading build, defeating the multi-core
+  parallelism story Phases 2/3 depend on. `PYTHON_GIL=0` suppresses
+  the re-enable; the import-time RuntimeWarning still fires but the
+  runtime stays GIL-free. Broker-only: it is the multi-thread process
+  (cache + long + 4 warm workers) where free-threading pays off.
+
 ## [2.14.0], 2026-05-30
 
 ### Changed
