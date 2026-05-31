@@ -12,11 +12,14 @@
       {%- for entry in patch_state.series %}
       <li class="{% if entry.is_current %}is-current{% endif %}">
         <time datetime="{{ entry.date.isoformat() if entry.date else '' }}">{{ entry.date.strftime('%Y-%m-%d') if entry.date else '?' }}</time>
-        <span class="rev-label">{{ entry.version }}</span>
         {%- if entry.is_current %}
+        <span class="rev-label">{{ entry.version }}</span>
         <span class="rev-current-marker">current</span>
-        {%- elif entry.diff_url %}
+        {%- else %}
+        <a class="rev-label" href="{{ entry.url }}" title="go to {{ entry.version }}">{{ entry.version }}</a>
+        {%- if entry.diff_url %}
         <a href="{{ entry.diff_url }}" title="show what changed between {{ entry.version }} and the current revision">[diff vs current]</a>
+        {%- endif %}
         {%- endif %}
       </li>
       {%- endfor %}
