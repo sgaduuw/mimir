@@ -1004,10 +1004,12 @@ def test_message_page_renders_patch_series_timeline(client, tmp_path):
     assert 'class="revisions-fold"' in body
     # The current revision (v2) is marked is-current.
     assert "is-current" in body
-    # The revisions fold lists both versions as rev-label spans.
+    # The revisions fold lists both versions as rev-label elements.
+    # v1 (non-current) is an <a class="rev-label" href="..."> link to its
+    # article page; v2 (current) stays a <span class="rev-label">.
     fold = body.split('class="revisions-fold"')[1].split("</details>")[0]
-    assert 'class="rev-label">v1' in fold
-    assert 'class="rev-label">v2' in fold
+    assert 'class="rev-label" href=' in fold and ">v1</a>" in fold
+    assert '<span class="rev-label">v2</span>' in fold
     # The prior revision (v1) carries a diff link; v2 carries the
     # "current" marker instead.
     assert "[diff vs current]" in fold
@@ -2081,3 +2083,67 @@ def test_message_page_revisions_fold_absent_for_single_revision(
     )
     body = client.get(url).data.decode()
     assert 'class="revisions-fold"' not in body
+
+
+def test_message_page_revisions_fold_links_non_current_versions(
+    client,
+    tmp_path,
+):
+    """Each non-current revision's version label is wrapped in an
+    `<a class="rev-label" href="...">` pointing at that revision's
+    article URL. The current revision's label is NOT a link (stays
+    a `<span class="rev-label">`).
+    """
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    art_v1_id, v1_url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "rev-link-v1@x",
+        subject="[PATCH 1/1] bar: baz",
+    )
+    (tmp_path / "v2").mkdir()
+    art_v2_id, v2_url = _ingest_one_article(
+        tmp_path / "v2",
+        "alpha",
+        "rev-link-v2@x",
+        subject="[PATCH v2 1/1] bar: baz",
+    )
+    shared_key = "rev-link-bar-key-0000"
+    with SessionLocal() as s:
+        s.execute(
+            update(Article)
+            .where(Article.id == art_v1_id)
+            .values(
+                patch_series_key=shared_key,
+                patch_series_position=1,
+                patch_series_version="v1",
+            )
+        )
+        s.execute(
+            update(Article)
+            .where(Article.id == art_v2_id)
+            .values(
+                patch_series_key=shared_key,
+                patch_series_position=1,
+                patch_series_version="v2",
+            )
+        )
+        s.commit()
+
+    # Viewing v2 (the latest): v1 should be linked, v2 should be plain.
+    body = client.get(v2_url).data.decode()
+    fold = body.split('class="revisions-fold"')[1].split("</details>")[0]
+    assert 'class="revisions-fold"' in body
+    assert f'<a class="rev-label" href="{v1_url}"' in fold, (
+        "non-current revision label (v1) must be linked to its article page"
+    )
+    # The current revision (v2) renders as a span, not a link.
+    assert '<span class="rev-label">v2</span>' in fold, (
+        "current revision label (v2) must stay a plain span, not a link"
+    )
+    # And the [diff vs current] link on v1 is preserved.
+    assert "[diff vs current]" in fold
