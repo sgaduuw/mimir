@@ -431,6 +431,98 @@ def delete_inbox(
     prompts.
     """
     report = InboxRemovalReport(name)
+
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from mimir.broker.writes import WriteOp
+
+        # Capture mirror_path_str from the closure result so the
+        # rmtree (outside the closure) can use it.
+        _mirror_path: dict = {}
+
+        def _fn(conn):
+            # The WriterThread uses its own engine which doesn't inherit
+            # the _sqlite_pragmas event listener from mimir.extensions,
+            # so PRAGMA foreign_keys is OFF by default. Enable it explicitly
+            # so DELETE FROM inboxes triggers the DB-level CASCADE onto
+            # article_lists and ingest_state.
+            conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+
+            row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
+            if row is None:
+                raise InboxNotFound(f"no inbox named {name!r}")
+
+            inbox_id = row.id
+            mirror_path_val = row.mirror_path
+            _mirror_path["path"] = mirror_path_val
+
+            article_lists_count = (
+                conn.execute(
+                    select(func.count())
+                    .select_from(ArticleList)
+                    .where(ArticleList.inbox_id == inbox_id)
+                ).scalar_one()
+                or 0
+            )
+            ingest_state_count = (
+                conn.execute(
+                    select(func.count())
+                    .select_from(IngestState)
+                    .where(IngestState.inbox_id == inbox_id)
+                ).scalar_one()
+                or 0
+            )
+
+            # Cascade-delete via the FK ondelete='CASCADE' on
+            # article_lists.inbox_id and ingest_state.inbox_id.
+            conn.execute(delete(Inbox).where(Inbox.name == name))
+
+            orphan_articles_count = 0
+            if not keep_orphan_articles:
+                orphan_stmt = delete(Article).where(
+                    ~exists().where(ArticleList.article_id == Article.id)
+                )
+                orphan_articles_count = conn.execute(orphan_stmt).rowcount or 0
+
+            # Return the counts so the caller can populate the report.
+            return (article_lists_count, ingest_state_count, orphan_articles_count)
+
+        al_count, is_count, orphan_count = writer.submit(
+            WriteOp(label=f"inbox:delete:{name}", fn=_fn)
+        ).result(timeout=30)
+        report.article_lists_deleted = al_count
+        report.ingest_state_deleted = is_count
+        report.orphan_articles_deleted = orphan_count
+
+        refresh_inbox_names()
+        # cache.delete_for_inbox stays OUTSIDE the closure (Decision 10).
+        cache.delete_for_inbox(name)
+
+        if remove_inbox_data:
+            mirror_path_str = _mirror_path["path"]
+            path = Path(mirror_path_str)
+            target = path
+            if path.name == "git" and path.parent.name == name:
+                target = path.parent
+            logger.warning(
+                "delete_inbox(%s): rmtree target resolved to %s (from mirror_path=%s)",
+                name,
+                target,
+                mirror_path_str,
+            )
+            if target.exists():
+                shutil.rmtree(target)
+                report.mirror_path_deleted = str(target)
+
+        return report
+
+    # Legacy fallback path.
     with SessionLocal() as session:
         inbox = session.execute(
             select(Inbox).where(Inbox.name == name)

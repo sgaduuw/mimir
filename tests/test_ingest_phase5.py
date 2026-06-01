@@ -343,3 +343,17 @@ def test_update_inbox_dispatches_via_writer(seeded_db, broker_active):
     assert len(submits) >= 1, "update_inbox must dispatch at least one WriteOp"
     assert submits[0].label.startswith("inbox:update:")
     assert inbox.mirror_path == "/tmp/alpha-updated"
+
+
+def test_delete_inbox_dispatches_via_writer(seeded_db, broker_active):
+    """Phase 5 contract: delete_inbox dispatches via the writer.
+    Uses the beta inbox so the primary alpha inbox is preserved for
+    other tests in the session."""
+    from mimir.inboxes import delete_inbox
+
+    _, submits = _writer_submit_recorder()
+    report = delete_inbox(name="beta", keep_orphan_articles=True)
+
+    assert len(submits) >= 1, "delete_inbox must dispatch at least one WriteOp"
+    assert submits[0].label.startswith("inbox:delete:")
+    assert report.name == "beta"
