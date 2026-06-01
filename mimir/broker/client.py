@@ -65,6 +65,7 @@ from mimir.broker.protocol import (
     VacuumRequest,
     WarmGlobalRequest,
     WarmInboxRequest,
+    WarmSubsystemRequest,
 )
 from mimir.config import settings
 
@@ -421,6 +422,37 @@ class BrokerClient:
         reply = self._rpc(req.model_dump_json(), timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"warm_inbox: {reply.error}")
+        return reply.result or {}
+
+    def warm_subsystem(
+        self,
+        inbox_name: str,
+        subsystem_id: int,
+        *,
+        priority: int = 1,
+        timeout: float = 300.0,
+    ) -> dict:
+        """Per-(inbox, subsystem) warm RPC. Used by the slow-tier
+        dispatch path in `mimir warm-cache --tier slow` to fan out
+        subsystem-dashboards work across broker workers rather than
+        serialising it inside a single warm_inbox RPC.
+
+        Reply shape mirrors `warm_inbox`: `{warmed, elapsed_ms,
+        errors}`. The handler runs the four dashboard helpers + the
+        two triage queues + per-reviewer `articles_reviewed_by`
+        warmups for the one subsystem.
+
+        `priority` controls broker warm-queue ordering identical to
+        `warm_inbox.priority`: 0 = fast, 1 = slow (default; only
+        existing caller is the slow-tier fan-out)."""
+        req = WarmSubsystemRequest(
+            inbox_name=inbox_name,
+            subsystem_id=subsystem_id,
+            priority=priority,
+        )
+        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"warm_subsystem: {reply.error}")
         return reply.result or {}
 
     def warm_global(

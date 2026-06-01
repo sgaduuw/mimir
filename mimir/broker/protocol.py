@@ -560,6 +560,31 @@ class WarmInboxRequest(BaseModel):
     priority: int = Field(default=1, ge=0, le=1)
 
 
+class WarmSubsystemRequest(BaseModel):
+    """Per-subsystem warm: invoke the four dashboard helpers
+    (`recent_articles_in_subsystem`, `active_threads_in_subsystem`,
+    `daily_volume_in_subsystem`, `active_reviewers_in_subsystem`)
+    plus reviewer warmups (`articles_reviewed_by` per reviewer
+    surfaced) for ONE (inbox, subsystem) pair. Used by:
+
+    - The scheduler's `mimir warm-cache --tier slow` CLI, which
+      pre-computes the top-N most-active subsystems per inbox and
+      fans out one warm_subsystem RPC per (inbox, subsystem). Broker
+      workers chew through them concurrently, parallelising what
+      was previously serial inside one warm_inbox worker thread.
+
+    `priority` controls broker warm-queue ordering identical to
+    the `WarmInboxRequest.priority` field: 0 = fast, 1 = slow.
+    Slow is the default; the only existing caller (slow-tier
+    warm-cache) sets priority=1 explicitly.
+    """
+
+    op: Literal["warm_subsystem"] = "warm_subsystem"
+    inbox_name: str = Field(min_length=1, max_length=64)
+    subsystem_id: int = Field(ge=1)
+    priority: int = Field(default=1, ge=0, le=1)
+
+
 class WarmGlobalRequest(BaseModel):
     """Global warm: invoke the cross-inbox aggregators
     (`most_active_subsystems_global` + sitemap index/meta when
@@ -620,6 +645,7 @@ Request = Union[
     RobotsRemoveRequest,
     RobotsResetRequest,
     WarmInboxRequest,
+    WarmSubsystemRequest,
     WarmGlobalRequest,
 ]
 

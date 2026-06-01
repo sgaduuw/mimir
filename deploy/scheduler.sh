@@ -162,6 +162,18 @@ run "warm-cache fast (initial, backgrounded)" /data/.last_warm_fast \
 # warm, so the in-loop ticks for those start with a fresh clock;
 # vacuum is the only one whose first run is gated by the persisted
 # mtime alone.
+# Stamp the slow-tier sentinel at boot if missing so the slow tier
+# does NOT fire immediately on first boot. Without this, missing
+# sentinel reads as 0 and the first in-loop tick fires slow tier
+# immediately, blocking fast tier ticks for the slow cycle duration
+# (30 to 50 min on production-scale corpora). Spec
+# `_claude/specs/2026-06-01-warm-cache-fast-slow-tier-split-design.md`
+# Risk #3: subsystem dashboards being cold for the first hour after
+# deploy is acceptable; fast tier covers the freshness-critical
+# surface. After this stamp, slow tier waits a full
+# WARM_CACHE_SLOW_EVERY before its first fire.
+[ -f /data/.last_warm_slow ] || touch /data/.last_warm_slow
+
 last_warm_fast=$(sentinel_mtime /data/.last_warm_fast)
 last_warm_slow=$(sentinel_mtime /data/.last_warm_slow)
 last_update=$(sentinel_mtime /data/.last_update)
@@ -198,9 +210,28 @@ while true; do
     fi
 
     if [ $((now - last_warm_slow)) -ge "$WARM_CACHE_SLOW_EVERY" ]; then
-        # shellcheck disable=SC2086
-        run "warm-cache slow" /data/.last_warm_slow mimir warm-cache --tier slow $SCHEDULER_VERBOSE
-        last_warm_slow=$(date +%s)
+        # Background the slow-tier dispatch so it doesn't block fast
+        # tier ticks for its whole wall-time (30 to 50 min on
+        # production-scale corpora; fast tier needs sub-minute cadence
+        # to keep sitemap rows fresh inside their TTL window). The
+        # `run` helper still touches /data/.last_warm_slow at completion
+        # (in the background subshell), so cadence math on next reboot
+        # stays correct. last_warm_slow=$(date +%s) captures intent-to-
+        # fire time so the next gate check waits a full
+        # WARM_CACHE_SLOW_EVERY from this fire's start, not from its
+        # completion.
+        #
+        # The `kill -0` check guards against overlapping cycles: when
+        # the corpus grows past WARM_CACHE_SLOW_EVERY (slow takes 90 min
+        # but cadence is 60 min), we skip the next tick rather than
+        # double-dispatch. Overlapping wouldn't help anyway, the broker's
+        # priority queue would just serialise them.
+        if [ -z "${slow_pid:-}" ] || ! kill -0 "$slow_pid" 2>/dev/null; then
+            # shellcheck disable=SC2086
+            run "warm-cache slow" /data/.last_warm_slow mimir warm-cache --tier slow $SCHEDULER_VERBOSE &
+            slow_pid=$!
+            last_warm_slow=$(date +%s)
+        fi
     fi
 
     if [ $((now - last_update)) -ge "$UPDATE_EVERY" ]; then
