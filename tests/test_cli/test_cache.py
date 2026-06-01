@@ -574,3 +574,172 @@ def test_build_slow_global_targets_includes_aggregator(seeded_db):
     labels = [label for label, _fn in targets]
     assert any("most_active_subsystems_global" in label for label in labels)
     assert not any("sitemap" in label for label in labels)
+
+
+# `--tier {fast,slow,all}` CLI dispatch (Task 4 of 2026-06-01-warm-
+# cache-fast-slow-tier-split). The flag drives `targets=` filtering on
+# the warm_inbox / warm_global broker RPCs: targets=None means "broker
+# picks the full set" (today's shape, back-compat); an explicit list
+# narrows the dispatch to just the named labels.
+#
+# These tests intercept the broker client by monkeypatching
+# `mimir.broker.client.get_broker_client` (the in-function import in
+# `warm_cache_command` reads through the module attribute, so the
+# patch lands). The FakeClient stubs `warm_inbox` / `warm_global` to
+# record the targets passed by the CLI, and stubs `cache_purge_expired`
+# because `cache.purge_expired()` (called at the end of
+# `warm_cache_command`) also routes through `get_broker_client()`.
+
+
+def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
+    seeded_db, monkeypatch
+):
+    """`warm-cache --tier fast` ends up dispatching each warm_inbox
+    RPC with only fast-tier target labels (sitemap + archive_stats
+    + latest_pull_requests + latest_stable_releases + recent_articles).
+    Slow-tier labels (subsystem dashboards, threads_for_day, etc.)
+    don't appear."""
+    from mimir.broker import client as _client_module
+    from mimir.cli.cache import warm_cache_command
+    from mimir.config import settings
+
+    captured: list[tuple[str, list[str] | None]] = []
+    global_captured: list[list[str] | None] = []
+
+    class FakeClient:
+        def warm_inbox(self, inbox_name, *, targets=None, **kwargs):
+            captured.append((inbox_name, targets))
+            return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
+
+        def warm_global(self, *, targets=None, **kwargs):
+            global_captured.append(targets)
+            return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
+
+        def cache_purge_expired(self, **kwargs):
+            return 0
+
+    monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
+    monkeypatch.setattr(settings, "site_base_url", "https://example.test")
+
+    result = CliRunner().invoke(warm_cache_command, ["--tier", "fast"])
+    assert result.exit_code == 0, result.output
+    assert captured, "no warm_inbox dispatches captured"
+    for inbox_name, targets in captured:
+        assert targets is not None, (
+            f"tier=fast must pass explicit targets, got None for {inbox_name}"
+        )
+        # Each fast-tier label must be one of the documented fast set.
+        for label in targets:
+            assert any(
+                fragment in label
+                for fragment in (
+                    "sitemap:inbox:",
+                    "archive_stats",
+                    "latest_pull_requests",
+                    "latest_stable_releases",
+                    "recent_articles",
+                )
+            ), f"non-fast label leaked into tier=fast dispatch: {label!r}"
+        # No slow-tier label appears.
+        assert not any(
+            fragment in label
+            for fragment in (
+                "subsystem dashboards",
+                "threads_for_day",
+                "daily_volume",
+                "active_threads",
+                "this_day_in_history",
+                "most_active_subsystems_in_inbox",
+                "tracker:",
+            )
+            for label in targets
+        )
+    # Global fast tier hits sitemap:index + sitemap:meta.
+    assert global_captured, "no warm_global dispatch captured"
+    assert all(
+        "sitemap" in label
+        for targets in global_captured
+        if targets
+        for label in targets
+    )
+
+
+def test_warm_cache_command_tier_slow_dispatches_slow_targets_only(
+    seeded_db, monkeypatch
+):
+    """Mirror: `warm-cache --tier slow` dispatches only slow-tier
+    target labels."""
+    from mimir.broker import client as _client_module
+    from mimir.cli.cache import warm_cache_command
+    from mimir.config import settings
+
+    captured: list[tuple[str, list[str] | None]] = []
+
+    class FakeClient:
+        def warm_inbox(self, inbox_name, *, targets=None, **kwargs):
+            captured.append((inbox_name, targets))
+            return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
+
+        def warm_global(self, *, targets=None, **kwargs):
+            return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
+
+        def cache_purge_expired(self, **kwargs):
+            return 0
+
+    monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
+    monkeypatch.setattr(settings, "site_base_url", "https://example.test")
+
+    result = CliRunner().invoke(warm_cache_command, ["--tier", "slow"])
+    assert result.exit_code == 0, result.output
+    assert captured
+    for inbox_name, targets in captured:
+        assert targets is not None
+        # No fast-tier label appears.
+        assert not any(
+            fragment in label
+            for fragment in (
+                "sitemap:inbox:",
+                "archive_stats",
+                "latest_pull_requests",
+                "latest_stable_releases",
+                "recent_articles",
+            )
+            for label in targets
+        ), f"fast label leaked into tier=slow dispatch for {inbox_name}: {targets}"
+
+
+def test_warm_cache_command_default_tier_all_passes_no_targets(seeded_db, monkeypatch):
+    """Default (no --tier) preserves today's behaviour: targets=None
+    on every dispatch, so the broker handler uses its full target
+    list."""
+    from mimir.broker import client as _client_module
+    from mimir.cli.cache import warm_cache_command
+    from mimir.config import settings
+
+    captured: list[tuple[str, list[str] | None]] = []
+    global_captured: list[list[str] | None] = []
+
+    class FakeClient:
+        def warm_inbox(self, inbox_name, *, targets=None, **kwargs):
+            captured.append((inbox_name, targets))
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
+
+        def warm_global(self, *, targets=None, **kwargs):
+            global_captured.append(targets)
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
+
+        def cache_purge_expired(self, **kwargs):
+            return 0
+
+    monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
+    monkeypatch.setattr(settings, "site_base_url", "https://example.test")
+
+    result = CliRunner().invoke(warm_cache_command, [])
+    assert result.exit_code == 0, result.output
+    assert captured, "no warm_inbox dispatches captured"
+    for inbox_name, targets in captured:
+        assert targets is None, (
+            f"tier=all should pass targets=None for {inbox_name}; got {targets}"
+        )
+    for targets in global_captured:
+        assert targets is None
