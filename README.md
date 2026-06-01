@@ -566,8 +566,13 @@ Routes:
   bypass the route cache via `Cache-Control: no-store`.
 - `GET /robots.txt`, disallows `/*/attachment/*` and points at the
   sitemap.
-- `GET /sitemap.xml`, meta-index + per-inbox dashboards + recent
-  100 message URLs per inbox. Cached for 5 min.
+- `GET /sitemap.xml`, sitemap index pointing at `/meta-sitemap.xml`
+  plus one `/<inbox>/sitemap.xml` per configured inbox. Each
+  response carries `Last-Modified` derived from the most-recent
+  content date and honours `If-Modified-Since` (304 Not Modified
+  on a conditional GET that already covers the latest content),
+  so crawlers like Google can re-fetch on a real change rather
+  than on full-body diffs. Cached for 1 h.
 - `GET /security.txt` and `GET /.well-known/security.txt`  
   RFC 9116 contact info. 404 unless `SECURITY_CONTACT` is set.
 - `GET /privacy`, GDPR Art. 13 transparency notice: controller
