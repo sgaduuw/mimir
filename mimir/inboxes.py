@@ -235,6 +235,39 @@ def create_inbox(name: str, mirror_path: str, upstream_url: str) -> Inbox:
     mirror_path = validate_mirror_path(mirror_path)
     upstream_url = validate_upstream_url(upstream_url)
 
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from mimir.broker.writes import WriteOp
+
+        def _fn(conn):
+            if (
+                conn.execute(select(Inbox).where(Inbox.name == name)).first()
+                is not None
+            ):
+                raise InboxValidationError(f"inbox {name!r} already exists")
+            conn.execute(
+                sqlite_insert(Inbox).values(
+                    name=name,
+                    mirror_path=mirror_path,
+                    upstream_url=upstream_url,
+                )
+            )
+            row = conn.execute(select(Inbox).where(Inbox.name == name)).one()
+            return Inbox(**dict(row._mapping))
+
+        result = writer.submit(WriteOp(label=f"inbox:create:{name}", fn=_fn)).result(
+            timeout=30
+        )
+        refresh_inbox_names()
+        return result
+
+    # Legacy fallback path.
     with SessionLocal() as session:
         if session.execute(select(Inbox).where(Inbox.name == name)).first() is not None:
             raise InboxValidationError(f"inbox {name!r} already exists")
@@ -264,6 +297,69 @@ def update_inbox(
     if upstream_url is not None:
         upstream_url = validate_upstream_url(upstream_url)
 
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from sqlalchemy import update as sa_update
+
+        from mimir.broker.writes import WriteOp
+
+        # Track rename state so cache bust can fire after result() returns.
+        _rename_info: dict = {}
+
+        def _fn(conn):
+            row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
+            if row is None:
+                raise InboxNotFound(f"no inbox named {name!r}")
+
+            old_name_val = row.name
+            effective_name = old_name_val
+            values: dict = {}
+
+            if new_name is not None and new_name != old_name_val:
+                collision = conn.execute(
+                    select(Inbox).where(Inbox.name == new_name)
+                ).first()
+                if collision is not None:
+                    raise InboxValidationError(f"inbox {new_name!r} already exists")
+                values["name"] = new_name
+                effective_name = new_name
+                # Signal the outer scope about the rename so the cache
+                # bust can fire after result() returns (Decision 10).
+                _rename_info["old"] = old_name_val
+
+            if mirror_path is not None:
+                values["mirror_path"] = mirror_path
+            if upstream_url is not None:
+                values["upstream_url"] = upstream_url
+
+            if values:
+                conn.execute(
+                    sa_update(Inbox).where(Inbox.name == name).values(**values)
+                )
+            updated = conn.execute(
+                select(Inbox).where(Inbox.name == effective_name)
+            ).one()
+            return Inbox(**dict(updated._mapping))
+
+        result = writer.submit(WriteOp(label=f"inbox:update:{name}", fn=_fn)).result(
+            timeout=30
+        )
+        refresh_inbox_names()
+        # Drop cached entries that referenced the old name. Cache values
+        # don't depend on mirror_path / upstream_url, so non-rename
+        # updates don't need invalidation. This stays OUTSIDE the closure
+        # because cache.delete_for_inbox is not a DB op (Decision 10).
+        if "old" in _rename_info:
+            cache.delete_for_inbox(_rename_info["old"])
+        return result
+
+    # Legacy fallback path.
     with SessionLocal() as session:
         inbox = session.execute(
             select(Inbox).where(Inbox.name == name)
@@ -290,9 +386,7 @@ def update_inbox(
         _publish_names(session)
         session.expunge(inbox)
 
-    # Drop cached entries that referenced the old name. Cache values
-    # don't depend on mirror_path / upstream_url, so non-rename
-    # updates don't need invalidation.
+    # Drop cached entries that referenced the old name.
     if renamed:
         cache.delete_for_inbox(old_name)
     return inbox
@@ -337,6 +431,98 @@ def delete_inbox(
     prompts.
     """
     report = InboxRemovalReport(name)
+
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from mimir.broker.writes import WriteOp
+
+        # Capture mirror_path_str from the closure result so the
+        # rmtree (outside the closure) can use it.
+        _mirror_path: dict = {}
+
+        def _fn(conn):
+            # The WriterThread uses its own engine which doesn't inherit
+            # the _sqlite_pragmas event listener from mimir.extensions,
+            # so PRAGMA foreign_keys is OFF by default. Enable it explicitly
+            # so DELETE FROM inboxes triggers the DB-level CASCADE onto
+            # article_lists and ingest_state.
+            conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+
+            row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
+            if row is None:
+                raise InboxNotFound(f"no inbox named {name!r}")
+
+            inbox_id = row.id
+            mirror_path_val = row.mirror_path
+            _mirror_path["path"] = mirror_path_val
+
+            article_lists_count = (
+                conn.execute(
+                    select(func.count())
+                    .select_from(ArticleList)
+                    .where(ArticleList.inbox_id == inbox_id)
+                ).scalar_one()
+                or 0
+            )
+            ingest_state_count = (
+                conn.execute(
+                    select(func.count())
+                    .select_from(IngestState)
+                    .where(IngestState.inbox_id == inbox_id)
+                ).scalar_one()
+                or 0
+            )
+
+            # Cascade-delete via the FK ondelete='CASCADE' on
+            # article_lists.inbox_id and ingest_state.inbox_id.
+            conn.execute(delete(Inbox).where(Inbox.name == name))
+
+            orphan_articles_count = 0
+            if not keep_orphan_articles:
+                orphan_stmt = delete(Article).where(
+                    ~exists().where(ArticleList.article_id == Article.id)
+                )
+                orphan_articles_count = conn.execute(orphan_stmt).rowcount or 0
+
+            # Return the counts so the caller can populate the report.
+            return (article_lists_count, ingest_state_count, orphan_articles_count)
+
+        al_count, is_count, orphan_count = writer.submit(
+            WriteOp(label=f"inbox:delete:{name}", fn=_fn)
+        ).result(timeout=30)
+        report.article_lists_deleted = al_count
+        report.ingest_state_deleted = is_count
+        report.orphan_articles_deleted = orphan_count
+
+        refresh_inbox_names()
+        # cache.delete_for_inbox stays OUTSIDE the closure (Decision 10).
+        cache.delete_for_inbox(name)
+
+        if remove_inbox_data:
+            mirror_path_str = _mirror_path["path"]
+            path = Path(mirror_path_str)
+            target = path
+            if path.name == "git" and path.parent.name == name:
+                target = path.parent
+            logger.warning(
+                "delete_inbox(%s): rmtree target resolved to %s (from mirror_path=%s)",
+                name,
+                target,
+                mirror_path_str,
+            )
+            if target.exists():
+                shutil.rmtree(target)
+                report.mirror_path_deleted = str(target)
+
+        return report
+
+    # Legacy fallback path.
     with SessionLocal() as session:
         inbox = session.execute(
             select(Inbox).where(Inbox.name == name)
@@ -424,6 +610,45 @@ def set_tracked_authors(
     invalidate any existing key, orphan rows age out via TTL.
     """
     cleaned = validate_tracked_authors(authors)
+
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from sqlalchemy import update as sa_update
+
+        from mimir.broker.writes import WriteOp
+
+        def _fn(conn):
+            row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
+            if row is None:
+                raise InboxNotFound(f"no inbox named {name!r}")
+            conn.execute(
+                sa_update(Inbox)
+                .where(Inbox.name == name)
+                .values(tracked_authors=cleaned)
+            )
+            # Re-fetch to get the post-update state. The row mapping
+            # includes all columns so we can construct a detached
+            # instance mirroring what the legacy path's expunge returns.
+            updated = conn.execute(select(Inbox).where(Inbox.name == name)).one()
+            return Inbox(**dict(updated._mapping))
+
+        result = writer.submit(
+            WriteOp(label=f"inbox:set_tracked_authors:{name}", fn=_fn)
+        ).result(timeout=30)
+        # Refresh the nav-name cache outside the closure. The closure
+        # receives a Connection, not a Session; _publish_names requires
+        # a Session. refresh_inbox_names opens its own short-lived
+        # SessionLocal (Decision 10 from the Phase 5 plan).
+        refresh_inbox_names()
+        return result
+
+    # Legacy fallback path (no broker context active).
     with SessionLocal() as session:
         inbox = session.execute(
             select(Inbox).where(Inbox.name == name)
@@ -433,13 +658,63 @@ def set_tracked_authors(
         inbox.tracked_authors = cleaned
         session.commit()
         session.refresh(inbox)
+        _publish_names(session)
         session.expunge(inbox)
     return inbox
 
 
 def add_tracked_author(name: str, label: str, substring: str) -> Inbox:
     """Add or replace one tracker entry. If the inbox has no trackers
-    yet, this initializes the dict with the single entry."""
+    yet, this initializes the dict with the single entry.
+
+    Writer-path folds the legacy two-call chain (get_inbox then
+    set_tracked_authors) into one closure to avoid two round-trips
+    through the writer queue. The closure reads the current row,
+    mutates the dict in Python, and issues a single UPDATE.
+    """
+    label = label.strip()
+    if not label:
+        raise InboxValidationError("tracker label must not be empty")
+    substring = substring.strip()
+    if not substring:
+        raise InboxValidationError(f"tracker substring for {label!r} must not be empty")
+
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from sqlalchemy import update as sa_update
+
+        from mimir.broker.writes import WriteOp
+
+        def _fn(conn):
+            row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
+            if row is None:
+                raise InboxNotFound(f"no inbox named {name!r}")
+            current = dict(row.tracked_authors or {})
+            current[label] = substring
+            # validate_tracked_authors collapses empty dicts to None;
+            # after adding an entry the dict is non-empty.
+            cleaned = validate_tracked_authors(current)
+            conn.execute(
+                sa_update(Inbox)
+                .where(Inbox.name == name)
+                .values(tracked_authors=cleaned)
+            )
+            updated = conn.execute(select(Inbox).where(Inbox.name == name)).one()
+            return Inbox(**dict(updated._mapping))
+
+        result = writer.submit(
+            WriteOp(label=f"inbox:add_tracked_author:{name}", fn=_fn)
+        ).result(timeout=30)
+        refresh_inbox_names()
+        return result
+
+    # Legacy fallback path.
     inbox = get_inbox(name)
     current = dict(inbox.tracked_authors or {})
     current[label] = substring
@@ -449,7 +724,55 @@ def add_tracked_author(name: str, label: str, substring: str) -> Inbox:
 def remove_tracked_author(name: str, label: str) -> Inbox:
     """Remove one tracker entry by label. Raises InboxValidationError
     if the label isn't present. Removing the last entry leaves the
-    column NULL (no tracker tiles)."""
+    column NULL (no tracker tiles).
+
+    Writer-path folds the legacy two-call chain (get_inbox then
+    set_tracked_authors) into one closure: SELECT current row, remove
+    the label from the dict, single UPDATE.
+    """
+    label = label.strip()
+    if not label:
+        raise InboxValidationError("tracker label must not be empty")
+
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from sqlalchemy import update as sa_update
+
+        from mimir.broker.writes import WriteOp
+
+        def _fn(conn):
+            row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
+            if row is None:
+                raise InboxNotFound(f"no inbox named {name!r}")
+            current = dict(row.tracked_authors or {})
+            if label not in current:
+                raise InboxValidationError(
+                    f"inbox {name!r} has no tracker labelled {label!r}"
+                )
+            del current[label]
+            # Empty dict collapses to None (no tracker tiles).
+            cleaned = current or None
+            conn.execute(
+                sa_update(Inbox)
+                .where(Inbox.name == name)
+                .values(tracked_authors=cleaned)
+            )
+            updated = conn.execute(select(Inbox).where(Inbox.name == name)).one()
+            return Inbox(**dict(updated._mapping))
+
+        result = writer.submit(
+            WriteOp(label=f"inbox:remove_tracked_author:{name}", fn=_fn)
+        ).result(timeout=30)
+        refresh_inbox_names()
+        return result
+
+    # Legacy fallback path.
     inbox = get_inbox(name)
     current = dict(inbox.tracked_authors or {})
     if label not in current:
