@@ -5,7 +5,8 @@
 # so a crash in one task doesn't take the loop down.
 #
 # Cadences (env-overridable, all in seconds):
-#   WARM_CACHE_EVERY      default 60     ; refresh dashboard helpers
+#   WARM_CACHE_EVERY      default 60     ; fast tier (sitemaps + cheap helpers)
+#   WARM_CACHE_SLOW_EVERY default 3600   ; slow tier (subsystem dashboards + rest)
 #   UPDATE_EVERY          default 300    ; sync upstream + ingest new commits
 #   UPDATE_MAINLINE_EVERY default 600    ; check every configured tree for due-ness (per-tree cadence inside the CLI)
 #   ANALYZE_EVERY         default 86400  ; refresh sqlite_stat1 (daily, bounded)
@@ -50,6 +51,11 @@
 set -u
 
 WARM_CACHE_EVERY=${WARM_CACHE_EVERY:-60}
+# Cadence for the slow warm tier (subsystem dashboards +
+# per-tracker queries + the rest). 1h default; tune lower if
+# you need fresher dashboards or higher if your subsystem-
+# dashboard cost is dominating broker warm-worker time.
+WARM_CACHE_SLOW_EVERY=${WARM_CACHE_SLOW_EVERY:-3600}
 UPDATE_EVERY=${UPDATE_EVERY:-300}
 UPDATE_MAINLINE_EVERY=${UPDATE_MAINLINE_EVERY:-600}
 ANALYZE_EVERY=${ANALYZE_EVERY:-86400}
@@ -137,9 +143,16 @@ run() {
 # below fires it on the first iteration because /data/.last_update
 # doesn't exist yet (sentinel_mtime returns 0, so now - 0 >=
 # UPDATE_EVERY is trivially true). One code path, no preamble drift.
+# Initial warm: fast tier only. Cold-boot priority is sitemaps
+# + front-page critical helpers; the slow tier kicks in on
+# its own cadence after boot (subsystem dashboards being cold
+# for the first hour after deploy is acceptable, matches the
+# pre-deploy warm-cycle-saturation shape anyway). Spec:
+# `_claude/specs/2026-06-01-warm-cache-fast-slow-tier-split-design.md`
+# Risk #3.
 # shellcheck disable=SC2086  # SCHEDULER_VERBOSE is a flag string, intentionally unquoted to splat empty -> nothing.
-run "warm-cache (initial, backgrounded)" /data/.last_warm \
-    mimir warm-cache $SCHEDULER_VERBOSE &
+run "warm-cache fast (initial, backgrounded)" /data/.last_warm_fast \
+    mimir warm-cache --tier fast $SCHEDULER_VERBOSE &
 
 # Persisted-mtime initialisation: read each sentinel's last-touch
 # time off /data. Missing file → 0 → the next tick fires immediately
@@ -149,7 +162,8 @@ run "warm-cache (initial, backgrounded)" /data/.last_warm \
 # warm, so the in-loop ticks for those start with a fresh clock;
 # vacuum is the only one whose first run is gated by the persisted
 # mtime alone.
-last_warm=$(sentinel_mtime /data/.last_warm)
+last_warm_fast=$(sentinel_mtime /data/.last_warm_fast)
+last_warm_slow=$(sentinel_mtime /data/.last_warm_slow)
 last_update=$(sentinel_mtime /data/.last_update)
 last_update_mainline=$(sentinel_mtime /data/.last_update_mainline)
 last_analyze=$(sentinel_mtime /data/.last_analyze)
@@ -177,10 +191,16 @@ while true; do
         was_paused=0
     fi
 
-    if [ $((now - last_warm)) -ge "$WARM_CACHE_EVERY" ]; then
+    if [ $((now - last_warm_fast)) -ge "$WARM_CACHE_EVERY" ]; then
         # shellcheck disable=SC2086
-        run "warm-cache" /data/.last_warm mimir warm-cache $SCHEDULER_VERBOSE
-        last_warm=$(date +%s)
+        run "warm-cache fast" /data/.last_warm_fast mimir warm-cache --tier fast $SCHEDULER_VERBOSE
+        last_warm_fast=$(date +%s)
+    fi
+
+    if [ $((now - last_warm_slow)) -ge "$WARM_CACHE_SLOW_EVERY" ]; then
+        # shellcheck disable=SC2086
+        run "warm-cache slow" /data/.last_warm_slow mimir warm-cache --tier slow $SCHEDULER_VERBOSE
+        last_warm_slow=$(date +%s)
     fi
 
     if [ $((now - last_update)) -ge "$UPDATE_EVERY" ]; then
