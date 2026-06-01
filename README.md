@@ -627,26 +627,41 @@ table; values JSON-encoded with a small dataclass registry in
 To eliminate user-facing cold-start latency, run:
 
 ```sh
-poetry run mimir warm-cache
+poetry run mimir warm-cache               # all tiers (operator one-off)
+poetry run mimir warm-cache --tier fast   # sitemaps + cheap helpers
+poetry run mimir warm-cache --tier slow   # subsystem dashboards + rest
 ```
 
-from cron or a systemd timer. Sample `crontab`:
+from cron or a systemd timer. The work splits into a **fast tier**
+(sitemaps, archive_stats, latest pulls, latest stable releases,
+recent articles) on a per-minute cadence and a **slow tier**
+(subsystem dashboards, per-tracker queries, the rest) on a per-hour
+cadence. The container scheduler fires them on the
+`WARM_CACHE_EVERY` / `WARM_CACHE_SLOW_EVERY` cadences (see
+`deploy/README.md`); broker-side, the warm-worker queue is a
+priority queue so a fast-tier RPC queued behind a slow-tier RPC
+jumps ahead (in-flight slow ops are never preempted). Sample
+`crontab` for a non-broker deploy:
 
 ```cron
-* * * * * cd ~/Projects/mimir && poetry run mimir warm-cache >/dev/null
+* * * * *   cd ~/Projects/mimir && poetry run mimir warm-cache --tier fast >/dev/null
+0 * * * *   cd ~/Projects/mimir && poetry run mimir warm-cache --tier slow >/dev/null
 ```
 
-A warm-cache run refreshes every cached helper for every configured
-inbox. With this in place, dashboard loads come back in
+A warm-cache run refreshes every targeted helper for every
+configured inbox. With this in place, dashboard loads come back in
 single-digit-millisecond range regardless of how big the archive
 gets.
 
 Per-key work fans out across `min(cpu_count, 8)` worker threads by
 default; pass `--workers N` to override (e.g. `--workers 1` when
-debugging a slow target). Keys whose remaining TTL exceeds the
-cron-period buffer are skipped on each tick: 5-min-TTL keys still
-refresh every run, 1-hour-TTL keys refresh on the tick nearest the
-hour boundary, and 24h-TTL keys refresh once per day.
+debugging a slow target). Keys are skipped on a warm tick if their
+remaining TTL is comfortably above the helper's refresh window
+(deterministic skip); inside the window the warm tick refreshes
+with a probability that ramps from 0 to 1 as the row approaches
+expiry, so siblings sharing a TTL don't all refresh on the same
+tick. Below the window the refresh fires every tick (the insurance
+zone, so the row is always rewritten before it expires).
 
 ## Reclaiming space (VACUUM)
 
