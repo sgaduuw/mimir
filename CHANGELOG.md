@@ -11,6 +11,28 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- **Scheduler dual-timer: slow tier no longer blocks fast tier
+  ticks, and no longer fires on cold boot.** Two related
+  scheduler.sh changes:
+  - The in-loop slow-tier dispatch (`mimir warm-cache --tier
+    slow`) is now backgrounded with `&`, so the scheduler loop
+    continues firing fast-tier ticks while the slow tier runs.
+    A `kill -0 "$slow_pid"` check guards against overlapping
+    cycles when the corpus grows past `WARM_CACHE_SLOW_EVERY`.
+    Production observation 2026-06-01: with the slow tier
+    taking 30 to 50 min per cycle, fast-tier ticks were stalled
+    for the whole window, so sitemap rows could expire (TTL
+    4200 s) without being refreshed.
+  - `/data/.last_warm_slow` is stamped at boot if missing, so
+    the slow tier waits a full `WARM_CACHE_SLOW_EVERY` before
+    its first fire after a fresh deploy. Spec §Risk #3
+    explicitly said slow tier shouldn't fire on cold boot
+    (subsystem dashboards being cold for the first hour is
+    acceptable), but missing-sentinel-reads-as-0 made the
+    first tick fire slow immediately.
+
 ### Added
 
 - **Config-drift guards: broker startup WARNING, warm handler
