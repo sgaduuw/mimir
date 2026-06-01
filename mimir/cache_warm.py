@@ -46,11 +46,8 @@ def effective_window_sec(*, nominal_ttl: int, window_sec: int) -> int:
 
 
 def stored_ttl_for(*, nominal_ttl: int, window_sec: int) -> int:
-    """Stored TTL = nominal + effective_window. Callers pass
-    this to `cache.set` / `cache.get_or_compute` when populating
-    a warm-cache-managed row, so the row stays valid through
-    the deterministic insurance zone past nominal expiry.
-    """
+    """Stored TTL = nominal + effective_window. Callers pass this
+    to `cache.set` when populating a warm-managed row."""
     return nominal_ttl + effective_window_sec(
         nominal_ttl=nominal_ttl, window_sec=window_sec
     )
@@ -59,15 +56,24 @@ def stored_ttl_for(*, nominal_ttl: int, window_sec: int) -> int:
 def _effective_for_stored(*, stored_ttl: int, window_sec: int) -> int:
     """Recover effective_window from stored_ttl + window_sec.
 
-    Two cases, both deterministic given the construction rules:
+    Exact given a fixed (nominal, window_sec) pair: the two
+    algebraic cases below are deterministic given the construction
+    rule in `effective_window_sec`.
 
     - Long-TTL case (cap didn't fire): stored = nominal + window_sec,
       so effective = window_sec.
     - Short-TTL case (cap fired, effective = nominal // 2): stored =
-      nominal + nominal // 2 = 3 * nominal // 2. We detect this by
-      checking whether the "long-TTL" nominal would still satisfy
-      effective_window_sec's contract; if not, we're in the short-TTL
-      branch.
+      nominal + nominal // 2 = 3 * nominal // 2, and effective is
+      recovered from nominal ≈ stored * 2 // 3.
+
+    The failure mode worth knowing about is config drift between
+    write and read: a row written under `window_sec=600` then read
+    under `window_sec=300` returns `effective=300` instead of 600,
+    because recovery uses the read-time `window_sec`. Downstream
+    zone classification still operates on `remaining` (invariant to
+    this drift), so no row is corrupted; the only effect is shifted
+    SKIP / PROBABILISTIC / DETERMINISTIC boundaries until the
+    rows churn under the new config.
     """
     # Try long-TTL first: nominal = stored - window_sec.
     long_nominal = stored_ttl - window_sec
@@ -100,9 +106,8 @@ def classify_zone(*, stored_ttl: int, window_sec: int, elapsed: int) -> Decision
 
 
 def should_refresh(*, stored_ttl: int, window_sec: int, elapsed: int) -> bool:
-    """Combine `classify_zone` with a `random.random()` draw to
-    decide whether to refresh this tick. Probability ramps 0 → 1
-    across the PROBABILISTIC band."""
+    """p = 1 at remaining=effective, p = 0 at remaining=2*effective.
+    Linear ramp across the PROBABILISTIC band."""
     zone = classify_zone(stored_ttl=stored_ttl, window_sec=window_sec, elapsed=elapsed)
     if zone is Decision.SKIP:
         return False

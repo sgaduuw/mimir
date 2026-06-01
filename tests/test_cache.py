@@ -1337,6 +1337,36 @@ def test_ttl_extension_context_extends_stored_ttl(seeded_db):
         assert 695 <= remaining <= 700  # 100 nominal + 600 extension
 
 
+def test_ttl_extension_inner_none_overrides_outer_extension(seeded_db):
+    """`ttl_extension(None)` inside an outer `ttl_extension(600)`
+    scope opts out: the inner `cache.set` stores nominal TTL only.
+    This freezes the API contract that the explicit None case
+    degrades to no-extension behaviour, so a future caller can
+    rely on it for opt-out patterns."""
+    import time
+
+    from sqlalchemy import delete, select
+
+    from mimir import cache
+    from mimir.cache import ttl_extension
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        s.commit()
+
+    with ttl_extension(600):
+        with ttl_extension(None):
+            cache.set("test:inner_none", "v", ttl=100)
+    with SessionLocal() as s:
+        row = s.execute(
+            select(CacheEntry).where(CacheEntry.key.like("%test:inner_none"))
+        ).scalar_one()
+        remaining = row.expires_at - time.time()
+        assert 95 <= remaining <= 100  # No extension applied
+
+
 def test_ttl_extension_context_clears_on_exit(seeded_db):
     """After exiting the `ttl_extension` context, `cache.set`
     reverts to storing nominal TTL only."""

@@ -373,11 +373,13 @@ def set(key: str, value: Any, ttl: int) -> None:
         # run without spinning up a broker).
         from mimir.broker.client import BrokerUnavailable, get_broker_client
 
-        # Apply any active warm-cache TTL extension before the RPC
-        # crosses the process boundary. ContextVar state is per-
-        # process; the broker handler on the other side won't see
-        # this caller's `ttl_extension(...)` scope, so we bake it
-        # into the wire `ttl` here.
+        # Apply the extension here, before crossing the wire: the
+        # broker's _ttl_extension ContextVar is unset in the cache-
+        # worker thread (ContextVar is per-thread; the warm worker's
+        # scope doesn't leak into other broker threads), so the
+        # broker-side _apply_ttl_extension is a no-op for RPCs from
+        # web tier. The web tier's extension must be baked in here or
+        # it's silently dropped at the wire.
         wire_ttl = _apply_ttl_extension(ttl)
         try:
             get_broker_client().cache_set(nskey, payload, wire_ttl)
@@ -571,27 +573,25 @@ def get_or_compute(
             # classifier to decide skip / probabilistic-ramp /
             # deterministic-insurance. Outside the warm-cache
             # cycle this branch is never reached (window is None
-            # by default), so the dependency on a consistent
-            # `_ttl_extension` between write and read time only
-            # matters for warm-cache itself.
+            # by default).
             #
-            # Assumption: `_ttl_extension` is set to the same value
-            # at read time as it was at write time. This holds for
-            # the warm-cache RPC path because one warm cycle wraps
-            # BOTH the read (this get_or_compute call) AND the
-            # write (the inner set/set_via_writer call) in the same
-            # `refresh_window(...)` + `ttl_extension(...)` scope.
-            # If that invariant is ever broken (e.g. a future
-            # caller sets refresh_window without ttl_extension, or
-            # the warm cycle re-enters with a different tier's
-            # window), the elapsed math here mis-estimates by at
-            # most one window's worth — degrading to today's
-            # deterministic-at-expiry behaviour rather than
-            # corrupting any cache row.
+            # A read-time `_ttl_extension` mismatch with the value
+            # in scope at write time is benign: `remaining` is
+            # read from the row directly (independent of any
+            # ContextVar), and `remaining` survives the mismatch
+            # because the stored_ttl error cancels the elapsed
+            # error (elapsed = stored_ttl - remaining, so passing
+            # both to should_refresh yields the same remaining
+            # internally). `effective` is recovered from
+            # stored_ttl + window_sec via `_effective_for_stored`,
+            # so zone boundaries are stable as long as `window_sec`
+            # is consistent between write and read. The genuine
+            # failure case is a `window_sec` config change between
+            # write and read: zone boundaries shift, but no row is
+            # corrupted.
             from mimir.cache_warm import should_refresh
 
-            extension = _ttl_extension.get() or 0
-            stored_ttl = ttl + extension
+            stored_ttl = _apply_ttl_extension(ttl)
             now = _now()
             elapsed = stored_ttl - (row.expires_at - now)
             if not should_refresh(
