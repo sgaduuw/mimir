@@ -449,3 +449,328 @@ def test_vacuum_command_runs_and_reports_sizes(seeded_db):
 
 # `admin failures list` / `replay` -- CLI wrappers around the service
 # layer (which has its own coverage in test_ingest.py).
+
+
+# Fast/slow tier split (Task 3 of 2026-06-01-warm-cache-fast-slow-
+# tier-split). The combined `_build_inbox_targets` /
+# `_build_global_targets` are partitioned into fast + slow halves
+# so the scheduler can fire fast targets every minute and slow
+# targets every hour; the combined builders survive as wrappers
+# so `mimir warm-cache --tier all` (operator one-off) and any
+# not-yet-migrated callers see today's full target list.
+
+
+def test_build_fast_inbox_targets_includes_sitemap_when_base_set(seeded_db):
+    """Fast tier per-inbox builder returns sitemap + the four
+    cheap helpers (archive_stats, latest_pull_requests,
+    latest_stable_releases, recent_articles) when SITE_BASE_URL is
+    set."""
+    from mimir.cli.cache import _build_fast_inbox_targets
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+    targets = _build_fast_inbox_targets(alpha, sitemap_base="https://example.test")
+    labels = [label for label, _fn in targets]
+    assert any(label.startswith("sitemap:inbox:alpha") for label in labels)
+    assert any("archive_stats" in label for label in labels)
+    assert any("latest_pull_requests" in label for label in labels)
+    assert any("latest_stable_releases" in label for label in labels)
+    assert any("recent_articles" in label for label in labels)
+
+
+def test_build_fast_inbox_targets_omits_sitemap_without_base(seeded_db):
+    """No SITE_BASE_URL → no sitemap target, but the four cheap
+    helpers still come back."""
+    from mimir.cli.cache import _build_fast_inbox_targets
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+    targets = _build_fast_inbox_targets(alpha, sitemap_base="")
+    labels = [label for label, _fn in targets]
+    assert not any("sitemap" in label for label in labels)
+    assert any("archive_stats" in label for label in labels)
+
+
+def test_build_slow_inbox_targets_includes_subsystem_dashboards(seeded_db):
+    """Slow tier per-inbox: subsystem dashboards + per-tracker +
+    daily_volume + threads_for_day + active_threads +
+    most_active_subsystems_in_inbox + this_day_in_history."""
+    import datetime
+
+    from mimir.cli.cache import _build_slow_inbox_targets
+    from mimir.extensions import SessionLocal
+
+    today = datetime.date(2024, 3, 1)
+    yesterday = today - datetime.timedelta(days=1)
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+    targets = _build_slow_inbox_targets(alpha, today, yesterday)
+    labels = [label for label, _fn in targets]
+    assert any("subsystem dashboards" in label for label in labels)
+    assert any("daily_volume" in label for label in labels)
+    assert any("threads_for_day (today)" in label for label in labels)
+    assert any("threads_for_day (yesterday)" in label for label in labels)
+    assert any("active_threads" in label for label in labels)
+    assert any("most_active_subsystems_in_inbox" in label for label in labels)
+    assert any("this_day_in_history" in label for label in labels)
+
+
+def test_build_inbox_targets_concatenates_fast_then_slow(seeded_db):
+    """Legacy combined builder = fast + slow union by label
+    (set-equality). The fast and slow halves partition cleanly
+    (no overlap, no drops); total count == fast + slow."""
+    import datetime
+
+    from mimir.cli.cache import (
+        _build_fast_inbox_targets,
+        _build_inbox_targets,
+        _build_slow_inbox_targets,
+    )
+    from mimir.extensions import SessionLocal
+
+    today = datetime.date(2024, 3, 1)
+    yesterday = today - datetime.timedelta(days=1)
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+    full = _build_inbox_targets(
+        alpha, today, yesterday, sitemap_base="https://example.test"
+    )
+    fast = _build_fast_inbox_targets(alpha, sitemap_base="https://example.test")
+    slow = _build_slow_inbox_targets(alpha, today, yesterday)
+    full_labels = {label for label, _ in full}
+    union_labels = {label for label, _ in fast} | {label for label, _ in slow}
+    assert full_labels == union_labels
+    # No duplicates (fast and slow partition cleanly).
+    assert len(full) == len(fast) + len(slow)
+
+
+def test_build_fast_global_targets_includes_sitemap_keys(seeded_db):
+    """Global fast tier: sitemap:index + sitemap:meta only."""
+    from mimir.cli.cache import _build_fast_global_targets
+
+    targets = _build_fast_global_targets(sitemap_base="https://example.test")
+    labels = [label for label, _fn in targets]
+    assert "sitemap:index" in labels
+    assert "sitemap:meta" in labels
+    assert not any("most_active_subsystems" in label for label in labels)
+
+
+def test_build_fast_global_targets_omits_sitemap_without_base(seeded_db):
+    """No SITE_BASE_URL → empty list (sitemap targets are gated; no
+    other fast-tier globals exist)."""
+    from mimir.cli.cache import _build_fast_global_targets
+
+    targets = _build_fast_global_targets(sitemap_base="")
+    assert targets == []
+
+
+def test_build_slow_global_targets_includes_aggregator(seeded_db):
+    """Global slow tier: just most_active_subsystems_global (7d)."""
+    from mimir.cli.cache import _build_slow_global_targets
+
+    targets = _build_slow_global_targets()
+    labels = [label for label, _fn in targets]
+    assert any("most_active_subsystems_global" in label for label in labels)
+    assert not any("sitemap" in label for label in labels)
+
+
+# `--tier {fast,slow,all}` CLI dispatch (Task 4 of 2026-06-01-warm-
+# cache-fast-slow-tier-split). The flag drives `targets=` filtering on
+# the warm_inbox / warm_global broker RPCs: targets=None means "broker
+# picks the full set" (today's shape, back-compat); an explicit list
+# narrows the dispatch to just the named labels.
+#
+# These tests intercept the broker client by monkeypatching
+# `mimir.broker.client.get_broker_client` (the in-function import in
+# `warm_cache_command` reads through the module attribute, so the
+# patch lands). The FakeClient stubs `warm_inbox` / `warm_global` to
+# record the targets passed by the CLI, and stubs `cache_purge_expired`
+# because `cache.purge_expired()` (called at the end of
+# `warm_cache_command`) also routes through `get_broker_client()`.
+
+
+def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
+    seeded_db, monkeypatch
+):
+    """`warm-cache --tier fast` ends up dispatching each warm_inbox
+    RPC with only fast-tier target labels (sitemap + archive_stats
+    + latest_pull_requests + latest_stable_releases + recent_articles).
+    Slow-tier labels (subsystem dashboards, threads_for_day, etc.)
+    don't appear."""
+    from mimir.broker import client as _client_module
+    from mimir.cli.cache import warm_cache_command
+    from mimir.config import settings
+
+    captured: list[tuple[str, list[str] | None, int]] = []
+    global_captured: list[tuple[list[str] | None, int]] = []
+
+    class FakeClient:
+        def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
+            captured.append((inbox_name, targets, priority))
+            return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
+
+        def warm_global(self, *, targets=None, priority=1, **kwargs):
+            global_captured.append((targets, priority))
+            return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
+
+        def cache_purge_expired(self, **kwargs):
+            return 0
+
+    monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
+    monkeypatch.setattr(settings, "site_base_url", "https://example.test")
+
+    result = CliRunner().invoke(warm_cache_command, ["--tier", "fast"])
+    assert result.exit_code == 0, result.output
+    assert captured, "no warm_inbox dispatches captured"
+    for inbox_name, targets, priority in captured:
+        assert targets is not None, (
+            f"tier=fast must pass explicit targets, got None for {inbox_name}"
+        )
+        # Task 5: tier=fast dispatches MUST carry priority=0 so
+        # they jump ahead of queued slow-tier items on the broker's
+        # warm PriorityQueue.
+        assert priority == 0, (
+            f"tier=fast must pass priority=0; got {priority} for {inbox_name}"
+        )
+        # Each fast-tier label must be one of the documented fast set.
+        for label in targets:
+            assert any(
+                fragment in label
+                for fragment in (
+                    "sitemap:inbox:",
+                    "archive_stats",
+                    "latest_pull_requests",
+                    "latest_stable_releases",
+                    "recent_articles",
+                )
+            ), f"non-fast label leaked into tier=fast dispatch: {label!r}"
+        # No slow-tier label appears.
+        assert not any(
+            fragment in label
+            for fragment in (
+                "subsystem dashboards",
+                "threads_for_day",
+                "daily_volume",
+                "active_threads",
+                "this_day_in_history",
+                "most_active_subsystems_in_inbox",
+                "tracker:",
+            )
+            for label in targets
+        )
+    # Global fast tier hits sitemap:index + sitemap:meta with
+    # priority=0 (same tier-mapping as the per-inbox fan-out).
+    assert global_captured, "no warm_global dispatch captured"
+    for targets, priority in global_captured:
+        assert priority == 0, (
+            f"tier=fast warm_global must pass priority=0; got {priority}"
+        )
+    assert all(
+        "sitemap" in label
+        for targets, _ in global_captured
+        if targets
+        for label in targets
+    )
+
+
+def test_warm_cache_command_tier_slow_dispatches_slow_targets_only(
+    seeded_db, monkeypatch
+):
+    """Mirror: `warm-cache --tier slow` dispatches only slow-tier
+    target labels."""
+    from mimir.broker import client as _client_module
+    from mimir.cli.cache import warm_cache_command
+    from mimir.config import settings
+
+    captured: list[tuple[str, list[str] | None, int]] = []
+    global_captured: list[tuple[list[str] | None, int]] = []
+
+    class FakeClient:
+        def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
+            captured.append((inbox_name, targets, priority))
+            return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
+
+        def warm_global(self, *, targets=None, priority=1, **kwargs):
+            global_captured.append((targets, priority))
+            return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
+
+        def cache_purge_expired(self, **kwargs):
+            return 0
+
+    monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
+    monkeypatch.setattr(settings, "site_base_url", "https://example.test")
+
+    result = CliRunner().invoke(warm_cache_command, ["--tier", "slow"])
+    assert result.exit_code == 0, result.output
+    assert captured
+    for inbox_name, targets, priority in captured:
+        assert targets is not None
+        # Task 5: tier=slow dispatches MUST carry priority=1 so
+        # they take the slow lane on the broker's warm PriorityQueue.
+        assert priority == 1, (
+            f"tier=slow must pass priority=1; got {priority} for {inbox_name}"
+        )
+        # No fast-tier label appears.
+        assert not any(
+            fragment in label
+            for fragment in (
+                "sitemap:inbox:",
+                "archive_stats",
+                "latest_pull_requests",
+                "latest_stable_releases",
+                "recent_articles",
+            )
+            for label in targets
+        ), f"fast label leaked into tier=slow dispatch for {inbox_name}: {targets}"
+    # Global slow tier also dispatches with priority=1.
+    assert global_captured, "no warm_global dispatch captured"
+    for _targets, priority in global_captured:
+        assert priority == 1, (
+            f"tier=slow warm_global must pass priority=1; got {priority}"
+        )
+
+
+def test_warm_cache_command_default_tier_all_passes_no_targets(seeded_db, monkeypatch):
+    """Default (no --tier) preserves today's behaviour: targets=None
+    on every dispatch, so the broker handler uses its full target
+    list. Task 5 maps tier=all to priority=1 so the operator
+    ad-hoc invocation matches today's slow-lane FIFO behaviour
+    rather than racing ahead of any other slow item already
+    queued."""
+    from mimir.broker import client as _client_module
+    from mimir.cli.cache import warm_cache_command
+    from mimir.config import settings
+
+    captured: list[tuple[str, list[str] | None, int]] = []
+    global_captured: list[tuple[list[str] | None, int]] = []
+
+    class FakeClient:
+        def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
+            captured.append((inbox_name, targets, priority))
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
+
+        def warm_global(self, *, targets=None, priority=1, **kwargs):
+            global_captured.append((targets, priority))
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
+
+        def cache_purge_expired(self, **kwargs):
+            return 0
+
+    monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
+    monkeypatch.setattr(settings, "site_base_url", "https://example.test")
+
+    result = CliRunner().invoke(warm_cache_command, [])
+    assert result.exit_code == 0, result.output
+    assert captured, "no warm_inbox dispatches captured"
+    for inbox_name, targets, priority in captured:
+        assert targets is None, (
+            f"tier=all should pass targets=None for {inbox_name}; got {targets}"
+        )
+        assert priority == 1, (
+            f"tier=all should pass priority=1 for {inbox_name}; got {priority}"
+        )
+    for targets, priority in global_captured:
+        assert targets is None
+        assert priority == 1

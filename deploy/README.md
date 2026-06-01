@@ -43,7 +43,8 @@ different `command:`.
 
 | Env var                 | Default         | What it controls                              |
 | ----------------------- | --------------- | --------------------------------------------- |
-| `WARM_CACHE_EVERY`      | `60` (s)        | Refresh dashboard helpers                     |
+| `WARM_CACHE_EVERY`      | `60` (s)        | Fast tier: sitemaps + cheap helpers (alias for `WARM_CACHE_FAST_EVERY`) |
+| `WARM_CACHE_SLOW_EVERY` | `3600` (s)      | Slow tier: subsystem dashboards + per-tracker queries + rest |
 | `UPDATE_EVERY`          | `300` (s)       | Sync upstream + ingest new commits            |
 | `UPDATE_MAINLINE_EVERY` | `600` (s)       | Fetch `linux.git` + (re)parse `MAINTAINERS`   |
 | `ANALYZE_EVERY`         | `86400` (s)     | Refresh `sqlite_stat1` (bounded)              |

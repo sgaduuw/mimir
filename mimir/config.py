@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from mimir._outbound import validate_outbound_url
@@ -283,6 +283,41 @@ class Settings(BaseSettings):
     # on bigger corpora; tune to 1 for serial-equivalent behaviour
     # (useful for tests). Override via BROKER_WARM_WORKERS.
     broker_warm_workers: int = 4
+
+    # Cadence for the fast warm tier (seconds). Drives the
+    # scheduler's per-minute warm tick. The fast tier covers
+    # sitemaps + a handful of cheap front-page helpers, where
+    # freshness matters more than recompute cost. WARM_CACHE_EVERY
+    # is kept as an alias for back-compat with the pre-tier-split
+    # single-cadence env var. Override via WARM_CACHE_FAST_EVERY.
+    warm_cache_fast_every: int = Field(
+        default=60,
+        validation_alias=AliasChoices("WARM_CACHE_FAST_EVERY", "WARM_CACHE_EVERY"),
+    )
+
+    # Cadence for the slow warm tier (seconds). Drives the
+    # scheduler's hourly warm tick. The slow tier covers
+    # subsystem dashboards + per-tracker queries + the rest,
+    # where compute cost dominates and an hour of staleness is
+    # acceptable. Override via WARM_CACHE_SLOW_EVERY.
+    warm_cache_slow_every: int = 3600
+
+    # Refresh window for fast-tier keys (seconds). In the last
+    # `window` seconds before a fast-tier key's nominal TTL
+    # expires, warm-cache fires probabilistically with p ramping
+    # 0→1; in the final `window` seconds of stored TTL (the
+    # insurance zone), every tick fires deterministically. See
+    # `_claude/specs/2026-06-01-warm-cache-fast-slow-tier-split-design.md`
+    # §5.2. Override via WARM_CACHE_FAST_REFRESH_WINDOW_SEC.
+    warm_cache_fast_refresh_window_sec: int = 600
+
+    # Refresh window for slow-tier keys (seconds). Same shape as
+    # fast tier; the larger default reflects the slow tier's
+    # hourly cadence, which needs a wider window to see enough
+    # ticks for the probability ramp to fire. 7200 = 2 h gives a
+    # 24h-TTL key 2 ticks in its window. Override via
+    # WARM_CACHE_SLOW_REFRESH_WINDOW_SEC.
+    warm_cache_slow_refresh_window_sec: int = 7200
 
     # Number of broker cache-worker threads. Cache ops are sub-ms
     # dispatches (build the closure, hand off to the WriterThread,
