@@ -373,3 +373,70 @@ def test_serve_sets_active_context_during_run(seeded_db):
     # before broker_running was entered (the session broker's context).
     assert _context._active_pool is pre_pool
     assert _context._active_writer is pre_writer
+
+
+def test_start_workers_honors_per_queue_settings(seeded_db, monkeypatch):
+    """`start_workers()` spawns `broker_<queue>_workers` threads per
+    queue. Defaults: 1 cache, 1 long, 4 warm; bumping the env-tunable
+    fields produces the expected counts. Threads are tagged with their
+    own name (`broker-<label>-worker`) so the operator can spot which
+    queue is busy in `ps`/thread-name dumps."""
+    from mimir.broker.server import build_server
+    from mimir.config import settings
+    from tests.test_broker._helpers import short_socket_path
+
+    monkeypatch.setattr(settings, "broker_cache_workers", 3)
+    monkeypatch.setattr(settings, "broker_long_workers", 2)
+    monkeypatch.setattr(settings, "broker_warm_workers", 5)
+
+    sp = short_socket_path("tunable-workers")
+    server = build_server(sp)  # build_server() spawns the worker pool
+    try:
+        assert len(server._cache_worker_threads) == 3
+        assert len(server._long_worker_threads) == 2
+        assert len(server._warm_worker_threads) == 5
+        # Multi-worker queues get suffixed names; single-worker keeps
+        # the bare prefix (see `start_workers` label logic).
+        names = {t.name for t in server._cache_worker_threads}
+        assert names == {
+            "broker-cache-0-worker",
+            "broker-cache-1-worker",
+            "broker-cache-2-worker",
+        }
+        # All threads are running.
+        for t in (
+            server._cache_worker_threads
+            + server._long_worker_threads
+            + server._warm_worker_threads
+        ):
+            assert t.is_alive(), f"worker {t.name} should be running"
+            assert t.daemon, f"worker {t.name} must be daemon for clean shutdown"
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()
+
+
+def test_start_workers_single_worker_keeps_bare_label(seeded_db, monkeypatch):
+    """When a queue's worker count is 1 (the default for cache and
+    long), the thread name keeps the bare prefix (`broker-cache-worker`)
+    rather than the suffixed form (`broker-cache-0-worker`). Matters
+    for log/ps readability and to match the pre-tunable thread name."""
+    from mimir.broker.server import build_server
+    from mimir.config import settings
+    from tests.test_broker._helpers import short_socket_path
+
+    monkeypatch.setattr(settings, "broker_cache_workers", 1)
+    monkeypatch.setattr(settings, "broker_long_workers", 1)
+    monkeypatch.setattr(settings, "broker_warm_workers", 1)
+
+    sp = short_socket_path("tunable-single")
+    server = build_server(sp)
+    try:
+        assert [t.name for t in server._cache_worker_threads] == ["broker-cache-worker"]
+        assert [t.name for t in server._long_worker_threads] == ["broker-long-worker"]
+        assert [t.name for t in server._warm_worker_threads] == ["broker-warm-worker"]
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()

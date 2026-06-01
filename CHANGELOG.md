@@ -11,6 +11,25 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- **`BROKER_CACHE_WORKERS` and `BROKER_LONG_WORKERS` env knobs.**
+  The broker's cache and long queues each had a hardcoded
+  single-worker drain; both are now operator-tunable, mirroring
+  the existing `BROKER_WARM_WORKERS` shape. Defaults stay at 1
+  (preserves FIFO commit order per submitting client on the
+  cache queue; matches the WriterThread funnel on the long
+  queue), so steady-state behaviour is unchanged. Bumping
+  `BROKER_CACHE_WORKERS` parallelises the cache dispatch step
+  for workloads where the single worker is the funnel rather
+  than the WriterThread; safe for mimir's cache.set (idempotent
+  on key). Bumping `BROKER_LONG_WORKERS` lets independent long
+  ops overlap their pre-write compute phases (batch building,
+  read fan-outs); the actual SQLite writes still funnel through
+  the WriterThread. Tests:
+  `test_start_workers_honors_per_queue_settings`,
+  `test_start_workers_single_worker_keeps_bare_label`.
+
 ## [2.17.0], 2026-06-01
 
 ### Fixed
