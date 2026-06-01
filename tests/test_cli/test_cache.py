@@ -369,13 +369,15 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
         "sitemap:inbox:beta": "{%s}urlset" % ns,
     }
     for key, expected_tag in expected_root.items():
-        body = cache.get(key)
-        assert body is not None, f"missing cache row for {key}"
-        assert "example.test" in body, (
+        payload = cache.get(key)
+        assert payload is not None, f"missing cache row for {key}"
+        # The cache now stores SitemapPayload (body + last_modified);
+        # the body field carries the XML the route serves.
+        assert "example.test" in payload.body, (
             f"cache row for {key} doesn't carry the SITE_BASE_URL prefix; "
             f"warm-cache may have run with the wrong base"
         )
-        root = ET.fromstring(body)
+        root = ET.fromstring(payload.body)
         assert root.tag == expected_tag, (
             f"cache row for {key} has wrong root element: {root.tag!r} "
             f"(expected {expected_tag!r})"
@@ -396,9 +398,12 @@ def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
     assert cache.get("sitemap:inbox:alpha") == "STALE"
     with SessionLocal() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        body = inbox_sitemap_xml(s, alpha, "https://example.test", force=True)
-    assert "<?xml" in body
-    assert cache.get("sitemap:inbox:alpha") == body
+        payload = inbox_sitemap_xml(s, alpha, "https://example.test", force=True)
+    assert "<?xml" in payload.body
+    # The cache now stores the full SitemapPayload (body + last_modified);
+    # `force=True` recomputed it, so the cached value equals the returned
+    # payload exactly.
+    assert cache.get("sitemap:inbox:alpha") == payload
 
 
 def test_analyze_command_runs(seeded_db):
