@@ -23,10 +23,11 @@ import time
 from concurrent.futures import Future
 from typing import Callable
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Connection
 
 from mimir.config import settings
+from mimir.extensions import _sqlite_pragmas
 
 logger = logging.getLogger(__name__)
 WriteFuture = Future  # type alias; parametrised as Future[T] at the use site (T is the WriteOp closure's return type; None for closures that don't return anything)
@@ -113,6 +114,16 @@ class WriterThread:
 
     def _run(self) -> None:
         engine = create_engine(self._database_url, future=True)
+        # Attach the same per-connection PRAGMA registration the shared
+        # engine in mimir.extensions uses. Without this, the writer's
+        # connection lacks foreign_keys=ON (silently breaks
+        # ondelete=CASCADE), synchronous=NORMAL (every commit fsyncs
+        # the WAL twice), analysis_limit=N (any ANALYZE on the writer
+        # holds the lock for the full multi-second scan), and
+        # busy_timeout. The listener correctly skips query_only=1 when
+        # mimir_is_broker=true, so attaching it here doesn't make the
+        # writer read-only.
+        event.listen(engine, "connect", _sqlite_pragmas)
         conn = engine.connect()
         try:
             while True:
