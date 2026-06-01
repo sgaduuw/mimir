@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.19.0], 2026-06-01
+
 ### Changed
 
 - **Slow tier fans out per-(inbox, subsystem) warm RPCs.**
