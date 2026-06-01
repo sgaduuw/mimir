@@ -479,7 +479,56 @@ def set_tracked_authors(
 
 def add_tracked_author(name: str, label: str, substring: str) -> Inbox:
     """Add or replace one tracker entry. If the inbox has no trackers
-    yet, this initializes the dict with the single entry."""
+    yet, this initializes the dict with the single entry.
+
+    Writer-path folds the legacy two-call chain (get_inbox then
+    set_tracked_authors) into one closure to avoid two round-trips
+    through the writer queue. The closure reads the current row,
+    mutates the dict in Python, and issues a single UPDATE.
+    """
+    label = label.strip()
+    if not label:
+        raise InboxValidationError("tracker label must not be empty")
+    substring = substring.strip()
+    if not substring:
+        raise InboxValidationError(f"tracker substring for {label!r} must not be empty")
+
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from sqlalchemy import update as sa_update
+
+        from mimir.broker.writes import WriteOp
+
+        def _fn(conn):
+            row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
+            if row is None:
+                raise InboxNotFound(f"no inbox named {name!r}")
+            current = dict(row.tracked_authors or {})
+            current[label] = substring
+            # validate_tracked_authors collapses empty dicts to None;
+            # after adding an entry the dict is non-empty.
+            cleaned = validate_tracked_authors(current)
+            conn.execute(
+                sa_update(Inbox)
+                .where(Inbox.name == name)
+                .values(tracked_authors=cleaned)
+            )
+            updated = conn.execute(select(Inbox).where(Inbox.name == name)).one()
+            return Inbox(**dict(updated._mapping))
+
+        result = writer.submit(
+            WriteOp(label=f"inbox:add_tracked_author:{name}", fn=_fn)
+        ).result(timeout=30)
+        refresh_inbox_names()
+        return result
+
+    # Legacy fallback path.
     inbox = get_inbox(name)
     current = dict(inbox.tracked_authors or {})
     current[label] = substring
