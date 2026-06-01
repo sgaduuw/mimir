@@ -186,3 +186,39 @@ def test_warm_global_request_priority_rejects_out_of_range():
         WarmGlobalRequest(priority=2)
     with pytest.raises(ValidationError):
         WarmGlobalRequest(priority=-1)
+
+
+def test_warm_subsystem_request_round_trip():
+    """WarmSubsystemRequest carries inbox_name + subsystem_id +
+    priority (default 1, slow). JSON round-trips."""
+    from mimir.broker.protocol import WarmSubsystemRequest
+
+    default = WarmSubsystemRequest(inbox_name="alpha", subsystem_id=42)
+    assert default.priority == 1
+    assert default.subsystem_id == 42
+
+    fast = WarmSubsystemRequest(inbox_name="alpha", subsystem_id=42, priority=0)
+    raw = fast.model_dump_json()
+    parsed = WarmSubsystemRequest.model_validate_json(raw)
+    assert parsed.priority == 0
+    assert parsed.subsystem_id == 42
+    assert parsed.op == "warm_subsystem"
+
+
+def test_warm_subsystem_request_priority_rejects_out_of_range():
+    """priority is bounded [0, 1] (same shape as WarmInboxRequest)."""
+    from mimir.broker.protocol import WarmSubsystemRequest
+
+    with pytest.raises(ValidationError):
+        WarmSubsystemRequest(inbox_name="alpha", subsystem_id=1, priority=2)
+    with pytest.raises(ValidationError):
+        WarmSubsystemRequest(inbox_name="alpha", subsystem_id=1, priority=-1)
+
+
+def test_warm_subsystem_request_rejects_zero_subsystem_id():
+    """subsystem_id is a positive int (sqlite autoincrement starts at
+    1); reject 0 / negative at the wire boundary."""
+    from mimir.broker.protocol import WarmSubsystemRequest
+
+    with pytest.raises(ValidationError):
+        WarmSubsystemRequest(inbox_name="alpha", subsystem_id=0)

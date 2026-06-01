@@ -554,6 +554,76 @@ def test_warm_queue_preserves_fifo_within_priority(seeded_db):
             sp.unlink()
 
 
+def test_build_server_warns_when_site_base_url_unset(seeded_db, caplog, monkeypatch):
+    """Layer 1 of the config-drift guard family: when SITE_BASE_URL
+    is empty, the broker logs a one-line WARNING at startup naming
+    the affected feature (sitemap warming) so an operator reading
+    `podman logs mimir-broker` sees the misconfig immediately.
+    Driven by the 2026-06-01 production incident."""
+    import logging as _logging
+
+    from mimir.broker.server import build_server
+    from mimir.config import settings as _settings
+    from tests.test_broker._helpers import short_socket_path
+
+    monkeypatch.setattr(_settings, "site_base_url", "")
+    caplog.set_level(_logging.WARNING, logger="mimir.broker.server")
+
+    sp = short_socket_path("site-base-url-unset")
+    server = build_server(sp)
+    try:
+        site_warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == _logging.WARNING
+            and "SITE_BASE_URL is unset" in r.getMessage()
+        ]
+        assert site_warnings, (
+            "expected a SITE_BASE_URL WARNING at broker startup; "
+            f"got: {[r.getMessage() for r in caplog.records]}"
+        )
+        msg = site_warnings[0].getMessage()
+        # The message names the feature that's broken and the env
+        # var to set, so an operator can act on the one-liner alone.
+        assert "sitemap" in msg.lower()
+        assert "SITE_BASE_URL" in msg
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()
+
+
+def test_build_server_silent_when_site_base_url_set(seeded_db, caplog, monkeypatch):
+    """Inverse pin: with SITE_BASE_URL set, the startup WARNING
+    must not fire. Healthy deploys should not log noise on every
+    broker bounce."""
+    import logging as _logging
+
+    from mimir.broker.server import build_server
+    from mimir.config import settings as _settings
+    from tests.test_broker._helpers import short_socket_path
+
+    monkeypatch.setattr(_settings, "site_base_url", "https://example.com")
+    caplog.set_level(_logging.WARNING, logger="mimir.broker.server")
+
+    sp = short_socket_path("site-base-url-set")
+    server = build_server(sp)
+    try:
+        site_warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == _logging.WARNING
+            and "SITE_BASE_URL is unset" in r.getMessage()
+        ]
+        assert not site_warnings, (
+            "no SITE_BASE_URL warning expected when the env is set"
+        )
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()
+
+
 def test_extract_warm_priority_parses_zero_one_and_default(seeded_db):
     """The reader-side priority extractor handles 0, 1, and
     missing field (returns 1). Bounded to the line head so payload

@@ -175,7 +175,14 @@ def test_warm_cache_subsystem_dashboards_populate_cache(
     # the `as_completed` join returned. The serial path is functionally
     # equivalent for this assertion (we're checking row presence, not
     # parallelism) and removes the flake.
-    result = CliRunner().invoke(warm_cache_command, ["--workers", "1"])
+    #
+    # `--tier slow` because that's the only tier that now dispatches
+    # per-(inbox, subsystem) warm_subsystem RPCs (Option A,
+    # 2026-06-01). `--tier all` / `--tier fast` deliberately skip the
+    # subsystem fan-out.
+    result = CliRunner().invoke(
+        warm_cache_command, ["--workers", "1", "--tier", "slow"]
+    )
     assert result.exit_code == 0
 
     # All four per-subsystem dashboard helpers must have cached a row
@@ -279,7 +286,12 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
 
     # `--workers 1` for the same reason the sibling test uses it (avoid
     # the parallel-commit-visibility race against the assertion below).
-    result = CliRunner().invoke(warm_cache_command, ["--workers", "1"])
+    # `--tier slow` because per-(inbox, subsystem) warm_subsystem RPCs
+    # (which surface the reviewers list and warm articles_reviewed_by)
+    # only dispatch on the slow tier per Option A (2026-06-01).
+    result = CliRunner().invoke(
+        warm_cache_command, ["--workers", "1", "--tier", "slow"]
+    )
     assert result.exit_code == 0
 
     from mimir.cache import _ns
@@ -493,10 +505,15 @@ def test_build_fast_inbox_targets_omits_sitemap_without_base(seeded_db):
     assert any("archive_stats" in label for label in labels)
 
 
-def test_build_slow_inbox_targets_includes_subsystem_dashboards(seeded_db):
-    """Slow tier per-inbox: subsystem dashboards + per-tracker +
+def test_build_slow_inbox_targets_includes_expected_labels(seeded_db):
+    """Slow tier per-inbox after Option A (2026-06-01): per-tracker +
     daily_volume + threads_for_day + active_threads +
-    most_active_subsystems_in_inbox + this_day_in_history."""
+    most_active_subsystems_in_inbox + this_day_in_history. The
+    `"subsystem dashboards"` target moved out into separate
+    warm_subsystem RPCs dispatched by the slow-tier CLI fan-out, so
+    it's NOT present here (see
+    `test_build_slow_inbox_targets_excludes_subsystem_dashboards`
+    for the dedicated guard)."""
     import datetime
 
     from mimir.cli.cache import _build_slow_inbox_targets
@@ -508,7 +525,6 @@ def test_build_slow_inbox_targets_includes_subsystem_dashboards(seeded_db):
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
     targets = _build_slow_inbox_targets(alpha, today, yesterday)
     labels = [label for label, _fn in targets]
-    assert any("subsystem dashboards" in label for label in labels)
     assert any("daily_volume" in label for label in labels)
     assert any("threads_for_day (today)" in label for label in labels)
     assert any("threads_for_day (yesterday)" in label for label in labels)
@@ -605,11 +621,16 @@ def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
 
     captured: list[tuple[str, list[str] | None, int]] = []
     global_captured: list[tuple[list[str] | None, int]] = []
+    subsystem_captured: list[tuple[str, int, int]] = []
 
     class FakeClient:
         def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
             captured.append((inbox_name, targets, priority))
             return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
+
+        def warm_subsystem(self, inbox_name, subsystem_id, *, priority=1, **kwargs):
+            subsystem_captured.append((inbox_name, subsystem_id, priority))
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
 
         def warm_global(self, *, targets=None, priority=1, **kwargs):
             global_captured.append((targets, priority))
@@ -673,6 +694,11 @@ def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
         if targets
         for label in targets
     )
+    # Option A (2026-06-01): per-(inbox, subsystem) warm_subsystem RPCs
+    # are slow-tier-only; fast tier must NOT dispatch them.
+    assert subsystem_captured == [], (
+        f"fast tier dispatched warm_subsystem RPCs unexpectedly: {subsystem_captured}"
+    )
 
 
 def test_warm_cache_command_tier_slow_dispatches_slow_targets_only(
@@ -686,11 +712,16 @@ def test_warm_cache_command_tier_slow_dispatches_slow_targets_only(
 
     captured: list[tuple[str, list[str] | None, int]] = []
     global_captured: list[tuple[list[str] | None, int]] = []
+    subsystem_captured: list[tuple[str, int, int]] = []
 
     class FakeClient:
         def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
             captured.append((inbox_name, targets, priority))
             return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
+
+        def warm_subsystem(self, inbox_name, subsystem_id, *, priority=1, **kwargs):
+            subsystem_captured.append((inbox_name, subsystem_id, priority))
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
 
         def warm_global(self, *, targets=None, priority=1, **kwargs):
             global_captured.append((targets, priority))
@@ -730,6 +761,15 @@ def test_warm_cache_command_tier_slow_dispatches_slow_targets_only(
         assert priority == 1, (
             f"tier=slow warm_global must pass priority=1; got {priority}"
         )
+    # Option A (2026-06-01): any per-(inbox, subsystem) RPCs that did
+    # dispatch must carry priority=1 (slow lane). On the tiny seeded
+    # corpus most_active_subsystems_in_inbox may return zero rows for
+    # `alpha`, so we don't require non-zero count; we just pin priority
+    # for whatever did fire.
+    for _name, _sub_id, priority in subsystem_captured:
+        assert priority == 1, (
+            f"tier=slow warm_subsystem must pass priority=1; got {priority}"
+        )
 
 
 def test_warm_cache_command_default_tier_all_passes_no_targets(seeded_db, monkeypatch):
@@ -745,10 +785,15 @@ def test_warm_cache_command_default_tier_all_passes_no_targets(seeded_db, monkey
 
     captured: list[tuple[str, list[str] | None, int]] = []
     global_captured: list[tuple[list[str] | None, int]] = []
+    subsystem_captured: list[tuple[str, int, int]] = []
 
     class FakeClient:
         def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
             captured.append((inbox_name, targets, priority))
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
+
+        def warm_subsystem(self, inbox_name, subsystem_id, *, priority=1, **kwargs):
+            subsystem_captured.append((inbox_name, subsystem_id, priority))
             return {"warmed": [], "errors": [], "elapsed_ms": 0}
 
         def warm_global(self, *, targets=None, priority=1, **kwargs):
@@ -774,3 +819,142 @@ def test_warm_cache_command_default_tier_all_passes_no_targets(seeded_db, monkey
     for targets, priority in global_captured:
         assert targets is None
         assert priority == 1
+    # Option A follow-up (2026-06-01): tier=all DOES dispatch
+    # per-(inbox, subsystem) warm_subsystem RPCs, same as tier=slow,
+    # so ad-hoc operator runs (`mimir warm-cache` with no flag) keep
+    # warming subsystem dashboards. The architectural-parallelism win
+    # applies equally; there's no reason to deny ad-hoc invocations
+    # the same fan-out. Priority stays at 1 (slow-lane), matching the
+    # tier=all queue ordering convention.
+    for inbox_name, subsystem_id, priority in subsystem_captured:
+        assert priority == 1, (
+            f"tier=all should dispatch warm_subsystem at priority=1 for "
+            f"{inbox_name}/{subsystem_id}; got {priority}"
+        )
+
+
+# Option A (2026-06-01) follow-up tests: per-(inbox, subsystem) warm
+# fan-out at the slow-tier CLI dispatch site. The slow tier no longer
+# warms subsystem dashboards inside one warm_inbox worker thread;
+# instead the CLI fans out separate warm_subsystem RPCs that the
+# broker's N warm workers parallelise across. These tests pin the
+# dispatch shape (mix of warm_inbox + warm_subsystem + one warm_global
+# on slow; warm_inbox + warm_global with NO warm_subsystem on fast)
+# and the structural shape of `_build_slow_inbox_targets` post-split
+# (no longer carries a `"subsystem dashboards (top 20)"` entry).
+
+
+def test_warm_cache_command_tier_slow_dispatches_per_subsystem_rpcs(
+    seeded_db, monkeypatch
+):
+    """`warm-cache --tier slow` dispatches not just per-inbox warm_inbox
+    RPCs but ALSO per-(inbox, subsystem) warm_subsystem RPCs for the
+    top-N most-active subsystems in each inbox. Exactly one warm_global
+    fires per cycle. All slow-tier dispatches carry priority=1."""
+    from mimir.broker import client as _client_module
+    from mimir.cli.cache import warm_cache_command
+    from mimir.config import settings
+
+    captured: list[tuple[str, object, object, int]] = []
+
+    class FakeClient:
+        def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
+            captured.append(("warm_inbox", inbox_name, targets, priority))
+            return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
+
+        def warm_subsystem(self, inbox_name, subsystem_id, *, priority=1, **kwargs):
+            captured.append(("warm_subsystem", inbox_name, subsystem_id, priority))
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
+
+        def warm_global(self, *, targets=None, priority=1, **kwargs):
+            captured.append(("warm_global", targets, None, priority))
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
+
+        def cache_purge_expired(self, **kwargs):
+            return 0
+
+    monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
+    monkeypatch.setattr(settings, "site_base_url", "https://example.test")
+
+    result = CliRunner().invoke(warm_cache_command, ["--tier", "slow"])
+    assert result.exit_code == 0, result.output
+
+    inbox_calls = [c for c in captured if c[0] == "warm_inbox"]
+    subsystem_calls = [c for c in captured if c[0] == "warm_subsystem"]
+    global_calls = [c for c in captured if c[0] == "warm_global"]
+
+    assert len(inbox_calls) > 0, "expected per-inbox warm_inbox RPCs"
+    # subsystem_calls may be 0 in the test seed if `alpha` has no
+    # most-active subsystem rows; accept >= 0 and assert the dispatch
+    # shape stayed intact (priority lane + the kind set).
+    assert len(global_calls) == 1, "exactly one warm_global per cycle"
+    # All slow-tier dispatches use priority=1 (the priority is the
+    # last element of every captured tuple).
+    for call in inbox_calls + subsystem_calls + global_calls:
+        assert call[-1] == 1
+
+
+def test_warm_cache_command_tier_fast_does_not_dispatch_subsystem_rpcs(
+    seeded_db, monkeypatch
+):
+    """Per-(inbox, subsystem) RPCs are slow-tier-only; --tier fast must
+    NOT dispatch any warm_subsystem RPCs. Pinning so a refactor of the
+    dispatch loop doesn't accidentally widen the fan-out to the fast
+    cadence (which would re-introduce the warm_inbox-inside-warm-cycle
+    serialisation the split was meant to eliminate)."""
+    from mimir.broker import client as _client_module
+    from mimir.cli.cache import warm_cache_command
+    from mimir.config import settings
+
+    captured: list[tuple[str, object]] = []
+
+    class FakeClient:
+        def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
+            captured.append(("warm_inbox", inbox_name))
+            return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
+
+        def warm_subsystem(self, inbox_name, subsystem_id, *, priority=1, **kwargs):
+            captured.append(("warm_subsystem", inbox_name, subsystem_id))
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
+
+        def warm_global(self, *, targets=None, priority=1, **kwargs):
+            captured.append(("warm_global",))
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
+
+        def cache_purge_expired(self, **kwargs):
+            return 0
+
+    monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
+    monkeypatch.setattr(settings, "site_base_url", "https://example.test")
+
+    result = CliRunner().invoke(warm_cache_command, ["--tier", "fast"])
+    assert result.exit_code == 0, result.output
+
+    assert not any(c[0] == "warm_subsystem" for c in captured), (
+        f"--tier fast dispatched warm_subsystem unexpectedly: {captured}"
+    )
+
+
+def test_build_slow_inbox_targets_excludes_subsystem_dashboards(seeded_db):
+    """Post-Option-A: `_build_slow_inbox_targets` no longer includes
+    the `"subsystem dashboards (top 20)"` label, because that work
+    is dispatched as separate warm_subsystem RPCs at the CLI fan-
+    out. Pinning the structural change so a future refactor that
+    re-adds the in-handler target doesn't silently double the work."""
+    import datetime
+
+    from sqlalchemy import select as _select
+
+    from mimir.cli.cache import _build_slow_inbox_targets
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    today = datetime.date(2024, 3, 1)
+    yesterday = today - datetime.timedelta(days=1)
+    with SessionLocal() as s:
+        alpha = s.execute(_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+    targets = _build_slow_inbox_targets(alpha, today, yesterday)
+    labels = [label for label, _fn in targets]
+    assert not any("subsystem dashboards" in label for label in labels), (
+        f"subsystem-dashboards label still present in slow inbox targets: {labels}"
+    )

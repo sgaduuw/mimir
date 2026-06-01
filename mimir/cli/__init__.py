@@ -64,6 +64,7 @@ from mimir.cli.cache import (
     warm_cache_command,
 )
 from mimir.cli.devseed import dev_seed_thread_command
+from mimir.cli.doctor import doctor_command
 from mimir.cli.ingest import (
     _push_indexnow,
     ingest_command,
@@ -109,6 +110,7 @@ __all__ = [
     "backfill_article_trailers_command",
     "backfill_patch_series_command",
     "dev_seed_thread_command",
+    "doctor_command",
     "ingest_command",
     "init_db_command",
     "register_cli",
@@ -138,6 +140,7 @@ def register_cli(app: Flask) -> None:
     app.cli.add_command(vacuum_command)
     app.cli.add_command(analyze_command)
     app.cli.add_command(dev_seed_thread_command)
+    app.cli.add_command(doctor_command)
     app.cli.add_command(admin_group)
 
 

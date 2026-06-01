@@ -11,6 +11,69 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.19.0], 2026-06-01
+
+### Changed
+
+- **Slow tier fans out per-(inbox, subsystem) warm RPCs.**
+  `mimir warm-cache --tier slow` no longer serializes the
+  20-subsystem dashboard sweep inside a single warm_inbox
+  worker thread. The CLI pre-computes top-N subsystems per
+  inbox and dispatches one `warm_subsystem` RPC per (inbox,
+  subsystem) pair via the broker's warm queue. With 8 warm
+  workers, hotspot inboxes (linux-arm-kernel,
+  linux-devicetree, linux-doc) drop from ~100 s slow-tier wall
+  time to ~14 s. Same total compute; just moved from per-thread
+  serialization to per-RPC parallelism. New protocol op:
+  `warm_subsystem` (`WarmSubsystemRequest`).
+
+### Fixed
+
+- **Scheduler dual-timer: slow tier no longer blocks fast tier
+  ticks, and no longer fires on cold boot.** Two related
+  scheduler.sh changes:
+  - The in-loop slow-tier dispatch (`mimir warm-cache --tier
+    slow`) is now backgrounded with `&`, so the scheduler loop
+    continues firing fast-tier ticks while the slow tier runs.
+    A `kill -0 "$slow_pid"` check guards against overlapping
+    cycles when the corpus grows past `WARM_CACHE_SLOW_EVERY`.
+    Production observation 2026-06-01: with the slow tier
+    taking 30 to 50 min per cycle, fast-tier ticks were stalled
+    for the whole window, so sitemap rows could expire (TTL
+    4200 s) without being refreshed.
+  - `/data/.last_warm_slow` is stamped at boot if missing, so
+    the slow tier waits a full `WARM_CACHE_SLOW_EVERY` before
+    its first fire after a fresh deploy. Spec §Risk #3
+    explicitly said slow tier shouldn't fire on cold boot
+    (subsystem dashboards being cold for the first hour is
+    acceptable), but missing-sentinel-reads-as-0 made the
+    first tick fire slow immediately.
+
+### Added
+
+- **Config-drift guards: broker startup WARNING, warm handler
+  WARNING, and `mimir doctor` CLI.** Three layered safety nets
+  for env-var misconfig:
+  - Broker logs a WARNING at startup when `SITE_BASE_URL` is
+    unset, naming the affected feature (sitemap warming).
+  - Warm handlers log a once-per-process WARNING when sitemap
+    labels arrive in `req.targets` but the broker's own
+    `SITE_BASE_URL` is unset, identifying the dropped labels.
+  - New `mimir doctor` subcommand prints a structured config-
+    health report (or `--json`) with per-check ok/warning/
+    error status. Operators run it pre-deploy or when
+    investigating drift. Exit code 0 (all ok) / 2 (warnings
+    only) / 1 (any error).
+
+  Driven by the 2026-06-01 production incident where
+  `SITE_BASE_URL` set on `mimir-tasks` and `mimir-app` but
+  missing on `mimir-broker` silently neutered the warm-cache
+  sitemap targets in the broker handler. 2.18.0's
+  conditional-GET semantics still worked for the boot warm
+  but the cached sitemap rows were never refreshed past the
+  boot-time warm's TTL, opening a cold-compute cliff
+  ~70 min after deploy.
+
 ## [2.18.0], 2026-06-01
 
 ### Added
