@@ -28,6 +28,7 @@ from mimir.broker.protocol import (
     Reply,
     WarmGlobalRequest,
     WarmInboxRequest,
+    WarmSubsystemRequest,
 )
 from mimir.cache import refresh_window, ttl_extension
 from mimir.config import settings
@@ -43,6 +44,55 @@ logger = logging.getLogger(__name__)
 # hit by ad-hoc / test callers that omit the kwarg. Kept module-level
 # so tests can monkey-patch.
 WARM_REFRESH_WITHIN_SEC = 450
+
+
+# Config-drift guard (Layer 2): once-per-process flag for the
+# sitemap-labels-but-no-SITE_BASE_URL WARNING. A misconfigured broker
+# sees ~200 warm RPCs per scheduler fast-tier tick, each of which
+# would otherwise log the same WARNING; gating on a module-level flag
+# keeps the signal visible without flooding the log. Resets on broker
+# restart (the operator who fixes the env will restart anyway, so the
+# warning fires once on the next misconfigured boot if it persists).
+# Tests reset this between cases via monkeypatch.
+_SITEMAP_GAP_LOGGED: bool = False
+
+
+def _maybe_warn_sitemap_targets_dropped(req_targets) -> None:
+    """One-shot WARNING when an RPC asks for sitemap labels but the
+    broker's own SITE_BASE_URL is unset. Paired with Layer 1's
+    startup WARNING: that one fires unconditionally at boot, this one
+    fires when the misconfig actually drops requested work (i.e. the
+    scheduler started routing sitemap warm RPCs into a broker that
+    can't serve them).
+
+    Guards:
+    - `req_targets is None` means "every target", which lets the
+      local target builder skip sitemap entries silently. No warning
+      needed there; the count discrepancy is implicit and Layer 1's
+      startup warning already named the affected feature.
+    - No sitemap: labels in req_targets → nothing to warn about.
+    - SITE_BASE_URL set → no drift; happy path.
+    - Already logged once → silent (the misconfig persists for the
+      lifetime of this process; one log line per boot is enough).
+    """
+    global _SITEMAP_GAP_LOGGED
+    if _SITEMAP_GAP_LOGGED:
+        return
+    if req_targets is None:
+        return
+    if not any(t.startswith("sitemap:") for t in req_targets):
+        return
+    if (settings.site_base_url or "").strip():
+        return
+    logger.warning(
+        "broker warm handler: sitemap labels requested in this RPC "
+        "(targets=[%s]) but SITE_BASE_URL is unset on the broker; "
+        "sitemap rows will not be refreshed. Set SITE_BASE_URL in the "
+        "broker container's environment. Suppressing further warnings "
+        "for the lifetime of this process.",
+        ", ".join(t for t in req_targets if t.startswith("sitemap:")),
+    )
+    _SITEMAP_GAP_LOGGED = True
 
 
 def _run_targets(
@@ -156,6 +206,8 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
     from mimir.cli.cache import _build_inbox_targets
     from mimir.models import Inbox
 
+    _maybe_warn_sitemap_targets_dropped(req.targets)
+
     with _context.get_active_pool().session() as session:
         inbox = session.execute(
             select(Inbox).where(Inbox.name == req.inbox_name)
@@ -185,6 +237,90 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
     )
 
 
+def handle_warm_subsystem(req: WarmSubsystemRequest) -> Reply:
+    """Per-(inbox, subsystem) warm. Replaces the serial inner loop of
+    `_warm_subsystem_dashboards` for the case where the slow-tier CLI
+    fans out one RPC per (inbox, subsystem) at the dispatch site.
+
+    The work delegates to `mimir.cli.cache._per_subsystem_warm_call`
+    so the dispatch shape stays single-source-of-truth with the
+    in-handler `_warm_subsystem_dashboards` path (which calls the
+    same helper). The whole sequence runs under `refresh_window` +
+    `ttl_extension` per `req.priority`, matching `handle_warm_inbox`
+    / `handle_warm_global` semantics.
+
+    Production motivation 2026-06-01: linux-arm-kernel's slow-tier
+    warm cycle took ~111 s wall time, ~107 s of which was the
+    internal 20-subsystem dashboard loop. With 8 broker warm
+    workers, per-subsystem fan-out drops this hotspot to
+    ~107 s / 8 ~= 14 s.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from mimir.cli.cache import _per_subsystem_warm_call
+    from mimir.models import Inbox, Subsystem
+
+    if req.priority == 0:
+        window_sec = settings.warm_cache_fast_refresh_window_sec
+    else:
+        window_sec = settings.warm_cache_slow_refresh_window_sec
+
+    t0 = time.perf_counter()
+    warmed: list[str] = []
+    errors: list[str] = []
+    sub_name_for_log: str = "?"
+    with (
+        refresh_window(window_sec),
+        ttl_extension(window_sec),
+        _context.get_active_pool().session() as session,
+    ):
+        inbox = session.execute(
+            select(Inbox).where(Inbox.name == req.inbox_name)
+        ).scalar_one_or_none()
+        if inbox is None:
+            return Reply(ok=False, error=f"UnknownInbox:{req.inbox_name}")
+        sub = session.execute(
+            select(Subsystem)
+            .options(selectinload(Subsystem.paths))
+            .where(Subsystem.id == req.subsystem_id)
+        ).scalar_one_or_none()
+        if sub is None:
+            return Reply(ok=False, error=f"UnknownSubsystem:{req.subsystem_id}")
+        sub_name_for_log = sub.name
+        try:
+            warmed_labels = _per_subsystem_warm_call(session, inbox, sub)
+            warmed.extend(warmed_labels)
+        except Exception as exc:
+            logger.warning(
+                "broker warm: warm_subsystem(%s, %s) failed: %r",
+                req.inbox_name,
+                sub.name,
+                exc,
+            )
+            errors.append(f"{inbox.name}/{sub.name}: {exc!r}")
+
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    if elapsed_ms >= settings.broker_slow_rpc_warn_ms:
+        logger.warning(
+            "broker warm slow [warm_subsystem] %s/%s: %dms total; warmed=%d errors=%d",
+            req.inbox_name,
+            sub_name_for_log,
+            elapsed_ms,
+            len(warmed),
+            len(errors),
+        )
+
+    return Reply(
+        ok=True,
+        result={
+            "warmed": warmed,
+            "elapsed_ms": elapsed_ms,
+            "errors": errors,
+        },
+    )
+
+
 def handle_warm_global(req: WarmGlobalRequest) -> Reply:
     """Warm the cross-inbox aggregators (`most_active_subsystems_global`
     + sitemap index/meta when `SITE_BASE_URL` is set). Caller is
@@ -203,6 +339,8 @@ def handle_warm_global(req: WarmGlobalRequest) -> Reply:
     aggregator.
     """
     from mimir.cli.cache import _build_global_targets
+
+    _maybe_warn_sitemap_targets_dropped(req.targets)
 
     sitemap_base = (settings.site_base_url or "").rstrip("/")
     targets = _build_global_targets(sitemap_base)

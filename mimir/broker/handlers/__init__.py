@@ -71,6 +71,7 @@ from mimir.broker.handlers.maintenance import (
 from mimir.broker.handlers.warm import (
     handle_warm_global,
     handle_warm_inbox,
+    handle_warm_subsystem,
 )
 from mimir.broker.protocol import (
     AnalyzeRequest,
@@ -102,6 +103,7 @@ from mimir.broker.protocol import (
     VacuumRequest,
     WarmGlobalRequest,
     WarmInboxRequest,
+    WarmSubsystemRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,6 +147,7 @@ LONG_OPS: frozenset[str] = frozenset(
 WARM_OPS: frozenset[str] = frozenset(
     {
         "warm_inbox",
+        "warm_subsystem",
         "warm_global",
     }
 )
@@ -211,6 +214,7 @@ _DISPATCH: dict[str, tuple[type, Callable]] = {
     "robots_remove": (RobotsRemoveRequest, handle_robots_remove),
     "robots_reset": (RobotsResetRequest, handle_robots_reset),
     "warm_inbox": (WarmInboxRequest, handle_warm_inbox),
+    "warm_subsystem": (WarmSubsystemRequest, handle_warm_subsystem),
     "warm_global": (WarmGlobalRequest, handle_warm_global),
 }
 

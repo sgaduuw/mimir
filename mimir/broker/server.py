@@ -771,6 +771,24 @@ def build_server(socket_path: Path) -> _BrokerServer:
     _migrate_if_needed(sp)
     _bootstrap_inboxes_if_needed(sp)
     _post_migrate_analyze_if_needed(sp)
+    # Config-drift guard (Layer 1): the broker can serve every non-
+    # sitemap surface with SITE_BASE_URL unset, but the sitemap warm
+    # targets (sitemap:index, sitemap:meta, sitemap:inbox:*) silently
+    # become no-ops because `_build_global_targets("")` returns an
+    # empty list when the base URL is missing. Surface that the
+    # moment the broker comes up so an operator reading `podman logs
+    # mimir-broker` sees it, rather than discovering the cliff
+    # later when cached sitemap rows age out without ever refreshing.
+    # Driven by the 2026-06-01 production incident where SITE_BASE_URL
+    # was set on mimir-tasks and mimir-app but missing on
+    # mimir-broker. Don't fail-fast: non-sitemap surfaces still work.
+    if not (settings.site_base_url or "").strip():
+        logger.warning(
+            "broker startup: SITE_BASE_URL is unset; sitemap warming "
+            "(sitemap:index, sitemap:meta, sitemap:inbox:*) will be a "
+            "no-op because the broker can't derive the canonical base URL. "
+            "Set SITE_BASE_URL in the broker container's environment."
+        )
     logger.info("broker: listening on %s", sp)
     return server
 
