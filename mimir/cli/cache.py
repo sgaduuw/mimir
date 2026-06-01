@@ -10,13 +10,14 @@ per-inbox cache rows instead of re-doing the underlying SQL.
 
 import os
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import click
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from mimir import cache as cache_mod
+from mimir.config import settings
 from mimir.dashboard import (
     archive_stats,
     author_recent,
@@ -385,7 +386,20 @@ def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
         "Pass 1 to disable parallelism when debugging."
     ),
 )
-def warm_cache_command(verbose: int, workers: int | None) -> None:
+@click.option(
+    "--tier",
+    type=click.Choice(["fast", "slow", "all"]),
+    default="all",
+    help=(
+        "Which warm tier to refresh. 'fast' covers sitemaps + a "
+        "handful of cheap front-page helpers, suitable for a "
+        "per-minute scheduler tick. 'slow' covers subsystem "
+        "dashboards + per-tracker + the rest, suitable for a "
+        "per-hour tick. 'all' (the default) preserves today's "
+        "single-tier behaviour for ad-hoc operator runs."
+    ),
+)
+def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
     """Recompute and cache the slow dashboard queries for every inbox.
 
     Designed to run from cron or a systemd timer. Refreshes the
@@ -405,6 +419,50 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
     worker_count = workers if workers is not None else min(os.cpu_count() or 1, 8)
     total_start = time.perf_counter()
 
+    # Per-tier target-label resolution. The flag drives `targets=`
+    # filtering on each warm_inbox / warm_global RPC: fast = the
+    # cheap helpers the per-minute scheduler tick refreshes; slow =
+    # the heavy subsystem dashboards + tracker + per-day reads the
+    # per-hour tick refreshes; all = no targets= filter, broker
+    # handler runs the full target list (today's shape, back-compat
+    # for operator ad-hoc invocations). Labels are extracted from
+    # the (label, fn) tuples produced by the per-tier builders;
+    # only the labels matter on the CLI side because the broker
+    # handler re-derives the callables from the inbox name.
+    sitemap_base = settings.site_base_url or ""
+    if tier == "fast":
+
+        def per_inbox_targets(inbox):
+            return [
+                label
+                for label, _ in _build_fast_inbox_targets(
+                    inbox, sitemap_base=sitemap_base
+                )
+            ]
+
+        global_targets: list[str] | None = [
+            label for label, _ in _build_fast_global_targets(sitemap_base=sitemap_base)
+        ]
+    elif tier == "slow":
+        # threads_for_day's cache key includes the date; compute
+        # today / yesterday once so both per-inbox labels carry
+        # the same cycle's dates.
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+
+        def per_inbox_targets(inbox):
+            return [
+                label for label, _ in _build_slow_inbox_targets(inbox, today, yesterday)
+            ]
+
+        global_targets = [label for label, _ in _build_slow_global_targets()]
+    else:  # "all"
+
+        def per_inbox_targets(inbox):
+            return None  # signal "full list" to the broker handler
+
+        global_targets = None
+
     # Fan out warm_inbox RPCs in parallel, then fire warm_global
     # once the per-inbox fan-out drains. The broker's N warm-workers
     # chew through the jobs concurrently. The CLI-side ThreadPool is
@@ -416,7 +474,12 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
     total_keys = 0
     try:
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
-            futures = {pool.submit(client.warm_inbox, name): name for name in inboxes}
+            futures = {
+                pool.submit(
+                    client.warm_inbox, name, targets=per_inbox_targets(inbox)
+                ): name
+                for name, inbox in inboxes.items()
+            }
             for fut in as_completed(futures):
                 name = futures[fut]
                 result = fut.result()
@@ -430,7 +493,15 @@ def warm_cache_command(verbose: int, workers: int | None) -> None:
                         + (f" (errors: {len(errors)})" if errors else "")
                     )
         # Global Phase B after the per-inbox fan-out drains.
-        global_result = client.warm_global()
+        # Only pass `targets=` when a non-None list narrows the
+        # dispatch; otherwise call with no kwargs to stay compatible
+        # with `BrokerClient.warm_global`'s current signature (the
+        # `targets=` kwarg on the broker side lands in a later task,
+        # see Task 5).
+        if global_targets is not None:
+            global_result = client.warm_global(targets=global_targets)
+        else:
+            global_result = client.warm_global()
         total_keys += len(global_result.get("warmed", []))
         if verbose:
             click.echo(
