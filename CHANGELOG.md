@@ -11,6 +11,26 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- **WriterThread engine now inherits the shared `_sqlite_pragmas`
+  registration.** `mimir/broker/writes.py::WriterThread._run`
+  creates its own engine via `create_engine(self._database_url)`;
+  until this fix, that engine had no `connect`-event listener
+  attached, so every PRAGMA the shared engine sets up
+  (`foreign_keys=ON`, `synchronous=NORMAL`,
+  `analysis_limit=4000`, `busy_timeout`) was missing on writer
+  connections. Surfaced during Phase 5 when `delete_inbox`'s
+  `DELETE FROM inboxes` quietly stopped cascading to
+  `article_lists` and `ingest_state` (FK CASCADE relies on
+  `PRAGMA foreign_keys=ON`); a per-closure workaround in
+  `delete_inbox` was the temporary fix. This change attaches
+  `mimir.extensions._sqlite_pragmas` as a `connect` listener on
+  the writer engine and removes the per-closure workaround.
+  Latent perf wins on commit fsync (synchronous=NORMAL vs FULL)
+  and ANALYZE lock-hold (`analysis_limit=4000` vs unbounded)
+  also apply now. Test: `test_writer_thread_engine_has_sqlite_pragmas_set`.
+
 ### Changed
 
 - **Broker two-pool restructure, Phase 5 (admin ops migration).**
