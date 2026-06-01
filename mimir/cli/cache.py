@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from mimir import cache as cache_mod
 from mimir.config import settings
+from mimir.extensions import SessionLocal
 from mimir.dashboard import (
     archive_stats,
     author_recent,
@@ -127,19 +128,17 @@ def _build_slow_inbox_targets(
 
     Includes: active_threads, threads_for_day (today + yesterday),
     daily_volume, this_day_in_history, most_active_subsystems_in_inbox,
-    the per-subsystem dashboards fan-out, and the per-tracker pairs
-    (dashboard tile + per-author atom feed) from inbox.tracked_authors.
+    and the per-tracker pairs (dashboard tile + per-author atom feed)
+    from inbox.tracked_authors. NOT included: the per-subsystem
+    dashboard fan-out. That work moved out into separate
+    `warm_subsystem` RPCs dispatched at the slow-tier CLI fan-out
+    (Option A, 2026-06-01) so the per-(inbox, subsystem) compute
+    parallelises across the broker's N warm workers rather than
+    serialising inside a single worker thread's `warm_inbox` body.
 
     `today` / `yesterday` are passed explicitly because the cache key
     for `threads_for_day` includes the date; the scheduler computes
     them once per cycle to keep both inbox-level calls aligned.
-
-    Splitting the per-inbox subsystem-dashboard target out into N
-    per-subsystem tasks was considered (and rejected) in the 1.37.0
-    design: the four helpers per subsystem are small individually
-    but commit through the broker's writer-lock funnel anyway, so
-    coalescing them into one task keeps the queue depth manageable
-    without changing wall time.
     """
     targets: list[tuple[str, object]] = [
         (
@@ -171,18 +170,13 @@ def _build_slow_inbox_targets(
             f"{inbox.name} most_active_subsystems_in_inbox (7d)",
             lambda s, ib=inbox: most_active_subsystems_in_inbox(s, ib, days=7),
         ),
-        # Per-subsystem dashboard helpers, top-N most active
-        # subsystems only. Coarse-grained: one warm target per
-        # inbox covering 4 helpers × top-N subsystems internally.
-        # Long-tail subsystems pay one cold load per hour.
-        (
-            f"{inbox.name} subsystem dashboards (top {WARM_TOP_SUBSYSTEMS_PER_INBOX})",
-            lambda s, ib=inbox: _warm_subsystem_dashboards(
-                s,
-                ib,
-                WARM_TOP_SUBSYSTEMS_PER_INBOX,
-            ),
-        ),
+        # The "subsystem dashboards (top 20)" target moved out into
+        # per-(inbox, subsystem) `warm_subsystem` RPCs dispatched by
+        # the slow-tier CLI fan-out (Option A, 2026-06-01). Keeping
+        # it here would double-do the work and re-serialise the
+        # inner loop inside a single warm_inbox worker thread, which
+        # was the production hotspot
+        # (linux-arm-kernel ~107 s out of a ~111 s slow-tier).
     ]
     for label, substr in (inbox.tracked_authors or {}).items():
         # Dashboard tracker tile (limit=5) AND per-author atom
@@ -288,6 +282,68 @@ def _build_global_targets(
     return _build_fast_global_targets(sitemap_base) + _build_slow_global_targets()
 
 
+def _per_subsystem_warm_call(
+    session,
+    inbox: Inbox,
+    sub: Subsystem,
+) -> list[str]:
+    """Run the four dashboard helpers + triage queues + reviewer warmups
+    for one (inbox, subsystem) pair, returning the list of warmed labels
+    for the broker handler's reply payload.
+
+    Mirrors the per-subsystem inner body of `_warm_subsystem_dashboards`
+    exactly so cache keys match the route call sites: same helper args,
+    same `SUBSYSTEM_RECENT_PATCHES_LIMIT` / `REVIEWS_PER_PAGE_LIMIT`
+    constants, same reviewer dedup. This is the broker handler's entry
+    point for `warm_subsystem` (per-(inbox, subsystem) RPC dispatched
+    at the slow-tier CLI fan-out), and the helper that
+    `_warm_subsystem_dashboards` now delegates its per-subsystem body
+    to. Single source of truth keeps the warm shape consistent across
+    the in-handler path and the CLI fan-out path.
+    """
+    warmed: list[str] = []
+    recent_articles_in_subsystem(
+        session,
+        inbox,
+        sub,
+        limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+    )
+    warmed.append(f"{inbox.name}/{sub.name} recent_articles_in_subsystem")
+    active_threads_in_subsystem(session, inbox, sub, days=7, limit=10)
+    warmed.append(f"{inbox.name}/{sub.name} active_threads_in_subsystem")
+    daily_volume_in_subsystem(session, inbox, sub, days=30)
+    warmed.append(f"{inbox.name}/{sub.name} daily_volume_in_subsystem")
+    # Triage queues (#209). Same arg shape as the route call site so
+    # the cache key matches; keeping them here preserves what the slow
+    # tier warmed pre-Option-A.
+    needs_attention_patches_in_subsystem(session, inbox, sub, limit=10)
+    warmed.append(f"{inbox.name}/{sub.name} needs_attention_patches_in_subsystem")
+    quiet_patches_in_subsystem(session, inbox, sub, limit=10)
+    warmed.append(f"{inbox.name}/{sub.name} quiet_patches_in_subsystem")
+    reviewers = active_reviewers_in_subsystem(
+        session,
+        inbox,
+        sub,
+        days=30,
+        limit=10,
+    )
+    warmed.append(f"{inbox.name}/{sub.name} active_reviewers_in_subsystem")
+    for r in reviewers or []:
+        # Arguments must match the `reviewer_view` route call site in
+        # `mimir/web/routes/search.py` (limit = REVIEWS_PER_PAGE_LIMIT)
+        # or the cache key diverges and the warmed row never hits.
+        articles_reviewed_by(
+            session,
+            inbox,
+            r.address_normalized,
+            limit=REVIEWS_PER_PAGE_LIMIT,
+        )
+        warmed.append(
+            f"{inbox.name}/{sub.name} articles_reviewed_by:{r.address_normalized}"
+        )
+    return warmed
+
+
 def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
     """Pre-warm the per-subsystem dashboard helpers AND the per-reviewer
     pages each one surfaces, for the top-N most active subsystems in
@@ -326,47 +382,16 @@ def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
         .all()
     )
     sub_by_id = {s.id: s for s in subs}
-    reviewer_addrs: set[str] = set()
     for row in top:
         sub = sub_by_id.get(row.id)
         if sub is None:
             continue
-        # `refresh_window` is active in the calling context; each of
-        # these falls through to a no-op when the cached row is far
-        # from expiry.
-        recent_articles_in_subsystem(
-            session,
-            inbox,
-            sub,
-            limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
-        )
-        active_threads_in_subsystem(session, inbox, sub, days=7, limit=10)
-        daily_volume_in_subsystem(session, inbox, sub, days=30)
-        # Triage queues (#209). Same arg shape as the route call
-        # site so the cache key matches.
-        needs_attention_patches_in_subsystem(session, inbox, sub, limit=10)
-        quiet_patches_in_subsystem(session, inbox, sub, limit=10)
-        # Collect addresses so we can warm the per-reviewer page each
-        # one links to from this subsystem's "Active reviewers" list.
-        for r in active_reviewers_in_subsystem(
-            session,
-            inbox,
-            sub,
-            days=30,
-            limit=10,
-        ):
-            reviewer_addrs.add(r.address_normalized)
-    # Warm articles_reviewed_by for each unique reviewer surfaced
-    # above. Arguments must match the `reviewer_view` route call site
-    # in `mimir/web/routes/search.py` (limit = REVIEWS_PER_PAGE_LIMIT)
-    # or the cache key diverges and the warmed row never hits.
-    for addr in reviewer_addrs:
-        articles_reviewed_by(
-            session,
-            inbox,
-            addr,
-            limit=REVIEWS_PER_PAGE_LIMIT,
-        )
+        # `refresh_window` is active in the calling context; each
+        # helper invocation inside `_per_subsystem_warm_call` falls
+        # through to a no-op when the cached row is far from expiry.
+        # Delegating keeps the per-subsystem warm shape single-
+        # sourced with the `warm_subsystem` broker handler's body.
+        _per_subsystem_warm_call(session, inbox, sub)
 
 
 @click.command("warm-cache")
@@ -469,28 +494,64 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
     # (Task 5 of the fast/slow tier split, spec §2 §5).
     priority_for_tier = {"fast": 0, "slow": 1, "all": 1}[tier]
 
-    # Fan out warm_inbox RPCs in parallel, then fire warm_global
-    # once the per-inbox fan-out drains. The broker's N warm-workers
-    # chew through the jobs concurrently. The CLI-side ThreadPool is
-    # just a fan-out + collect pattern; no work runs in this process
-    # beyond JSON encode/decode.
+    # Slow tier ONLY: pre-compute the top-N most-active subsystems per
+    # inbox so the CLI can fan out one `warm_subsystem` RPC per
+    # (inbox, subsystem) pair alongside the per-inbox warm_inbox RPCs.
+    # This is Option A from the 2026-06-01 design: turn the previously
+    # serial inner loop of `_warm_subsystem_dashboards` into N parallel
+    # broker-queue jobs. With 8 broker warm workers, linux-arm-kernel's
+    # slow-tier wall time drops from ~111 s to roughly the per-inbox-
+    # cheap targets time + (107 s / 8) ~= 14 s of subsystem work.
+    #
+    # Read-only query in the CLI's own session; bounded at
+    # WARM_TOP_SUBSYSTEMS_PER_INBOX (20). The lookup runs once per
+    # warm-cycle, not per RPC, so the cost is amortised.
+    per_inbox_subsystem_ids: dict[str, list[int]] = {}
+    if tier == "slow":
+        with SessionLocal() as s:
+            for ib in inboxes.values():
+                top = most_active_subsystems_in_inbox(
+                    s, ib, days=7, limit=WARM_TOP_SUBSYSTEMS_PER_INBOX
+                )
+                per_inbox_subsystem_ids[ib.name] = [row.id for row in (top or [])]
+
+    # Fan out warm_inbox RPCs (and warm_subsystem RPCs on the slow
+    # tier) in parallel, then fire warm_global once the per-inbox fan-
+    # out drains. The broker's N warm-workers chew through the jobs
+    # concurrently. The CLI-side ThreadPool is just a fan-out + collect
+    # pattern; no work runs in this process beyond JSON encode/decode.
     from mimir.broker.client import BrokerUnavailable, get_broker_client
 
     client = get_broker_client()
     total_keys = 0
     try:
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
-            futures = {
-                pool.submit(
-                    client.warm_inbox,
-                    name,
-                    targets=per_inbox_targets(inbox),
-                    priority=priority_for_tier,
-                ): name
-                for name, inbox in inboxes.items()
-            }
+            # Each future is tagged with (kind, label) so the result
+            # accounting can attribute per-inbox vs per-subsystem
+            # outcomes correctly and the verbose output can name what
+            # finished.
+            futures: dict = {}
+            for name, inbox in inboxes.items():
+                futures[
+                    pool.submit(
+                        client.warm_inbox,
+                        name,
+                        targets=per_inbox_targets(inbox),
+                        priority=priority_for_tier,
+                    )
+                ] = ("warm_inbox", name)
+                if tier == "slow":
+                    for sub_id in per_inbox_subsystem_ids.get(name, []):
+                        futures[
+                            pool.submit(
+                                client.warm_subsystem,
+                                name,
+                                sub_id,
+                                priority=priority_for_tier,
+                            )
+                        ] = ("warm_subsystem", f"{name}:{sub_id}")
             for fut in as_completed(futures):
-                name = futures[fut]
+                kind, label = futures[fut]
                 result = fut.result()
                 warmed = result.get("warmed", [])
                 errors = result.get("errors", [])
@@ -498,7 +559,8 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
                 total_keys += len(warmed)
                 if verbose:
                     click.echo(
-                        f"{name}: {len(warmed)} keys warmed in {elapsed_ms} ms"
+                        f"{kind} {label}: {len(warmed)} keys warmed in "
+                        f"{elapsed_ms} ms"
                         + (f" (errors: {len(errors)})" if errors else "")
                     )
         # Global Phase B after the per-inbox fan-out drains. Task 5
