@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.17.0], 2026-06-01
+
 ### Fixed
 
 - **Sitemap routes now carry `Last-Modified` and honour
