@@ -424,6 +424,45 @@ def set_tracked_authors(
     invalidate any existing key, orphan rows age out via TTL.
     """
     cleaned = validate_tracked_authors(authors)
+
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from sqlalchemy import update as sa_update
+
+        from mimir.broker.writes import WriteOp
+
+        def _fn(conn):
+            row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
+            if row is None:
+                raise InboxNotFound(f"no inbox named {name!r}")
+            conn.execute(
+                sa_update(Inbox)
+                .where(Inbox.name == name)
+                .values(tracked_authors=cleaned)
+            )
+            # Re-fetch to get the post-update state. The row mapping
+            # includes all columns so we can construct a detached
+            # instance mirroring what the legacy path's expunge returns.
+            updated = conn.execute(select(Inbox).where(Inbox.name == name)).one()
+            return Inbox(**dict(updated._mapping))
+
+        result = writer.submit(
+            WriteOp(label=f"inbox:set_tracked_authors:{name}", fn=_fn)
+        ).result(timeout=30)
+        # Refresh the nav-name cache outside the closure. The closure
+        # receives a Connection, not a Session; _publish_names requires
+        # a Session. refresh_inbox_names opens its own short-lived
+        # SessionLocal (Decision 10 from the Phase 5 plan).
+        refresh_inbox_names()
+        return result
+
+    # Legacy fallback path (no broker context active).
     with SessionLocal() as session:
         inbox = session.execute(
             select(Inbox).where(Inbox.name == name)
@@ -433,6 +472,7 @@ def set_tracked_authors(
         inbox.tracked_authors = cleaned
         session.commit()
         session.refresh(inbox)
+        _publish_names(session)
         session.expunge(inbox)
     return inbox
 
