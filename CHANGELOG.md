@@ -11,6 +11,70 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.17.0], 2026-06-01
+
+### Fixed
+
+- **Sitemap routes now carry `Last-Modified` and honour
+  `If-Modified-Since`.** `/sitemap.xml`, `/meta-sitemap.xml`, and
+  `/<inbox>/sitemap.xml` each set a `Last-Modified` header derived
+  from the sitemap's most-recent content date (per-inbox latest for
+  the per-inbox sitemap; global latest for the index + meta), and
+  return `304 Not Modified` on a conditional GET whose
+  `If-Modified-Since` covers that date. Without these headers,
+  Google had no cheap way to know the sitemap had changed and
+  deprioritised re-fetching, so a fresh ingest could sit
+  un-reindexed for hours. The cached payload now carries
+  `(body, last_modified)` together via a new `SitemapPayload`
+  dataclass so the body and the header date stay in sync across
+  cache reads. Test coverage:
+  `test_sitemap_xml_carries_last_modified_header`,
+  `test_meta_sitemap_xml_carries_last_modified_header`,
+  `test_inbox_sitemap_xml_carries_last_modified_header`,
+  `test_sitemap_xml_returns_304_when_if_modified_since_matches`,
+  `test_inbox_sitemap_xml_returns_304_when_if_modified_since_matches`,
+  `test_sitemap_xml_returns_200_when_if_modified_since_is_older`.
+
+- **WriterThread engine now inherits the shared `_sqlite_pragmas`
+  registration.** `mimir/broker/writes.py::WriterThread._run`
+  creates its own engine via `create_engine(self._database_url)`;
+  until this fix, that engine had no `connect`-event listener
+  attached, so every PRAGMA the shared engine sets up
+  (`foreign_keys=ON`, `synchronous=NORMAL`,
+  `analysis_limit=4000`, `busy_timeout`) was missing on writer
+  connections. Surfaced during Phase 5 when `delete_inbox`'s
+  `DELETE FROM inboxes` quietly stopped cascading to
+  `article_lists` and `ingest_state` (FK CASCADE relies on
+  `PRAGMA foreign_keys=ON`); a per-closure workaround in
+  `delete_inbox` was the temporary fix. This change attaches
+  `mimir.extensions._sqlite_pragmas` as a `connect` listener on
+  the writer engine and removes the per-closure workaround.
+  Latent perf wins on commit fsync (synchronous=NORMAL vs FULL)
+  and ANALYZE lock-hold (`analysis_limit=4000` vs unbounded)
+  also apply now. Test: `test_writer_thread_engine_has_sqlite_pragmas_set`.
+
+### Changed
+
+- **Broker two-pool restructure, Phase 5 (admin ops migration).**
+  The 12 broker admin RPC handlers (3 inbox CRUD, 4 tracker
+  mutators, 4 robots CRUD, 1 failures replay) no longer write
+  inline via the service layer's `SessionLocal()` (and
+  `write_transaction()` for the four robots functions). Each
+  service-layer function in `mimir/inboxes.py`, `mimir/robots.py`,
+  and `mimir/ingest/replay.py::replay_failures` now dispatches
+  via the active `WriterThread` when a broker context is set;
+  falls back to the legacy `SessionLocal()` path for non-broker
+  callers (tests, `bootstrap_inboxes`, dev scripts). The
+  `_INBOX_NAMES` nav-cache refresh moves outside the writer
+  closure (via the existing `refresh_inbox_names()` helper after
+  `future.result()`) because the closure receives a Connection
+  while `_publish_names` needs a Session. The two-call-chain
+  functions (`add_tracked_author`, `remove_tracked_author`) fold
+  into a single closure on the writer path. After Phase 5 only
+  the broker's periodic purge timer thread still writes outside
+  the WriterThread (Phase 6 cleanup). Same RPC contract, same
+  `Reply.result` shapes, no env-var or CLI surface change.
+
 ## [2.16.0], 2026-05-31
 
 ### Changed

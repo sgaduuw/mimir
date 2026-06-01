@@ -151,10 +151,64 @@ def add_rule(
 ) -> RobotsRule:
     """Insert one new RobotsRule. Raises RobotsValidationError if the
     user-agent already has a row (use `update_rule` instead)."""
+    # Validation runs before the dispatch fork so it raises consistently
+    # regardless of which write path is taken.
     ua = validate_user_agent(user_agent)
     paths = [validate_disallow_path(p) for p in (disallow or [])]
     delay = validate_crawl_delay(crawl_delay)
     signals = validate_content_signals(content_signals)
+
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        # Writer-thread path: no write_transaction() wrapper because
+        # the WriterThread uses its own engine (Decision 12 from plan).
+        # The closure runs the same SQL as the legacy block, but via
+        # the writer's conn.
+        from sqlalchemy import select as sa_select
+
+        from mimir.broker.writes import WriteOp
+
+        disallow_paths_val = paths or None
+        content_signals_val = signals or None
+
+        def _fn(conn):
+            existing = conn.execute(
+                sa_select(RobotsRule).where(RobotsRule.user_agent == ua)
+            ).first()
+            if existing is not None:
+                raise RobotsValidationError(
+                    f"user_agent {ua!r} already has a rule; use update"
+                )
+            conn.execute(
+                sqlite_insert(RobotsRule).values(
+                    user_agent=ua,
+                    crawl_delay=delay,
+                    disallow_paths=disallow_paths_val,
+                    content_signals=content_signals_val,
+                )
+            )
+            # Return a detached RobotsRule instance mirroring the legacy
+            # expunged object. Values are known from input; no RETURNING
+            # needed.
+            return RobotsRule(
+                user_agent=ua,
+                crawl_delay=delay,
+                disallow_paths=disallow_paths_val,
+                content_signals=content_signals_val,
+            )
+
+        return writer.submit(WriteOp(label=f"robots:add:{ua}", fn=_fn)).result(
+            timeout=30
+        )
+
+    # Legacy fallback path (no broker context active, e.g. direct CLI
+    # invocations or tests that deliberately clear the context).
     with write_transaction(f"robots:add:{ua}"), SessionLocal() as session:
         if session.get(RobotsRule, ua) is not None:
             raise RobotsValidationError(
@@ -213,6 +267,81 @@ def update_rule(
         raise RobotsValidationError(
             "clear_all_content_signals is mutually exclusive with set/clear"
         )
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        # Writer-thread path: compose the same mutations as the legacy block
+        # inside a closure, executed on the writer's conn. The closure re-
+        # selects the current row, applies the same in-memory mutation logic,
+        # then issues an UPDATE via Core so the writer's engine is used.
+        from sqlalchemy import update as sa_update
+        from sqlalchemy import select as sa_select
+
+        from mimir.broker.writes import WriteOp
+
+        def _fn(conn):
+            row = conn.execute(
+                sa_select(RobotsRule).where(RobotsRule.user_agent == ua)
+            ).first()
+            if row is None:
+                raise RobotsRuleNotFound(f"no rule for user_agent {ua!r}")
+
+            # Apply path mutations against the current stored value.
+            cur_paths = list(row.disallow_paths or [])
+            for p in adds:
+                if p not in cur_paths:
+                    cur_paths.append(p)
+            if removes:
+                cur_paths = [p for p in cur_paths if p not in removes]
+            new_paths = cur_paths or None
+
+            # Apply crawl-delay mutation.
+            if clear_crawl_delay:
+                new_delay = None
+            elif delay is not None:
+                new_delay = delay
+            else:
+                new_delay = row.crawl_delay
+
+            # Apply content-signal mutations.
+            if clear_all_content_signals:
+                new_signals = None
+            else:
+                sig_dict = dict(row.content_signals or {})
+                if set_signals:
+                    sig_dict.update(set_signals)
+                for k in clear_content_signal or []:
+                    sig_dict.pop(k, None)
+                new_signals = sig_dict or None
+
+            conn.execute(
+                sa_update(RobotsRule)
+                .where(RobotsRule.user_agent == ua)
+                .values(
+                    disallow_paths=new_paths,
+                    crawl_delay=new_delay,
+                    content_signals=new_signals,
+                )
+            )
+            # Return a detached RobotsRule instance mirroring the legacy
+            # expunged object. Values are known from the mutation results.
+            return RobotsRule(
+                user_agent=ua,
+                crawl_delay=new_delay,
+                disallow_paths=new_paths,
+                content_signals=new_signals,
+            )
+
+        return writer.submit(WriteOp(label=f"robots:update:{ua}", fn=_fn)).result(
+            timeout=30
+        )
+
+    # Legacy fallback path.
     with write_transaction(f"robots:update:{ua}"), SessionLocal() as session:
         rule = session.get(RobotsRule, ua)
         if rule is None:
@@ -252,6 +381,27 @@ def remove_rule(user_agent: str) -> None:
         raise RobotsValidationError(
             "cannot remove the '*' stanza; use reset to restore defaults"
         )
+
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from mimir.broker.writes import WriteOp
+
+        def _fn(conn):
+            result = conn.execute(delete(RobotsRule).where(RobotsRule.user_agent == ua))
+            if result.rowcount == 0:
+                raise RobotsRuleNotFound(f"no rule for user_agent {ua!r}")
+            return None
+
+        writer.submit(WriteOp(label=f"robots:remove:{ua}", fn=_fn)).result(timeout=30)
+        return
+
+    # Legacy fallback path.
     with write_transaction(f"robots:remove:{ua}"), SessionLocal() as session:
         result = session.execute(delete(RobotsRule).where(RobotsRule.user_agent == ua))
         if result.rowcount == 0:
@@ -280,6 +430,32 @@ _DEFAULT_STAR_CONTENT_SIGNALS: dict[str, str] = {
 
 def reset_rules() -> None:
     """Drop every row and re-seed the `*` stanza with the defaults."""
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from mimir.broker.writes import WriteOp
+
+        def _fn(conn):
+            conn.execute(delete(RobotsRule))
+            conn.execute(
+                sqlite_insert(RobotsRule).values(
+                    user_agent="*",
+                    crawl_delay=_DEFAULT_STAR_CRAWL_DELAY,
+                    disallow_paths=list(_DEFAULT_STAR_DISALLOW),
+                    content_signals=dict(_DEFAULT_STAR_CONTENT_SIGNALS),
+                )
+            )
+            return None
+
+        writer.submit(WriteOp(label="robots:reset", fn=_fn)).result(timeout=30)
+        return
+
+    # Legacy fallback path.
     with write_transaction("robots:reset"), SessionLocal() as session:
         session.execute(delete(RobotsRule))
         session.execute(
