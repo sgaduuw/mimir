@@ -45,6 +45,55 @@ logger = logging.getLogger(__name__)
 WARM_REFRESH_WITHIN_SEC = 450
 
 
+# Config-drift guard (Layer 2): once-per-process flag for the
+# sitemap-labels-but-no-SITE_BASE_URL WARNING. A misconfigured broker
+# sees ~200 warm RPCs per scheduler fast-tier tick, each of which
+# would otherwise log the same WARNING; gating on a module-level flag
+# keeps the signal visible without flooding the log. Resets on broker
+# restart (the operator who fixes the env will restart anyway, so the
+# warning fires once on the next misconfigured boot if it persists).
+# Tests reset this between cases via monkeypatch.
+_SITEMAP_GAP_LOGGED: bool = False
+
+
+def _maybe_warn_sitemap_targets_dropped(req_targets) -> None:
+    """One-shot WARNING when an RPC asks for sitemap labels but the
+    broker's own SITE_BASE_URL is unset. Paired with Layer 1's
+    startup WARNING: that one fires unconditionally at boot, this one
+    fires when the misconfig actually drops requested work (i.e. the
+    scheduler started routing sitemap warm RPCs into a broker that
+    can't serve them).
+
+    Guards:
+    - `req_targets is None` means "every target", which lets the
+      local target builder skip sitemap entries silently. No warning
+      needed there; the count discrepancy is implicit and Layer 1's
+      startup warning already named the affected feature.
+    - No sitemap: labels in req_targets → nothing to warn about.
+    - SITE_BASE_URL set → no drift; happy path.
+    - Already logged once → silent (the misconfig persists for the
+      lifetime of this process; one log line per boot is enough).
+    """
+    global _SITEMAP_GAP_LOGGED
+    if _SITEMAP_GAP_LOGGED:
+        return
+    if req_targets is None:
+        return
+    if not any(t.startswith("sitemap:") for t in req_targets):
+        return
+    if (settings.site_base_url or "").strip():
+        return
+    logger.warning(
+        "broker warm handler: sitemap labels requested in this RPC "
+        "(targets=[%s]) but SITE_BASE_URL is unset on the broker; "
+        "sitemap rows will not be refreshed. Set SITE_BASE_URL in the "
+        "broker container's environment. Suppressing further warnings "
+        "for the lifetime of this process.",
+        ", ".join(t for t in req_targets if t.startswith("sitemap:")),
+    )
+    _SITEMAP_GAP_LOGGED = True
+
+
 def _run_targets(
     targets,
     *,
@@ -156,6 +205,8 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
     from mimir.cli.cache import _build_inbox_targets
     from mimir.models import Inbox
 
+    _maybe_warn_sitemap_targets_dropped(req.targets)
+
     with _context.get_active_pool().session() as session:
         inbox = session.execute(
             select(Inbox).where(Inbox.name == req.inbox_name)
@@ -203,6 +254,8 @@ def handle_warm_global(req: WarmGlobalRequest) -> Reply:
     aggregator.
     """
     from mimir.cli.cache import _build_global_targets
+
+    _maybe_warn_sitemap_targets_dropped(req.targets)
 
     sitemap_base = (settings.site_base_url or "").rstrip("/")
     targets = _build_global_targets(sitemap_base)

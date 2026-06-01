@@ -605,3 +605,161 @@ def test_run_targets_default_priority_is_slow(seeded_db, monkeypatch):
     warm_module._run_targets([])
     assert ("refresh_window", 1234) in captured
     assert ("ttl_extension", 1234) in captured
+
+
+# ----- Config-drift Layer 2: sitemap labels with SITE_BASE_URL unset -------
+#
+# When the scheduler routes sitemap labels into a broker whose
+# SITE_BASE_URL is empty, the handler builds a target list that
+# drops sitemap entries silently (`_build_global_targets("")` and
+# `_build_fast_global_targets("")` return [] when the base is unset).
+# The handler emits a once-per-process WARNING so the operator sees
+# the drift in `podman logs mimir-broker`. The flag resets on broker
+# restart, so a persistent misconfig fires the warning once per
+# boot.
+
+
+def test_warm_global_logs_sitemap_gap_warning_when_site_base_unset(
+    seeded_db, caplog, monkeypatch
+):
+    """warm_global with sitemap labels in req.targets but
+    SITE_BASE_URL empty triggers a one-line WARNING from the
+    warm handler module."""
+    import logging as _logging
+
+    from mimir.broker.handlers import warm as warm_module
+    from mimir.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "site_base_url", "")
+    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", False)
+    caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
+
+    reply = warm_module.handle_warm_global(
+        WarmGlobalRequest(targets=["sitemap:index"], priority=0)
+    )
+    assert reply.ok is True
+
+    gap_warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == _logging.WARNING
+        and "sitemap labels requested" in r.getMessage()
+    ]
+    assert gap_warnings, (
+        "expected a sitemap-gap WARNING; got "
+        f"{[r.getMessage() for r in caplog.records]}"
+    )
+    msg = gap_warnings[0].getMessage()
+    assert "sitemap:index" in msg
+    assert "SITE_BASE_URL" in msg
+
+
+def test_warm_global_sitemap_gap_warning_fires_once_per_process(
+    seeded_db, caplog, monkeypatch
+):
+    """The WARNING is gated on a module-level flag so 200 warm RPCs
+    per scheduler tick do not flood the log. A second call with the
+    same misconfig logs nothing."""
+    import logging as _logging
+
+    from mimir.broker.handlers import warm as warm_module
+    from mimir.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "site_base_url", "")
+    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", False)
+    caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
+
+    # First call: WARNING fires.
+    warm_module.handle_warm_global(
+        WarmGlobalRequest(targets=["sitemap:index"], priority=0)
+    )
+    first_count = sum(
+        1 for r in caplog.records if "sitemap labels requested" in r.getMessage()
+    )
+    assert first_count == 1
+
+    # Second call with the same args: no NEW WARNING.
+    warm_module.handle_warm_global(
+        WarmGlobalRequest(targets=["sitemap:index"], priority=0)
+    )
+    second_count = sum(
+        1 for r in caplog.records if "sitemap labels requested" in r.getMessage()
+    )
+    assert second_count == 1, "second RPC should not log a second sitemap-gap WARNING"
+
+
+def test_warm_global_no_gap_warning_when_site_base_set(seeded_db, caplog, monkeypatch):
+    """Happy path: SITE_BASE_URL set, sitemap targets requested, no
+    gap WARNING. The runtime path runs the targets normally."""
+    import logging as _logging
+
+    from mimir.broker.handlers import warm as warm_module
+    from mimir.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "site_base_url", "https://example.com")
+    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", False)
+    caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
+
+    warm_module.handle_warm_global(
+        WarmGlobalRequest(targets=["sitemap:index"], priority=0)
+    )
+    gap_warnings = [
+        r for r in caplog.records if "sitemap labels requested" in r.getMessage()
+    ]
+    assert not gap_warnings
+
+
+def test_warm_global_no_gap_warning_when_targets_none(seeded_db, caplog, monkeypatch):
+    """targets=None means "all targets"; the local target builder
+    skips sitemap entries silently when SITE_BASE_URL is unset, and
+    the count discrepancy is implicit. No per-RPC WARNING in that
+    case; the broker startup WARNING (Layer 1) already named the
+    affected feature."""
+    import logging as _logging
+
+    from mimir.broker.handlers import warm as warm_module
+    from mimir.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "site_base_url", "")
+    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", False)
+    caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
+
+    warm_module.handle_warm_global(WarmGlobalRequest(targets=None, priority=1))
+    gap_warnings = [
+        r for r in caplog.records if "sitemap labels requested" in r.getMessage()
+    ]
+    assert not gap_warnings
+
+
+def test_warm_inbox_logs_sitemap_gap_warning_when_site_base_unset(
+    seeded_db, caplog, monkeypatch
+):
+    """Same gating applies to handle_warm_inbox: sitemap labels in
+    req.targets with SITE_BASE_URL unset fires the once-per-process
+    WARNING."""
+    import logging as _logging
+
+    from mimir.broker.handlers import warm as warm_module
+    from mimir.broker.protocol import WarmInboxRequest
+    from mimir.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "site_base_url", "")
+    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", False)
+    caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
+
+    reply = warm_module.handle_warm_inbox(
+        WarmInboxRequest(
+            inbox_name="alpha",
+            targets=["sitemap:inbox:alpha"],
+            priority=0,
+        )
+    )
+    assert reply.ok is True
+
+    gap_warnings = [
+        r
+        for r in caplog.records
+        if "sitemap labels requested" in r.getMessage()
+    ]
+    assert gap_warnings, "expected a sitemap-gap WARNING from handle_warm_inbox"
+    assert "sitemap:inbox:alpha" in gap_warnings[0].getMessage()
