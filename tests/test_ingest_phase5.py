@@ -207,3 +207,52 @@ def test_reset_rules_dispatches_via_writer(seeded_db, broker_active):
     assert "phase5-reset-survivor-1" not in remaining
     assert "phase5-reset-survivor-2" not in remaining
     assert "*" in remaining, "reset_rules must reseed the default star rule"
+
+
+def test_replay_failures_dispatches_via_writer(seeded_db, broker_active):
+    """Phase 5 contract: `mimir.ingest.replay.replay_failures` dispatches
+    via the active WriterThread when broker context is set. The function
+    only writes when there are actual failures to process; seed one
+    ParseFailure row first so the loop runs."""
+    from sqlalchemy import insert, select
+
+    from mimir.ingest.replay import replay_failures
+    from mimir.models import Inbox, ParseFailure
+
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        s.execute(
+            insert(ParseFailure).values(
+                inbox_id=alpha.id,
+                epoch="0.git",
+                commit_sha="0" * 40,
+                error_class="TestError",
+                error_message="phase5 contract test seed",
+                first_seen=now,
+                last_attempt=now,
+                attempts=1,
+            )
+        )
+        s.commit()
+        # Detach the inbox so replay_failures' session.merge() works as
+        # in production (the broker handler passes a freshly-fetched
+        # Inbox).
+        s.expunge(alpha)
+
+    _, submits = _writer_submit_recorder()
+    # replay_failures with default kwargs will read the seeded
+    # ParseFailure, fail to fetch its blob (the commit_sha doesn't
+    # exist in the mirror), bump the last_seen_at + seen_count, and
+    # commit. The dispatch path must fire at least one WriteOp.
+    replay_failures(alpha, limit=10)
+
+    assert len(submits) >= 1, (
+        "replay_failures must dispatch at least one WriteOp when "
+        "broker context is active"
+    )
+    assert submits[0].label == "failures_replay", (
+        "WriteOp label should be 'failures_replay'"
+    )
