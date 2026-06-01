@@ -11,6 +11,28 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- **Broker two-pool restructure, Phase 5 (admin ops migration).**
+  The 12 broker admin RPC handlers (3 inbox CRUD, 4 tracker
+  mutators, 4 robots CRUD, 1 failures replay) no longer write
+  inline via the service layer's `SessionLocal()` (and
+  `write_transaction()` for the four robots functions). Each
+  service-layer function in `mimir/inboxes.py`, `mimir/robots.py`,
+  and `mimir/ingest/replay.py::replay_failures` now dispatches
+  via the active `WriterThread` when a broker context is set;
+  falls back to the legacy `SessionLocal()` path for non-broker
+  callers (tests, `bootstrap_inboxes`, dev scripts). The
+  `_INBOX_NAMES` nav-cache refresh moves outside the writer
+  closure (via the existing `refresh_inbox_names()` helper after
+  `future.result()`) because the closure receives a Connection
+  while `_publish_names` needs a Session. The two-call-chain
+  functions (`add_tracked_author`, `remove_tracked_author`) fold
+  into a single closure on the writer path. After Phase 5 only
+  the broker's periodic purge timer thread still writes outside
+  the WriterThread (Phase 6 cleanup). Same RPC contract, same
+  `Reply.result` shapes, no env-var or CLI surface change.
+
 ## [2.16.0], 2026-05-31
 
 ### Changed
