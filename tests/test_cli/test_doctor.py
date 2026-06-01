@@ -175,7 +175,9 @@ def test_doctor_json_output_shape(runner, seeded_db, monkeypatch, tmp_path):
     assert site_row["remediation"]
 
 
-def test_doctor_indexnow_unset_is_ok_not_warning(runner, seeded_db, monkeypatch, tmp_path):
+def test_doctor_indexnow_unset_is_ok_not_warning(
+    runner, seeded_db, monkeypatch, tmp_path
+):
     """INDEXNOW_KEY is intentionally optional. An unset key reports
     info ("not set; IndexNow disabled"), not a warning; the exit
     code is unaffected by its absence."""

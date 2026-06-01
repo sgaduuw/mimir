@@ -757,9 +757,7 @@ def test_warm_inbox_logs_sitemap_gap_warning_when_site_base_unset(
     assert reply.ok is True
 
     gap_warnings = [
-        r
-        for r in caplog.records
-        if "sitemap labels requested" in r.getMessage()
+        r for r in caplog.records if "sitemap labels requested" in r.getMessage()
     ]
     assert gap_warnings, "expected a sitemap-gap WARNING from handle_warm_inbox"
     assert "sitemap:inbox:alpha" in gap_warnings[0].getMessage()
