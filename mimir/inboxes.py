@@ -297,6 +297,69 @@ def update_inbox(
     if upstream_url is not None:
         upstream_url = validate_upstream_url(upstream_url)
 
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from sqlalchemy import update as sa_update
+
+        from mimir.broker.writes import WriteOp
+
+        # Track rename state so cache bust can fire after result() returns.
+        _rename_info: dict = {}
+
+        def _fn(conn):
+            row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
+            if row is None:
+                raise InboxNotFound(f"no inbox named {name!r}")
+
+            old_name_val = row.name
+            effective_name = old_name_val
+            values: dict = {}
+
+            if new_name is not None and new_name != old_name_val:
+                collision = conn.execute(
+                    select(Inbox).where(Inbox.name == new_name)
+                ).first()
+                if collision is not None:
+                    raise InboxValidationError(f"inbox {new_name!r} already exists")
+                values["name"] = new_name
+                effective_name = new_name
+                # Signal the outer scope about the rename so the cache
+                # bust can fire after result() returns (Decision 10).
+                _rename_info["old"] = old_name_val
+
+            if mirror_path is not None:
+                values["mirror_path"] = mirror_path
+            if upstream_url is not None:
+                values["upstream_url"] = upstream_url
+
+            if values:
+                conn.execute(
+                    sa_update(Inbox).where(Inbox.name == name).values(**values)
+                )
+            updated = conn.execute(
+                select(Inbox).where(Inbox.name == effective_name)
+            ).one()
+            return Inbox(**dict(updated._mapping))
+
+        result = writer.submit(WriteOp(label=f"inbox:update:{name}", fn=_fn)).result(
+            timeout=30
+        )
+        refresh_inbox_names()
+        # Drop cached entries that referenced the old name. Cache values
+        # don't depend on mirror_path / upstream_url, so non-rename
+        # updates don't need invalidation. This stays OUTSIDE the closure
+        # because cache.delete_for_inbox is not a DB op (Decision 10).
+        if "old" in _rename_info:
+            cache.delete_for_inbox(_rename_info["old"])
+        return result
+
+    # Legacy fallback path.
     with SessionLocal() as session:
         inbox = session.execute(
             select(Inbox).where(Inbox.name == name)
@@ -323,9 +386,7 @@ def update_inbox(
         _publish_names(session)
         session.expunge(inbox)
 
-    # Drop cached entries that referenced the old name. Cache values
-    # don't depend on mirror_path / upstream_url, so non-rename
-    # updates don't need invalidation.
+    # Drop cached entries that referenced the old name.
     if renamed:
         cache.delete_for_inbox(old_name)
     return inbox

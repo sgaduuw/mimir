@@ -331,3 +331,15 @@ def test_create_inbox_dispatches_via_writer(seeded_db, broker_active):
     assert submits[0].label.startswith("inbox:create:")
     assert inbox.name == "phase5-new"
     assert inbox.mirror_path == "/tmp/phase5-new"
+
+
+def test_update_inbox_dispatches_via_writer(seeded_db, broker_active):
+    """Phase 5 contract: update_inbox dispatches via the writer."""
+    from mimir.inboxes import update_inbox
+
+    _, submits = _writer_submit_recorder()
+    inbox = update_inbox(name="alpha", mirror_path="/tmp/alpha-updated")
+
+    assert len(submits) >= 1, "update_inbox must dispatch at least one WriteOp"
+    assert submits[0].label.startswith("inbox:update:")
+    assert inbox.mirror_path == "/tmp/alpha-updated"
