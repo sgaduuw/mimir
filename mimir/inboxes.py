@@ -235,6 +235,39 @@ def create_inbox(name: str, mirror_path: str, upstream_url: str) -> Inbox:
     mirror_path = validate_mirror_path(mirror_path)
     upstream_url = validate_upstream_url(upstream_url)
 
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from mimir.broker.writes import WriteOp
+
+        def _fn(conn):
+            if (
+                conn.execute(select(Inbox).where(Inbox.name == name)).first()
+                is not None
+            ):
+                raise InboxValidationError(f"inbox {name!r} already exists")
+            conn.execute(
+                sqlite_insert(Inbox).values(
+                    name=name,
+                    mirror_path=mirror_path,
+                    upstream_url=upstream_url,
+                )
+            )
+            row = conn.execute(select(Inbox).where(Inbox.name == name)).one()
+            return Inbox(**dict(row._mapping))
+
+        result = writer.submit(WriteOp(label=f"inbox:create:{name}", fn=_fn)).result(
+            timeout=30
+        )
+        refresh_inbox_names()
+        return result
+
+    # Legacy fallback path.
     with SessionLocal() as session:
         if session.execute(select(Inbox).where(Inbox.name == name)).first() is not None:
             raise InboxValidationError(f"inbox {name!r} already exists")

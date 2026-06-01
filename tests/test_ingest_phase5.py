@@ -314,3 +314,20 @@ def test_clear_tracked_authors_dispatches_via_writer(seeded_db, broker_active):
     # clear_tracked_authors delegates to set_tracked_authors
     assert submits[0].label.startswith("inbox:set_tracked_authors:")
     assert inbox.tracked_authors is None
+
+
+def test_create_inbox_dispatches_via_writer(seeded_db, broker_active):
+    """Phase 5 contract: create_inbox dispatches via the writer."""
+    from mimir.inboxes import create_inbox
+
+    _, submits = _writer_submit_recorder()
+    inbox = create_inbox(
+        name="phase5-new",
+        mirror_path="/tmp/phase5-new",
+        upstream_url="https://example.com/phase5-new",
+    )
+
+    assert len(submits) >= 1, "create_inbox must dispatch at least one WriteOp"
+    assert submits[0].label.startswith("inbox:create:")
+    assert inbox.name == "phase5-new"
+    assert inbox.mirror_path == "/tmp/phase5-new"
