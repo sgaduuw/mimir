@@ -538,7 +538,55 @@ def add_tracked_author(name: str, label: str, substring: str) -> Inbox:
 def remove_tracked_author(name: str, label: str) -> Inbox:
     """Remove one tracker entry by label. Raises InboxValidationError
     if the label isn't present. Removing the last entry leaves the
-    column NULL (no tracker tiles)."""
+    column NULL (no tracker tiles).
+
+    Writer-path folds the legacy two-call chain (get_inbox then
+    set_tracked_authors) into one closure: SELECT current row, remove
+    the label from the dict, single UPDATE.
+    """
+    label = label.strip()
+    if not label:
+        raise InboxValidationError("tracker label must not be empty")
+
+    try:
+        from mimir.broker._context import get_active_writer
+
+        writer = get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from sqlalchemy import update as sa_update
+
+        from mimir.broker.writes import WriteOp
+
+        def _fn(conn):
+            row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
+            if row is None:
+                raise InboxNotFound(f"no inbox named {name!r}")
+            current = dict(row.tracked_authors or {})
+            if label not in current:
+                raise InboxValidationError(
+                    f"inbox {name!r} has no tracker labelled {label!r}"
+                )
+            del current[label]
+            # Empty dict collapses to None (no tracker tiles).
+            cleaned = current or None
+            conn.execute(
+                sa_update(Inbox)
+                .where(Inbox.name == name)
+                .values(tracked_authors=cleaned)
+            )
+            updated = conn.execute(select(Inbox).where(Inbox.name == name)).one()
+            return Inbox(**dict(updated._mapping))
+
+        result = writer.submit(
+            WriteOp(label=f"inbox:remove_tracked_author:{name}", fn=_fn)
+        ).result(timeout=30)
+        refresh_inbox_names()
+        return result
+
+    # Legacy fallback path.
     inbox = get_inbox(name)
     current = dict(inbox.tracked_authors or {})
     if label not in current:
