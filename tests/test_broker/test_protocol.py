@@ -124,3 +124,65 @@ def test_reply_result_field_round_trips():
     parsed2 = Reply.model_validate_json(r2.model_dump_json())
     assert parsed2.result["new"] == 12
     assert parsed2.result["failed"] == 0
+
+
+# Task 5 of the fast/slow tier split (spec §2 §5): `WarmInboxRequest`
+# gains a `priority` field; `WarmGlobalRequest` gains both `priority`
+# and `targets`. Defaults are chosen so existing callers see no
+# behaviour change (`priority=1` slow = today's single-tier shape;
+# `targets=None` = run every target).
+
+
+def test_warm_inbox_request_priority_field_round_trips():
+    """WarmInboxRequest.priority defaults to 1 (slow); 0=fast.
+    JSON round-trips correctly."""
+    from mimir.broker.protocol import WarmInboxRequest
+
+    default = WarmInboxRequest(inbox_name="alpha")
+    assert default.priority == 1
+
+    fast = WarmInboxRequest(inbox_name="alpha", priority=0)
+    assert fast.priority == 0
+
+    raw = fast.model_dump_json()
+    parsed = WarmInboxRequest.model_validate_json(raw)
+    assert parsed.priority == 0
+
+
+def test_warm_inbox_request_priority_rejects_out_of_range():
+    """priority is bounded [0, 1] (two tiers; widening to N requires
+    a deliberate spec change). Anything else is rejected at the
+    wire boundary."""
+    from mimir.broker.protocol import WarmInboxRequest
+
+    with pytest.raises(ValidationError):
+        WarmInboxRequest(inbox_name="alpha", priority=2)
+    with pytest.raises(ValidationError):
+        WarmInboxRequest(inbox_name="alpha", priority=-1)
+
+
+def test_warm_global_request_priority_and_targets_round_trip():
+    """WarmGlobalRequest gains both `priority` (default 1) and
+    `targets` (default None). JSON round-trips."""
+    from mimir.broker.protocol import WarmGlobalRequest
+
+    default = WarmGlobalRequest()
+    assert default.priority == 1
+    assert default.targets is None
+
+    fast_with_targets = WarmGlobalRequest(
+        priority=0, targets=["sitemap:index", "sitemap:meta"]
+    )
+    raw = fast_with_targets.model_dump_json()
+    parsed = WarmGlobalRequest.model_validate_json(raw)
+    assert parsed.priority == 0
+    assert parsed.targets == ["sitemap:index", "sitemap:meta"]
+
+
+def test_warm_global_request_priority_rejects_out_of_range():
+    from mimir.broker.protocol import WarmGlobalRequest
+
+    with pytest.raises(ValidationError):
+        WarmGlobalRequest(priority=2)
+    with pytest.raises(ValidationError):
+        WarmGlobalRequest(priority=-1)

@@ -389,6 +389,7 @@ class BrokerClient:
         inbox_name: str,
         *,
         targets: list[str] | None = None,
+        priority: int = 1,
         timeout: float = 300.0,
     ) -> dict:
         """Phase 2.2 warm op: warm one inbox's cached helpers via
@@ -402,19 +403,33 @@ class BrokerClient:
         every per-inbox helper, which is the warm-cache CLI
         posture.
 
+        `priority` controls broker warm-queue ordering (Task 5 of
+        the fast/slow tier split, spec §2): 0 = fast (sitemap-class;
+        jumps ahead of queued slow items via `queue.PriorityQueue`),
+        1 = slow (default; matches today's single-tier FIFO
+        behaviour for any caller that doesn't set it explicitly).
+
         Default timeout 300 s: typical per-inbox warm finishes in
         seconds on the production corpus; 5 minutes is a generous
         safety net for outliers (e.g. a brand-new inbox's first
         warm where every helper is cold). Routed to the broker's
         N warm-workers so multiple inboxes are warmed concurrently.
         """
-        req = WarmInboxRequest(inbox_name=inbox_name, targets=targets)
+        req = WarmInboxRequest(
+            inbox_name=inbox_name, targets=targets, priority=priority
+        )
         reply = self._rpc(req.model_dump_json(), timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"warm_inbox: {reply.error}")
         return reply.result or {}
 
-    def warm_global(self, *, timeout: float = 300.0) -> dict:
+    def warm_global(
+        self,
+        *,
+        targets: list[str] | None = None,
+        priority: int = 1,
+        timeout: float = 300.0,
+    ) -> dict:
         """Phase 2.2 warm op: warm the cross-inbox aggregators
         (`most_active_subsystems_global` + sitemap index/meta when
         SITE_BASE_URL is set). Caller MUST issue this after every
@@ -422,8 +437,18 @@ class BrokerClient:
         aggregator races a warm-worker still mid-compute. The CLI
         dispatcher in `mimir.cli.cache.warm_cache_command` handles
         this sequencing.
+
+        `targets` (Task 5 of the fast/slow tier split) narrows the
+        global aggregator set to a labelled subset, mirroring
+        `warm_inbox`. None = run every global aggregator (today's
+        shape). The CLI dispatches a narrowed list under
+        `--tier fast` / `--tier slow` so each scheduler cadence
+        only refreshes its own global surfaces.
+
+        `priority` mirrors `warm_inbox.priority`: 0 = fast, 1 = slow
+        (default).
         """
-        req = WarmGlobalRequest()
+        req = WarmGlobalRequest(targets=targets, priority=priority)
         reply = self._rpc(req.model_dump_json(), timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"warm_global: {reply.error}")

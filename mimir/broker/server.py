@@ -51,6 +51,7 @@ its `queue.get(timeout=...)` poll, all exit cleanly.
 import logging
 import os
 import queue
+import re
 import selectors
 import signal
 import socket
@@ -99,6 +100,35 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 # send keepalive pings well inside the window; broker_ping CLI is
 # one-shot.
 IDLE_TIMEOUT_SEC = 300
+
+# Reader-side priority extractor for warm RPCs. Sub-ms per line; the
+# warm queue is a `queue.PriorityQueue` and routing on the wire-side
+# numeric priority is what makes fast-tier RPCs (sitemap-class) dequeue
+# ahead of queued slow-tier ones (Task 5 of the fast/slow tier split,
+# spec §2 §5). Implemented as a small regex against the head of the
+# line rather than full JSON parse so the reader thread stays sub-ms
+# per RPC and never blocks the accept loop's enqueue rate. Falls back
+# to 1 (slow) on missing field / malformed digits, matching the
+# protocol-level default.
+_WARM_PRIORITY_RE = re.compile(rb'"priority"\s*:\s*(\d+)')
+
+
+def _extract_warm_priority(line: bytes) -> int:
+    """Cheaply parse a warm RPC JSONL line for its priority field.
+    Defaults to 1 (slow) when absent, matching the protocol-level
+    default on `WarmInboxRequest` / `WarmGlobalRequest`. Bounded
+    by inspecting only the first 512 bytes of the line; the
+    `priority` field rides up near the front of any well-formed
+    warm request, and capping the search keeps the per-RPC cost
+    bounded regardless of `targets=` payload size."""
+    m = _WARM_PRIORITY_RE.search(line[:512])
+    if m is None:
+        return 1
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return 1
+
 
 # Linux exposes SO_PEERCRED (pid + uid + gid of the peer process) on
 # AF_UNIX sockets via getsockopt. macOS / BSDs have their own (and
@@ -183,9 +213,16 @@ class _BrokerServer(socketserver.UnixStreamServer):
         self.long_queue: "queue.Queue[tuple[bytes, socket.socket, float]]" = (
             queue.Queue()
         )
-        self.warm_queue: "queue.Queue[tuple[bytes, socket.socket, float]]" = (
-            queue.Queue()
-        )
+        # Warm queue is a PriorityQueue so fast-tier RPCs
+        # (priority=0; sitemap-class) jump ahead of queued slow-tier
+        # (priority=1; subsystem dashboards + tracker). Tuple shape:
+        # (priority, enqueued_at, line, sock). The enqueued_at slot
+        # serves both as the slow-RPC queue-wait input AND as the
+        # FIFO tie-breaker between two items at the same priority
+        # (PriorityQueue compares tuples element-wise, so equal
+        # priority falls through to enqueued_at). Task 5 of the
+        # fast/slow tier split (spec §2 §5).
+        self.warm_queue: "queue.PriorityQueue[tuple[int, float, bytes, socket.socket]]" = queue.PriorityQueue()
         self._reader_threads: list[threading.Thread] = []
         self._cache_worker_threads: list[threading.Thread] = []
         self._long_worker_threads: list[threading.Thread] = []
@@ -299,13 +336,21 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     line = bytes(linebuf[:nl])
                     del linebuf[: nl + 1]
                     op = classify_op(line)
+                    enqueued_at = time.perf_counter()
                     if op is not None and op in LONG_OPS:
-                        target = self.long_queue
+                        self.long_queue.put((line, sock, enqueued_at))
                     elif op is not None and op in WARM_OPS:
-                        target = self.warm_queue
+                        # Warm queue is a PriorityQueue; tuple shape
+                        # is (priority, enqueued_at, line, sock).
+                        # Fast-tier RPCs (priority=0) jump ahead of
+                        # queued slow-tier (priority=1); enqueued_at
+                        # is the FIFO tie-breaker within a priority
+                        # class. See `_extract_warm_priority` for the
+                        # sub-ms regex extractor.
+                        priority = _extract_warm_priority(line)
+                        self.warm_queue.put((priority, enqueued_at, line, sock))
                     else:
-                        target = self.cache_queue
-                    target.put((line, sock, time.perf_counter()))
+                        self.cache_queue.put((line, sock, enqueued_at))
         finally:
             sel.close()
             try:
@@ -315,7 +360,7 @@ class _BrokerServer(socketserver.UnixStreamServer):
 
     def _worker_loop(
         self,
-        q: "queue.Queue[tuple[bytes, socket.socket, float]]",
+        q: "queue.Queue",
         worker_tag: str,
     ) -> None:
         """Drain one queue serially. One RPC at a time on this
@@ -324,15 +369,33 @@ class _BrokerServer(socketserver.UnixStreamServer):
         write reply to the originating socket. Slow-RPC WARNING
         fires with queue-wait + dispatch breakdown.
 
-        `worker_tag` tags the slow-RPC log line ("cache" or "long")
-        so operators reading the broker log can tell which queue
-        is contended without inferring it from the op string.
+        `worker_tag` tags the slow-RPC log line ("cache" / "long" /
+        "warm") so operators reading the broker log can tell which
+        queue is contended without inferring it from the op string.
+
+        Queue tuple shapes differ by queue (Task 5):
+
+        - `cache_queue` / `long_queue`: `(line, sock, enqueued_at)`.
+        - `warm_queue` is a PriorityQueue with shape
+          `(priority, enqueued_at, line, sock)`. The first slot is
+          the int priority (0=fast, 1=slow) so PriorityQueue's
+          element-wise tuple compare gives fast items dispatch
+          precedence over slow items at the same `enqueued_at`.
+
+        In-flight slow ops are NOT preempted: once a worker picks
+        an item via `q.get()`, the dispatch runs to completion
+        before the next `get()` returns whatever's on top. Priority
+        is a queue-ordering policy, not a cancellation primitive.
         """
         while not self.stop_event.is_set():
             try:
-                line, sock, enqueued_at = q.get(timeout=SHUTDOWN_POLL_SEC)
+                item = q.get(timeout=SHUTDOWN_POLL_SEC)
             except queue.Empty:
                 continue
+            if q is self.warm_queue:
+                _priority, enqueued_at, line, sock = item
+            else:
+                line, sock, enqueued_at = item
             try:
                 queue_wait_ms = (time.perf_counter() - enqueued_at) * 1000.0
                 t0 = time.perf_counter()
