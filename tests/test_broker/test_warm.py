@@ -440,3 +440,168 @@ def test_handle_warm_global_uses_active_read_pool_session(monkeypatch):
     # so the handler should succeed without falling back to SessionLocal.
     reply = handle_warm_global(WarmGlobalRequest())
     assert reply.ok is True
+
+
+# Task 5 of the fast/slow tier split (spec §2 §5): `_run_targets`
+# selects per-tier `refresh_window` + `ttl_extension` from settings;
+# the handlers pass `priority=req.priority` through. The no-
+# preemption pin captures the load-bearing semantic that a slow op
+# already in flight is NOT cancelled when a fast op queues behind
+# it: priority is a queue-ordering policy, not a cancellation
+# primitive.
+
+
+def test_warm_workers_do_not_preempt_in_flight_slow_op(seeded_db, monkeypatch):
+    """Load-bearing decision pin: once a slow op starts on a worker,
+    a fast op queued behind it does NOT preempt it. The fast op
+    waits for slow to finish, then runs. Strategy: 1 worker,
+    monkey-patch warm handler to sleep 200 ms, fire one slow then
+    one fast, assert slow completes before fast."""
+    import threading
+
+    from mimir.broker import handlers as _handlers
+    from mimir.broker.client import BrokerClient
+    from mimir.broker.handlers.warm import handle_warm_inbox
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "broker_warm_workers", 1)
+
+    def slow_handle(req):
+        time.sleep(0.2)
+        return handle_warm_inbox(req)
+
+    real_entry = _handlers._DISPATCH["warm_inbox"]
+    _handlers._DISPATCH["warm_inbox"] = (real_entry[0], slow_handle)
+    try:
+        sp = short_socket_path("warm-preempt")
+        with broker_running(sp):
+            c_slow = BrokerClient(sp)
+            c_fast = BrokerClient(sp)
+            try:
+                completions: dict[str, float] = {}
+                done = threading.Event()
+
+                def fire_slow():
+                    c_slow.warm_inbox("alpha")  # priority=1 default
+                    completions["slow"] = time.perf_counter()
+                    if "fast" in completions:
+                        done.set()
+
+                def fire_fast():
+                    c_fast.warm_inbox("alpha", priority=0)
+                    completions["fast"] = time.perf_counter()
+                    if "slow" in completions:
+                        done.set()
+
+                t_slow = threading.Thread(target=fire_slow, daemon=True)
+                t_fast = threading.Thread(target=fire_fast, daemon=True)
+                t_slow.start()
+                time.sleep(0.05)  # give slow a head start
+                t_fast.start()
+                done.wait(timeout=3)
+
+                assert "slow" in completions and "fast" in completions
+                assert completions["slow"] < completions["fast"], (
+                    "in-flight slow op should not be preempted; got "
+                    f"slow={completions['slow']:.3f}, fast={completions['fast']:.3f}"
+                )
+            finally:
+                c_slow.close()
+                c_fast.close()
+    finally:
+        _handlers._DISPATCH["warm_inbox"] = real_entry
+
+
+def test_run_targets_applies_fast_tier_window_for_priority_zero(seeded_db, monkeypatch):
+    """`_run_targets(targets, priority=0)` wraps execution in
+    refresh_window(warm_cache_fast_refresh_window_sec) and
+    ttl_extension(warm_cache_fast_refresh_window_sec). Verified
+    by monkey-patching refresh_window + ttl_extension to record
+    the value they're called with."""
+    from contextlib import contextmanager
+
+    from mimir.broker.handlers import warm as warm_module
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "warm_cache_fast_refresh_window_sec", 555)
+
+    captured: list[tuple[str, int | None]] = []
+
+    @contextmanager
+    def fake_refresh_window(seconds):
+        captured.append(("refresh_window", seconds))
+        yield
+
+    @contextmanager
+    def fake_ttl_extension(seconds):
+        captured.append(("ttl_extension", seconds))
+        yield
+
+    monkeypatch.setattr(warm_module, "refresh_window", fake_refresh_window)
+    monkeypatch.setattr(warm_module, "ttl_extension", fake_ttl_extension)
+
+    # No-op target list so the for-loop exits without running anything.
+    warm_module._run_targets([], priority=0)
+    assert ("refresh_window", 555) in captured
+    assert ("ttl_extension", 555) in captured
+
+
+def test_run_targets_applies_slow_tier_window_for_priority_one(seeded_db, monkeypatch):
+    """Mirror: priority=1 uses warm_cache_slow_refresh_window_sec."""
+    from contextlib import contextmanager
+
+    from mimir.broker.handlers import warm as warm_module
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "warm_cache_slow_refresh_window_sec", 999)
+
+    captured: list[tuple[str, int | None]] = []
+
+    @contextmanager
+    def fake_refresh_window(seconds):
+        captured.append(("refresh_window", seconds))
+        yield
+
+    @contextmanager
+    def fake_ttl_extension(seconds):
+        captured.append(("ttl_extension", seconds))
+        yield
+
+    monkeypatch.setattr(warm_module, "refresh_window", fake_refresh_window)
+    monkeypatch.setattr(warm_module, "ttl_extension", fake_ttl_extension)
+
+    warm_module._run_targets([], priority=1)
+    assert ("refresh_window", 999) in captured
+    assert ("ttl_extension", 999) in captured
+
+
+def test_run_targets_default_priority_is_slow(seeded_db, monkeypatch):
+    """`_run_targets(targets)` without an explicit priority uses
+    the slow-tier window. Back-compat for ad-hoc / test callers
+    that omit the kwarg; the handlers always pass `priority=req.priority`
+    so this fallback path is only exercised in isolation."""
+    from contextlib import contextmanager
+
+    from mimir.broker.handlers import warm as warm_module
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "warm_cache_slow_refresh_window_sec", 1234)
+
+    captured: list[tuple[str, int | None]] = []
+
+    @contextmanager
+    def fake_refresh_window(seconds):
+        captured.append(("refresh_window", seconds))
+        yield
+
+    @contextmanager
+    def fake_ttl_extension(seconds):
+        captured.append(("ttl_extension", seconds))
+        yield
+
+    monkeypatch.setattr(warm_module, "refresh_window", fake_refresh_window)
+    monkeypatch.setattr(warm_module, "ttl_extension", fake_ttl_extension)
+
+    warm_module._run_targets([])
+    assert ("refresh_window", 1234) in captured
+    assert ("ttl_extension", 1234) in captured
