@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [2.18.0], 2026-06-01
+
 ### Added
 
 - **`BROKER_CACHE_WORKERS` and `BROKER_LONG_WORKERS` env knobs.**
