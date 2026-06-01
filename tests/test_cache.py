@@ -860,8 +860,9 @@ def test_refresh_window_recomputes_when_near_expiry():
     key = "xtest-refresh-near-expiry"
     with SessionLocal() as s:
         s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
-        # 60 s of TTL remaining, but the window asks for "anything
-        # within 300 s of expiry", so recompute.
+        # 60 s of remaining TTL out of a 3600 s nominal: the row is
+        # deep in the deterministic insurance zone (remaining < window),
+        # so the probabilistic classifier returns True every tick.
         s.add(
             CacheEntry(
                 key=_ns(key),
@@ -880,7 +881,10 @@ def test_refresh_window_recomputes_when_near_expiry():
 
     try:
         with SessionLocal() as s, refresh_window(300):
-            out = get_or_compute(s, key, ttl=60, fn=compute)
+            # ttl=3600 matches what the original caller would have
+            # stored; remaining 60 << window 300 puts us in the
+            # DETERMINISTIC band of the cache_warm classifier.
+            out = get_or_compute(s, key, ttl=3600, fn=compute)
         assert out == "fresh"
         assert calls == 1, "near-expiry row inside refresh_window must recompute"
     finally:
@@ -1294,3 +1298,122 @@ def test_cache_set_falls_back_to_inline_when_no_active_writer(seeded_db):
     finally:
         if saved_pool is not None and saved_writer is not None:
             _context.set_active(saved_pool, saved_writer)
+
+
+def test_ttl_extension_context_extends_stored_ttl(seeded_db):
+    """`ttl_extension(seconds)` causes `cache.set` to store
+    `expires_at = now + ttl + seconds`. The context manager scopes
+    the effect; outside the block, `set` stores nominal TTL only."""
+    import time
+
+    from sqlalchemy import delete, select
+
+    from mimir import cache
+    from mimir.cache import ttl_extension
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        s.commit()
+
+    # Without extension: stored TTL = nominal.
+    cache.set("test:no_extension", "v1", ttl=100)
+    with SessionLocal() as s:
+        row = s.execute(
+            select(CacheEntry).where(CacheEntry.key.like("%test:no_extension"))
+        ).scalar_one()
+        remaining = row.expires_at - time.time()
+        assert 95 <= remaining <= 100
+
+    # With extension: stored TTL = nominal + extension.
+    with ttl_extension(600):
+        cache.set("test:with_extension", "v1", ttl=100)
+    with SessionLocal() as s:
+        row = s.execute(
+            select(CacheEntry).where(CacheEntry.key.like("%test:with_extension"))
+        ).scalar_one()
+        remaining = row.expires_at - time.time()
+        assert 695 <= remaining <= 700  # 100 nominal + 600 extension
+
+
+def test_ttl_extension_context_clears_on_exit(seeded_db):
+    """After exiting the `ttl_extension` context, `cache.set`
+    reverts to storing nominal TTL only."""
+    import time
+
+    from sqlalchemy import delete, select
+
+    from mimir import cache
+    from mimir.cache import ttl_extension
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        s.commit()
+
+    with ttl_extension(600):
+        pass  # do nothing; just open + close the context
+    cache.set("test:after_exit", "v1", ttl=100)
+    with SessionLocal() as s:
+        row = s.execute(
+            select(CacheEntry).where(CacheEntry.key.like("%test:after_exit"))
+        ).scalar_one()
+        remaining = row.expires_at - time.time()
+        assert 95 <= remaining <= 100
+
+
+def test_get_or_compute_window_check_is_probabilistic_when_refresh_within_active(
+    seeded_db, monkeypatch
+):
+    """Inside `refresh_window(window_sec)`, `get_or_compute` uses
+    the cache_warm classifier instead of the deterministic "if
+    remaining < window, recompute" check. Verified by monkey-
+    patching `cache_warm.should_refresh` and confirming the result
+    is honoured."""
+    from sqlalchemy import delete
+
+    from mimir import cache
+    from mimir.cache import refresh_window
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        s.commit()
+
+    # Seed a cache row with a known TTL.
+    cache.set("test:probabilistic", "v1", ttl=3600)
+
+    # Inside a refresh_window, monkey-patch should_refresh to
+    # always return True; expect get_or_compute to call fn()
+    # and overwrite with v2.
+    from mimir import cache_warm
+
+    monkeypatch.setattr(cache_warm, "should_refresh", lambda **kw: True)
+
+    with SessionLocal() as s:
+        with refresh_window(600):
+            value = cache.get_or_compute(
+                session=s,
+                key="test:probabilistic",
+                ttl=3600,
+                fn=lambda: "v2",
+            )
+        # should_refresh returned True → fn was called → v2 returned.
+        assert value == "v2"
+
+    # And the other direction: should_refresh False → cached value
+    # returned unchanged.
+    monkeypatch.setattr(cache_warm, "should_refresh", lambda **kw: False)
+    with SessionLocal() as s:
+        with refresh_window(600):
+            value = cache.get_or_compute(
+                session=s,
+                key="test:probabilistic",
+                ttl=3600,
+                fn=lambda: "v3",
+            )
+        # should_refresh returned False → cached v2 returned.
+        assert value == "v2"
