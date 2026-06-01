@@ -30,6 +30,43 @@ changes, not internal refactors. Categories: **Added**,
   `test_start_workers_honors_per_queue_settings`,
   `test_start_workers_single_worker_keeps_bare_label`.
 
+### Changed
+
+- **Warm-cache split into fast and slow tiers with priority-queue
+  routing.** `mimir warm-cache` gains a `--tier {fast,slow,all}`
+  flag; the scheduler invokes fast on the per-minute cadence
+  (covering sitemaps + archive_stats + latest_pull_requests +
+  latest_stable_releases + recent_articles) and slow on a
+  per-hour cadence (covering subsystem dashboards + per-tracker
+  queries + the rest). The broker's `warm_queue` migrates from
+  `queue.Queue` to `queue.PriorityQueue`: fast-tier RPCs
+  (priority=0) dequeue before slow-tier RPCs (priority=1) already
+  queued, but in-flight slow ops are not preempted. New
+  scheduler env vars: `WARM_CACHE_SLOW_EVERY` (default 3600 s).
+  `WARM_CACHE_EVERY` keeps its meaning (drives the fast tier)
+  and remains an alias for the new `WARM_CACHE_FAST_EVERY`.
+  Pydantic settings: `warm_cache_fast_every` (default 60),
+  `warm_cache_slow_every` (default 3600),
+  `warm_cache_fast_refresh_window_sec` (default 600),
+  `warm_cache_slow_refresh_window_sec` (default 7200).
+
+- **Warm-cache cache rows store extended TTL with probabilistic
+  refresh window.** Warm-managed rows now store `TTL = nominal +
+  window_sec` (e.g. a sitemap row stores 4200 s rather than the
+  nominal 3600 s). `mimir.cache.get_or_compute` learns a
+  probabilistic refresh decision via the new
+  `mimir.cache_warm.should_refresh` helper: for `remaining > 2 ×
+  window` the row is served from cache (skip); for
+  `window < remaining ≤ 2 × window` the warm-tick refreshes with
+  probability ramping 0 → 1 across the band (spreads load so 204
+  sibling keys don't all warm on the same tick); for
+  `remaining ≤ window` the warm-tick refreshes deterministically
+  every time (the insurance zone, so the cache row is always
+  overwritten before it expires). Average cached `Last-Modified`
+  staleness on sitemaps goes up by roughly 5 minutes; cold-miss
+  windows on the read path effectively disappear. Spec:
+  `_claude/specs/2026-06-01-warm-cache-fast-slow-tier-split-design.md`.
+
 ## [2.17.0], 2026-06-01
 
 ### Fixed
