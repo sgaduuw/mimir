@@ -134,24 +134,26 @@ class _BrokerServer(socketserver.UnixStreamServer):
     worker thread draining three separate work queues:
 
     - `cache_queue` for cache ops (sub-ms commits). Always-on
-      throughput; the only thing the web tier waits on. **One**
-      worker thread (write ordering matters here).
+      throughput; the only thing the web tier waits on.
+      `broker_cache_workers` workers (default 1, env
+      `BROKER_CACHE_WORKERS`); single-worker default preserves
+      FIFO commit order per submitting client.
     - `long_queue` for long-running ops (`bootstrap_inboxes` in
       Phase 2.0; ingest / backfills / mainline / analyze / vacuum
-      in Phase 2.1+). **One** worker thread; one op at a time can
-      run for minutes.
-    - `warm_queue` for cache warming (Phase 2.2). **N** worker
-      threads (default 4, env `BROKER_WARM_WORKERS`) so the
+      in Phase 2.1+). `broker_long_workers` workers (default 1,
+      env `BROKER_LONG_WORKERS`); long ops funnel at the
+      WriterThread regardless of worker count, so bumping the
+      default rarely improves wall time.
+    - `warm_queue` for cache warming (Phase 2.2). `broker_warm_workers`
+      workers (default 4, env `BROKER_WARM_WORKERS`) so the
       compute phase of warming overlaps across inboxes; cache.set
       commits still funnel through the SQLite writer lock but
       every warm worker has its own session for the read phase.
 
-    The cache + long workers contend for the SQLite writer lock at
-    the SQLite level (via `busy_timeout`); cache writes never wait
-    behind the *whole* long op, just behind the long op's current
-    commit batch. The warm workers add another N entries to that
-    contention pool, but each warm cache.set is short-lived, so
-    they queue cleanly behind any cache op the web tier is firing.
+    All worker threads ultimately funnel their SQLite writes
+    through one WriterThread (Phase 4+), so cross-queue write
+    contention is bounded at the writer rather than at each
+    queue's individual workers.
 
     `daemon_threads = True` so reader / worker threads don't block
     process exit on unclean shutdown.
@@ -185,8 +187,8 @@ class _BrokerServer(socketserver.UnixStreamServer):
             queue.Queue()
         )
         self._reader_threads: list[threading.Thread] = []
-        self._cache_worker_thread: threading.Thread | None = None
-        self._long_worker_thread: threading.Thread | None = None
+        self._cache_worker_threads: list[threading.Thread] = []
+        self._long_worker_threads: list[threading.Thread] = []
         self._warm_worker_threads: list[threading.Thread] = []
         # Phase 1 of the two-pool restructure
         # (_claude/specs/2026-05-29-broker-two-pool-design.md): parallel
@@ -403,39 +405,69 @@ class _BrokerServer(socketserver.UnixStreamServer):
         """Spawn worker threads for each queue. Call once after
         construction (before `serve_forever`).
 
-        Cache and long queues get one worker each (write ordering).
-        Warm queue gets `settings.broker_warm_workers` workers
-        (default 4) so the read-heavy compute phase of warming
-        parallelises across inboxes; cache.set commits still
-        serialise at the SQLite writer lock, but the upstream
-        compute overlaps."""
-        assert self._cache_worker_thread is None, "workers already started"
-        self._cache_worker_thread = threading.Thread(
-            target=self._worker_loop,
-            args=(self.cache_queue, "cache"),
-            daemon=True,
-            name="broker-cache-worker",
-        )
-        self._long_worker_thread = threading.Thread(
-            target=self._worker_loop,
-            args=(self.long_queue, "long"),
-            daemon=True,
-            name="broker-long-worker",
-        )
-        self._cache_worker_thread.start()
-        self._long_worker_thread.start()
-        # Warm workers: N parallel drains of the same queue. One op
-        # at a time per worker; concurrency across workers.
-        warm_n = max(1, settings.broker_warm_workers)
-        for i in range(warm_n):
-            t = threading.Thread(
-                target=self._worker_loop,
-                args=(self.warm_queue, f"warm-{i}"),
-                daemon=True,
-                name=f"broker-warm-worker-{i}",
-            )
-            t.start()
-            self._warm_worker_threads.append(t)
+        Each queue's worker count is operator-tunable via Settings:
+        `broker_cache_workers` (default 1), `broker_long_workers`
+        (default 1), `broker_warm_workers` (default 4). All three
+        share the same `_worker_loop` shape: a thread doing
+        `queue.get()` then dispatch then reply, in a loop. N
+        workers on one queue means N parallel drains.
+
+        Defaults reflect each queue's natural shape, not a hard
+        constraint:
+
+        - **cache**: single-worker default preserves FIFO commit
+          order per submitting client (every cache.set / delete on
+          a given key from a given client lands on the WriterThread
+          in submit order). Bumping to N parallelises the dispatch
+          step but reorders concurrent submits at the WriterThread;
+          safe for mimir's cache.set (idempotent on key,
+          last-writer-wins after TTL) but callers relying on
+          ordering between distinct ops would need the
+          partition-by-key or submit-lock shapes.
+        - **long**: long ops are write-heavy and funnel at the
+          WriterThread anyway, so bumping the worker count rarely
+          improves wall time. The exception is non-trivial pre-write
+          compute phases (batch building, read fan-outs) that can
+          overlap across workers.
+        - **warm**: read-heavy compute (recursive CTEs against the
+          read pool) with a small trailing write; the multi-worker
+          default exploits parallel reads cleanly. Cap is the read
+          pool size (`broker_read_pool_size`).
+
+        Each worker still funnels its actual SQLite writes through
+        the single WriterThread underneath."""
+        assert not self._cache_worker_threads, "workers already started"
+        for queue_attr, count_setting, label_prefix, tracker in (
+            (
+                "cache_queue",
+                settings.broker_cache_workers,
+                "cache",
+                self._cache_worker_threads,
+            ),
+            (
+                "long_queue",
+                settings.broker_long_workers,
+                "long",
+                self._long_worker_threads,
+            ),
+            (
+                "warm_queue",
+                settings.broker_warm_workers,
+                "warm",
+                self._warm_worker_threads,
+            ),
+        ):
+            n = max(1, count_setting)
+            for i in range(n):
+                label = label_prefix if n == 1 else f"{label_prefix}-{i}"
+                t = threading.Thread(
+                    target=self._worker_loop,
+                    args=(getattr(self, queue_attr), label),
+                    daemon=True,
+                    name=f"broker-{label}-worker",
+                )
+                t.start()
+                tracker.append(t)
 
 
 def _check_peer_uid(sock: socket.socket) -> bool:

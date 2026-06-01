@@ -284,6 +284,33 @@ class Settings(BaseSettings):
     # (useful for tests). Override via BROKER_WARM_WORKERS.
     broker_warm_workers: int = 4
 
+    # Number of broker cache-worker threads. Cache ops are sub-ms
+    # dispatches (build the closure, hand off to the WriterThread,
+    # await its result), so a single worker is rarely the funnel
+    # under realistic load. The default 1 also preserves FIFO commit
+    # order per submitting client: every cache.set / delete on a
+    # given key from a given client lands on the WriterThread in
+    # the order it was submitted. Bumping to N>1 parallelises the
+    # dispatch step but reorders the WriterThread submits across
+    # concurrent workers. Safe when callers don't rely on inter-op
+    # ordering, which is the case for mimir's cache.set (idempotent
+    # on key, last-writer-wins after TTL anyway). Override via
+    # BROKER_CACHE_WORKERS.
+    broker_cache_workers: int = 1
+
+    # Number of broker long-worker threads. Long ops (ingest,
+    # backfills, mainline walk, ANALYZE, VACUUM) are write-heavy
+    # and naturally serialise at the WriterThread, which holds the
+    # SQLite writer lock for whatever duration the op needs. The
+    # default 1 reflects that: bumping to N lets multiple long ops
+    # *start* in parallel, but the WriterThread funnels them
+    # regardless, so total wall time rarely improves. The case
+    # where it does: when long ops have non-trivial pre-write
+    # compute (e.g. building a batch of inserts) that runs against
+    # the read pool, multiple workers can overlap that compute
+    # phase. Override via BROKER_LONG_WORKERS.
+    broker_long_workers: int = 1
+
     # Backfill chunk budget (seconds) for broker-mode cooperative
     # scheduling (Phase 2.2). When a backfill RPC handler runs inside
     # the broker, it walks for at most this long before committing
