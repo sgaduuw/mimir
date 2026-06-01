@@ -819,13 +819,18 @@ def test_warm_cache_command_default_tier_all_passes_no_targets(seeded_db, monkey
     for targets, priority in global_captured:
         assert targets is None
         assert priority == 1
-    # Option A (2026-06-01): tier=all preserves today's behaviour and
-    # does NOT dispatch per-(inbox, subsystem) warm_subsystem RPCs.
-    # The work surfaces via the warm_inbox handler's internal target
-    # list (`_build_inbox_targets`), same as it did before the split.
-    assert subsystem_captured == [], (
-        f"tier=all dispatched warm_subsystem RPCs unexpectedly: {subsystem_captured}"
-    )
+    # Option A follow-up (2026-06-01): tier=all DOES dispatch
+    # per-(inbox, subsystem) warm_subsystem RPCs, same as tier=slow,
+    # so ad-hoc operator runs (`mimir warm-cache` with no flag) keep
+    # warming subsystem dashboards. The architectural-parallelism win
+    # applies equally; there's no reason to deny ad-hoc invocations
+    # the same fan-out. Priority stays at 1 (slow-lane), matching the
+    # tier=all queue ordering convention.
+    for inbox_name, subsystem_id, priority in subsystem_captured:
+        assert priority == 1, (
+            f"tier=all should dispatch warm_subsystem at priority=1 for "
+            f"{inbox_name}/{subsystem_id}; got {priority}"
+        )
 
 
 # Option A (2026-06-01) follow-up tests: per-(inbox, subsystem) warm

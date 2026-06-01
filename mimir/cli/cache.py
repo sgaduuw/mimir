@@ -507,7 +507,7 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
     # WARM_TOP_SUBSYSTEMS_PER_INBOX (20). The lookup runs once per
     # warm-cycle, not per RPC, so the cost is amortised.
     per_inbox_subsystem_ids: dict[str, list[int]] = {}
-    if tier == "slow":
+    if tier in ("slow", "all"):
         with SessionLocal() as s:
             for ib in inboxes.values():
                 top = most_active_subsystems_in_inbox(
@@ -540,7 +540,7 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
                         priority=priority_for_tier,
                     )
                 ] = ("warm_inbox", name)
-                if tier == "slow":
+                if tier in ("slow", "all"):
                     for sub_id in per_inbox_subsystem_ids.get(name, []):
                         futures[
                             pool.submit(
