@@ -1,0 +1,209 @@
+"""Phase 5 tests: broker admin RPC handlers migrate from inline
+direct-SQLite writes (via service-layer SessionLocal/write_transaction)
+to WriteOp dispatch through the active WriterThread.
+
+Pins the structural contract for Phase 5 of the broker two-pool
+restructure (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
+Kept in its own file so the Phase 5 PR audit is easy.
+
+Contract-test shape: capture all WriteOp submits to the active
+writer via a recording wrapper around `_context.get_active_writer()`,
+run the service function, assert at least one submit happened
+(i.e. the dispatch path was taken, not the legacy SessionLocal
+path).
+"""
+
+
+def _writer_submit_recorder():
+    """Helper: monkeypatch `writer.submit` on the active broker writer
+    to record every WriteOp passed through. The wrapper preserves
+    submit's real behaviour (the writer actually executes the WriteOp)
+    so DB state assertions still work; the list just records the
+    dispatch happened.
+
+    Returns (writer, submits_list). Caller is responsible for restoring
+    `writer.submit` after the test if needed; pytest's test isolation
+    typically makes this fine since the per-test broker_active fixture
+    rebuilds the writer."""
+    from mimir.broker._context import get_active_writer
+
+    writer = get_active_writer()
+    submits = []
+    original_submit = writer.submit
+
+    def _recording_submit(op):
+        submits.append(op)
+        return original_submit(op)
+
+    writer.submit = _recording_submit
+    return writer, submits
+
+
+def test_add_rule_dispatches_via_writer(seeded_db, broker_active):
+    """Phase 5 contract: `mimir.robots.add_rule` dispatches via the
+    active WriterThread when broker context is set, not via the
+    legacy `write_transaction() + SessionLocal()` path."""
+    from sqlalchemy import select
+
+    from mimir.models import RobotsRule
+    from mimir.robots import add_rule
+
+    _, submits = _writer_submit_recorder()
+    add_rule(
+        user_agent="phase5-test-agent",
+        disallow=["/test"],
+        crawl_delay=None,
+        content_signals=None,
+    )
+
+    assert len(submits) >= 1, "add_rule must dispatch at least one WriteOp"
+    assert submits[0].label.startswith("robots:add:"), (
+        "WriteOp label preserves the legacy write_transaction label shape"
+    )
+
+    # End-to-end: the row landed.
+    with seeded_db() as s:
+        row = s.execute(
+            select(RobotsRule).where(RobotsRule.user_agent == "phase5-test-agent")
+        ).scalar_one()
+    assert row.user_agent == "phase5-test-agent"
+
+
+def test_add_rule_falls_back_to_direct_when_no_context(seeded_db):
+    """When called outside the broker context, `add_rule` must fall
+    back to the legacy `write_transaction() + SessionLocal()` path."""
+    from sqlalchemy import select
+
+    from mimir.broker import _context
+    from mimir.models import RobotsRule
+    from mimir.robots import add_rule
+
+    # Temporarily clear the active broker context so no writer is available.
+    saved_pool = _context._active_pool
+    saved_writer = _context._active_writer
+    _context.clear_active()
+    try:
+        add_rule(
+            user_agent="phase5-fallback-agent",
+            disallow=["/fallback"],
+            crawl_delay=None,
+            content_signals=None,
+        )
+    finally:
+        if saved_pool is not None and saved_writer is not None:
+            _context.set_active(saved_pool, saved_writer)
+
+    with seeded_db() as s:
+        row = s.execute(
+            select(RobotsRule).where(RobotsRule.user_agent == "phase5-fallback-agent")
+        ).scalar_one()
+    assert row.user_agent == "phase5-fallback-agent"
+
+
+def test_update_rule_dispatches_via_writer(seeded_db, broker_active):
+    """Phase 5 contract: update_rule dispatches via the writer."""
+    from sqlalchemy import insert, select
+
+    from mimir.models import RobotsRule
+    from mimir.robots import update_rule
+
+    with seeded_db() as s:
+        s.execute(
+            insert(RobotsRule).values(
+                user_agent="phase5-update-target",
+                disallow_paths=["/old"],
+                crawl_delay=None,
+                content_signals=None,
+            )
+        )
+        s.commit()
+
+    _, submits = _writer_submit_recorder()
+    update_rule(
+        user_agent="phase5-update-target",
+        add_disallow=["/new"],
+        remove_disallow=["/old"],
+        crawl_delay=10,
+    )
+
+    assert len(submits) >= 1
+    assert submits[0].label.startswith("robots:update:")
+
+    with seeded_db() as s:
+        row = s.execute(
+            select(RobotsRule).where(RobotsRule.user_agent == "phase5-update-target")
+        ).scalar_one()
+    assert row.disallow_paths == ["/new"]
+    assert row.crawl_delay == 10
+
+
+def test_remove_rule_dispatches_via_writer(seeded_db, broker_active):
+    """Phase 5 contract: remove_rule dispatches via the writer."""
+    from sqlalchemy import insert, select
+
+    from mimir.models import RobotsRule
+    from mimir.robots import remove_rule
+
+    with seeded_db() as s:
+        s.execute(
+            insert(RobotsRule).values(
+                user_agent="phase5-remove-target",
+                disallow_paths=["/x"],
+                crawl_delay=None,
+                content_signals=None,
+            )
+        )
+        s.commit()
+
+    _, submits = _writer_submit_recorder()
+    remove_rule(user_agent="phase5-remove-target")
+
+    assert len(submits) >= 1
+    assert submits[0].label.startswith("robots:remove:")
+
+    with seeded_db() as s:
+        row = s.execute(
+            select(RobotsRule).where(RobotsRule.user_agent == "phase5-remove-target")
+        ).one_or_none()
+    assert row is None
+
+
+def test_reset_rules_dispatches_via_writer(seeded_db, broker_active):
+    """Phase 5 contract: reset_rules dispatches via the writer.
+    After reset, only the default `*` row should remain."""
+    from sqlalchemy import insert, select
+
+    from mimir.models import RobotsRule
+    from mimir.robots import reset_rules
+
+    with seeded_db() as s:
+        s.execute(
+            insert(RobotsRule).values(
+                user_agent="phase5-reset-survivor-1",
+                disallow_paths=["/y"],
+                crawl_delay=None,
+                content_signals=None,
+            )
+        )
+        s.execute(
+            insert(RobotsRule).values(
+                user_agent="phase5-reset-survivor-2",
+                disallow_paths=["/z"],
+                crawl_delay=None,
+                content_signals=None,
+            )
+        )
+        s.commit()
+
+    _, submits = _writer_submit_recorder()
+    reset_rules()
+
+    assert len(submits) >= 1
+    assert submits[0].label == "robots:reset"
+
+    with seeded_db() as s:
+        remaining = s.execute(select(RobotsRule.user_agent)).scalars().all()
+    # The two custom rules are gone; only the default star row remains.
+    assert "phase5-reset-survivor-1" not in remaining
+    assert "phase5-reset-survivor-2" not in remaining
+    assert "*" in remaining, "reset_rules must reseed the default star rule"
