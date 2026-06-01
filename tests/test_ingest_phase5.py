@@ -281,3 +281,18 @@ def test_add_tracked_author_dispatches_via_writer(seeded_db, broker_active):
     assert submits[0].label.startswith("inbox:add_tracked_author:")
     assert inbox.tracked_authors is not None
     assert inbox.tracked_authors.get("phase5") == "phase5@test"
+
+
+def test_remove_tracked_author_dispatches_via_writer(seeded_db, broker_active):
+    """Phase 5 contract: remove_tracked_author dispatches via the writer."""
+    from mimir.inboxes import remove_tracked_author, set_tracked_authors
+
+    # Seed a tracker entry so removal has something to remove.
+    set_tracked_authors(name="alpha", authors={"to-remove": "remove@test"})
+
+    _, submits = _writer_submit_recorder()
+    inbox = remove_tracked_author(name="alpha", label="to-remove")
+
+    assert len(submits) >= 1, "remove_tracked_author must dispatch at least one WriteOp"
+    assert submits[0].label.startswith("inbox:remove_tracked_author:")
+    assert inbox.tracked_authors is None or "to-remove" not in inbox.tracked_authors
