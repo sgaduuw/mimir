@@ -268,3 +268,16 @@ def test_set_tracked_authors_dispatches_via_writer(seeded_db, broker_active):
     assert len(submits) >= 1, "set_tracked_authors must dispatch at least one WriteOp"
     assert submits[0].label.startswith("inbox:set_tracked_authors:")
     assert inbox.tracked_authors == {"phase5": "phase5@test"}
+
+
+def test_add_tracked_author_dispatches_via_writer(seeded_db, broker_active):
+    """Phase 5 contract: add_tracked_author dispatches via the writer."""
+    from mimir.inboxes import add_tracked_author
+
+    _, submits = _writer_submit_recorder()
+    inbox = add_tracked_author(name="alpha", label="phase5", substring="phase5@test")
+
+    assert len(submits) >= 1, "add_tracked_author must dispatch at least one WriteOp"
+    assert submits[0].label.startswith("inbox:add_tracked_author:")
+    assert inbox.tracked_authors is not None
+    assert inbox.tracked_authors.get("phase5") == "phase5@test"
