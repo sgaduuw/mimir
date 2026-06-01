@@ -447,13 +447,6 @@ def delete_inbox(
         _mirror_path: dict = {}
 
         def _fn(conn):
-            # The WriterThread uses its own engine which doesn't inherit
-            # the _sqlite_pragmas event listener from mimir.extensions,
-            # so PRAGMA foreign_keys is OFF by default. Enable it explicitly
-            # so DELETE FROM inboxes triggers the DB-level CASCADE onto
-            # article_lists and ingest_state.
-            conn.exec_driver_sql("PRAGMA foreign_keys=ON")
-
             row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
             if row is None:
                 raise InboxNotFound(f"no inbox named {name!r}")

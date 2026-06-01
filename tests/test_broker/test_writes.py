@@ -319,3 +319,73 @@ def test_write_future_propagates_closure_return_value(seeded_db):
         assert fut3.result(timeout=10) is None
     finally:
         wt.stop(timeout=10)
+
+
+def test_writer_thread_engine_has_sqlite_pragmas_set(seeded_db):
+    """The WriterThread creates its own engine via create_engine();
+    until this test was added, that engine had no event listeners
+    attached, so PRAGMA foreign_keys was OFF (silently breaking
+    ondelete=CASCADE), PRAGMA synchronous defaulted to FULL (extra
+    fsync per commit), PRAGMA analysis_limit was 0 (ANALYZE held
+    the writer lock for the full multi-second scan on the prod
+    corpus), and PRAGMA busy_timeout was 0.
+
+    The fix attaches `mimir.extensions._sqlite_pragmas` as a connect
+    listener on the writer's engine. This test pins the contract by
+    submitting a closure that reads back the PRAGMA values from the
+    writer's connection.
+
+    Notable exclusion: PRAGMA query_only must stay OFF on the writer
+    (the writer IS the writer). The `_sqlite_pragmas` listener
+    correctly skips `query_only=1` when `settings.mimir_is_broker`
+    is true; the broker process sets that env var. Tests run without
+    `MIMIR_IS_BROKER=true`, so the listener WOULD apply query_only=1
+    to a non-broker shared-engine connection, but the writer's
+    engine here is process-local and we're testing the listener's
+    "broker == sole writer" semantics. The query_only check is
+    omitted from this test for that reason; if it failed (i.e. the
+    listener wrongly set query_only on the writer in a real broker
+    deploy) the integration tests would surface the
+    `OperationalError: attempt to write a readonly database`.
+    """
+    from mimir.broker.writes import WriteOp, WriterThread
+    from mimir.config import settings
+
+    writer = WriterThread(database_url=settings.database_url, queue_depth=8)
+    writer.start()
+    try:
+
+        def _read_pragmas(conn):
+            return {
+                "foreign_keys": conn.exec_driver_sql("PRAGMA foreign_keys").scalar(),
+                "synchronous": conn.exec_driver_sql("PRAGMA synchronous").scalar(),
+                "busy_timeout": conn.exec_driver_sql("PRAGMA busy_timeout").scalar(),
+                "analysis_limit": conn.exec_driver_sql(
+                    "PRAGMA analysis_limit"
+                ).scalar(),
+            }
+
+        result = writer.submit(
+            WriteOp(label="test:read-pragmas", fn=_read_pragmas)
+        ).result(timeout=5)
+
+        assert result["foreign_keys"] == 1, (
+            "PRAGMA foreign_keys must be ON; without it, DELETE statements "
+            "that rely on ondelete=CASCADE silently leave child rows behind"
+        )
+        assert result["synchronous"] == 1, (
+            "PRAGMA synchronous must be NORMAL (=1); FULL (=2) is the SQLite "
+            "default but adds a needless fsync per commit on WAL mode"
+        )
+        assert result["busy_timeout"] == settings.sqlite_busy_timeout_ms, (
+            f"PRAGMA busy_timeout must match settings.sqlite_busy_timeout_ms "
+            f"({settings.sqlite_busy_timeout_ms}); got {result['busy_timeout']}"
+        )
+        assert result["analysis_limit"] == settings.analyze_limit, (
+            f"PRAGMA analysis_limit must match settings.analyze_limit "
+            f"({settings.analyze_limit}); got {result['analysis_limit']}. "
+            "0 would mean unbounded ANALYZE scans, which held the writer "
+            "lock for ~25s on the 11M-row prod corpus before 1.36.4"
+        )
+    finally:
+        writer.stop(timeout=5)
