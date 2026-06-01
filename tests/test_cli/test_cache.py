@@ -603,16 +603,16 @@ def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
     from mimir.cli.cache import warm_cache_command
     from mimir.config import settings
 
-    captured: list[tuple[str, list[str] | None]] = []
-    global_captured: list[list[str] | None] = []
+    captured: list[tuple[str, list[str] | None, int]] = []
+    global_captured: list[tuple[list[str] | None, int]] = []
 
     class FakeClient:
-        def warm_inbox(self, inbox_name, *, targets=None, **kwargs):
-            captured.append((inbox_name, targets))
+        def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
+            captured.append((inbox_name, targets, priority))
             return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
 
-        def warm_global(self, *, targets=None, **kwargs):
-            global_captured.append(targets)
+        def warm_global(self, *, targets=None, priority=1, **kwargs):
+            global_captured.append((targets, priority))
             return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
 
         def cache_purge_expired(self, **kwargs):
@@ -624,9 +624,15 @@ def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
     result = CliRunner().invoke(warm_cache_command, ["--tier", "fast"])
     assert result.exit_code == 0, result.output
     assert captured, "no warm_inbox dispatches captured"
-    for inbox_name, targets in captured:
+    for inbox_name, targets, priority in captured:
         assert targets is not None, (
             f"tier=fast must pass explicit targets, got None for {inbox_name}"
+        )
+        # Task 5: tier=fast dispatches MUST carry priority=0 so
+        # they jump ahead of queued slow-tier items on the broker's
+        # warm PriorityQueue.
+        assert priority == 0, (
+            f"tier=fast must pass priority=0; got {priority} for {inbox_name}"
         )
         # Each fast-tier label must be one of the documented fast set.
         for label in targets:
@@ -654,11 +660,16 @@ def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
             )
             for label in targets
         )
-    # Global fast tier hits sitemap:index + sitemap:meta.
+    # Global fast tier hits sitemap:index + sitemap:meta with
+    # priority=0 (same tier-mapping as the per-inbox fan-out).
     assert global_captured, "no warm_global dispatch captured"
+    for targets, priority in global_captured:
+        assert priority == 0, (
+            f"tier=fast warm_global must pass priority=0; got {priority}"
+        )
     assert all(
         "sitemap" in label
-        for targets in global_captured
+        for targets, _ in global_captured
         if targets
         for label in targets
     )
@@ -673,14 +684,16 @@ def test_warm_cache_command_tier_slow_dispatches_slow_targets_only(
     from mimir.cli.cache import warm_cache_command
     from mimir.config import settings
 
-    captured: list[tuple[str, list[str] | None]] = []
+    captured: list[tuple[str, list[str] | None, int]] = []
+    global_captured: list[tuple[list[str] | None, int]] = []
 
     class FakeClient:
-        def warm_inbox(self, inbox_name, *, targets=None, **kwargs):
-            captured.append((inbox_name, targets))
+        def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
+            captured.append((inbox_name, targets, priority))
             return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
 
-        def warm_global(self, *, targets=None, **kwargs):
+        def warm_global(self, *, targets=None, priority=1, **kwargs):
+            global_captured.append((targets, priority))
             return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
 
         def cache_purge_expired(self, **kwargs):
@@ -692,8 +705,13 @@ def test_warm_cache_command_tier_slow_dispatches_slow_targets_only(
     result = CliRunner().invoke(warm_cache_command, ["--tier", "slow"])
     assert result.exit_code == 0, result.output
     assert captured
-    for inbox_name, targets in captured:
+    for inbox_name, targets, priority in captured:
         assert targets is not None
+        # Task 5: tier=slow dispatches MUST carry priority=1 so
+        # they take the slow lane on the broker's warm PriorityQueue.
+        assert priority == 1, (
+            f"tier=slow must pass priority=1; got {priority} for {inbox_name}"
+        )
         # No fast-tier label appears.
         assert not any(
             fragment in label
@@ -706,26 +724,35 @@ def test_warm_cache_command_tier_slow_dispatches_slow_targets_only(
             )
             for label in targets
         ), f"fast label leaked into tier=slow dispatch for {inbox_name}: {targets}"
+    # Global slow tier also dispatches with priority=1.
+    assert global_captured, "no warm_global dispatch captured"
+    for _targets, priority in global_captured:
+        assert priority == 1, (
+            f"tier=slow warm_global must pass priority=1; got {priority}"
+        )
 
 
 def test_warm_cache_command_default_tier_all_passes_no_targets(seeded_db, monkeypatch):
     """Default (no --tier) preserves today's behaviour: targets=None
     on every dispatch, so the broker handler uses its full target
-    list."""
+    list. Task 5 maps tier=all to priority=1 so the operator
+    ad-hoc invocation matches today's slow-lane FIFO behaviour
+    rather than racing ahead of any other slow item already
+    queued."""
     from mimir.broker import client as _client_module
     from mimir.cli.cache import warm_cache_command
     from mimir.config import settings
 
-    captured: list[tuple[str, list[str] | None]] = []
-    global_captured: list[list[str] | None] = []
+    captured: list[tuple[str, list[str] | None, int]] = []
+    global_captured: list[tuple[list[str] | None, int]] = []
 
     class FakeClient:
-        def warm_inbox(self, inbox_name, *, targets=None, **kwargs):
-            captured.append((inbox_name, targets))
+        def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
+            captured.append((inbox_name, targets, priority))
             return {"warmed": [], "errors": [], "elapsed_ms": 0}
 
-        def warm_global(self, *, targets=None, **kwargs):
-            global_captured.append(targets)
+        def warm_global(self, *, targets=None, priority=1, **kwargs):
+            global_captured.append((targets, priority))
             return {"warmed": [], "errors": [], "elapsed_ms": 0}
 
         def cache_purge_expired(self, **kwargs):
@@ -737,9 +764,13 @@ def test_warm_cache_command_default_tier_all_passes_no_targets(seeded_db, monkey
     result = CliRunner().invoke(warm_cache_command, [])
     assert result.exit_code == 0, result.output
     assert captured, "no warm_inbox dispatches captured"
-    for inbox_name, targets in captured:
+    for inbox_name, targets, priority in captured:
         assert targets is None, (
             f"tier=all should pass targets=None for {inbox_name}; got {targets}"
         )
-    for targets in global_captured:
+        assert priority == 1, (
+            f"tier=all should pass priority=1 for {inbox_name}; got {priority}"
+        )
+    for targets, priority in global_captured:
         assert targets is None
+        assert priority == 1

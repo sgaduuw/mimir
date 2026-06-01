@@ -463,6 +463,12 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
 
         global_targets = None
 
+    # Priority maps directly off the tier: fast=0 jumps ahead of
+    # queued slow items on the broker's warm PriorityQueue; slow=1
+    # and all=1 preserve today's single-tier FIFO behaviour
+    # (Task 5 of the fast/slow tier split, spec §2 §5).
+    priority_for_tier = {"fast": 0, "slow": 1, "all": 1}[tier]
+
     # Fan out warm_inbox RPCs in parallel, then fire warm_global
     # once the per-inbox fan-out drains. The broker's N warm-workers
     # chew through the jobs concurrently. The CLI-side ThreadPool is
@@ -476,7 +482,10 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
             futures = {
                 pool.submit(
-                    client.warm_inbox, name, targets=per_inbox_targets(inbox)
+                    client.warm_inbox,
+                    name,
+                    targets=per_inbox_targets(inbox),
+                    priority=priority_for_tier,
                 ): name
                 for name, inbox in inboxes.items()
             }
@@ -492,16 +501,16 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
                         f"{name}: {len(warmed)} keys warmed in {elapsed_ms} ms"
                         + (f" (errors: {len(errors)})" if errors else "")
                     )
-        # Global Phase B after the per-inbox fan-out drains.
-        # Only pass `targets=` when a non-None list narrows the
-        # dispatch; otherwise call with no kwargs to stay compatible
-        # with `BrokerClient.warm_global`'s current signature (the
-        # `targets=` kwarg on the broker side lands in a later task,
-        # see Task 5).
-        if global_targets is not None:
-            global_result = client.warm_global(targets=global_targets)
-        else:
-            global_result = client.warm_global()
+        # Global Phase B after the per-inbox fan-out drains. Task 5
+        # closed the protocol gap that previously forced a
+        # conditional `warm_global(targets=...)` vs `warm_global()`
+        # dispatch (WarmGlobalRequest now carries `targets`), so
+        # this call is unconditional: tier=all passes targets=None
+        # (broker runs the full global list), tier=fast/slow pass
+        # an explicit label list.
+        global_result = client.warm_global(
+            targets=global_targets, priority=priority_for_tier
+        )
         total_keys += len(global_result.get("warmed", []))
         if verbose:
             click.echo(
