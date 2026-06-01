@@ -13,6 +13,26 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- **Sitemap routes now carry `Last-Modified` and honour
+  `If-Modified-Since`.** `/sitemap.xml`, `/meta-sitemap.xml`, and
+  `/<inbox>/sitemap.xml` each set a `Last-Modified` header derived
+  from the sitemap's most-recent content date (per-inbox latest for
+  the per-inbox sitemap; global latest for the index + meta), and
+  return `304 Not Modified` on a conditional GET whose
+  `If-Modified-Since` covers that date. Without these headers,
+  Google had no cheap way to know the sitemap had changed and
+  deprioritised re-fetching, so a fresh ingest could sit
+  un-reindexed for hours. The cached payload now carries
+  `(body, last_modified)` together via a new `SitemapPayload`
+  dataclass so the body and the header date stay in sync across
+  cache reads. Test coverage:
+  `test_sitemap_xml_carries_last_modified_header`,
+  `test_meta_sitemap_xml_carries_last_modified_header`,
+  `test_inbox_sitemap_xml_carries_last_modified_header`,
+  `test_sitemap_xml_returns_304_when_if_modified_since_matches`,
+  `test_inbox_sitemap_xml_returns_304_when_if_modified_since_matches`,
+  `test_sitemap_xml_returns_200_when_if_modified_since_is_older`.
+
 - **WriterThread engine now inherits the shared `_sqlite_pragmas`
   registration.** `mimir/broker/writes.py::WriterThread._run`
   creates its own engine via `create_engine(self._database_url)`;

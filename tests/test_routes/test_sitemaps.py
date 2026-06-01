@@ -223,3 +223,92 @@ def test_inbox_sitemap_articles_scoped_to_that_inbox(client):
     beta_root = ET.fromstring(client.get("/beta/sitemap.xml").get_data())
     beta_locs = {u.find("s:loc", ns).text for u in beta_root.findall("s:url", ns)}
     assert any(loc.endswith(f"/{art2_id}") for loc in beta_locs)
+
+
+# ---------------------------------------------------------------------------
+# Conditional GET / Last-Modified contract (the bit Google needs to
+# re-fetch the sitemap on a real change).
+# ---------------------------------------------------------------------------
+
+
+def test_sitemap_xml_carries_last_modified_header(client):
+    """The sitemap index response sets `Last-Modified` to the global
+    most-recent article date. Without this header, Google has no
+    cheap way to know the sitemap changed and deprioritises
+    re-fetching."""
+    _clear_sitemap_cache()
+    r = client.get("/sitemap.xml")
+    assert r.status_code == 200
+    assert r.headers.get("Last-Modified") is not None
+    # Seeded data's max article date is art3's 2024-03-01. The header is
+    # RFC 9110 HTTP-date format (start of day UTC), so the string must
+    # at least mention that calendar date.
+    assert "01 Mar 2024" in r.headers["Last-Modified"]
+
+
+def test_meta_sitemap_xml_carries_last_modified_header(client):
+    """`/meta-sitemap.xml`'s `Last-Modified` matches the global-max
+    article date (same value its body's `<lastmod>` carries)."""
+    _clear_sitemap_cache()
+    r = client.get("/meta-sitemap.xml")
+    assert r.status_code == 200
+    assert r.headers.get("Last-Modified") is not None
+    assert "01 Mar 2024" in r.headers["Last-Modified"]
+
+
+def test_inbox_sitemap_xml_carries_last_modified_header(client):
+    """Per-inbox sitemap's `Last-Modified` matches the inbox's
+    most-recent article date. Scoped per-inbox so updates to one
+    inbox don't make Google re-fetch sitemaps for unchanged
+    inboxes."""
+    _clear_sitemap_cache()
+    r = client.get("/alpha/sitemap.xml")
+    assert r.status_code == 200
+    assert r.headers.get("Last-Modified") is not None
+    # alpha's max article date is also 2024-03-01 (art3 cross-post).
+    assert "01 Mar 2024" in r.headers["Last-Modified"]
+
+
+def test_sitemap_xml_returns_304_when_if_modified_since_matches(client):
+    """A crawler that already saw today's content sends
+    `If-Modified-Since: <date>`; mimir returns 304 Not Modified with
+    no body. This is the cheap path: Google avoids re-downloading;
+    mimir avoids recomputing (the body is cached anyway but a 304
+    skips even the header-write)."""
+    _clear_sitemap_cache()
+    # First request: prime + grab the Last-Modified value.
+    r = client.get("/sitemap.xml")
+    assert r.status_code == 200
+    last_mod = r.headers["Last-Modified"]
+    # Second request, conditional: must come back 304 with no body.
+    r2 = client.get("/sitemap.xml", headers={"If-Modified-Since": last_mod})
+    assert r2.status_code == 304
+    # 304 responses must not carry a body per RFC 9110 section 15.4.5.
+    assert r2.get_data() == b""
+
+
+def test_inbox_sitemap_xml_returns_304_when_if_modified_since_matches(client):
+    """Conditional GET on a per-inbox sitemap: same 304 contract."""
+    _clear_sitemap_cache()
+    r = client.get("/alpha/sitemap.xml")
+    assert r.status_code == 200
+    last_mod = r.headers["Last-Modified"]
+    r2 = client.get("/alpha/sitemap.xml", headers={"If-Modified-Since": last_mod})
+    assert r2.status_code == 304
+    assert r2.get_data() == b""
+
+
+def test_sitemap_xml_returns_200_when_if_modified_since_is_older(client):
+    """When the crawler's `If-Modified-Since` is older than the
+    sitemap's `Last-Modified`, mimir returns 200 with the fresh body.
+    This is the path that gets Google to re-index after an ingest."""
+    _clear_sitemap_cache()
+    # Use a Sunday in 2020 as the conditional date: well before any
+    # seeded article. mimir must return the current body.
+    r = client.get(
+        "/sitemap.xml",
+        headers={"If-Modified-Since": "Sun, 01 Mar 2020 00:00:00 GMT"},
+    )
+    assert r.status_code == 200
+    # Body actually carries content (not a 304 leak).
+    assert b"<sitemapindex" in r.get_data()
