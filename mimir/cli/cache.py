@@ -68,27 +68,70 @@ WARM_CACHE_REFRESH_WITHIN_SEC = 450
 WARM_TOP_SUBSYSTEMS_PER_INBOX = 20
 
 
-def _build_inbox_targets(
+def _build_fast_inbox_targets(
+    inbox: Inbox,
+    sitemap_base: str = "",
+) -> list[tuple[str, "object"]]:
+    """Fast tier per-inbox warm targets: the cheap, freshness-
+    sensitive helpers that the front page and crawlers read
+    constantly. Sub-100 ms each; the whole list is ~300-500 ms
+    per inbox. Designed to fire on the per-minute scheduler tick
+    (`mimir warm-cache --tier fast`), independent of the slow
+    tier's per-hour cadence.
+
+    Includes: archive_stats, latest_pull_requests,
+    latest_stable_releases, recent_articles (FEED_ENTRY_LIMIT),
+    and the per-inbox sitemap (only when sitemap_base is non-empty;
+    the helper caches a body keyed implicitly on the base URL, so
+    warming with an empty base would poison the cache vs what the
+    live route emits)."""
+    targets: list[tuple[str, object]] = [
+        (f"{inbox.name} archive_stats", lambda s, ib=inbox: archive_stats(s, ib)),
+        (
+            f"{inbox.name} latest_pull_requests",
+            lambda s, ib=inbox: latest_pull_requests(s, ib, limit=5),
+        ),
+        (
+            f"{inbox.name} latest_stable_releases",
+            lambda s, ib=inbox: latest_stable_releases(s, ib, limit=5),
+        ),
+        # Atom feed source. Different cache key from the
+        # dashboard "Recent messages" loader because the limit
+        # is the cache key, feeds need 50, the dashboard's
+        # initial paint uses 10.
+        (
+            f"{inbox.name} recent_articles ({FEED_ENTRY_LIMIT})",
+            lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT),
+        ),
+    ]
+    if sitemap_base:
+        targets.append(
+            (
+                f"sitemap:inbox:{inbox.name}",
+                lambda s, ib=inbox, base=sitemap_base: inbox_sitemap_xml(s, ib, base),
+            )
+        )
+    return targets
+
+
+def _build_slow_inbox_targets(
     inbox: Inbox,
     today: "datetime.date",
     yesterday: "datetime.date",
-    sitemap_base: str = "",
 ) -> list[tuple[str, "object"]]:
-    """Per-inbox warm-target list: one inbox in, list of
-    `(label, fn)` tuples out. Each `fn(session)` computes one
-    cached helper and (via `cache.get_or_compute`) writes the
-    result back. Used by:
+    """Slow tier per-inbox warm targets: the heavy queries
+    dominated by subsystem-dashboard cost (50-100 s per inbox on
+    broad-F: subsystems like linux-arm-kernel). Designed to fire on
+    the per-hour scheduler tick (`mimir warm-cache --tier slow`).
 
-    - The legacy in-process `warm-cache` CLI, which iterates these
-      across every configured inbox.
-    - The broker's `handle_warm_inbox` handler (1.37.0), which
-      runs them for one inbox per RPC so the broker's N warm-
-      workers fan out across inboxes.
+    Includes: active_threads, threads_for_day (today + yesterday),
+    daily_volume, this_day_in_history, most_active_subsystems_in_inbox,
+    the per-subsystem dashboards fan-out, and the per-tracker pairs
+    (dashboard tile + per-author atom feed) from inbox.tracked_authors.
 
-    Sitemap per-inbox row is included only when `sitemap_base` is
-    non-empty (the cache key encodes the base URL, so warming with
-    the wrong/empty base would poison the cache vs what the live
-    route emits at request time).
+    `today` / `yesterday` are passed explicitly because the cache key
+    for `threads_for_day` includes the date; the scheduler computes
+    them once per cycle to keep both inbox-level calls aligned.
 
     Splitting the per-inbox subsystem-dashboard target out into N
     per-subsystem tasks was considered (and rejected) in the 1.37.0
@@ -114,26 +157,9 @@ def _build_inbox_targets(
             f"{inbox.name} daily_volume (30d)",
             lambda s, ib=inbox: daily_volume(s, ib, days=30),
         ),
-        (f"{inbox.name} archive_stats", lambda s, ib=inbox: archive_stats(s, ib)),
-        (
-            f"{inbox.name} latest_pull_requests",
-            lambda s, ib=inbox: latest_pull_requests(s, ib, limit=5),
-        ),
-        (
-            f"{inbox.name} latest_stable_releases",
-            lambda s, ib=inbox: latest_stable_releases(s, ib, limit=5),
-        ),
         (
             f"{inbox.name} this_day_in_history",
             lambda s, ib=inbox: this_day_in_history(s, ib, years_ago=5, limit=3),
-        ),
-        # Atom feed source. Different cache key from the
-        # dashboard "Recent messages" loader because the limit
-        # is the cache key, feeds need 50, the dashboard's
-        # initial paint uses 10.
-        (
-            f"{inbox.name} recent_articles ({FEED_ENTRY_LIMIT})",
-            lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT),
         ),
         # Per-inbox subsystem discoverability widget. One
         # warm target per inbox: the cache key is limit-less
@@ -179,51 +205,86 @@ def _build_inbox_targets(
                 ),
             )
         )
+    return targets
+
+
+def _build_inbox_targets(
+    inbox: Inbox,
+    today: "datetime.date",
+    yesterday: "datetime.date",
+    sitemap_base: str = "",
+) -> list[tuple[str, "object"]]:
+    """Legacy combined builder: fast + slow concatenated. Kept so
+    `mimir warm-cache --tier all` (the operator one-off) and any
+    callers that haven't been migrated still get the full target
+    list. New scheduler-side callers use _build_fast_inbox_targets /
+    _build_slow_inbox_targets directly.
+
+    Order differs slightly from the pre-split shape (fast comes
+    first now), but no existing test pins ordering of this list,
+    only set-membership.
+    """
+    return _build_fast_inbox_targets(inbox, sitemap_base) + _build_slow_inbox_targets(
+        inbox, today, yesterday
+    )
+
+
+def _build_fast_global_targets(
+    sitemap_base: str = "",
+) -> list[tuple[str, "object"]]:
+    """Fast tier global warm targets: sitemap:index + sitemap:meta
+    only, and only when sitemap_base is non-empty. Sub-100 ms each;
+    designed to fire on the per-minute scheduler tick alongside the
+    fast per-inbox targets so crawler-facing surfaces stay within a
+    minute of fresh.
+
+    Empty list when sitemap_base is unset: no other fast-tier global
+    surfaces exist today, so an unconfigured site_base_url means the
+    fast-tier global pass has nothing to do."""
+    targets: list[tuple[str, object]] = []
     if sitemap_base:
         targets.append(
             (
-                f"sitemap:inbox:{inbox.name}",
-                lambda s, ib=inbox, base=sitemap_base: inbox_sitemap_xml(s, ib, base),
+                "sitemap:index",
+                lambda s, base=sitemap_base: sitemap_index_xml(s, base),
+            )
+        )
+        targets.append(
+            (
+                "sitemap:meta",
+                lambda s, base=sitemap_base: meta_sitemap_xml(s, base),
             )
         )
     return targets
 
 
-def _build_global_targets(
-    sitemap_base: str = "",
-) -> list[tuple[str, "object"]]:
-    """Global (cross-inbox) warm targets: sitemap index, meta
-    sitemap, and `most_active_subsystems_global`. The aggregator
-    reads per-inbox cache rows, so it MUST run after every
-    `_build_inbox_targets` cycle has completed (Phase B in the
-    legacy CLI; a separate `warm_global` RPC in the broker shape).
-
-    Sitemap targets are included only when `sitemap_base` is set:
-    the helper caches a body keyed implicitly on the base URL, so
-    warming with an empty base would poison the cache against
-    what the route emits at request time."""
-    targets: list[tuple[str, object]] = [
+def _build_slow_global_targets() -> list[tuple[str, "object"]]:
+    """Slow tier global warm targets: just
+    `most_active_subsystems_global (7d)`. The aggregator reads per-
+    inbox cache rows, so it MUST run after the per-inbox slow tier
+    has populated those rows (the broker shape: a separate
+    `warm_global` RPC fired after the per-inbox fan-out drains)."""
+    return [
         (
             "most_active_subsystems_global (7d)",
             lambda s: most_active_subsystems_global(s, days=7),
         )
     ]
-    if sitemap_base:
-        targets.insert(
-            0,
-            (
-                "sitemap:index",
-                lambda s, base=sitemap_base: sitemap_index_xml(s, base),
-            ),
-        )
-        targets.insert(
-            1,
-            (
-                "sitemap:meta",
-                lambda s, base=sitemap_base: meta_sitemap_xml(s, base),
-            ),
-        )
-    return targets
+
+
+def _build_global_targets(
+    sitemap_base: str = "",
+) -> list[tuple[str, "object"]]:
+    """Legacy combined builder: fast + slow concatenated. Kept so
+    `mimir warm-cache --tier all` (the operator one-off) and any
+    callers that haven't been migrated still get the full target
+    list. New scheduler-side callers use _build_fast_global_targets /
+    _build_slow_global_targets directly.
+
+    Order is sitemap:index, sitemap:meta, most_active_subsystems_global
+    when sitemap_base is set, matching the pre-split shape (which
+    inserted the sitemap targets at positions 0 and 1)."""
+    return _build_fast_global_targets(sitemap_base) + _build_slow_global_targets()
 
 
 def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
