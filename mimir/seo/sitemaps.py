@@ -4,8 +4,16 @@ Three cached surfaces feeding `/sitemap.xml`, `/meta-sitemap.xml`, and
 `/<inbox>/sitemap.xml`. Cache keys are stable; bumping
 `cache.NAMESPACE_VERSION` invalidates everything if a payload shape
 changes, so per-route expiry is purely about freshness.
+
+Each surface returns a `SitemapPayload` carrying both the XML body and
+the most-recent `<lastmod>` date represented in that body. Route
+handlers project the date into the HTTP `Last-Modified` header and
+honour `If-Modified-Since` for conditional GETs, so crawlers (Google
+in particular) can re-fetch the sitemap on a real change rather than
+relying on body-content compare which they deprioritise.
 """
 
+from dataclasses import dataclass
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import func, select
@@ -16,6 +24,23 @@ from mimir.models import Article, ArticleList, Inbox
 
 SITEMAP_RECENT_PER_INBOX = 5000
 SITEMAP_TTL_SEC = 3600
+
+
+@dataclass
+class SitemapPayload:
+    """The body + last-modified pair for one sitemap surface. The
+    last_modified field is an ISO-8601 date string (`YYYY-MM-DD`) or
+    None when the sitemap has no datable content. Routes parse it back
+    into a datetime to populate `Last-Modified` on the HTTP response.
+    The cache (`cache.register("SitemapPayload", ...)` below) stores
+    the full dataclass so a warmed body + lastmod are always
+    consistent."""
+
+    body: str
+    last_modified: str | None
+
+
+cache.register("SitemapPayload", SitemapPayload)
 
 
 def _build_sitemap_xml(entries: list[tuple[str, str | None]]) -> str:
@@ -65,13 +90,18 @@ def _per_inbox_latest_date(session) -> dict[str, str | None]:
     return {name: (dt.strftime("%Y-%m-%d") if dt else None) for name, dt in rows}
 
 
-def sitemap_index_xml(session: Session, base: str, *, force: bool = False) -> str:
+def sitemap_index_xml(
+    session: Session, base: str, *, force: bool = False
+) -> SitemapPayload:
     """Cached body of `/sitemap.xml`. Lists `/meta-sitemap.xml` plus one
     `/<inbox>/sitemap.xml` per configured inbox. Same cache key as the
     route uses (`sitemap:index`) so `warm-cache` can pre-populate it
-    via `force=True`."""
+    via `force=True`. The `last_modified` field of the returned
+    `SitemapPayload` is the global-max article date (max across all
+    per-inbox lastmods), which drives the `Last-Modified` response
+    header at the route layer."""
 
-    def compute() -> str:
+    def compute() -> SitemapPayload:
         per_inbox_latest = _per_inbox_latest_date(session)
         global_latest = max((d for d in per_inbox_latest.values() if d), default=None)
         entries: list[tuple[str, str | None]] = [
@@ -85,7 +115,10 @@ def sitemap_index_xml(session: Session, base: str, *, force: bool = False) -> st
                     per_inbox_latest.get(inbox.name),
                 )
             )
-        return _build_sitemap_index_xml(entries)
+        return SitemapPayload(
+            body=_build_sitemap_index_xml(entries),
+            last_modified=global_latest,
+        )
 
     return cache.get_or_compute(
         session,
@@ -96,14 +129,21 @@ def sitemap_index_xml(session: Session, base: str, *, force: bool = False) -> st
     )
 
 
-def meta_sitemap_xml(session: Session, base: str, *, force: bool = False) -> str:
+def meta_sitemap_xml(
+    session: Session, base: str, *, force: bool = False
+) -> SitemapPayload:
     """Cached body of `/meta-sitemap.xml`. One-URL urlset covering `/`
-    with the global-max article date as lastmod."""
+    with the global-max article date as lastmod. The `last_modified`
+    field carries the same global-max date so the route's
+    `Last-Modified` header stays in sync with the body's `<lastmod>`."""
 
-    def compute() -> str:
+    def compute() -> SitemapPayload:
         per_inbox_latest = _per_inbox_latest_date(session)
         global_latest = max((d for d in per_inbox_latest.values() if d), default=None)
-        return _build_sitemap_xml([(base + "/", global_latest)])
+        return SitemapPayload(
+            body=_build_sitemap_xml([(base + "/", global_latest)]),
+            last_modified=global_latest,
+        )
 
     return cache.get_or_compute(
         session,
@@ -116,12 +156,15 @@ def meta_sitemap_xml(session: Session, base: str, *, force: bool = False) -> str
 
 def inbox_sitemap_xml(
     session: Session, inbox: Inbox, base: str, *, force: bool = False
-) -> str:
+) -> SitemapPayload:
     """Cached body of `/<inbox>/sitemap.xml`. Dashboard + year/month
     archives that actually have data + the SITEMAP_RECENT_PER_INBOX
-    most-recent article URLs in this inbox."""
+    most-recent article URLs in this inbox. The `last_modified` field
+    of the returned `SitemapPayload` is this inbox's most-recent
+    article date, scoped so updates to other inboxes don't trigger
+    Google to re-fetch this one."""
 
-    def compute() -> str:
+    def compute() -> SitemapPayload:
         entries: list[tuple[str, str | None]] = []
 
         inbox_latest_dt = session.scalar(
@@ -181,7 +224,10 @@ def inbox_sitemap_xml(
                     date.strftime("%Y-%m-%d"),
                 )
             )
-        return _build_sitemap_xml(entries)
+        return SitemapPayload(
+            body=_build_sitemap_xml(entries),
+            last_modified=inbox_latest,
+        )
 
     return cache.get_or_compute(
         session,
