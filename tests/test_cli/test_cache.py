@@ -449,3 +449,128 @@ def test_vacuum_command_runs_and_reports_sizes(seeded_db):
 
 # `admin failures list` / `replay` -- CLI wrappers around the service
 # layer (which has its own coverage in test_ingest.py).
+
+
+# Fast/slow tier split (Task 3 of 2026-06-01-warm-cache-fast-slow-
+# tier-split). The combined `_build_inbox_targets` /
+# `_build_global_targets` are partitioned into fast + slow halves
+# so the scheduler can fire fast targets every minute and slow
+# targets every hour; the combined builders survive as wrappers
+# so `mimir warm-cache --tier all` (operator one-off) and any
+# not-yet-migrated callers see today's full target list.
+
+
+def test_build_fast_inbox_targets_includes_sitemap_when_base_set(seeded_db):
+    """Fast tier per-inbox builder returns sitemap + the four
+    cheap helpers (archive_stats, latest_pull_requests,
+    latest_stable_releases, recent_articles) when SITE_BASE_URL is
+    set."""
+    from mimir.cli.cache import _build_fast_inbox_targets
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+    targets = _build_fast_inbox_targets(alpha, sitemap_base="https://example.test")
+    labels = [label for label, _fn in targets]
+    assert any(label.startswith("sitemap:inbox:alpha") for label in labels)
+    assert any("archive_stats" in label for label in labels)
+    assert any("latest_pull_requests" in label for label in labels)
+    assert any("latest_stable_releases" in label for label in labels)
+    assert any("recent_articles" in label for label in labels)
+
+
+def test_build_fast_inbox_targets_omits_sitemap_without_base(seeded_db):
+    """No SITE_BASE_URL → no sitemap target, but the four cheap
+    helpers still come back."""
+    from mimir.cli.cache import _build_fast_inbox_targets
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+    targets = _build_fast_inbox_targets(alpha, sitemap_base="")
+    labels = [label for label, _fn in targets]
+    assert not any("sitemap" in label for label in labels)
+    assert any("archive_stats" in label for label in labels)
+
+
+def test_build_slow_inbox_targets_includes_subsystem_dashboards(seeded_db):
+    """Slow tier per-inbox: subsystem dashboards + per-tracker +
+    daily_volume + threads_for_day + active_threads +
+    most_active_subsystems_in_inbox + this_day_in_history."""
+    import datetime
+
+    from mimir.cli.cache import _build_slow_inbox_targets
+    from mimir.extensions import SessionLocal
+
+    today = datetime.date(2024, 3, 1)
+    yesterday = today - datetime.timedelta(days=1)
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+    targets = _build_slow_inbox_targets(alpha, today, yesterday)
+    labels = [label for label, _fn in targets]
+    assert any("subsystem dashboards" in label for label in labels)
+    assert any("daily_volume" in label for label in labels)
+    assert any("threads_for_day (today)" in label for label in labels)
+    assert any("threads_for_day (yesterday)" in label for label in labels)
+    assert any("active_threads" in label for label in labels)
+    assert any("most_active_subsystems_in_inbox" in label for label in labels)
+    assert any("this_day_in_history" in label for label in labels)
+
+
+def test_build_inbox_targets_concatenates_fast_then_slow(seeded_db):
+    """Legacy combined builder = fast + slow union by label
+    (set-equality). The fast and slow halves partition cleanly
+    (no overlap, no drops); total count == fast + slow."""
+    import datetime
+
+    from mimir.cli.cache import (
+        _build_fast_inbox_targets,
+        _build_inbox_targets,
+        _build_slow_inbox_targets,
+    )
+    from mimir.extensions import SessionLocal
+
+    today = datetime.date(2024, 3, 1)
+    yesterday = today - datetime.timedelta(days=1)
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+    full = _build_inbox_targets(
+        alpha, today, yesterday, sitemap_base="https://example.test"
+    )
+    fast = _build_fast_inbox_targets(alpha, sitemap_base="https://example.test")
+    slow = _build_slow_inbox_targets(alpha, today, yesterday)
+    full_labels = {label for label, _ in full}
+    union_labels = {label for label, _ in fast} | {label for label, _ in slow}
+    assert full_labels == union_labels
+    # No duplicates (fast and slow partition cleanly).
+    assert len(full) == len(fast) + len(slow)
+
+
+def test_build_fast_global_targets_includes_sitemap_keys(seeded_db):
+    """Global fast tier: sitemap:index + sitemap:meta only."""
+    from mimir.cli.cache import _build_fast_global_targets
+
+    targets = _build_fast_global_targets(sitemap_base="https://example.test")
+    labels = [label for label, _fn in targets]
+    assert "sitemap:index" in labels
+    assert "sitemap:meta" in labels
+    assert not any("most_active_subsystems" in label for label in labels)
+
+
+def test_build_fast_global_targets_omits_sitemap_without_base(seeded_db):
+    """No SITE_BASE_URL → empty list (sitemap targets are gated; no
+    other fast-tier globals exist)."""
+    from mimir.cli.cache import _build_fast_global_targets
+
+    targets = _build_fast_global_targets(sitemap_base="")
+    assert targets == []
+
+
+def test_build_slow_global_targets_includes_aggregator(seeded_db):
+    """Global slow tier: just most_active_subsystems_global (7d)."""
+    from mimir.cli.cache import _build_slow_global_targets
+
+    targets = _build_slow_global_targets()
+    labels = [label for label, _fn in targets]
+    assert any("most_active_subsystems_global" in label for label in labels)
+    assert not any("sitemap" in label for label in labels)
