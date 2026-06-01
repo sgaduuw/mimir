@@ -65,6 +65,39 @@ def refresh_window(seconds: float | None) -> Iterator[None]:
         _refresh_within.reset(token)
 
 
+# Stored-TTL extension threaded through to `set` / writer variants
+# via a context manager. Set by warm-cache so warm-managed cache
+# rows store `expires_at = now + nominal_ttl + extension`, giving
+# the probabilistic refresh window in `_refresh_within` room to
+# fire inside the cached lifetime AND a deterministic insurance
+# band past nominal. Unset (None) means standard cache.set:
+# stored TTL = nominal TTL.
+_ttl_extension: ContextVar[int | None] = ContextVar("_ttl_extension", default=None)
+
+
+@contextmanager
+def ttl_extension(seconds: int | None) -> Iterator[None]:
+    """Within this scope, calls to `set` / `_set_via_writer_for_nskey`
+    / etc. that write a cache row extend the stored TTL by
+    `seconds`. Used by warm-cache so a warm-managed row's
+    stored expires_at sits `seconds` past its nominal expiry,
+    matching the spec's "stored TTL = nominal + window" pattern.
+    Spec: `_claude/specs/2026-06-01-warm-cache-fast-slow-tier-split-design.md` §5.2."""
+    token = _ttl_extension.set(seconds)
+    try:
+        yield
+    finally:
+        _ttl_extension.reset(token)
+
+
+def _apply_ttl_extension(ttl: int) -> int:
+    """Add the active `_ttl_extension` ContextVar value (if any) to
+    `ttl`. Called at each cache-write site so warm-cache cycles can
+    extend stored TTL beyond nominal without per-call plumbing.
+    Returns `ttl` unchanged when no extension is in scope."""
+    return ttl + (_ttl_extension.get() or 0)
+
+
 def _ns(key: str) -> str:
     """Apply the cache namespace prefix to a caller-supplied key."""
     return f"v{NAMESPACE_VERSION}:{key}"
@@ -251,6 +284,10 @@ def _direct_set(nskey: str, payload: str, ttl: int) -> None:
     payload over the wire). Used by `set()` when broker mode is off,
     and imported by `mimir.broker.handlers` so the broker daemon
     runs the same write without recursing into broker mode."""
+    # Apply any active warm-cache TTL extension (see `ttl_extension`
+    # context manager) so warm-managed rows store the spec's
+    # `nominal + window` lifetime. No-op outside a warm cycle.
+    ttl = _apply_ttl_extension(ttl)
     expires_at = _now() + ttl
     stmt = (
         sqlite_insert(CacheEntry)
@@ -336,8 +373,16 @@ def set(key: str, value: Any, ttl: int) -> None:
         # run without spinning up a broker).
         from mimir.broker.client import BrokerUnavailable, get_broker_client
 
+        # Apply the extension here, before crossing the wire: the
+        # broker's _ttl_extension ContextVar is unset in the cache-
+        # worker thread (ContextVar is per-thread; the warm worker's
+        # scope doesn't leak into other broker threads), so the
+        # broker-side _apply_ttl_extension is a no-op for RPCs from
+        # web tier. The web tier's extension must be baked in here or
+        # it's silently dropped at the wire.
+        wire_ttl = _apply_ttl_extension(ttl)
         try:
-            get_broker_client().cache_set(nskey, payload, ttl)
+            get_broker_client().cache_set(nskey, payload, wire_ttl)
         except BrokerUnavailable as exc:
             logger.warning("broker write failed for %s: %s", nskey, exc)
         return
@@ -370,6 +415,11 @@ def set_via_writer(writer: Any, key: str, value: Any, ttl: int) -> Any:
 
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
+    # Apply any active warm-cache TTL extension at submit time so the
+    # value snapshot the writer-thread closure captures is the bumped
+    # one; the WriterThread may run the closure on a different thread,
+    # where the caller's ContextVar isn't visible.
+    ttl = _apply_ttl_extension(ttl)
     expires_at = _now() + ttl
 
     def _fn(conn: Any) -> None:
@@ -402,6 +452,10 @@ def _set_via_writer_for_nskey(
 
     from mimir.broker.writes import WriteOp
 
+    # Apply any active warm-cache TTL extension at submit time; see
+    # `set_via_writer` for the rationale (ContextVar isn't visible
+    # to the writer-thread closure).
+    ttl = _apply_ttl_extension(ttl)
     expires_at = _now() + ttl
 
     def _fn(conn: Any) -> None:
@@ -513,11 +567,41 @@ def get_or_compute(
         ).one_or_none()
         if row is not None and row.expires_at >= _now():
             window = _refresh_within.get()
-            if window is None or (row.expires_at - _now()) >= window:
+            if window is None:
                 return _decode(json.loads(row.value))
-            # Inside an active refresh_window and the row is about to
-            # expire: fall through to recompute instead of serving a
-            # near-stale value that the next user request would miss.
+            # Probabilistic refresh window: use the cache_warm
+            # classifier to decide skip / probabilistic-ramp /
+            # deterministic-insurance. Outside the warm-cache
+            # cycle this branch is never reached (window is None
+            # by default).
+            #
+            # A read-time `_ttl_extension` mismatch with the value
+            # in scope at write time is benign: `remaining` is
+            # read from the row directly (independent of any
+            # ContextVar), and `remaining` survives the mismatch
+            # because the stored_ttl error cancels the elapsed
+            # error (elapsed = stored_ttl - remaining, so passing
+            # both to should_refresh yields the same remaining
+            # internally). `effective` is recovered from
+            # stored_ttl + window_sec via `_effective_for_stored`,
+            # so zone boundaries are stable as long as `window_sec`
+            # is consistent between write and read. The genuine
+            # failure case is a `window_sec` config change between
+            # write and read: zone boundaries shift, but no row is
+            # corrupted.
+            from mimir.cache_warm import should_refresh
+
+            stored_ttl = _apply_ttl_extension(ttl)
+            now = _now()
+            elapsed = stored_ttl - (row.expires_at - now)
+            if not should_refresh(
+                stored_ttl=stored_ttl,
+                window_sec=int(window),
+                elapsed=int(elapsed),
+            ):
+                return _decode(json.loads(row.value))
+            # Probabilistic / deterministic check said yes: fall
+            # through to recompute.
     value = fn()
     set(key, value, ttl)
     return value

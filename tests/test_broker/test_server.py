@@ -373,3 +373,197 @@ def test_serve_sets_active_context_during_run(seeded_db):
     # before broker_running was entered (the session broker's context).
     assert _context._active_pool is pre_pool
     assert _context._active_writer is pre_writer
+
+
+def test_start_workers_honors_per_queue_settings(seeded_db, monkeypatch):
+    """`start_workers()` spawns `broker_<queue>_workers` threads per
+    queue. Defaults: 1 cache, 1 long, 4 warm; bumping the env-tunable
+    fields produces the expected counts. Threads are tagged with their
+    own name (`broker-<label>-worker`) so the operator can spot which
+    queue is busy in `ps`/thread-name dumps."""
+    from mimir.broker.server import build_server
+    from mimir.config import settings
+    from tests.test_broker._helpers import short_socket_path
+
+    monkeypatch.setattr(settings, "broker_cache_workers", 3)
+    monkeypatch.setattr(settings, "broker_long_workers", 2)
+    monkeypatch.setattr(settings, "broker_warm_workers", 5)
+
+    sp = short_socket_path("tunable-workers")
+    server = build_server(sp)  # build_server() spawns the worker pool
+    try:
+        assert len(server._cache_worker_threads) == 3
+        assert len(server._long_worker_threads) == 2
+        assert len(server._warm_worker_threads) == 5
+        # Multi-worker queues get suffixed names; single-worker keeps
+        # the bare prefix (see `start_workers` label logic).
+        names = {t.name for t in server._cache_worker_threads}
+        assert names == {
+            "broker-cache-0-worker",
+            "broker-cache-1-worker",
+            "broker-cache-2-worker",
+        }
+        # All threads are running.
+        for t in (
+            server._cache_worker_threads
+            + server._long_worker_threads
+            + server._warm_worker_threads
+        ):
+            assert t.is_alive(), f"worker {t.name} should be running"
+            assert t.daemon, f"worker {t.name} must be daemon for clean shutdown"
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()
+
+
+def test_start_workers_single_worker_keeps_bare_label(seeded_db, monkeypatch):
+    """When a queue's worker count is 1 (the default for cache and
+    long), the thread name keeps the bare prefix (`broker-cache-worker`)
+    rather than the suffixed form (`broker-cache-0-worker`). Matters
+    for log/ps readability and to match the pre-tunable thread name."""
+    from mimir.broker.server import build_server
+    from mimir.config import settings
+    from tests.test_broker._helpers import short_socket_path
+
+    monkeypatch.setattr(settings, "broker_cache_workers", 1)
+    monkeypatch.setattr(settings, "broker_long_workers", 1)
+    monkeypatch.setattr(settings, "broker_warm_workers", 1)
+
+    sp = short_socket_path("tunable-single")
+    server = build_server(sp)
+    try:
+        assert [t.name for t in server._cache_worker_threads] == ["broker-cache-worker"]
+        assert [t.name for t in server._long_worker_threads] == ["broker-long-worker"]
+        assert [t.name for t in server._warm_worker_threads] == ["broker-warm-worker"]
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()
+
+
+# Task 5 of the fast/slow tier split: warm_queue migrates from
+# `queue.Queue` to `queue.PriorityQueue` so fast-tier RPCs dequeue
+# ahead of queued slow-tier RPCs. The reader-side extractor
+# (`_extract_warm_priority`) parses the wire-side `priority` field
+# on each warm line; the worker's `get()` returns the smallest
+# priority first (PriorityQueue compares tuples element-wise, so
+# equal priority falls through to the enqueued_at tie-breaker).
+
+
+def test_warm_queue_is_priority_queue(seeded_db):
+    """warm_queue migrates to queue.PriorityQueue so fast-tier
+    RPCs jump ahead of queued slow-tier RPCs."""
+    import queue as _queue
+
+    from mimir.broker.server import build_server
+    from tests.test_broker._helpers import short_socket_path
+
+    sp = short_socket_path("warm-priority-type")
+    server = build_server(sp)
+    try:
+        assert isinstance(server.warm_queue, _queue.PriorityQueue)
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()
+
+
+def test_warm_queue_dequeues_fast_priority_first(seeded_db, monkeypatch):
+    """Two items, slow then fast: fast dequeues first.
+
+    Stops the worker thread before staging items so the warm
+    worker doesn't race the test by dequeuing and dispatching the
+    stub-sock items (which would AttributeError on sendall(None)).
+    """
+    import time
+
+    from mimir.broker.server import SHUTDOWN_POLL_SEC, build_server
+    from mimir.config import settings
+    from tests.test_broker._helpers import short_socket_path
+
+    monkeypatch.setattr(settings, "broker_warm_workers", 1)
+    sp = short_socket_path("warm-priority-order")
+    server = build_server(sp)
+    try:
+        # Stop workers + wait one poll cycle for them to exit before
+        # touching the queue so the warm worker can't dispatch our
+        # stub items with sock=None.
+        server.stop_event.set()
+        for t in server._warm_worker_threads:
+            t.join(timeout=SHUTDOWN_POLL_SEC * 5)
+        while not server.warm_queue.empty():
+            server.warm_queue.get_nowait()
+        # Slow then fast: PriorityQueue must reorder so fast
+        # dequeues first regardless of enqueue order.
+        server.warm_queue.put(
+            (
+                1,
+                time.perf_counter(),
+                b'{"op":"warm_inbox","inbox_name":"x","priority":1}',
+                None,
+            )
+        )
+        server.warm_queue.put(
+            (
+                0,
+                time.perf_counter(),
+                b'{"op":"warm_inbox","inbox_name":"y","priority":0}',
+                None,
+            )
+        )
+        first = server.warm_queue.get_nowait()
+        second = server.warm_queue.get_nowait()
+        assert first[0] == 0
+        assert second[0] == 1
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()
+
+
+def test_warm_queue_preserves_fifo_within_priority(seeded_db):
+    """Two items at same priority dequeue in put-order (FIFO via
+    enqueued_at tiebreaker)."""
+    import time
+
+    from mimir.broker.server import SHUTDOWN_POLL_SEC, build_server
+    from tests.test_broker._helpers import short_socket_path
+
+    sp = short_socket_path("warm-priority-fifo")
+    server = build_server(sp)
+    try:
+        # Stop workers + wait one poll cycle (see priority-order
+        # test for the same reasoning).
+        server.stop_event.set()
+        for t in server._warm_worker_threads:
+            t.join(timeout=SHUTDOWN_POLL_SEC * 5)
+        while not server.warm_queue.empty():
+            server.warm_queue.get_nowait()
+        t1 = time.perf_counter()
+        t2 = t1 + 0.001
+        server.warm_queue.put((1, t1, b'{"op":"warm_inbox","inbox_name":"a"}', None))
+        server.warm_queue.put((1, t2, b'{"op":"warm_inbox","inbox_name":"b"}', None))
+        first = server.warm_queue.get_nowait()
+        second = server.warm_queue.get_nowait()
+        assert first[1] == t1
+        assert second[1] == t2
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()
+
+
+def test_extract_warm_priority_parses_zero_one_and_default(seeded_db):
+    """The reader-side priority extractor handles 0, 1, and
+    missing field (returns 1). Bounded to the line head so payload
+    size doesn't slow the reader thread."""
+    from mimir.broker.server import _extract_warm_priority
+
+    assert _extract_warm_priority(b'{"op":"warm_inbox","priority":0}') == 0
+    assert _extract_warm_priority(b'{"op":"warm_inbox","priority":1}') == 1
+    assert _extract_warm_priority(b'{"op":"warm_inbox"}') == 1
+    # Whitespace tolerance:
+    assert _extract_warm_priority(b'{"op":"warm_inbox", "priority": 0}') == 0
+    # Malformed priority value (non-digit) falls back to slow.
+    assert _extract_warm_priority(b'{"op":"warm_inbox","priority":"nope"}') == 1

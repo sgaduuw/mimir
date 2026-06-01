@@ -29,27 +29,48 @@ from mimir.broker.protocol import (
     WarmGlobalRequest,
     WarmInboxRequest,
 )
-from mimir.cache import refresh_window
+from mimir.cache import refresh_window, ttl_extension
 from mimir.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-# Refresh window the broker applies for the duration of a warm
-# cycle. Same value as the CLI's `WARM_CACHE_REFRESH_WITHIN_SEC`
-# (450 s, set in `mimir.cli.cache`): a key with less remaining TTL
-# than this gets recomputed; one with more is left alone. Tests
-# can monkey-patch this at the module level.
+# Back-compat constant retained for callers that invoke `_run_targets`
+# without a `priority`. Task 5 of the fast/slow tier split moved the
+# in-handler default to tier-aware sourcing from `settings.warm_cache_
+# {fast,slow}_refresh_window_sec` (see `_run_targets`); the handlers
+# always pass `priority=req.priority` so this fallback is only ever
+# hit by ad-hoc / test callers that omit the kwarg. Kept module-level
+# so tests can monkey-patch.
 WARM_REFRESH_WITHIN_SEC = 450
 
 
 def _run_targets(
     targets,
+    *,
+    priority: int = 1,
 ) -> tuple[list[str], list[str], int, list[tuple[str, int]]]:
     """Run a list of `(label, fn(session))` warm targets serially on
-    a fresh session under `refresh_window(WARM_REFRESH_WITHIN_SEC)`.
-    Returns `(warmed, errors, elapsed_ms, per_target)`, where
-    `per_target` is `[(label, ms), ...]` sorted desc by ms.
+    a fresh session under tier-aware `refresh_window` +
+    `ttl_extension` context. Returns
+    `(warmed, errors, elapsed_ms, per_target)`, where `per_target`
+    is `[(label, ms), ...]` sorted desc by ms.
+
+    `priority` selects the tier window from settings (Task 5 of the
+    fast/slow tier split, spec §5):
+
+    - `priority=0` (fast): `settings.warm_cache_fast_refresh_window_sec`
+      (default 600 s; matches the per-minute scheduler cadence with
+      headroom for the probabilistic refresh ramp).
+    - `priority=1` (slow): `settings.warm_cache_slow_refresh_window_sec`
+      (default 7200 s; matches the per-hour cadence with enough ticks
+      in the window for the ramp to fire).
+
+    The same window value drives both the read-side `refresh_window`
+    (recompute any row with less than `window` TTL remaining) AND the
+    write-side `ttl_extension` (store `expires_at = now + nominal +
+    window` so the deterministic insurance band sits past nominal).
+    Spec §5.2 walks through why these two sides must agree.
 
     Per-target exceptions go into `errors` as `f"{label}: {exc!r}"`
     so the broker's reply can report partial outcomes; the
@@ -64,12 +85,17 @@ def _run_targets(
     (e.g. `active_threads` vs the per-inbox subsystem-dashboard
     fan-out) without needing a separate `-v` repro.
     """
+    if priority == 0:
+        window_sec = settings.warm_cache_fast_refresh_window_sec
+    else:
+        window_sec = settings.warm_cache_slow_refresh_window_sec
     warmed: list[str] = []
     errors: list[str] = []
     per_target: list[tuple[str, int]] = []
     t0 = time.perf_counter()
     with (
-        refresh_window(WARM_REFRESH_WITHIN_SEC),
+        refresh_window(window_sec),
+        ttl_extension(window_sec),
         _context.get_active_pool().session() as session,
     ):
         for label, fn in targets:
@@ -144,7 +170,9 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
     if req.targets is not None:
         wanted = set(req.targets)
         targets = [(label, fn) for label, fn in targets if label in wanted]
-    warmed, errors, elapsed_ms, per_target = _run_targets(targets)
+    warmed, errors, elapsed_ms, per_target = _run_targets(
+        targets, priority=req.priority
+    )
     _log_slow_breakdown("warm_inbox", req.inbox_name, elapsed_ms, per_target)
     return Reply(
         ok=True,
@@ -168,12 +196,22 @@ def handle_warm_global(req: WarmGlobalRequest) -> Reply:
     The CLI dispatcher in `mimir.cli.cache.warm_cache_command`
     handles this sequencing by awaiting the per-inbox fan-out
     before issuing the global RPC.
+
+    `req.targets` (Task 5 of the fast/slow tier split) narrows the
+    global aggregator set to a labelled subset, mirroring
+    `handle_warm_inbox`'s targets filter. None = run every global
+    aggregator.
     """
     from mimir.cli.cache import _build_global_targets
 
     sitemap_base = (settings.site_base_url or "").rstrip("/")
     targets = _build_global_targets(sitemap_base)
-    warmed, errors, elapsed_ms, per_target = _run_targets(targets)
+    if req.targets is not None:
+        wanted = set(req.targets)
+        targets = [(label, fn) for label, fn in targets if label in wanted]
+    warmed, errors, elapsed_ms, per_target = _run_targets(
+        targets, priority=req.priority
+    )
     _log_slow_breakdown("warm_global", "<global>", elapsed_ms, per_target)
     return Reply(
         ok=True,

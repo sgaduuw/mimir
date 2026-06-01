@@ -545,11 +545,19 @@ class WarmInboxRequest(BaseModel):
     a labelled subset. None = warm all helpers (the warm-cache CLI
     posture). Post-ingest warm uses a small subset
     (`active_threads`, `archive_stats`, `daily_volume`).
+
+    `priority` controls broker warm-queue ordering (Task 5 of the
+    fast/slow tier split, spec §2): 0 = fast tier (sitemap-class
+    keys + cheap front-page helpers; jumps ahead of queued slow
+    items via `queue.PriorityQueue`), 1 = slow tier (the default;
+    matches today's single-tier FIFO behaviour for any caller that
+    doesn't set it explicitly).
     """
 
     op: Literal["warm_inbox"] = "warm_inbox"
     inbox_name: str = Field(min_length=1, max_length=64)
     targets: list[str] | None = None
+    priority: int = Field(default=1, ge=0, le=1)
 
 
 class WarmGlobalRequest(BaseModel):
@@ -561,9 +569,23 @@ class WarmGlobalRequest(BaseModel):
     inbox's per-inbox key. The CLI dispatcher handles this
     sequencing automatically; ad-hoc callers should issue
     warm_global only after their warm_inbox fan-out drains.
+
+    `targets` (Task 5 of the fast/slow tier split, spec §2)
+    narrows the global aggregator set to a labelled subset,
+    mirroring `WarmInboxRequest.targets`. None = run every
+    global aggregator (today's shape). The CLI's
+    `--tier fast` dispatches with `targets=["sitemap:index",
+    "sitemap:meta"]` so the per-minute scheduler tick only
+    refreshes the cheap sitemap-index aggregators; `--tier slow`
+    narrows to the heavy `most_active_subsystems_global` query.
+
+    `priority` mirrors `WarmInboxRequest.priority`: 0 = fast,
+    1 = slow (default).
     """
 
     op: Literal["warm_global"] = "warm_global"
+    targets: list[str] | None = None
+    priority: int = Field(default=1, ge=0, le=1)
 
 
 # Tagged union over all valid request ops. Discriminated on `op` so
