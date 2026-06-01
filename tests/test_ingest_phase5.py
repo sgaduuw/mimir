@@ -256,3 +256,15 @@ def test_replay_failures_dispatches_via_writer(seeded_db, broker_active):
     assert submits[0].label == "failures_replay", (
         "WriteOp label should be 'failures_replay'"
     )
+
+
+def test_set_tracked_authors_dispatches_via_writer(seeded_db, broker_active):
+    """Phase 5 contract: set_tracked_authors dispatches via the writer."""
+    from mimir.inboxes import set_tracked_authors
+
+    _, submits = _writer_submit_recorder()
+    inbox = set_tracked_authors(name="alpha", authors={"phase5": "phase5@test"})
+
+    assert len(submits) >= 1, "set_tracked_authors must dispatch at least one WriteOp"
+    assert submits[0].label.startswith("inbox:set_tracked_authors:")
+    assert inbox.tracked_authors == {"phase5": "phase5@test"}
