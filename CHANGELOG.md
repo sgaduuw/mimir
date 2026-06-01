@@ -11,6 +11,31 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- **Config-drift guards: broker startup WARNING, warm handler
+  WARNING, and `mimir doctor` CLI.** Three layered safety nets
+  for env-var misconfig:
+  - Broker logs a WARNING at startup when `SITE_BASE_URL` is
+    unset, naming the affected feature (sitemap warming).
+  - Warm handlers log a once-per-process WARNING when sitemap
+    labels arrive in `req.targets` but the broker's own
+    `SITE_BASE_URL` is unset, identifying the dropped labels.
+  - New `mimir doctor` subcommand prints a structured config-
+    health report (or `--json`) with per-check ok/warning/
+    error status. Operators run it pre-deploy or when
+    investigating drift. Exit code 0 (all ok) / 2 (warnings
+    only) / 1 (any error).
+
+  Driven by the 2026-06-01 production incident where
+  `SITE_BASE_URL` set on `mimir-tasks` and `mimir-app` but
+  missing on `mimir-broker` silently neutered the warm-cache
+  sitemap targets in the broker handler. 2.18.0's
+  conditional-GET semantics still worked for the boot warm
+  but the cached sitemap rows were never refreshed past the
+  boot-time warm's TTL, opening a cold-compute cliff
+  ~70 min after deploy.
+
 ## [2.18.0], 2026-06-01
 
 ### Added
