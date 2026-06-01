@@ -11,6 +11,20 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- **Slow tier fans out per-(inbox, subsystem) warm RPCs.**
+  `mimir warm-cache --tier slow` no longer serializes the
+  20-subsystem dashboard sweep inside a single warm_inbox
+  worker thread. The CLI pre-computes top-N subsystems per
+  inbox and dispatches one `warm_subsystem` RPC per (inbox,
+  subsystem) pair via the broker's warm queue. With 8 warm
+  workers, hotspot inboxes (linux-arm-kernel,
+  linux-devicetree, linux-doc) drop from ~100 s slow-tier wall
+  time to ~14 s. Same total compute; just moved from per-thread
+  serialization to per-RPC parallelism. New protocol op:
+  `warm_subsystem` (`WarmSubsystemRequest`).
+
 ### Fixed
 
 - **Scheduler dual-timer: slow tier no longer blocks fast tier
