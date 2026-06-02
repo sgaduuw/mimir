@@ -619,10 +619,15 @@ def test_mid_epoch_batch_failure_leaves_cursor_at_old_position(
     real_submit = pending_mod._submit_ingest_batch
     submit_call_count = {"n": 0}
     first_batch_last_sha: dict[str, str | None] = {"sha": None}
+    second_batch_attempted_sha: dict[str, str | None] = {"sha": None}
 
     def explode_on_second_call(writer, pending):
         submit_call_count["n"] += 1
         if submit_call_count["n"] == 2:
+            # Capture what the cursor WOULD have advanced to if this
+            # batch had committed. The inverse-shaped assertion below
+            # verifies the on-disk cursor did NOT take this value.
+            second_batch_attempted_sha["sha"] = pending.last_commit_sha
             f: Future = Future()
             f.set_exception(RuntimeError("simulated crash between batches"))
             return f
@@ -682,6 +687,34 @@ def test_mid_epoch_batch_failure_leaves_cursor_at_old_position(
     )
     assert cursor_after_crash == first_batch_last_sha["sha"], (
         "cursor must be at the first batch's last sha, not the failed batch's"
+    )
+    # Inverse-shaped guard: the cursor must NOT have advanced to the
+    # second (failed) batch's pending sha. Without this, a regression
+    # that committed the cursor outside the batch's atomic closure (or
+    # that wrote the cursor as the FIRST step of the closure instead of
+    # the LAST) would also leave a cursor != first_batch_last_sha; the
+    # original assertion would catch that, but a closely-related bug
+    # where cursor = second_batch_last_sha would silently pass any
+    # weaker "cursor advanced" check. Pinning both directions catches
+    # the cursor-ordering invariant precisely (CONTEXT.md "Phase 3b":
+    # the IngestState UPSERT is the FINAL statement of each batch's
+    # composite WriteOp).
+    assert second_batch_attempted_sha["sha"] is not None, (
+        "test wiring: explode_on_second_call should have captured the "
+        "second batch's pending.last_commit_sha before failing the Future"
+    )
+    assert second_batch_attempted_sha["sha"] != first_batch_last_sha["sha"], (
+        "test wiring: batch sizing is wrong if batch 1 and batch 2 share "
+        "the same last_commit_sha (would make the inverse assertion below "
+        "tautologically true). With ingest_batch_flush_seconds=0 each "
+        "message is its own batch, so the shas must differ."
+    )
+    assert cursor_after_crash != second_batch_attempted_sha["sha"], (
+        "cursor must NOT have advanced to the failed batch's last sha. "
+        "A regression that wrote the cursor BEFORE the batch's atomic "
+        "boundary (or persisted it via a non-final WriteOp inside the "
+        "closure) would let the cursor sit at the failed batch's value "
+        "even though the data rows rolled back."
     )
     assert len(article_lists_after_crash) == len(articles_after_crash), (
         "one article_lists row per committed article"
@@ -875,4 +908,102 @@ def test_cache_writes_drain_between_ingest_batches(
         "promises bounded tails (well under the ~62 s pre-Phase-3b "
         "stall); a >5 s tail suggests ingest_inbox is holding the "
         "writer lock across batches instead of committing per batch."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Naive-datetime normalization on the ingest path (CONTEXT.md §9)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_handles_dash_zero_zero_zero_zero_date_alongside_aware(
+    seeded_db, tmp_path, broker_active
+):
+    """A `-0000`-dated message must ingest cleanly when it lands in the
+    same batch as a tz-aware message. RFC 5322 lets `-0000` mean "no
+    time-zone information available"; CPython's `parsedate_to_datetime`
+    returns a tz-NAIVE datetime for it, and `max(aware, naive)` raises
+    TypeError, which used to roll back the whole ingest batch.
+
+    The fix lives in `mimir.datetime_utils.aware_utc`, wired into
+    `mimir/ingest/epoch.py` at the observation-tally `obs_time =
+    aware_utc(parsed.date or commit_time)` call site (and at the
+    matching site in `mimir/ingest/backfill.py`). CONTEXT.md §9
+    documents the historical outage.
+
+    This pins the regression: build two messages sharing a list address
+    so observation tally accumulates across them (the exact code path
+    where `max(prev_ts, obs_time)` blew up); give one a `-0000` Date
+    header and the other a `+0200` Date header so without the wrap the
+    second iteration's `max()` mixes aware + naive. Assert both land
+    cleanly (`new == 2`, `failed == 0`).
+    """
+    from sqlalchemy import select
+
+    from mimir.ingest import ingest_inbox
+    from mimir.models import Inbox, InboxAddressObservation
+    from tests.test_ingest._helpers import (
+        _build_pubinbox_repo,
+        _rfc5322_with_date,
+    )
+
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    # Same `To:` list address on both messages so observation tally
+    # accumulates and hits the `max(prev_ts, obs_time)` codepath on
+    # the second iteration. The kernel.org suffix matches LIST_HOST_SUFFIXES
+    # so `extract_list_addresses` actually returns the address (a personal
+    # @example.com would be filtered out and the codepath wouldn't fire).
+    list_addr = "linux-kernel@vger.kernel.org"
+    messages = [
+        _rfc5322_with_date(
+            "aware-tz@example.com",
+            "Mon, 1 Jan 2024 12:00:00 +0200",
+            to=list_addr,
+        ),
+        _rfc5322_with_date(
+            "naive-dash-zero@example.com",
+            "Mon, 1 Jan 2024 12:00:00 -0000",
+            to=list_addr,
+        ),
+    ]
+    _build_pubinbox_repo(mirror / "0.git", messages)
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ix.mirror_path = str(mirror)
+        s.commit()
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+    # Pre-Phase-3b, a naive-vs-aware comparison inside the batch
+    # rolled the whole batch back. Post-fix, ingest completes cleanly
+    # with both messages landed.
+    results = ingest_inbox(inbox, workers=1)
+
+    assert sum(r.new for r in results) == 2, (
+        "both messages must ingest; if one batch rolled back due to a "
+        "naive-vs-aware TypeError, `new` drops below 2"
+    )
+    assert sum(r.failed for r in results) == 0, (
+        "no parse_failures expected; a TypeError in the batch closure "
+        "would surface here"
+    )
+
+    # Inverse-shaped assertion: the observation row landed with an
+    # aware UTC timestamp (not a naive one). A regression that dropped
+    # the `aware_utc()` wrap would either roll back the batch (caught
+    # above) OR land a naive `last_seen` in SQLite. SQLite strips tzinfo
+    # on store, so the assertion below is "no exception thrown by the
+    # comparator inside ingest_epoch", which the `new == 2` check above
+    # already covers; here we just confirm the observation actually
+    # accumulated to 2 across both messages.
+    with seeded_db() as s:
+        obs_count = s.execute(
+            select(InboxAddressObservation.count).where(
+                InboxAddressObservation.inbox_id == inbox.id,
+                InboxAddressObservation.address == list_addr,
+            )
+        ).scalar_one()
+    assert obs_count == 2, (
+        f"observation tally must accumulate across both messages; got {obs_count}"
     )
