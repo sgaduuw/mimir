@@ -1395,6 +1395,77 @@ def test_message_json_ld_author_omits_email_when_not_allowlisted(
     assert posting["author"]["name"] == "Casual Sender"
 
 
+def test_message_json_ld_author_includes_email_for_maintainers_derived_address(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    """The allowlist that gates JSON-LD `Person.email` is the UNION
+    of `Settings.email_allowlist` AND addresses parsed out of
+    `subsystem_maintainers` (the MAINTAINERS-derived half, see
+    CONTEXT.md "Allowlist source: static config + parsed MAINTAINERS").
+
+    Existing tests cover the `Settings.email_allowlist` half
+    (`test_message_json_ld_author_includes_email_when_allowlisted`)
+    and the from-line visible-HTML render of the MAINTAINERS half
+    (`test_maintainer_listed_address_surfaces_in_from_line`); this
+    test pins the JSON-LD half: a sender whose address is NOT in
+    `Settings.email_allowlist` but IS recorded in
+    `subsystem_maintainers` must still have `Person.email` emitted
+    in the JSON-LD graph on their message page, mirroring the
+    visible-HTML decision and matching CONTEXT.md's "metadata
+    mirrors visible HTML, per sender" posture.
+
+    A regression that read the static allowlist only (skipping the
+    MAINTAINERS-derived union) would silently drop `Person.email`
+    for every maintainer who isn't also covered by a static
+    `email_allowlist` substring token.
+    """
+    from mimir import maintainer_allowlist
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Subsystem, SubsystemMaintainer
+
+    # Static allowlist is empty: any pass must come from the
+    # MAINTAINERS-derived half of the union, not the static half.
+    monkeypatch.setattr(settings, "email_allowlist", [])
+
+    with SessionLocal() as s:
+        sub = Subsystem(name="JSONLD-CONTRIB", status="Maintained")
+        s.add(sub)
+        s.flush()
+        s.add(
+            SubsystemMaintainer(
+                subsystem_id=sub.id,
+                role="M",
+                name="JSON-LD Contributor",
+                address="jsonld-contrib@somecorp.example",
+            )
+        )
+        s.commit()
+    maintainer_allowlist.invalidate()
+
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "jsonld-maintainer@example.com",
+        author="JSON-LD Contributor <jsonld-contrib@somecorp.example>",
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+
+    assert posting["author"]["name"] == "JSON-LD Contributor", (
+        "Person.name carries the display name on every surface, "
+        "including for MAINTAINERS-derived addresses"
+    )
+    assert posting["author"].get("email") == "jsonld-contrib@somecorp.example", (
+        "Person.email must surface for MAINTAINERS-derived addresses "
+        "(union of Settings.email_allowlist + subsystem_maintainers). "
+        "A regression that only consulted the static allowlist would "
+        f"drop the email field here; got {posting['author']!r}"
+    )
+
+
 def test_message_json_ld_includes_text_snippet(client, tmp_path):
     """Google's DiscussionForumPosting validator requires one of
     `text` / `image` / `video`; we ship `text` derived from the
