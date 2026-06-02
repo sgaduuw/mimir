@@ -1216,6 +1216,14 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
             )
         )
         s.commit()
+        # Re-derive the URL from the article's NEW date. The helper's
+        # returned URL was built against the original "yesterday" date,
+        # which can fall in a different month from the re-anchored
+        # "10 days ago" date (e.g. on the 1st-10th of any month, when
+        # yesterday and 10-days-ago straddle a month boundary). URL
+        # shape includes YYYY/MM as part of identity (CONTEXT.md "URL
+        # scheme"); a mismatch returns 404, not a redirect.
+        url = f"/alpha/{art.date.year}/{art.date.month:02d}/{art_id}"
     body = client.get(url).data.decode()
     # Badge redesign: activity chip rendered; heat is warm/cooling.
     assert 'class="badge badge-activity-' in body
