@@ -190,3 +190,84 @@ def test_reindex_rejects_malformed_epoch_shape(seeded_db, tmp_path):
             f"output: {result.output}"
         )
         assert "epoch" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# --workers / --limit boundary coverage (per the 2026-06-02 audit)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_command_workers_one_is_sequential(seeded_db, tmp_path):
+    """`--workers 1` forces single-threaded ingest. The path is the
+    same `ingest_inbox(..., workers=1)` the production CLI hits when
+    operators set `--workers 1` for deterministic debugging.
+
+    Pin the sequential path completes cleanly (the audit asked for
+    the boundary at `workers=1` so a regression that, say, refused
+    `workers < 2` or hung on the single-thread executor would
+    surface here)."""
+    from mimir.extensions import SessionLocal
+
+    mirror = tmp_path / "alpha-mirror"
+    _build_pubinbox_repo(
+        mirror / "3.git",
+        [_rfc5322_msg(f"workers1-{i}@example.com") for i in range(3)],
+    )
+    _repoint_inbox("alpha", mirror)
+
+    result = CliRunner().invoke(ingest_command, ["--inbox", "alpha", "--workers", "1"])
+    assert result.exit_code == 0, result.output
+    assert "new=3" in result.output
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        n = len(
+            s.execute(
+                select(Article.message_id)
+                .join(ArticleList, ArticleList.article_id == Article.id)
+                .where(ArticleList.inbox_id == alpha.id, ArticleList.epoch == "3.git")
+            )
+            .scalars()
+            .all()
+        )
+    assert n == 3
+
+
+def test_ingest_command_limit_zero_is_no_op(seeded_db, tmp_path):
+    """`--limit 0` semantics: ingest budget is exhausted before any
+    epoch walks. The per-epoch loop short-circuits via the
+    `remaining is not None and remaining <= 0` guard. No articles
+    land in DB; the CLI exits cleanly.
+
+    A regression that treated `0` as "unlimited" (e.g. via
+    `if limit:` instead of `if limit is not None`) would silently
+    walk the whole archive when the operator asked for zero — a
+    pretty bad failure mode for a "dry run" use case.
+    """
+    from mimir.extensions import SessionLocal
+
+    mirror = tmp_path / "alpha-mirror"
+    _build_pubinbox_repo(
+        mirror / "4.git",
+        [_rfc5322_msg(f"limit0-{i}@example.com") for i in range(3)],
+    )
+    _repoint_inbox("alpha", mirror)
+
+    result = CliRunner().invoke(ingest_command, ["--inbox", "alpha", "--limit", "0"])
+    assert result.exit_code == 0, result.output
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        landed = (
+            s.execute(
+                select(Article.message_id)
+                .join(ArticleList, ArticleList.article_id == Article.id)
+                .where(ArticleList.inbox_id == alpha.id, ArticleList.epoch == "4.git")
+            )
+            .scalars()
+            .all()
+        )
+    assert landed == [], (
+        f"`--limit 0` must not ingest any articles (the documented "
+        f"dry-run shape); got {landed!r}"
+    )
