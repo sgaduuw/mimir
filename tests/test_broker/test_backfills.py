@@ -309,7 +309,7 @@ def test_dispatch_backfill_patch_series_returns_counters_partial_continuation(
     """The patch-series backfill handler runs the full seeded corpus
     cheaply (no blob fetch). Reply.result must carry the three
     keys the CLI loop reads."""
-    reply = dispatch(_line(BackfillPatchSeriesRequest(limit=4)))
+    reply = dispatch(_line(BackfillPatchSeriesRequest(rpc_id=1, limit=4)))
     assert reply.ok is True, reply.error
     assert reply.result is not None
     assert "counters" in reply.result
@@ -330,7 +330,7 @@ def test_dispatch_backfill_patch_series_passes_continuation_through(seeded_db):
         min_id = s.execute(select(Article.id).order_by(Article.id)).scalars().first()
     reply = dispatch(
         _line(
-            BackfillPatchSeriesRequest(continuation=min_id + 1),
+            BackfillPatchSeriesRequest(rpc_id=1, continuation=min_id + 1),
         )
     )
     assert reply.ok is True
@@ -346,7 +346,7 @@ def test_dispatch_backfill_article_files_reply_shape(seeded_db):
     reply shape is well-formed and the handler doesn't crash on
     unreachable mirrors (the existing `_process_one` catches
     `MessageNotFound` / `KeyError` and reports `skipped`)."""
-    reply = dispatch(_line(BackfillArticleFilesRequest(limit=4)))
+    reply = dispatch(_line(BackfillArticleFilesRequest(rpc_id=1, limit=4)))
     assert reply.ok is True, reply.error
     assert reply.result is not None
     counters = reply.result["counters"]
@@ -359,7 +359,7 @@ def test_dispatch_backfill_article_files_reply_shape(seeded_db):
 
 
 def test_dispatch_backfill_article_trailers_reply_shape(seeded_db):
-    reply = dispatch(_line(BackfillArticleTrailersRequest(limit=4)))
+    reply = dispatch(_line(BackfillArticleTrailersRequest(rpc_id=1, limit=4)))
     assert reply.ok is True, reply.error
     counters = reply.result["counters"]
     assert counters["examined"] == 4
@@ -371,7 +371,7 @@ def test_dispatch_backfill_canonicals_reply_shape(seeded_db):
     articles have no canonical_inbox set yet, so the default
     (non-reprocess) path scans all 4. They all end up `skipped`
     because the mirror isn't real."""
-    reply = dispatch(_line(BackfillCanonicalsRequest()))
+    reply = dispatch(_line(BackfillCanonicalsRequest(rpc_id=1)))
     assert reply.ok is True, reply.error
     counters = reply.result["counters"]
     assert counters["examined"] == 4
@@ -382,7 +382,7 @@ def test_dispatch_backfill_canonicals_with_inbox_filter(seeded_db):
     """`inbox_filter='alpha'` restricts the walk to articles linked
     to alpha. The seeded fixture has 3 articles linked to alpha
     (art1, art3 via cross-post, art4); art2 is beta-only."""
-    reply = dispatch(_line(BackfillCanonicalsRequest(inbox_filter="alpha")))
+    reply = dispatch(_line(BackfillCanonicalsRequest(rpc_id=1, inbox_filter="alpha")))
     assert reply.ok is True, reply.error
     counters = reply.result["counters"]
     assert counters["examined"] == 3

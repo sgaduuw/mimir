@@ -102,7 +102,7 @@ def test_dispatch_warm_inbox_reply_shape(seeded_db):
     fixture has enough rows that the targets run cleanly; we don't
     pin the exact `warmed` content because the helper list evolves,
     but the shape and the absence of errors is pinned."""
-    reply = dispatch(_line(WarmInboxRequest(inbox_name="alpha")))
+    reply = dispatch(_line(WarmInboxRequest(rpc_id=1, inbox_name="alpha")))
     assert reply.ok is True, reply.error
     assert reply.result is not None
     assert "warmed" in reply.result
@@ -122,7 +122,7 @@ def test_dispatch_warm_inbox_unknown_returns_clean_error(seeded_db):
     """Bogus inbox name returns a structured `UnknownInbox:<name>`
     error rather than crashing the handler. Mirrors the matching
     contract on `ingest_inbox`."""
-    reply = dispatch(_line(WarmInboxRequest(inbox_name="does-not-exist")))
+    reply = dispatch(_line(WarmInboxRequest(rpc_id=1, inbox_name="does-not-exist")))
     assert reply.ok is False
     assert reply.error is not None
     assert "UnknownInbox:does-not-exist" in reply.error
@@ -135,6 +135,7 @@ def test_dispatch_warm_inbox_targets_narrows_set(seeded_db):
     reply = dispatch(
         _line(
             WarmInboxRequest(
+                rpc_id=1,
                 inbox_name="alpha",
                 targets=["alpha archive_stats"],
             )
@@ -177,7 +178,7 @@ def test_dispatch_warm_inbox_emits_slow_breakdown_log(seeded_db, monkeypatch, ca
     monkeypatch.setattr(settings, "broker_slow_rpc_warn_ms", 10)
 
     caplog.set_level("WARNING", logger="mimir.broker.handlers.warm")
-    reply = dispatch(_line(WarmInboxRequest(inbox_name="alpha")))
+    reply = dispatch(_line(WarmInboxRequest(rpc_id=1, inbox_name="alpha")))
     assert reply.ok is True
 
     per_target = reply.result["per_target"]
@@ -211,7 +212,7 @@ def test_dispatch_warm_inbox_captures_per_target_errors(seeded_db, monkeypatch):
 
     monkeypatch.setattr(cli_cache, "_build_inbox_targets", fake_build)
 
-    reply = dispatch(_line(WarmInboxRequest(inbox_name="alpha")))
+    reply = dispatch(_line(WarmInboxRequest(rpc_id=1, inbox_name="alpha")))
     assert reply.ok is True
     assert reply.result["warmed"] == ["alpha healthy"]
     assert len(reply.result["errors"]) == 1
@@ -227,7 +228,7 @@ def test_dispatch_warm_global_reply_shape(seeded_db):
     (most_active_subsystems_global + sitemap when SITE_BASE_URL is
     set). On the seeded test corpus there's at least the one
     aggregator target."""
-    reply = dispatch(_line(WarmGlobalRequest()))
+    reply = dispatch(_line(WarmGlobalRequest(rpc_id=1)))
     assert reply.ok is True, reply.error
     assert reply.result is not None
     assert "warmed" in reply.result
@@ -420,7 +421,7 @@ def test_handle_warm_inbox_uses_active_read_pool_session(monkeypatch):
 
     # The _active_broker_context fixture has already set up the pool,
     # so the handler should succeed without falling back to SessionLocal.
-    reply = handle_warm_inbox(WarmInboxRequest(inbox_name="alpha", targets=None))
+    reply = handle_warm_inbox(WarmInboxRequest(rpc_id=1, inbox_name="alpha", targets=None))
     assert reply.ok is True
 
 
@@ -444,7 +445,7 @@ def test_handle_warm_global_uses_active_read_pool_session(monkeypatch):
 
     # The _active_broker_context fixture has already set up the pool,
     # so the handler should succeed without falling back to SessionLocal.
-    reply = handle_warm_global(WarmGlobalRequest())
+    reply = handle_warm_global(WarmGlobalRequest(rpc_id=1))
     assert reply.ok is True
 
 
@@ -641,7 +642,7 @@ def test_warm_global_logs_sitemap_gap_warning_when_site_base_unset(
     caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
 
     reply = warm_module.handle_warm_global(
-        WarmGlobalRequest(targets=["sitemap:index"], priority=0)
+        WarmGlobalRequest(rpc_id=1, targets=["sitemap:index"], priority=0)
     )
     assert reply.ok is True
 
@@ -677,7 +678,7 @@ def test_warm_global_sitemap_gap_warning_fires_once_per_process(
 
     # First call: WARNING fires.
     warm_module.handle_warm_global(
-        WarmGlobalRequest(targets=["sitemap:index"], priority=0)
+        WarmGlobalRequest(rpc_id=1, targets=["sitemap:index"], priority=0)
     )
     first_count = sum(
         1 for r in caplog.records if "sitemap labels requested" in r.getMessage()
@@ -686,7 +687,7 @@ def test_warm_global_sitemap_gap_warning_fires_once_per_process(
 
     # Second call with the same args: no NEW WARNING.
     warm_module.handle_warm_global(
-        WarmGlobalRequest(targets=["sitemap:index"], priority=0)
+        WarmGlobalRequest(rpc_id=1, targets=["sitemap:index"], priority=0)
     )
     second_count = sum(
         1 for r in caplog.records if "sitemap labels requested" in r.getMessage()
@@ -707,7 +708,7 @@ def test_warm_global_no_gap_warning_when_site_base_set(seeded_db, caplog, monkey
     caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
 
     warm_module.handle_warm_global(
-        WarmGlobalRequest(targets=["sitemap:index"], priority=0)
+        WarmGlobalRequest(rpc_id=1, targets=["sitemap:index"], priority=0)
     )
     gap_warnings = [
         r for r in caplog.records if "sitemap labels requested" in r.getMessage()
@@ -730,7 +731,7 @@ def test_warm_global_no_gap_warning_when_targets_none(seeded_db, caplog, monkeyp
     monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", False)
     caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
 
-    warm_module.handle_warm_global(WarmGlobalRequest(targets=None, priority=1))
+    warm_module.handle_warm_global(WarmGlobalRequest(rpc_id=1, targets=None, priority=1))
     gap_warnings = [
         r for r in caplog.records if "sitemap labels requested" in r.getMessage()
     ]
@@ -755,6 +756,7 @@ def test_warm_inbox_logs_sitemap_gap_warning_when_site_base_unset(
 
     reply = warm_module.handle_warm_inbox(
         WarmInboxRequest(
+            rpc_id=1,
             inbox_name="alpha",
             targets=["sitemap:inbox:alpha"],
             priority=0,
@@ -830,14 +832,14 @@ def test_handle_warm_subsystem_runs_helpers_under_tier_window(seeded_db, monkeyp
 
     sub_id = _seed_or_get_subsystem_id()
 
-    req = WarmSubsystemRequest(inbox_name="alpha", subsystem_id=sub_id, priority=1)
+    req = WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=sub_id, priority=1)
     reply = warm_module.handle_warm_subsystem(req)
     assert reply.ok, reply.error
     assert ("refresh_window", 222) in captured
     assert ("ttl_extension", 222) in captured
 
     captured.clear()
-    req_fast = WarmSubsystemRequest(inbox_name="alpha", subsystem_id=sub_id, priority=0)
+    req_fast = WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=sub_id, priority=0)
     reply_fast = warm_module.handle_warm_subsystem(req_fast)
     assert reply_fast.ok, reply_fast.error
     assert ("refresh_window", 111) in captured
@@ -850,7 +852,7 @@ def test_handle_warm_subsystem_returns_unknown_inbox_cleanly(seeded_db):
     from mimir.broker.handlers.warm import handle_warm_subsystem
     from mimir.broker.protocol import WarmSubsystemRequest
 
-    req = WarmSubsystemRequest(inbox_name="zzz-nonexistent", subsystem_id=1, priority=1)
+    req = WarmSubsystemRequest(rpc_id=1, inbox_name="zzz-nonexistent", subsystem_id=1, priority=1)
     reply = handle_warm_subsystem(req)
     assert not reply.ok
     assert "UnknownInbox" in (reply.error or "")
@@ -865,7 +867,7 @@ def test_handle_warm_subsystem_returns_unknown_subsystem_cleanly(seeded_db):
     from mimir.broker.handlers.warm import handle_warm_subsystem
     from mimir.broker.protocol import WarmSubsystemRequest
 
-    req = WarmSubsystemRequest(inbox_name="alpha", subsystem_id=99999999, priority=1)
+    req = WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=99999999, priority=1)
     reply = handle_warm_subsystem(req)
     assert not reply.ok
     assert "UnknownSubsystem" in (reply.error or "")
@@ -878,7 +880,7 @@ def test_dispatch_warm_subsystem_reply_shape(seeded_db):
 
     sub_id = _seed_or_get_subsystem_id()
     reply = dispatch(
-        _line(WarmSubsystemRequest(inbox_name="alpha", subsystem_id=sub_id))
+        _line(WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=sub_id))
     )
     assert reply.ok is True, reply.error
     assert reply.result is not None
