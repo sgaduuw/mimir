@@ -516,7 +516,12 @@ def test_cache_set_handler_real_timeout_with_blocked_writer(broker_active):
 
     try:
         reply = handle_cache_set(
-            CacheSetRequest(key="v3:real-timeout-cache-set", value_json='"x"', ttl=60)
+            CacheSetRequest(
+                rpc_id=1,
+                key="v3:real-timeout-cache-set",
+                value_json='"x"',
+                ttl=60,
+            )
         )
 
         assert reply.ok is False, (

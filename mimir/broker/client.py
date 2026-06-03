@@ -137,7 +137,9 @@ class BrokerClient:
             s.connect(str(self._socket_path))
         except OSError as exc:
             s.close()
-            raise BrokerUnavailable(f"connect {self._socket_path}: {exc}") from exc
+            raise BrokerUnavailable(
+                f"broker connect failed: {self._socket_path}: {exc}"
+            ) from exc
         self._sock = s
         self._rfile = s.makefile("rb", buffering=0)
 
