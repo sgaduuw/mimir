@@ -21,7 +21,7 @@ def _line(req) -> bytes:
 
 
 def test_dispatch_ping(seeded_db):
-    reply = dispatch(_line(PingRequest()))
+    reply = dispatch(_line(PingRequest(rpc_id=1)))
     assert reply.ok is True
     assert reply.error is None
 
@@ -34,6 +34,7 @@ def test_dispatch_cache_set_writes_to_db(seeded_db):
     reply = dispatch(
         _line(
             CacheSetRequest(
+                rpc_id=1,
                 key=nskey,
                 value_json='"hello"',
                 ttl=60,
@@ -56,7 +57,7 @@ def test_dispatch_cache_delete_removes_row(seeded_db):
     cache._direct_set(nskey, json.dumps(cache._encode("x")), 60)
     assert cache.get("test_dispatch_delete") == "x"
 
-    reply = dispatch(_line(CacheDeleteRequest(key=nskey)))
+    reply = dispatch(_line(CacheDeleteRequest(rpc_id=1, key=nskey)))
     assert reply.ok is True
 
     assert cache.get("test_dispatch_delete") is None
@@ -67,7 +68,7 @@ def test_dispatch_cache_delete_for_inbox_reports_count(seeded_db):
     cache.set("daily_volume:alpha:30", "x2", ttl=60)
     cache.set("archive_stats:beta", "x3", ttl=60)
 
-    reply = dispatch(_line(CacheDeleteForInboxRequest(name="alpha")))
+    reply = dispatch(_line(CacheDeleteForInboxRequest(rpc_id=1, name="alpha")))
     assert reply.ok is True
     assert reply.rows_deleted == 2
 
@@ -95,7 +96,7 @@ def test_dispatch_cache_purge_expired_reports_count(seeded_db):
         s.add(CacheEntry(key=_ns("alive_one"), value='"y"', expires_at=now + 3600))
         s.commit()
 
-    reply = dispatch(_line(CachePurgeExpiredRequest()))
+    reply = dispatch(_line(CachePurgeExpiredRequest(rpc_id=1)))
     assert reply.ok is True
     assert (reply.rows_deleted or 0) >= 1
 

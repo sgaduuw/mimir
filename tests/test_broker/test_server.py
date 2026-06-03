@@ -31,7 +31,7 @@ def _send_line(sp: Path, line: bytes) -> bytes:
 def test_server_binds_and_responds_to_ping(seeded_db):
     sp = short_socket_path("ping")
     with broker_running(sp):
-        reply = _send_line(sp, b'{"op": "ping"}')
+        reply = _send_line(sp, b'{"rpc_id":1,"op":"ping"}')
         assert b'"ok":true' in reply
 
 
@@ -48,7 +48,7 @@ def test_server_handles_sequential_requests_on_one_connection(seeded_db):
         wfile = s.makefile("wb")
         try:
             for _ in range(5):
-                wfile.write(b'{"op": "ping"}\n')
+                wfile.write(b'{"rpc_id":1,"op":"ping"}\n')
                 wfile.flush()
                 line = rfile.readline()
                 assert b'"ok":true' in line

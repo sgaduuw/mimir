@@ -21,7 +21,7 @@ from mimir.broker.protocol import (
 
 
 def test_cache_set_round_trip():
-    req = CacheSetRequest(key="v2:archive_stats:lkml", value_json='{"x":1}', ttl=86400)
+    req = CacheSetRequest(rpc_id=1, key="v2:archive_stats:lkml", value_json='{"x":1}', ttl=86400)
     encoded = req.model_dump_json()
     parsed = CacheSetRequest.model_validate_json(encoded)
     assert parsed.key == req.key
@@ -35,51 +35,51 @@ def test_cache_set_rejects_empty_value_json():
     cache.get on hit return `None` and look like a miss. Boundary
     rejection keeps useless rows out of the cache."""
     with pytest.raises(ValidationError):
-        CacheSetRequest(key="x", value_json="", ttl=60)
+        CacheSetRequest(rpc_id=1, key="x", value_json="", ttl=60)
 
 
 def test_cache_set_rejects_negative_ttl():
     with pytest.raises(ValidationError):
-        CacheSetRequest(key="x", value_json='"v"', ttl=-1)
+        CacheSetRequest(rpc_id=1, key="x", value_json='"v"', ttl=-1)
 
 
 def test_cache_delete_round_trip():
-    req = CacheDeleteRequest(key="v2:thing:y")
+    req = CacheDeleteRequest(rpc_id=1, key="v2:thing:y")
     parsed = CacheDeleteRequest.model_validate_json(req.model_dump_json())
     assert parsed.key == req.key
     assert parsed.op == "cache_delete"
 
 
 def test_cache_delete_for_inbox_round_trip():
-    req = CacheDeleteForInboxRequest(name="linux-fsdevel")
+    req = CacheDeleteForInboxRequest(rpc_id=1, name="linux-fsdevel")
     parsed = CacheDeleteForInboxRequest.model_validate_json(req.model_dump_json())
     assert parsed.name == "linux-fsdevel"
 
 
 def test_cache_purge_expired_round_trip():
-    req = CachePurgeExpiredRequest()
+    req = CachePurgeExpiredRequest(rpc_id=1)
     parsed = CachePurgeExpiredRequest.model_validate_json(req.model_dump_json())
     assert parsed.op == "cache_purge_expired"
 
 
 def test_ping_round_trip():
-    req = PingRequest()
+    req = PingRequest(rpc_id=1)
     parsed = PingRequest.model_validate_json(req.model_dump_json())
     assert parsed.op == "ping"
 
 
 def test_reply_round_trip():
-    r = Reply(ok=True)
+    r = Reply(rpc_id=1, ok=True)
     parsed = Reply.model_validate_json(r.model_dump_json())
     assert parsed.ok is True
     assert parsed.error is None
 
-    r2 = Reply(ok=False, error="MalformedJSON")
+    r2 = Reply(rpc_id=1, ok=False, error="MalformedJSON")
     parsed2 = Reply.model_validate_json(r2.model_dump_json())
     assert parsed2.ok is False
     assert parsed2.error == "MalformedJSON"
 
-    r3 = Reply(ok=True, rows_deleted=42)
+    r3 = Reply(rpc_id=1, ok=True, rows_deleted=42)
     parsed3 = Reply.model_validate_json(r3.model_dump_json())
     assert parsed3.rows_deleted == 42
 
@@ -102,7 +102,7 @@ def test_op_tag_is_load_bearing():
 
 def test_bootstrap_inboxes_round_trip():
     """Phase 2.0 long op. No args; just the op tag."""
-    req = BootstrapInboxesRequest()
+    req = BootstrapInboxesRequest(rpc_id=1)
     parsed = BootstrapInboxesRequest.model_validate_json(req.model_dump_json())
     assert parsed.op == "bootstrap_inboxes"
 
@@ -113,11 +113,12 @@ def test_reply_result_field_round_trips():
     `{"new": N, "linked": N, ...}`). Round-trip a few shapes to
     catch a future pydantic config change that'd accidentally
     drop unknown keys."""
-    r = Reply(ok=True, result={"inboxes": 7})
+    r = Reply(rpc_id=1, ok=True, result={"inboxes": 7})
     parsed = Reply.model_validate_json(r.model_dump_json())
     assert parsed.result == {"inboxes": 7}
 
     r2 = Reply(
+        rpc_id=1,
         ok=True,
         result={"new": 12, "linked": 3, "dup_batch": 1, "failed": 0},
     )
@@ -138,10 +139,10 @@ def test_warm_inbox_request_priority_field_round_trips():
     JSON round-trips correctly."""
     from mimir.broker.protocol import WarmInboxRequest
 
-    default = WarmInboxRequest(inbox_name="alpha")
+    default = WarmInboxRequest(rpc_id=1, inbox_name="alpha")
     assert default.priority == 1
 
-    fast = WarmInboxRequest(inbox_name="alpha", priority=0)
+    fast = WarmInboxRequest(rpc_id=1, inbox_name="alpha", priority=0)
     assert fast.priority == 0
 
     raw = fast.model_dump_json()
@@ -156,9 +157,9 @@ def test_warm_inbox_request_priority_rejects_out_of_range():
     from mimir.broker.protocol import WarmInboxRequest
 
     with pytest.raises(ValidationError):
-        WarmInboxRequest(inbox_name="alpha", priority=2)
+        WarmInboxRequest(rpc_id=1, inbox_name="alpha", priority=2)
     with pytest.raises(ValidationError):
-        WarmInboxRequest(inbox_name="alpha", priority=-1)
+        WarmInboxRequest(rpc_id=1, inbox_name="alpha", priority=-1)
 
 
 def test_warm_global_request_priority_and_targets_round_trip():
@@ -166,12 +167,12 @@ def test_warm_global_request_priority_and_targets_round_trip():
     `targets` (default None). JSON round-trips."""
     from mimir.broker.protocol import WarmGlobalRequest
 
-    default = WarmGlobalRequest()
+    default = WarmGlobalRequest(rpc_id=1)
     assert default.priority == 1
     assert default.targets is None
 
     fast_with_targets = WarmGlobalRequest(
-        priority=0, targets=["sitemap:index", "sitemap:meta"]
+        rpc_id=1, priority=0, targets=["sitemap:index", "sitemap:meta"]
     )
     raw = fast_with_targets.model_dump_json()
     parsed = WarmGlobalRequest.model_validate_json(raw)
@@ -183,9 +184,9 @@ def test_warm_global_request_priority_rejects_out_of_range():
     from mimir.broker.protocol import WarmGlobalRequest
 
     with pytest.raises(ValidationError):
-        WarmGlobalRequest(priority=2)
+        WarmGlobalRequest(rpc_id=1, priority=2)
     with pytest.raises(ValidationError):
-        WarmGlobalRequest(priority=-1)
+        WarmGlobalRequest(rpc_id=1, priority=-1)
 
 
 def test_warm_subsystem_request_round_trip():
@@ -193,11 +194,11 @@ def test_warm_subsystem_request_round_trip():
     priority (default 1, slow). JSON round-trips."""
     from mimir.broker.protocol import WarmSubsystemRequest
 
-    default = WarmSubsystemRequest(inbox_name="alpha", subsystem_id=42)
+    default = WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=42)
     assert default.priority == 1
     assert default.subsystem_id == 42
 
-    fast = WarmSubsystemRequest(inbox_name="alpha", subsystem_id=42, priority=0)
+    fast = WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=42, priority=0)
     raw = fast.model_dump_json()
     parsed = WarmSubsystemRequest.model_validate_json(raw)
     assert parsed.priority == 0
@@ -210,9 +211,9 @@ def test_warm_subsystem_request_priority_rejects_out_of_range():
     from mimir.broker.protocol import WarmSubsystemRequest
 
     with pytest.raises(ValidationError):
-        WarmSubsystemRequest(inbox_name="alpha", subsystem_id=1, priority=2)
+        WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=1, priority=2)
     with pytest.raises(ValidationError):
-        WarmSubsystemRequest(inbox_name="alpha", subsystem_id=1, priority=-1)
+        WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=1, priority=-1)
 
 
 def test_warm_subsystem_request_rejects_zero_subsystem_id():
@@ -221,7 +222,7 @@ def test_warm_subsystem_request_rejects_zero_subsystem_id():
     from mimir.broker.protocol import WarmSubsystemRequest
 
     with pytest.raises(ValidationError):
-        WarmSubsystemRequest(inbox_name="alpha", subsystem_id=0)
+        WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=0)
 
 
 def test_reply_requires_rpc_id():

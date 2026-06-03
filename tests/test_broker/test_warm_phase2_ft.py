@@ -27,7 +27,7 @@ def test_phase2_concurrent_warm_inbox_no_deadlock_or_race(seeded_db):
     try:
         _context.set_active(pool, writer)
         N = 8
-        req = WarmInboxRequest(inbox_name="alpha", targets=None)
+        req = WarmInboxRequest(rpc_id=1, inbox_name="alpha", targets=None)
 
         barrier = threading.Barrier(N)
 

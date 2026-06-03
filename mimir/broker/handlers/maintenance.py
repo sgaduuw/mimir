@@ -69,7 +69,7 @@ def handle_update_mainline(req: UpdateMainlineRequest) -> Reply:
         skip_commits=req.skip_commits,
         force=req.force,
     )
-    return Reply(ok=True, result=result.model_dump(mode="json"))
+    return Reply(rpc_id=req.rpc_id, ok=True, result=result.model_dump(mode="json"))
 
 
 def handle_analyze(req: AnalyzeRequest) -> Reply:
@@ -79,7 +79,7 @@ def handle_analyze(req: AnalyzeRequest) -> Reply:
     from mimir.maintenance import run_analyze
 
     result = run_analyze(full=req.full)
-    return Reply(ok=True, result=result.model_dump(mode="json"))
+    return Reply(rpc_id=req.rpc_id, ok=True, result=result.model_dump(mode="json"))
 
 
 def handle_vacuum(req: VacuumRequest) -> Reply:
@@ -107,22 +107,22 @@ def handle_vacuum(req: VacuumRequest) -> Reply:
         result.elapsed_ms,
         result.reclaimed,
     )
-    return Reply(ok=True, result=result.model_dump(mode="json"))
+    return Reply(rpc_id=req.rpc_id, ok=True, result=result.model_dump(mode="json"))
 
 
 # ----- Phase 2.4: admin-write ops ----------------------------------------
 
 
-def _inbox_error_reply(exc: Exception) -> Reply:
+def _inbox_error_reply(req, exc: Exception) -> Reply:
     """Map an admin-CRUD service-layer exception to a structured
     failure Reply. The CLI shim picks the prefix apart and re-raises
     as ClickException so operator-facing text stays intact."""
     from mimir.inboxes import InboxNotFound, InboxValidationError
 
     if isinstance(exc, InboxNotFound):
-        return Reply(ok=False, error=f"InboxNotFound:{exc}")
+        return Reply(rpc_id=req.rpc_id, ok=False, error=f"InboxNotFound:{exc}")
     if isinstance(exc, InboxValidationError):
-        return Reply(ok=False, error=f"InvalidInbox:{exc}")
+        return Reply(rpc_id=req.rpc_id, ok=False, error=f"InvalidInbox:{exc}")
     raise exc  # Anything else propagates to the dispatch layer.
 
 
@@ -155,8 +155,8 @@ def handle_inbox_create(req: InboxCreateRequest) -> Reply:
             upstream_url=req.upstream_url,
         )
     except (InboxNotFound, InboxValidationError) as exc:
-        return _inbox_error_reply(exc)
-    return Reply(ok=True, result={"inbox": _inbox_to_dict(inbox)})
+        return _inbox_error_reply(req, exc)
+    return Reply(rpc_id=req.rpc_id, ok=True, result={"inbox": _inbox_to_dict(inbox)})
 
 
 def handle_inbox_update(req: InboxUpdateRequest) -> Reply:
@@ -176,8 +176,8 @@ def handle_inbox_update(req: InboxUpdateRequest) -> Reply:
             upstream_url=req.upstream_url,
         )
     except (InboxNotFound, InboxValidationError) as exc:
-        return _inbox_error_reply(exc)
-    return Reply(ok=True, result={"inbox": _inbox_to_dict(inbox)})
+        return _inbox_error_reply(req, exc)
+    return Reply(rpc_id=req.rpc_id, ok=True, result={"inbox": _inbox_to_dict(inbox)})
 
 
 def handle_inbox_delete(req: InboxDeleteRequest) -> Reply:
@@ -193,8 +193,9 @@ def handle_inbox_delete(req: InboxDeleteRequest) -> Reply:
             remove_inbox_data=req.remove_inbox_data,
         )
     except InboxNotFound as exc:
-        return _inbox_error_reply(exc)
+        return _inbox_error_reply(req, exc)
     return Reply(
+        rpc_id=req.rpc_id,
         ok=True,
         result={
             "report": {
@@ -221,8 +222,8 @@ def handle_inbox_set_tracked_authors(
     try:
         inbox = set_tracked_authors(req.name, req.trackers)
     except (InboxNotFound, InboxValidationError) as exc:
-        return _inbox_error_reply(exc)
-    return Reply(ok=True, result={"inbox": _inbox_to_dict(inbox)})
+        return _inbox_error_reply(req, exc)
+    return Reply(rpc_id=req.rpc_id, ok=True, result={"inbox": _inbox_to_dict(inbox)})
 
 
 def handle_inbox_add_tracked_author(
@@ -238,8 +239,8 @@ def handle_inbox_add_tracked_author(
     try:
         inbox = add_tracked_author(req.name, req.label, req.substring)
     except (InboxNotFound, InboxValidationError) as exc:
-        return _inbox_error_reply(exc)
-    return Reply(ok=True, result={"inbox": _inbox_to_dict(inbox)})
+        return _inbox_error_reply(req, exc)
+    return Reply(rpc_id=req.rpc_id, ok=True, result={"inbox": _inbox_to_dict(inbox)})
 
 
 def handle_inbox_remove_tracked_author(
@@ -255,8 +256,8 @@ def handle_inbox_remove_tracked_author(
     try:
         inbox = remove_tracked_author(req.name, req.label)
     except (InboxNotFound, InboxValidationError) as exc:
-        return _inbox_error_reply(exc)
-    return Reply(ok=True, result={"inbox": _inbox_to_dict(inbox)})
+        return _inbox_error_reply(req, exc)
+    return Reply(rpc_id=req.rpc_id, ok=True, result={"inbox": _inbox_to_dict(inbox)})
 
 
 def handle_inbox_clear_tracked_authors(
@@ -268,8 +269,8 @@ def handle_inbox_clear_tracked_authors(
     try:
         inbox = clear_tracked_authors(req.name)
     except InboxNotFound as exc:
-        return _inbox_error_reply(exc)
-    return Reply(ok=True, result={"inbox": _inbox_to_dict(inbox)})
+        return _inbox_error_reply(req, exc)
+    return Reply(rpc_id=req.rpc_id, ok=True, result={"inbox": _inbox_to_dict(inbox)})
 
 
 # ----- Phase 2.4: admin failures replay ----------------------------------
@@ -286,28 +287,28 @@ def handle_failures_replay(req: FailuresReplayRequest) -> Reply:
     try:
         inbox = get_inbox(req.inbox_name)
     except InboxNotFound as exc:
-        return _inbox_error_reply(exc)
+        return _inbox_error_reply(req, exc)
     result = replay_failures(
         inbox,
         epoch_filter=req.epoch_filter,
         limit=req.limit,
     )
-    return Reply(ok=True, result=result.model_dump(mode="json"))
+    return Reply(rpc_id=req.rpc_id, ok=True, result=result.model_dump(mode="json"))
 
 
 # ----- robots admin ------------------------------------------------------
 
 
-def _robots_error_reply(exc: Exception) -> Reply:
+def _robots_error_reply(req, exc: Exception) -> Reply:
     """Map a robots service-layer exception to a structured failure
     Reply. The CLI shim picks the prefix apart and re-raises as
     ClickException."""
     from mimir.robots import RobotsRuleNotFound, RobotsValidationError
 
     if isinstance(exc, RobotsRuleNotFound):
-        return Reply(ok=False, error=f"RobotsRuleNotFound:{exc}")
+        return Reply(rpc_id=req.rpc_id, ok=False, error=f"RobotsRuleNotFound:{exc}")
     if isinstance(exc, RobotsValidationError):
-        return Reply(ok=False, error=f"InvalidRobotsRule:{exc}")
+        return Reply(rpc_id=req.rpc_id, ok=False, error=f"InvalidRobotsRule:{exc}")
     raise exc
 
 
@@ -338,8 +339,8 @@ def handle_robots_add(req: RobotsAddRequest) -> Reply:
             content_signals=req.content_signals or None,
         )
     except (RobotsRuleNotFound, RobotsValidationError) as exc:
-        return _robots_error_reply(exc)
-    return Reply(ok=True, result={"rule": _robots_rule_to_dict(rule)})
+        return _robots_error_reply(req, exc)
+    return Reply(rpc_id=req.rpc_id, ok=True, result={"rule": _robots_rule_to_dict(rule)})
 
 
 def handle_robots_update(req: RobotsUpdateRequest) -> Reply:
@@ -361,8 +362,8 @@ def handle_robots_update(req: RobotsUpdateRequest) -> Reply:
             clear_all_content_signals=req.clear_all_content_signals,
         )
     except (RobotsRuleNotFound, RobotsValidationError) as exc:
-        return _robots_error_reply(exc)
-    return Reply(ok=True, result={"rule": _robots_rule_to_dict(rule)})
+        return _robots_error_reply(req, exc)
+    return Reply(rpc_id=req.rpc_id, ok=True, result={"rule": _robots_rule_to_dict(rule)})
 
 
 def handle_robots_remove(req: RobotsRemoveRequest) -> Reply:
@@ -375,15 +376,15 @@ def handle_robots_remove(req: RobotsRemoveRequest) -> Reply:
     try:
         remove_rule(req.user_agent)
     except (RobotsRuleNotFound, RobotsValidationError) as exc:
-        return _robots_error_reply(exc)
-    return Reply(ok=True)
+        return _robots_error_reply(req, exc)
+    return Reply(rpc_id=req.rpc_id, ok=True)
 
 
 def handle_robots_reset(req: RobotsResetRequest) -> Reply:
     from mimir.robots import reset_rules
 
     reset_rules()
-    return Reply(ok=True)
+    return Reply(rpc_id=req.rpc_id, ok=True)
 
 
 __all__ = [
