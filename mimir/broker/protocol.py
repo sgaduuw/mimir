@@ -51,7 +51,16 @@ def _validate_inbox_name(v: str) -> str:
     return v
 
 
-class CacheSetRequest(BaseModel):
+class _BrokerRequest(BaseModel):
+    """Base for every broker Request type. Carries the required
+    `rpc_id` field that the client allocates and the broker echoes
+    back into the Reply so the client can demux concurrent in-flight
+    RPCs on one socket. 3.0.0 wire-protocol change."""
+
+    rpc_id: int = Field(ge=0)
+
+
+class CacheSetRequest(_BrokerRequest):
     op: Literal["cache_set"] = "cache_set"
     key: str = Field(min_length=1, max_length=512)
     value_json: str
