@@ -222,3 +222,17 @@ def test_warm_subsystem_request_rejects_zero_subsystem_id():
 
     with pytest.raises(ValidationError):
         WarmSubsystemRequest(inbox_name="alpha", subsystem_id=0)
+
+
+def test_reply_requires_rpc_id():
+    """Reply MUST carry rpc_id so the client can demux concurrent
+    in-flight RPCs. Missing field raises pydantic ValidationError."""
+    with pytest.raises(ValidationError):
+        Reply(ok=True)
+
+
+def test_reply_rpc_id_round_trips():
+    """Reply preserves rpc_id through JSON encode/decode."""
+    reply = Reply(ok=True, rpc_id=42)
+    decoded = Reply.model_validate_json(reply.model_dump_json())
+    assert decoded.rpc_id == 42
