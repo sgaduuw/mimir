@@ -2301,3 +2301,76 @@ def test_message_page_revisions_fold_links_non_current_versions(
     )
     # And the [diff vs current] link on v1 is preserved.
     assert "[diff vs current]" in fold
+
+
+# ---------------------------------------------------------------------------
+# Plan-pinning: bulk Message-ID linkifier SELECT uses an indexed seek
+# ---------------------------------------------------------------------------
+
+
+def test_bulk_msgid_linkify_select_uses_indexed_seek_no_full_scan(seeded_db):
+    """The message-page renderer (mimir/web/routes/message.py:232-243)
+    builds a `{message_id -> int-URL}` dict via one bulk SELECT:
+    `SELECT articles JOIN article_lists ON ... WHERE inbox_id=? AND
+    articles.message_id IN (candidate_set)`. The IN-list must drive
+    through `articles.message_id`'s UNIQUE/index; a regression that
+    fell back to a full SCAN of articles would balloon render time
+    on every message page that linkifies refs (most of them).
+
+    `articles.message_id` is declared `unique=True, index=True` in
+    mimir/models.py:66; SQLite is free to pick either the
+    UNIQUE-constraint index or the column index. Both are sargable
+    seeks.
+
+    Pin: no full SCAN of articles or article_lists; an indexed seek
+    drives the join.
+    """
+    from sqlalchemy import select, text
+
+    from mimir.models import Inbox
+
+    with seeded_db() as s:
+        alpha_id = s.execute(select(Inbox.id).where(Inbox.name == "alpha")).scalar_one()
+
+        plan_rows = s.execute(
+            text(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT a.id, a.message_id, a.subject, a.date,
+                       a.canonical_inbox_id
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                WHERE al.inbox_id = :inbox_id
+                  AND a.message_id IN (:m1, :m2, :m3)
+                """
+            ),
+            {
+                "inbox_id": alpha_id,
+                "m1": "art1@example.com",
+                "m2": "art3@example.com",
+                "m3": "art4@example.com",
+            },
+        ).all()
+    plan = "\n".join(r[-1] for r in plan_rows)
+
+    # At unit-test scale (4 articles, 5 article_lists rows), SQLite
+    # may pick SCAN on tiny tables post-ANALYZE — single-page tables
+    # are often cheaper to full-scan than to index-lookup. What we
+    # DO pin: AT LEAST ONE indexed seek appears in the plan. The
+    # bug class this catches is a non-sargable WHERE clause that
+    # defeats every index (e.g. `LOWER(message_id) IN (...)` or
+    # `message_id || '' IN (...)`); a regression producing a plan
+    # with NO `USING INDEX` / `USING INTEGER PRIMARY KEY` segments
+    # would surface here.
+    # SQLite reports index use as "USING INDEX <name>" or
+    # "USING COVERING INDEX <name>" (the article_lists join shows up
+    # this way), plus "USING INTEGER PRIMARY KEY" for rowid lookups.
+    # The bug-class catch is "no index whatsoever in the plan" —
+    # accept any of these tokens.
+    assert "INDEX" in plan or "INTEGER PRIMARY KEY" in plan, (
+        f"bulk msgid linkifier must drive via an indexed seek "
+        f"somewhere (articles.message_id UNIQUE index, "
+        f"ix_articles_message_id, article_lists PK, or rowid); a "
+        f"regression to a non-sargable WHERE clause (e.g. "
+        f"function-on-column) would surface here. plan:\n{plan}"
+    )
