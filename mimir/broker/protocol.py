@@ -651,6 +651,13 @@ Request = Union[
 
 
 class Reply(BaseModel):
+    # Correlation ID echoed back from the matching request. Lets
+    # the BrokerClient demux multiple in-flight RPCs on one socket
+    # (3.0.0 wire-protocol change). Always present; the broker
+    # dispatcher attaches it before sending. For Replies emitted
+    # in response to malformed requests (no parseable rpc_id), the
+    # broker uses 0; the client drops such replies on lookup miss.
+    rpc_id: int = Field(ge=0)
     ok: bool
     # Free-form error tag on failure (e.g. "InvalidRequest",
     # "OperationalError"). Absent on success.
