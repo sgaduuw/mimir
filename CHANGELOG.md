@@ -11,6 +11,45 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.0.0] - YYYY-MM-DD
+
+### Breaking changes
+
+- **Wire-protocol bump**: every broker Request and Reply now
+  carries a required `rpc_id: int` field. The BrokerClient
+  pipelines RPCs over one socket: multiple caller threads can
+  have requests in flight concurrently, and a daemon demux
+  thread resolves replies by `rpc_id`. Mixed-version broker /
+  web / tasks containers fail with `pydantic.ValidationError`
+  on the first message. Atomic compose deploy required; the
+  standard `podman compose up -d` flow handles this correctly
+  via `depends_on`.
+
+  The previous CLI-side `_rpc_lock` (a single per-process lock
+  held across every send-plus-receive round-trip) and the
+  retry-once-across-reconnect logic are removed. Callers that
+  need retry handle it at their layer: `mimir.cache.cache_set`
+  logs at warning and swallows `BrokerUnavailable`; long-op CLI
+  wrappers raise `ClickException`.
+
+### Changed
+
+- `mimir warm-cache --tier slow` wall time drops from O(263 s) to
+  a fraction of that on production-scale corpora; the 8 broker
+  warm workers can now actually run concurrently when the slow
+  tier fans out per-(inbox, subsystem) RPCs.
+
+### Internal
+
+- Broker per-connection `_send_lock` serialises concurrent
+  worker replies on the same client connection at the byte
+  level (microsecond hold).
+- New `_BrokerRequest` base class in `mimir.broker.protocol`
+  carries `rpc_id`; every concrete Request inherits from it.
+- New daemon demux thread inside `BrokerClient`; per-RPC
+  timeout lives on the caller's `Future` (no socket-level
+  read timeout).
+
 ## [2.19.0], 2026-06-01
 
 ### Changed
