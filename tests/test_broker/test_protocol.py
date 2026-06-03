@@ -236,3 +236,17 @@ def test_reply_rpc_id_round_trips():
     reply = Reply(ok=True, rpc_id=42)
     decoded = Reply.model_validate_json(reply.model_dump_json())
     assert decoded.rpc_id == 42
+
+
+def test_cache_set_request_requires_rpc_id():
+    """Every broker Request MUST carry rpc_id (3.0.0 wire-protocol
+    change). The CacheSetRequest is the canary; the full sweep
+    lands in the next task. Missing rpc_id raises ValidationError."""
+    with pytest.raises(ValidationError):
+        CacheSetRequest(key="x", value_json='"v"', ttl=60)
+
+
+def test_cache_set_request_rpc_id_round_trips():
+    req = CacheSetRequest(rpc_id=7, key="x", value_json='"v"', ttl=60)
+    decoded = CacheSetRequest.model_validate_json(req.model_dump_json())
+    assert decoded.rpc_id == 7
