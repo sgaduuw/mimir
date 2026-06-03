@@ -2,6 +2,8 @@
 attachment download + Pygments-syntax-highlighted preview,
 and the race-condition fallback when the git blob is gone."""
 
+import pytest
+
 from tests.test_routes._helpers import _ingest_with_attachment
 
 
@@ -120,3 +122,71 @@ def test_attachment_preview_falls_back_for_non_previewable(client, tmp_path):
     assert "payload.bin" in body
     # No Pygments highlighting on a binary blob.
     assert "<span" not in body or "linenos" not in body
+
+
+# ---------------------------------------------------------------------------
+# RFC 6266 Content-Disposition: multibyte UTF-8 filename coverage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "filename,expected_quoted_substring",
+    [
+        # CJK (Japanese: "invitation.txt")
+        ("招待状.txt", "%E6%8B%9B%E5%BE%85%E7%8A%B6.txt"),
+        # Latin-1 with diacritics (French: "cafe.txt" with é)
+        ("café.txt", "caf%C3%A9.txt"),
+        # Emoji (party popper, U+1F389, requires surrogate pair in UTF-16
+        # but a 4-byte UTF-8 sequence; common real-world filename input)
+        ("🎉.txt", "%F0%9F%8E%89.txt"),
+        # Cyrillic (Russian: "doc.txt" in Cyrillic letters)
+        ("документ.txt", "%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82.txt"),
+    ],
+    ids=["CJK", "Latin-1-diacritic", "emoji-4byte", "Cyrillic"],
+)
+def test_content_disposition_rfc6266_multibyte_utf8(
+    filename, expected_quoted_substring
+):
+    """`_content_disposition` must produce a valid RFC 6266
+    `filename*=UTF-8''<percent-encoded>` parameter for ANY multibyte
+    filename, including:
+
+    - 3-byte CJK codepoints (Japanese, Chinese, Korean)
+    - 2-byte Latin-1 supplements with diacritics
+    - 4-byte UTF-8 sequences (emoji, mathematical alphanumerics, etc.)
+    - Cyrillic (mixed multi-byte)
+
+    Existing `test_attachment_download_serves_bytes_with_content_disposition`
+    pins only the ASCII case. A regression that bypassed
+    `urllib.parse.quote` for the multibyte path (e.g. emitted raw
+    bytes in the header) would inject invalid UTF-8 bytes into the
+    HTTP response line, breaking compliant clients.
+
+    Direct unit test on `_content_disposition` rather than a full
+    route integration so the contract is pinned even if the route's
+    SQL fixture machinery changes shape.
+    """
+    from mimir.web.routes.attachments import _content_disposition
+
+    cd = _content_disposition(filename)
+
+    # The RFC 6266 `filename*` parameter is the load-bearing surface
+    # for non-ASCII filenames; pin its presence + the exact percent-
+    # encoded form.
+    assert f"filename*=UTF-8''{expected_quoted_substring}" in cd, (
+        f"`filename*` parameter for {filename!r} doesn't match the "
+        f"expected percent-encoded form. Got Content-Disposition: {cd!r}"
+    )
+    # The header must still start with `attachment;` so browsers
+    # treat it as a download rather than rendering inline.
+    assert cd.startswith("attachment;"), (
+        f"Content-Disposition must start with `attachment;`; got {cd!r}"
+    )
+    # No raw multibyte codepoints should leak into the ASCII
+    # `filename="..."` form (whatever the bare filename= contains,
+    # the filename* form is what compliant clients use; verify the
+    # quoted form was produced).
+    assert "%" in cd, (
+        f"expected percent-encoded characters in Content-Disposition for "
+        f"multibyte filename {filename!r}; got {cd!r}"
+    )

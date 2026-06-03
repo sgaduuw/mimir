@@ -209,3 +209,56 @@ def test_doctor_indexnow_unset_is_ok_not_warning(
     # issues the exit is 0.
     assert payload["summary"]["warning"] == 0
     assert payload["exit_code"] == 0
+
+
+def test_doctor_warns_on_missing_mirror_path(runner, seeded_db, monkeypatch, tmp_path):
+    """`_check_mirror_paths` in mimir/cli/doctor.py:295 walks every
+    configured inbox and reports a warning when the inbox's
+    mirror_path directory doesn't exist on disk. CONTEXT.md
+    "Production deployment posture": a missing bind mount means
+    the read path can't fetch blobs and `update` can't pull,
+    silently breaking ingest. Pin that doctor surfaces this
+    pre-deploy.
+
+    Audit asked for this specific failure mode. Existing tests
+    all `mkdir()` the mirror dirs; this one deliberately doesn't,
+    asserting the WARN exit code and the "missing" diagnostic.
+    """
+    from mimir.config import settings as live_settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from sqlalchemy import select
+
+    monkeypatch.setattr(live_settings, "mimir_is_broker", True)
+    monkeypatch.setattr(live_settings, "site_base_url", "https://example.com")
+    monkeypatch.setattr(live_settings, "indexnow_key", None)
+
+    # Re-point alpha at a directory that DOESN'T exist (no mkdir);
+    # beta gets a real one so the test isolates the mirror check.
+    missing = tmp_path / "alpha-not-on-disk"
+    beta_dir = tmp_path / "beta-real"
+    beta_dir.mkdir()
+    assert not missing.exists()
+    with SessionLocal() as s:
+        for name, mp in (("alpha", missing), ("beta", beta_dir)):
+            ix = s.execute(select(Inbox).where(Inbox.name == name)).scalar_one()
+            ix.mirror_path = str(mp)
+        s.commit()
+
+    result = runner.invoke(doctor_command, ["--json"])
+    assert result.exit_code != 0, (
+        f"doctor must exit non-zero when an inbox's mirror_path is "
+        f"missing on disk; got exit={result.exit_code} output={result.output!r}"
+    )
+    payload = json.loads(result.output)
+    mirror_check = next(c for c in payload["checks"] if c["name"] == "Mirror paths")
+    assert mirror_check["status"] == "warning", (
+        f"Mirror paths check must report warning; got "
+        f"{mirror_check['status']!r}, value={mirror_check.get('value')!r}"
+    )
+    assert "alpha" in mirror_check["value"], (
+        f"the missing inbox name (alpha) must surface in the warning "
+        f"value so the operator knows WHICH bind mount to check; got "
+        f"{mirror_check['value']!r}"
+    )
+    assert payload["summary"]["warning"] >= 1

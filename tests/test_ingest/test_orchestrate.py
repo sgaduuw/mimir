@@ -105,6 +105,77 @@ def test_ingest_inbox_skips_analyze_when_disabled(
     assert not analyze_calls, "ANALYZE must not run when disabled (threshold=0)"
 
 
+import pytest  # noqa: E402  (kept adjacent to the parametrised test that needs it)
+
+
+@pytest.mark.parametrize(
+    "messages,threshold,should_analyze",
+    [
+        # moved < threshold → skip
+        (2, 3, False),
+        # moved == threshold → fire (gate is `moved >= threshold`, INCLUSIVE)
+        (3, 3, True),
+        # moved > threshold → fire
+        (4, 3, True),
+    ],
+    ids=["below=skip", "at=fire", "above=fire"],
+)
+def test_ingest_inbox_analyze_threshold_is_inclusive_at_min(
+    seeded_db, tmp_path, monkeypatch, broker_active, messages, threshold, should_analyze
+):
+    """The auto-ANALYZE gate in `ingest_inbox` is
+    `if threshold > 0 and moved >= threshold` (orchestrate.py:164),
+    i.e. INCLUSIVE at the threshold (production default 10000 fires
+    at exactly 10000 new+linked rows; 9999 skips). Boundary tests
+    pinned per the 2026-06-02 audit (CONTEXT.md "Auto-ANALYZE after
+    threshold-crossing ingest"). An off-by-one regression (`>` instead
+    of `>=`) would silently raise the bar by 1, postponing planner
+    refresh on the freshly-added-inbox initial-load case where the
+    moved count happens to land exactly on the configured threshold.
+
+    Tested with a small threshold (3) so it's exercise-able without
+    ingesting 10000 messages; the gate is the SAME comparator the
+    production default 10000 exercises.
+    """
+    from concurrent.futures import Future
+
+    from mimir.config import settings
+
+    alpha = _setup_alpha_with_messages(seeded_db, tmp_path, messages)
+    monkeypatch.setattr(settings, "analyze_after_ingest_rows", threshold)
+
+    analyze_calls: list[str] = []
+    import mimir.ingest.orchestrate as orchestrate_mod
+
+    def _stub_analyze(writer, inbox_name):
+        analyze_calls.append(inbox_name)
+        f: Future = Future()
+        f.set_result(None)
+        return f
+
+    monkeypatch.setattr(orchestrate_mod, "_submit_analyze", _stub_analyze)
+
+    results = ingest_inbox(alpha, workers=1)
+    moved = sum(r.new + r.linked for r in results)
+    assert moved == messages, (
+        f"test wiring: expected {messages} new+linked, got {moved}"
+    )
+
+    if should_analyze:
+        assert analyze_calls, (
+            f"with moved={moved} and threshold={threshold}, ANALYZE must "
+            f"fire (gate is `>= threshold`, INCLUSIVE). The off-by-one "
+            f"regression catch is: a `> threshold` comparator would have "
+            f"skipped this case."
+        )
+    else:
+        assert not analyze_calls, (
+            f"with moved={moved} and threshold={threshold}, ANALYZE must "
+            f"skip (moved is strictly below threshold). Got "
+            f"calls={analyze_calls!r}."
+        )
+
+
 # Cache invalidation on empty-to-non-empty transition
 
 
