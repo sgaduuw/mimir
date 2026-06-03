@@ -329,3 +329,106 @@ def test_two_threads_dispatch_concurrently_no_serialization(seeded_db, monkeypat
             assert results.get("b") is True
         finally:
             c.close()
+
+
+def test_rpc_id_unique_under_contention(seeded_db):
+    """1000 RPC id allocations across 16 threads: every allocated
+    rpc_id is unique. Monotonicity is an implementation detail of
+    the atomic counter, not a contract; only uniqueness is asserted."""
+    import threading
+
+    sp = short_socket_path("client-id-unique")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            seen: set[int] = set()
+            seen_lock = threading.Lock()
+
+            def fire(n: int) -> None:
+                for _ in range(n):
+                    rpc_id = c._allocate_rpc_id()
+                    with seen_lock:
+                        assert rpc_id not in seen
+                        seen.add(rpc_id)
+
+            threads = [threading.Thread(target=fire, args=(62,)) for _ in range(16)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5.0)
+            assert len(seen) == 16 * 62
+        finally:
+            c.close()
+
+
+def test_caller_timeout_leaves_client_usable(seeded_db, monkeypatch):
+    """When a caller times out on _rpc(timeout=N), the late-arriving
+    reply is silently dropped by the demux thread. The client must
+    stay usable for subsequent RPCs."""
+    import time
+    from mimir.broker import handlers
+    from mimir.broker.protocol import PingRequest, Reply
+
+    def slow_ping(req):
+        time.sleep(0.5)
+        return Reply(rpc_id=req.rpc_id, ok=True)
+
+    monkeypatch.setitem(
+        handlers._DISPATCH,
+        "ping",
+        (PingRequest, slow_ping),
+    )
+
+    sp = short_socket_path("client-timeout")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            # Force 100ms timeout; the broker sleeps 500ms.
+            req = PingRequest(rpc_id=0)
+            with pytest.raises(BrokerUnavailable):
+                c._rpc(req, timeout=0.1)
+
+            # Wait for the dropped reply to land in the demux thread
+            # and be silently discarded.
+            time.sleep(1.0)
+
+            # Subsequent RPC works normally.
+            assert c.ping() is True
+        finally:
+            c.close()
+
+
+def test_socket_eof_fails_all_pending(seeded_db):
+    """When the broker closes the socket mid-pipeline, every
+    pending future receives BrokerUnavailable from the demux
+    thread's fail-all step."""
+    from concurrent.futures import Future
+
+    sp = short_socket_path("client-eof")
+    with broker_running(sp) as server:
+        c = BrokerClient(sp)
+        try:
+            c._ensure_alive()
+            # Plant two fake pending futures (no real RPC sent;
+            # simulating "broker died after we registered").
+            fake_a: Future = Future()
+            fake_b: Future = Future()
+            with c._pending_lock:
+                c._pending[100001] = fake_a
+                c._pending[100002] = fake_b
+            # Force EOF: signal the broker to shut down. The demux
+            # thread sees the socket close when the broker exits.
+            server.stop_event.set()
+            # Wait for fail-all to fire. Give the demux thread a
+            # generous window; it is poll-based on readline.
+            try:
+                fake_a.exception(timeout=5.0)
+            except TimeoutError:
+                pytest.fail("demux thread did not fail-all within 5s")
+            assert isinstance(fake_a.exception(), BrokerUnavailable)
+            assert isinstance(fake_b.exception(), BrokerUnavailable)
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
