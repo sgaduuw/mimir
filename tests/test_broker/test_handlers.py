@@ -131,3 +131,51 @@ def test_dispatch_handler_does_not_crash_on_bad_value_type(seeded_db):
     reply = dispatch(b"[1, 2, 3]")
     assert reply.ok is False
     assert reply.error == "UnknownOp"
+
+
+def test_dispatch_echoes_rpc_id_on_success():
+    """dispatch() attaches the request's rpc_id to the Reply so
+    the client can demux multiple in-flight RPCs."""
+    line = b'{"op":"ping","rpc_id":12345}'
+    reply = dispatch(line)
+    assert reply.ok is True
+    assert reply.rpc_id == 12345
+
+
+def test_dispatch_echoes_rpc_id_on_handler_error():
+    """rpc_id is echoed even when the handler returns ok=False, so
+    the client can resolve the future cleanly."""
+    # Unknown op produces Reply(ok=False, error="UnknownOp").
+    line = b'{"op":"no_such_op","rpc_id":99}'
+    reply = dispatch(line)
+    assert reply.ok is False
+    assert reply.rpc_id == 99
+
+
+def test_dispatch_malformed_json_returns_rpc_id_zero():
+    """Malformed JSON: no rpc_id is parseable, so the Reply uses 0.
+    The client allocates from 1, so 0 lookups miss and the reply is
+    silently dropped."""
+    reply = dispatch(b"this is not json")
+    assert reply.ok is False
+    assert reply.error == "MalformedJSON"
+    assert reply.rpc_id == 0
+
+
+def test_dispatch_missing_rpc_id_returns_rpc_id_zero():
+    """Request JSON without the required rpc_id field fails pydantic
+    validation; the Reply uses 0 as the rpc_id sentinel."""
+    reply = dispatch(b'{"op":"ping"}')  # no rpc_id
+    assert reply.ok is False
+    assert reply.error == "InvalidRequest"
+    assert reply.rpc_id == 0
+
+
+def test_dispatch_negative_rpc_id_returns_rpc_id_zero():
+    """Negative rpc_id in malformed request: dispatch coerces to 0
+    so the Reply does not escape pydantic's Field(ge=0) constraint.
+    Pins the guard added to keep dispatch() within its 'never raises'
+    contract."""
+    reply = dispatch(b'{"op":"no_such_op","rpc_id":-5}')
+    assert reply.ok is False
+    assert reply.rpc_id == 0
