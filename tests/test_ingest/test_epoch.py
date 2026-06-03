@@ -10,6 +10,7 @@ headers filter, and the tz-aware UTC normalisation for
 
 from datetime import datetime, timezone
 
+import pytest
 from dulwich.repo import Repo
 from sqlalchemy import func, select
 
@@ -1070,6 +1071,129 @@ def test_promote_list_address_split_decision_skips(seeded_db):
         s.commit()
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
         assert result is None
+        assert ix.list_address is None
+
+
+@pytest.mark.parametrize(
+    "winner_count,should_promote",
+    [
+        (MIN_PROMOTE_OBSERVATIONS - 1, False),
+        (MIN_PROMOTE_OBSERVATIONS, True),
+        (MIN_PROMOTE_OBSERVATIONS + 1, True),
+    ],
+    ids=["below=skip", "at=promote", "above=promote"],
+)
+def test_promote_list_address_count_threshold_is_inclusive_at_min(
+    seeded_db, winner_count, should_promote
+):
+    """The count gate at `_submit_promote_list_address` is
+    `if top_count < MIN_PROMOTE_OBSERVATIONS: return None`, i.e.
+    INCLUSIVE at the threshold (50 promotes; 49 skips). Boundary tests
+    pinned per the 2026-06-02 audit (CONTEXT.md "Canonical-inbox
+    resolution"). An off-by-one regression (`<=` instead of `<`) would
+    quietly require 51 observations instead of 50, postponing
+    auto-promotion for every newly-added inbox.
+
+    The dominance ratio is held at 1.0 (only one address observed) so
+    the count gate is the only branch under test.
+    """
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s:
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="linux-fsdevel@vger.kernel.org",
+                count=winner_count,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
+        s.commit()
+        result = _maybe_promote_list_address(s, alpha.id)
+        s.commit()
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+
+    if should_promote:
+        assert result == "linux-fsdevel@vger.kernel.org", (
+            f"with top_count={winner_count} and dominance=1.0, promotion "
+            f"must fire (count gate is `< MIN_PROMOTE_OBSERVATIONS`, "
+            f"INCLUSIVE at the threshold). Got result={result!r}."
+        )
+        assert ix.list_address == "linux-fsdevel@vger.kernel.org"
+    else:
+        assert result is None, (
+            f"with top_count={winner_count} (below MIN_PROMOTE_OBSERVATIONS="
+            f"{MIN_PROMOTE_OBSERVATIONS}), promotion must skip. Got "
+            f"result={result!r}."
+        )
+        assert ix.list_address is None
+
+
+@pytest.mark.parametrize(
+    "winner,runner,should_promote",
+    [
+        # 69/(69+31)=0.69, below threshold → skip
+        (69, 31, False),
+        # 70/(70+30)=0.70, exactly at threshold → promote (gate is `<`, INCLUSIVE)
+        (70, 30, True),
+        # 71/(71+29)=0.71, above threshold → promote
+        (71, 29, True),
+    ],
+    ids=["0.69=skip", "0.70=promote", "0.71=promote"],
+)
+def test_promote_list_address_dominance_threshold_is_inclusive_at_min(
+    seeded_db, winner, runner, should_promote
+):
+    """The dominance gate at `_submit_promote_list_address` is
+    `if top_count / (top_count + second_count) < PROMOTE_DOMINANCE:
+    return None`, i.e. INCLUSIVE at the threshold (0.70 promotes;
+    0.69 skips). Boundary tests pinned per the 2026-06-02 audit. An
+    off-by-one regression (`<=` instead of `<`) would silently raise
+    the bar from 70% to >70%, leaving inboxes stuck at NULL even when
+    the modal address is exactly at the documented threshold.
+
+    Count total is held at 100 (well above MIN_PROMOTE_OBSERVATIONS=50)
+    so the count gate is never the deciding branch; only the dominance
+    ratio varies.
+    """
+    alpha = _alpha(seeded_db)
+    assert winner + runner == 100, "test wiring: total must be 100"
+
+    with seeded_db() as s:
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="linux-fsdevel@vger.kernel.org",
+                count=winner,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="linux-kernel@vger.kernel.org",
+                count=runner,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
+        s.commit()
+        result = _maybe_promote_list_address(s, alpha.id)
+        s.commit()
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+
+    ratio = winner / (winner + runner)
+    if should_promote:
+        assert result == "linux-fsdevel@vger.kernel.org", (
+            f"with dominance ratio {ratio:.2f} (>= PROMOTE_DOMINANCE="
+            f"{PROMOTE_DOMINANCE}), promotion must fire. Got "
+            f"result={result!r}."
+        )
+        assert ix.list_address == "linux-fsdevel@vger.kernel.org"
+    else:
+        assert result is None, (
+            f"with dominance ratio {ratio:.2f} (< PROMOTE_DOMINANCE="
+            f"{PROMOTE_DOMINANCE}), promotion must skip. Got "
+            f"result={result!r}."
+        )
         assert ix.list_address is None
 
 
