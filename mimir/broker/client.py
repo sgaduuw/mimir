@@ -33,6 +33,7 @@ table) without blocking callers indefinitely if the broker hangs.
 import logging
 import socket
 import threading
+from concurrent.futures import Future
 from pathlib import Path
 
 from mimir.broker.protocol import (
@@ -89,19 +90,57 @@ class BrokerUnavailable(Exception):
 
 class BrokerClient:
     """Persistent connection to the broker daemon. One per
-    process; obtain via `get_broker_client()`."""
+    process; obtain via `get_broker_client()`.
+
+    Pipelined RPCs (3.0.0): multiple caller threads can have
+    in-flight requests on the same socket. Each request carries a
+    monotonic per-client `rpc_id`; the broker echoes it back in the
+    matching Reply; a daemon `_demux_thread` reads replies in a
+    loop and resolves the matching `concurrent.futures.Future` from
+    `_pending`. Caller threads block on `future.result(timeout=...)`.
+
+    Locks:
+
+    - `_id_lock`: protects the monotonic counter.
+    - `_pending_lock`: protects the pending-futures dict.
+    - `_send_lock`: held only across one `sock.sendall(...)` call
+      (microseconds) so concurrent caller threads do not interleave
+      bytes on the wire.
+    - `_state_lock`: serialises connect / close / demux-thread
+      lifecycle transitions."""
 
     def __init__(self, socket_path: Path) -> None:
         self._socket_path = Path(socket_path)
         self._sock: socket.socket | None = None
         self._rfile = None
         self._wfile = None
-        # Serialises every RPC through the singleton from multiple
-        # caller threads (warm-cache's ThreadPoolExecutor fans out
-        # to ~8 workers sharing this client). Held for the duration
-        # of `_rpc`, which covers connect, write, read, and any
-        # retry. Cheap on the happy path (uncontended); essential
-        # under contention.
+
+        # Monotonic per-client RPC id allocator. Client allocates
+        # from 1; the broker uses 0 as a sentinel for malformed
+        # requests (no matching pending future, silently dropped).
+        self._next_rpc_id: int = 1
+        self._id_lock = threading.Lock()
+
+        # In-flight RPCs awaiting replies. Populated under
+        # _pending_lock by the caller; popped under the same lock
+        # by the demux thread.
+        self._pending: dict[int, Future] = {}
+        self._pending_lock = threading.Lock()
+
+        # Held narrowly around `sock.sendall(req + b"\n")` so
+        # concurrent caller threads do not tear the JSONL frame.
+        self._send_lock = threading.Lock()
+
+        # Serialises lifecycle transitions: connect, close,
+        # starting/stopping the demux thread.
+        self._state_lock = threading.Lock()
+
+        self._demux_thread: threading.Thread | None = None
+        self._closed: bool = False
+
+        # NOTE: `_rpc_lock` is kept temporarily so the existing
+        # `_rpc` method (rewritten in Task 9) still works during
+        # this transitional commit. Will be removed in Task 9.
         self._rpc_lock = threading.Lock()
 
     def _connect(self) -> None:
