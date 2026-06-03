@@ -174,6 +174,113 @@ class BrokerClient:
         self._rfile = None
         self._wfile = None
 
+    def _connect_locked(self) -> None:
+        """Open the UNIX socket. Caller must hold `_state_lock`.
+        Raises BrokerUnavailable on connect failure. Does NOT start
+        the demux thread; that's `_ensure_alive`'s job."""
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # No SO_RCVTIMEO: the demux thread does blocking readline;
+        # per-RPC deadlines live entirely on the caller's future.
+        try:
+            s.connect(str(self._socket_path))
+        except OSError as exc:
+            s.close()
+            raise BrokerUnavailable(f"connect {self._socket_path}: {exc}") from exc
+        self._sock = s
+        self._rfile = s.makefile("rb", buffering=0)
+        self._wfile = s.makefile("wb", buffering=0)
+
+    def _close_socket(self) -> None:
+        """Tear down the socket and file wrappers. Idempotent and
+        safe to call concurrently with `_demux_loop` (each branch
+        guards against None)."""
+        for f in (self._rfile, self._wfile):
+            if f is not None:
+                try:
+                    f.close()
+                except OSError:
+                    pass
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        self._sock = None
+        self._rfile = None
+        self._wfile = None
+
+    def _ensure_alive(self) -> None:
+        """Make sure the socket is open and the demux thread is
+        running. Called at the top of `_rpc`; idempotent.
+
+        Raises BrokerUnavailable if the connect fails or the client
+        is already closed."""
+        with self._state_lock:
+            if self._closed:
+                raise BrokerUnavailable("client closed")
+            if self._sock is None:
+                self._connect_locked()
+            if self._demux_thread is None or not self._demux_thread.is_alive():
+                t = threading.Thread(
+                    target=self._demux_loop,
+                    daemon=True,
+                    name=f"broker-client-demux-{self._socket_path.name}",
+                )
+                self._demux_thread = t
+                t.start()
+
+    def _demux_loop(self) -> None:
+        """Read JSONL replies in a loop; resolve the matching
+        pending future. On EOF or OSError, fails every pending
+        future with BrokerUnavailable and exits so the next caller
+        reconnects fresh.
+
+        Garbage on the wire (a Reply that fails pydantic validation)
+        is treated as fatal: continuing would leak futures whose
+        rpc_id we cannot determine. Log error and exit."""
+        # Pin a local ref so `_close_socket` setting attributes to
+        # None mid-loop doesn't crash us; we'll see EOF on the next
+        # readline either way.
+        rfile = self._rfile
+        if rfile is None:
+            return
+        try:
+            while not self._closed:
+                try:
+                    line = rfile.readline()
+                except OSError:
+                    break
+                if not line:
+                    break  # Clean EOF from broker.
+                try:
+                    reply = Reply.model_validate_json(line)
+                except Exception:
+                    logger.error(
+                        "broker reply parse failure; closing connection"
+                    )
+                    break
+                with self._pending_lock:
+                    fut = self._pending.pop(reply.rpc_id, None)
+                if fut is not None and not fut.done():
+                    fut.set_result(reply)
+                # rpc_id miss (e.g. server-side rpc_id=0 for a
+                # MalformedJSON / InvalidRequest, or a late reply
+                # for a caller that already timed out) is silently
+                # dropped; the client never allocates 0 itself.
+        finally:
+            self._fail_all_pending("broker closed")
+            with self._state_lock:
+                self._close_socket()
+
+    def _fail_all_pending(self, message: str) -> None:
+        """Reject every pending future with BrokerUnavailable. Used
+        by demux on EOF and by `close()` on shutdown. Idempotent."""
+        with self._pending_lock:
+            for fut in list(self._pending.values()):
+                if not fut.done():
+                    fut.set_exception(BrokerUnavailable(message))
+            self._pending.clear()
+
     def _send_one(self, request_json: str) -> Reply:
         """One attempt: write the request, read one reply line.
         Raises any socket / framing error to the caller; the public
