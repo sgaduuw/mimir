@@ -58,22 +58,29 @@ def test_client_raises_broker_unavailable_when_no_broker(seeded_db):
         c.cache_set("x", '"v"', 60)
 
 
-def test_client_reconnects_after_broker_restart(seeded_db):
-    """First RPC succeeds. Stop the broker. Start a new broker on
-    the same socket. Second RPC should reconnect transparently and
-    succeed. Exercises the `_rpc` retry loop."""
+def test_client_reconnects_lazily_after_broker_restart(seeded_db):
+    """3.0.0 fail-fast contract: after a broker restart, the next
+    RPC reconnects transparently. Any RPC mid-flight at the moment
+    of EOF raises BrokerUnavailable; callers handle that at their
+    layer (cache.set logs and swallows)."""
     sp = short_socket_path("client-reconnect")
     c = BrokerClient(sp)
     try:
         with broker_running(sp):
             assert c.ping() is True
         # Broker is gone; the client's socket is stale.
-        # Second broker on the same path:
+        # The next RPC against a stopped broker raises.
+        with pytest.raises(BrokerUnavailable):
+            c.ping()
+        # New broker on the same path. Next RPC reconnects.
         with broker_running(sp):
-            # First call after restart: client reconnects on retry.
             assert c.ping() is True
     finally:
-        c.close()
+        try:
+            if c._sock is not None:
+                c._sock.close()
+        except Exception:
+            pass
 
 
 def test_client_persistent_connection_survives_idle_window(seeded_db):
