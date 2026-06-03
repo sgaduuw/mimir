@@ -238,3 +238,94 @@ def test_close_fails_pending_futures(seeded_db):
         # Future must be resolved with BrokerUnavailable.
         assert fake.done()
         assert isinstance(fake.exception(), BrokerUnavailable)
+
+
+def test_two_threads_dispatch_concurrently_no_serialization(seeded_db, monkeypatch):
+    """REGRESSION GUARD (3.0.0): two caller threads issue RPCs
+    concurrently. The first thread's RPC takes a long time on the
+    broker side; the second thread's RPC must dispatch and complete
+    BEFORE the first thread's reply arrives. If this test fails,
+    the client has silently re-introduced a global lock that
+    serialises the wire.
+
+    Mechanism: monkeypatch the broker's _DISPATCH so the `ping` op
+    routes to a slow-for-rpc_id-1 handler, and bump
+    `broker_cache_workers` to 2 so both pings can dispatch in
+    parallel. Thread A wins rpc_id=1 (started first), Thread B gets
+    rpc_id=2. The barrier is set only when Thread B completes; if B
+    is blocked behind A on a global client-side lock, the barrier
+    never trips and the test times out.
+
+    Note: `broker_cache_workers` must be >= 2 for the broker side to
+    drain both pings concurrently. The default is 1 (FIFO commit
+    order), which is correct for production; this test intentionally
+    bumps it to 2 to exercise the CLIENT-side pipelining property in
+    isolation from server-side serialisation."""
+    import threading
+    import time
+    from mimir.broker import handlers
+    from mimir.broker.protocol import PingRequest, Reply
+    from mimir.config import settings
+
+    barrier = threading.Event()
+
+    def slow_for_rpc_id_one(req):
+        if req.rpc_id == 1:
+            # Wait for Thread B to complete first. If a global lock
+            # were back on the client, B is queued behind A and never
+            # sets the barrier -> we time out.
+            barrier.wait(timeout=5.0)
+        return Reply(rpc_id=req.rpc_id, ok=True)
+
+    # Two cache workers so both pings can run in parallel on the
+    # broker side. Without this the broker serialises them through
+    # the single default worker, which would make the barrier test
+    # false-positive (B blocks on the server queue, not on a client
+    # lock). The regression we guard is client-side, so we must
+    # eliminate server-side serialisation as a confound.
+    monkeypatch.setattr(settings, "broker_cache_workers", 2)
+
+    # Patch the _DISPATCH entry for "ping" so the slow handler
+    # is the one the broker invokes. The PingRequest type stays
+    # the same; only the handler changes.
+    monkeypatch.setitem(
+        handlers._DISPATCH,
+        "ping",
+        (PingRequest, slow_for_rpc_id_one),
+    )
+
+    sp = short_socket_path("client-regression-pipelining")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        # Force monotonic counter to a known start so Thread A
+        # gets rpc_id=1 reliably.
+        c._next_rpc_id = 1
+        try:
+            results = {}
+
+            def thread_a():
+                # Will get rpc_id=1; handler blocks on barrier.
+                results["a"] = c.ping()
+
+            def thread_b():
+                # Will get rpc_id=2; must dispatch fully even while
+                # Thread A is parked on the barrier.
+                results["b"] = c.ping()
+                # Releasing the barrier lets Thread A finish.
+                barrier.set()
+
+            ta = threading.Thread(target=thread_a)
+            tb = threading.Thread(target=thread_b)
+            ta.start()
+            # Tiny delay so Thread A wins the rpc_id allocation race.
+            time.sleep(0.05)
+            tb.start()
+
+            ta.join(timeout=10.0)
+            tb.join(timeout=10.0)
+            assert not ta.is_alive(), "thread A stuck (serialization regression?)"
+            assert not tb.is_alive(), "thread B stuck (serialization regression?)"
+            assert results.get("a") is True
+            assert results.get("b") is True
+        finally:
+            c.close()
