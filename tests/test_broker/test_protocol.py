@@ -21,7 +21,9 @@ from mimir.broker.protocol import (
 
 
 def test_cache_set_round_trip():
-    req = CacheSetRequest(rpc_id=1, key="v2:archive_stats:lkml", value_json='{"x":1}', ttl=86400)
+    req = CacheSetRequest(
+        rpc_id=1, key="v2:archive_stats:lkml", value_json='{"x":1}', ttl=86400
+    )
     encoded = req.model_dump_json()
     parsed = CacheSetRequest.model_validate_json(encoded)
     assert parsed.key == req.key
@@ -198,7 +200,9 @@ def test_warm_subsystem_request_round_trip():
     assert default.priority == 1
     assert default.subsystem_id == 42
 
-    fast = WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=42, priority=0)
+    fast = WarmSubsystemRequest(
+        rpc_id=1, inbox_name="alpha", subsystem_id=42, priority=0
+    )
     raw = fast.model_dump_json()
     parsed = WarmSubsystemRequest.model_validate_json(raw)
     assert parsed.priority == 0

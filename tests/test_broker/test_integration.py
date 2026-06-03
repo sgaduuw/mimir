@@ -7,7 +7,6 @@ demux thread resolves futures by rpc_id."""
 
 import threading
 
-import pytest
 
 from mimir import cache as cache_mod
 from mimir.broker.client import BrokerClient
@@ -22,6 +21,7 @@ def test_sixteen_concurrent_pings_all_complete(seeded_db, monkeypatch):
     # Bump cache workers so the broker can actually drain 16 pings
     # in parallel rather than serializing them at one worker.
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "broker_cache_workers", 4)
 
     sp = short_socket_path("integration-16-pings")
@@ -49,12 +49,14 @@ def test_mixed_op_types_concurrent(seeded_db, monkeypatch):
     """Mix cache_set, ping across threads. Every reply demuxes to
     the correct caller. Verifies all 8 cache writes landed."""
     from mimir.config import settings
+
     monkeypatch.setattr(settings, "broker_cache_workers", 4)
 
     sp = short_socket_path("integration-mixed")
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
+
             def do_set(i: int) -> None:
                 c.cache_set(cache_mod._ns(f"key_{i}"), f'"v_{i}"', 60)
 

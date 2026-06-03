@@ -264,7 +264,9 @@ def dispatch(line: bytes) -> Reply:
     # even when we can't fully validate the request, so a pipelining
     # client can correlate the error to its in-flight slot.
     raw_rpc_id = raw.get("rpc_id") if isinstance(raw, dict) else None
-    pre_parse_rpc_id = raw_rpc_id if isinstance(raw_rpc_id, int) and raw_rpc_id >= 0 else 0
+    pre_parse_rpc_id = (
+        raw_rpc_id if isinstance(raw_rpc_id, int) and raw_rpc_id >= 0 else 0
+    )
     entry = _DISPATCH.get(op) if isinstance(op, str) else None
     if entry is None:
         return Reply(rpc_id=pre_parse_rpc_id, ok=False, error="UnknownOp")

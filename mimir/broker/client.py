@@ -204,9 +204,7 @@ class BrokerClient:
                 try:
                     reply = Reply.model_validate_json(line)
                 except Exception:
-                    logger.error(
-                        "broker reply parse failure; closing connection"
-                    )
+                    logger.error("broker reply parse failure; closing connection")
                     break
                 with self._pending_lock:
                     fut = self._pending.pop(reply.rpc_id, None)
@@ -288,9 +286,7 @@ class BrokerClient:
             # Caller's per-RPC timeout. Leave the pending entry in
             # place; if the reply eventually arrives, demux drops it.
             # If the socket dies, fail-all clears it.
-            raise BrokerUnavailable(
-                f"rpc timed out after {timeout_value}s"
-            ) from exc
+            raise BrokerUnavailable(f"rpc timed out after {timeout_value}s") from exc
         return reply
 
     # Public ops ─────────────────────────────────────────────

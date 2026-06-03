@@ -421,7 +421,9 @@ def test_handle_warm_inbox_uses_active_read_pool_session(monkeypatch):
 
     # The _active_broker_context fixture has already set up the pool,
     # so the handler should succeed without falling back to SessionLocal.
-    reply = handle_warm_inbox(WarmInboxRequest(rpc_id=1, inbox_name="alpha", targets=None))
+    reply = handle_warm_inbox(
+        WarmInboxRequest(rpc_id=1, inbox_name="alpha", targets=None)
+    )
     assert reply.ok is True
 
 
@@ -731,7 +733,9 @@ def test_warm_global_no_gap_warning_when_targets_none(seeded_db, caplog, monkeyp
     monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", False)
     caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
 
-    warm_module.handle_warm_global(WarmGlobalRequest(rpc_id=1, targets=None, priority=1))
+    warm_module.handle_warm_global(
+        WarmGlobalRequest(rpc_id=1, targets=None, priority=1)
+    )
     gap_warnings = [
         r for r in caplog.records if "sitemap labels requested" in r.getMessage()
     ]
@@ -832,14 +836,18 @@ def test_handle_warm_subsystem_runs_helpers_under_tier_window(seeded_db, monkeyp
 
     sub_id = _seed_or_get_subsystem_id()
 
-    req = WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=sub_id, priority=1)
+    req = WarmSubsystemRequest(
+        rpc_id=1, inbox_name="alpha", subsystem_id=sub_id, priority=1
+    )
     reply = warm_module.handle_warm_subsystem(req)
     assert reply.ok, reply.error
     assert ("refresh_window", 222) in captured
     assert ("ttl_extension", 222) in captured
 
     captured.clear()
-    req_fast = WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=sub_id, priority=0)
+    req_fast = WarmSubsystemRequest(
+        rpc_id=1, inbox_name="alpha", subsystem_id=sub_id, priority=0
+    )
     reply_fast = warm_module.handle_warm_subsystem(req_fast)
     assert reply_fast.ok, reply_fast.error
     assert ("refresh_window", 111) in captured
@@ -852,7 +860,9 @@ def test_handle_warm_subsystem_returns_unknown_inbox_cleanly(seeded_db):
     from mimir.broker.handlers.warm import handle_warm_subsystem
     from mimir.broker.protocol import WarmSubsystemRequest
 
-    req = WarmSubsystemRequest(rpc_id=1, inbox_name="zzz-nonexistent", subsystem_id=1, priority=1)
+    req = WarmSubsystemRequest(
+        rpc_id=1, inbox_name="zzz-nonexistent", subsystem_id=1, priority=1
+    )
     reply = handle_warm_subsystem(req)
     assert not reply.ok
     assert "UnknownInbox" in (reply.error or "")
@@ -867,7 +877,9 @@ def test_handle_warm_subsystem_returns_unknown_subsystem_cleanly(seeded_db):
     from mimir.broker.handlers.warm import handle_warm_subsystem
     from mimir.broker.protocol import WarmSubsystemRequest
 
-    req = WarmSubsystemRequest(rpc_id=1, inbox_name="alpha", subsystem_id=99999999, priority=1)
+    req = WarmSubsystemRequest(
+        rpc_id=1, inbox_name="alpha", subsystem_id=99999999, priority=1
+    )
     reply = handle_warm_subsystem(req)
     assert not reply.ok
     assert "UnknownSubsystem" in (reply.error or "")

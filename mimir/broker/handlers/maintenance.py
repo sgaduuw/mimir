@@ -340,7 +340,9 @@ def handle_robots_add(req: RobotsAddRequest) -> Reply:
         )
     except (RobotsRuleNotFound, RobotsValidationError) as exc:
         return _robots_error_reply(req, exc)
-    return Reply(rpc_id=req.rpc_id, ok=True, result={"rule": _robots_rule_to_dict(rule)})
+    return Reply(
+        rpc_id=req.rpc_id, ok=True, result={"rule": _robots_rule_to_dict(rule)}
+    )
 
 
 def handle_robots_update(req: RobotsUpdateRequest) -> Reply:
@@ -363,7 +365,9 @@ def handle_robots_update(req: RobotsUpdateRequest) -> Reply:
         )
     except (RobotsRuleNotFound, RobotsValidationError) as exc:
         return _robots_error_reply(req, exc)
-    return Reply(rpc_id=req.rpc_id, ok=True, result={"rule": _robots_rule_to_dict(rule)})
+    return Reply(
+        rpc_id=req.rpc_id, ok=True, result={"rule": _robots_rule_to_dict(rule)}
+    )
 
 
 def handle_robots_remove(req: RobotsRemoveRequest) -> Reply:
