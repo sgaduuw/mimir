@@ -87,7 +87,7 @@ def test_normal_sized_request_passes(seeded_db):
         s.settimeout(5.0)
         s.connect(str(sp))
         try:
-            s.sendall(b'{"op": "ping"}\n')
+            s.sendall(b'{"rpc_id":1,"op":"ping"}\n')
             buf = b""
             while b"\n" not in buf:
                 chunk = s.recv(4096)
@@ -148,7 +148,7 @@ def test_active_connection_not_closed_by_idle_check(seeded_db, monkeypatch):
             # Three pings inside what would otherwise be three full
             # idle windows.
             for _ in range(3):
-                wfile.write(b'{"op": "ping"}\n')
+                wfile.write(b'{"rpc_id":1,"op":"ping"}\n')
                 wfile.flush()
                 line = rfile.readline()
                 assert b'"ok":true' in line
@@ -220,7 +220,7 @@ def test_cache_delete_for_inbox_rejects_like_metacharacters():
     bad = ["%lkml%", "lkml_", "_lkml", "LKML", "lkml.dev", "-lkml", "lkml-"]
     for name in bad:
         with pytest.raises(ValidationError):
-            CacheDeleteForInboxRequest(name=name)
+            CacheDeleteForInboxRequest(rpc_id=1, name=name)
 
 
 def test_cache_delete_for_inbox_accepts_real_slugs():
@@ -229,5 +229,5 @@ def test_cache_delete_for_inbox_accepts_real_slugs():
     two regexes drift-aware."""
     good = ["lkml", "linux-fsdevel", "x86", "a", "a1", "a-b-c", "linux-arm-kernel"]
     for name in good:
-        req = CacheDeleteForInboxRequest(name=name)
+        req = CacheDeleteForInboxRequest(rpc_id=1, name=name)
         assert req.name == name

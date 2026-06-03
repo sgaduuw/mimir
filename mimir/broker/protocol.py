@@ -51,7 +51,16 @@ def _validate_inbox_name(v: str) -> str:
     return v
 
 
-class CacheSetRequest(BaseModel):
+class _BrokerRequest(BaseModel):
+    """Base for every broker Request type. Carries the required
+    `rpc_id` field that the client allocates and the broker echoes
+    back into the Reply so the client can demux concurrent in-flight
+    RPCs on one socket. 3.0.0 wire-protocol change."""
+
+    rpc_id: int = Field(ge=0)
+
+
+class CacheSetRequest(_BrokerRequest):
     op: Literal["cache_set"] = "cache_set"
     key: str = Field(min_length=1, max_length=512)
     value_json: str
@@ -69,12 +78,12 @@ class CacheSetRequest(BaseModel):
         return v
 
 
-class CacheDeleteRequest(BaseModel):
+class CacheDeleteRequest(_BrokerRequest):
     op: Literal["cache_delete"] = "cache_delete"
     key: str = Field(min_length=1, max_length=512)
 
 
-class CacheDeleteForInboxRequest(BaseModel):
+class CacheDeleteForInboxRequest(_BrokerRequest):
     op: Literal["cache_delete_for_inbox"] = "cache_delete_for_inbox"
     name: str = Field(min_length=1, max_length=64)
 
@@ -96,15 +105,15 @@ class CacheDeleteForInboxRequest(BaseModel):
         return v
 
 
-class CachePurgeExpiredRequest(BaseModel):
+class CachePurgeExpiredRequest(_BrokerRequest):
     op: Literal["cache_purge_expired"] = "cache_purge_expired"
 
 
-class PingRequest(BaseModel):
+class PingRequest(_BrokerRequest):
     op: Literal["ping"] = "ping"
 
 
-class IngestInboxRequest(BaseModel):
+class IngestInboxRequest(_BrokerRequest):
     """Phase 2.1 long op: run `ingest_inbox(name)` on the broker
     process. Carries the inbox NAME (not an Inbox ORM object;
     that doesn't pickle and isn't useful across the RPC anyway);
@@ -122,7 +131,7 @@ class IngestInboxRequest(BaseModel):
     workers: int | None = Field(default=None, ge=1)
 
 
-class BootstrapInboxesRequest(BaseModel):
+class BootstrapInboxesRequest(_BrokerRequest):
     """Long op: reconcile `Settings.inboxes` env config into the
     `inboxes` table. Idempotent via `ON CONFLICT (name) DO NOTHING`.
     Smallest of the long ops and the migration canary for Phase 2.0
@@ -148,28 +157,28 @@ class BootstrapInboxesRequest(BaseModel):
 # longer monopolise the long worker.
 
 
-class BackfillArticleFilesRequest(BaseModel):
+class BackfillArticleFilesRequest(_BrokerRequest):
     op: Literal["backfill_article_files"] = "backfill_article_files"
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
     continuation: int | None = Field(default=None, ge=0)
 
 
-class BackfillArticleTrailersRequest(BaseModel):
+class BackfillArticleTrailersRequest(_BrokerRequest):
     op: Literal["backfill_article_trailers"] = "backfill_article_trailers"
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
     continuation: int | None = Field(default=None, ge=0)
 
 
-class BackfillPatchSeriesRequest(BaseModel):
+class BackfillPatchSeriesRequest(_BrokerRequest):
     op: Literal["backfill_patch_series"] = "backfill_patch_series"
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
     continuation: int | None = Field(default=None, ge=0)
 
 
-class BackfillCanonicalsRequest(BaseModel):
+class BackfillCanonicalsRequest(_BrokerRequest):
     """Phase 2.2 long op: chunked `backfill_canonicals` over the
     broker. Same shape as the patch-metadata backfills plus
     `inbox_filter` for the `admin canonicals backfill --inbox`
@@ -195,7 +204,7 @@ class BackfillCanonicalsRequest(BaseModel):
 # week.
 
 
-class UpdateMainlineRequest(BaseModel):
+class UpdateMainlineRequest(_BrokerRequest):
     """Run `mimir.mainline.update_mainline` on the broker. The four
     booleans mirror the CLI options exactly so the broker handler
     can delegate without translating.
@@ -212,7 +221,7 @@ class UpdateMainlineRequest(BaseModel):
     force: bool = False
 
 
-class AnalyzeRequest(BaseModel):
+class AnalyzeRequest(_BrokerRequest):
     """Run `ANALYZE` on the broker. `full=True` overrides the
     per-connection `analysis_limit` for this pass (no cap) so the
     weekly safety-net catches index distributions the daily bounded
@@ -222,7 +231,7 @@ class AnalyzeRequest(BaseModel):
     full: bool = False
 
 
-class FailuresReplayRequest(BaseModel):
+class FailuresReplayRequest(_BrokerRequest):
     """Phase 2.4 long op: re-parse persisted parse_failures for one
     inbox. Successful parses insert the article and delete the
     failure row; failed parses bump `attempts` + `last_attempt`.
@@ -256,7 +265,7 @@ class FailuresReplayRequest(BaseModel):
 # top.
 
 
-class InboxCreateRequest(BaseModel):
+class InboxCreateRequest(_BrokerRequest):
     """Insert a new Inbox after validating all three fields. Handler
     delegates to `mimir.inboxes.create_inbox`."""
 
@@ -271,7 +280,7 @@ class InboxCreateRequest(BaseModel):
         return _validate_inbox_name(v)
 
 
-class InboxUpdateRequest(BaseModel):
+class InboxUpdateRequest(_BrokerRequest):
     """Modify an existing inbox. Only the supplied fields are
     touched server-side. Handler delegates to
     `mimir.inboxes.update_inbox`."""
@@ -288,7 +297,7 @@ class InboxUpdateRequest(BaseModel):
         return None if v is None else _validate_inbox_name(v)
 
 
-class InboxDeleteRequest(BaseModel):
+class InboxDeleteRequest(_BrokerRequest):
     """Remove an inbox and its dependent rows. Cascades through
     `article_lists` / `ingest_state` via FK ondelete=CASCADE. With
     `keep_orphan_articles=False` (default), also deletes any
@@ -309,7 +318,7 @@ class InboxDeleteRequest(BaseModel):
         return _validate_inbox_name(v)
 
 
-class InboxSetTrackedAuthorsRequest(BaseModel):
+class InboxSetTrackedAuthorsRequest(_BrokerRequest):
     """Replace the per-inbox tracker dict in one shot. Handler
     delegates to `mimir.inboxes.set_tracked_authors`."""
 
@@ -323,7 +332,7 @@ class InboxSetTrackedAuthorsRequest(BaseModel):
         return _validate_inbox_name(v)
 
 
-class InboxAddTrackedAuthorRequest(BaseModel):
+class InboxAddTrackedAuthorRequest(_BrokerRequest):
     """Add (or replace) one tracker entry. Handler delegates to
     `mimir.inboxes.add_tracked_author`."""
 
@@ -338,7 +347,7 @@ class InboxAddTrackedAuthorRequest(BaseModel):
         return _validate_inbox_name(v)
 
 
-class InboxRemoveTrackedAuthorRequest(BaseModel):
+class InboxRemoveTrackedAuthorRequest(_BrokerRequest):
     """Remove one tracker entry by label. Handler delegates to
     `mimir.inboxes.remove_tracked_author`."""
 
@@ -352,7 +361,7 @@ class InboxRemoveTrackedAuthorRequest(BaseModel):
         return _validate_inbox_name(v)
 
 
-class InboxClearTrackedAuthorsRequest(BaseModel):
+class InboxClearTrackedAuthorsRequest(_BrokerRequest):
     """Drop all tracker entries (writes NULL). Handler delegates to
     `mimir.inboxes.clear_tracked_authors`."""
 
@@ -417,7 +426,7 @@ def _validate_robots_content_signal_keys(v: list[str]) -> list[str]:
     return v
 
 
-class RobotsAddRequest(BaseModel):
+class RobotsAddRequest(_BrokerRequest):
     """Insert one new robots_rules row. Handler delegates to
     `mimir.robots.add_rule`."""
 
@@ -443,7 +452,7 @@ class RobotsAddRequest(BaseModel):
         return _validate_robots_content_signals(v)
 
 
-class RobotsUpdateRequest(BaseModel):
+class RobotsUpdateRequest(_BrokerRequest):
     """Mutate one existing robots_rules row. Handler delegates to
     `mimir.robots.update_rule`. `clear_crawl_delay=True` sets the
     column to NULL (distinct from omitting `crawl_delay` which means
@@ -482,7 +491,7 @@ class RobotsUpdateRequest(BaseModel):
         return _validate_robots_content_signal_keys(v)
 
 
-class RobotsRemoveRequest(BaseModel):
+class RobotsRemoveRequest(_BrokerRequest):
     """Drop one robots_rules row. `*` is refused at the service
     layer. Handler delegates to `mimir.robots.remove_rule`."""
 
@@ -495,14 +504,14 @@ class RobotsRemoveRequest(BaseModel):
         return _validate_robots_user_agent(v)
 
 
-class RobotsResetRequest(BaseModel):
+class RobotsResetRequest(_BrokerRequest):
     """Drop every row and re-seed the `*` stanza with the migration's
     defaults. Handler delegates to `mimir.robots.reset_rules`."""
 
     op: Literal["robots_reset"] = "robots_reset"
 
 
-class VacuumRequest(BaseModel):
+class VacuumRequest(_BrokerRequest):
     """Run `VACUUM` (+ WAL checkpoint) on the broker. Holds the
     SQLite exclusive lock for the duration; cache writes from the
     web tier queue behind it and may time out under the broker
@@ -529,7 +538,7 @@ class VacuumRequest(BaseModel):
 # scheduler's warm cycle.
 
 
-class WarmInboxRequest(BaseModel):
+class WarmInboxRequest(_BrokerRequest):
     """Per-inbox warm: invoke every cached helper for one inbox.
     The handler calls `mimir.cli.cache._build_inbox_targets(inbox)`
     and runs each target on its own session. Used by:
@@ -560,7 +569,7 @@ class WarmInboxRequest(BaseModel):
     priority: int = Field(default=1, ge=0, le=1)
 
 
-class WarmSubsystemRequest(BaseModel):
+class WarmSubsystemRequest(_BrokerRequest):
     """Per-subsystem warm: invoke the four dashboard helpers
     (`recent_articles_in_subsystem`, `active_threads_in_subsystem`,
     `daily_volume_in_subsystem`, `active_reviewers_in_subsystem`)
@@ -585,7 +594,7 @@ class WarmSubsystemRequest(BaseModel):
     priority: int = Field(default=1, ge=0, le=1)
 
 
-class WarmGlobalRequest(BaseModel):
+class WarmGlobalRequest(_BrokerRequest):
     """Global warm: invoke the cross-inbox aggregators
     (`most_active_subsystems_global` + sitemap index/meta when
     `SITE_BASE_URL` is configured). MUST be invoked after every
@@ -651,6 +660,13 @@ Request = Union[
 
 
 class Reply(BaseModel):
+    # Correlation ID echoed back from the matching request. Lets
+    # the BrokerClient demux multiple in-flight RPCs on one socket
+    # (3.0.0 wire-protocol change). Always present; the broker
+    # dispatcher attaches it before sending. For Replies emitted
+    # in response to malformed requests (no parseable rpc_id), the
+    # broker uses 0; the client drops such replies on lookup miss.
+    rpc_id: int = Field(ge=0)
     ok: bool
     # Free-form error tag on failure (e.g. "InvalidRequest",
     # "OperationalError"). Absent on success.

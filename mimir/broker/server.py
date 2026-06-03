@@ -59,6 +59,7 @@ import socketserver
 import struct
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from mimir import cache
@@ -130,6 +131,20 @@ def _extract_warm_priority(line: bytes) -> int:
         return 1
 
 
+@dataclass
+class ClientConnection:
+    """Per-accepted-connection state carried alongside the socket
+    on every queue tuple. Owns the `send_lock` that workers acquire
+    around `sock.sendall(reply)` so concurrent replies from N
+    workers do not interleave bytes on the wire (3.0.0 pipelining).
+    The reader thread owns the socket's read side; workers only
+    write. The lock is held microseconds per reply (one `sendall`),
+    so it does not bottleneck concurrent dispatch."""
+
+    sock: socket.socket
+    send_lock: threading.Lock = field(default_factory=threading.Lock)
+
+
 # Linux exposes SO_PEERCRED (pid + uid + gid of the peer process) on
 # AF_UNIX sockets via getsockopt. macOS / BSDs have their own (and
 # different) peer-credential interfaces; we don't try to bridge them
@@ -199,30 +214,30 @@ class _BrokerServer(socketserver.UnixStreamServer):
         super().__init__(socket_path, _NoopHandler)
         self.stop_event = threading.Event()
         # Three queues, one per worker class. Items are
-        # `(line, sock, enqueued_at)` tuples; the reader classifies
-        # by op name and routes (`handlers.classify_op` →
+        # `(line, conn, enqueued_at)` tuples; the reader classifies
+        # by op name and routes (`handlers.classify_op` ->
         # `handlers.LONG_OPS` / `WARM_OPS`). Unbounded queues:
         # under observed peak load (a few hundred cache.sets per
         # warm-cache tick) memory is negligible and a hard cap
         # would just drop work silently. The slow-RPC WARNING
         # (with breakdown into queue vs dispatch) is the operator-
         # facing signal.
-        self.cache_queue: "queue.Queue[tuple[bytes, socket.socket, float]]" = (
+        self.cache_queue: "queue.Queue[tuple[bytes, ClientConnection, float]]" = (
             queue.Queue()
         )
-        self.long_queue: "queue.Queue[tuple[bytes, socket.socket, float]]" = (
+        self.long_queue: "queue.Queue[tuple[bytes, ClientConnection, float]]" = (
             queue.Queue()
         )
         # Warm queue is a PriorityQueue so fast-tier RPCs
         # (priority=0; sitemap-class) jump ahead of queued slow-tier
         # (priority=1; subsystem dashboards + tracker). Tuple shape:
-        # (priority, enqueued_at, line, sock). The enqueued_at slot
+        # (priority, enqueued_at, line, conn). The enqueued_at slot
         # serves both as the slow-RPC queue-wait input AND as the
         # FIFO tie-breaker between two items at the same priority
         # (PriorityQueue compares tuples element-wise, so equal
         # priority falls through to enqueued_at). Task 5 of the
         # fast/slow tier split (spec §2 §5).
-        self.warm_queue: "queue.PriorityQueue[tuple[int, float, bytes, socket.socket]]" = queue.PriorityQueue()
+        self.warm_queue: "queue.PriorityQueue[tuple[int, float, bytes, ClientConnection]]" = queue.PriorityQueue()
         self._reader_threads: list[threading.Thread] = []
         self._cache_worker_threads: list[threading.Thread] = []
         self._long_worker_threads: list[threading.Thread] = []
@@ -299,6 +314,7 @@ class _BrokerServer(socketserver.UnixStreamServer):
 
         Both defenses log at WARNING so an operator can correlate the
         close with the upstream symptom (a stuck `cache.set` etc.)."""
+        conn = ClientConnection(sock=sock)
         linebuf = bytearray()
         sel = selectors.DefaultSelector()
         sel.register(sock, selectors.EVENT_READ)
@@ -338,19 +354,19 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     op = classify_op(line)
                     enqueued_at = time.perf_counter()
                     if op is not None and op in LONG_OPS:
-                        self.long_queue.put((line, sock, enqueued_at))
+                        self.long_queue.put((line, conn, enqueued_at))
                     elif op is not None and op in WARM_OPS:
                         # Warm queue is a PriorityQueue; tuple shape
-                        # is (priority, enqueued_at, line, sock).
+                        # is (priority, enqueued_at, line, conn).
                         # Fast-tier RPCs (priority=0) jump ahead of
                         # queued slow-tier (priority=1); enqueued_at
                         # is the FIFO tie-breaker within a priority
                         # class. See `_extract_warm_priority` for the
                         # sub-ms regex extractor.
                         priority = _extract_warm_priority(line)
-                        self.warm_queue.put((priority, enqueued_at, line, sock))
+                        self.warm_queue.put((priority, enqueued_at, line, conn))
                     else:
-                        self.cache_queue.put((line, sock, enqueued_at))
+                        self.cache_queue.put((line, conn, enqueued_at))
         finally:
             sel.close()
             try:
@@ -373,14 +389,20 @@ class _BrokerServer(socketserver.UnixStreamServer):
         "warm") so operators reading the broker log can tell which
         queue is contended without inferring it from the op string.
 
-        Queue tuple shapes differ by queue (Task 5):
+        Queue tuple shapes differ by queue (Task 5 + Task 6):
 
-        - `cache_queue` / `long_queue`: `(line, sock, enqueued_at)`.
+        - `cache_queue` / `long_queue`: `(line, conn, enqueued_at)`.
         - `warm_queue` is a PriorityQueue with shape
-          `(priority, enqueued_at, line, sock)`. The first slot is
+          `(priority, enqueued_at, line, conn)`. The first slot is
           the int priority (0=fast, 1=slow) so PriorityQueue's
           element-wise tuple compare gives fast items dispatch
           precedence over slow items at the same `enqueued_at`.
+
+        `conn` is a `ClientConnection` wrapping the socket plus a
+        per-connection `send_lock`. Workers acquire the lock around
+        `conn.sock.sendall(payload)` so concurrent replies from N
+        workers (e.g. multiple warm workers replying to the same
+        connection) do not interleave bytes on the wire.
 
         In-flight slow ops are NOT preempted: once a worker picks
         an item via `q.get()`, the dispatch runs to completion
@@ -393,9 +415,9 @@ class _BrokerServer(socketserver.UnixStreamServer):
             except queue.Empty:
                 continue
             if q is self.warm_queue:
-                _priority, enqueued_at, line, sock = item
+                _priority, enqueued_at, line, conn = item
             else:
-                line, sock, enqueued_at = item
+                line, conn, enqueued_at = item
             try:
                 queue_wait_ms = (time.perf_counter() - enqueued_at) * 1000.0
                 t0 = time.perf_counter()
@@ -452,7 +474,8 @@ class _BrokerServer(socketserver.UnixStreamServer):
 
                 payload = reply.model_dump_json().encode("utf-8") + b"\n"
                 try:
-                    sock.sendall(payload)
+                    with conn.send_lock:
+                        conn.sock.sendall(payload)
                 except OSError, ConnectionError:
                     # Client closed mid-flight or socket reset.
                     # Drop the reply silently; the client treats
@@ -840,4 +863,4 @@ def serve(socket_path: Path) -> None:
         logger.info("broker: shut down cleanly")
 
 
-__all__ = ["build_server", "serve", "Reply", "PURGE_INTERVAL_SEC"]
+__all__ = ["build_server", "serve", "ClientConnection", "Reply", "PURGE_INTERVAL_SEC"]

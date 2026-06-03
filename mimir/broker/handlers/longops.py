@@ -47,7 +47,7 @@ def handle_bootstrap_inboxes(req: BootstrapInboxesRequest) -> Reply:
 
     with write_transaction("broker:bootstrap_inboxes"):
         inboxes = bootstrap_inboxes()
-    return Reply(ok=True, result={"inboxes": len(inboxes)})
+    return Reply(rpc_id=req.rpc_id, ok=True, result={"inboxes": len(inboxes)})
 
 
 def handle_ingest_inbox(req: IngestInboxRequest) -> Reply:
@@ -78,12 +78,14 @@ def handle_ingest_inbox(req: IngestInboxRequest) -> Reply:
         ).scalar_one_or_none()
     if inbox is None:
         return Reply(
+            rpc_id=req.rpc_id,
             ok=False,
             error=f"UnknownInbox:{req.inbox_name}",
         )
     workers = req.workers if req.workers is not None else DEFAULT_WORKERS
     results = ingest_inbox(inbox, limit=req.limit, workers=workers)
     return Reply(
+        rpc_id=req.rpc_id,
         ok=True,
         result={"results": [r.model_dump(mode="json") for r in results]},
     )
@@ -99,7 +101,7 @@ def _chunk_seconds() -> float:
     return float(settings.broker_backfill_chunk_seconds)
 
 
-def _backfill_reply(result) -> Reply:
+def _backfill_reply(req, result) -> Reply:
     """Shared shape for the four backfill handlers' Reply: the
     `BackfillResult` model is serialised whole as `counters`, and
     `partial`/`continuation` are mirrored out so the CLI can branch
@@ -107,6 +109,7 @@ def _backfill_reply(result) -> Reply:
     reconstructs the typed `BackfillResult` from `counters` to feed
     its `merge()` chain."""
     return Reply(
+        rpc_id=req.rpc_id,
         ok=True,
         result={
             "counters": result.model_dump(mode="json"),
@@ -129,7 +132,7 @@ def handle_backfill_article_files(req: BackfillArticleFilesRequest) -> Reply:
         max_seconds=_chunk_seconds(),
         start_cursor=req.continuation,
     )
-    return _backfill_reply(result)
+    return _backfill_reply(req, result)
 
 
 def handle_backfill_article_trailers(req: BackfillArticleTrailersRequest) -> Reply:
@@ -142,7 +145,7 @@ def handle_backfill_article_trailers(req: BackfillArticleTrailersRequest) -> Rep
         max_seconds=_chunk_seconds(),
         start_cursor=req.continuation,
     )
-    return _backfill_reply(result)
+    return _backfill_reply(req, result)
 
 
 def handle_backfill_patch_series(req: BackfillPatchSeriesRequest) -> Reply:
@@ -158,7 +161,7 @@ def handle_backfill_patch_series(req: BackfillPatchSeriesRequest) -> Reply:
         max_seconds=_chunk_seconds(),
         start_cursor=req.continuation,
     )
-    return _backfill_reply(result)
+    return _backfill_reply(req, result)
 
 
 def handle_backfill_canonicals(req: BackfillCanonicalsRequest) -> Reply:
@@ -176,4 +179,4 @@ def handle_backfill_canonicals(req: BackfillCanonicalsRequest) -> Reply:
         max_seconds=_chunk_seconds(),
         start_cursor=req.continuation,
     )
-    return _backfill_reply(result)
+    return _backfill_reply(req, result)

@@ -3,36 +3,24 @@
 Process-singleton (`get_broker_client()`): each gunicorn worker /
 each CLI invocation reuses one persistent socket connection.
 
-Thread-safe via a per-client `threading.Lock` wrapping every RPC.
-Gunicorn's sync workers are single-threaded, but the scheduler-
-sidecar's `warm-cache` (and other CLI commands invoking the
-ThreadPoolExecutor) fans out across N worker threads sharing the
-same process-singleton client. Without the lock, concurrent RPCs
-would race on the same socket: interleaved writes break JSONL
-framing, the broker returns parse errors, the client closes the
-socket, and every thread piles into a fresh connect attempt
-against the broker's listen backlog (production saw `Errno 11
-Resource temporarily unavailable` on connect under load). The
-lock serializes RPCs in-process; the broker itself is already
-single-threaded so the bottleneck is unchanged, but framing and
-connect pressure stay clean.
+Pipelined RPCs (3.0.0): multiple caller threads share one socket;
+each request carries a monotonic per-client rpc_id; a daemon demux
+thread reads replies and resolves matching `concurrent.futures.Future`
+instances by rpc_id. See `BrokerClient` for the full design.
 
-Reconnect: on any socket error mid-RPC the client closes the
-socket, marks itself disconnected, and retries the same RPC once
-on a fresh connection. Two consecutive failures raise
-`BrokerUnavailable`. Backoff is hardcoded short (~100ms) because
-the broker is on the same host; long backoffs would just stretch
-out web-tier request latency under broker-restart windows.
+Reconnect: on socket failure during send, the caller's RPC raises
+`BrokerUnavailable` immediately; on demux failure (EOF / OSError)
+every in-flight future receives `BrokerUnavailable`. The next caller
+`_rpc` call lazy-reconnects via `_ensure_alive`. No automatic retry
+across reconnect; callers handle retry at their layer.
 
-Each RPC has a 5s timeout (`SO_RCVTIMEO`). The broker handles
-requests serially on one thread; 5s comfortably covers the
-worst-case (a slow `cache_delete_for_inbox` on a large cache
-table) without blocking callers indefinitely if the broker hangs.
-"""
+Per-RPC `timeout` lives on the caller's `Future.result(timeout=...)`;
+the socket has no read timeout from the caller's perspective."""
 
 import logging
 import socket
 import threading
+from concurrent.futures import Future, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 from mimir.broker.protocol import (
@@ -66,6 +54,7 @@ from mimir.broker.protocol import (
     WarmGlobalRequest,
     WarmInboxRequest,
     WarmSubsystemRequest,
+    _BrokerRequest,
 )
 from mimir.config import settings
 
@@ -81,51 +70,88 @@ RPC_TIMEOUT_SEC = 5.0
 
 
 class BrokerUnavailable(Exception):
-    """Raised when the broker socket can't be reached or two
-    consecutive RPCs failed. Callers in `mimir.cache` catch this and
-    log+drop, matching today's best-effort `OperationalError`
+    """Raised when the broker socket can't be reached or an
+    in-flight RPC fails (send error, demux EOF, caller timeout,
+    or client.close()). Callers in `mimir.cache` catch this and
+    log+drop, matching the best-effort `OperationalError`
     semantics."""
 
 
 class BrokerClient:
     """Persistent connection to the broker daemon. One per
-    process; obtain via `get_broker_client()`."""
+    process; obtain via `get_broker_client()`.
+
+    Pipelined RPCs (3.0.0): multiple caller threads can have
+    in-flight requests on the same socket. Each request carries a
+    monotonic per-client `rpc_id`; the broker echoes it back in the
+    matching Reply; a daemon `_demux_thread` reads replies in a
+    loop and resolves the matching `concurrent.futures.Future` from
+    `_pending`. Caller threads block on `future.result(timeout=...)`.
+
+    Locks:
+
+    - `_id_lock`: protects the monotonic counter.
+    - `_pending_lock`: protects the pending-futures dict.
+    - `_send_lock`: held only across one `sock.sendall(...)` call
+      (microseconds) so concurrent caller threads do not interleave
+      bytes on the wire.
+    - `_state_lock`: serialises connect / close / demux-thread
+      lifecycle transitions."""
 
     def __init__(self, socket_path: Path) -> None:
         self._socket_path = Path(socket_path)
         self._sock: socket.socket | None = None
         self._rfile = None
-        self._wfile = None
-        # Serialises every RPC through the singleton from multiple
-        # caller threads (warm-cache's ThreadPoolExecutor fans out
-        # to ~8 workers sharing this client). Held for the duration
-        # of `_rpc`, which covers connect, write, read, and any
-        # retry. Cheap on the happy path (uncontended); essential
-        # under contention.
-        self._rpc_lock = threading.Lock()
 
-    def _connect(self) -> None:
+        # Monotonic per-client RPC id allocator. Client allocates
+        # from 1; the broker uses 0 as a sentinel for malformed
+        # requests (no matching pending future, silently dropped).
+        self._next_rpc_id: int = 1
+        self._id_lock = threading.Lock()
+
+        # In-flight RPCs awaiting replies. Populated under
+        # _pending_lock by the caller; popped under the same lock
+        # by the demux thread.
+        self._pending: dict[int, Future] = {}
+        self._pending_lock = threading.Lock()
+
+        # Held narrowly around `sock.sendall(req + b"\n")` so
+        # concurrent caller threads do not tear the JSONL frame.
+        self._send_lock = threading.Lock()
+
+        # Serialises lifecycle transitions: connect, close,
+        # starting/stopping the demux thread.
+        self._state_lock = threading.Lock()
+
+        self._demux_thread: threading.Thread | None = None
+        self._closed: bool = False
+
+    def _connect_locked(self) -> None:
+        """Open the UNIX socket. Caller must hold `_state_lock`.
+        Raises BrokerUnavailable on connect failure. Does NOT start
+        the demux thread; that's `_ensure_alive`'s job."""
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(RPC_TIMEOUT_SEC)
+        # No SO_RCVTIMEO: the demux thread does blocking readline;
+        # per-RPC deadlines live entirely on the caller's future.
         try:
             s.connect(str(self._socket_path))
         except OSError as exc:
             s.close()
-            raise BrokerUnavailable(f"connect {self._socket_path}: {exc}") from exc
+            raise BrokerUnavailable(
+                f"broker connect failed: {self._socket_path}: {exc}"
+            ) from exc
         self._sock = s
-        # Buffered file wrappers for line-oriented JSONL framing.
-        # `newline=""` because we frame on `\n` ourselves and don't
-        # want Python's universal-newline translation rewriting it.
         self._rfile = s.makefile("rb", buffering=0)
-        self._wfile = s.makefile("wb", buffering=0)
 
-    def _close(self) -> None:
-        for f in (self._rfile, self._wfile):
-            if f is not None:
-                try:
-                    f.close()
-                except OSError:
-                    pass
+    def _close_socket(self) -> None:
+        """Tear down the socket and file wrappers. Idempotent and
+        safe to call concurrently with `_demux_loop` (each branch
+        guards against None)."""
+        if self._rfile is not None:
+            try:
+                self._rfile.close()
+            except OSError:
+                pass
         if self._sock is not None:
             try:
                 self._sock.close()
@@ -133,118 +159,170 @@ class BrokerClient:
                 pass
         self._sock = None
         self._rfile = None
-        self._wfile = None
 
-    def _send_one(self, request_json: str) -> Reply:
-        """One attempt: write the request, read one reply line.
-        Raises any socket / framing error to the caller; the public
-        wrappers handle retry.
+    def _ensure_alive(self) -> None:
+        """Make sure the socket is open and the demux thread is
+        running. Called at the top of `_rpc`; idempotent.
 
-        Uses `socket.sendall` (loops on partial sends) rather than
-        the `_wfile.write` path. The earlier shape called
-        `makefile("wb", buffering=0).write(...)`, which delegates to
-        `SocketIO.write`, which does a single `send()` and **returns
-        the number of bytes actually written**. For small payloads
-        that's the full request; for payloads larger than the
-        kernel socket-send buffer (~208 KB on Linux by default,
-        tripped easily by sitemap XML for inboxes with many
-        articles), `send()` returns a short count and the leftover
-        bytes are silently dropped. The broker then receives a
-        truncated message and the JSON parser reports
-        `Unterminated string`. Reported in production after the
-        1.33.0 deploy on inbox sitemap writes.
-        """
-        assert self._sock is not None and self._rfile is not None
-        self._sock.sendall(request_json.encode("utf-8") + b"\n")
-        line = self._rfile.readline()
-        if not line:
-            raise BrokerUnavailable("broker closed the connection")
-        return Reply.model_validate_json(line)
+        Raises BrokerUnavailable if the connect fails or the client
+        is already closed."""
+        with self._state_lock:
+            if self._closed:
+                raise BrokerUnavailable("client closed")
+            if self._sock is None:
+                self._connect_locked()
+            if self._demux_thread is None or not self._demux_thread.is_alive():
+                t = threading.Thread(
+                    target=self._demux_loop,
+                    daemon=True,
+                    name=f"broker-client-demux-{self._socket_path.name}",
+                )
+                self._demux_thread = t
+                t.start()
+
+    def _demux_loop(self) -> None:
+        """Read JSONL replies in a loop; resolve the matching
+        pending future. On EOF or OSError, fails every pending
+        future with BrokerUnavailable and exits so the next caller
+        reconnects fresh.
+
+        Garbage on the wire (a Reply that fails pydantic validation)
+        is treated as fatal: continuing would leak futures whose
+        rpc_id we cannot determine. Log error and exit."""
+        # Pin a local ref so `_close_socket` setting attributes to
+        # None mid-loop doesn't crash us; we'll see EOF on the next
+        # readline either way.
+        rfile = self._rfile
+        if rfile is None:
+            return
+        try:
+            while not self._closed:
+                try:
+                    line = rfile.readline()
+                except OSError:
+                    break
+                if not line:
+                    break  # Clean EOF from broker.
+                try:
+                    reply = Reply.model_validate_json(line)
+                except Exception:
+                    logger.error("broker reply parse failure; closing connection")
+                    break
+                with self._pending_lock:
+                    fut = self._pending.pop(reply.rpc_id, None)
+                if fut is not None and not fut.done():
+                    fut.set_result(reply)
+                # rpc_id miss (e.g. server-side rpc_id=0 for a
+                # MalformedJSON / InvalidRequest, or a late reply
+                # for a caller that already timed out) is silently
+                # dropped; the client never allocates 0 itself.
+        finally:
+            self._fail_all_pending("broker closed")
+            with self._state_lock:
+                self._close_socket()
+
+    def _fail_all_pending(self, message: str) -> None:
+        """Reject every pending future with BrokerUnavailable. Used
+        by demux on EOF and by `close()` on shutdown. Idempotent."""
+        with self._pending_lock:
+            for fut in list(self._pending.values()):
+                if not fut.done():
+                    fut.set_exception(BrokerUnavailable(message))
+            self._pending.clear()
+
+    def _allocate_rpc_id(self) -> int:
+        """Atomically allocate the next monotonic rpc_id. Client
+        allocates from 1; broker uses 0 as sentinel for malformed-
+        request replies."""
+        with self._id_lock:
+            rpc_id = self._next_rpc_id
+            self._next_rpc_id += 1
+            return rpc_id
 
     def _rpc(
         self,
-        request_json: str,
+        request_model: _BrokerRequest,
         *,
         timeout: float | None = None,
     ) -> Reply:
-        """Send the request, read the reply. Retries once across a
-        reconnect on socket errors; raises `BrokerUnavailable` on
-        the second failure.
+        """Allocate an rpc_id, register a future, send the request,
+        await the reply. Per-RPC `timeout` (seconds) caps how long
+        the caller waits; the socket itself has no read timeout.
 
-        Held inside `_rpc_lock` so concurrent calls from multiple
-        threads (warm-cache's ThreadPoolExecutor) serialize cleanly
-        on this client's socket. The broker is single-threaded
-        upstream anyway, so the lock doesn't reduce throughput,
-        just keeps framing intact and avoids connect storms when
-        each thread races to reopen the socket after a framing
-        error.
+        On socket failure during send, the future is removed from
+        pending and BrokerUnavailable is raised immediately. On
+        demux failure (EOF / unparseable reply) every pending
+        future receives BrokerUnavailable from `_demux_loop`'s
+        fail-all step.
 
-        `timeout`: when not None, set the socket's per-RPC timeout
-        to this value (seconds) for the duration of the call, then
-        restore the default `RPC_TIMEOUT_SEC` afterwards. Long ops
-        (Phase 2.0+: `bootstrap_inboxes`, ingest, backfills, ...)
-        pass a much larger value (minutes) since their reply only
-        arrives once the work completes. Cache ops use the default.
-        """
-        with self._rpc_lock:
-            last_exc: Exception | None = None
-            for attempt in range(2):
-                if self._sock is None:
-                    try:
-                        self._connect()
-                    except BrokerUnavailable as exc:
-                        last_exc = exc
-                        continue
-                if timeout is not None and self._sock is not None:
-                    # Override the default 5s for this RPC. Restored
-                    # in the `finally` below so subsequent RPCs on
-                    # the same socket go back to the default.
-                    self._sock.settimeout(timeout)
-                try:
-                    try:
-                        return self._send_one(request_json)
-                    except (OSError, BrokerUnavailable) as exc:
-                        last_exc = exc
-                        self._close()
-                        # Fall through to retry on a fresh connection.
-                        continue
-                finally:
-                    if timeout is not None and self._sock is not None:
-                        self._sock.settimeout(RPC_TIMEOUT_SEC)
-            raise BrokerUnavailable(f"broker rpc failed after retry: {last_exc}")
+        No automatic retry: the previous `_rpc`'s retry-once-across-
+        reconnect loop is gone. Callers that need retry handle it
+        at their layer (cache.set logs and swallows BrokerUnavailable;
+        long-op CLI wrappers raise ClickException)."""
+        rpc_id = self._allocate_rpc_id()
+        request_model.rpc_id = rpc_id
+        request_bytes = request_model.model_dump_json().encode("utf-8") + b"\n"
+
+        fut: Future = Future()
+        with self._pending_lock:
+            self._pending[rpc_id] = fut
+
+        try:
+            self._ensure_alive()
+            sock = self._sock
+            if sock is None:
+                raise BrokerUnavailable("socket closed during send")
+            with self._send_lock:
+                sock.sendall(request_bytes)
+        except (OSError, BrokerUnavailable) as exc:
+            with self._pending_lock:
+                self._pending.pop(rpc_id, None)
+            if not isinstance(exc, BrokerUnavailable):
+                raise BrokerUnavailable(f"send failed: {exc}") from exc
+            raise
+
+        timeout_value = timeout if timeout is not None else RPC_TIMEOUT_SEC
+        try:
+            reply = fut.result(timeout=timeout_value)
+        except FuturesTimeoutError as exc:
+            # Caller's per-RPC timeout. Leave the pending entry in
+            # place; if the reply eventually arrives, demux drops it.
+            # If the socket dies, fail-all clears it.
+            raise BrokerUnavailable(f"rpc timed out after {timeout_value}s") from exc
+        return reply
 
     # Public ops ─────────────────────────────────────────────
 
     def cache_set(self, key: str, value_json: str, ttl: int) -> None:
-        req = CacheSetRequest(key=key, value_json=value_json, ttl=ttl)
-        reply = self._rpc(req.model_dump_json())
+        req = CacheSetRequest(rpc_id=0, key=key, value_json=value_json, ttl=ttl)
+        reply = self._rpc(req)
         if not reply.ok:
             raise BrokerUnavailable(f"cache_set: {reply.error}")
 
     def cache_delete(self, key: str) -> int:
-        req = CacheDeleteRequest(key=key)
-        reply = self._rpc(req.model_dump_json())
+        req = CacheDeleteRequest(rpc_id=0, key=key)
+        reply = self._rpc(req)
         if not reply.ok:
             raise BrokerUnavailable(f"cache_delete: {reply.error}")
         return reply.rows_deleted or 0
 
     def cache_delete_for_inbox(self, name: str) -> int:
-        req = CacheDeleteForInboxRequest(name=name)
-        reply = self._rpc(req.model_dump_json())
+        req = CacheDeleteForInboxRequest(rpc_id=0, name=name)
+        reply = self._rpc(req)
         if not reply.ok:
             raise BrokerUnavailable(f"cache_delete_for_inbox: {reply.error}")
         return reply.rows_deleted or 0
 
     def cache_purge_expired(self) -> int:
-        req = CachePurgeExpiredRequest()
-        reply = self._rpc(req.model_dump_json())
+        req = CachePurgeExpiredRequest(rpc_id=0)
+        reply = self._rpc(req)
         if not reply.ok:
             raise BrokerUnavailable(f"cache_purge_expired: {reply.error}")
         return reply.rows_deleted or 0
 
     def ping(self) -> bool:
-        req = PingRequest()
-        reply = self._rpc(req.model_dump_json())
+        req = PingRequest(rpc_id=0)
+        reply = self._rpc(req)
         return bool(reply.ok)
 
     # Long ops ─────────────────────────────────────────────────────────
@@ -270,11 +348,12 @@ class BrokerClient:
         from mimir.ingest.epoch import IngestResult
 
         req = IngestInboxRequest(
+            rpc_id=0,
             inbox_name=inbox_name,
             limit=limit,
             workers=workers,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"ingest_inbox: {reply.error}")
         raw = (reply.result or {}).get("results", [])
@@ -303,11 +382,12 @@ class BrokerClient:
         from mimir.patches import BackfillResult
 
         req = BackfillArticleFilesRequest(
+            rpc_id=0,
             limit=limit,
             reprocess=reprocess,
             continuation=continuation,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"backfill_article_files: {reply.error}")
         counters = (reply.result or {}).get("counters", {})
@@ -326,11 +406,12 @@ class BrokerClient:
         from mimir.trailers import BackfillResult
 
         req = BackfillArticleTrailersRequest(
+            rpc_id=0,
             limit=limit,
             reprocess=reprocess,
             continuation=continuation,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"backfill_article_trailers: {reply.error}")
         counters = (reply.result or {}).get("counters", {})
@@ -349,11 +430,12 @@ class BrokerClient:
         from mimir.patch_series import BackfillResult
 
         req = BackfillPatchSeriesRequest(
+            rpc_id=0,
             limit=limit,
             reprocess=reprocess,
             continuation=continuation,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"backfill_patch_series: {reply.error}")
         counters = (reply.result or {}).get("counters", {})
@@ -374,12 +456,13 @@ class BrokerClient:
         from mimir.ingest.backfill import BackfillResult
 
         req = BackfillCanonicalsRequest(
+            rpc_id=0,
             inbox_filter=inbox_filter,
             limit=limit,
             reprocess=reprocess,
             continuation=continuation,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"backfill_canonicals: {reply.error}")
         counters = (reply.result or {}).get("counters", {})
@@ -417,9 +500,9 @@ class BrokerClient:
         N warm-workers so multiple inboxes are warmed concurrently.
         """
         req = WarmInboxRequest(
-            inbox_name=inbox_name, targets=targets, priority=priority
+            rpc_id=0, inbox_name=inbox_name, targets=targets, priority=priority
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"warm_inbox: {reply.error}")
         return reply.result or {}
@@ -446,11 +529,12 @@ class BrokerClient:
         `warm_inbox.priority`: 0 = fast, 1 = slow (default; only
         existing caller is the slow-tier fan-out)."""
         req = WarmSubsystemRequest(
+            rpc_id=0,
             inbox_name=inbox_name,
             subsystem_id=subsystem_id,
             priority=priority,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"warm_subsystem: {reply.error}")
         return reply.result or {}
@@ -480,8 +564,8 @@ class BrokerClient:
         `priority` mirrors `warm_inbox.priority`: 0 = fast, 1 = slow
         (default).
         """
-        req = WarmGlobalRequest(targets=targets, priority=priority)
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        req = WarmGlobalRequest(rpc_id=0, targets=targets, priority=priority)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"warm_global: {reply.error}")
         return reply.result or {}
@@ -506,12 +590,13 @@ class BrokerClient:
         run on a fresh deploy, which walks ~1.5M Linus-tree commits
         and can run several minutes."""
         req = UpdateMainlineRequest(
+            rpc_id=0,
             skip_fetch=skip_fetch,
             skip_maintainers=skip_maintainers,
             skip_commits=skip_commits,
             force=force,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"update_mainline: {reply.error}")
         return reply.result or {}
@@ -523,8 +608,8 @@ class BrokerClient:
         Default `timeout=600 s` covers both the bounded daily pass
         (~1-3 s) and the weekly `full=True` pass (~25-30 s) with
         plenty of headroom for growth."""
-        req = AnalyzeRequest(full=full)
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        req = AnalyzeRequest(rpc_id=0, full=full)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"analyze: {reply.error}")
         return reply.result or {}
@@ -544,8 +629,8 @@ class BrokerClient:
         paused (SQLite exclusive lock); cache writes from the web
         tier may time out on the client side. The broker logs a
         WARNING at start so the cause is correlatable."""
-        req = VacuumRequest()
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        req = VacuumRequest(rpc_id=0)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"vacuum: {reply.error}")
         return reply.result or {}
@@ -558,8 +643,8 @@ class BrokerClient:
         family and the migration canary for the per-op-timeout
         machinery. Default `timeout=60s` is generous (the operation
         is one upsert per inbox)."""
-        req = BootstrapInboxesRequest()
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        req = BootstrapInboxesRequest(rpc_id=0)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"bootstrap_inboxes: {reply.error}")
         return int((reply.result or {}).get("inboxes", 0))
@@ -578,11 +663,12 @@ class BrokerClient:
         inbox dict (`{id, name, mirror_path, upstream_url,
         tracked_authors}`) reconstructed from the Reply payload."""
         req = InboxCreateRequest(
+            rpc_id=0,
             name=name,
             mirror_path=mirror_path,
             upstream_url=upstream_url,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"inbox_create: {reply.error}")
         return (reply.result or {}).get("inbox", {})
@@ -599,12 +685,13 @@ class BrokerClient:
         """Modify one inbox via the broker. Only non-None fields are
         applied server-side."""
         req = InboxUpdateRequest(
+            rpc_id=0,
             name=name,
             new_name=new_name,
             mirror_path=mirror_path,
             upstream_url=upstream_url,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"inbox_update: {reply.error}")
         return (reply.result or {}).get("inbox", {})
@@ -627,11 +714,12 @@ class BrokerClient:
         broker `rm -rf`s the on-disk mirror, which can take a few
         minutes on a ~20 GB lkml-shaped tree."""
         req = InboxDeleteRequest(
+            rpc_id=0,
             name=name,
             keep_orphan_articles=keep_orphan_articles,
             remove_inbox_data=remove_inbox_data,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"inbox_delete: {reply.error}")
         return (reply.result or {}).get("report", {})
@@ -644,8 +732,8 @@ class BrokerClient:
         timeout: float = 60.0,
     ) -> dict:
         """Replace the per-inbox tracker dict in one shot."""
-        req = InboxSetTrackedAuthorsRequest(name=name, trackers=trackers)
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        req = InboxSetTrackedAuthorsRequest(rpc_id=0, name=name, trackers=trackers)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"inbox_set_tracked_authors: {reply.error}")
         return (reply.result or {}).get("inbox", {})
@@ -660,11 +748,12 @@ class BrokerClient:
     ) -> dict:
         """Add (or replace) one tracker entry."""
         req = InboxAddTrackedAuthorRequest(
+            rpc_id=0,
             name=name,
             label=label,
             substring=substring,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"inbox_add_tracked_author: {reply.error}")
         return (reply.result or {}).get("inbox", {})
@@ -677,8 +766,8 @@ class BrokerClient:
         timeout: float = 60.0,
     ) -> dict:
         """Remove one tracker entry by label."""
-        req = InboxRemoveTrackedAuthorRequest(name=name, label=label)
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        req = InboxRemoveTrackedAuthorRequest(rpc_id=0, name=name, label=label)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"inbox_remove_tracked_author: {reply.error}")
         return (reply.result or {}).get("inbox", {})
@@ -690,8 +779,8 @@ class BrokerClient:
         timeout: float = 60.0,
     ) -> dict:
         """Drop all tracker entries (writes NULL)."""
-        req = InboxClearTrackedAuthorsRequest(name=name)
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        req = InboxClearTrackedAuthorsRequest(rpc_id=0, name=name)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"inbox_clear_tracked_authors: {reply.error}")
         return (reply.result or {}).get("inbox", {})
@@ -709,12 +798,13 @@ class BrokerClient:
         resulting rule dict (`{user_agent, crawl_delay,
         disallow_paths, content_signals}`)."""
         req = RobotsAddRequest(
+            rpc_id=0,
             user_agent=user_agent,
             disallow=list(disallow or []),
             crawl_delay=crawl_delay,
             content_signals=dict(content_signals or {}),
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"robots_add: {reply.error}")
         return (reply.result or {}).get("rule", {})
@@ -739,6 +829,7 @@ class BrokerClient:
         `clear_content_signal` drops specific keys;
         `clear_all_content_signals` wipes the dict."""
         req = RobotsUpdateRequest(
+            rpc_id=0,
             user_agent=user_agent,
             add_disallow=list(add_disallow or []),
             remove_disallow=list(remove_disallow or []),
@@ -748,7 +839,7 @@ class BrokerClient:
             clear_content_signal=list(clear_content_signal or []),
             clear_all_content_signals=clear_all_content_signals,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"robots_update: {reply.error}")
         return (reply.result or {}).get("rule", {})
@@ -761,16 +852,16 @@ class BrokerClient:
     ) -> None:
         """Drop one robots_rules row via the broker. `*` is refused
         server-side; use `robots_reset` to restore defaults."""
-        req = RobotsRemoveRequest(user_agent=user_agent)
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        req = RobotsRemoveRequest(rpc_id=0, user_agent=user_agent)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"robots_remove: {reply.error}")
 
     def robots_reset(self, *, timeout: float = 60.0) -> None:
         """Drop every robots_rules row and re-seed the `*` stanza
         with the migration defaults."""
-        req = RobotsResetRequest()
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        req = RobotsResetRequest(rpc_id=0)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"robots_reset: {reply.error}")
 
@@ -790,11 +881,12 @@ class BrokerClient:
         row replay session on a fresh post-fix run; steady-state
         replays are sub-second."""
         req = FailuresReplayRequest(
+            rpc_id=0,
             inbox_name=inbox_name,
             epoch_filter=epoch_filter,
             limit=limit,
         )
-        reply = self._rpc(req.model_dump_json(), timeout=timeout)
+        reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"failures_replay: {reply.error}")
         return reply.result or {}
@@ -802,7 +894,10 @@ class BrokerClient:
     def close(self) -> None:
         """Tests and CLI tools call this to release the socket; the
         process-singleton accessor below normally never closes."""
-        self._close()
+        with self._state_lock:
+            self._closed = True
+            self._close_socket()
+        self._fail_all_pending("client closed")
 
 
 # Process-singleton, lazy-constructed on first use. Lookup is
