@@ -515,6 +515,189 @@ def test_normalize_subject(inp, expected):
     assert normalize_subject(inp) == expected
 
 
+# Subject normalization: pathological cases (mixed locale, deep
+# repetition, the locale tokens the basic test doesn't cover)
+
+
+@pytest.mark.parametrize(
+    "inp,expected",
+    [
+        # Locales the basic test_normalize_subject doesn't cover. The
+        # full regex token list is "re|fwd?|aw|sv|antw|antwort|wg|tr".
+        ("Antw: foo", "foo"),  # German short "Antwort"
+        ("Antwort: foo", "foo"),  # German long form
+        ("Sv: foo", "foo"),  # Swedish "Svar"
+        ("Wg: foo", "foo"),  # German "Weiterleitung" (forward)
+        ("Tr: foo", "foo"),  # French "Transféré" (forward)
+        # Deep repetition: the loop strips repeatedly until idempotent.
+        ("Re: Re: Re: Re: foo", "foo"),
+        # Mixed-locale chain (single subject crosses 3 locales).
+        ("Aw: Fwd: Re: foo", "foo"),
+        ("Sv: Antw: Wg: foo", "foo"),
+        # Inverse: bracketed [PATCH ...] tags MUST be kept (they
+        # distinguish patch revisions; subject_normalized groups
+        # revisions as related-but-distinct threads).
+        ("Re: [PATCH v3 1/N] reduce alloc churn", "[patch v3 1/n] reduce alloc churn"),
+        ("Re: Re: [PATCH] foo", "[patch] foo"),
+        # Whitespace + case: case-insensitive matching, internal
+        # whitespace collapsed.
+        ("re: RE:    Re:  foo  bar", "foo bar"),
+        # NOT a prefix: a "RE" inside the body of the subject must
+        # NOT be stripped (would silently corrupt subjects like
+        # "RECORD: foo" by lopping off "RE").
+        ("Record: foo", "record: foo"),
+        ("Fwdfoo: bar", "fwdfoo: bar"),  # no colon delimiter, not a prefix
+    ],
+)
+def test_normalize_subject_pathological(inp, expected):
+    """Boundary cases for `normalize_subject` (CONTEXT.md "Subject-based
+    fallback grouping"):
+
+    - Locale prefixes the basic test_normalize_subject doesn't enumerate
+      (Antw/Antwort/Sv/Wg/Tr). A regression that dropped one from the
+      regex would silently fragment threads on subjects from senders
+      using that locale.
+    - Deep repetition: the loop must keep stripping until idempotent,
+      not bail after one pass.
+    - Mixed-locale chains (a single subject that picked up 3 different
+      reply tokens across forwarding hops).
+    - `[PATCH vN x/M]` bracketed tags MUST be kept: they're the
+      distinguishing token for patch-revision threading.
+    - Word-boundary safety: "Record:" is NOT a prefix, "Fwdfoo:" is NOT
+      a prefix (no whitespace before the trailing colon means it's the
+      subject's own colon, not a reply marker).
+    """
+    assert normalize_subject(inp) == expected
+
+
+# ---------------------------------------------------------------------------
+# Surrogate scrubbing: per-field coverage on ParsedArticle + ParsedAttachment
+# ---------------------------------------------------------------------------
+
+
+def _surrogate_str() -> str:
+    """A string containing a lone surrogate (U+D800, outside the
+    surrogate-escape range). After scrubbing this becomes U+FFFD per
+    `_scrub_surrogates`'s first arm. The `prefix-` segment is plain
+    ASCII so the test can also verify the rest of the string survives.
+    """
+    return "prefix-\ud800-suffix"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        # ParsedArticle scalar str fields (parser.py:91-98).
+        "message_id",
+        "subject",
+        "author",
+        "body",
+        "body_content_type",
+        "in_reply_to",
+    ],
+)
+def test_parsed_article_scrubs_surrogates_on_str_field(field):
+    """`ParsedArticle._scrub_str` is registered on every scalar str
+    field via `@field_validator(...)`. A regression that removed a
+    field from the decorator's arg list would silently leak surrogate
+    codepoints into SQLite (which refuses them) or into the rendered
+    HTML.
+
+    Parametrised over every field in the validator's arg list so the
+    "did someone drop a field?" regression is caught.
+    """
+    from mimir.parser import ParsedArticle
+
+    tainted = _surrogate_str()
+    # message_id has no surrogate by default in normal traffic; we
+    # still expect the validator to run.
+    kwargs: dict = {"message_id": "ok@example.com"}
+    kwargs[field] = tainted
+
+    art = ParsedArticle(**kwargs)
+    out = getattr(art, field)
+
+    assert out is not None, f"field {field!r} unexpectedly None"
+    assert "\ud800" not in out, (
+        f"field {field!r} retains a lone surrogate; the scrubber's "
+        f"@field_validator must have skipped it. Got {out!r}."
+    )
+    assert "�" in out or out != tainted, (
+        f"field {field!r} appears unchanged ({out!r}); the scrubber "
+        f"should have replaced U+D800 with U+FFFD."
+    )
+
+
+def test_parsed_article_scrubs_surrogates_in_references_list():
+    """The `references` validator (parser.py:104-107) applies
+    `_scrub_surrogates` to every element. Different shape from the
+    scalar `_scrub_str` validator so it gets its own test.
+    """
+    from mimir.parser import ParsedArticle
+
+    art = ParsedArticle(
+        message_id="ok@example.com",
+        references=[_surrogate_str(), "clean@example.com", _surrogate_str()],
+    )
+    for ref in art.references:
+        assert "\ud800" not in ref, (
+            f"references entry retains a lone surrogate: {ref!r}"
+        )
+    assert art.references[1] == "clean@example.com"
+
+
+def test_parsed_article_scrubs_surrogates_in_headers_dict():
+    """The `headers` validator (parser.py:109-112) applies
+    `_scrub_surrogates` to every VALUE in the dict. Different shape
+    from `references` (dict values, not list elements).
+
+    The validator does NOT scrub keys, which matches the parser's
+    invariant that header names are ASCII per RFC 5322 (the bytes are
+    drawn from a fixed set; surrogate codepoints can't appear).
+    """
+    from mimir.parser import ParsedArticle
+
+    art = ParsedArticle(
+        message_id="ok@example.com",
+        headers={
+            "X-Tainted": _surrogate_str(),
+            "X-Clean": "ok",
+        },
+    )
+    assert "\ud800" not in art.headers["X-Tainted"], (
+        f"headers value retains a lone surrogate: {art.headers['X-Tainted']!r}"
+    )
+    assert art.headers["X-Clean"] == "ok"
+
+
+@pytest.mark.parametrize("field", ["filename", "content_type"])
+def test_parsed_attachment_scrubs_surrogates_on_str_field(field):
+    """`ParsedAttachment._scrub_str` is registered on `filename` and
+    `content_type` (parser.py:73-76). `content` is bytes (no scrubber
+    needed). Pinned per-field so a regression that dropped one field
+    from the validator's arg list surfaces here.
+    """
+    from mimir.parser import ParsedAttachment
+
+    tainted = _surrogate_str()
+    kwargs: dict = {
+        "filename": "ok.txt",
+        "content_type": "text/plain",
+        "content": b"hello",
+    }
+    kwargs[field] = tainted
+
+    att = ParsedAttachment(**kwargs)
+    out = getattr(att, field)
+
+    assert out is not None, f"field {field!r} unexpectedly None"
+    assert "\ud800" not in out, (
+        f"ParsedAttachment field {field!r} retains a lone surrogate; "
+        f"the scrubber's @field_validator must have skipped it. "
+        f"Got {out!r}."
+    )
+
+
 # Size cap
 
 
