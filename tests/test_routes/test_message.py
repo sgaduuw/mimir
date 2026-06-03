@@ -519,6 +519,81 @@ def test_message_page_emits_discussion_forum_posting(client, tmp_path):
     assert posting["dateModified"] == posting["datePublished"]
 
 
+def test_message_page_json_ld_date_published_prefers_parsed_date_over_article_date(
+    client,
+    tmp_path,
+):
+    """SEO posture (CONTEXT.md "articles.date = public-inbox commit
+    timestamp"): JSON-LD `datePublished` for the message page uses
+    `parsed.date` (the original RFC 5322 `Date:` header value) rather
+    than `article.date` (which is the public-inbox commit time mimir
+    uses for every other listing surface).
+
+    The trade-off: search engines want the message's claimed send time
+    on rich-results cards, not the archive's "when it became public"
+    time. The existing
+    `test_message_page_emits_discussion_forum_posting` implicitly pins
+    this by asserting `datePublished` starts with "2024-01-01" (the
+    `Date:` header value in `_ingest_one_article`'s default RFC 5322
+    bytes) while `article.date` is set to "now - 86400" (yesterday)
+    on the commit timestamp. This test makes the preference
+    self-documenting: ingest an article whose two dates differ by
+    YEARS (parsed=2024, article=2030), assert the JSON-LD field is
+    the parsed value, NOT the commit value.
+
+    A regression that swapped to `article.date` would silently emit
+    "2030-..." here, drift the visible `datePublished` away from the
+    "From … on …" line, and break the search-engine claim that
+    canonical-publishing date matches the rendered page.
+    """
+    import re
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    art_id, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "jsonld-date-pref@example.com",
+        subject="parsed-vs-article date test",
+    )
+    # Force `article.date` to a year far in the future so the two
+    # dates are unambiguously different. parsed.date stays at the
+    # helper's default "Mon, 1 Jan 2024 00:00:00 +0000".
+    far_future = datetime(2030, 6, 1, 12, 0, tzinfo=timezone.utc)
+    with SessionLocal() as s:
+        s.execute(update(Article).where(Article.id == art_id).values(date=far_future))
+        s.commit()
+        # Re-derive URL from the article's new date because URL
+        # YYYY/MM is part of identity (see test_patch_state... date-bug
+        # fix in PR 1.1 for the same lesson).
+        new_date = s.execute(
+            select(Article.date).where(Article.id == art_id)
+        ).scalar_one()
+    url = f"/alpha/{new_date.year}/{new_date.month:02d}/{art_id}"
+
+    blocks = _json_ld_blocks(client.get(url).data.decode())
+    posting = next(
+        g for g in blocks[0]["@graph"] if g["@type"] == "DiscussionForumPosting"
+    )
+
+    assert posting["datePublished"].startswith("2024-01-01T00:00:00"), (
+        f"datePublished must come from parsed.date (2024-01-01, the "
+        f"RFC 5322 Date: header), NOT from article.date (which we "
+        f"set to 2030-06-01 above). Got "
+        f"{posting['datePublished']!r}. If this assertion sees a "
+        f"2030 timestamp, JSON-LD has regressed to using article.date "
+        f"and search-engine rich-results will silently drift."
+    )
+    assert not re.match(r"^2030-", posting["datePublished"]), (
+        f"inverse guard: datePublished must NOT carry the article.date "
+        f"year (2030); got {posting['datePublished']!r}"
+    )
+
+
 def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
     """A patch article whose touched-paths match a Subsystem
     surfaces the section name + maintainer on the rendered page.
