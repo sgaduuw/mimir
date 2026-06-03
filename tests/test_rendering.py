@@ -303,6 +303,37 @@ def test_render_body_deeply_nested_quotes_collapse_to_details():
     assert "<summary>" in out
 
 
+def test_render_body_alternating_quote_depths_render_correctly():
+    """Quoted-text rendering wraps quotes at depth >= 2 in `<details>`,
+    level-1 stays as plain `<blockquote>` (CONTEXT.md "Quoted-block
+    collapse"). The existing tests cover linear nesting (level-1 only,
+    or level-2 only). This pins the pathological mixed-depth case:
+    `> a` (level 1) followed by `>> b` (level 2) followed by `> c`
+    (level 1 again) must produce BOTH a top-level <blockquote> AND a
+    nested <details> for the level-2 segment.
+
+    A regex-based depth-calc regression on alternating nesting
+    (e.g. miscounting `>>` as level-1 after a transition from level-2
+    back) would silently collapse or expand the wrong segments;
+    pinning both shapes appear catches that.
+    """
+    body = "> level-1-a\n>> level-2-b\n> level-1-c"
+    out = str(render_body(body))
+
+    assert "<blockquote>" in out, (
+        f"level-1 quote segments must render as plain <blockquote>; output: {out!r}"
+    )
+    assert "<details>" in out, (
+        f"level-2+ quote segments must render inside <details>; output: {out!r}"
+    )
+    # All three content segments must appear somewhere in the
+    # rendered output (no segment dropped by the depth walker).
+    for needle in ("level-1-a", "level-2-b", "level-1-c"):
+        assert needle in out, (
+            f"alternating-depth walker dropped segment {needle!r}; output: {out!r}"
+        )
+
+
 def test_render_body_first_level_quoted_diff_folds_as_hunk_quote():
     """A reviewer's first-level quote of a patch hunk gets folded
     into a `<details class="hunk-quote">` so a wall of quoted diff
