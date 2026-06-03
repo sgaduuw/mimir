@@ -3,11 +3,7 @@ itself is exercised in `tests/test_patches.py`; ingest-time path
 extraction is exercised in `tests/test_ingest.py`. This file pins
 the backfill walker's idempotence + the bucket counters."""
 
-from pathlib import Path
-
 from click.testing import CliRunner
-from dulwich.objects import Blob, Commit, Tree
-from dulwich.repo import Repo
 from sqlalchemy import select
 
 from mimir.cli import backfill_article_files_command
@@ -15,32 +11,12 @@ from mimir.ingest import ingest_epoch
 from mimir.models import Article, ArticleFile, Inbox
 from mimir.patches import backfill_article_files
 
-
-def _build_pubinbox_repo(repo_path: Path, messages: list[bytes]) -> Path:
-    """Mirror of the helper in tests/test_ingest.py; duplicating
-    avoids importing from a sibling test module (pytest test files
-    aren't meant to be importable cross-module)."""
-    repo = Repo.init_bare(str(repo_path), mkdir=True)
-    parent = None
-    for i, raw in enumerate(messages):
-        blob = Blob.from_string(raw)
-        repo.object_store.add_object(blob)
-        tree = Tree()
-        tree.add(b"m", 0o100644, blob.id)
-        repo.object_store.add_object(tree)
-        commit = Commit()
-        commit.tree = tree.id
-        commit.parents = [parent] if parent else []
-        commit.author = commit.committer = b"test <t@x>"
-        commit.commit_time = commit.author_time = 1700000000 + i
-        commit.commit_timezone = commit.author_timezone = 0
-        commit.encoding = b"UTF-8"
-        commit.message = f"add message {i}".encode()
-        repo.object_store.add_object(commit)
-        parent = commit.id
-    if parent is not None:
-        repo.refs[b"HEAD"] = parent
-    return repo_path
+# Shared with tests/test_ingest/test_*.py + tests/test_ingest_phase3b.py
+# etc. Pytest sibling-module imports work fine in this repo (the
+# `_helpers.py` filename's underscore prefix keeps it out of pytest's
+# collection); the docstring on the previous local copy claimed
+# otherwise but the import shape used everywhere else proves it's fine.
+from tests.test_ingest._helpers import _build_pubinbox_repo
 
 
 _PATCH_BODY = (
