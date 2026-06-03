@@ -437,6 +437,152 @@ def test_update_mainline_uses_writer_thread_via_active_context(seeded_db, monkey
         pool.close()
 
 
+def test_walk_commits_rebases_dispatches_delete_then_batches_then_cursor(
+    seeded_db, tmp_path
+):
+    """`rebases=True` trees (linux-next, mm/mm-stable, etc.) must
+    dispatch WriteOps in this exact sequence:
+
+      1. `mainline:<tree>:delete-rebases` (pre-walk DELETE)
+      2. one or more `mainline:<tree>:batch` (per-batch composite inserts)
+      3. `mainline:<tree>:cursor-update` (FINAL WriteOp; advances
+         MainlineState.commits_walked_to_sha or last_walked_at)
+
+    CONTEXT.md "Phase 3" pins this shape: the cursor as the FINAL
+    WriteOp inside the per-tree closure preserves resume-from-cursor
+    semantics on a crash, and the DELETE-first invariant means a
+    force-pushed tree's stale rows get cleared before the re-walk
+    inserts new ones.
+
+    A regression that reordered (e.g. ran DELETE inside the batch
+    composite, or submitted cursor-update before the last batch
+    completed) would silently break crash-recovery: a mid-walk crash
+    after the cursor advanced but before the batches committed would
+    leave the cursor at HEAD while half the rows are missing, and
+    the next tick would skip the missing range.
+
+    The existing `test_mid_walk_cursor_failure_leaves_cursor_at_old_position`
+    pins the cursor-failure CONSEQUENCE (cursor stays at old position);
+    this test pins the SUBMIT SEQUENCE itself by recording every
+    `writer.submit()` call's label.
+    """
+    import sqlalchemy as sa
+    from dulwich.objects import Commit, Tree
+    from dulwich.repo import Repo
+    from sqlalchemy import create_engine
+
+    from mimir.broker.writes import WriterThread
+    from mimir.config import settings
+    from mimir.mainline import walk_commits
+    from mimir.models import MainlineCommit, MainlineState
+
+    repo_path = tmp_path / "rebases-test.git"
+    repo = Repo.init_bare(str(repo_path), mkdir=True)
+
+    def _build(repo: Repo, msg: bytes, parent: bytes | None = None) -> bytes:
+        tree = Tree()
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.parents = [parent] if parent else []
+        commit.author = commit.committer = b"test <t@x>"
+        commit.commit_time = commit.author_time = 1700000000
+        commit.commit_timezone = commit.author_timezone = 0
+        commit.encoding = b"UTF-8"
+        commit.message = msg
+        repo.object_store.add_object(commit)
+        repo.refs[b"HEAD"] = commit.id
+        return commit.id
+
+    # 3 Link-trailered commits; batch_size=2 → 2 batches (commits 1+2,
+    # commit 3). Plus 1 delete + 1 cursor → 4 labels total.
+    prev = None
+    for i in range(1, 4):
+        prev = _build(
+            repo,
+            f"Fix {i}.\n\nLink: https://lore.kernel.org/r/m{i}@test\n".encode(),
+            parent=prev,
+        )
+
+    tree_name = "rebases-sequence-test"
+
+    writer = WriterThread.from_settings()
+    writer.start()
+    try:
+        real_submit = writer.submit
+        captured_labels: list[str] = []
+
+        def _recording_submit(op):
+            captured_labels.append(op.label)
+            return real_submit(op)
+
+        writer.submit = _recording_submit  # type: ignore[method-assign]
+        try:
+            with seeded_db() as session:
+                walk_commits(
+                    session,
+                    repo_path,
+                    tree_name=tree_name,
+                    writer=writer,
+                    batch_size=2,
+                    branch="HEAD",
+                    rebases=True,
+                )
+        finally:
+            writer.submit = real_submit  # type: ignore[method-assign]
+
+        # Filter to labels for THIS tree only (the session broker may
+        # have unrelated WriteOps interleaved on its writer).
+        tree_labels = [
+            label
+            for label in captured_labels
+            if label.startswith(f"mainline:{tree_name}:")
+        ]
+
+        assert tree_labels, (
+            f"no mainline:{tree_name}:* WriteOps captured; the rebases=True "
+            f"walk should have submitted at least DELETE + batches + cursor"
+        )
+
+        # Strict ordering: DELETE first, then batches, then cursor LAST.
+        assert tree_labels[0] == f"mainline:{tree_name}:delete-rebases", (
+            f"first WriteOp must be the rebases DELETE; got "
+            f"{tree_labels[0]!r}. A regression that ran DELETE inside the "
+            f"per-batch closure would surface here."
+        )
+        assert tree_labels[-1] == f"mainline:{tree_name}:cursor", (
+            f"last WriteOp must be the cursor update (Phase 3 invariant: "
+            f"cursor is the FINAL WriteOp so crash-replay leaves the "
+            f"cursor at its old position). Got {tree_labels[-1]!r}."
+        )
+        # Everything in between must be per-batch composites.
+        middle = tree_labels[1:-1]
+        assert middle, (
+            f"expected one or more :batch WriteOps between DELETE and "
+            f"cursor-update; got middle={middle!r} from full sequence "
+            f"{tree_labels!r}"
+        )
+        for label in middle:
+            assert ":batch" in label, (
+                f"unexpected label {label!r} in the middle of the sequence; "
+                f"expected only :batch entries. Full sequence: {tree_labels!r}"
+            )
+
+        # Cleanup so the synthetic tree_name doesn't pollute subsequent tests.
+        engine = create_engine(settings.database_url, future=True)
+        with engine.connect() as c:
+            c.execute(
+                sa.delete(MainlineCommit).where(MainlineCommit.tree_name == tree_name)
+            )
+            c.execute(
+                sa.delete(MainlineState).where(MainlineState.tree_name == tree_name)
+            )
+            c.commit()
+        engine.dispose()
+    finally:
+        writer.stop(timeout=10)
+
+
 def test_cache_writes_drain_between_mainline_batches(seeded_db, tmp_path):
     """Phase 3 contract: while walk_commits dispatches batches through
     the writer, concurrent cache-set writes drain between batches

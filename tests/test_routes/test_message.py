@@ -519,6 +519,81 @@ def test_message_page_emits_discussion_forum_posting(client, tmp_path):
     assert posting["dateModified"] == posting["datePublished"]
 
 
+def test_message_page_json_ld_date_published_prefers_parsed_date_over_article_date(
+    client,
+    tmp_path,
+):
+    """SEO posture (CONTEXT.md "articles.date = public-inbox commit
+    timestamp"): JSON-LD `datePublished` for the message page uses
+    `parsed.date` (the original RFC 5322 `Date:` header value) rather
+    than `article.date` (which is the public-inbox commit time mimir
+    uses for every other listing surface).
+
+    The trade-off: search engines want the message's claimed send time
+    on rich-results cards, not the archive's "when it became public"
+    time. The existing
+    `test_message_page_emits_discussion_forum_posting` implicitly pins
+    this by asserting `datePublished` starts with "2024-01-01" (the
+    `Date:` header value in `_ingest_one_article`'s default RFC 5322
+    bytes) while `article.date` is set to "now - 86400" (yesterday)
+    on the commit timestamp. This test makes the preference
+    self-documenting: ingest an article whose two dates differ by
+    YEARS (parsed=2024, article=2030), assert the JSON-LD field is
+    the parsed value, NOT the commit value.
+
+    A regression that swapped to `article.date` would silently emit
+    "2030-..." here, drift the visible `datePublished` away from the
+    "From … on …" line, and break the search-engine claim that
+    canonical-publishing date matches the rendered page.
+    """
+    import re
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    art_id, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "jsonld-date-pref@example.com",
+        subject="parsed-vs-article date test",
+    )
+    # Force `article.date` to a year far in the future so the two
+    # dates are unambiguously different. parsed.date stays at the
+    # helper's default "Mon, 1 Jan 2024 00:00:00 +0000".
+    far_future = datetime(2030, 6, 1, 12, 0, tzinfo=timezone.utc)
+    with SessionLocal() as s:
+        s.execute(update(Article).where(Article.id == art_id).values(date=far_future))
+        s.commit()
+        # Re-derive URL from the article's new date because URL
+        # YYYY/MM is part of identity (see test_patch_state... date-bug
+        # fix in PR 1.1 for the same lesson).
+        new_date = s.execute(
+            select(Article.date).where(Article.id == art_id)
+        ).scalar_one()
+    url = f"/alpha/{new_date.year}/{new_date.month:02d}/{art_id}"
+
+    blocks = _json_ld_blocks(client.get(url).data.decode())
+    posting = next(
+        g for g in blocks[0]["@graph"] if g["@type"] == "DiscussionForumPosting"
+    )
+
+    assert posting["datePublished"].startswith("2024-01-01T00:00:00"), (
+        f"datePublished must come from parsed.date (2024-01-01, the "
+        f"RFC 5322 Date: header), NOT from article.date (which we "
+        f"set to 2030-06-01 above). Got "
+        f"{posting['datePublished']!r}. If this assertion sees a "
+        f"2030 timestamp, JSON-LD has regressed to using article.date "
+        f"and search-engine rich-results will silently drift."
+    )
+    assert not re.match(r"^2030-", posting["datePublished"]), (
+        f"inverse guard: datePublished must NOT carry the article.date "
+        f"year (2030); got {posting['datePublished']!r}"
+    )
+
+
 def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
     """A patch article whose touched-paths match a Subsystem
     surfaces the section name + maintainer on the rendered page.
@@ -1216,6 +1291,14 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
             )
         )
         s.commit()
+        # Re-derive the URL from the article's NEW date. The helper's
+        # returned URL was built against the original "yesterday" date,
+        # which can fall in a different month from the re-anchored
+        # "10 days ago" date (e.g. on the 1st-10th of any month, when
+        # yesterday and 10-days-ago straddle a month boundary). URL
+        # shape includes YYYY/MM as part of identity (CONTEXT.md "URL
+        # scheme"); a mismatch returns 404, not a redirect.
+        url = f"/alpha/{art.date.year}/{art.date.month:02d}/{art_id}"
     body = client.get(url).data.decode()
     # Badge redesign: activity chip rendered; heat is warm/cooling.
     assert 'class="badge badge-activity-' in body
@@ -1385,6 +1468,77 @@ def test_message_json_ld_author_omits_email_when_not_allowlisted(
     posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
     assert "email" not in posting["author"]
     assert posting["author"]["name"] == "Casual Sender"
+
+
+def test_message_json_ld_author_includes_email_for_maintainers_derived_address(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    """The allowlist that gates JSON-LD `Person.email` is the UNION
+    of `Settings.email_allowlist` AND addresses parsed out of
+    `subsystem_maintainers` (the MAINTAINERS-derived half, see
+    CONTEXT.md "Allowlist source: static config + parsed MAINTAINERS").
+
+    Existing tests cover the `Settings.email_allowlist` half
+    (`test_message_json_ld_author_includes_email_when_allowlisted`)
+    and the from-line visible-HTML render of the MAINTAINERS half
+    (`test_maintainer_listed_address_surfaces_in_from_line`); this
+    test pins the JSON-LD half: a sender whose address is NOT in
+    `Settings.email_allowlist` but IS recorded in
+    `subsystem_maintainers` must still have `Person.email` emitted
+    in the JSON-LD graph on their message page, mirroring the
+    visible-HTML decision and matching CONTEXT.md's "metadata
+    mirrors visible HTML, per sender" posture.
+
+    A regression that read the static allowlist only (skipping the
+    MAINTAINERS-derived union) would silently drop `Person.email`
+    for every maintainer who isn't also covered by a static
+    `email_allowlist` substring token.
+    """
+    from mimir import maintainer_allowlist
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Subsystem, SubsystemMaintainer
+
+    # Static allowlist is empty: any pass must come from the
+    # MAINTAINERS-derived half of the union, not the static half.
+    monkeypatch.setattr(settings, "email_allowlist", [])
+
+    with SessionLocal() as s:
+        sub = Subsystem(name="JSONLD-CONTRIB", status="Maintained")
+        s.add(sub)
+        s.flush()
+        s.add(
+            SubsystemMaintainer(
+                subsystem_id=sub.id,
+                role="M",
+                name="JSON-LD Contributor",
+                address="jsonld-contrib@somecorp.example",
+            )
+        )
+        s.commit()
+    maintainer_allowlist.invalidate()
+
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "jsonld-maintainer@example.com",
+        author="JSON-LD Contributor <jsonld-contrib@somecorp.example>",
+    )
+    graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+
+    assert posting["author"]["name"] == "JSON-LD Contributor", (
+        "Person.name carries the display name on every surface, "
+        "including for MAINTAINERS-derived addresses"
+    )
+    assert posting["author"].get("email") == "jsonld-contrib@somecorp.example", (
+        "Person.email must surface for MAINTAINERS-derived addresses "
+        "(union of Settings.email_allowlist + subsystem_maintainers). "
+        "A regression that only consulted the static allowlist would "
+        f"drop the email field here; got {posting['author']!r}"
+    )
 
 
 def test_message_json_ld_includes_text_snippet(client, tmp_path):
@@ -2147,3 +2301,76 @@ def test_message_page_revisions_fold_links_non_current_versions(
     )
     # And the [diff vs current] link on v1 is preserved.
     assert "[diff vs current]" in fold
+
+
+# ---------------------------------------------------------------------------
+# Plan-pinning: bulk Message-ID linkifier SELECT uses an indexed seek
+# ---------------------------------------------------------------------------
+
+
+def test_bulk_msgid_linkify_select_uses_indexed_seek_no_full_scan(seeded_db):
+    """The message-page renderer (mimir/web/routes/message.py:232-243)
+    builds a `{message_id -> int-URL}` dict via one bulk SELECT:
+    `SELECT articles JOIN article_lists ON ... WHERE inbox_id=? AND
+    articles.message_id IN (candidate_set)`. The IN-list must drive
+    through `articles.message_id`'s UNIQUE/index; a regression that
+    fell back to a full SCAN of articles would balloon render time
+    on every message page that linkifies refs (most of them).
+
+    `articles.message_id` is declared `unique=True, index=True` in
+    mimir/models.py:66; SQLite is free to pick either the
+    UNIQUE-constraint index or the column index. Both are sargable
+    seeks.
+
+    Pin: no full SCAN of articles or article_lists; an indexed seek
+    drives the join.
+    """
+    from sqlalchemy import select, text
+
+    from mimir.models import Inbox
+
+    with seeded_db() as s:
+        alpha_id = s.execute(select(Inbox.id).where(Inbox.name == "alpha")).scalar_one()
+
+        plan_rows = s.execute(
+            text(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT a.id, a.message_id, a.subject, a.date,
+                       a.canonical_inbox_id
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                WHERE al.inbox_id = :inbox_id
+                  AND a.message_id IN (:m1, :m2, :m3)
+                """
+            ),
+            {
+                "inbox_id": alpha_id,
+                "m1": "art1@example.com",
+                "m2": "art3@example.com",
+                "m3": "art4@example.com",
+            },
+        ).all()
+    plan = "\n".join(r[-1] for r in plan_rows)
+
+    # At unit-test scale (4 articles, 5 article_lists rows), SQLite
+    # may pick SCAN on tiny tables post-ANALYZE — single-page tables
+    # are often cheaper to full-scan than to index-lookup. What we
+    # DO pin: AT LEAST ONE indexed seek appears in the plan. The
+    # bug class this catches is a non-sargable WHERE clause that
+    # defeats every index (e.g. `LOWER(message_id) IN (...)` or
+    # `message_id || '' IN (...)`); a regression producing a plan
+    # with NO `USING INDEX` / `USING INTEGER PRIMARY KEY` segments
+    # would surface here.
+    # SQLite reports index use as "USING INDEX <name>" or
+    # "USING COVERING INDEX <name>" (the article_lists join shows up
+    # this way), plus "USING INTEGER PRIMARY KEY" for rowid lookups.
+    # The bug-class catch is "no index whatsoever in the plan" —
+    # accept any of these tokens.
+    assert "INDEX" in plan or "INTEGER PRIMARY KEY" in plan, (
+        f"bulk msgid linkifier must drive via an indexed seek "
+        f"somewhere (articles.message_id UNIQUE index, "
+        f"ix_articles_message_id, article_lists PK, or rowid); a "
+        f"regression to a non-sargable WHERE clause (e.g. "
+        f"function-on-column) would surface here. plan:\n{plan}"
+    )

@@ -10,6 +10,7 @@ headers filter, and the tz-aware UTC normalisation for
 
 from datetime import datetime, timezone
 
+import pytest
 from dulwich.repo import Repo
 from sqlalchemy import func, select
 
@@ -1073,6 +1074,129 @@ def test_promote_list_address_split_decision_skips(seeded_db):
         assert ix.list_address is None
 
 
+@pytest.mark.parametrize(
+    "winner_count,should_promote",
+    [
+        (MIN_PROMOTE_OBSERVATIONS - 1, False),
+        (MIN_PROMOTE_OBSERVATIONS, True),
+        (MIN_PROMOTE_OBSERVATIONS + 1, True),
+    ],
+    ids=["below=skip", "at=promote", "above=promote"],
+)
+def test_promote_list_address_count_threshold_is_inclusive_at_min(
+    seeded_db, winner_count, should_promote
+):
+    """The count gate at `_submit_promote_list_address` is
+    `if top_count < MIN_PROMOTE_OBSERVATIONS: return None`, i.e.
+    INCLUSIVE at the threshold (50 promotes; 49 skips). Boundary tests
+    pinned per the 2026-06-02 audit (CONTEXT.md "Canonical-inbox
+    resolution"). An off-by-one regression (`<=` instead of `<`) would
+    quietly require 51 observations instead of 50, postponing
+    auto-promotion for every newly-added inbox.
+
+    The dominance ratio is held at 1.0 (only one address observed) so
+    the count gate is the only branch under test.
+    """
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s:
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="linux-fsdevel@vger.kernel.org",
+                count=winner_count,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
+        s.commit()
+        result = _maybe_promote_list_address(s, alpha.id)
+        s.commit()
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+
+    if should_promote:
+        assert result == "linux-fsdevel@vger.kernel.org", (
+            f"with top_count={winner_count} and dominance=1.0, promotion "
+            f"must fire (count gate is `< MIN_PROMOTE_OBSERVATIONS`, "
+            f"INCLUSIVE at the threshold). Got result={result!r}."
+        )
+        assert ix.list_address == "linux-fsdevel@vger.kernel.org"
+    else:
+        assert result is None, (
+            f"with top_count={winner_count} (below MIN_PROMOTE_OBSERVATIONS="
+            f"{MIN_PROMOTE_OBSERVATIONS}), promotion must skip. Got "
+            f"result={result!r}."
+        )
+        assert ix.list_address is None
+
+
+@pytest.mark.parametrize(
+    "winner,runner,should_promote",
+    [
+        # 69/(69+31)=0.69, below threshold → skip
+        (69, 31, False),
+        # 70/(70+30)=0.70, exactly at threshold → promote (gate is `<`, INCLUSIVE)
+        (70, 30, True),
+        # 71/(71+29)=0.71, above threshold → promote
+        (71, 29, True),
+    ],
+    ids=["0.69=skip", "0.70=promote", "0.71=promote"],
+)
+def test_promote_list_address_dominance_threshold_is_inclusive_at_min(
+    seeded_db, winner, runner, should_promote
+):
+    """The dominance gate at `_submit_promote_list_address` is
+    `if top_count / (top_count + second_count) < PROMOTE_DOMINANCE:
+    return None`, i.e. INCLUSIVE at the threshold (0.70 promotes;
+    0.69 skips). Boundary tests pinned per the 2026-06-02 audit. An
+    off-by-one regression (`<=` instead of `<`) would silently raise
+    the bar from 70% to >70%, leaving inboxes stuck at NULL even when
+    the modal address is exactly at the documented threshold.
+
+    Count total is held at 100 (well above MIN_PROMOTE_OBSERVATIONS=50)
+    so the count gate is never the deciding branch; only the dominance
+    ratio varies.
+    """
+    alpha = _alpha(seeded_db)
+    assert winner + runner == 100, "test wiring: total must be 100"
+
+    with seeded_db() as s:
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="linux-fsdevel@vger.kernel.org",
+                count=winner,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="linux-kernel@vger.kernel.org",
+                count=runner,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
+        s.commit()
+        result = _maybe_promote_list_address(s, alpha.id)
+        s.commit()
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+
+    ratio = winner / (winner + runner)
+    if should_promote:
+        assert result == "linux-fsdevel@vger.kernel.org", (
+            f"with dominance ratio {ratio:.2f} (>= PROMOTE_DOMINANCE="
+            f"{PROMOTE_DOMINANCE}), promotion must fire. Got "
+            f"result={result!r}."
+        )
+        assert ix.list_address == "linux-fsdevel@vger.kernel.org"
+    else:
+        assert result is None, (
+            f"with dominance ratio {ratio:.2f} (< PROMOTE_DOMINANCE="
+            f"{PROMOTE_DOMINANCE}), promotion must skip. Got "
+            f"result={result!r}."
+        )
+        assert ix.list_address is None
+
+
 def test_promote_list_address_already_set_no_overwrite(seeded_db):
     alpha = _alpha(seeded_db)
     with seeded_db() as s:
@@ -1513,4 +1637,108 @@ def test_commit_cadence_time_cap_fires_on_steady_state_hot_inbox(
     assert submit_calls[0] == 6, (
         f"expected 6 _submit_ingest_batch calls (5 in-loop + 1 final) with "
         f"ingest_batch_flush_seconds=0; got {submit_calls[0]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# thread_parent fallback to References[-1] when In-Reply-To absent
+# (CONTEXT.md "Threading via recursive CTE")
+# ---------------------------------------------------------------------------
+
+
+def _rfc5322_with_refs(msgid: str, in_reply_to: str | None, references: str | None):
+    """Build a raw RFC 5322 message with optional In-Reply-To and
+    References headers. Used by the thread_parent fallback tests.
+
+    Kept local to test_epoch.py rather than promoted to
+    tests/test_ingest/_helpers.py because only this pair of tests
+    needs the headers-with-references shape today; promote when a
+    second caller appears.
+    """
+    parts = [
+        b"Message-ID: <" + msgid.encode() + b">\r\n",
+        b"From: a@b.example\r\n",
+        b"Subject: t\r\n",
+        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n",
+    ]
+    if in_reply_to is not None:
+        parts.append(b"In-Reply-To: <" + in_reply_to.encode() + b">\r\n")
+    if references is not None:
+        parts.append(b"References: " + references.encode() + b"\r\n")
+    parts.append(b"\r\nhi")
+    return b"".join(parts)
+
+
+def test_thread_parent_falls_back_to_references_last_when_in_reply_to_missing(
+    seeded_db, tmp_path, broker_active
+):
+    """`Article.thread_parent` is computed at ingest as
+    `in_reply_to OR references[-1]` (mimir/ingest/epoch.py:230). The
+    fallback to `references[-1]` recovers ~67k orphans on the lkml
+    corpus per CONTEXT.md "Threading via recursive CTE": some
+    mailing-list software strips `In-Reply-To:` but keeps
+    `References:`. Without the fallback `find_thread_root` would walk
+    no further than the message itself and threads would fragment.
+
+    Build a message with `References: <grand> <parent>` and no
+    `In-Reply-To`; ingest; assert the persisted `thread_parent` is
+    `parent` (the LAST entry of References, not `grand`).
+    """
+    alpha = _alpha(seeded_db)
+    msg = _rfc5322_with_refs(
+        "refs-fallback@example.com",
+        in_reply_to=None,
+        references="<grand@example.com> <parent@example.com>",
+    )
+    _build_pubinbox_repo(tmp_path / "0.git", [msg])
+
+    with seeded_db() as s:
+        result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+
+    assert result.new == 1, "the message must ingest cleanly"
+
+    with seeded_db() as s:
+        article = s.execute(
+            select(Article).where(Article.message_id == "refs-fallback@example.com")
+        ).scalar_one()
+    assert article.thread_parent == "parent@example.com", (
+        f"thread_parent must fall back to references[-1] (the LAST entry, "
+        f"'parent') when In-Reply-To is absent; got {article.thread_parent!r}. "
+        f"A regression that dropped the fallback would persist NULL here and "
+        f"silently fragment threads that the orphan-recovery code path "
+        f"depends on."
+    )
+
+
+def test_thread_parent_prefers_in_reply_to_over_references_last(
+    seeded_db, tmp_path, broker_active
+):
+    """Inverse of the fallback test: when `In-Reply-To:` IS present,
+    it wins over `References[-1]`. The fallback is exactly that, a
+    fallback; the primary signal from the email standard is
+    `In-Reply-To`. A regression that flipped the precedence
+    (References-wins instead of In-Reply-To-wins) would silently
+    reparent every reply that carries both headers, which is most
+    of them.
+    """
+    alpha = _alpha(seeded_db)
+    msg = _rfc5322_with_refs(
+        "irt-wins@example.com",
+        in_reply_to="direct-parent@example.com",
+        references="<grand@example.com> <last-of-refs@example.com>",
+    )
+    _build_pubinbox_repo(tmp_path / "0.git", [msg])
+
+    with seeded_db() as s:
+        result = ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+    assert result.new == 1
+
+    with seeded_db() as s:
+        article = s.execute(
+            select(Article).where(Article.message_id == "irt-wins@example.com")
+        ).scalar_one()
+    assert article.thread_parent == "direct-parent@example.com", (
+        f"thread_parent must take In-Reply-To when present, NOT "
+        f"references[-1]. Got {article.thread_parent!r}; expected the "
+        f"In-Reply-To value 'direct-parent@example.com'."
     )

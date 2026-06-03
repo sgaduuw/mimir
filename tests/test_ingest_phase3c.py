@@ -604,6 +604,229 @@ def test_batch_closure_failure_rolls_back_entire_batch(
     )
 
 
+# ---------------------------------------------------------------------------
+# One-composite-WriteOp-per-backfill invariant
+# ---------------------------------------------------------------------------
+#
+# The existing `test_batch_closure_failure_rolls_back_entire_batch` above
+# pins the WriterThread's BEGIN IMMEDIATE / COMMIT / ROLLBACK semantic via
+# a custom closure: any composite WriteOp inherits all-or-nothing atomicity
+# from the writer. That contract is shared across all four backfills.
+#
+# What that test does NOT pin: that each `_submit_<X>_batch` actually
+# packages its work into ONE composite WriteOp. A regression that split a
+# backfill's work into two writer.submit() calls (e.g., "submit the DELETE
+# as its own WriteOp, THEN submit the INSERT as a second WriteOp") would
+# break atomicity: a crash between the two calls leaves the DELETE
+# committed and the INSERT lost. Per-table atomicity inherited from the
+# writer can't help when the writes are in different transactions.
+#
+# These tests pin the structural invariant: each backfill's
+# `_submit_<X>_batch` makes exactly ONE call to `writer.submit()`. Catches
+# the split-WriteOp regression across all four backfills.
+
+
+@pytest.mark.parametrize(
+    "backfill_name",
+    ["article_files", "article_trailers", "patch_series", "canonical"],
+)
+def test_submit_batch_issues_exactly_one_writeop(backfill_name, writer, seeded_db):
+    """Each `_submit_<X>_batch` must package the entire batch into ONE
+    composite WriteOp via a single `writer.submit()` call. A regression
+    that split the work across multiple submits would silently break
+    atomicity (a crash between the submits would leave half-committed
+    state on disk, breaking the per-batch all-or-nothing contract that
+    Phase 3c promises and that `test_batch_closure_failure_rolls_back_entire_batch`
+    pins for the generic WriterThread case).
+
+    Wrap `writer.submit` to count calls; invoke each backfill's submit
+    with a minimal valid payload; assert exactly ONE submission.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from mimir._pending_backfill import (
+        _ArticleFilesPending,
+        _ArticleTrailerInsert,
+        _ArticleTrailersPending,
+        _CanonicalPending,
+        _PatchSeriesPending,
+        _submit_article_files_batch,
+        _submit_article_trailers_batch,
+        _submit_canonical_batch,
+        _submit_patch_series_batch,
+    )
+    from mimir.models import Article, Inbox
+
+    with seeded_db() as s:
+        article_id = s.execute(select(Article.id).limit(1)).scalar_one()
+        alpha_id = s.execute(select(Inbox.id).where(Inbox.name == "alpha")).scalar_one()
+
+    # Build the per-backfill payload + bind the submit function.
+    if backfill_name == "article_files":
+        payloads = [
+            _ArticleFilesPending(
+                article_id=article_id,
+                delete_first=False,
+                paths=["one-writeop/a.c", "one-writeop/b.c"],
+            )
+        ]
+        submit_fn = _submit_article_files_batch
+        submit_args = (writer, payloads)
+    elif backfill_name == "article_trailers":
+        payloads = [
+            _ArticleTrailersPending(
+                article_id=article_id,
+                delete_first=False,
+                trailers=[
+                    _ArticleTrailerInsert(
+                        role="Signed-off-by",
+                        name="One Writeop",
+                        address="one@example.com",
+                    )
+                ],
+            )
+        ]
+        submit_fn = _submit_article_trailers_batch
+        submit_args = (writer, payloads)
+    elif backfill_name == "patch_series":
+        payloads = [
+            _PatchSeriesPending(
+                article_id=article_id,
+                patch_series_key="one-writeop-key",
+                patch_series_version="v1",
+                patch_series_position=1,
+            )
+        ]
+        submit_fn = _submit_patch_series_batch
+        submit_args = (writer, payloads)
+    elif backfill_name == "canonical":
+        ts = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+        payloads = [
+            _CanonicalPending(
+                article_id=article_id,
+                new_canonical_inbox_id=alpha_id,
+                observation_deltas={alpha_id: {"one-writeop@example.com": (1, ts)}},
+            )
+        ]
+        submit_fn = _submit_canonical_batch
+        submit_args = (writer, payloads)
+    else:
+        raise AssertionError(f"unknown backfill: {backfill_name}")
+
+    # Wrap writer.submit to count calls. The real submit still runs so
+    # the WriteOp commits and `.result()` resolves cleanly; we just
+    # count entries.
+    real_submit = writer.submit
+    submit_count = {"n": 0}
+
+    def _counting_submit(op):
+        submit_count["n"] += 1
+        return real_submit(op)
+
+    writer.submit = _counting_submit  # type: ignore[method-assign]
+    try:
+        future = submit_fn(*submit_args)
+        future.result(timeout=10)
+    finally:
+        writer.submit = real_submit  # type: ignore[method-assign]
+
+    assert submit_count["n"] == 1, (
+        f"`_submit_{backfill_name}_batch` made {submit_count['n']} call(s) "
+        f"to `writer.submit()`; expected exactly 1. A multi-submit shape "
+        f"breaks per-batch atomicity (a crash between the submits leaves "
+        f"half the batch committed). Phase 3c contract: one composite "
+        f"WriteOp per batch (CONTEXT.md '2.14.0: Phase 3c')."
+    )
+
+
+def test_submit_canonical_batch_rolls_back_observations_on_canonical_update_failure(
+    writer, seeded_db
+):
+    """The canonical backfill's composite WriteOp does BOTH a per-article
+    canonical_inbox_id UPDATE AND per-(inbox,address) observation
+    upserts in the SAME closure. A regression that committed observations
+    before the canonical UPDATE failed would corrupt the auto-promotion
+    heuristic (CONTEXT.md "Canonical-inbox resolution"): observations
+    would accumulate to thresholds while the canonical pin stayed wrong.
+
+    This test injects a failure in the canonical UPDATE step by passing
+    an `article_id` that doesn't exist (so the UPDATE matches 0 rows,
+    which is fine, but a closure that raised on missing-row would let
+    us assert rollback). Since the real closure tolerates 0-row UPDATEs,
+    we instead force the failure by passing an invalid inbox FK in
+    observation_deltas: SQLite enforces foreign_keys=ON via _sqlite_pragmas
+    on the writer engine (pinned by
+    `test_writer_thread_engine_has_sqlite_pragmas_set`), so the
+    observation INSERT with a non-existent inbox_id will raise, and the
+    test asserts both the observations DIDN'T land AND the canonical
+    UPDATE didn't either.
+    """
+    from datetime import datetime, timezone
+
+    import pytest as _pytest
+    from sqlalchemy import select, update
+
+    from mimir._pending_backfill import (
+        _CanonicalPending,
+        _submit_canonical_batch,
+    )
+    from mimir.models import Article, Inbox, InboxAddressObservation
+
+    with seeded_db() as s:
+        article_id = s.execute(select(Article.id).limit(1)).scalar_one()
+        alpha_id = s.execute(select(Inbox.id).where(Inbox.name == "alpha")).scalar_one()
+        # Pin the article's pre-state to NULL canonical so a successful
+        # UPDATE inside the closure would be detectable post-hoc.
+        s.execute(
+            update(Article)
+            .where(Article.id == article_id)
+            .values(canonical_inbox_id=None)
+        )
+        s.commit()
+
+    invalid_inbox_id = 999_999  # no inbox row with this id
+    ts = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+    payloads = [
+        _CanonicalPending(
+            article_id=article_id,
+            new_canonical_inbox_id=alpha_id,
+            observation_deltas={
+                invalid_inbox_id: {"atomicity@example.com": (1, ts)},
+            },
+        )
+    ]
+
+    # The FK-violation INSERT raises; the closure's atomicity must roll
+    # back the canonical UPDATE too. WriteFuture surfaces the exception.
+    with _pytest.raises(Exception):
+        _submit_canonical_batch(writer, payloads).result(timeout=10)
+
+    with seeded_db() as s:
+        # Canonical UPDATE must have rolled back: still NULL.
+        canonical_after = s.execute(
+            select(Article.canonical_inbox_id).where(Article.id == article_id)
+        ).scalar_one()
+        # Observation must NOT have landed (it was the failing statement).
+        obs_after = s.execute(
+            select(InboxAddressObservation.address).where(
+                InboxAddressObservation.address == "atomicity@example.com"
+            )
+        ).scalar_one_or_none()
+
+    assert canonical_after is None, (
+        "the canonical UPDATE must have rolled back when the observation "
+        "INSERT failed; a regression that committed the UPDATE before "
+        "attempting observations would corrupt the auto-promotion "
+        f"heuristic. Article {article_id} canonical_inbox_id is "
+        f"{canonical_after!r}; expected None."
+    )
+    assert obs_after is None, (
+        f"the failing observation INSERT must have left no row; found {obs_after!r}"
+    )
+
+
 def test_cache_writes_drain_between_backfill_batches(
     seeded_db, tmp_path, monkeypatch, broker_active
 ):

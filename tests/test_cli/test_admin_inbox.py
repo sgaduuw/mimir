@@ -311,6 +311,42 @@ def test_admin_inbox_update_invalid_value_clickexception(seeded_db):
     assert result.exit_code != 0
 
 
+def test_admin_inbox_update_empty_mirror_path_clickexception(seeded_db):
+    """`validate_mirror_path` rejects empty / whitespace-only values
+    (mimir/inboxes.py:142-153). Relative paths are deliberately
+    PERMITTED (the directory can be created on first clone), so the
+    only mirror-path rejection that ships from the validator is
+    "not empty". A regression that skipped the empty-check on the
+    update path would silently store an empty string and break the
+    next ingest tick's mirror lookup.
+    """
+    result = CliRunner().invoke(
+        admin_inbox_update_command,
+        ["alpha", "--mirror-path", "   "],
+    )
+    assert result.exit_code != 0, (
+        f"update with whitespace-only mirror_path must error via "
+        f"InboxValidationError → ClickException; got exit={result.exit_code} "
+        f"output={result.output!r}"
+    )
+
+
+def test_admin_inbox_update_invalid_rename_clickexception(seeded_db):
+    """`--rename <new>` runs the inbox-name validator on `<new>`
+    (slug regex). An invalid new name (slashes, uppercase, special
+    chars) must surface as a ClickException, not silently rename
+    to a value that breaks URL routing.
+    """
+    result = CliRunner().invoke(
+        admin_inbox_update_command,
+        ["alpha", "--rename", "Has Spaces and SLASH/"],
+    )
+    assert result.exit_code != 0, (
+        f"update --rename with invalid slug must error; got "
+        f"exit={result.exit_code} output={result.output!r}"
+    )
+
+
 def test_admin_inbox_remove_unknown_clickexception(seeded_db):
     """remove on a non-existent inbox raises ClickException via the
     pre-flight get_inbox call (covers cli.py:1422-1423)."""

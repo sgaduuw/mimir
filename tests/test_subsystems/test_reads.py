@@ -366,3 +366,87 @@ def test_daily_volume_in_subsystem_returns_zero_series_for_zero_paths(
 # The extractor itself is exercised in tests/test_trailers.py; here
 # we pin the JOIN through article_files (subsystem path filter) +
 # the per-reviewer aggregation contract.
+
+
+# ---------------------------------------------------------------------------
+# Plan-pinning: recent_articles_in_subsystem uses the IN-list shape, no SCAN
+# ---------------------------------------------------------------------------
+#
+# CONTEXT.md 2026-05-29: PR #392 / v2.8.0 rewrote
+# recent_articles_in_subsystem (and two siblings) from the IN-list shape
+# `WHERE a.id IN (UNION-of-seeks)` to an EXISTS shape; the EXISTS
+# regression killed lkml from 24 s to 351 s on production and was
+# reverted in v2.8.1. MEMORY.md "measure perf PRs against the WORST
+# inboxes": EXPLAIN-shape pins alone wouldn't have caught the v2.8.0
+# regression (the EXISTS plan looked fine until production-scale data
+# distribution exposed it). This test pins the COARSE shape (no full
+# scan; ix_article_files_path drives) so a regression that drops the
+# UNION-of-seeks index optimisation OR introduces a clearly-wrong
+# SCAN would surface here.
+
+
+def test_recent_articles_in_subsystem_uses_indexed_seeks_no_full_scan(seeded_db):
+    """`recent_articles_in_subsystem`'s production SQL is:
+    `SELECT ... FROM articles a JOIN article_lists al WHERE al.inbox_id=?
+    AND a.id IN ({path_sql}) ORDER BY a.date DESC LIMIT ?`. The
+    `path_sql` IN-list is the UNION-of-seeks shape from
+    `_subsystem_path_filter_sql` (already plan-pinned in
+    `tests/test_subsystems/test_path_filter.py`).
+
+    Pin: no full SCAN of articles or article_lists; the path filter's
+    `ix_article_files_path` index appears in the plan.
+    """
+    from sqlalchemy import text
+
+    from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
+
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        sub = _add_subsystem(
+            s,
+            "PLAN-PIN-TEST",
+            "Maintained",
+            files=["net/", "fs/foo.c"],
+            excludes=["net/bluetooth/"],
+        )
+        s.commit()
+        path_filter = _subsystem_path_filter_sql(sub, prefix="planpin")
+        assert path_filter is not None, (
+            "test wiring: subsystem has includes, _subsystem_path_filter_sql "
+            "should return a non-None (sql, params) tuple"
+        )
+        path_sql, path_params = path_filter
+
+        full_sql = f"""
+            EXPLAIN QUERY PLAN
+            SELECT a.id, a.message_id, a.subject, a.author, a.date,
+                   a.canonical_inbox_id
+            FROM articles a
+            JOIN article_lists al ON al.article_id = a.id
+            WHERE al.inbox_id = :inbox_id
+              AND a.id IN ({path_sql})
+            ORDER BY a.date DESC
+            LIMIT :limit
+        """
+        plan_rows = s.execute(
+            text(full_sql),
+            {"inbox_id": alpha.id, "limit": 20, **path_params},
+        ).all()
+    plan = "\n".join(r[-1] for r in plan_rows)
+
+    assert "SCAN articles" not in plan, (
+        f"recent_articles_in_subsystem must not full-scan articles; plan:\n{plan}"
+    )
+    assert "SCAN article_lists" not in plan, (
+        f"recent_articles_in_subsystem must not full-scan article_lists; plan:\n{plan}"
+    )
+    assert "SCAN article_files" not in plan, (
+        f"recent_articles_in_subsystem's path-filter IN-list must drive "
+        f"through ix_article_files_path (the UNION-of-seeks shape), NOT "
+        f"a full scan of article_files; the LIKE-with-ESCAPE shape that "
+        f"disabled the index would surface here. plan:\n{plan}"
+    )
+    assert "ix_article_files_path" in plan, (
+        f"recent_articles_in_subsystem must drive via "
+        f"ix_article_files_path on the path-filter join; plan:\n{plan}"
+    )
