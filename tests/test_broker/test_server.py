@@ -663,8 +663,10 @@ def test_concurrent_worker_replies_are_not_torn():
         # them at the byte level.
         t1 = threading.Thread(target=send, args=(reply_a,))
         t2 = threading.Thread(target=send, args=(reply_b,))
-        t1.start(); t2.start()
-        t1.join(); t2.join()
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
 
         # Read everything available; parse line-by-line.
         peer.settimeout(2.0)
