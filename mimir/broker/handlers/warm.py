@@ -213,7 +213,9 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
             select(Inbox).where(Inbox.name == req.inbox_name)
         ).scalar_one_or_none()
     if inbox is None:
-        return Reply(ok=False, error=f"UnknownInbox:{req.inbox_name}")
+        return Reply(
+            rpc_id=req.rpc_id, ok=False, error=f"UnknownInbox:{req.inbox_name}"
+        )
 
     today = datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
@@ -227,6 +229,7 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
     )
     _log_slow_breakdown("warm_inbox", req.inbox_name, elapsed_ms, per_target)
     return Reply(
+        rpc_id=req.rpc_id,
         ok=True,
         result={
             "warmed": warmed,
@@ -279,14 +282,20 @@ def handle_warm_subsystem(req: WarmSubsystemRequest) -> Reply:
             select(Inbox).where(Inbox.name == req.inbox_name)
         ).scalar_one_or_none()
         if inbox is None:
-            return Reply(ok=False, error=f"UnknownInbox:{req.inbox_name}")
+            return Reply(
+                rpc_id=req.rpc_id, ok=False, error=f"UnknownInbox:{req.inbox_name}"
+            )
         sub = session.execute(
             select(Subsystem)
             .options(selectinload(Subsystem.paths))
             .where(Subsystem.id == req.subsystem_id)
         ).scalar_one_or_none()
         if sub is None:
-            return Reply(ok=False, error=f"UnknownSubsystem:{req.subsystem_id}")
+            return Reply(
+                rpc_id=req.rpc_id,
+                ok=False,
+                error=f"UnknownSubsystem:{req.subsystem_id}",
+            )
         sub_name_for_log = sub.name
         try:
             warmed_labels = _per_subsystem_warm_call(session, inbox, sub)
@@ -312,6 +321,7 @@ def handle_warm_subsystem(req: WarmSubsystemRequest) -> Reply:
         )
 
     return Reply(
+        rpc_id=req.rpc_id,
         ok=True,
         result={
             "warmed": warmed,
@@ -352,6 +362,7 @@ def handle_warm_global(req: WarmGlobalRequest) -> Reply:
     )
     _log_slow_breakdown("warm_global", "<global>", elapsed_ms, per_target)
     return Reply(
+        rpc_id=req.rpc_id,
         ok=True,
         result={
             "warmed": warmed,
