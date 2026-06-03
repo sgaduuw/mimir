@@ -637,3 +637,41 @@ def test_extract_warm_priority_parses_zero_one_and_default(seeded_db):
     assert _extract_warm_priority(b'{"op":"warm_inbox", "priority": 0}') == 0
     # Malformed priority value (non-digit) falls back to slow.
     assert _extract_warm_priority(b'{"op":"warm_inbox","priority":"nope"}') == 1
+
+
+def test_concurrent_worker_replies_are_not_torn():
+    """Two workers sending replies on the same connection
+    simultaneously: each reply lands as a complete, parseable JSON
+    line. Pins the per-connection _send_lock (3.0.0 pipelining)."""
+    import socket
+    import threading
+    from mimir.broker.server import ClientConnection
+    from mimir.broker.protocol import Reply
+
+    # Create a connected socket pair: `peer` reads what `sock` writes.
+    sock, peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        conn = ClientConnection(sock=sock)
+        reply_a = Reply(rpc_id=1, ok=True).model_dump_json().encode() + b"\n"
+        reply_b = Reply(rpc_id=2, ok=True).model_dump_json().encode() + b"\n"
+
+        def send(payload):
+            with conn.send_lock:
+                conn.sock.sendall(payload)
+
+        # Fire two senders concurrently. The lock must serialise
+        # them at the byte level.
+        t1 = threading.Thread(target=send, args=(reply_a,))
+        t2 = threading.Thread(target=send, args=(reply_b,))
+        t1.start(); t2.start()
+        t1.join(); t2.join()
+
+        # Read everything available; parse line-by-line.
+        peer.settimeout(2.0)
+        rfile = peer.makefile("rb")
+        lines = [rfile.readline(), rfile.readline()]
+        replies = [Reply.model_validate_json(line) for line in lines]
+        assert {r.rpc_id for r in replies} == {1, 2}
+    finally:
+        sock.close()
+        peer.close()
