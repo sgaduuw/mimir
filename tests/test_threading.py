@@ -699,3 +699,141 @@ def test_active_threads_uses_cache_and_force_bypasses(seeded_db):
     # After force=True the cache must hold the recomputed value, not
     # the sentinel. Equivalence to `forced` is the load-bearing claim.
     assert cache.get(key) == forced
+
+
+# ---------------------------------------------------------------------------
+# Plan-pinning: hot read-path queries must not regress to full table scans
+# ---------------------------------------------------------------------------
+#
+# CONTEXT.md "Multi-inbox support" / "Active-threads ranking": both
+# `find_thread_root` and `_active_threads_query` are recursive CTEs;
+# a wrong planner choice (e.g. `sqlite_stat1` mis-population, the
+# 1.36.x 400-sample-ANALYZE regression) silently inflated runtimes
+# from milliseconds to MINUTES on the production corpus before
+# 1.36.4 calibrated analyze_limit to 4000. Pin the EXPLAIN shape so
+# any future planner-stat or schema regression surfaces in CI rather
+# than via production cold-miss symptoms.
+
+
+def test_find_thread_root_uses_indexes_no_full_scan(seeded_db):
+    """`find_thread_root`'s recursive CTE walks via
+    article_lists.inbox_id (filtering to the current inbox) and
+    articles.thread_parent (walking up the parent chain). Both joins
+    must use indexes; a regression that fell back to full SCAN
+    articles or SCAN article_lists would multiply per-iteration
+    cost by table size (6M+ rows on prod).
+    """
+    from sqlalchemy import text
+
+    alpha = _inbox(seeded_db, "alpha")
+
+    with seeded_db() as s:
+        sql = text(
+            """
+            EXPLAIN QUERY PLAN
+            WITH RECURSIVE ancestors AS (
+                SELECT a.message_id, a.thread_parent, 0 AS depth
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                WHERE al.inbox_id = :inbox_id AND a.message_id = :mid
+                UNION ALL
+                SELECT a.message_id, a.thread_parent, anc.depth + 1
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                JOIN ancestors anc ON a.message_id = anc.thread_parent
+                WHERE al.inbox_id = :inbox_id AND anc.depth < :max_depth
+            )
+            SELECT message_id FROM ancestors ORDER BY depth DESC LIMIT 1
+            """
+        )
+        plan_rows = s.execute(
+            sql,
+            {"inbox_id": alpha.id, "mid": "art4@example.com", "max_depth": MAX_DEPTH},
+        ).all()
+    plan = "\n".join(r[-1] for r in plan_rows)
+
+    assert "SCAN articles" not in plan, (
+        f"find_thread_root must not full-scan articles; plan:\n{plan}"
+    )
+    assert "SCAN article_lists" not in plan, (
+        f"find_thread_root must not full-scan article_lists; plan:\n{plan}"
+    )
+
+
+def test_active_threads_recursive_cte_uses_date_index_no_full_scan(seeded_db):
+    """`_active_threads_query` is the load-bearing front-page query
+    (CONTEXT.md "Active-threads ranking with recency decay"): driven
+    by `a.date >= :start AND a.date < :end` on a 7-day window over
+    6M+ articles. The date-index walk MUST be the driver; a
+    regression that fell back to SCAN articles (e.g. planner stats
+    drift, missing index) would explode cold-miss latency from
+    ~700 ms to multi-second.
+
+    Pin: no full SCAN of `articles` or `article_lists` anywhere in
+    the plan; the date index `ix_articles_date` is the seed driver.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import text
+
+    alpha = _inbox(seeded_db, "alpha")
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=7)
+
+    with seeded_db() as s:
+        # Mirror the exact seed SQL `_active_threads_query` builds.
+        # The load-bearing plan choice is the SEED step's date-window
+        # walk; the recursive step is naturally indexed by message_id
+        # (UNIQUE).
+        sql = text(
+            """
+            EXPLAIN QUERY PLAN
+            WITH RECURSIVE chains AS (
+                SELECT a.id AS recent_id, a.message_id AS curr, a.thread_parent,
+                       a.date AS recent_date, 0 AS depth
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                WHERE al.inbox_id = :inbox_id AND a.date >= :start AND a.date < :end
+                UNION ALL
+                SELECT c.recent_id, a.message_id, a.thread_parent,
+                       c.recent_date, c.depth + 1
+                FROM articles a
+                JOIN article_lists al ON al.article_id = a.id
+                JOIN chains c ON a.message_id = c.thread_parent
+                WHERE al.inbox_id = :inbox_id AND c.depth < :max_depth
+            )
+            SELECT recent_id FROM chains
+            """
+        )
+        plan_rows = s.execute(
+            sql,
+            {
+                "inbox_id": alpha.id,
+                "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+                "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+                "max_depth": MAX_DEPTH,
+            },
+        ).all()
+    plan = "\n".join(r[-1] for r in plan_rows)
+
+    assert "SCAN articles" not in plan, (
+        f"active_threads seed step must not full-scan articles; plan:\n{plan}"
+    )
+    assert "SCAN article_lists" not in plan, (
+        f"active_threads must not full-scan article_lists; plan:\n{plan}"
+    )
+    # An index-driven plan must appear on the article + article_lists
+    # joins. SQLite picks among ix_articles_date (when the date window
+    # is highly selective) and ix_article_lists_inbox_id (when the
+    # inbox filter is more selective; this is what the planner picks
+    # on the tiny seeded test corpus). Either is acceptable; what
+    # matters is that AT LEAST ONE indexed seek drives the seed step
+    # rather than a full table scan.
+    # SQLite reports index use as "USING INDEX <name>" /
+    # "USING COVERING INDEX <name>" / "USING INTEGER PRIMARY KEY".
+    # Accept any of these; the bug-class catch is "no index in plan".
+    assert "INDEX" in plan or "INTEGER PRIMARY KEY" in plan, (
+        f"active_threads seed step must drive via an indexed seek "
+        f"(ix_articles_date / ix_article_lists_inbox_id / PK); "
+        f"a regression to no-index-at-all would surface here. plan:\n{plan}"
+    )

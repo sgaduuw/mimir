@@ -235,6 +235,47 @@ def test_writer_thread_submit_blocks_when_queue_full(seeded_db):
         writer.stop(timeout=5)
 
 
+def test_writer_thread_from_settings_uses_documented_queue_depth():
+    """Pin the wiring + default. `WriterThread.from_settings()` must size
+    its bounded queue from `settings.broker_writer_queue_depth`, and the
+    documented default for that setting is 256 (CONTEXT.md "Phase 1";
+    `_claude/specs/2026-05-29-broker-two-pool-design.md`).
+
+    Companion to `test_writer_thread_submit_blocks_when_queue_full`,
+    which pins the BEHAVIOR at saturation (queue.put blocks). Together
+    they catch two distinct regression classes: a `from_settings()` that
+    accidentally hardcodes a different depth (e.g. the Phase 1
+    prototype's `queue_depth=8`), and a silent drift in the documented
+    default.
+    """
+    from mimir.broker.writes import WriterThread
+    from mimir.config import Settings, settings
+
+    # Field default. Reading the model class field bypasses any
+    # env-driven override (e.g. CI setting BROKER_WRITER_QUEUE_DEPTH).
+    default_depth = Settings.model_fields["broker_writer_queue_depth"].default
+    assert default_depth == 256, (
+        f"Settings field default for broker_writer_queue_depth changed: "
+        f"got {default_depth}, expected 256. If intentional, update "
+        f"CONTEXT.md and the broker two-pool spec doc."
+    )
+
+    # Wiring. Whatever settings.broker_writer_queue_depth resolves to
+    # at runtime (default or env-override), from_settings() honours it.
+    writer = WriterThread.from_settings()
+    try:
+        assert writer._queue.maxsize == settings.broker_writer_queue_depth, (
+            f"WriterThread.from_settings()._queue.maxsize = "
+            f"{writer._queue.maxsize}, expected "
+            f"settings.broker_writer_queue_depth = "
+            f"{settings.broker_writer_queue_depth}. Did a refactor "
+            f"hardcode the depth instead of reading the setting?"
+        )
+    finally:
+        # Never started, so stop is a no-op; called for symmetry.
+        writer.stop(timeout=1)
+
+
 def test_writer_thread_slow_commit_emits_warning(seeded_db, caplog):
     """A commit that exceeds broker_slow_rpc_warn_ms emits a WARNING
     line with the op label and elapsed ms."""

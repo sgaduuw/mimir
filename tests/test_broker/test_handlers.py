@@ -21,7 +21,7 @@ def _line(req) -> bytes:
 
 
 def test_dispatch_ping(seeded_db):
-    reply = dispatch(_line(PingRequest()))
+    reply = dispatch(_line(PingRequest(rpc_id=1)))
     assert reply.ok is True
     assert reply.error is None
 
@@ -34,6 +34,7 @@ def test_dispatch_cache_set_writes_to_db(seeded_db):
     reply = dispatch(
         _line(
             CacheSetRequest(
+                rpc_id=1,
                 key=nskey,
                 value_json='"hello"',
                 ttl=60,
@@ -56,7 +57,7 @@ def test_dispatch_cache_delete_removes_row(seeded_db):
     cache._direct_set(nskey, json.dumps(cache._encode("x")), 60)
     assert cache.get("test_dispatch_delete") == "x"
 
-    reply = dispatch(_line(CacheDeleteRequest(key=nskey)))
+    reply = dispatch(_line(CacheDeleteRequest(rpc_id=1, key=nskey)))
     assert reply.ok is True
 
     assert cache.get("test_dispatch_delete") is None
@@ -67,7 +68,7 @@ def test_dispatch_cache_delete_for_inbox_reports_count(seeded_db):
     cache.set("daily_volume:alpha:30", "x2", ttl=60)
     cache.set("archive_stats:beta", "x3", ttl=60)
 
-    reply = dispatch(_line(CacheDeleteForInboxRequest(name="alpha")))
+    reply = dispatch(_line(CacheDeleteForInboxRequest(rpc_id=1, name="alpha")))
     assert reply.ok is True
     assert reply.rows_deleted == 2
 
@@ -95,7 +96,7 @@ def test_dispatch_cache_purge_expired_reports_count(seeded_db):
         s.add(CacheEntry(key=_ns("alive_one"), value='"y"', expires_at=now + 3600))
         s.commit()
 
-    reply = dispatch(_line(CachePurgeExpiredRequest()))
+    reply = dispatch(_line(CachePurgeExpiredRequest(rpc_id=1)))
     assert reply.ok is True
     assert (reply.rows_deleted or 0) >= 1
 
@@ -130,3 +131,51 @@ def test_dispatch_handler_does_not_crash_on_bad_value_type(seeded_db):
     reply = dispatch(b"[1, 2, 3]")
     assert reply.ok is False
     assert reply.error == "UnknownOp"
+
+
+def test_dispatch_echoes_rpc_id_on_success():
+    """dispatch() attaches the request's rpc_id to the Reply so
+    the client can demux multiple in-flight RPCs."""
+    line = b'{"op":"ping","rpc_id":12345}'
+    reply = dispatch(line)
+    assert reply.ok is True
+    assert reply.rpc_id == 12345
+
+
+def test_dispatch_echoes_rpc_id_on_handler_error():
+    """rpc_id is echoed even when the handler returns ok=False, so
+    the client can resolve the future cleanly."""
+    # Unknown op produces Reply(ok=False, error="UnknownOp").
+    line = b'{"op":"no_such_op","rpc_id":99}'
+    reply = dispatch(line)
+    assert reply.ok is False
+    assert reply.rpc_id == 99
+
+
+def test_dispatch_malformed_json_returns_rpc_id_zero():
+    """Malformed JSON: no rpc_id is parseable, so the Reply uses 0.
+    The client allocates from 1, so 0 lookups miss and the reply is
+    silently dropped."""
+    reply = dispatch(b"this is not json")
+    assert reply.ok is False
+    assert reply.error == "MalformedJSON"
+    assert reply.rpc_id == 0
+
+
+def test_dispatch_missing_rpc_id_returns_rpc_id_zero():
+    """Request JSON without the required rpc_id field fails pydantic
+    validation; the Reply uses 0 as the rpc_id sentinel."""
+    reply = dispatch(b'{"op":"ping"}')  # no rpc_id
+    assert reply.ok is False
+    assert reply.error == "InvalidRequest"
+    assert reply.rpc_id == 0
+
+
+def test_dispatch_negative_rpc_id_returns_rpc_id_zero():
+    """Negative rpc_id in malformed request: dispatch coerces to 0
+    so the Reply does not escape pydantic's Field(ge=0) constraint.
+    Pins the guard added to keep dispatch() within its 'never raises'
+    contract."""
+    reply = dispatch(b'{"op":"no_such_op","rpc_id":-5}')
+    assert reply.ok is False
+    assert reply.rpc_id == 0

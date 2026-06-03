@@ -381,6 +381,85 @@ def test_analyze_limit_pragma_set_on_every_connection():
     assert _pragma("analysis_limit") == settings.analyze_limit
 
 
+# ---------------------------------------------------------------------------
+# PRAGMA query_only gating on `settings.mimir_is_broker` (2.0.0 invariant)
+# ---------------------------------------------------------------------------
+
+
+def test_pragmas_listener_sets_query_only_when_not_broker(monkeypatch):
+    """The 2.0.0 single-writer invariant: every non-broker process
+    opens its SQLite connections with `PRAGMA query_only=1`, so any
+    code path that escaped routing through the broker's WriteRPC
+    surfaces immediately as `OperationalError: attempt to write a
+    readonly database` rather than silently bypassing the serialised
+    writer queue (CONTEXT.md "Single-writer invariant via the
+    broker (v2.0.0+)").
+
+    The listener `_sqlite_pragmas` decides per-connection based on
+    `settings.mimir_is_broker`. The conftest sets MIMIR_IS_BROKER=true
+    process-wide so the test process can write, but the runtime
+    behavior the test pins is the OTHER branch (non-broker). Call
+    the listener directly against a fresh raw sqlite3 connection so
+    nothing about the shared engine pool's state matters.
+    """
+    import sqlite3
+
+    from mimir.extensions import _sqlite_pragmas
+
+    monkeypatch.setattr(settings, "mimir_is_broker", False)
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        _sqlite_pragmas(conn, None)
+        cur = conn.cursor()
+        cur.execute("PRAGMA query_only")
+        result = cur.fetchone()[0]
+    finally:
+        conn.close()
+
+    assert result == 1, (
+        "non-broker connections must open with PRAGMA query_only=1 so "
+        "accidental writes raise loudly instead of silently bypassing "
+        "the broker's single-writer queue"
+    )
+
+
+def test_pragmas_listener_does_not_set_query_only_when_broker():
+    """Inverse: when `settings.mimir_is_broker` is True (i.e. the
+    broker process itself), the listener must NOT set query_only.
+    The broker IS the writer; setting query_only would brick every
+    write path on the broker. Conftest sets MIMIR_IS_BROKER=true at
+    import time, so this is the steady-state path under the test
+    harness.
+    """
+    import sqlite3
+
+    from mimir.extensions import _sqlite_pragmas
+
+    # Sanity check: conftest's process-wide setting puts us in the
+    # broker branch by default. If this assertion fails, the
+    # listener's gate condition is being tested against the wrong
+    # baseline.
+    assert settings.mimir_is_broker is True, (
+        "test harness invariant: conftest sets MIMIR_IS_BROKER=true "
+        "so the test process can act as the writer for fixtures"
+    )
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        _sqlite_pragmas(conn, None)
+        cur = conn.cursor()
+        cur.execute("PRAGMA query_only")
+        result = cur.fetchone()[0]
+    finally:
+        conn.close()
+
+    assert result == 0, (
+        "broker connections must NOT carry query_only=1; the broker IS "
+        "the sole SQLite writer process"
+    )
+
+
 def test_analyze_limit_default_is_4000():
     """1.36.4 calibration: bumped from 400 to 4000 after the
     production multi-inbox corpus (11M+ rows) revealed that 400-

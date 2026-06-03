@@ -223,17 +223,19 @@ def test_cache_handlers_do_not_call_write_transaction(
 
     # Each handler must complete without tripping the guard.
     r = handle_cache_set(
-        CacheSetRequest(key="v3:phase4-contract", value_json='"x"', ttl=60)
+        CacheSetRequest(rpc_id=1, key="v3:phase4-contract", value_json='"x"', ttl=60)
     )
     assert r.ok is True
 
-    r = handle_cache_delete(CacheDeleteRequest(key="v3:phase4-contract"))
+    r = handle_cache_delete(CacheDeleteRequest(rpc_id=1, key="v3:phase4-contract"))
     assert r.ok is True
 
-    r = handle_cache_delete_for_inbox(CacheDeleteForInboxRequest(name="alpha"))
+    r = handle_cache_delete_for_inbox(
+        CacheDeleteForInboxRequest(rpc_id=1, name="alpha")
+    )
     assert r.ok is True
 
-    r = handle_cache_purge_expired(CachePurgeExpiredRequest())
+    r = handle_cache_purge_expired(CachePurgeExpiredRequest(rpc_id=1))
     assert r.ok is True
 
 
@@ -322,6 +324,7 @@ def test_cache_handlers_dispatch_under_long_op_load(
 
     def _cache_handler_call(i: int) -> None:
         req = CacheSetRequest(
+            rpc_id=1,
             key=f"v3:phase4_handler_stress_{i}",
             value_json='{"x": 1}',
             ttl=60,
@@ -437,23 +440,27 @@ def test_cache_handlers_swallow_timeout_error_during_writer_block(broker_active)
     try:
         with patch("mimir.cache._set_via_writer_for_nskey", _never_resolving):
             r = handle_cache_set(
-                CacheSetRequest(key="v3:hotfix-test", value_json='"x"', ttl=60)
+                CacheSetRequest(
+                    rpc_id=1, key="v3:hotfix-test", value_json='"x"', ttl=60
+                )
             )
         assert r.ok is False
         assert r.error == "writer busy"
 
         with patch("mimir.cache.delete_via_writer", _never_resolving):
-            r = handle_cache_delete(CacheDeleteRequest(key="v3:hotfix-test"))
+            r = handle_cache_delete(CacheDeleteRequest(rpc_id=1, key="v3:hotfix-test"))
         assert r.ok is False
         assert r.error == "writer busy"
 
         with patch("mimir.cache.delete_for_inbox_via_writer", _never_resolving):
-            r = handle_cache_delete_for_inbox(CacheDeleteForInboxRequest(name="alpha"))
+            r = handle_cache_delete_for_inbox(
+                CacheDeleteForInboxRequest(rpc_id=1, name="alpha")
+            )
         assert r.ok is False
         assert r.error == "writer busy"
 
         with patch("mimir.cache.purge_expired_via_writer", _never_resolving):
-            r = handle_cache_purge_expired(CachePurgeExpiredRequest())
+            r = handle_cache_purge_expired(CachePurgeExpiredRequest(rpc_id=1))
         assert r.ok is False
         assert r.error == "writer busy"
 
@@ -464,3 +471,70 @@ def test_cache_handlers_swallow_timeout_error_during_writer_block(broker_active)
             assert "writer busy" in record.getMessage()
     finally:
         cache_handler_logger.removeHandler(caplog_handler)
+
+
+def test_cache_set_handler_real_timeout_with_blocked_writer(broker_active):
+    """Companion to test_cache_handlers_swallow_timeout_error_during_writer_block:
+    that test pre-fails the WriteFuture with TimeoutError so the handler's
+    `.result(timeout=5)` raises immediately on entry, exercising only the
+    exception-catch path (a regression that removed the `except TimeoutError`
+    block is caught either way).
+
+    THIS test exercises the REAL wait path: a held WriteOp ahead of the
+    cache.set occupies the WriterThread, so the cache.set's WriteFuture
+    genuinely never resolves within the 5 s window; `.result(timeout=5)`
+    blocks for the full window, raises TimeoutError from the wait itself
+    (not from a pre-set exception), the handler catches, and the reply
+    comes back ok=False/"writer busy".
+
+    Wall-time cost: ~5 s (the hardcoded handler timeout). One handler is
+    enough to pin the wait path; the mocked-Future variant above covers
+    the symmetric exception-propagation for all four handlers without
+    paying 4×5 s. If the handler timeout ever becomes settings-tunable,
+    drop this to a sub-second wait.
+    """
+    import threading
+
+    from mimir.broker import _context
+    from mimir.broker.handlers.cache import handle_cache_set
+    from mimir.broker.protocol import CacheSetRequest
+    from mimir.broker.writes import WriteOp
+
+    writer = _context.get_active_writer()
+
+    # Block the writer thread with a WriteOp that waits on an Event. The
+    # 15 s ceiling on release.wait() is a defensive bound: if the test
+    # crashes between submit and the finally below, the writer drains
+    # itself after 15 s instead of hanging the test session.
+    release = threading.Event()
+    blocked_future = writer.submit(
+        WriteOp(
+            label="test:hold-writer-15s",
+            fn=lambda conn: release.wait(timeout=15),
+        )
+    )
+
+    try:
+        reply = handle_cache_set(
+            CacheSetRequest(
+                rpc_id=1,
+                key="v3:real-timeout-cache-set",
+                value_json='"x"',
+                ttl=60,
+            )
+        )
+
+        assert reply.ok is False, (
+            "handler must return ok=False after a REAL .result(timeout=5) "
+            "miss (2.15.1 hotfix contract; mocked variant above also "
+            "asserts this, but this test pins the wait path)"
+        )
+        assert reply.error == "writer busy", (
+            f"expected error='writer busy', got {reply.error!r}"
+        )
+    finally:
+        # Release the blocking WriteOp so broker_active's
+        # writer.stop(timeout=10) doesn't have to wait the full 15 s
+        # release.wait() ceiling.
+        release.set()
+        blocked_future.result(timeout=10)

@@ -58,22 +58,40 @@ def test_client_raises_broker_unavailable_when_no_broker(seeded_db):
         c.cache_set("x", '"v"', 60)
 
 
-def test_client_reconnects_after_broker_restart(seeded_db):
-    """First RPC succeeds. Stop the broker. Start a new broker on
-    the same socket. Second RPC should reconnect transparently and
-    succeed. Exercises the `_rpc` retry loop."""
+def test_client_reconnects_lazily_after_broker_restart(seeded_db):
+    """3.0.0 fail-fast contract: after a broker restart, the next
+    RPC reconnects transparently. Any RPC mid-flight at the moment
+    of EOF raises BrokerUnavailable; callers handle that at their
+    layer (cache.set logs and swallows)."""
+    import time
+
     sp = short_socket_path("client-reconnect")
     c = BrokerClient(sp)
     try:
         with broker_running(sp):
             assert c.ping() is True
+        # The broker's reader and worker threads run independently
+        # of broker_running's context exit and may still drain a
+        # request landing inside the SHUTDOWN_POLL_SEC=0.1s window
+        # before they observe stop_event. Wait for the demux thread
+        # to observe EOF and zero _sock so the next ping reliably
+        # hits the "no socket" path.
+        deadline = time.time() + 2.0
+        while c._sock is not None and time.time() < deadline:
+            time.sleep(0.01)
         # Broker is gone; the client's socket is stale.
-        # Second broker on the same path:
+        # The next RPC against a stopped broker raises.
+        with pytest.raises(BrokerUnavailable):
+            c.ping()
+        # New broker on the same path. Next RPC reconnects.
         with broker_running(sp):
-            # First call after restart: client reconnects on retry.
             assert c.ping() is True
     finally:
-        c.close()
+        try:
+            if c._sock is not None:
+                c._sock.close()
+        except Exception:
+            pass
 
 
 def test_client_persistent_connection_survives_idle_window(seeded_db):
@@ -211,3 +229,217 @@ def test_client_persistent_connection_reuses_socket(seeded_db):
             )
         finally:
             c.close()
+
+
+def test_close_fails_pending_futures(seeded_db):
+    """Closing the client while futures are pending must fail them
+    (not leak). Pins the shutdown contract."""
+    from concurrent.futures import Future
+
+    sp = short_socket_path("client-close")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        c._ensure_alive()
+        # Plant a fake pending future (no real RPC sent; we are
+        # simulating "broker died after we registered").
+        fake = Future()
+        with c._pending_lock:
+            c._pending[99999] = fake
+        c.close()
+        # Future must be resolved with BrokerUnavailable.
+        assert fake.done()
+        assert isinstance(fake.exception(), BrokerUnavailable)
+
+
+def test_two_threads_dispatch_concurrently_no_serialization(seeded_db, monkeypatch):
+    """REGRESSION GUARD (3.0.0): two caller threads issue RPCs
+    concurrently. The first thread's RPC takes a long time on the
+    broker side; the second thread's RPC must dispatch and complete
+    BEFORE the first thread's reply arrives. If this test fails,
+    the client has silently re-introduced a global lock that
+    serialises the wire.
+
+    Mechanism: monkeypatch the broker's _DISPATCH so the `ping` op
+    routes to a slow-for-rpc_id-1 handler, and bump
+    `broker_cache_workers` to 2 so both pings can dispatch in
+    parallel. Thread A wins rpc_id=1 (started first), Thread B gets
+    rpc_id=2. The barrier is set only when Thread B completes; if B
+    is blocked behind A on a global client-side lock, the barrier
+    never trips and the test times out.
+
+    Note: `broker_cache_workers` must be >= 2 for the broker side to
+    drain both pings concurrently. The default is 1 (FIFO commit
+    order), which is correct for production; this test intentionally
+    bumps it to 2 to exercise the CLIENT-side pipelining property in
+    isolation from server-side serialisation."""
+    import threading
+    import time
+    from mimir.broker import handlers
+    from mimir.broker.protocol import PingRequest, Reply
+    from mimir.config import settings
+
+    barrier = threading.Event()
+
+    def slow_for_rpc_id_one(req):
+        if req.rpc_id == 1:
+            # Wait for Thread B to complete first. If a global lock
+            # were back on the client, B is queued behind A and never
+            # sets the barrier -> we time out.
+            barrier.wait(timeout=5.0)
+        return Reply(rpc_id=req.rpc_id, ok=True)
+
+    # Two cache workers so both pings can run in parallel on the
+    # broker side. Without this the broker serialises them through
+    # the single default worker, which would make the barrier test
+    # false-positive (B blocks on the server queue, not on a client
+    # lock). The regression we guard is client-side, so we must
+    # eliminate server-side serialisation as a confound.
+    monkeypatch.setattr(settings, "broker_cache_workers", 2)
+
+    # Patch the _DISPATCH entry for "ping" so the slow handler
+    # is the one the broker invokes. The PingRequest type stays
+    # the same; only the handler changes.
+    monkeypatch.setitem(
+        handlers._DISPATCH,
+        "ping",
+        (PingRequest, slow_for_rpc_id_one),
+    )
+
+    sp = short_socket_path("client-regression-pipelining")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        # Force monotonic counter to a known start so Thread A
+        # gets rpc_id=1 reliably.
+        c._next_rpc_id = 1
+        try:
+            results = {}
+
+            def thread_a():
+                # Will get rpc_id=1; handler blocks on barrier.
+                results["a"] = c.ping()
+
+            def thread_b():
+                # Will get rpc_id=2; must dispatch fully even while
+                # Thread A is parked on the barrier.
+                results["b"] = c.ping()
+                # Releasing the barrier lets Thread A finish.
+                barrier.set()
+
+            ta = threading.Thread(target=thread_a)
+            tb = threading.Thread(target=thread_b)
+            ta.start()
+            # Tiny delay so Thread A wins the rpc_id allocation race.
+            time.sleep(0.05)
+            tb.start()
+
+            ta.join(timeout=10.0)
+            tb.join(timeout=10.0)
+            assert not ta.is_alive(), "thread A stuck (serialization regression?)"
+            assert not tb.is_alive(), "thread B stuck (serialization regression?)"
+            assert results.get("a") is True
+            assert results.get("b") is True
+        finally:
+            c.close()
+
+
+def test_rpc_id_unique_under_contention(seeded_db):
+    """1000 RPC id allocations across 16 threads: every allocated
+    rpc_id is unique. Monotonicity is an implementation detail of
+    the atomic counter, not a contract; only uniqueness is asserted."""
+    import threading
+
+    sp = short_socket_path("client-id-unique")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            seen: set[int] = set()
+            seen_lock = threading.Lock()
+
+            def fire(n: int) -> None:
+                for _ in range(n):
+                    rpc_id = c._allocate_rpc_id()
+                    with seen_lock:
+                        assert rpc_id not in seen
+                        seen.add(rpc_id)
+
+            threads = [threading.Thread(target=fire, args=(62,)) for _ in range(16)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5.0)
+            assert len(seen) == 16 * 62
+        finally:
+            c.close()
+
+
+def test_caller_timeout_leaves_client_usable(seeded_db, monkeypatch):
+    """When a caller times out on _rpc(timeout=N), the late-arriving
+    reply is silently dropped by the demux thread. The client must
+    stay usable for subsequent RPCs."""
+    import time
+    from mimir.broker import handlers
+    from mimir.broker.protocol import PingRequest, Reply
+
+    def slow_ping(req):
+        time.sleep(0.5)
+        return Reply(rpc_id=req.rpc_id, ok=True)
+
+    monkeypatch.setitem(
+        handlers._DISPATCH,
+        "ping",
+        (PingRequest, slow_ping),
+    )
+
+    sp = short_socket_path("client-timeout")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            # Force 100ms timeout; the broker sleeps 500ms.
+            req = PingRequest(rpc_id=0)
+            with pytest.raises(BrokerUnavailable):
+                c._rpc(req, timeout=0.1)
+
+            # Wait for the dropped reply to land in the demux thread
+            # and be silently discarded.
+            time.sleep(1.0)
+
+            # Subsequent RPC works normally.
+            assert c.ping() is True
+        finally:
+            c.close()
+
+
+def test_socket_eof_fails_all_pending(seeded_db):
+    """When the broker closes the socket mid-pipeline, every
+    pending future receives BrokerUnavailable from the demux
+    thread's fail-all step."""
+    from concurrent.futures import Future
+
+    sp = short_socket_path("client-eof")
+    with broker_running(sp) as server:
+        c = BrokerClient(sp)
+        try:
+            c._ensure_alive()
+            # Plant two fake pending futures (no real RPC sent;
+            # simulating "broker died after we registered").
+            fake_a: Future = Future()
+            fake_b: Future = Future()
+            with c._pending_lock:
+                c._pending[100001] = fake_a
+                c._pending[100002] = fake_b
+            # Force EOF: signal the broker to shut down. The demux
+            # thread sees the socket close when the broker exits.
+            server.stop_event.set()
+            # Wait for fail-all to fire. Give the demux thread a
+            # generous window; it is poll-based on readline.
+            try:
+                fake_a.exception(timeout=5.0)
+            except TimeoutError:
+                pytest.fail("demux thread did not fail-all within 5s")
+            assert isinstance(fake_a.exception(), BrokerUnavailable)
+            assert isinstance(fake_b.exception(), BrokerUnavailable)
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
