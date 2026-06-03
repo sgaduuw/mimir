@@ -218,3 +218,23 @@ def test_client_persistent_connection_reuses_socket(seeded_db):
             )
         finally:
             c.close()
+
+
+def test_close_fails_pending_futures(seeded_db):
+    """Closing the client while futures are pending must fail them
+    (not leak). Pins the shutdown contract."""
+    from concurrent.futures import Future
+
+    sp = short_socket_path("client-close")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        c._ensure_alive()
+        # Plant a fake pending future (no real RPC sent; we are
+        # simulating "broker died after we registered").
+        fake = Future()
+        with c._pending_lock:
+            c._pending[99999] = fake
+        c.close()
+        # Future must be resolved with BrokerUnavailable.
+        assert fake.done()
+        assert isinstance(fake.exception(), BrokerUnavailable)
