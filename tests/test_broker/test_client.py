@@ -63,11 +63,22 @@ def test_client_reconnects_lazily_after_broker_restart(seeded_db):
     RPC reconnects transparently. Any RPC mid-flight at the moment
     of EOF raises BrokerUnavailable; callers handle that at their
     layer (cache.set logs and swallows)."""
+    import time
+
     sp = short_socket_path("client-reconnect")
     c = BrokerClient(sp)
     try:
         with broker_running(sp):
             assert c.ping() is True
+        # The broker's reader and worker threads run independently
+        # of broker_running's context exit and may still drain a
+        # request landing inside the SHUTDOWN_POLL_SEC=0.1s window
+        # before they observe stop_event. Wait for the demux thread
+        # to observe EOF and zero _sock so the next ping reliably
+        # hits the "no socket" path.
+        deadline = time.time() + 2.0
+        while c._sock is not None and time.time() < deadline:
+            time.sleep(0.01)
         # Broker is gone; the client's socket is stale.
         # The next RPC against a stopped broker raises.
         with pytest.raises(BrokerUnavailable):
