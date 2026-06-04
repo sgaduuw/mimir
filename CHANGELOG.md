@@ -11,6 +11,16 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- **`compose.yaml`: `PYTHON_GIL=0` on mimir-tasks.** Suppresses
+  the RuntimeWarning that fired on every Flask CLI subprocess
+  spawned by `scheduler.sh` (~one per tick) when SQLAlchemy's
+  cyextension import re-enabled the GIL under Python 3.14t.
+  Cosmetic log-hygiene only; tasks is single-thread (RPC-shell),
+  so free-threading itself buys nothing here. Broker already had
+  the same setting since 2.14.1 where it actually pays off.
+
 ## [3.0.0] - 2026-06-03
 
 ### Breaking changes
