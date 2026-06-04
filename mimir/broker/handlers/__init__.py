@@ -245,30 +245,45 @@ def dispatch(line: bytes) -> Reply:
     """Parse one JSONL request line, dispatch to the matching
     handler, return a `Reply`. Never raises: any error becomes a
     structured failure reply so the connection stays open for the
-    next request."""
+    next request.
+
+    For error replies produced before a valid request is parsed
+    (MalformedJSON, UnknownOp, InvalidRequest) the rpc_id cannot
+    be recovered; the spec mandates rpc_id=0 in that case. The
+    client treats a lookup miss on rpc_id=0 as an ignorable stray
+    error frame (no in-flight RPC has id 0; valid ids start at 1).
+    """
     try:
         raw = json.loads(line)
     except json.JSONDecodeError as exc:
         logger.warning("broker: malformed JSON: %s", exc)
-        return Reply(ok=False, error="MalformedJSON")
+        return Reply(rpc_id=0, ok=False, error="MalformedJSON")
     op = raw.get("op") if isinstance(raw, dict) else None
+    # Best-effort rpc_id extraction for pre-parse error replies.
+    # If the wire message had a numeric rpc_id field we echo it back
+    # even when we can't fully validate the request, so a pipelining
+    # client can correlate the error to its in-flight slot.
+    raw_rpc_id = raw.get("rpc_id") if isinstance(raw, dict) else None
+    pre_parse_rpc_id = (
+        raw_rpc_id if isinstance(raw_rpc_id, int) and raw_rpc_id >= 0 else 0
+    )
     entry = _DISPATCH.get(op) if isinstance(op, str) else None
     if entry is None:
-        return Reply(ok=False, error="UnknownOp")
+        return Reply(rpc_id=pre_parse_rpc_id, ok=False, error="UnknownOp")
     model, handler = entry
     try:
         req = model.model_validate(raw)
     except ValidationError as exc:
         logger.warning("broker: invalid %s: %s", op, exc)
-        return Reply(ok=False, error="InvalidRequest")
+        return Reply(rpc_id=pre_parse_rpc_id, ok=False, error="InvalidRequest")
     try:
         return handler(req)
     except OperationalError as exc:
         logger.warning("broker: SQLite error on %s: %s", op, exc)
-        return Reply(ok=False, error="OperationalError")
+        return Reply(rpc_id=req.rpc_id, ok=False, error="OperationalError")
     except Exception as exc:
         logger.exception("broker: handler crashed on %s: %s", op, exc)
-        return Reply(ok=False, error="HandlerCrashed")
+        return Reply(rpc_id=req.rpc_id, ok=False, error="HandlerCrashed")
 
 
 __all__ = ["LONG_OPS", "WARM_OPS", "classify_op", "dispatch"]

@@ -60,8 +60,8 @@ def handle_cache_set(req: CacheSetRequest) -> Reply:
         ).result(timeout=5)
     except TimeoutError:
         logger.warning("cache_set timeout: writer busy (key=%s)", req.key)
-        return Reply(ok=False, error="writer busy")
-    return Reply(ok=True)
+        return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
+    return Reply(rpc_id=req.rpc_id, ok=True)
 
 
 def handle_cache_delete(req: CacheDeleteRequest) -> Reply:
@@ -72,8 +72,8 @@ def handle_cache_delete(req: CacheDeleteRequest) -> Reply:
         cache.delete_via_writer(writer, req.key).result(timeout=5)
     except TimeoutError:
         logger.warning("cache_delete timeout: writer busy (key=%s)", req.key)
-        return Reply(ok=False, error="writer busy")
-    return Reply(ok=True)
+        return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
+    return Reply(rpc_id=req.rpc_id, ok=True)
 
 
 def handle_cache_delete_for_inbox(req: CacheDeleteForInboxRequest) -> Reply:
@@ -84,8 +84,8 @@ def handle_cache_delete_for_inbox(req: CacheDeleteForInboxRequest) -> Reply:
         logger.warning(
             "cache_delete_for_inbox timeout: writer busy (name=%s)", req.name
         )
-        return Reply(ok=False, error="writer busy")
-    return Reply(ok=True, rows_deleted=n)
+        return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
+    return Reply(rpc_id=req.rpc_id, ok=True, rows_deleted=n)
 
 
 def handle_cache_purge_expired(req: CachePurgeExpiredRequest) -> Reply:
@@ -94,9 +94,9 @@ def handle_cache_purge_expired(req: CachePurgeExpiredRequest) -> Reply:
         n = cache.purge_expired_via_writer(writer).result(timeout=5)
     except TimeoutError:
         logger.warning("cache_purge_expired timeout: writer busy")
-        return Reply(ok=False, error="writer busy")
-    return Reply(ok=True, rows_deleted=n)
+        return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
+    return Reply(rpc_id=req.rpc_id, ok=True, rows_deleted=n)
 
 
 def handle_ping(req: PingRequest) -> Reply:
-    return Reply(ok=True)
+    return Reply(rpc_id=req.rpc_id, ok=True)
