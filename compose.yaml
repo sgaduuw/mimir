@@ -143,6 +143,14 @@ services:
       # guard. Leave default `/data/.broker.sock` for
       # BROKER_SOCKET_PATH unless you've moved the socket.
       MIMIR_DEPLOY: "true"
+      # Silences the RuntimeWarning that fires on every Flask CLI
+      # invocation when SQLAlchemy's cyextension imports re-enable
+      # the GIL (see the broker block above for the full rationale).
+      # tasks is the scheduler shelling out one-shot RPC dispatchers
+      # in a loop, so each `mimir <cmd>` subprocess re-imports and
+      # re-fires the warning; free-threading itself buys nothing
+      # here. This is purely log hygiene.
+      PYTHON_GIL: "0"
       # Match the web container's INBOXES / SITE_NAME / etc. so the
       # CLI commands see the same Settings.
       # SITE_NAME: lkml-mirror
