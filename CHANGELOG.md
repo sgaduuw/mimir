@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-06-08
+
 ### Changed
 
 - **`compose.yaml`: `PYTHON_GIL=0` on mimir-tasks.** Suppresses
