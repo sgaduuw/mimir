@@ -11,7 +11,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
-## [3.0.2] - 2026-06-08
+## [3.0.2] - 2026-06-09
 
 ### Changed
 
