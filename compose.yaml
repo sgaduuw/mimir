@@ -50,6 +50,27 @@ services:
       # actually pays off. mimir-app is gunicorn sync workers (one
       # thread each); mimir-tasks is the scheduler shelling out RPCs.
       PYTHON_GIL: "0"
+      # Replace glibc malloc with mimalloc on the broker via LD_PRELOAD.
+      # Broker only: it allocates burstly during warm cycles (cache fan-out
+      # across ~50+ inboxes) and we want the pages returned to the kernel
+      # promptly once a cycle ends. glibc malloc holds 128 per-thread arenas
+      # under the default `arena_max = 8 * nproc` (16 cores * 8 = 128 here),
+      # which fragments badly under free-threaded Python's many-threads
+      # contention pattern and returns pages to the kernel opportunistically
+      # at best. mimalloc's segment-based design uses `madvise(MADV_DONTNEED)`
+      # proactively under MIMALLOC_PURGE_DELAY (ms). 200ms is more eager
+      # than the default 1000ms without thrashing mid-cycle.
+      #
+      # CPython 3.14t already uses a vendored mimalloc internally for
+      # Python object allocation; this LD_PRELOAD swaps glibc malloc for
+      # C-level allocations too (dulwich's C bits, OpenSSL, libuv, etc.).
+      # Net: one allocator across the broker's whole address space.
+      #
+      # mimir-app and mimir-tasks stay on glibc malloc; neither hits the
+      # broker's warm-cycle allocation pattern. Issue #447, spec at
+      # _claude/specs/2026-06-08-broker-mimalloc-allocator-design.md.
+      LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libmimalloc.so.3
+      MIMALLOC_PURGE_DELAY: "200"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mimir", "broker-ping", "--socket", "/data/.broker.sock"]
