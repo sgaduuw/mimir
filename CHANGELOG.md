@@ -11,6 +11,33 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-06-08
+
+### Changed
+
+- **`compose.yaml`: `PYTHON_GIL=0` on mimir-tasks.** Suppresses
+  the RuntimeWarning that fired on every Flask CLI subprocess
+  spawned by `scheduler.sh` (~one per tick) when SQLAlchemy's
+  cyextension import re-enabled the GIL under Python 3.14t.
+  Cosmetic log-hygiene only; tasks is single-thread (RPC-shell),
+  so free-threading itself buys nothing here. Broker already had
+  the same setting since 2.14.1 where it actually pays off.
+- **broker: replace glibc malloc with mimalloc.** Installs
+  `libmimalloc3` in the runtime image and `LD_PRELOAD`s it on
+  the `mimir-broker` service via compose, with
+  `MIMALLOC_PURGE_DELAY=200` to release freed segments back to
+  the kernel promptly after a warm cycle. glibc's default
+  `arena_max = 8 * nproc` (128 arenas on a 16-core host)
+  fragments under free-threaded Python's many-threads contention
+  and only opportunistically returns memory to the kernel.
+  mimalloc's segment-based design uses `madvise(MADV_DONTNEED)`
+  proactively. Free-threaded CPython 3.14 already uses a
+  vendored mimalloc internally for Python object allocation;
+  this puts C-extension allocations (dulwich, OpenSSL, libuv,
+  etc.) onto the same allocator. Broker only; app and tasks stay
+  on glibc malloc. Issue #447; spec at
+  `_claude/specs/2026-06-08-broker-mimalloc-allocator-design.md`.
+
 ## [3.0.0] - 2026-06-03
 
 ### Breaking changes
