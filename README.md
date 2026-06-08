@@ -63,13 +63,13 @@ time, not just at ingest time.
 ## Requirements
 
 - Python 3.14 (declared in `.python-version`)
-- [Poetry](https://python-poetry.org/) for dependency management
+- [uv](https://docs.astral.sh/uv/) for dependency management
 
 ## Setup
 
 ```sh
-poetry install
-poetry run alembic upgrade head
+uv sync
+uv run alembic upgrade head
 ```
 
 Then create a `.env` in the project root. Minimum:
@@ -117,11 +117,11 @@ Each list on lore.kernel.org is published as one git repo per epoch.
 The easiest way to set things up is to let mimir do it for you:
 
 ```sh
-poetry run mimir update                   # all configured inboxes
-poetry run mimir update --inbox lkml      # one specific inbox
-poetry run mimir update --skip-clone      # only fetch updates on existing epochs
-poetry run mimir update --skip-fetch      # only discover/clone new epochs
-poetry run mimir update --skip-ingest     # download but don't index
+uv run mimir update                   # all configured inboxes
+uv run mimir update --inbox lkml      # one specific inbox
+uv run mimir update --skip-clone      # only fetch updates on existing epochs
+uv run mimir update --skip-fetch      # only discover/clone new epochs
+uv run mimir update --skip-ingest     # download but don't index
 ```
 
 (All `mimir <cmd>` invocations are also reachable as
@@ -150,12 +150,12 @@ git clone --mirror -- https://lore.kernel.org/lkml/git/1.git 1.git
 ## Ingesting
 
 ```sh
-poetry run mimir ingest                   # walk every configured inbox (parallel by default)
-poetry run mimir ingest --inbox lkml      # only one inbox
-poetry run mimir ingest --limit 500       # cap for testing
-poetry run mimir ingest --workers 1       # force sequential (debug)
-poetry run mimir ingest -v                # progress every 100 msgs
-poetry run mimir ingest -vv               # one log line per message
+uv run mimir ingest                   # walk every configured inbox (parallel by default)
+uv run mimir ingest --inbox lkml      # only one inbox
+uv run mimir ingest --limit 500       # cap for testing
+uv run mimir ingest --workers 1       # force sequential (debug)
+uv run mimir ingest -v                # progress every 100 msgs
+uv run mimir ingest -vv               # one log line per message
 ```
 
 Parsing runs in a `ProcessPoolExecutor` (defaults to
@@ -168,9 +168,9 @@ unaffected, parallelism is confined to the CPU-bound
 To inspect a single message (smoke test for the git-backed read path):
 
 ```sh
-poetry run mimir show '<message-id-without-angle-brackets>'
-poetry run mimir show '...' --inbox lkml         # read the blob from this inbox's mirror
-poetry run mimir show '...' --body-chars -1      # full body, no truncation
+uv run mimir show '<message-id-without-angle-brackets>'
+uv run mimir show '...' --inbox lkml         # read the blob from this inbox's mirror
+uv run mimir show '...' --body-chars -1      # full body, no truncation
 ```
 
 By default the ingest is quiet apart from the per-epoch summary
@@ -180,8 +180,8 @@ To re-walk a single epoch, e.g. to backfill messages that failed
 under an older parser version:
 
 ```sh
-poetry run mimir reindex lkml 0.git                    # rewind state, re-walk; dedup skips existing
-poetry run mimir reindex lkml 0.git --from-scratch     # also DELETE this inbox's links to that epoch first
+uv run mimir reindex lkml 0.git                    # rewind state, re-walk; dedup skips existing
+uv run mimir reindex lkml 0.git --from-scratch     # also DELETE this inbox's links to that epoch first
 ```
 
 Output is one line per epoch, e.g.:
@@ -484,7 +484,7 @@ and [Pygments](https://pygments.org/) for server-side syntax
 highlighting.
 
 ```sh
-poetry run mimir run        # http://127.0.0.1:5000/
+uv run mimir run        # http://127.0.0.1:5000/
 ```
 
 Routes:
@@ -627,9 +627,9 @@ table; values JSON-encoded with a small dataclass registry in
 To eliminate user-facing cold-start latency, run:
 
 ```sh
-poetry run mimir warm-cache               # all tiers (operator one-off)
-poetry run mimir warm-cache --tier fast   # sitemaps + cheap helpers
-poetry run mimir warm-cache --tier slow   # subsystem dashboards + rest
+uv run mimir warm-cache               # all tiers (operator one-off)
+uv run mimir warm-cache --tier fast   # sitemaps + cheap helpers
+uv run mimir warm-cache --tier slow   # subsystem dashboards + rest
 ```
 
 from cron or a systemd timer. The work splits into a **fast tier**
@@ -644,8 +644,8 @@ jumps ahead (in-flight slow ops are never preempted). Sample
 `crontab` for a non-broker deploy:
 
 ```cron
-* * * * *   cd ~/Projects/mimir && poetry run mimir warm-cache --tier fast >/dev/null
-0 * * * *   cd ~/Projects/mimir && poetry run mimir warm-cache --tier slow >/dev/null
+* * * * *   cd ~/Projects/mimir && uv run mimir warm-cache --tier fast >/dev/null
+0 * * * *   cd ~/Projects/mimir && uv run mimir warm-cache --tier slow >/dev/null
 ```
 
 A warm-cache run refreshes every targeted helper for every
@@ -670,7 +670,7 @@ past its actual content over time, and the WAL grows during long
 ingests until something checkpoints it. To compact both:
 
 ```sh
-poetry run mimir vacuum
+uv run mimir vacuum
 ```
 
 Reports before/after sizes for `mimir.db`, `mimir.db-wal`, and
@@ -683,7 +683,7 @@ run it during a quiet window.
 Sample `crontab` (daily at 04:00, only if no ingest is running):
 
 ```cron
-0 4 * * * cd ~/Projects/mimir && poetry run mimir vacuum >/dev/null
+0 4 * * * cd ~/Projects/mimir && uv run mimir vacuum >/dev/null
 ```
 
 On lkml-scale (~6 M articles, ~3.6 GB DB) a full VACUUM takes
@@ -706,8 +706,8 @@ deploy/README.md) at their defaults.
 For ad-hoc operator runs:
 
 ```sh
-poetry run mimir analyze
-poetry run mimir analyze --full
+uv run mimir analyze
+uv run mimir analyze --full
 ```
 
 The bounded form runs in 1 to 3 s on the lkml-scale corpus and is
@@ -719,8 +719,8 @@ indexes the bounded sample might miss.
 Example crontab pair:
 
 ```cron
-30 4 * * *  cd ~/Projects/mimir && poetry run mimir analyze
-0 5 * * 0  cd ~/Projects/mimir && poetry run mimir analyze --full
+30 4 * * *  cd ~/Projects/mimir && uv run mimir analyze
+0 5 * * 0  cd ~/Projects/mimir && uv run mimir analyze --full
 ```
 
 ## Deployment
@@ -805,13 +805,13 @@ next major release.
 
 ```sh
 # Clone (first run) or fetch + load:
-poetry run mimir update-mainline
+uv run mimir update-mainline
 
 # Re-parse the local HEAD without fetching:
-poetry run mimir update-mainline --skip-fetch
+uv run mimir update-mainline --skip-fetch
 
 # Force re-parse even when HEAD hasn't moved (after a parser fix):
-poetry run mimir update-mainline --force
+uv run mimir update-mainline --force
 ```
 
 Steady-state ticks (HEAD unchanged) are cheap: fetch, compare,
@@ -840,7 +840,7 @@ at ingest time (parsing `diff --git a/<old> b/<new>` headers out
 of patch bodies). For articles ingested before that landed, run:
 
 ```sh
-poetry run mimir backfill-article-files [-v]
+uv run mimir backfill-article-files [-v]
 ```
 
 Idempotent, articles that already have rows are skipped. Pass
@@ -859,7 +859,7 @@ via their thread parent). For articles ingested before that
 landed:
 
 ```sh
-poetry run mimir backfill-patch-series [-v]
+uv run mimir backfill-patch-series [-v]
 ```
 
 Cheaper than the article-files backfill, only reads
@@ -908,8 +908,8 @@ responses log a warning and don't break the ingest tick.
 ## Linting and tests
 
 ```sh
-poetry run ruff check mimir/ tests/
-poetry run pytest
+uv run ruff check mimir/ tests/
+uv run pytest
 ```
 
 Both `mimir/` and `tests/` are linted because CI runs ruff over

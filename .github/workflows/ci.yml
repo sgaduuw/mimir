@@ -40,25 +40,20 @@ jobs:
         with:
           python-version: '3.14'
 
-      - name: Install Poetry
-        run: pipx install 'poetry>=2.0,<3.0'
-
-      - name: Cache Poetry venv
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          path: ./.venv
-          key: poetry-${{ runner.os }}-py3.14-${{ hashFiles('poetry.lock') }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install deps
-        run: |
-          poetry config virtualenvs.in-project true
-          poetry install --no-interaction
+      - name: Install dependencies
+        run: uv sync --frozen
 
       - name: Ruff check
-        run: poetry run ruff check mimir/ tests/
+        run: uv run ruff check mimir/ tests/
 
       - name: Ruff format check
-        run: poetry run ruff format --check mimir/ tests/
+        run: uv run ruff format --check mimir/ tests/
 
   test:
     runs-on: ubuntu-latest
@@ -75,19 +70,14 @@ jobs:
         with:
           python-version: '3.14'
 
-      - name: Install Poetry
-        run: pipx install 'poetry>=2.0,<3.0'
-
-      - name: Cache Poetry venv
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          path: ./.venv
-          key: poetry-${{ runner.os }}-py3.14-${{ hashFiles('poetry.lock') }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install deps
-        run: |
-          poetry config virtualenvs.in-project true
-          poetry install --no-interaction
+      - name: Install dependencies
+        run: uv sync --frozen
 
       - name: Pytest
         # The conftest's session-scoped `_migrate_db` fixture runs
@@ -95,7 +85,7 @@ jobs:
         # (in tempfile.mkdtemp, not the repo root). A separate
         # migrate step here is redundant, and post-2.0.0 it'd also
         # fail because non-broker processes open `query_only=1`.
-        run: poetry run pytest -v
+        run: uv run pytest -v
 
   test-ft:
     runs-on: ubuntu-latest
@@ -116,25 +106,31 @@ jobs:
         with:
           python-version: '3.14t'
 
-      - name: Install Poetry
-        run: pipx install 'poetry>=2.0,<3.0'
-
-      - name: Cache Poetry venv
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Install uv
+        # `python-version: '3.14t'` here is the load-bearing bit for the
+        # free-threaded job: setup-uv exports UV_PYTHON so that uv sync /
+        # uv run pick the freethreaded interpreter setup-python just
+        # provisioned, rather than uv's own default (which is a regular
+        # GIL-enabled 3.14 build and would silently re-enable the GIL).
+        uses: astral-sh/setup-uv@v7
         with:
-          path: ./.venv
-          key: poetry-${{ runner.os }}-py3.14t-${{ hashFiles('poetry.lock') }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          python-version: '3.14t'
 
-      - name: Install deps
-        run: |
-          poetry config virtualenvs.in-project true
-          poetry install --no-interaction
+      - name: Confirm uv selected the free-threaded interpreter
+        # Fail-fast before paying for `uv sync`: catches the uv-vs-
+        # setup-python disagreement (regression class fixed by the
+        # python-version pin on setup-uv above) in seconds rather than
+        # after wheel install. --no-project --no-sync makes uv resolve
+        # the configured Python without touching project dependencies.
+        run: uv run --no-project --no-sync python -c "import sys; assert sys._is_gil_enabled() is False, 'expected free-threaded build'"
 
-      - name: Confirm GIL is off
-        run: poetry run python -c "import sys; assert sys._is_gil_enabled() is False, 'expected free-threaded build'"
+      - name: Install dependencies
+        run: uv sync --frozen
 
       - name: Pytest
-        run: poetry run pytest -v
+        run: uv run pytest -v
 
   docker:
     runs-on: ubuntu-latest
