@@ -748,7 +748,7 @@ dev), see `deploy/README.md`. Three shapes are covered:
 
 ### Architecture: broker as the sole writer
 
-mimir 2.0.0 runs three containers (see `compose.yaml`):
+mimir runs three containers (since 2.0.0; see `compose.yaml`):
 
 - **`mimir-broker`** owns the sole SQLite writer connection.
   Serves cache + admin RPCs over a UNIX socket at
