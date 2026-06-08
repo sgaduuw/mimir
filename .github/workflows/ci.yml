@@ -165,6 +165,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,format=short
+            type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
