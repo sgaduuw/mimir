@@ -107,10 +107,16 @@ jobs:
           python-version: '3.14t'
 
       - name: Install uv
+        # `python-version: '3.14t'` here is the load-bearing bit for the
+        # free-threaded job: setup-uv exports UV_PYTHON so that uv sync /
+        # uv run pick the freethreaded interpreter setup-python just
+        # provisioned, rather than uv's own default (which is a regular
+        # GIL-enabled 3.14 build and would silently re-enable the GIL).
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+          python-version: '3.14t'
 
       - name: Install dependencies
         run: uv sync --frozen
