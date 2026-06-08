@@ -11,6 +11,48 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-06-09
+
+### Changed
+
+- **Build tooling: Poetry replaced with uv across pyproject,
+  lockfile, Dockerfile, CI, and docs.** `pyproject.toml` uses
+  PEP 735 `[dependency-groups]` for dev deps and the `hatchling`
+  build backend; `poetry.lock` is gone and `uv.lock` is the new
+  source of truth. The `builder` stage in the Dockerfile copies
+  `uv` from `ghcr.io/astral-sh/uv:latest` and pins the project
+  venv via `UV_PROJECT_ENVIRONMENT=/app/.venv`; the PBS 3.14t
+  base stage and the runtime stage are structurally unchanged.
+  The three CI jobs (`lint`, `test`, `test-ft`) install
+  dependencies via `astral-sh/setup-uv@v7` with the lockfile-
+  keyed cache; the free-threaded job additionally pins
+  `python-version: '3.14t'` on setup-uv so uv honours the
+  freethreaded interpreter that setup-python provisions rather
+  than downloading its own (GIL-enabled) default. README,
+  deploy/README, and the dev scripts swap every `poetry run X`
+  invocation to `uv run X`, including the operator cron
+  snippets. No runtime behaviour change; image contents and
+  CLI surface are identical.
+- **CI test-ft job: GIL assertion moved before `uv sync`.**
+  `uv run --no-project --no-sync python -c "..."` runs the
+  free-threaded interpreter check immediately after setup-uv,
+  so a misconfigured Python (the class of regression fixed by
+  the `python-version: '3.14t'` pin) fails the job in seconds
+  rather than after wheel install. Cosmetic CI hygiene; no
+  effect on what the job actually verifies.
+
+### Added
+
+- **`.github/dependabot.yml`**, matching the johnny + johnny-
+  callback sibling shape now that uv is in place. Three
+  ecosystems on a weekly Monday cadence: `github-actions`
+  (grouped), `uv` (grouped minor+patch vs major; reads
+  `pyproject.toml` + `uv.lock` together), and `docker` (tracks
+  the `debian:trixie-slim` FROM line). The Astral
+  python-build-standalone tarball is `ARG`-pinned and stays
+  out of scope for the docker scanner; PBS bumps remain
+  manual until a custom updater becomes worth wiring up.
+
 ## [3.0.1] - 2026-06-08
 
 ### Changed

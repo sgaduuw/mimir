@@ -174,8 +174,8 @@ sudo useradd --system --create-home --home-dir /opt/mimir mimir
 sudo -u mimir git clone https://github.com/sgaduuw/mimir /opt/mimir
 cd /opt/mimir
 sudo -u mimir python3.14 -m venv .venv
-sudo -u mimir .venv/bin/pip install poetry
-sudo -u mimir .venv/bin/poetry install --without dev
+sudo -u mimir .venv/bin/pip install uv
+sudo -u mimir .venv/bin/uv sync --no-dev
 
 # Drop your env file (SECRET_KEY at minimum)
 sudo -u mimir cp .env.example .env  # then edit
