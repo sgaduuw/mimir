@@ -69,7 +69,7 @@ services:
       # mimir-app and mimir-tasks stay on glibc malloc; neither hits the
       # broker's warm-cycle allocation pattern. Issue #447, spec at
       # _claude/specs/2026-06-08-broker-mimalloc-allocator-design.md.
-      LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libmimalloc.so.2
+      LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libmimalloc.so.3
       MIMALLOC_PURGE_DELAY: "200"
     restart: unless-stopped
     healthcheck:

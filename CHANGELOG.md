@@ -21,7 +21,7 @@ changes, not internal refactors. Categories: **Added**,
   so free-threading itself buys nothing here. Broker already had
   the same setting since 2.14.1 where it actually pays off.
 - **broker: replace glibc malloc with mimalloc.** Installs
-  `libmimalloc2.0` in the runtime image and `LD_PRELOAD`s it on
+  `libmimalloc3` in the runtime image and `LD_PRELOAD`s it on
   the `mimir-broker` service via compose, with
   `MIMALLOC_PURGE_DELAY=200` to release freed segments back to
   the kernel promptly after a warm cycle. glibc's default

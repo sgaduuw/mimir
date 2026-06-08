@@ -112,12 +112,15 @@ FROM python-3.14t AS runtime
 # `subprocess.run(..., check=True)` semantics intact (so a failing
 # `git fetch` still raises CalledProcessError instead of being
 # silently auto-reaped by a SIGCHLD=SIG_IGN disposition).
-# libmimalloc2.0: replaces glibc malloc for the mimir-broker service
+# libmimalloc3: replaces glibc malloc for the mimir-broker service
 # via LD_PRELOAD (set in compose.yaml on the broker only). Default
 # allocator stays glibc for app and tasks. See issue #447 for the
 # rationale (warm-cycle RSS oscillation, post-cycle release rate).
+# The ABI version (libmimalloc.so.3) tracks Debian Trixie's package;
+# bump in lockstep with compose.yaml's LD_PRELOAD path when moving
+# to a newer base image that ships a different libmimalloc<N>.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates tini libmimalloc2.0 \
+ && apt-get install -y --no-install-recommends git ca-certificates tini libmimalloc3 \
  && rm -rf /var/lib/apt/lists/*
 
 # Non-root user. UID/GID stable for predictable bind-mount perms.
