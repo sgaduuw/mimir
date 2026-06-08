@@ -118,11 +118,16 @@ jobs:
           cache-dependency-glob: uv.lock
           python-version: '3.14t'
 
+      - name: Confirm uv selected the free-threaded interpreter
+        # Fail-fast before paying for `uv sync`: catches the uv-vs-
+        # setup-python disagreement (regression class fixed by the
+        # python-version pin on setup-uv above) in seconds rather than
+        # after wheel install. --no-project --no-sync makes uv resolve
+        # the configured Python without touching project dependencies.
+        run: uv run --no-project --no-sync python -c "import sys; assert sys._is_gil_enabled() is False, 'expected free-threaded build'"
+
       - name: Install dependencies
         run: uv sync --frozen
-
-      - name: Confirm GIL is off
-        run: uv run python -c "import sys; assert sys._is_gil_enabled() is False, 'expected free-threaded build'"
 
       - name: Pytest
         run: uv run pytest -v
