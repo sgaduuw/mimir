@@ -2,7 +2,7 @@
 
 Run on demand when the design changes:
 
-    poetry run python bake_og_image.py
+    uv run python bake_og_image.py
 
 Output: `mimir/static/img/og-image.png`. Pillow is a dev-only dep; the
 runtime serves the resulting PNG as a static file via the

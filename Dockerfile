@@ -7,8 +7,8 @@
 #   separate maintenance track that hasn't shipped a free-threaded
 #   variant), so we pull the reproducible CPython distribution Astral /
 #   uv use directly. Pinned by `PBS_RELEASE` for reproducible builds.
-# - `builder`: install dependencies via Poetry into a project-local
-#   venv. Poetry stays in this stage; only the venv ships.
+# - `builder`: install dependencies via uv into a project-local
+#   venv. Only the venv ships.
 # - `runtime`: clean stage with the venv + source, runs gunicorn as a
 #   non-root user. Derives from the same `python-3.14t` base as builder
 #   so the venv's shebangs (which point at `/opt/python/bin/python3`)
@@ -69,31 +69,40 @@ ENV PATH="/opt/python/bin:${PATH}"
 
 FROM python-3.14t AS builder
 
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1 \
-    POETRY_VIRTUALENVS_IN_PROJECT=true \
-    POETRY_NO_INTERACTION=1
+# Copy the uv binary from its official image rather than installing
+# it via pip. This avoids pip's own resolver and keeps the builder
+# stage lean.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+# UV_PYTHON_DOWNLOADS=never: the PBS Python at /opt/python/bin/python3
+# (PATH-prepended in the python-3.14t base) is what uv must use; we
+# do not want uv to attempt a download of its own interpreter.
+# UV_LINK_MODE=copy: avoids hardlink errors across the BuildKit cache
+# mount filesystem boundary.
+# UV_PROJECT_ENVIRONMENT=/app/.venv: pins the venv path so the runtime
+# stage's COPY --from=builder and PATH entries resolve correctly.
+ENV UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir 'poetry>=2.0,<3.0'
-
 # Copy only what dependency resolution needs first so the wheel-cache
 # layer survives unrelated source changes.
-COPY pyproject.toml poetry.lock README.md ./
+COPY pyproject.toml uv.lock README.md ./
 COPY mimir/__init__.py ./mimir/__init__.py
 
-RUN poetry install --without dev --no-root
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 
 # Now the rest of the source.
 COPY mimir/ ./mimir/
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
 
-# Install the project itself (uses the same venv). `--only-root`
-# can't be combined with group flags in Poetry 2.x; the deps were
-# already installed --without dev above.
-RUN poetry install --only-root
+# Install the project itself into the same venv.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
 
 
 FROM python-3.14t AS runtime
