@@ -11,6 +11,20 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- **`mimir tracemalloc-diff` CLI + broker tracemalloc snapshotter.**
+  New env-gated diagnostic for the broker:
+  `TRACEMALLOC_INTERVAL_SECONDS` (default unset = off) enables a
+  daemon thread that writes `tracemalloc` snapshots to
+  `/data/diagnostics/tracemalloc-<ISO>.pkl` every N seconds, and
+  logs a top-25-by-current-bytes summary to stderr. Pair with
+  `mimir tracemalloc-diff <a.pkl> <b.pkl> [--top N]
+  [--filter-prefix /app/mimir]` to rank growers offline. Zero
+  cost when disabled. Intended to identify the Python-side
+  retention that mimalloc didn't move (per
+  `_claude/specs/2026-06-11-broker-tracemalloc-diagnostic-design.md`).
+
 ## [3.0.2] - 2026-06-09
 
 ### Changed
