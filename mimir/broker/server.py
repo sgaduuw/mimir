@@ -50,6 +50,7 @@ its `queue.get(timeout=...)` poll, all exit cleanly.
 
 import logging
 import os
+import pickle
 import queue
 import re
 import selectors
@@ -59,7 +60,9 @@ import socketserver
 import struct
 import threading
 import time
+import tracemalloc
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mimir import cache
@@ -849,6 +852,7 @@ def serve(socket_path: Path) -> None:
 
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
+    _maybe_start_tracemalloc_snapshotter(settings.tracemalloc_interval_seconds)
 
     try:
         server.serve_forever(poll_interval=0.5)
@@ -861,6 +865,74 @@ def serve(socket_path: Path) -> None:
         _context.clear_active()
         server.read_pool.close()
         logger.info("broker: shut down cleanly")
+
+
+def _log_tracemalloc_top_25(snap: tracemalloc.Snapshot) -> None:
+    """Log the top-25 allocation sites by current bytes at INFO.
+
+    One header line plus one entry per site, formatted as
+    '<bytes_mib>  <file>:<lineno>' so an operator following along
+    via `podman logs` sees the leak shape forming.
+    """
+    stats = snap.statistics("lineno")[:25]
+    logger.info("broker: tracemalloc top-25 by current bytes:")
+    for stat in stats:
+        # stat.traceback is sorted oldest -> most recent; [-1] is the
+        # allocation site, which is what an operator looking for the
+        # leak wants to see (not the outer thread/event-loop frame).
+        frame = stat.traceback[-1]
+        size_mib = stat.size / (1024 * 1024)
+        logger.info("  %7.1f MiB  %s:%d", size_mib, frame.filename, frame.lineno)
+
+
+def _maybe_start_tracemalloc_snapshotter(
+    interval: int,
+    diagnostics_dir: Path = Path("/data/diagnostics"),
+    frames: int = 25,
+) -> None:
+    """Start tracemalloc + a daemon snapshotter thread when interval > 0.
+
+    No-op when interval is 0 or negative. Errors during startup
+    (e.g., diagnostics_dir not writable) log and abort the
+    snapshotter cleanly; the broker continues serving.
+
+    See _claude/specs/2026-06-11-broker-tracemalloc-diagnostic-design.md.
+    """
+    if interval <= 0:
+        return
+    try:
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.error("broker: tracemalloc snapshotter disabled: %s", e)
+        return
+    tracemalloc.start(frames)
+    logger.info(
+        "broker: tracemalloc enabled (interval=%ds, frames=%d); snapshots -> %s",
+        interval,
+        frames,
+        diagnostics_dir,
+    )
+
+    def _loop() -> None:
+        while True:
+            try:
+                snap = tracemalloc.take_snapshot()
+                ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                path = diagnostics_dir / f"tracemalloc-{ts}.pkl"
+                tmp = path.with_suffix(".pkl.tmp")
+                with open(tmp, "wb") as f:
+                    pickle.dump(snap, f)
+                os.rename(tmp, path)
+                _log_tracemalloc_top_25(snap)
+            except Exception as e:
+                logger.warning("broker: tracemalloc snapshot failed: %s", e)
+            time.sleep(interval)
+
+    threading.Thread(
+        target=_loop,
+        name="broker-tracemalloc",
+        daemon=True,
+    ).start()
 
 
 __all__ = ["build_server", "serve", "ClientConnection", "Reply", "PURGE_INTERVAL_SEC"]
