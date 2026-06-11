@@ -876,8 +876,10 @@ def _log_tracemalloc_top_25(snap: tracemalloc.Snapshot) -> None:
     stats = snap.statistics("lineno")[:25]
     logger.info("broker: tracemalloc top-25 by current bytes:")
     for stat in stats:
-        # stat.traceback is a Traceback; [0] is the most recent frame
-        frame = stat.traceback[0]
+        # stat.traceback is sorted oldest -> most recent; [-1] is the
+        # allocation site, which is what an operator looking for the
+        # leak wants to see (not the outer thread/event-loop frame).
+        frame = stat.traceback[-1]
         size_mib = stat.size / (1024 * 1024)
         logger.info("  %7.1f MiB  %s:%d", size_mib, frame.filename, frame.lineno)
 
