@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-06-11
+
 ### Added
 
 - **`mimir tracemalloc-diff` CLI + broker tracemalloc snapshotter.**
@@ -24,6 +26,15 @@ changes, not internal refactors. Categories: **Added**,
   cost when disabled. Intended to identify the Python-side
   retention that mimalloc didn't move (per
   `_claude/specs/2026-06-11-broker-tracemalloc-diagnostic-design.md`).
+
+### Changed
+
+- **CI image-tag emission aligned with sibling projects.** The
+  `docker-publish` workflow now emits a literal `v$X.Y.Z` tag in
+  addition to the unprefixed `$X.Y.Z` and `latest` tags on tag
+  pushes, matching the johnny / johnny-callback shape. Operators
+  pinning to either form continue to resolve; no compose change
+  needed.
 
 ## [3.0.2] - 2026-06-09
 
