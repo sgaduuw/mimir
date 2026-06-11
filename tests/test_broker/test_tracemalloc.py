@@ -103,3 +103,20 @@ def test_snapshotter_survives_write_failure(tmp_path, caplog):
         finally:
             diag.chmod(0o755)
             tracemalloc.stop()
+
+
+def test_snapshotter_logs_top_25_summary(tmp_path, caplog):
+    """One snapshot logs a 'tracemalloc top-25' summary at INFO."""
+    caplog.set_level(logging.INFO)
+    diag = tmp_path / "diag"
+    _maybe_start_tracemalloc_snapshotter(interval=1, diagnostics_dir=diag, frames=10)
+    try:
+        time.sleep(1.5)
+        messages = [r.message for r in caplog.records]
+        assert any("tracemalloc top-25 by current bytes" in m for m in messages)
+        # Format: one of the following lines should look like "<MiB>  <file>:<lineno>"
+        # We don't pin exact bytes (allocator-dependent) but we pin the shape.
+        format_hits = [m for m in messages if "MiB" in m and ":" in m]
+        assert format_hits, "expected at least one 'MiB ... file:lineno' line"
+    finally:
+        tracemalloc.stop()
