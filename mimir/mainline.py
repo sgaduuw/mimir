@@ -557,17 +557,21 @@ def load_maintainers(
     the whole subsystems triple in one transaction, the exact
     shape that trips SQLITE_BUSY_SNAPSHOT under concurrent cache
     writes."""
-    repo = Repo(str(tree_path))
-    head_sha = repo.head().decode("ascii")
-    commit = repo[repo.head()]
-    tree = repo[commit.tree]
-    try:
-        _mode, blob_sha = tree[b"MAINTAINERS"]
-    except KeyError as exc:
-        raise FileNotFoundError(
-            f"no MAINTAINERS file at HEAD of {tree_path}; wrong tree?"
-        ) from exc
-    blob_bytes = repo[blob_sha].data
+    # Scope the Repo to just the read of MAINTAINERS bytes. The
+    # write_transaction block below doesn't need `repo` open, so
+    # closing it before the SQL writes releases the pack-file
+    # mmaps before the writer lock is acquired.
+    with Repo(str(tree_path)) as repo:
+        head_sha = repo.head().decode("ascii")
+        commit = repo[repo.head()]
+        tree = repo[commit.tree]
+        try:
+            _mode, blob_sha = tree[b"MAINTAINERS"]
+        except KeyError as exc:
+            raise FileNotFoundError(
+                f"no MAINTAINERS file at HEAD of {tree_path}; wrong tree?"
+            ) from exc
+        blob_bytes = repo[blob_sha].data
 
     with (
         write_transaction("update_mainline:maintainers"),
