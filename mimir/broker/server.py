@@ -863,4 +863,23 @@ def serve(socket_path: Path) -> None:
         logger.info("broker: shut down cleanly")
 
 
+def _maybe_start_tracemalloc_snapshotter(
+    interval: int,
+    diagnostics_dir: Path = Path("/data/diagnostics"),
+    frames: int = 25,
+) -> None:
+    """Start tracemalloc + a daemon snapshotter thread when interval > 0.
+
+    No-op when interval is 0 or negative. Errors during startup
+    (e.g., diagnostics_dir not writable) log and abort the
+    snapshotter cleanly; the broker continues serving.
+
+    See _claude/specs/2026-06-11-broker-tracemalloc-diagnostic-design.md.
+    """
+    if interval <= 0:
+        return
+    # Enabled path filled in by the next task.
+    raise NotImplementedError("enabled-path implementation pending")
+
+
 __all__ = ["build_server", "serve", "ClientConnection", "Reply", "PURGE_INTERVAL_SEC"]
