@@ -873,3 +873,53 @@ def test_load_maintainers_closes_repo_at_function_exit(
     load_maintainers(tmp_path / "tree.git", tree_name="linus", force=True)
 
     assert exit_calls, "Repo.__exit__ was not called during load_maintainers"
+
+
+def test_read_linus_head_closes_repo_at_function_exit(tmp_path, monkeypatch):
+    """The linus-head probe was inline in update_mainline. Extracted
+    into a `_read_linus_head` helper for testability + deterministic
+    close. Same __exit__-spy shape as the walk_commits and
+    load_maintainers tests."""
+    from dulwich.repo import Repo as DulwichRepo
+
+    from mimir.mainline import _read_linus_head
+
+    exit_calls: list[bool] = []
+    original_exit = DulwichRepo.__exit__
+
+    def tracking_exit(self, *args):
+        exit_calls.append(True)
+        return original_exit(self, *args)
+
+    monkeypatch.setattr(DulwichRepo, "__exit__", tracking_exit)
+
+    # _read_linus_head's contract is "return None on any failure"
+    # but to exercise __exit__ we need a Repo whose HEAD is readable.
+    # Build a one-commit fixture (re-using the load_maintainers test
+    # pattern).
+    repo = _bare_repo(tmp_path / "linus.git")
+    tree = Tree()
+    commit = Commit()
+    commit.tree = tree.id
+    commit.author = commit.committer = b"Test <test@example.org>"
+    commit.author_time = commit.commit_time = 1700000000
+    commit.author_timezone = commit.commit_timezone = 0
+    commit.message = b"seed"
+    repo.object_store.add_object(tree)
+    repo.object_store.add_object(commit)
+    repo.refs[b"HEAD"] = commit.id
+    repo.close()
+
+    head = _read_linus_head(tmp_path / "linus.git")
+
+    assert head == commit.id, f"expected {commit.id!r}, got {head!r}"
+    assert exit_calls, "Repo.__exit__ was not called during _read_linus_head"
+
+
+def test_read_linus_head_returns_none_on_missing_repo(tmp_path):
+    """Contract: _read_linus_head must NEVER raise; it returns None
+    on any failure (missing clone, unreadable, no HEAD, etc.).
+    Callers (update_mainline) fall back to walking full history."""
+    from mimir.mainline import _read_linus_head
+
+    assert _read_linus_head(tmp_path / "does-not-exist") is None

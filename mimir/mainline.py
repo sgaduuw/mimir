@@ -664,6 +664,24 @@ def load_maintainers(
     return True, loaded, head_sha
 
 
+def _read_linus_head(linus_disk_path: Path) -> bytes | None:
+    """Read Linus's HEAD SHA from disk. Returns None on any error
+    (missing clone, unreadable, no HEAD, etc.); callers fall back to
+    walking the full history. Repo is context-managed so the brief
+    mmap of the pack files releases at function return rather than
+    on the next GC pass."""
+    try:
+        with Repo(str(linus_disk_path)) as repo:
+            return repo.head()
+    except Exception as exc:
+        logger.debug(
+            "mainline: could not read linus HEAD from %s: %r",
+            linus_disk_path,
+            exc,
+        )
+        return None
+
+
 def update_mainline(
     *,
     skip_fetch: bool = False,
@@ -709,14 +727,7 @@ def update_mainline(
 
             linus_disk_path = PROJECT_ROOT / linus_disk_path
         if linus_disk_path.exists():
-            try:
-                linus_head = Repo(str(linus_disk_path)).head()
-            except Exception as exc:
-                logger.debug(
-                    "mainline: could not read linus HEAD from %s: %r",
-                    linus_disk_path,
-                    exc,
-                )
+            linus_head = _read_linus_head(linus_disk_path)
 
     # Linus first so its clone exists for --reference on subsequent
     # trees in the same tick.
