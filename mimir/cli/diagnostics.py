@@ -60,7 +60,28 @@ def tracemalloc_diff_command(
     is ranked by (B.size - A.size) descending. Filter and table
     formatting fill in by the next plan tasks.
     """
-    _snap_a = _load(snapshot_a)
-    _snap_b = _load(snapshot_b)
-    # Filter + table formatting added in Tasks 9 and 10.
-    raise NotImplementedError("filter + table formatting pending")
+    snap_a = _load(snapshot_a)
+    snap_b = _load(snapshot_b)
+    stats = snap_b.compare_to(snap_a, "lineno")[:top]
+    click.echo("mimir tracemalloc-diff")
+    click.echo(f"  a: {snapshot_a.name}")
+    click.echo(f"  b: {snapshot_b.name}")
+    click.echo("")
+    click.echo(f"  {'SIZE DIFF':>12}  {'COUNT DIFF':>10}  LOCATION")
+    for stat in stats:
+        size_mib = stat.size_diff / (1024 * 1024)
+        sign = "+" if size_mib >= 0 else "-"
+        size_str = f"{sign}{abs(size_mib):.1f} MiB"
+        count_str = f"{stat.count_diff:+,}"
+        # tracemalloc.Traceback is sorted oldest -> most recent.
+        # [-1] is the allocation site (what the operator wants to see
+        # first); the 3 prior frames are the callers, walked most-
+        # recent-first so the trail reads top-down toward the outer
+        # context.
+        frames = list(stat.traceback)
+        leader = frames[-1]
+        loc = f"{leader.filename}:{leader.lineno}"
+        click.echo(f"  {size_str:>12}  {count_str:>10}  {loc}")
+        # Show up to 3 frames of caller context, most-recent caller first
+        for frame in reversed(frames[-4:-1]):
+            click.echo(f"  {'':>12}  {'':>10}    {frame.filename}:{frame.lineno}")
