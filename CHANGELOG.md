@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-06-12
+
 ### Fixed
 
 - **`mimir.mainline` Repo lifecycle: three bare-assignment Repo
