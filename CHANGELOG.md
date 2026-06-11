@@ -11,6 +11,20 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-06-11
+
+### Fixed
+
+- **Broker no longer accumulates dead reader threads in
+  `_BrokerServer._reader_threads`.** Each reader thread now self-
+  removes from the list in `_reader_loop`'s `finally:` block, so
+  the list size tracks live connections instead of growing
+  monotonically with connection churn over the broker's lifetime.
+  Modest memory impact (~200-500 B per leaked Thread shell), but
+  the list growing without bound was an obvious latent footgun.
+  Diagnosed via the 3.1.0 tracemalloc instrumentation on prod
+  2026-06-11; see issue #460.
+
 ## [3.1.0] - 2026-06-11
 
 ### Added

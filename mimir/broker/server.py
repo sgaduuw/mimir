@@ -242,6 +242,10 @@ class _BrokerServer(socketserver.UnixStreamServer):
         # fast/slow tier split (spec §2 §5).
         self.warm_queue: "queue.PriorityQueue[tuple[int, float, bytes, ClientConnection]]" = queue.PriorityQueue()
         self._reader_threads: list[threading.Thread] = []
+        # Held around `_reader_threads` mutations so the per-reader
+        # self-removal in `_reader_loop`'s finally block does not race
+        # against the accept-loop's append. Held microseconds per call.
+        self._reader_threads_lock = threading.Lock()
         self._cache_worker_threads: list[threading.Thread] = []
         self._long_worker_threads: list[threading.Thread] = []
         self._warm_worker_threads: list[threading.Thread] = []
@@ -283,7 +287,8 @@ class _BrokerServer(socketserver.UnixStreamServer):
             daemon=True,
             name=f"broker-reader-{request.fileno()}",
         )
-        self._reader_threads.append(thread)
+        with self._reader_threads_lock:
+            self._reader_threads.append(thread)
         thread.start()
 
     def handle_error(self, request, client_address) -> None:
@@ -376,6 +381,16 @@ class _BrokerServer(socketserver.UnixStreamServer):
                 sock.close()
             except OSError:
                 pass
+            # Self-remove from `_reader_threads` so the list does not
+            # grow unboundedly with connection churn. The accept loop
+            # holds the same lock around its append; ValueError is
+            # tolerated because a shutdown sweep could also prune
+            # this thread between its death and this finally block.
+            with self._reader_threads_lock:
+                try:
+                    self._reader_threads.remove(threading.current_thread())
+                except ValueError:
+                    pass
 
     def _worker_loop(
         self,
