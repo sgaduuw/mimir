@@ -905,6 +905,52 @@ tick legitimately exceeds it.
 All notification calls are best-effort: network errors and non-2xx
 responses log a warning and don't break the ingest tick.
 
+## Diagnosing broker memory drift (tracemalloc)
+
+The broker carries a latent tracemalloc-based diagnostic for
+investigating Python-side memory retention (RSS staying high
+between warm cycles, `VmData` drifting up over a multi-day
+window, that sort of thing). Off by default, zero cost when
+disabled.
+
+Enable on the broker container only, by setting
+`TRACEMALLOC_INTERVAL_SECONDS` to a positive integer:
+
+```yaml
+# compose.yaml
+services:
+  mimir-broker:
+    environment:
+      TRACEMALLOC_INTERVAL_SECONDS: "1800"   # snapshot every 30 min
+```
+
+Restart the broker. From that point on, a daemon thread takes a
+`tracemalloc.Snapshot` on the interval, writes it as a pickle to
+`/data/diagnostics/tracemalloc-<UTC-ISO>.pkl` (atomic rename),
+and logs a top-25-by-current-bytes summary to stderr per
+snapshot, so a `podman logs -f mimir-broker` tail shows the leak
+shape forming without pulling files.
+
+To rank growers between two snapshots offline:
+
+```sh
+podman exec mimir-broker mimir tracemalloc-diff \
+    /data/diagnostics/tracemalloc-<early>.pkl \
+    /data/diagnostics/tracemalloc-<late>.pkl \
+    --top 25 \
+    --filter-prefix /app/mimir
+```
+
+`--filter-prefix` narrows the output to allocations whose source
+file starts with the given path (typical pick: `/app/mimir` for
+the mimir code itself, ignoring stdlib / third-party noise).
+
+When done, drop the env var, restart, and `rm -rf
+/data/diagnostics/*.pkl` to reclaim the disk. Snapshot files run
+~10 to 50 MB each depending on heap size and `frames` (default
+25); a 4 to 8 hour observation window at 30-minute interval lands
+around 200 to 400 MB.
+
 ## Linting and tests
 
 ```sh
