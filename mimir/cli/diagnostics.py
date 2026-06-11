@@ -62,6 +62,10 @@ def tracemalloc_diff_command(
     """
     snap_a = _load(snapshot_a)
     snap_b = _load(snapshot_b)
+    if filter_prefix:
+        filt = tracemalloc.Filter(True, f"{filter_prefix}*")
+        snap_a = snap_a.filter_traces([filt])
+        snap_b = snap_b.filter_traces([filt])
     stats = snap_b.compare_to(snap_a, "lineno")[:top]
     click.echo("mimir tracemalloc-diff")
     click.echo(f"  a: {snapshot_a.name}")
