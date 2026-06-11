@@ -5,6 +5,7 @@ in `test_handlers.py`; here we care about the socket lifecycle
 and the bytes-on-the-wire framing."""
 
 import socket
+import time
 from pathlib import Path
 
 from mimir.broker.server import build_server
@@ -261,6 +262,47 @@ def test_server_serves_many_clients_concurrently(seeded_db):
             assert cache.get(f"many:{cid}:{i}") == f"{cid}-{i}", (
                 f"missing row for client {cid} rpc {i}"
             )
+
+
+def test_reader_threads_prunes_dead_threads(seeded_db):
+    """Each dead reader thread (peer closed connection, idle timeout,
+    or error exit) must be removed from `_BrokerServer._reader_threads`.
+    Otherwise the list grows unboundedly over the broker's lifetime
+    as connections churn (gunicorn workers reconnecting, scheduler-
+    tasks pings, broker-ping healthchecks). Diagnosed on prod 2026-06-11
+    via the v3.1.0 tracemalloc instrumentation.
+
+    Pin: open 20 short-lived client connections in sequence, close each
+    cleanly, wait for the reader threads to notice EOF and exit, and
+    assert the list retains no dead threads."""
+    from mimir.broker.client import BrokerClient
+
+    sp = short_socket_path("reader-prune")
+    n_clients = 20
+
+    with broker_running(sp) as server:
+        for _ in range(n_clients):
+            c = BrokerClient(sp)
+            assert c.ping() is True
+            c.close()
+
+        # Reader threads notice EOF within SHUTDOWN_POLL_SEC (0.1s) of
+        # the peer close; allow ample slack for CI scheduling.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            snapshot = list(server._reader_threads)
+            dead = [t for t in snapshot if not t.is_alive()]
+            if not dead:
+                break
+            time.sleep(0.1)
+
+        snapshot = list(server._reader_threads)
+        dead_after = [t for t in snapshot if not t.is_alive()]
+        assert dead_after == [], (
+            f"_reader_threads retains {len(dead_after)} dead threads "
+            f"after all connections closed: "
+            f"{[t.name for t in dead_after]}"
+        )
 
 
 def test_server_slow_rpc_warning_includes_queue_wait(seeded_db, caplog, monkeypatch):
