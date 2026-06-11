@@ -852,6 +852,7 @@ def serve(socket_path: Path) -> None:
 
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
+    _maybe_start_tracemalloc_snapshotter(settings.tracemalloc_interval_seconds)
 
     try:
         server.serve_forever(poll_interval=0.5)
