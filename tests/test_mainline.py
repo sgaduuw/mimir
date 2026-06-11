@@ -797,3 +797,129 @@ def test_update_mainline_per_tree_failure_isolated(seeded_db, monkeypatch, tmp_p
     assert result.trees["bad"].ok is False
     assert result.trees["bad"].error is not None
     assert result.trees["good"].ok is True
+
+
+def test_walk_commits_closes_repo_at_function_exit(
+    seeded_db, tmp_path, writer_thread, monkeypatch
+):
+    """Pin the with-Repo lifecycle: walk_commits must close its Repo
+    deterministically at function exit, not rely on GC. Spying on
+    __exit__ because the bare-assignment path never invokes it
+    (dulwich's Repo.__del__ does its own cleanup but does NOT go
+    through __exit__). The spy unambiguously differentiates
+    pre-fix from post-fix."""
+    from dulwich.repo import Repo as DulwichRepo
+    from mimir.extensions import SessionLocal
+
+    exit_calls: list[bool] = []
+    original_exit = DulwichRepo.__exit__
+
+    def tracking_exit(self, *args):
+        exit_calls.append(True)
+        return original_exit(self, *args)
+
+    monkeypatch.setattr(DulwichRepo, "__exit__", tracking_exit)
+
+    _bare_repo(tmp_path / "tree.git")
+    with SessionLocal() as s:
+        walk_commits(s, tmp_path / "tree.git", writer=writer_thread)
+
+    assert exit_calls, "Repo.__exit__ was not called during walk_commits"
+
+
+def test_load_maintainers_closes_repo_at_function_exit(
+    seeded_db, tmp_path, monkeypatch
+):
+    """Same lifecycle pin as walk_commits but for load_maintainers,
+    which opens a Repo, reads MAINTAINERS at HEAD, and writes the
+    parsed subsystems triple. The Repo close was previously
+    GC-deferred; now deterministic at function exit."""
+    from dulwich.objects import Blob
+    from dulwich.repo import Repo as DulwichRepo
+
+    from mimir.mainline import load_maintainers
+
+    exit_calls: list[bool] = []
+    original_exit = DulwichRepo.__exit__
+
+    def tracking_exit(self, *args):
+        exit_calls.append(True)
+        return original_exit(self, *args)
+
+    monkeypatch.setattr(DulwichRepo, "__exit__", tracking_exit)
+
+    # Build a bare repo with a HEAD commit whose tree contains a
+    # minimal MAINTAINERS blob. _bare_repo seeds an empty repo; we
+    # need at least one commit + MAINTAINERS for load_maintainers to
+    # find the blob.
+    repo = _bare_repo(tmp_path / "tree.git")
+    blob = Blob.from_string(
+        b"BCACHEFS\nM:\tKent Overstreet <kent@example.org>\nF:\tfs/bcachefs/\n"
+    )
+    tree = Tree()
+    tree.add(b"MAINTAINERS", 0o100644, blob.id)
+    commit = Commit()
+    commit.tree = tree.id
+    commit.author = commit.committer = b"Test <test@example.org>"
+    commit.author_time = commit.commit_time = 1700000000
+    commit.author_timezone = commit.commit_timezone = 0
+    commit.message = b"seed MAINTAINERS"
+    repo.object_store.add_object(blob)
+    repo.object_store.add_object(tree)
+    repo.object_store.add_object(commit)
+    repo.refs[b"HEAD"] = commit.id
+    repo.close()
+
+    load_maintainers(tmp_path / "tree.git", tree_name="linus", force=True)
+
+    assert exit_calls, "Repo.__exit__ was not called during load_maintainers"
+
+
+def test_read_linus_head_closes_repo_at_function_exit(tmp_path, monkeypatch):
+    """The linus-head probe was inline in update_mainline. Extracted
+    into a `_read_linus_head` helper for testability + deterministic
+    close. Same __exit__-spy shape as the walk_commits and
+    load_maintainers tests."""
+    from dulwich.repo import Repo as DulwichRepo
+
+    from mimir.mainline import _read_linus_head
+
+    exit_calls: list[bool] = []
+    original_exit = DulwichRepo.__exit__
+
+    def tracking_exit(self, *args):
+        exit_calls.append(True)
+        return original_exit(self, *args)
+
+    monkeypatch.setattr(DulwichRepo, "__exit__", tracking_exit)
+
+    # _read_linus_head's contract is "return None on any failure"
+    # but to exercise __exit__ we need a Repo whose HEAD is readable.
+    # Build a one-commit fixture (re-using the load_maintainers test
+    # pattern).
+    repo = _bare_repo(tmp_path / "linus.git")
+    tree = Tree()
+    commit = Commit()
+    commit.tree = tree.id
+    commit.author = commit.committer = b"Test <test@example.org>"
+    commit.author_time = commit.commit_time = 1700000000
+    commit.author_timezone = commit.commit_timezone = 0
+    commit.message = b"seed"
+    repo.object_store.add_object(tree)
+    repo.object_store.add_object(commit)
+    repo.refs[b"HEAD"] = commit.id
+    repo.close()
+
+    head = _read_linus_head(tmp_path / "linus.git")
+
+    assert head == commit.id, f"expected {commit.id!r}, got {head!r}"
+    assert exit_calls, "Repo.__exit__ was not called during _read_linus_head"
+
+
+def test_read_linus_head_returns_none_on_missing_repo(tmp_path):
+    """Contract: _read_linus_head must NEVER raise; it returns None
+    on any failure (missing clone, unreadable, no HEAD, etc.).
+    Callers (update_mainline) fall back to walking full history."""
+    from mimir.mainline import _read_linus_head
+
+    assert _read_linus_head(tmp_path / "does-not-exist") is None
