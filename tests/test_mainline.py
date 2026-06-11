@@ -825,3 +825,51 @@ def test_walk_commits_closes_repo_at_function_exit(
         walk_commits(s, tmp_path / "tree.git", writer=writer_thread)
 
     assert exit_calls, "Repo.__exit__ was not called during walk_commits"
+
+
+def test_load_maintainers_closes_repo_at_function_exit(
+    seeded_db, tmp_path, monkeypatch
+):
+    """Same lifecycle pin as walk_commits but for load_maintainers,
+    which opens a Repo, reads MAINTAINERS at HEAD, and writes the
+    parsed subsystems triple. The Repo close was previously
+    GC-deferred; now deterministic at function exit."""
+    from dulwich.objects import Blob
+    from dulwich.repo import Repo as DulwichRepo
+
+    from mimir.mainline import load_maintainers
+
+    exit_calls: list[bool] = []
+    original_exit = DulwichRepo.__exit__
+
+    def tracking_exit(self, *args):
+        exit_calls.append(True)
+        return original_exit(self, *args)
+
+    monkeypatch.setattr(DulwichRepo, "__exit__", tracking_exit)
+
+    # Build a bare repo with a HEAD commit whose tree contains a
+    # minimal MAINTAINERS blob. _bare_repo seeds an empty repo; we
+    # need at least one commit + MAINTAINERS for load_maintainers to
+    # find the blob.
+    repo = _bare_repo(tmp_path / "tree.git")
+    blob = Blob.from_string(
+        b"BCACHEFS\nM:\tKent Overstreet <kent@example.org>\nF:\tfs/bcachefs/\n"
+    )
+    tree = Tree()
+    tree.add(b"MAINTAINERS", 0o100644, blob.id)
+    commit = Commit()
+    commit.tree = tree.id
+    commit.author = commit.committer = b"Test <test@example.org>"
+    commit.author_time = commit.commit_time = 1700000000
+    commit.author_timezone = commit.commit_timezone = 0
+    commit.message = b"seed MAINTAINERS"
+    repo.object_store.add_object(blob)
+    repo.object_store.add_object(tree)
+    repo.object_store.add_object(commit)
+    repo.refs[b"HEAD"] = commit.id
+    repo.close()
+
+    load_maintainers(tmp_path / "tree.git", tree_name="linus", force=True)
+
+    assert exit_calls, "Repo.__exit__ was not called during load_maintainers"
