@@ -184,191 +184,195 @@ def walk_commits(
     takes minutes. Operator can scope the initial run by setting
     `commits_walked_to_sha` manually (e.g. to a recent release tag)
     if they only care about recent history."""
-    repo = Repo(str(tree_path))
-    state = session.get(MainlineState, tree_name)
-    if state is None:
-        state = MainlineState(tree_name=tree_name)
-        session.add(state)
+    with Repo(str(tree_path)) as repo:
+        state = session.get(MainlineState, tree_name)
+        if state is None:
+            state = MainlineState(tree_name=tree_name)
+            session.add(state)
 
-    # Resolve the branch ref. HEAD is the common case; named branches
-    # are used for trees like akpm/mm where the canonical work lives
-    # on a non-default ref. A missing named branch degrades gracefully
-    # to HEAD rather than crashing, because a tree config error should
-    # not halt other trees' indexing on the same tick. An empty repo
-    # (no commits at all) produces a WalkResult with zero commits.
-    branch_ref: bytes | None
-    if branch == "HEAD":
-        try:
-            branch_ref = repo.head()
-        except KeyError:
-            branch_ref = None
-    else:
-        try:
-            branch_ref = repo.refs[f"refs/heads/{branch}".encode()]
-        except KeyError:
-            logger.warning(
-                "mainline: branch %s missing in %s; falling back to HEAD",
-                branch,
-                tree_path,
-            )
+        # Resolve the branch ref. HEAD is the common case; named branches
+        # are used for trees like akpm/mm where the canonical work lives
+        # on a non-default ref. A missing named branch degrades gracefully
+        # to HEAD rather than crashing, because a tree config error should
+        # not halt other trees' indexing on the same tick. An empty repo
+        # (no commits at all) produces a WalkResult with zero commits.
+        branch_ref: bytes | None
+        if branch == "HEAD":
             try:
                 branch_ref = repo.head()
             except KeyError:
                 branch_ref = None
-
-    if branch_ref is None:
-        # Empty repo or missing ref: nothing to walk. The read-only
-        # session has no pending writes so no commit needed; return
-        # early with zero counts. Note: the rebases=True DELETE WriteOp
-        # has not been submitted yet at this point; that block comes
-        # after this guard.
-        return WalkResult()
-
-    exclude: list[bytes] = []
-    if rebases:
-        # Force-pushed tree: wipe the tree's existing rows so stale
-        # SHAs don't accumulate. The full walk that follows re-inserts
-        # the live history; ON CONFLICT DO NOTHING absorbs any
-        # intra-walk duplicates from merge-graph re-emissions.
-        # `exclude_from` intentionally NOT applied here; see the
-        # docstring for the per-tree-timeline rationale.
-        #
-        # Phase 3: the DELETE becomes a WriteOp dispatched through
-        # the writer, matching every other write in this function.
-        def _delete_existing(conn, tn=tree_name):
-            conn.execute(delete(MainlineCommit).where(MainlineCommit.tree_name == tn))
-
-        writer.submit(
-            WriteOp(label=f"mainline:{tree_name}:delete-rebases", fn=_delete_existing),
-        ).result(timeout=60)
-    else:
-        # Incremental cursor walk. Skip commits already recorded in
-        # the prior run by excluding the last-seen SHA. If the cursor
-        # SHA no longer exists (force-push, shallow re-clone), re-walk
-        # from scratch: we'd rather re-insert against ON CONFLICT than
-        # crash and stall the tree.
-        since = state.commits_walked_to_sha
-        if since:
+        else:
             try:
-                repo[since.encode()]
-                exclude.append(since.encode())
+                branch_ref = repo.refs[f"refs/heads/{branch}".encode()]
             except KeyError:
                 logger.warning(
-                    "mainline: cursor SHA %s missing from %s; rewalking",
-                    since,
+                    "mainline: branch %s missing in %s; falling back to HEAD",
+                    branch,
                     tree_path,
                 )
-        # Additional shortcut: skip commits reachable from another
-        # tree's head when supplied (typically `linus_head` so non-
-        # Linus trees walk only divergent commits). KeyError means
-        # this repo's objectstore doesn't have the SHA, e.g. no
-        # --reference linus.git on clone; falling back to a full
-        # walk is the right safety net (slower, still correct).
-        if exclude_from is not None:
-            try:
-                repo[exclude_from]
-                exclude.append(exclude_from)
-            except KeyError:
-                logger.debug(
-                    "mainline: exclude_from %s not in %s; walking full history",
-                    exclude_from.decode("ascii", errors="replace"),
-                    tree_path,
+                try:
+                    branch_ref = repo.head()
+                except KeyError:
+                    branch_ref = None
+
+        if branch_ref is None:
+            # Empty repo or missing ref: nothing to walk. The read-only
+            # session has no pending writes so no commit needed; return
+            # early with zero counts. Note: the rebases=True DELETE WriteOp
+            # has not been submitted yet at this point; that block comes
+            # after this guard.
+            return WalkResult()
+
+        exclude: list[bytes] = []
+        if rebases:
+            # Force-pushed tree: wipe the tree's existing rows so stale
+            # SHAs don't accumulate. The full walk that follows re-inserts
+            # the live history; ON CONFLICT DO NOTHING absorbs any
+            # intra-walk duplicates from merge-graph re-emissions.
+            # `exclude_from` intentionally NOT applied here; see the
+            # docstring for the per-tree-timeline rationale.
+            #
+            # Phase 3: the DELETE becomes a WriteOp dispatched through
+            # the writer, matching every other write in this function.
+            def _delete_existing(conn, tn=tree_name):
+                conn.execute(
+                    delete(MainlineCommit).where(MainlineCommit.tree_name == tn)
                 )
 
-    # dulwich's reverse=True walker emits oldest-first, which is what
-    # we want: advance the SHA cursor monotonically so the next tick
-    # only picks up commits appended after this one.
-    walker = repo.get_walker(include=[branch_ref], exclude=exclude, reverse=True)
+            writer.submit(
+                WriteOp(
+                    label=f"mainline:{tree_name}:delete-rebases", fn=_delete_existing
+                ),
+            ).result(timeout=60)
+        else:
+            # Incremental cursor walk. Skip commits already recorded in
+            # the prior run by excluding the last-seen SHA. If the cursor
+            # SHA no longer exists (force-push, shallow re-clone), re-walk
+            # from scratch: we'd rather re-insert against ON CONFLICT than
+            # crash and stall the tree.
+            since = state.commits_walked_to_sha
+            if since:
+                try:
+                    repo[since.encode()]
+                    exclude.append(since.encode())
+                except KeyError:
+                    logger.warning(
+                        "mainline: cursor SHA %s missing from %s; rewalking",
+                        since,
+                        tree_path,
+                    )
+            # Additional shortcut: skip commits reachable from another
+            # tree's head when supplied (typically `linus_head` so non-
+            # Linus trees walk only divergent commits). KeyError means
+            # this repo's objectstore doesn't have the SHA, e.g. no
+            # --reference linus.git on clone; falling back to a full
+            # walk is the right safety net (slower, still correct).
+            if exclude_from is not None:
+                try:
+                    repo[exclude_from]
+                    exclude.append(exclude_from)
+                except KeyError:
+                    logger.debug(
+                        "mainline: exclude_from %s not in %s; walking full history",
+                        exclude_from.decode("ascii", errors="replace"),
+                        tree_path,
+                    )
 
-    result = WalkResult(
-        last_walked_sha=None if rebases else state.commits_walked_to_sha
-    )
-    pending_rows: list[dict] = []
-    # Tracks the SHA of the last commit processed; updated per commit
-    # in the main loop and used for the post-walk cursor WriteOp.
-    last_seen_sha_for_cursor: str | None = result.last_walked_sha
+        # dulwich's reverse=True walker emits oldest-first, which is what
+        # we want: advance the SHA cursor monotonically so the next tick
+        # only picks up commits appended after this one.
+        walker = repo.get_walker(include=[branch_ref], exclude=exclude, reverse=True)
 
-    def flush() -> None:
-        """Submit the current pending_rows batch via the writer and
-        wait for the commit before clearing the buffer.
+        result = WalkResult(
+            last_walked_sha=None if rebases else state.commits_walked_to_sha
+        )
+        pending_rows: list[dict] = []
+        # Tracks the SHA of the last commit processed; updated per commit
+        # in the main loop and used for the post-walk cursor WriteOp.
+        last_seen_sha_for_cursor: str | None = result.last_walked_sha
 
-        Phase 3: writes go through _submit_mainline_batch rather than
-        inline session.execute + session.commit. The cursor update is
-        deferred to the post-walk submission so the cursor only
-        advances after ALL batches for this tree have committed."""
-        nonlocal pending_rows
-        if not pending_rows:
-            return
-        # _submit_mainline_batch handles the INSERT OR IGNORE for the
-        # three dup scenarios described in the helper's docstring. Wait
-        # on the future so we don't compose the next batch until this
-        # one has committed: preserves the resume-from-cursor invariant
-        # (last_seen_sha_for_cursor only advances after this batch is
-        # durable).
-        _submit_mainline_batch(writer, tree_name, pending_rows).result(timeout=60)
-        pending_rows = []
+        def flush() -> None:
+            """Submit the current pending_rows batch via the writer and
+            wait for the commit before clearing the buffer.
 
-    for entry in walker:
-        commit = entry.commit
-        sha = commit.id.decode("ascii")
-        result.commits_seen += 1
-        last_seen_sha_for_cursor = sha
+            Phase 3: writes go through _submit_mainline_batch rather than
+            inline session.execute + session.commit. The cursor update is
+            deferred to the post-walk submission so the cursor only
+            advances after ALL batches for this tree have committed."""
+            nonlocal pending_rows
+            if not pending_rows:
+                return
+            # _submit_mainline_batch handles the INSERT OR IGNORE for the
+            # three dup scenarios described in the helper's docstring. Wait
+            # on the future so we don't compose the next batch until this
+            # one has committed: preserves the resume-from-cursor invariant
+            # (last_seen_sha_for_cursor only advances after this batch is
+            # durable).
+            _submit_mainline_batch(writer, tree_name, pending_rows).result(timeout=60)
+            pending_rows = []
 
-        msgids = extract_message_ids(commit.message)
-        if msgids:
-            result.linked += 1
-            committed_at = datetime.fromtimestamp(
-                commit.commit_time,
-                tz=timezone.utc,
-            )
-            for mid in msgids:
-                pending_rows.append(
-                    {
-                        "commit_sha": sha,
-                        "message_id": mid,
-                        "tree_name": tree_name,
-                        "committed_at": committed_at,
-                    }
+        for entry in walker:
+            commit = entry.commit
+            sha = commit.id.decode("ascii")
+            result.commits_seen += 1
+            last_seen_sha_for_cursor = sha
+
+            msgids = extract_message_ids(commit.message)
+            if msgids:
+                result.linked += 1
+                committed_at = datetime.fromtimestamp(
+                    commit.commit_time,
+                    tz=timezone.utc,
                 )
-                result.rows_inserted += 1
+                for mid in msgids:
+                    pending_rows.append(
+                        {
+                            "commit_sha": sha,
+                            "message_id": mid,
+                            "tree_name": tree_name,
+                            "committed_at": committed_at,
+                        }
+                    )
+                    result.rows_inserted += 1
 
-        if result.commits_seen % batch_size == 0:
-            flush()
-            logger.info(
-                "mainline: walked %d commits (%d linked, %d rows) on %s",
-                result.commits_seen,
-                result.linked,
-                result.rows_inserted,
-                tree_name,
-            )
+            if result.commits_seen % batch_size == 0:
+                flush()
+                logger.info(
+                    "mainline: walked %d commits (%d linked, %d rows) on %s",
+                    result.commits_seen,
+                    result.linked,
+                    result.rows_inserted,
+                    tree_name,
+                )
 
-    # Tail flush: submit any remaining rows that didn't fill a complete
-    # batch.
-    flush()
+        # Tail flush: submit any remaining rows that didn't fill a complete
+        # batch.
+        flush()
 
-    # Cursor update: submit the final WriteOp advancing
-    # MainlineState.commits_walked_to_sha to the last commit seen. This
-    # is the FINAL WriteOp per tree; submitting it after all batches
-    # have committed preserves resume semantics: a crash between the
-    # last batch and the cursor leaves the cursor at the pre-walk value,
-    # so the next tick re-walks the just-inserted commits idempotently
-    # via on_conflict_do_nothing.
-    #
-    # Only submit when we actually advanced (last_seen_sha_for_cursor
-    # differs from the initial value stored in result.last_walked_sha):
-    # - rebases=True, no commits: both are None (skip).
-    # - rebases=True, walked N commits: result.last_walked_sha is None,
-    #   last_seen_sha_for_cursor is the final SHA (submit).
-    # - rebases=False, no new commits: both equal the old cursor (skip).
-    # - rebases=False, walked N commits: they differ (submit).
-    if last_seen_sha_for_cursor is not None and (
-        last_seen_sha_for_cursor != result.last_walked_sha
-    ):
-        _submit_mainline_cursor_update(
-            writer, tree_name, last_seen_sha_for_cursor
-        ).result(timeout=60)
+        # Cursor update: submit the final WriteOp advancing
+        # MainlineState.commits_walked_to_sha to the last commit seen. This
+        # is the FINAL WriteOp per tree; submitting it after all batches
+        # have committed preserves resume semantics: a crash between the
+        # last batch and the cursor leaves the cursor at the pre-walk value,
+        # so the next tick re-walks the just-inserted commits idempotently
+        # via on_conflict_do_nothing.
+        #
+        # Only submit when we actually advanced (last_seen_sha_for_cursor
+        # differs from the initial value stored in result.last_walked_sha):
+        # - rebases=True, no commits: both are None (skip).
+        # - rebases=True, walked N commits: result.last_walked_sha is None,
+        #   last_seen_sha_for_cursor is the final SHA (submit).
+        # - rebases=False, no new commits: both equal the old cursor (skip).
+        # - rebases=False, walked N commits: they differ (submit).
+        if last_seen_sha_for_cursor is not None and (
+            last_seen_sha_for_cursor != result.last_walked_sha
+        ):
+            _submit_mainline_cursor_update(
+                writer, tree_name, last_seen_sha_for_cursor
+            ).result(timeout=60)
 
-    return result
+        return result
 
 
 class TreeWalkResult(BaseModel):
@@ -553,17 +557,21 @@ def load_maintainers(
     the whole subsystems triple in one transaction, the exact
     shape that trips SQLITE_BUSY_SNAPSHOT under concurrent cache
     writes."""
-    repo = Repo(str(tree_path))
-    head_sha = repo.head().decode("ascii")
-    commit = repo[repo.head()]
-    tree = repo[commit.tree]
-    try:
-        _mode, blob_sha = tree[b"MAINTAINERS"]
-    except KeyError as exc:
-        raise FileNotFoundError(
-            f"no MAINTAINERS file at HEAD of {tree_path}; wrong tree?"
-        ) from exc
-    blob_bytes = repo[blob_sha].data
+    # Scope the Repo to just the read of MAINTAINERS bytes. The
+    # write_transaction block below doesn't need `repo` open, so
+    # closing it before the SQL writes releases the pack-file
+    # mmaps before the writer lock is acquired.
+    with Repo(str(tree_path)) as repo:
+        head_sha = repo.head().decode("ascii")
+        commit = repo[repo.head()]
+        tree = repo[commit.tree]
+        try:
+            _mode, blob_sha = tree[b"MAINTAINERS"]
+        except KeyError as exc:
+            raise FileNotFoundError(
+                f"no MAINTAINERS file at HEAD of {tree_path}; wrong tree?"
+            ) from exc
+        blob_bytes = repo[blob_sha].data
 
     with (
         write_transaction("update_mainline:maintainers"),
@@ -656,6 +664,24 @@ def load_maintainers(
     return True, loaded, head_sha
 
 
+def _read_linus_head(linus_disk_path: Path) -> bytes | None:
+    """Read Linus's HEAD SHA from disk. Returns None on any error
+    (missing clone, unreadable, no HEAD, etc.); callers fall back to
+    walking the full history. Repo is context-managed so the brief
+    mmap of the pack files releases at function return rather than
+    on the next GC pass."""
+    try:
+        with Repo(str(linus_disk_path)) as repo:
+            return repo.head()
+    except Exception as exc:
+        logger.debug(
+            "mainline: could not read linus HEAD from %s: %r",
+            linus_disk_path,
+            exc,
+        )
+        return None
+
+
 def update_mainline(
     *,
     skip_fetch: bool = False,
@@ -701,14 +727,7 @@ def update_mainline(
 
             linus_disk_path = PROJECT_ROOT / linus_disk_path
         if linus_disk_path.exists():
-            try:
-                linus_head = Repo(str(linus_disk_path)).head()
-            except Exception as exc:
-                logger.debug(
-                    "mainline: could not read linus HEAD from %s: %r",
-                    linus_disk_path,
-                    exc,
-                )
+            linus_head = _read_linus_head(linus_disk_path)
 
     # Linus first so its clone exists for --reference on subsequent
     # trees in the same tick.

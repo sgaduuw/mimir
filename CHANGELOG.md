@@ -11,6 +11,23 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-06-12
+
+### Fixed
+
+- **`mimir.mainline` Repo lifecycle: three bare-assignment Repo
+  opens now use `with Repo(...) as repo:`.** `walk_commits` wraps
+  its body in `with`; `load_maintainers` wraps just the MAINTAINERS
+  read (releasing the Repo before the SQL writes); the
+  `update_mainline` linus-head probe is extracted into a private
+  `_read_linus_head` helper that owns the `with` and the
+  `try/except`. dulwich's `__exit__` now fires deterministically at
+  function exit instead of relying on GC to invoke `__del__`.
+  Addresses the walker-state retention signal from the v3.1.0
+  tracemalloc investigation (`dulwich/walk.py:208/225/240` showed
+  2 persistent walker states across all observation windows).
+  See issue #461.
+
 ## [3.1.1] - 2026-06-11
 
 ### Fixed
