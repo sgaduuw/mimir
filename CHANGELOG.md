@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-06-11
+
 ### Fixed
 
 - **Broker no longer accumulates dead reader threads in
