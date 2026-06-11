@@ -867,11 +867,19 @@ def serve(socket_path: Path) -> None:
 
 
 def _log_tracemalloc_top_25(snap: tracemalloc.Snapshot) -> None:
-    """Log the top-25 allocation sites by current bytes to stderr.
+    """Log the top-25 allocation sites by current bytes at INFO.
 
-    Implementation in Task 6.
+    One header line plus one entry per site, formatted as
+    '<bytes_mib>  <file>:<lineno>' so an operator following along
+    via `podman logs` sees the leak shape forming.
     """
-    pass
+    stats = snap.statistics("lineno")[:25]
+    logger.info("broker: tracemalloc top-25 by current bytes:")
+    for stat in stats:
+        # stat.traceback is a Traceback; [0] is the most recent frame
+        frame = stat.traceback[0]
+        size_mib = stat.size / (1024 * 1024)
+        logger.info("  %7.1f MiB  %s:%d", size_mib, frame.filename, frame.lineno)
 
 
 def _maybe_start_tracemalloc_snapshotter(
