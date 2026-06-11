@@ -64,6 +64,7 @@ from mimir.cli.cache import (
     warm_cache_command,
 )
 from mimir.cli.devseed import dev_seed_thread_command
+from mimir.cli.diagnostics import tracemalloc_diff_command
 from mimir.cli.doctor import doctor_command
 from mimir.cli.ingest import (
     _push_indexnow,
@@ -116,6 +117,7 @@ __all__ = [
     "register_cli",
     "reindex_command",
     "show_command",
+    "tracemalloc_diff_command",
     "update_command",
     "update_mainline_command",
     "vacuum_command",
@@ -141,6 +143,7 @@ def register_cli(app: Flask) -> None:
     app.cli.add_command(analyze_command)
     app.cli.add_command(dev_seed_thread_command)
     app.cli.add_command(doctor_command)
+    app.cli.add_command(tracemalloc_diff_command)
     app.cli.add_command(admin_group)
 
 
