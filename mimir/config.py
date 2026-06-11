@@ -250,6 +250,15 @@ class Settings(BaseSettings):
     # it with a multi-minute hang. Override via SQLITE_BUSY_TIMEOUT_MS.
     sqlite_busy_timeout_ms: int = 5000
 
+    # Broker tracemalloc snapshotter interval. 0 (default) disables.
+    # When > 0, the broker enables `tracemalloc` on startup and writes
+    # a Snapshot pickle to /data/diagnostics/ every N seconds. Used
+    # for diagnosing Python-side allocation growth in the broker (see
+    # _claude/specs/2026-06-11-broker-tracemalloc-diagnostic-design.md).
+    # Snapshots can run 10-50 MB each; consider disk impact for long
+    # observation windows.
+    tracemalloc_interval_seconds: int = 0
+
     # Write-broker socket path. The broker daemon (`mimir broker
     # --socket PATH`) is the sole SQLite writer process in mimir
     # 2.0.0; every other process (web, tasks, CLI invocations)
