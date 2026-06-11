@@ -73,27 +73,33 @@ def test_snapshotter_survives_write_failure(tmp_path, caplog):
     """Read-only diagnostics_dir mid-loop: warning logged, loop continues."""
     diag = tmp_path / "diag"
     diag.mkdir()
+    # at_level scope must cover the sleep window: the daemon thread logs its
+    # WARNING from inside _loop seconds after the snapshotter returns, not
+    # during the call itself. Closing the scope at function-exit would rely
+    # on pytest's default propagation level, which is fragile.
     with caplog.at_level(logging.WARNING, logger="mimir.broker.server"):
         _maybe_start_tracemalloc_snapshotter(
             interval=1, diagnostics_dir=diag, frames=10
         )
-    try:
-        # First snapshot lands while writable
-        time.sleep(1.5)
-        first = sorted(diag.glob("tracemalloc-*.pkl"))
-        assert len(first) >= 1
-        # Make the dir read-only; next iteration will fail to write
-        diag.chmod(0o555)
-        time.sleep(2.0)
-        # Thread is still alive
-        assert _live_threads_named("broker-tracemalloc")
-        # A warning was logged
-        assert any("tracemalloc snapshot failed" in r.message for r in caplog.records)
-        # Restore writability; next iteration writes a fresh file
-        diag.chmod(0o755)
-        time.sleep(2.0)
-        after = sorted(diag.glob("tracemalloc-*.pkl"))
-        assert len(after) > len(first)
-    finally:
-        diag.chmod(0o755)
-        tracemalloc.stop()
+        try:
+            # First snapshot lands while writable
+            time.sleep(1.5)
+            first = sorted(diag.glob("tracemalloc-*.pkl"))
+            assert len(first) >= 1
+            # Make the dir read-only; next iteration will fail to write
+            diag.chmod(0o555)
+            time.sleep(2.0)
+            # Thread is still alive
+            assert _live_threads_named("broker-tracemalloc")
+            # A warning was logged
+            assert any(
+                "tracemalloc snapshot failed" in r.message for r in caplog.records
+            )
+            # Restore writability; next iteration writes a fresh file
+            diag.chmod(0o755)
+            time.sleep(2.0)
+            after = sorted(diag.glob("tracemalloc-*.pkl"))
+            assert len(after) > len(first)
+        finally:
+            diag.chmod(0o755)
+            tracemalloc.stop()
