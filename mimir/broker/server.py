@@ -870,9 +870,10 @@ def _maybe_start_tracemalloc_snapshotter(
 ) -> None:
     """Start tracemalloc + a daemon snapshotter thread when interval > 0.
 
-    No-op when interval is 0 or negative. Errors during startup
-    (e.g., diagnostics_dir not writable) log and abort the
-    snapshotter cleanly; the broker continues serving.
+    No-op when interval is 0 or negative. Enabled-path not yet
+    implemented; the next plan task fills it in (thread spawn,
+    snapshot, atomic-rename file write, top-25 stderr summary,
+    error handling).
 
     See _claude/specs/2026-06-11-broker-tracemalloc-diagnostic-design.md.
     """
