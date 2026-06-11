@@ -797,3 +797,31 @@ def test_update_mainline_per_tree_failure_isolated(seeded_db, monkeypatch, tmp_p
     assert result.trees["bad"].ok is False
     assert result.trees["bad"].error is not None
     assert result.trees["good"].ok is True
+
+
+def test_walk_commits_closes_repo_at_function_exit(
+    seeded_db, tmp_path, writer_thread, monkeypatch
+):
+    """Pin the with-Repo lifecycle: walk_commits must close its Repo
+    deterministically at function exit, not rely on GC. Spying on
+    __exit__ because the bare-assignment path never invokes it
+    (dulwich's Repo.__del__ does its own cleanup but does NOT go
+    through __exit__). The spy unambiguously differentiates
+    pre-fix from post-fix."""
+    from dulwich.repo import Repo as DulwichRepo
+    from mimir.extensions import SessionLocal
+
+    exit_calls: list[bool] = []
+    original_exit = DulwichRepo.__exit__
+
+    def tracking_exit(self, *args):
+        exit_calls.append(True)
+        return original_exit(self, *args)
+
+    monkeypatch.setattr(DulwichRepo, "__exit__", tracking_exit)
+
+    _bare_repo(tmp_path / "tree.git")
+    with SessionLocal() as s:
+        walk_commits(s, tmp_path / "tree.git", writer=writer_thread)
+
+    assert exit_calls, "Repo.__exit__ was not called during walk_commits"
