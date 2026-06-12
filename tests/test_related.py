@@ -220,3 +220,36 @@ class TestCandidates:
                 )
                 == []
             )
+
+    def test_exact_subject_predicate_isolated(self, seeded_db):
+        """The equality branch must match on its own (no tokens, no
+        authors), otherwise removing it would silently degrade exact
+        rematches to token luck."""
+        from sqlalchemy import select as sa_select
+
+        from mimir.models import Inbox
+        from mimir.related import _candidates
+
+        with seeded_db() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            hit = _seed_message(
+                s, alpha, "iso1@x", "bcachefs deadlock fix", "Alice", 20
+            )
+            miss = _seed_message(
+                s, alpha, "iso2@x", "unrelated subject line", "Bob", 20
+            )
+            s.commit()
+            rows = _candidates(
+                s,
+                alpha,
+                exclude_ids=set(),
+                subject_normalized="bcachefs deadlock fix",
+                tokens=[],
+                authors=set(),
+                min_date=datetime.now(timezone.utc) - timedelta(days=365),
+            )
+            ids = {r.id for r in rows}
+            assert hit.id in ids
+            assert miss.id not in ids

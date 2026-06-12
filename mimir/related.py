@@ -175,6 +175,11 @@ def _candidate_select(
     per row during the walk. Returns None when no predicate applies
     (empty subject, no tokens, no authors). Exposed separately from
     `_candidates` so the plan-pin test can EXPLAIN the compiled SQL.
+
+    Tokens may contain `_`, which LIKE treats as a single-char
+    wildcard (so %spin_lock% also matches spinXlock). Accepted: the
+    only caller feeds [a-z0-9_] tokens from _rare_tokens and the
+    widening is negligible for subject matching.
     """
     preds = []
     if subject_normalized:
@@ -213,8 +218,16 @@ def _candidates(
     tokens: list[str],
     authors: set[str],
     min_date: datetime,
-):
-    """Execute the candidate query and drop in-thread rows."""
+) -> list:
+    """Execute the candidate query and drop in-thread rows.
+
+    Note: `exclude_ids` filters in Python AFTER the SQL LIMIT, so a
+    thread whose own messages dominate the most-recent-100 matches
+    yields fewer (possibly zero) candidates even when older
+    out-of-thread matches exist. Deliberate capacity trade: the
+    exclude set stays out of the SQL (no unbounded IN list) and the
+    cap reads as "the 100 most recent matching messages".
+    """
     stmt = _candidate_select(
         inbox.id,
         subject_normalized=subject_normalized,
