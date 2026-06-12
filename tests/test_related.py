@@ -410,6 +410,47 @@ class TestRelatedDiscussions:
             assert tok_root.id in ids
             assert tok_reply.id not in ids
 
+    def test_empty_render_still_logs_instrumentation(self, seeded_db, caplog):
+        """The #71 escalation decision reads empty-rate from
+        rendered=0 lines; an early-return that skips the log on
+        empty results would silently bias the measurement."""
+        import logging
+
+        from sqlalchemy import select as sa_select
+
+        from mimir.models import Inbox
+        from mimir.related import related_discussions
+
+        with seeded_db() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            root = _seed_message(
+                s,
+                alpha,
+                "lonely-root@x",
+                "completely singular topic nobody discussed",
+                "Alice",
+                2,
+            )
+            s.commit()
+            with caplog.at_level(logging.INFO, logger="mimir.related"):
+                out = related_discussions(
+                    s,
+                    alpha,
+                    root_id=root.id,
+                    thread_article_ids={root.id},
+                    thread_authors={"Alice"},
+                )
+            assert out == []
+            line = next(
+                rec.getMessage()
+                for rec in caplog.records
+                if rec.getMessage().startswith("related-discussions:")
+            )
+            assert "rendered=0" in line, line
+            assert "strong=0" in line and "weak=0" in line, line
+
 
 class TestCandidatePlanPin:
     def test_candidate_query_drives_on_date_index(self, seeded_db):

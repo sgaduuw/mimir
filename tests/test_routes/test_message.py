@@ -2469,3 +2469,58 @@ class TestRelatedDiscussionsPanel:
         resp = client.get(url)
         assert resp.status_code == 200
         assert b"Related discussions" not in resp.data
+
+    def test_old_possibly_related_yields_to_panel_on_non_patch(self, client, tmp_path):
+        """Pins the route's `is_patch_thread` narrowing of the old surface;
+        removing it would double-render both sections (#71 spec).
+
+        On a NON-patch thread whose root has an off-list parent and which
+        has a same-subject orphan:
+        - the OLD "Possibly related" section must NOT render (its condition
+          requires `is_patch_thread=True`, which is False here).
+        - the NEW "Related discussions" panel MUST render (the orphan serves
+          as a related-discussions candidate via the exact-subject branch).
+        """
+        from sqlalchemy import select as sa_select
+
+        from mimir.extensions import SessionLocal
+        from mimir.models import Inbox
+        from tests.test_related import _seed_message
+
+        # Root with an off-list parent: ingest with In-Reply-To pointing at
+        # a message-id that does not exist in the DB. The route checks
+        # `thread[0].thread_parent` and queries Article for that id; when
+        # it's absent, `parent_off_list` is set to that string.
+        root_id, url = _ingest_one_article(
+            tmp_path,
+            "alpha",
+            "narrowing-root@x",
+            subject="unique discussion topic alpha",
+            in_reply_to="not-in-archive@elsewhere",
+        )
+
+        # Same-subject orphan (no thread_parent): exact-subject match makes
+        # it a related-discussions candidate. SQL-only; scorer reads columns,
+        # not the git blob.
+        with SessionLocal() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            _seed_message(
+                s,
+                alpha,
+                "narrowing-orphan@x",
+                "unique discussion topic alpha",
+                "Bob",
+                30,
+            )
+            s.commit()
+
+        resp = client.get(url)
+        assert resp.status_code == 200
+        # Old "Possibly related" section must be absent: its condition
+        # includes `is_patch_thread` which is False for this non-patch thread.
+        assert b"Possibly related" not in resp.data
+        # New "Related discussions" panel must be present: the orphan is a
+        # related-discussions candidate (exact subject_normalized match).
+        assert b"Related discussions" in resp.data
