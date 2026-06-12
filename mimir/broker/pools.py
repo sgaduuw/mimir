@@ -14,6 +14,7 @@ existing `mimir.extensions.SessionLocal`."""
 from __future__ import annotations
 
 import contextlib
+import logging
 import threading
 
 from sqlalchemy import create_engine, event
@@ -21,6 +22,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from mimir.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class ReadSessionPool:
@@ -57,6 +60,13 @@ class ReadSessionPool:
         )
         self._closed = False
         self._closed_lock = threading.Lock()
+        # Condition + in-flight counter wire `close()` to wait for
+        # checked-out sessions to drain before `engine.dispose()`.
+        # Without it, `dispose()` invalidates connections mid-query
+        # and a long-running warm handler hits OperationalError on
+        # its next statement (audit #472).
+        self._drained = threading.Condition(self._closed_lock)
+        self._in_flight = 0
 
     @classmethod
     def from_settings(cls) -> "ReadSessionPool":
@@ -73,20 +83,51 @@ class ReadSessionPool:
         The session is constructed while holding `_closed_lock` so a
         concurrent `close()` cannot dispose the engine between the
         closed-check and the sessionmaker call. The lock is released
-        before yielding, so session use itself does not block close()."""
+        before yielding, so session use itself does not block other
+        checkouts. An in-flight counter is bumped under the lock so
+        `close()` can wait for live sessions to drain before
+        `engine.dispose()`."""
         with self._closed_lock:
             if self._closed:
                 raise RuntimeError("ReadSessionPool is closed")
             s: Session = self._sessionmaker()
+            self._in_flight += 1
         try:
             yield s
         finally:
-            s.close()
+            try:
+                s.close()
+            finally:
+                with self._closed_lock:
+                    self._in_flight -= 1
+                    if self._in_flight == 0:
+                        self._drained.notify_all()
 
-    def close(self) -> None:
-        """Dispose the engine + mark the pool closed. Idempotent."""
+    def close(self, drain_timeout: float = 30.0) -> None:
+        """Mark the pool closed, wait for in-flight sessions to drain,
+        then dispose the engine. Idempotent.
+
+        `drain_timeout` (default 30s) bounds the wait. `dispose()`
+        runs even after a timeout so a stuck handler can never block
+        broker shutdown; on timeout the in-flight sessions hit
+        OperationalError on their next statement, the pre-fix
+        behaviour. In practice the broker's shutdown sequence sets
+        `stop_event` before calling `close()`, so workers have
+        already returned by the time the drain wait starts."""
         with self._closed_lock:
             if self._closed:
                 return
             self._closed = True
+            drained = self._drained.wait_for(
+                lambda: self._in_flight == 0,
+                timeout=drain_timeout,
+            )
+            leftover = self._in_flight
+        if not drained:
+            logger.warning(
+                "ReadSessionPool.close: %d sessions still in-flight "
+                "after %.1fs; disposing engine anyway",
+                leftover,
+                drain_timeout,
+            )
         self._engine.dispose()
