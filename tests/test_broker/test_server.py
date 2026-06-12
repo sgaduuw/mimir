@@ -681,6 +681,58 @@ def test_extract_warm_priority_parses_zero_one_and_default(seeded_db):
     assert _extract_warm_priority(b'{"op":"warm_inbox","priority":"nope"}') == 1
 
 
+def test_signal_handler_is_idempotent(seeded_db, caplog):
+    """`_make_signal_handler` returns a closure that fires
+    `server.shutdown()` exactly once even when SIGTERM and SIGINT
+    arrive back-to-back. A naive shape would spawn a second
+    `server.shutdown()` thread that hangs on the framework's
+    one-shot Event (audit #484)."""
+    import logging
+    import signal as _signal
+    import threading
+
+    from mimir.broker.server import _make_signal_handler, build_server
+
+    sp = short_socket_path("signal-idem")
+    server = build_server(sp)
+    try:
+        shutdown_calls: list[int] = []
+        shutdown_started = threading.Event()
+
+        def _fake_shutdown():
+            shutdown_calls.append(1)
+            shutdown_started.set()
+
+        server.shutdown = _fake_shutdown  # type: ignore[assignment]
+
+        handler, state = _make_signal_handler(server)
+
+        with caplog.at_level(logging.INFO, logger="mimir.broker.server"):
+            handler(_signal.SIGTERM, None)
+            first_thread = state["thread"]
+            assert isinstance(first_thread, threading.Thread)
+            assert shutdown_started.wait(timeout=2.0), (
+                "first signal never fired shutdown"
+            )
+
+            handler(_signal.SIGINT, None)
+            assert state["thread"] is first_thread, (
+                "second signal spawned a new shutdown thread"
+            )
+
+        first_thread.join(timeout=2.0)
+        assert shutdown_calls == [1], (
+            f"expected exactly one shutdown call, got {len(shutdown_calls)}"
+        )
+        assert any(
+            "shutdown already in progress" in r.message for r in caplog.records
+        ), [r.message for r in caplog.records]
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()
+
+
 def test_purge_loop_submits_via_writer_thread(seeded_db, monkeypatch, caplog):
     """`_purge_loop` routes the expired-row DELETE through
     `cache.purge_expired_via_writer(writer)` so every write funnels
