@@ -253,3 +253,159 @@ class TestCandidates:
             ids = {r.id for r in rows}
             assert hit.id in ids
             assert miss.id not in ids
+
+
+class TestRelatedDiscussions:
+    def _setup_corpus(self, s, alpha):
+        """Current thread: non-patch root + one reply. Prior corpus:
+        a token-related thread, a participant-related thread, an
+        unrelated thread, all in alpha."""
+        root = _seed_message(
+            s,
+            alpha,
+            "cur-root@x",
+            "bcachefs deadlock during journal replay",
+            "Alice",
+            2,
+        )
+        reply = _seed_message(
+            s,
+            alpha,
+            "cur-reply@x",
+            "Re: bcachefs deadlock during journal replay",
+            "Bob",
+            1,
+            thread_parent="cur-root@x",
+        )
+        tok_root = _seed_message(
+            s,
+            alpha,
+            "tok-root@x",
+            "journal replay hangs on dirty mount",
+            "Carol",
+            60,
+        )
+        part_root = _seed_message(
+            s,
+            alpha,
+            "part-root@x",
+            "weekly status report thing",
+            "Alice",
+            90,
+        )
+        unrelated = _seed_message(
+            s,
+            alpha,
+            "unrel-root@x",
+            "random words entirely different",
+            "Zoe",
+            30,
+        )
+        s.commit()
+        return root, reply, tok_root, part_root, unrelated
+
+    def test_finds_scores_orders_and_logs(self, seeded_db, caplog):
+        import logging
+
+        from sqlalchemy import select as sa_select
+
+        from mimir.models import Inbox
+        from mimir.related import related_discussions
+
+        with seeded_db() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            root, reply, tok_root, part_root, unrelated = self._setup_corpus(s, alpha)
+
+            with caplog.at_level(logging.INFO, logger="mimir.related"):
+                out = related_discussions(
+                    s,
+                    alpha,
+                    root_id=root.id,
+                    thread_article_ids={root.id, reply.id},
+                    thread_authors={"Alice", "Bob"},
+                )
+
+            ids = [r.article_id for r in out]
+            assert tok_root.id in ids
+            assert part_root.id in ids
+            assert unrelated.id not in ids
+            assert root.id not in ids and reply.id not in ids
+            # Token match outranks participant-only.
+            assert ids.index(tok_root.id) < ids.index(part_root.id)
+            tok_item = next(r for r in out if r.article_id == tok_root.id)
+            part_item = next(r for r in out if r.article_id == part_root.id)
+            assert "token" in tok_item.signals
+            assert part_item.signals == ("participant",)
+            # Instrumentation line carries the decision-rule fields.
+            line = next(
+                rec.getMessage()
+                for rec in caplog.records
+                if rec.getMessage().startswith("related-discussions:")
+            )
+            for field in (
+                "inbox=alpha",
+                "candidates=",
+                "rendered=2",
+                "strong=1",
+                "weak=1",
+                "top=",
+                "elapsed_ms=",
+            ):
+                assert field in line, line
+
+    def test_result_is_cached(self, seeded_db):
+        from sqlalchemy import select as sa_select
+
+        from mimir import cache
+        from mimir.models import Inbox
+        from mimir.related import related_discussions
+
+        with seeded_db() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            root, reply, *_ = self._setup_corpus(s, alpha)
+            related_discussions(
+                s,
+                alpha,
+                root_id=root.id,
+                thread_article_ids={root.id, reply.id},
+                thread_authors={"Alice", "Bob"},
+            )
+            assert cache.get(f"related_discussions:alpha:{root.id}") is not None
+
+    def test_replies_collapse_to_their_root(self, seeded_db):
+        """A candidate that is a REPLY in a prior thread must surface
+        as that thread's root, not as the reply row."""
+        from sqlalchemy import select as sa_select
+
+        from mimir.models import Inbox
+        from mimir.related import related_discussions
+
+        with seeded_db() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            root, reply, tok_root, *_ = self._setup_corpus(s, alpha)
+            tok_reply = _seed_message(
+                s,
+                alpha,
+                "tok-reply@x",
+                "Re: journal replay hangs on dirty mount",
+                "Dave",
+                59,
+                thread_parent="tok-root@x",
+            )
+            s.commit()
+            out = related_discussions(
+                s,
+                alpha,
+                root_id=root.id,
+                thread_article_ids={root.id, reply.id},
+                thread_authors={"Alice", "Bob"},
+            )
+            ids = [r.article_id for r in out]
+            assert tok_root.id in ids
+            assert tok_reply.id not in ids

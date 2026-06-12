@@ -11,14 +11,18 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Select, or_, select
 from sqlalchemy.orm import Session
 
 from mimir import cache
+from mimir.config import settings
+from mimir.datetime_utils import aware_utc
 from mimir.models import Article, ArticleList, Inbox
+from mimir.threading import find_thread_root
 
 logger = logging.getLogger(__name__)
 
@@ -238,3 +242,133 @@ def _candidates(
     if stmt is None:
         return []
     return [r for r in session.execute(stmt).all() if r.id not in exclude_ids]
+
+
+def related_discussions(
+    session: Session,
+    inbox: Inbox,
+    *,
+    root_id: int,
+    thread_article_ids: set[int],
+    thread_authors: set[str],
+) -> list[RelatedThread]:
+    """Up to RELATED_LIMIT related prior threads for a non-patch
+    thread, cached per root. The cold path runs the candidate query,
+    collapses candidates to their thread roots, scores per root, and
+    emits the instrumentation line the #71 decision rule reads.
+    """
+
+    def _compute() -> list[RelatedThread]:
+        t0 = time.perf_counter()
+        now = datetime.now(timezone.utc)
+        root = session.get(Article, root_id)
+        if root is None:
+            return []
+        tokens = _rare_tokens(root.subject_normalized)
+        rows = _candidates(
+            session,
+            inbox,
+            exclude_ids=thread_article_ids,
+            subject_normalized=root.subject_normalized or "",
+            tokens=tokens,
+            authors={a for a in thread_authors if a},
+            min_date=now - timedelta(days=settings.related_discussions_window_days),
+        )
+
+        # Collapse candidate messages onto their thread roots and
+        # aggregate per-root evidence. find_thread_root is ~2-3 ms
+        # per walk; CANDIDATE_CAP bounds the total.
+        authors_cf = {a.casefold().strip() for a in thread_authors if a}
+        token_set = set(tokens)
+        evidence: dict[str, dict] = {}
+        for r in rows:
+            root_mid = find_thread_root(session, inbox, r.message_id)
+            if root_mid is None:
+                continue
+            ev = evidence.setdefault(
+                root_mid,
+                {
+                    "exact": False,
+                    "tokens": set(),
+                    "authors": set(),
+                    "last": None,
+                },
+            )
+            if (
+                root.subject_normalized
+                and r.subject_normalized == root.subject_normalized
+            ):
+                ev["exact"] = True
+            if r.subject_normalized:
+                ev["tokens"] |= {t for t in token_set if t in r.subject_normalized}
+            if r.author and r.author.casefold().strip() in authors_cf:
+                ev["authors"].add(r.author.casefold().strip())
+            if r.date and (ev["last"] is None or r.date > ev["last"]):
+                ev["last"] = r.date
+
+        # Fetch the root Article rows for surviving roots; drop the
+        # current thread if a candidate walked back into it.
+        root_arts = {}
+        if evidence:
+            for a in session.execute(
+                select(Article).where(Article.message_id.in_(list(evidence.keys())))
+            ).scalars():
+                if a.id != root_id and a.id not in thread_article_ids:
+                    root_arts[a.message_id] = a
+
+        scored: list[tuple[float, RelatedThread]] = []
+        for mid, art in root_arts.items():
+            ev = evidence[mid]
+            # Article.date from SQLite arrives tz-naive; normalize to
+            # aware UTC so the decay subtraction doesn't raise.
+            last_activity = aware_utc(ev["last"]) if ev["last"] else None
+            base, decayed, signals = _score_and_classify(
+                exact_subject=ev["exact"],
+                matched_tokens=ev["tokens"],
+                shared_authors=ev["authors"],
+                last_activity=last_activity,
+                now=now,
+            )
+            if base < SCORE_THRESHOLD:
+                continue
+            scored.append(
+                (
+                    decayed,
+                    RelatedThread(
+                        article_id=art.id,
+                        inbox_name=inbox.name,
+                        year=art.date.year if art.date else 0,
+                        month=art.date.month if art.date else 0,
+                        subject=art.subject,
+                        last_activity=last_activity,
+                        score=round(decayed, 2),
+                        signals=signals,
+                    ),
+                )
+            )
+        scored.sort(key=lambda p: -p[0])
+        result = [item for _, item in scored[:RELATED_LIMIT]]
+
+        strong = sum(
+            1 for item in result if "subject" in item.signals or "token" in item.signals
+        )
+        logger.info(
+            "related-discussions: inbox=%s root=%d candidates=%d "
+            "rendered=%d strong=%d weak=%d top=%.1f elapsed_ms=%d",
+            inbox.name,
+            root_id,
+            len(rows),
+            len(result),
+            strong,
+            len(result) - strong,
+            result[0].score if result else 0.0,
+            int((time.perf_counter() - t0) * 1000),
+        )
+        return result
+
+    return cache.get_or_compute(
+        session,
+        f"related_discussions:{inbox.name}:{root_id}",
+        CACHE_TTL,
+        _compute,
+    )
