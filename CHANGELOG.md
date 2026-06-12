@@ -38,6 +38,23 @@ changes, not internal refactors. Categories: **Added**,
   Previously the Repo survived until GC, holding mmaps in VmData
   across concurrent multi-inbox ingests. Closes #470.
 
+- **`mimir.broker.writes.WriterThread` thread-safety + connect-failure
+  cleanup.** Two fixes from the 2026-06-12 threading audit:
+  - **`submit()` and `stop()` are now atomic with respect to each
+    other** via `_stop_lock`: `submit()` holds the lock for the
+    check-and-put, `stop()` holds it for set-and-put-sentinel. The
+    previous shape could enqueue an op AFTER the shutdown sentinel,
+    leaving the future unresolved and the caller hung on `.result()`.
+    `_stopped` is now a `threading.Event` rather than a bool.
+    Closes #473.
+  - **`_run()` uses `with engine.connect() as conn:`** so a
+    `connect()` raise (wrong `database_url`, missing `/data/db`
+    mount, permission error) propagates cleanly instead of dying on
+    `UnboundLocalError` inside the bare-assignment `finally`. The
+    old shape killed the writer thread silently; every subsequent
+    `submit()` blocked forever on the full queue while the broker
+    still advertised itself as healthy. Closes #481.
+
 ## [3.1.2] - 2026-06-12
 
 ### Fixed

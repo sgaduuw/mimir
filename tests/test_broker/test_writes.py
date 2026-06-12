@@ -5,6 +5,7 @@ import dataclasses
 import threading
 import time
 
+import pytest
 from sqlalchemy import text
 
 from mimir.broker.writes import WriteOp, WriterThread
@@ -430,3 +431,39 @@ def test_writer_thread_engine_has_sqlite_pragmas_set(seeded_db):
         )
     finally:
         writer.stop(timeout=5)
+
+
+def test_writer_thread_run_disposes_engine_when_connect_fails(monkeypatch):
+    """Regression: `WriterThread._run` previously did a bare
+    `conn = engine.connect()` outside a `with`. If `connect()` raised
+    (wrong database_url, missing /data/db mount, permission error), the
+    `finally` block hit `conn.close()` on an unbound name, raised
+    `UnboundLocalError`, silently killed the writer thread, and every
+    subsequent `submit()` blocked forever on the queue while the broker
+    advertised itself as healthy.
+
+    Fix: `with engine.connect() as conn:` exits cleanly on raise.
+    `engine.dispose()` still runs in the outer finally. This test pins
+    the contract by calling `_run()` directly in the test thread (so
+    no spurious pytest thread-exception warnings) and asserting both
+    that the original exception propagates AND that `engine.dispose()`
+    was called."""
+    from unittest.mock import MagicMock
+
+    from sqlalchemy import event
+
+    fake_engine = MagicMock(name="fake_engine")
+    fake_engine.connect.side_effect = RuntimeError(
+        "simulated connect failure: database_url is bogus"
+    )
+
+    def fake_create_engine(database_url, **kwargs):
+        return fake_engine
+
+    monkeypatch.setattr("mimir.broker.writes.create_engine", fake_create_engine)
+    monkeypatch.setattr(event, "listen", lambda *a, **kw: None)
+
+    writer = WriterThread(database_url="sqlite:///bogus", queue_depth=8)
+    with pytest.raises(RuntimeError, match="simulated connect failure"):
+        writer._run()
+    fake_engine.dispose.assert_called_once()
