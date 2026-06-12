@@ -27,7 +27,7 @@ from mimir.models import (
 )
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.patch_state import patch_state_for_article
-from mimir.related import related_discussions
+from mimir.related import is_bot_sender, related_discussions
 from mimir.rendering import URL_OR_MSGID_RE
 from mimir.rendering.linkify import _extract_lore_msgid
 from mimir.seo import _json_ld_message
@@ -184,8 +184,15 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             is not None
         )
 
+        # A bot-authored root (syzbot, kernel test robot, tip-bot)
+        # shows no panel: the non-patch population is dominated by
+        # bot reports whose related matches are low-value (#71).
+        # Gated before compute like is_patch_thread so suppressed
+        # roots don't enter the empty-rate metric.
+        is_bot_root = bool(thread) and is_bot_sender(thread[0].author)
+
         related_threads: list = []
-        if not is_patch_thread and thread:
+        if not is_patch_thread and not is_bot_root and thread:
             # Best-effort: a panel bug must never 500 a message view.
             # ERROR (not warning) so a broken scorer stays loud.
             try:
