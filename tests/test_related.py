@@ -409,3 +409,92 @@ class TestRelatedDiscussions:
             ids = [r.article_id for r in out]
             assert tok_root.id in ids
             assert tok_reply.id not in ids
+
+
+class TestCandidatePlanPin:
+    def test_candidate_query_drives_on_date_index(self, seeded_db):
+        """The candidate query must SEARCH via ix_articles_date,
+        never SCAN articles. The LIKE predicates ride the date walk;
+        a regression to a subject-index OR shape (which cannot use
+        the index with leading wildcards) would surface here as a
+        SCAN."""
+        from sqlalchemy import select as sa_select, text
+
+        from mimir.models import Inbox
+        from mimir.related import _candidate_select
+
+        # Phase 1: seed the corpus and update planner statistics.
+        # Committed and closed so that phase 2 gets a fresh session
+        # whose query plans are compiled against the updated sqlite_stat1
+        # rather than any cached plan from a prior session in this run.
+        with seeded_db() as s:
+            alpha_inbox = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            beta_inbox = s.execute(
+                sa_select(Inbox).where(Inbox.name == "beta")
+            ).scalar_one()
+            alpha_id = alpha_inbox.id
+            # Seed a corpus where the date filter is much more selective
+            # than the inbox filter:
+            # - 60 in-window articles for alpha (what the query will match)
+            # - 140 out-of-window articles for alpha (outside date range)
+            # - 200 articles for beta (different inbox, outside date range)
+            # Result: inbox_id=alpha matches 204 rows out of 604 total (34%).
+            # date >= min_date matches only 60 rows out of 604 total (10%).
+            # With 10% date selectivity vs 34% inbox selectivity, the planner
+            # should prefer ix_articles_date once ANALYZE populates stats.
+            for i in range(60):
+                _seed_message(
+                    s,
+                    alpha_inbox,
+                    f"pin{i}@x",
+                    f"subject number {i} lockdep",
+                    f"Author{i}",
+                    i,  # 0..59 days ago: inside 365-day window
+                )
+            for i in range(140):
+                _seed_message(
+                    s,
+                    alpha_inbox,
+                    f"old{i}@x",
+                    f"old subject number {i} lockdep",
+                    f"OldAuthor{i}",
+                    400 + i,  # 400..539 days ago: outside 365-day window
+                )
+            for i in range(200):
+                _seed_message(
+                    s,
+                    beta_inbox,
+                    f"beta{i}@x",
+                    f"beta subject {i}",
+                    f"BetaAuthor{i}",
+                    400 + i,  # outside 365-day window
+                )
+            s.commit()
+            s.execute(text("ANALYZE"))
+            s.commit()
+
+        # Phase 2: open a fresh session and re-run ANALYZE on this
+        # connection before issuing EXPLAIN.  SQLAlchemy's connection
+        # pool may hand us a connection that already prepared and cached
+        # the query plan before our phase-1 ANALYZE updated sqlite_stat1.
+        # SQLite does not invalidate per-connection statement caches on
+        # sqlite_stat1 writes; running ANALYZE on the connection forces
+        # it to reload the statistics and recompile any subsequent
+        # prepared statement.
+        with seeded_db() as s:
+            s.execute(text("ANALYZE"))
+            stmt = _candidate_select(
+                alpha_id,
+                subject_normalized="subject number 7 lockdep",
+                tokens=["lockdep", "number"],
+                authors={"Author1", "Author2"},
+                min_date=datetime.now(timezone.utc) - timedelta(days=365),
+            )
+            sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            plan = "\n".join(
+                row[3] for row in s.execute(text(f"EXPLAIN QUERY PLAN {sql}"))
+            )
+            assert "ix_articles_date" in plan, plan
+            assert "SCAN articles" not in plan, plan
