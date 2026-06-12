@@ -13,6 +13,22 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- **`mimir.inboxes` thread-safety under free-threaded Python.** Two
+  fixes from the 2026-06-12 threading audit:
+  - **`_INBOX_NAMES` nav cache now uses a `threading.Lock`** for
+    slice-assignment and reads. The doc comment claiming "atomic via
+    list slice-assignment" was GIL-era and incorrect under
+    `PYTHON_GIL=0`: the underlying resize + copy loop runs without
+    the GIL and a reader could observe partial state. Lock held
+    microseconds per call; no contention concern. Closes #469.
+  - **`update_inbox` and `delete_inbox` closures return tuples**
+    instead of side-channelling through captured dicts (`_rename_info`,
+    `_mirror_path`). The previous shape relied on undocumented
+    `Future.set_result` / `.result()` memory-ordering. The new shape
+    propagates rename-old-name and mirror-path via the WriteFuture's
+    return value, which has a well-defined boundary via the future's
+    internal Condition. Closes #479.
+
 - **`mimir.ingest.epoch._walk_epoch` now context-manages its dulwich
   Repo.** Same shape as the v3.1.2 `mainline.py` fix: the generator
   now wraps its body in `with Repo(...) as repo:` so the Repo's
