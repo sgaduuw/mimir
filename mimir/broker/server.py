@@ -40,8 +40,11 @@ Why this shape (rather than `ThreadingMixIn` per-connection):
    to coalesce N cache.sets into one transaction when the
    throughput needs it. Phase 1.5+ work.
 
-The periodic-purge thread is unchanged: calls
-`cache._direct_purge_expired` on `PURGE_INTERVAL_SEC` cadence.
+The periodic-purge thread submits the expired-row DELETE through the
+broker's WriterThread on `PURGE_INTERVAL_SEC` cadence so every write
+funnels through the single-writer invariant. The legacy direct-write
+path through `cache._direct_purge_expired` would race intra-broker
+writers and silently skip ticks on `SQLITE_BUSY_SNAPSHOT`.
 
 Signal handlers (`SIGTERM`, `SIGINT`) set `stop_event`; reader
 threads notice via their selector poll, the worker notices via
@@ -340,6 +343,10 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     continue
                 try:
                     chunk = sock.recv(4096)
+                # PEP 758 (Python 3.14): the bare-comma form is the
+                # canonical tuple-of-exceptions syntax; `ruff format`
+                # rewrites parenthesised forms to this shape. NOT a
+                # Python 2 holdover (audit #482, closed as not-a-bug).
                 except OSError, ConnectionError:
                     return
                 if not chunk:
@@ -432,78 +439,92 @@ class _BrokerServer(socketserver.UnixStreamServer):
                 item = q.get(timeout=SHUTDOWN_POLL_SEC)
             except queue.Empty:
                 continue
-            if q is self.warm_queue:
-                _priority, enqueued_at, line, conn = item
-            else:
-                line, conn, enqueued_at = item
+            # Outer try/except guarantees an unhandled exception from
+            # dispatch / sendall / unpack does not kill the worker
+            # thread and silently stop draining the queue (audit #478).
+            # The inner try/finally still fires `q.task_done()` so
+            # `q.join()` stays correct.
             try:
-                queue_wait_ms = (time.perf_counter() - enqueued_at) * 1000.0
-                t0 = time.perf_counter()
-                # Mark this worker thread as "currently dispatching a
-                # broker handler" so any reachable `cache.set` /
-                # `cache.delete_for_inbox` etc. falls through to the
-                # direct write path rather than attempting a self-RPC
-                # back through the socket. Production handles the
-                # same concern via `MIMIR_IS_BROKER=true` env at the
-                # process level, but the in-process test environment
-                # shares `settings.mimir_is_broker` between broker
-                # thread and CLI invocations; the thread-local flag
-                # is the right granularity in either case.
-                cache._set_broker_handler_active(True)
-                try:
-                    reply = dispatch(line)
-                finally:
-                    cache._set_broker_handler_active(False)
-                dispatch_ms = (time.perf_counter() - t0) * 1000.0
-                total_ms = queue_wait_ms + dispatch_ms
-
-                threshold_ms = settings.broker_slow_rpc_warn_ms
-                if threshold_ms > 0 and total_ms >= threshold_ms:
-                    # Breakdown helps operators tell the
-                    # difference between front-of-queue contention
-                    # (high queue_wait_ms; many clients piling on)
-                    # and back-of-queue contention
-                    # (high dispatch_ms; SQLite writer lock held
-                    # by the other worker or, in Phase 1 deploys,
-                    # by direct scheduler-side writes).
-                    logger.warning(
-                        "broker slow rpc [%s] (%.1fms total = %.1fms queued + "
-                        "%.1fms dispatch, qsize=%d): %.80s -> ok=%s",
-                        worker_tag,
-                        total_ms,
-                        queue_wait_ms,
-                        dispatch_ms,
-                        q.qsize(),
-                        line.decode("utf-8", "replace"),
-                        reply.ok,
-                    )
+                if q is self.warm_queue:
+                    _priority, enqueued_at, line, conn = item
                 else:
-                    logger.debug(
-                        "broker rpc [%s]: %.80s -> ok=%s%s "
-                        "(%.1fms total = %.1fms queued + %.1fms dispatch)",
-                        worker_tag,
-                        line.decode("utf-8", "replace"),
-                        reply.ok,
-                        f" error={reply.error}" if not reply.ok else "",
-                        total_ms,
-                        queue_wait_ms,
-                        dispatch_ms,
-                    )
-
-                payload = reply.model_dump_json().encode("utf-8") + b"\n"
+                    line, conn, enqueued_at = item
                 try:
-                    with conn.send_lock:
-                        conn.sock.sendall(payload)
-                except OSError, ConnectionError:
-                    # Client closed mid-flight or socket reset.
-                    # Drop the reply silently; the client treats
-                    # the missing reply as `BrokerUnavailable` and
-                    # retries.
-                    logger.debug(
-                        "broker [%s]: dropped reply on closed sock", worker_tag
-                    )
-            finally:
-                q.task_done()
+                    queue_wait_ms = (time.perf_counter() - enqueued_at) * 1000.0
+                    t0 = time.perf_counter()
+                    # Mark this worker thread as "currently dispatching a
+                    # broker handler" so any reachable `cache.set` /
+                    # `cache.delete_for_inbox` etc. falls through to the
+                    # direct write path rather than attempting a self-RPC
+                    # back through the socket. Production handles the
+                    # same concern via `MIMIR_IS_BROKER=true` env at the
+                    # process level, but the in-process test environment
+                    # shares `settings.mimir_is_broker` between broker
+                    # thread and CLI invocations; the thread-local flag
+                    # is the right granularity in either case.
+                    cache._set_broker_handler_active(True)
+                    try:
+                        reply = dispatch(line)
+                    finally:
+                        cache._set_broker_handler_active(False)
+                    dispatch_ms = (time.perf_counter() - t0) * 1000.0
+                    total_ms = queue_wait_ms + dispatch_ms
+
+                    threshold_ms = settings.broker_slow_rpc_warn_ms
+                    if threshold_ms > 0 and total_ms >= threshold_ms:
+                        # Breakdown helps operators tell the
+                        # difference between front-of-queue contention
+                        # (high queue_wait_ms; many clients piling on)
+                        # and back-of-queue contention
+                        # (high dispatch_ms; SQLite writer lock held
+                        # by the other worker or, in Phase 1 deploys,
+                        # by direct scheduler-side writes).
+                        logger.warning(
+                            "broker slow rpc [%s] (%.1fms total = %.1fms queued + "
+                            "%.1fms dispatch, qsize=%d): %.80s -> ok=%s",
+                            worker_tag,
+                            total_ms,
+                            queue_wait_ms,
+                            dispatch_ms,
+                            q.qsize(),
+                            line.decode("utf-8", "replace"),
+                            reply.ok,
+                        )
+                    else:
+                        logger.debug(
+                            "broker rpc [%s]: %.80s -> ok=%s%s "
+                            "(%.1fms total = %.1fms queued + %.1fms dispatch)",
+                            worker_tag,
+                            line.decode("utf-8", "replace"),
+                            reply.ok,
+                            f" error={reply.error}" if not reply.ok else "",
+                            total_ms,
+                            queue_wait_ms,
+                            dispatch_ms,
+                        )
+
+                    payload = reply.model_dump_json().encode("utf-8") + b"\n"
+                    try:
+                        with conn.send_lock:
+                            conn.sock.sendall(payload)
+                    # PEP 758 canonical tuple-of-exceptions form, see
+                    # `_reader_loop` above. Audit #482, not a bug.
+                    except OSError, ConnectionError:
+                        # Client closed mid-flight or socket reset.
+                        # Drop the reply silently; the client treats
+                        # the missing reply as `BrokerUnavailable` and
+                        # retries.
+                        logger.debug(
+                            "broker [%s]: dropped reply on closed sock", worker_tag
+                        )
+                finally:
+                    q.task_done()
+            except Exception:
+                logger.exception(
+                    "broker [%s]: worker caught unhandled exception; "
+                    "continuing to drain queue",
+                    worker_tag,
+                )
 
     def start_workers(self) -> None:
         """Spawn worker threads for each queue. Call once after
@@ -745,13 +766,18 @@ def _post_migrate_analyze_if_needed(socket_path: Path) -> None:
     )
 
 
-def _purge_loop(stop_event: threading.Event) -> None:
-    """Periodic purge of expired cache rows. Owned by the broker so
-    no other writer competes for the same table. Backs off via
-    `stop_event.wait` so shutdown is responsive."""
+def _purge_loop(stop_event: threading.Event, writer: WriterThread) -> None:
+    """Periodic purge of expired cache rows. Submitted as a WriteOp via
+    the broker's `WriterThread` so every write funnels through the
+    single-writer invariant; concurrent handler writes can no longer
+    push this thread's DEFERRED `BEGIN` into a `SQLITE_BUSY_SNAPSHOT`
+    that silently skips a purge tick (audit #475).
+
+    Backs off via `stop_event.wait` so shutdown is responsive."""
     while not stop_event.wait(PURGE_INTERVAL_SEC):
         try:
-            n = cache._direct_purge_expired()
+            future = cache.purge_expired_via_writer(writer)
+            n = future.result(timeout=30)
             if n:
                 logger.info("broker purge: %d expired rows deleted", n)
         except Exception:
@@ -834,6 +860,52 @@ def build_server(socket_path: Path) -> _BrokerServer:
     return server
 
 
+def _make_signal_handler(server: "_BrokerServer"):
+    """Build the SIGTERM/SIGINT handler used by `serve()`. Returns
+    `(handler, state)` so callers (and tests) can inspect the handler's
+    state without touching module-level globals.
+
+    The handler is idempotent: a second signal arriving after the first
+    has fired logs and returns rather than spawning a second
+    `server.shutdown()` thread. `socketserver.BaseServer.shutdown()` is
+    not documented as safe to call concurrently; a second call hangs on
+    the internal one-shot Event, which would dangle the shutdown thread
+    even though the broker process itself shuts down via the daemon
+    flag (audit #484).
+
+    `state["thread"]` carries the spawned shutdown thread so `serve()`'s
+    finally can join it instead of relying on daemon-thread reclamation.
+    """
+    lock = threading.Lock()
+    state: dict[str, object] = {"started": False, "thread": None}
+
+    def _on_signal(signum, _frame):
+        signame = signal.Signals(signum).name
+        with lock:
+            if state["started"]:
+                logger.info(
+                    "broker: %s received, shutdown already in progress; ignoring",
+                    signame,
+                )
+                return
+            state["started"] = True
+            logger.info("broker: %s received, shutting down", signame)
+            server.stop_event.set()
+            # `shutdown()` blocks until `serve_forever` returns. Spawn
+            # it on a fresh thread so the signal handler returns
+            # promptly; the parent `serve()` joins this thread in its
+            # finally.
+            t = threading.Thread(
+                target=server.shutdown,
+                daemon=True,
+                name="broker-shutdown",
+            )
+            state["thread"] = t
+            t.start()
+
+    return _on_signal, state
+
+
 def serve(socket_path: Path) -> None:
     """Start the broker daemon. Blocks until SIGTERM/SIGINT.
 
@@ -852,22 +924,19 @@ def serve(socket_path: Path) -> None:
 
     purge_thread = threading.Thread(
         target=_purge_loop,
-        args=(server.stop_event,),
+        args=(server.stop_event, server.writer),
         daemon=True,
         name="broker-purge",
     )
     purge_thread.start()
 
-    def _on_signal(signum, frame):
-        logger.info("broker: %s received, shutting down", signal.Signals(signum).name)
-        server.stop_event.set()
-        # `shutdown()` blocks until `serve_forever` returns. Call
-        # from a fresh thread so signal handler returns promptly.
-        threading.Thread(target=server.shutdown, daemon=True).start()
-
-    signal.signal(signal.SIGTERM, _on_signal)
-    signal.signal(signal.SIGINT, _on_signal)
-    _maybe_start_tracemalloc_snapshotter(settings.tracemalloc_interval_seconds)
+    signal_handler, shutdown_state = _make_signal_handler(server)
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    tracemalloc_thread = _maybe_start_tracemalloc_snapshotter(
+        settings.tracemalloc_interval_seconds,
+        stop_event=server.stop_event,
+    )
 
     try:
         server.serve_forever(poll_interval=0.5)
@@ -875,7 +944,30 @@ def serve(socket_path: Path) -> None:
         server.server_close()
         if sp.exists():
             sp.unlink()
+        # Workers and the tracemalloc snapshotter all watch
+        # `stop_event` (set in `_on_signal` before `server.shutdown`
+        # runs), so within `SHUTDOWN_POLL_SEC` each thread exits its
+        # loop. Bounded joins give in-flight replies a chance to land
+        # before the process exits, which keeps committed work from
+        # going un-acknowledged on a clean SIGTERM (audit #476).
+        # Daemon threads still reclaim if a join times out.
+        for t in (
+            *server._cache_worker_threads,
+            *server._long_worker_threads,
+            *server._warm_worker_threads,
+        ):
+            t.join(timeout=5.0)
         purge_thread.join(timeout=5.0)
+        if tracemalloc_thread is not None:
+            tracemalloc_thread.join(timeout=5.0)
+        # Join the signal-spawned shutdown thread so a fast SIGTERM
+        # right before process exit doesn't leave it dangling (audit
+        # #484). The thread is already done by the time we get here
+        # (its `server.shutdown()` returned the moment `serve_forever`
+        # exited above), so the join is effectively instant.
+        shutdown_thread = shutdown_state.get("thread")
+        if shutdown_thread is not None:
+            shutdown_thread.join(timeout=5.0)
         server.writer.stop(timeout=10.0)
         _context.clear_active()
         server.read_pool.close()
@@ -902,24 +994,35 @@ def _log_tracemalloc_top_25(snap: tracemalloc.Snapshot) -> None:
 
 def _maybe_start_tracemalloc_snapshotter(
     interval: int,
+    stop_event: threading.Event | None = None,
     diagnostics_dir: Path = Path("/data/diagnostics"),
     frames: int = 25,
-) -> None:
-    """Start tracemalloc + a daemon snapshotter thread when interval > 0.
+) -> threading.Thread | None:
+    """Start tracemalloc + a snapshotter thread when interval > 0.
 
-    No-op when interval is 0 or negative. Errors during startup
-    (e.g., diagnostics_dir not writable) log and abort the
-    snapshotter cleanly; the broker continues serving.
+    Returns the spawned thread so `serve()` can join it on a clean
+    shutdown; returns None when disabled (interval <= 0) or when
+    startup fails (e.g., diagnostics_dir not writable).
+
+    `stop_event` is the broker's shared stop signal. The snapshotter
+    waits on it between iterations and exits as soon as it fires,
+    so a clean shutdown breaks out of the loop instead of risking a
+    mid-`pickle.dump` process exit that would leave `.pkl.tmp` files
+    orphaned under `diagnostics_dir` (audit #477). Callers without a
+    stop signal (existing unit tests) may pass None to get a fresh,
+    never-set event with today's daemon-thread semantics.
 
     See _claude/specs/2026-06-11-broker-tracemalloc-diagnostic-design.md.
     """
     if interval <= 0:
-        return
+        return None
     try:
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         logger.error("broker: tracemalloc snapshotter disabled: %s", e)
-        return
+        return None
+    if stop_event is None:
+        stop_event = threading.Event()
     tracemalloc.start(frames)
     logger.info(
         "broker: tracemalloc enabled (interval=%ds, frames=%d); snapshots -> %s",
@@ -941,13 +1044,20 @@ def _maybe_start_tracemalloc_snapshotter(
                 _log_tracemalloc_top_25(snap)
             except Exception as e:
                 logger.warning("broker: tracemalloc snapshot failed: %s", e)
-            time.sleep(interval)
+            # `wait()` returns True when the event is set; False on
+            # timeout. Stopping here (rather than `time.sleep`) lets
+            # `serve()` join this thread on shutdown.
+            if stop_event.wait(interval):
+                tracemalloc.stop()
+                return
 
-    threading.Thread(
+    thread = threading.Thread(
         target=_loop,
         name="broker-tracemalloc",
         daemon=True,
-    ).start()
+    )
+    thread.start()
+    return thread
 
 
 __all__ = ["build_server", "serve", "ClientConnection", "Reply", "PURGE_INTERVAL_SEC"]

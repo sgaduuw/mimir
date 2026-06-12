@@ -19,6 +19,28 @@ from typing import Optional
 from mimir.broker.pools import ReadSessionPool
 from mimir.broker.writes import WriterThread
 
+# Lock guards every read and write of `_active_pool` /
+# `_active_writer`. The read path is hot (every RPC dispatch hits
+# `get_active_pool()` and `get_active_writer()` once each), and audit
+# #483 proposed replacing the lock with a single immutable tuple read
+# under the theory that free-threading serialises this otherwise.
+# Microbenchmark `_claude/bench-483-context-lock.py` measured both
+# shapes on GIL-on and GIL-off (3.14t) interpreters at N in {1, 2, 4,
+# 8, 16} threads:
+#
+# - GIL on: lockless ~3x faster, scales linearly. Expected.
+# - GIL off: lockless is 2.3x SLOWER at N=4, 1.6x slower at N=8 and
+#   N=16. The lockless shape does two module-attribute loads + tuple
+#   subscripts per call, and under free-threading each one trips
+#   atomic refcount increments on a shared object. That refcount
+#   thrashing dominates the lock acquire under contention; the lock
+#   itself has built-in backoff semantics that scale better.
+#
+# At the broker's default N=8 warm workers the baseline costs ~131 ns
+# per lookup × 2 lookups per RPC dispatch = ~260 ns of overhead per
+# dispatch. Dispatch itself is ~10 ms, so the lookup is 0.003% of
+# dispatch time. Not worth optimising; the proposed fix would
+# regress. Lock stays.
 _lock = threading.Lock()
 _active_pool: Optional[ReadSessionPool] = None
 _active_writer: Optional[WriterThread] = None

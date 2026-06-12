@@ -106,12 +106,34 @@ def _ns(key: str) -> str:
 # Tag picked explicitly (not `cls.__name__`) so a rename in the source
 # can't silently invalidate previously-cached rows or, worse, decode
 # them into the wrong type.
+#
+# Thread-safety invariant: `_TYPES` and `_TAGS` are populated only at
+# module import time by top-level `cache.register("Tag", Cls)` calls
+# in each owning module (`mimir/dashboard.py`, `mimir/threading.py`,
+# `mimir/subsystems.py`, etc.). Python's import lock serialises module
+# initialisation, so these writes never race. Reads from `_encode` and
+# `_decode` happen on broker worker threads at runtime, after every
+# module has finished importing — so reads only ever see a frozen
+# dict.
+#
+# **DO NOT add a `cache.register(...)` call inside a function body or
+# any code path that runs after import.** Under free-threaded Python
+# (`PYTHON_GIL=0` in production) a late `register()` call would race
+# concurrent `_encode` / `_decode` reads on a worker thread; a
+# dict-resize race can corrupt the hash table or raise
+# `RuntimeError: dictionary changed size during iteration`. The audit
+# at 2026-06-12 (issue #471) confirmed all 17 callsites are at
+# module top level; any new caller should land in that pattern too.
 _TYPES: dict[str, type] = {}
 _TAGS: dict[type, str] = {}
 
 
 def register(tag: str, cls: type) -> None:
-    """Make `cls` round-trip through cache encode/decode under `tag`."""
+    """Make `cls` round-trip through cache encode/decode under `tag`.
+
+    Call only at module import time. See the comment above `_TYPES` /
+    `_TAGS` for the thread-safety invariant.
+    """
     _TYPES[tag] = cls
     _TAGS[cls] = tag
 
@@ -216,6 +238,21 @@ def _should_dispatch_to_broker() -> bool:
 # checks it (in addition to `settings.mimir_is_broker`) to avoid a
 # self-RPC when broker + caller share a process (the in-process
 # test shape).
+#
+# Landmine to watch for (audit #486): thread-locals are scoped to the
+# thread that sets them. A handler that spawns helper threads (e.g. a
+# `ThreadPoolExecutor` inside a warm target) will see those threads
+# inherit no `_HANDLER_TLS.active = True` flag, so any `cache.set` from
+# inside the helper falls through to `_should_dispatch_to_broker() ->
+# True` and attempts a self-RPC back through the broker socket. With
+# the cache worker already busy dispatching the parent RPC, that
+# self-RPC sits on the queue forever -> deadlock.
+#
+# Today no handler spawns helper threads; this is a design landmine,
+# not a current bug. If that ever changes, either bracket the helper's
+# entry/exit with `_set_broker_handler_active(True)` / `(False)`, or
+# (preferred) factor the cache writes back into the dispatching
+# thread.
 _HANDLER_TLS = threading.local()
 
 
