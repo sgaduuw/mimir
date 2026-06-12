@@ -126,3 +126,99 @@ def test_read_session_pool_session_close_race(seeded_db):
     t_close.join(timeout=5)
 
     assert not errors, f"race produced bad state: {errors}"
+
+
+def test_read_session_pool_close_waits_for_in_flight_session(seeded_db):
+    """`close()` blocks while a session is checked out and only proceeds
+    to `engine.dispose()` once the in-flight count drops to zero.
+    Pre-fix `close()` would dispose mid-query, invalidating the live
+    session's connection. Audit #472."""
+    pool = ReadSessionPool.from_settings()
+
+    session_acquired = threading.Event()
+    release_session = threading.Event()
+    close_returned = threading.Event()
+    errors: list[str] = []
+
+    def hold_session():
+        try:
+            with pool.session() as s:
+                session_acquired.set()
+                # Hold the session past close()'s arrival.
+                if not release_session.wait(timeout=5.0):
+                    errors.append("release_session never set")
+                    return
+                # Session must still be usable after close() has been
+                # called and is blocked waiting.
+                row = s.execute(text("SELECT 1")).scalar_one()
+                if row != 1:
+                    errors.append(f"session unusable mid-close: row={row!r}")
+        except Exception as e:
+            errors.append(f"hold_session raised: {type(e).__name__}: {e}")
+
+    def trigger_close():
+        try:
+            pool.close(drain_timeout=5.0)
+        except Exception as e:
+            errors.append(f"close raised: {type(e).__name__}: {e}")
+        finally:
+            close_returned.set()
+
+    t_hold = threading.Thread(target=hold_session)
+    t_hold.start()
+    assert session_acquired.wait(timeout=5.0), "session never acquired"
+
+    t_close = threading.Thread(target=trigger_close)
+    t_close.start()
+
+    # Give close() a beat to enter wait_for; it should be blocked
+    # because the session is still in-flight.
+    time.sleep(0.25)
+    assert not close_returned.is_set(), (
+        "close() returned before the in-flight session was released; "
+        "the drain barrier is not waiting"
+    )
+
+    # Release the session — close() should now complete.
+    release_session.set()
+    t_hold.join(timeout=5.0)
+    t_close.join(timeout=10.0)
+
+    assert close_returned.is_set(), "close() did not return after session released"
+    assert not errors, errors
+
+
+def test_read_session_pool_close_drain_timeout_proceeds_anyway(seeded_db, caplog):
+    """If a session holds past `drain_timeout`, `close()` logs a WARNING
+    and proceeds to `engine.dispose()` rather than blocking shutdown
+    forever. Pre-fix behaviour: stuck handler hits OperationalError
+    on its next statement, same as before, but the broker shuts down."""
+    import logging
+
+    pool = ReadSessionPool.from_settings()
+    session_acquired = threading.Event()
+    release_session = threading.Event()
+    errors: list[str] = []
+
+    def hold_session():
+        try:
+            with pool.session() as _s:
+                session_acquired.set()
+                release_session.wait(timeout=10.0)
+        except Exception as e:
+            errors.append(f"hold_session raised: {type(e).__name__}: {e}")
+
+    t_hold = threading.Thread(target=hold_session)
+    t_hold.start()
+    assert session_acquired.wait(timeout=5.0)
+
+    with caplog.at_level(logging.WARNING, logger="mimir.broker.pools"):
+        pool.close(drain_timeout=0.3)
+    release_session.set()
+    t_hold.join(timeout=5.0)
+
+    assert any(
+        "still in-flight" in r.message and "disposing engine anyway" in r.message
+        for r in caplog.records
+    ), [r.message for r in caplog.records]
+    assert not errors, errors

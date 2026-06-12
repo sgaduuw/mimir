@@ -681,6 +681,153 @@ def test_extract_warm_priority_parses_zero_one_and_default(seeded_db):
     assert _extract_warm_priority(b'{"op":"warm_inbox","priority":"nope"}') == 1
 
 
+def test_signal_handler_is_idempotent(seeded_db, caplog):
+    """`_make_signal_handler` returns a closure that fires
+    `server.shutdown()` exactly once even when SIGTERM and SIGINT
+    arrive back-to-back. A naive shape would spawn a second
+    `server.shutdown()` thread that hangs on the framework's
+    one-shot Event (audit #484)."""
+    import logging
+    import signal as _signal
+    import threading
+
+    from mimir.broker.server import _make_signal_handler, build_server
+
+    sp = short_socket_path("signal-idem")
+    server = build_server(sp)
+    try:
+        shutdown_calls: list[int] = []
+        shutdown_started = threading.Event()
+
+        def _fake_shutdown():
+            shutdown_calls.append(1)
+            shutdown_started.set()
+
+        server.shutdown = _fake_shutdown  # type: ignore[assignment]
+
+        handler, state = _make_signal_handler(server)
+
+        with caplog.at_level(logging.INFO, logger="mimir.broker.server"):
+            handler(_signal.SIGTERM, None)
+            first_thread = state["thread"]
+            assert isinstance(first_thread, threading.Thread)
+            assert shutdown_started.wait(timeout=2.0), (
+                "first signal never fired shutdown"
+            )
+
+            handler(_signal.SIGINT, None)
+            assert state["thread"] is first_thread, (
+                "second signal spawned a new shutdown thread"
+            )
+
+        first_thread.join(timeout=2.0)
+        assert shutdown_calls == [1], (
+            f"expected exactly one shutdown call, got {len(shutdown_calls)}"
+        )
+        assert any(
+            "shutdown already in progress" in r.message for r in caplog.records
+        ), [r.message for r in caplog.records]
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()
+
+
+def test_purge_loop_submits_via_writer_thread(seeded_db, monkeypatch, caplog):
+    """`_purge_loop` routes the expired-row DELETE through
+    `cache.purge_expired_via_writer(writer)` so every write funnels
+    through the single-writer invariant (audit #475). Pre-fix it
+    called `cache._direct_purge_expired()` directly, racing intra-
+    broker writers under load.
+    """
+    import logging
+    import threading
+    from unittest.mock import MagicMock
+
+    from mimir import cache
+    from mimir.broker.server import _purge_loop
+
+    # `_purge_loop` exits via `while not stop_event.wait(...)`. We
+    # short-circuit: first wait() returns False (loop body fires),
+    # second returns True (loop exits).
+    stop_event = MagicMock(spec=threading.Event)
+    stop_event.wait = MagicMock(side_effect=[False, True])
+
+    seen_writer: list[object] = []
+
+    def _spy(writer):
+        seen_writer.append(writer)
+        future = MagicMock()
+        future.result.return_value = 7
+        return future
+
+    monkeypatch.setattr(cache, "purge_expired_via_writer", _spy)
+
+    fake_writer = object()
+    with caplog.at_level(logging.INFO, logger="mimir.broker.server"):
+        _purge_loop(stop_event, fake_writer)
+
+    assert seen_writer == [fake_writer], (
+        "purge_loop should pass the writer through to purge_expired_via_writer"
+    )
+    assert any(
+        "broker purge: 7 expired rows deleted" in r.message for r in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+def test_worker_loop_survives_handler_exception(seeded_db, monkeypatch, caplog):
+    """An exception escaping `dispatch()` must NOT kill the worker
+    thread. The outer try/except in `_worker_loop` catches it, logs
+    at exception level, and loops back to dequeue the next item
+    (audit #478). Before the fix, the worker thread silently exited
+    and that queue stopped draining.
+    """
+    import logging
+    import socket as _socket
+    import threading
+    import time as _time
+
+    from mimir.broker import server as server_module
+    from mimir.broker.server import ClientConnection
+
+    sp = short_socket_path("worker-survives")
+    raised = threading.Event()
+
+    def _raising_dispatch(_line):
+        raised.set()
+        raise RuntimeError("simulated handler explosion")
+
+    with broker_running(sp) as server:
+        cache_workers = list(server._cache_worker_threads)
+        assert cache_workers, "expected at least one cache worker"
+        worker = cache_workers[0]
+        assert worker.is_alive()
+
+        monkeypatch.setattr(server_module, "dispatch", _raising_dispatch)
+
+        # The worker's per-item path needs a real socket to reach via
+        # `conn.sock`. The reply never lands (dispatch raised before
+        # `sendall`), so `peer.recv` would time out — we don't read.
+        sock, peer = _socket.socketpair(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        try:
+            with caplog.at_level(logging.ERROR, logger="mimir.broker.server"):
+                conn = ClientConnection(sock=sock)
+                server.cache_queue.put(
+                    (b'{"rpc_id":1,"op":"ping"}', conn, _time.perf_counter())
+                )
+                assert raised.wait(timeout=2.0), "dispatch was never called"
+                # Give the outer try/except a beat to log and loop back.
+                _time.sleep(0.2)
+        finally:
+            sock.close()
+            peer.close()
+
+        assert worker.is_alive(), "worker thread died after handler exception"
+        assert any(
+            "worker caught unhandled exception" in r.message for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+
 def test_concurrent_worker_replies_are_not_torn():
     """Two workers sending replies on the same connection
     simultaneously: each reply lands as a complete, parseable JSON
