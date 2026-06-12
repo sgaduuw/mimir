@@ -532,9 +532,13 @@ Routes:
   state card above the body summarising trailers (with maintainer
   attestation chips), mainline-landing record, cross-revision
   series timeline (with `[diff vs current]` links), and thread
-  activity. When the thread root has an off-list parent, also
-  shows a "Possibly related" surface of other archived messages
-  with the same normalized subject (JWZ subject-based grouping).
+  activity. On patch threads whose root has an off-list parent,
+  also shows a "Possibly related" surface of other archived
+  messages with the same normalized subject (JWZ subject-based
+  grouping).
+  Non-patch threads also show a **Related discussions** panel: up
+  to 5 prior threads from the same inbox ranked by subject-token
+  overlap, shared participants, and recency.
   The year/month must match the article's archived date;
   mismatches return 404. ETag-based conditional revalidation:
   responses carry `Cache-Control: public, no-cache` and a strong

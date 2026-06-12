@@ -2374,3 +2374,153 @@ def test_bulk_msgid_linkify_select_uses_indexed_seek_no_full_scan(seeded_db):
         f"regression to a non-sargable WHERE clause (e.g. "
         f"function-on-column) would surface here. plan:\n{plan}"
     )
+
+
+class TestRelatedDiscussionsPanel:
+    def test_panel_renders_on_non_patch_thread(self, client, tmp_path):
+        """A non-patch thread with a related candidate surfaces the
+        "Related discussions" panel. The root is ingested with a real git
+        blob so the route's `read_message` call resolves; the prior article
+        is SQL-only (just DB rows) since the scorer only queries Article
+        columns, not the git blob."""
+        from sqlalchemy import select as sa_select
+
+        from mimir.extensions import SessionLocal
+        from mimir.models import Inbox
+        from tests.test_related import _seed_message
+
+        root_id, url = _ingest_one_article(
+            tmp_path,
+            "alpha",
+            "panel-root@x",
+            subject="bcachefs deadlock during journal replay",
+        )
+        # SQL-only "prior" article: appears as a candidate in the
+        # related-discussions scorer.
+        with SessionLocal() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            _seed_message(
+                s,
+                alpha,
+                "panel-prior@x",
+                "journal replay hangs on dirty mount",
+                "Carol",
+                60,
+            )
+            s.commit()
+        resp = client.get(url)
+        assert resp.status_code == 200
+        assert b"Related discussions" in resp.data
+
+    def test_panel_absent_on_patch_thread(self, client, tmp_path):
+        """A patch thread (any article in the thread has ArticleFile rows)
+        must not render the related-discussions panel; the route gate sets
+        `is_patch_thread=True` and `related_threads` stays empty."""
+        from sqlalchemy import select as sa_select
+
+        from mimir.extensions import SessionLocal
+        from mimir.models import ArticleFile, Inbox
+        from tests.test_related import _seed_message
+
+        root_id, url = _ingest_one_article(
+            tmp_path,
+            "alpha",
+            "patch-root@x",
+            subject="bcachefs deadlock during journal replay",
+        )
+        with SessionLocal() as s:
+            # Mark the root as a patch thread by adding an ArticleFile row.
+            s.add(ArticleFile(article_id=root_id, path="fs/bcachefs/super.c"))
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            _seed_message(
+                s,
+                alpha,
+                "patch-prior@x",
+                "journal replay hangs on dirty mount",
+                "Carol",
+                60,
+            )
+            s.commit()
+        resp = client.get(url)
+        assert resp.status_code == 200
+        assert b"Related discussions" not in resp.data
+
+    def test_helper_failure_does_not_500(self, client, tmp_path, monkeypatch):
+        """A RuntimeError raised inside `related_discussions` must be
+        swallowed (logged as ERROR) and the page must still return 200
+        without the panel."""
+
+        def _boom(*a, **kw):
+            raise RuntimeError("scoring bug")
+
+        import mimir.web.routes.message as message_route
+
+        monkeypatch.setattr(message_route, "related_discussions", _boom)
+        _, url = _ingest_one_article(
+            tmp_path,
+            "alpha",
+            "boom-root@x",
+            subject="some discussion",
+        )
+        resp = client.get(url)
+        assert resp.status_code == 200
+        assert b"Related discussions" not in resp.data
+
+    def test_old_possibly_related_yields_to_panel_on_non_patch(self, client, tmp_path):
+        """Pins the route's `is_patch_thread` narrowing of the old surface;
+        removing it would double-render both sections (#71 spec).
+
+        On a NON-patch thread whose root has an off-list parent and which
+        has a same-subject orphan:
+        - the OLD "Possibly related" section must NOT render (its condition
+          requires `is_patch_thread=True`, which is False here).
+        - the NEW "Related discussions" panel MUST render (the orphan serves
+          as a related-discussions candidate via the exact-subject branch).
+        """
+        from sqlalchemy import select as sa_select
+
+        from mimir.extensions import SessionLocal
+        from mimir.models import Inbox
+        from tests.test_related import _seed_message
+
+        # Root with an off-list parent: ingest with In-Reply-To pointing at
+        # a message-id that does not exist in the DB. The route checks
+        # `thread[0].thread_parent` and queries Article for that id; when
+        # it's absent, `parent_off_list` is set to that string.
+        root_id, url = _ingest_one_article(
+            tmp_path,
+            "alpha",
+            "narrowing-root@x",
+            subject="unique discussion topic alpha",
+            in_reply_to="not-in-archive@elsewhere",
+        )
+
+        # Same-subject orphan (no thread_parent): exact-subject match makes
+        # it a related-discussions candidate. SQL-only; scorer reads columns,
+        # not the git blob.
+        with SessionLocal() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            _seed_message(
+                s,
+                alpha,
+                "narrowing-orphan@x",
+                "unique discussion topic alpha",
+                "Bob",
+                30,
+            )
+            s.commit()
+
+        resp = client.get(url)
+        assert resp.status_code == 200
+        # Old "Possibly related" section must be absent: its condition
+        # includes `is_patch_thread` which is False for this non-patch thread.
+        assert b"Possibly related" not in resp.data
+        # New "Related discussions" panel must be present: the orphan is a
+        # related-discussions candidate (exact subject_normalized match).
+        assert b"Related discussions" in resp.data

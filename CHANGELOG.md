@@ -9,7 +9,17 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
-## [Unreleased]
+## [3.2.0] - 2026-06-12
+
+### Added
+
+- "Related discussions" panel on non-patch thread pages: up to 5
+  prior threads from the same inbox ranked by subject-token overlap,
+  shared participants, and recency. Zero new dependencies; candidates
+  bounded by `RELATED_DISCUSSIONS_WINDOW_DAYS` (default 365). Cold
+  computes log an instrumentation line (`related-discussions: ...`)
+  recording empty-rate and weak-match-rate inputs for #71's
+  escalation decision.
 
 ## [3.1.3] - 2026-06-12
 

@@ -160,3 +160,21 @@ def test_settings_ingest_batch_flush_seconds_env_override(monkeypatch):
 
     s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.ingest_batch_flush_seconds == 2.5
+
+
+def test_settings_has_related_discussions_window_days_default():
+    """Default 365 bounds the related-discussions candidate walk to one year
+    of the date index; a silently changed default would change both panel
+    recall and cold-compute cost (#71)."""
+    from mimir.config import Settings
+
+    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    assert s.related_discussions_window_days == 365
+
+
+def test_settings_related_discussions_window_days_env_override(monkeypatch):
+    monkeypatch.setenv("RELATED_DISCUSSIONS_WINDOW_DAYS", "90")
+    from mimir.config import Settings
+
+    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    assert s.related_discussions_window_days == 90
