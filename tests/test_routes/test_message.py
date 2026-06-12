@@ -2524,3 +2524,40 @@ class TestRelatedDiscussionsPanel:
         # New "Related discussions" panel must be present: the orphan is a
         # related-discussions candidate (exact subject_normalized match).
         assert b"Related discussions" in resp.data
+
+    def test_panel_suppressed_on_bot_authored_root(self, client, seeded_db, tmp_path):
+        """A bot-authored root (syzbot, kernel test robot, tip-bot)
+        shows no panel even when a token-related thread exists. The
+        non-patch population is dominated by bot reports that produce
+        low-value matches (#71 follow-up)."""
+        from sqlalchemy import select as sa_select
+
+        from mimir.models import Inbox
+        from tests.test_related import _seed_message
+
+        # The root needs a real git blob so the route's read_message
+        # call resolves; the candidate is SQL-only (scorer reads columns,
+        # not the blob).
+        _, url = _ingest_one_article(
+            tmp_path,
+            "alpha",
+            "botroot@x",
+            subject="general protection fault in stack_depot_save_flags",
+            author="syzbot <syzbot+dead@syzkaller.appspotmail.com>",
+        )
+        with seeded_db() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            _seed_message(
+                s,
+                alpha,
+                "botroot-prior@x",
+                "general protection fault in __schedule",
+                "Carol",
+                30,
+            )
+            s.commit()
+        resp = client.get(url)
+        assert resp.status_code == 200
+        assert b"Related discussions" not in resp.data

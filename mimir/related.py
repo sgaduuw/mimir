@@ -166,6 +166,24 @@ def _rare_tokens(subject: str | None, top: int = 3) -> list[str]:
     return sorted(tokens, key=lambda t: (-len(t), t))[:top]
 
 
+def is_bot_sender(author: str | None) -> bool:
+    """True when `author` matches a configured bot/automated sender.
+
+    Substring match (case-insensitive) against
+    `settings.related_discussions_bot_senders`. Used to drop bot
+    threads from related-discussions candidates and to suppress the
+    panel on bot-authored roots (#71): syzbot, the kernel test robot,
+    and tip-bot dominate the non-patch population and produce
+    low-value matches.
+    """
+    if not author:
+        return False
+    low = author.casefold()
+    return any(
+        tok.casefold() in low for tok in settings.related_discussions_bot_senders
+    )
+
+
 def _candidate_select(
     inbox_id: int,
     *,
@@ -265,20 +283,26 @@ def related_discussions(
         if root is None:
             return []
         tokens = _rare_tokens(root.subject_normalized)
+        # Bot/automated senders (syzbot, kernel test robot, tip-bot)
+        # dominate the non-patch population and produce low-value
+        # matches (#71). Drop them from the authors used for candidate
+        # generation and participant scoring so a bot co-author never
+        # drags in every thread it touched.
+        human_authors = {a for a in thread_authors if a and not is_bot_sender(a)}
         rows = _candidates(
             session,
             inbox,
             exclude_ids=thread_article_ids,
             subject_normalized=root.subject_normalized or "",
             tokens=tokens,
-            authors={a for a in thread_authors if a},
+            authors=human_authors,
             min_date=now - timedelta(days=settings.related_discussions_window_days),
         )
 
         # Collapse candidate messages onto their thread roots and
         # aggregate per-root evidence. find_thread_root is ~2-3 ms
         # per walk; CANDIDATE_CAP bounds the total.
-        authors_cf = {a.casefold().strip() for a in thread_authors if a}
+        authors_cf = {a.casefold().strip() for a in human_authors}
         token_set = set(tokens)
         evidence: dict[str, dict] = {}
         for r in rows:
@@ -307,14 +331,26 @@ def related_discussions(
                 ev["last"] = r.date
 
         # Fetch the root Article rows for surviving roots; drop the
-        # current thread if a candidate walked back into it.
+        # current thread if a candidate walked back into it, and drop
+        # threads whose root author is a bot (e.g. other syzbot
+        # reports) wholesale, regardless of which reply matched.
+        # Note: bot rows are filtered here at the root, not in the SQL
+        # `_candidates` query, so they still consume CANDIDATE_CAP. On
+        # an inbox where bot threads dominate a token's matches this
+        # can crowd out older human candidates; `bot_filtered` in the
+        # log line surfaces the volume so #71's review can judge it.
         root_arts = {}
+        bot_filtered = 0
         if evidence:
             for a in session.execute(
                 select(Article).where(Article.message_id.in_(list(evidence.keys())))
             ).scalars():
-                if a.id != root_id and a.id not in thread_article_ids:
-                    root_arts[a.message_id] = a
+                if a.id == root_id or a.id in thread_article_ids:
+                    continue
+                if is_bot_sender(a.author):
+                    bot_filtered += 1
+                    continue
+                root_arts[a.message_id] = a
 
         scored: list[tuple[float, RelatedThread]] = []
         for mid, art in root_arts.items():
@@ -354,13 +390,15 @@ def related_discussions(
         )
         logger.info(
             "related-discussions: inbox=%s root=%d candidates=%d "
-            "rendered=%d strong=%d weak=%d top=%.1f elapsed_ms=%d",
+            "rendered=%d strong=%d weak=%d bot_filtered=%d top=%.1f "
+            "elapsed_ms=%d",
             inbox.name,
             root_id,
             len(rows),
             len(result),
             strong,
             len(result) - strong,
+            bot_filtered,
             result[0].score if result else 0.0,
             int((time.perf_counter() - t0) * 1000),
         )
