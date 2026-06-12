@@ -21,6 +21,7 @@ pattern used by the long-op handlers.
 """
 
 import logging
+import threading
 import time
 
 from mimir.broker import _context
@@ -54,7 +55,17 @@ WARM_REFRESH_WITHIN_SEC = 450
 # restart (the operator who fixes the env will restart anyway, so the
 # warning fires once on the next misconfigured boot if it persists).
 # Tests reset this between cases via monkeypatch.
-_SITEMAP_GAP_LOGGED: bool = False
+# `threading.Event` rather than a bool because the GIL-era
+# read-check-write pattern (`if not flag: ...; flag = True`) is racy
+# under PYTHON_GIL=0 (3.14t production): 8 warm workers can all see
+# False, all log, all set True. Event.is_set() / .set() are documented
+# thread-safe via the internal `_cond`'s memory barrier; the paired
+# `_SITEMAP_GAP_LOG_LOCK` covers the check-decide-log-then-set sequence
+# atomically (double-checked locking) so the warning fires exactly once
+# per process. Tests reset both via monkeypatch (swap in a fresh
+# Event).
+_SITEMAP_GAP_LOGGED = threading.Event()
+_SITEMAP_GAP_LOG_LOCK = threading.Lock()
 
 
 def _maybe_warn_sitemap_targets_dropped(req_targets) -> None:
@@ -75,8 +86,8 @@ def _maybe_warn_sitemap_targets_dropped(req_targets) -> None:
     - Already logged once → silent (the misconfig persists for the
       lifetime of this process; one log line per boot is enough).
     """
-    global _SITEMAP_GAP_LOGGED
-    if _SITEMAP_GAP_LOGGED:
+    # Fast path: lock-free read with Event's memory-barrier semantics.
+    if _SITEMAP_GAP_LOGGED.is_set():
         return
     if req_targets is None:
         return
@@ -84,15 +95,21 @@ def _maybe_warn_sitemap_targets_dropped(req_targets) -> None:
         return
     if (settings.site_base_url or "").strip():
         return
-    logger.warning(
-        "broker warm handler: sitemap labels requested in this RPC "
-        "(targets=[%s]) but SITE_BASE_URL is unset on the broker; "
-        "sitemap rows will not be refreshed. Set SITE_BASE_URL in the "
-        "broker container's environment. Suppressing further warnings "
-        "for the lifetime of this process.",
-        ", ".join(t for t in req_targets if t.startswith("sitemap:")),
-    )
-    _SITEMAP_GAP_LOGGED = True
+    # Slow path: claim the "first warner" slot under the lock. The
+    # double-check inside the lock makes the warning fire exactly once
+    # even when 8 warm workers all reach this branch concurrently.
+    with _SITEMAP_GAP_LOG_LOCK:
+        if _SITEMAP_GAP_LOGGED.is_set():
+            return
+        logger.warning(
+            "broker warm handler: sitemap labels requested in this RPC "
+            "(targets=[%s]) but SITE_BASE_URL is unset on the broker; "
+            "sitemap rows will not be refreshed. Set SITE_BASE_URL in the "
+            "broker container's environment. Suppressing further warnings "
+            "for the lifetime of this process.",
+            ", ".join(t for t in req_targets if t.startswith("sitemap:")),
+        )
+        _SITEMAP_GAP_LOGGED.set()
 
 
 def _run_targets(

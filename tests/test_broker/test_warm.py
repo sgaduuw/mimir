@@ -20,6 +20,7 @@ Covers:
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -640,7 +641,7 @@ def test_warm_global_logs_sitemap_gap_warning_when_site_base_unset(
     from mimir.config import settings as _settings
 
     monkeypatch.setattr(_settings, "site_base_url", "")
-    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", False)
+    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", threading.Event())
     caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
 
     reply = warm_module.handle_warm_global(
@@ -675,7 +676,7 @@ def test_warm_global_sitemap_gap_warning_fires_once_per_process(
     from mimir.config import settings as _settings
 
     monkeypatch.setattr(_settings, "site_base_url", "")
-    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", False)
+    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", threading.Event())
     caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
 
     # First call: WARNING fires.
@@ -706,7 +707,7 @@ def test_warm_global_no_gap_warning_when_site_base_set(seeded_db, caplog, monkey
     from mimir.config import settings as _settings
 
     monkeypatch.setattr(_settings, "site_base_url", "https://example.com")
-    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", False)
+    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", threading.Event())
     caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
 
     warm_module.handle_warm_global(
@@ -730,7 +731,7 @@ def test_warm_global_no_gap_warning_when_targets_none(seeded_db, caplog, monkeyp
     from mimir.config import settings as _settings
 
     monkeypatch.setattr(_settings, "site_base_url", "")
-    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", False)
+    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", threading.Event())
     caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
 
     warm_module.handle_warm_global(
@@ -755,7 +756,7 @@ def test_warm_inbox_logs_sitemap_gap_warning_when_site_base_unset(
     from mimir.config import settings as _settings
 
     monkeypatch.setattr(_settings, "site_base_url", "")
-    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", False)
+    monkeypatch.setattr(warm_module, "_SITEMAP_GAP_LOGGED", threading.Event())
     caplog.set_level(_logging.WARNING, logger="mimir.broker.handlers.warm")
 
     reply = warm_module.handle_warm_inbox(
