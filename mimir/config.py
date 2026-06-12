@@ -632,6 +632,7 @@ class Settings(BaseSettings):
     # index so nothing scans the full corpus; deploy-varying because
     # corpus sizes differ. See #71 and
     # _claude/specs/2026-06-12-related-discussions-design.md.
+    # Override via RELATED_DISCUSSIONS_WINDOW_DAYS.
     related_discussions_window_days: int = 365
 
 
