@@ -10,6 +10,7 @@ chrome.
 """
 
 import hashlib
+import logging
 
 from flask import Response, abort, make_response, render_template, request
 from sqlalchemy import select
@@ -26,6 +27,7 @@ from mimir.models import (
 )
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.patch_state import patch_state_for_article
+from mimir.related import related_discussions
 from mimir.rendering import URL_OR_MSGID_RE
 from mimir.rendering.linkify import _extract_lore_msgid
 from mimir.seo import _json_ld_message
@@ -42,6 +44,8 @@ from mimir.web.urls import (
     _msg_url,
     _site_base,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Threshold above which the message-page layout switches from
@@ -167,9 +171,41 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 }
                 parent_off_list_hints = [a for a in candidates if a not in known][:3]
 
+        # Non-patch gate for the related-discussions panel (#71):
+        # a thread counts as a patch thread when ANY of its articles
+        # touches files. Rides the (article_id, path) PK.
+        thread_ids = {n.id for n in thread}
+        is_patch_thread = (
+            session.execute(
+                select(ArticleFile.article_id)
+                .where(ArticleFile.article_id.in_(list(thread_ids)))
+                .limit(1)
+            ).first()
+            is not None
+        )
+
+        related_threads: list = []
+        if not is_patch_thread and thread:
+            # Best-effort: a panel bug must never 500 a message view.
+            # ERROR (not warning) so a broken scorer stays loud.
+            try:
+                related_threads = related_discussions(
+                    session,
+                    inbox,
+                    root_id=thread[0].id,
+                    thread_article_ids=thread_ids,
+                    thread_authors={n.author for n in thread if n.author},
+                )
+            except Exception:
+                logger.exception(
+                    "related-discussions failed for %s/%s",
+                    inbox.name,
+                    article.id,
+                )
+
         # Same-subject orphans within this inbox.
         related: list[Article] = []
-        if parent_off_list and article.subject_normalized:
+        if parent_off_list and article.subject_normalized and is_patch_thread:
             in_thread = {n.message_id for n in thread}
             related = list(
                 session.execute(
@@ -397,6 +433,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             parent_off_list=parent_off_list,
             parent_off_list_hints=parent_off_list_hints,
             related=related,
+            related_threads=related_threads,
             cross_post_inboxes=cross_post_inboxes,
             canonical_url=canonical_url,
             page_json_ld=page_json_ld,

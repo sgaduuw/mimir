@@ -627,5 +627,13 @@ class Settings(BaseSettings):
     # RECENT_PATCHES_MAX_AGE_DAYS.
     recent_patches_max_age_days: int = 180
 
+    # Candidate window (days) for the related-discussions panel on
+    # non-patch threads. Bounds every candidate query on the date
+    # index so nothing scans the full corpus; deploy-varying because
+    # corpus sizes differ. See #71 and
+    # _claude/specs/2026-06-12-related-discussions-design.md.
+    # Override via RELATED_DISCUSSIONS_WINDOW_DAYS.
+    related_discussions_window_days: int = 365
+
 
 settings = Settings()
