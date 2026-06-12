@@ -120,3 +120,27 @@ def test_snapshotter_logs_top_25_summary(tmp_path, caplog):
         assert format_hits, "expected at least one 'MiB ... file:lineno' line"
     finally:
         tracemalloc.stop()
+
+
+def test_snapshotter_stops_when_stop_event_set(tmp_path):
+    """Setting `stop_event` makes the snapshotter exit its loop and
+    return; serve()'s finally block can then join the thread cleanly
+    (audit #477)."""
+    diag = tmp_path / "diag"
+    stop_event = threading.Event()
+    thread = _maybe_start_tracemalloc_snapshotter(
+        interval=30,  # long enough that wait() blocks until set
+        stop_event=stop_event,
+        diagnostics_dir=diag,
+        frames=10,
+    )
+    assert thread is not None
+    # First snapshot fires immediately on entry; wait briefly so the
+    # loop is parked on stop_event.wait(interval).
+    time.sleep(0.5)
+    assert thread.is_alive()
+    stop_event.set()
+    thread.join(timeout=5.0)
+    assert not thread.is_alive(), "snapshotter did not exit after stop_event.set()"
+    # _loop's stop path calls tracemalloc.stop(); a second call here
+    # would error if it were still running. No try/finally needed.
