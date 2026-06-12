@@ -160,3 +160,13 @@ def test_settings_ingest_batch_flush_seconds_env_override(monkeypatch):
 
     s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.ingest_batch_flush_seconds == 2.5
+
+
+def test_related_discussions_window_days_default_and_env(monkeypatch):
+    """New tunable for the related-discussions candidate window.
+    Default 365; env-overridable per the 12-factor convention."""
+    from mimir.config import Settings
+
+    assert Settings(SECRET_KEY="test-secret-key-not-real-12345678").related_discussions_window_days == 365
+    monkeypatch.setenv("RELATED_DISCUSSIONS_WINDOW_DAYS", "90")
+    assert Settings(SECRET_KEY="test-secret-key-not-real-12345678").related_discussions_window_days == 90
