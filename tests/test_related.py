@@ -1,10 +1,8 @@
 """Tests for mimir/related.py: related-discussions retrieval and
 scoring for non-patch threads (#71).
-
-Note: datetime/timedelta/timezone and pytest imports are added back
-by later tasks (scoring, recency decay, parametrize). Removed here
-to satisfy ruff F401; later tasks re-add what they need.
 """
+
+from datetime import datetime, timezone
 
 
 class TestRareTokens:
@@ -39,3 +37,27 @@ class TestRareTokens:
         # key inputs are stable across runs.
         out = _rare_tokens("zzzz aaaa cccc bbbb")
         assert out == ["aaaa", "bbbb", "cccc"]
+
+
+class TestRelatedThreadCacheRoundTrip:
+    def test_encode_decode_preserves_fields(self):
+        """RelatedThread must survive the cache JSON round-trip
+        (cache.register convention; cache knows nothing about its
+        callers, each module registers its own dataclasses)."""
+        from mimir import cache
+        from mimir.related import RelatedThread
+
+        original = RelatedThread(
+            article_id=42,
+            inbox_name="alpha",
+            year=2026,
+            month=6,
+            subject="bcachefs journal deadlock",
+            last_activity=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            score=8.25,
+            signals=("token", "participant"),
+        )
+        import json
+
+        decoded = cache._decode(json.loads(json.dumps(cache._encode([original]))))
+        assert decoded == [original]
