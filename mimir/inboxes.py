@@ -33,6 +33,7 @@ reasoning.
 import logging
 import re
 import shutil
+import threading
 from pathlib import Path
 
 from sqlalchemy import delete, exists, func, select
@@ -52,9 +53,15 @@ logger = logging.getLogger(__name__)
 # hyphens, doesn't start or end with a hyphen. ≤64 chars.
 _NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
-# Replaced atomically via list slice-assignment; readers see either
-# the old list or the new one, never a partial state.
+# Guarded by `_INBOX_NAMES_LOCK` against torn reads. Under the GIL the
+# slice-assignment was approximately atomic and readers/writers were
+# safe without a lock; under PYTHON_GIL=0 (3.14t in production) the
+# underlying list resize + copy loop runs without the GIL and a reader
+# can observe partial state. Writers acquire the lock around
+# `_INBOX_NAMES[:] = names`; readers acquire the lock around
+# `list(_INBOX_NAMES)`.
 _INBOX_NAMES: list[str] = []
+_INBOX_NAMES_LOCK = threading.Lock()
 
 
 class InboxValidationError(ValueError):
@@ -159,19 +166,22 @@ def _publish_names(session: Session) -> None:
     """Refresh the nav-name cache from the open session. Use after
     any CRUD op so the running web process sees the change."""
     names = sorted(n for (n,) in session.execute(select(Inbox.name)))
-    _INBOX_NAMES[:] = names
+    with _INBOX_NAMES_LOCK:
+        _INBOX_NAMES[:] = names
 
 
 def refresh_inbox_names() -> list[str]:
     """Repopulate the cached nav list from the DB. Returns the new list."""
     with SessionLocal() as session:
         _publish_names(session)
-    return list(_INBOX_NAMES)
+    with _INBOX_NAMES_LOCK:
+        return list(_INBOX_NAMES)
 
 
 def inbox_names() -> list[str]:
     """The current set of inbox slugs, for nav rendering. Cheap, no DB hit."""
-    return list(_INBOX_NAMES)
+    with _INBOX_NAMES_LOCK:
+        return list(_INBOX_NAMES)
 
 
 def bootstrap_inboxes() -> dict[str, Inbox]:
@@ -309,10 +319,7 @@ def update_inbox(
 
         from mimir.broker.writes import WriteOp
 
-        # Track rename state so cache bust can fire after result() returns.
-        _rename_info: dict = {}
-
-        def _fn(conn):
+        def _fn(conn) -> tuple[Inbox, str | None]:
             row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
             if row is None:
                 raise InboxNotFound(f"no inbox named {name!r}")
@@ -320,6 +327,7 @@ def update_inbox(
             old_name_val = row.name
             effective_name = old_name_val
             values: dict = {}
+            renamed_from: str | None = None
 
             if new_name is not None and new_name != old_name_val:
                 collision = conn.execute(
@@ -329,9 +337,12 @@ def update_inbox(
                     raise InboxValidationError(f"inbox {new_name!r} already exists")
                 values["name"] = new_name
                 effective_name = new_name
-                # Signal the outer scope about the rename so the cache
-                # bust can fire after result() returns (Decision 10).
-                _rename_info["old"] = old_name_val
+                # Returning `renamed_from` to the caller via the WriteFuture
+                # rather than a side-channel captured dict: the future's
+                # internal Condition gives a well-defined memory-ordering
+                # boundary, so the writer thread's write is reliably
+                # visible to the caller thread after `.result()`.
+                renamed_from = old_name_val
 
             if mirror_path is not None:
                 values["mirror_path"] = mirror_path
@@ -345,18 +356,18 @@ def update_inbox(
             updated = conn.execute(
                 select(Inbox).where(Inbox.name == effective_name)
             ).one()
-            return Inbox(**dict(updated._mapping))
+            return Inbox(**dict(updated._mapping)), renamed_from
 
-        result = writer.submit(WriteOp(label=f"inbox:update:{name}", fn=_fn)).result(
-            timeout=30
-        )
+        result, renamed_from = writer.submit(
+            WriteOp(label=f"inbox:update:{name}", fn=_fn)
+        ).result(timeout=30)
         refresh_inbox_names()
         # Drop cached entries that referenced the old name. Cache values
         # don't depend on mirror_path / upstream_url, so non-rename
         # updates don't need invalidation. This stays OUTSIDE the closure
         # because cache.delete_for_inbox is not a DB op (Decision 10).
-        if "old" in _rename_info:
-            cache.delete_for_inbox(_rename_info["old"])
+        if renamed_from is not None:
+            cache.delete_for_inbox(renamed_from)
         return result
 
     # Legacy fallback path.
@@ -442,18 +453,13 @@ def delete_inbox(
     if writer is not None:
         from mimir.broker.writes import WriteOp
 
-        # Capture mirror_path_str from the closure result so the
-        # rmtree (outside the closure) can use it.
-        _mirror_path: dict = {}
-
-        def _fn(conn):
+        def _fn(conn) -> tuple[int, int, int, str]:
             row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
             if row is None:
                 raise InboxNotFound(f"no inbox named {name!r}")
 
             inbox_id = row.id
             mirror_path_val = row.mirror_path
-            _mirror_path["path"] = mirror_path_val
 
             article_lists_count = (
                 conn.execute(
@@ -483,10 +489,19 @@ def delete_inbox(
                 )
                 orphan_articles_count = conn.execute(orphan_stmt).rowcount or 0
 
-            # Return the counts so the caller can populate the report.
-            return (article_lists_count, ingest_state_count, orphan_articles_count)
+            # Return the counts AND the mirror_path so the caller can
+            # populate the report and (optionally) rmtree the on-disk
+            # mirror. Returning rather than side-channelling through a
+            # captured dict because the WriteFuture's internal Condition
+            # gives a well-defined memory-ordering boundary.
+            return (
+                article_lists_count,
+                ingest_state_count,
+                orphan_articles_count,
+                mirror_path_val,
+            )
 
-        al_count, is_count, orphan_count = writer.submit(
+        al_count, is_count, orphan_count, mirror_path_str = writer.submit(
             WriteOp(label=f"inbox:delete:{name}", fn=_fn)
         ).result(timeout=30)
         report.article_lists_deleted = al_count
@@ -498,7 +513,6 @@ def delete_inbox(
         cache.delete_for_inbox(name)
 
         if remove_inbox_data:
-            mirror_path_str = _mirror_path["path"]
             path = Path(mirror_path_str)
             target = path
             if path.name == "git" and path.parent.name == name:
