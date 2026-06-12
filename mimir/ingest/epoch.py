@@ -119,28 +119,37 @@ def _walk_epoch(
     repo_path: Path,
     since_sha: str | None,
 ) -> Iterator[tuple[str, datetime, bytes]]:
-    """Yield (commit_sha, commit_time_utc, raw_message_bytes) per epoch commit."""
-    repo = Repo(str(repo_path))
-    head = repo.head()
-    exclude: list[bytes] = []
-    if since_sha:
-        try:
-            repo[since_sha.encode()]
-            exclude = [since_sha.encode()]
-        except KeyError:
-            exclude = []
+    """Yield (commit_sha, commit_time_utc, raw_message_bytes) per epoch commit.
 
-    walker = repo.get_walker(include=[head], exclude=exclude, reverse=True)
-    for entry in walker:
-        commit = entry.commit
-        tree = repo[commit.tree]
-        try:
-            _mode, blob_sha = tree[b"m"]
-        except KeyError:
-            continue
-        blob = repo[blob_sha]
-        commit_time = datetime.fromtimestamp(commit.commit_time, timezone.utc)
-        yield commit.id.decode(), commit_time, blob.data
+    Repo is context-managed so its pack-file mmaps release when the
+    generator exhausts OR when the consumer abandons it (Python calls
+    `generator.close()` which raises `GeneratorExit` into the
+    suspended frame; the `with` block's `__exit__` runs then). Without
+    `with` the Repo would survive until GC, holding mmaps in VmData
+    across concurrent multi-inbox ingests. Same shape as the v3.1.2
+    `mainline.py` fix.
+    """
+    with Repo(str(repo_path)) as repo:
+        head = repo.head()
+        exclude: list[bytes] = []
+        if since_sha:
+            try:
+                repo[since_sha.encode()]
+                exclude = [since_sha.encode()]
+            except KeyError:
+                exclude = []
+
+        walker = repo.get_walker(include=[head], exclude=exclude, reverse=True)
+        for entry in walker:
+            commit = entry.commit
+            tree = repo[commit.tree]
+            try:
+                _mode, blob_sha = tree[b"m"]
+            except KeyError:
+                continue
+            blob = repo[blob_sha]
+            commit_time = datetime.fromtimestamp(commit.commit_time, timezone.utc)
+            yield commit.id.decode(), commit_time, blob.data
 
 
 def _parse_pair(
