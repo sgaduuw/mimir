@@ -343,6 +343,10 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     continue
                 try:
                     chunk = sock.recv(4096)
+                # PEP 758 (Python 3.14): the bare-comma form is the
+                # canonical tuple-of-exceptions syntax; `ruff format`
+                # rewrites parenthesised forms to this shape. NOT a
+                # Python 2 holdover (audit #482, closed as not-a-bug).
                 except OSError, ConnectionError:
                     return
                 if not chunk:
@@ -503,6 +507,8 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     try:
                         with conn.send_lock:
                             conn.sock.sendall(payload)
+                    # PEP 758 canonical tuple-of-exceptions form, see
+                    # `_reader_loop` above. Audit #482, not a bug.
                     except OSError, ConnectionError:
                         # Client closed mid-flight or socket reset.
                         # Drop the reply silently; the client treats
@@ -854,6 +860,52 @@ def build_server(socket_path: Path) -> _BrokerServer:
     return server
 
 
+def _make_signal_handler(server: "_BrokerServer"):
+    """Build the SIGTERM/SIGINT handler used by `serve()`. Returns
+    `(handler, state)` so callers (and tests) can inspect the handler's
+    state without touching module-level globals.
+
+    The handler is idempotent: a second signal arriving after the first
+    has fired logs and returns rather than spawning a second
+    `server.shutdown()` thread. `socketserver.BaseServer.shutdown()` is
+    not documented as safe to call concurrently; a second call hangs on
+    the internal one-shot Event, which would dangle the shutdown thread
+    even though the broker process itself shuts down via the daemon
+    flag (audit #484).
+
+    `state["thread"]` carries the spawned shutdown thread so `serve()`'s
+    finally can join it instead of relying on daemon-thread reclamation.
+    """
+    lock = threading.Lock()
+    state: dict[str, object] = {"started": False, "thread": None}
+
+    def _on_signal(signum, _frame):
+        signame = signal.Signals(signum).name
+        with lock:
+            if state["started"]:
+                logger.info(
+                    "broker: %s received, shutdown already in progress; ignoring",
+                    signame,
+                )
+                return
+            state["started"] = True
+            logger.info("broker: %s received, shutting down", signame)
+            server.stop_event.set()
+            # `shutdown()` blocks until `serve_forever` returns. Spawn
+            # it on a fresh thread so the signal handler returns
+            # promptly; the parent `serve()` joins this thread in its
+            # finally.
+            t = threading.Thread(
+                target=server.shutdown,
+                daemon=True,
+                name="broker-shutdown",
+            )
+            state["thread"] = t
+            t.start()
+
+    return _on_signal, state
+
+
 def serve(socket_path: Path) -> None:
     """Start the broker daemon. Blocks until SIGTERM/SIGINT.
 
@@ -878,15 +930,9 @@ def serve(socket_path: Path) -> None:
     )
     purge_thread.start()
 
-    def _on_signal(signum, frame):
-        logger.info("broker: %s received, shutting down", signal.Signals(signum).name)
-        server.stop_event.set()
-        # `shutdown()` blocks until `serve_forever` returns. Call
-        # from a fresh thread so signal handler returns promptly.
-        threading.Thread(target=server.shutdown, daemon=True).start()
-
-    signal.signal(signal.SIGTERM, _on_signal)
-    signal.signal(signal.SIGINT, _on_signal)
+    signal_handler, shutdown_state = _make_signal_handler(server)
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
     tracemalloc_thread = _maybe_start_tracemalloc_snapshotter(
         settings.tracemalloc_interval_seconds,
         stop_event=server.stop_event,
@@ -914,6 +960,14 @@ def serve(socket_path: Path) -> None:
         purge_thread.join(timeout=5.0)
         if tracemalloc_thread is not None:
             tracemalloc_thread.join(timeout=5.0)
+        # Join the signal-spawned shutdown thread so a fast SIGTERM
+        # right before process exit doesn't leave it dangling (audit
+        # #484). The thread is already done by the time we get here
+        # (its `server.shutdown()` returned the moment `serve_forever`
+        # exited above), so the join is effectively instant.
+        shutdown_thread = shutdown_state.get("thread")
+        if shutdown_thread is not None:
+            shutdown_thread.join(timeout=5.0)
         server.writer.stop(timeout=10.0)
         _context.clear_active()
         server.read_pool.close()
