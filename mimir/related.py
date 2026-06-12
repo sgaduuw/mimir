@@ -106,6 +106,40 @@ class RelatedThread:
 cache.register("related_thread", RelatedThread)
 
 
+def _score_and_classify(
+    *,
+    exact_subject: bool,
+    matched_tokens: set[str],
+    shared_authors: set[str],
+    last_activity: datetime | None,
+    now: datetime,
+) -> tuple[float, float, tuple[str, ...]]:
+    """Score one candidate root and label its matched signals.
+
+    Returns (base, decayed, signals). The THRESHOLD cut applies to
+    `base` (signal quality), while ordering uses `decayed` (recency
+    as tie-break across the window): a strong old match should still
+    render, just below an equally strong fresh one. Spec records the
+    threshold as 2.0 on the signal score.
+    """
+    base = 0.0
+    signals: list[str] = []
+    if exact_subject:
+        base += SCORE_EXACT_SUBJECT
+        signals.append("subject")
+    if matched_tokens:
+        base += SCORE_PER_TOKEN * len(matched_tokens)
+        signals.append("token")
+    if shared_authors:
+        base += SCORE_PER_PARTICIPANT * min(len(shared_authors), PARTICIPANT_CAP)
+        signals.append("participant")
+    decayed = base
+    if last_activity is not None:
+        age_days = max((now - last_activity).total_seconds() / 86400.0, 0.0)
+        decayed = base * (0.5 ** (age_days / DECAY_HALF_LIFE_DAYS))
+    return base, decayed, tuple(signals)
+
+
 def _rare_tokens(subject: str | None, top: int = 3) -> list[str]:
     """Distinctive tokens of a subject line, longest first.
 

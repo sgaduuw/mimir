@@ -2,7 +2,8 @@
 scoring for non-patch threads (#71).
 """
 
-from datetime import datetime, timezone
+import pytest
+from datetime import datetime, timedelta, timezone
 
 
 class TestRareTokens:
@@ -61,3 +62,58 @@ class TestRelatedThreadCacheRoundTrip:
 
         decoded = cache._decode(json.loads(json.dumps(cache._encode([original]))))
         assert decoded == [original]
+
+
+class TestScoreAndClassify:
+    NOW = datetime(2026, 6, 12, 12, 0, tzinfo=timezone.utc)
+
+    def _call(self, **kw):
+        from mimir.related import _score_and_classify
+
+        defaults = dict(
+            exact_subject=False,
+            matched_tokens=set(),
+            shared_authors=set(),
+            last_activity=self.NOW,
+            now=self.NOW,
+        )
+        defaults.update(kw)
+        return _score_and_classify(**defaults)
+
+    def test_exact_subject_scores_and_labels(self):
+        base, decayed, signals = self._call(exact_subject=True)
+        assert base == 6.0
+        assert decayed == 6.0  # zero age, no decay
+        assert signals == ("subject",)
+
+    def test_tokens_and_participants_accumulate(self):
+        base, decayed, signals = self._call(
+            matched_tokens={"bcachefs", "journal"},
+            shared_authors={"a", "b"},
+        )
+        assert base == 3.0 * 2 + 2.0 * 2
+        assert signals == ("token", "participant")
+
+    def test_participant_overlap_capped_at_three(self):
+        base, _, _ = self._call(shared_authors={"a", "b", "c", "d", "e"})
+        assert base == 2.0 * 3
+
+    def test_decay_halves_at_half_life(self):
+        from mimir.related import DECAY_HALF_LIFE_DAYS
+
+        base, decayed, _ = self._call(
+            exact_subject=True,
+            last_activity=self.NOW - timedelta(days=DECAY_HALF_LIFE_DAYS),
+        )
+        assert base == 6.0
+        assert decayed == pytest.approx(3.0)
+
+    def test_none_last_activity_skips_decay(self):
+        base, decayed, _ = self._call(exact_subject=True, last_activity=None)
+        assert decayed == base == 6.0
+
+    def test_strong_vs_weak_signal_sets(self):
+        _, _, strong = self._call(matched_tokens={"lockdep"})
+        _, _, weak = self._call(shared_authors={"a"})
+        assert "token" in strong
+        assert weak == ("participant",)
