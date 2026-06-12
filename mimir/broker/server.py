@@ -40,8 +40,11 @@ Why this shape (rather than `ThreadingMixIn` per-connection):
    to coalesce N cache.sets into one transaction when the
    throughput needs it. Phase 1.5+ work.
 
-The periodic-purge thread is unchanged: calls
-`cache._direct_purge_expired` on `PURGE_INTERVAL_SEC` cadence.
+The periodic-purge thread submits the expired-row DELETE through the
+broker's WriterThread on `PURGE_INTERVAL_SEC` cadence so every write
+funnels through the single-writer invariant. The legacy direct-write
+path through `cache._direct_purge_expired` would race intra-broker
+writers and silently skip ticks on `SQLITE_BUSY_SNAPSHOT`.
 
 Signal handlers (`SIGTERM`, `SIGINT`) set `stop_event`; reader
 threads notice via their selector poll, the worker notices via
@@ -757,13 +760,18 @@ def _post_migrate_analyze_if_needed(socket_path: Path) -> None:
     )
 
 
-def _purge_loop(stop_event: threading.Event) -> None:
-    """Periodic purge of expired cache rows. Owned by the broker so
-    no other writer competes for the same table. Backs off via
-    `stop_event.wait` so shutdown is responsive."""
+def _purge_loop(stop_event: threading.Event, writer: WriterThread) -> None:
+    """Periodic purge of expired cache rows. Submitted as a WriteOp via
+    the broker's `WriterThread` so every write funnels through the
+    single-writer invariant; concurrent handler writes can no longer
+    push this thread's DEFERRED `BEGIN` into a `SQLITE_BUSY_SNAPSHOT`
+    that silently skips a purge tick (audit #475).
+
+    Backs off via `stop_event.wait` so shutdown is responsive."""
     while not stop_event.wait(PURGE_INTERVAL_SEC):
         try:
-            n = cache._direct_purge_expired()
+            future = cache.purge_expired_via_writer(writer)
+            n = future.result(timeout=30)
             if n:
                 logger.info("broker purge: %d expired rows deleted", n)
         except Exception:
@@ -864,7 +872,7 @@ def serve(socket_path: Path) -> None:
 
     purge_thread = threading.Thread(
         target=_purge_loop,
-        args=(server.stop_event,),
+        args=(server.stop_event, server.writer),
         daemon=True,
         name="broker-purge",
     )
