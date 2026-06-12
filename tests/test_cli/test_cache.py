@@ -55,6 +55,26 @@ def _active_broker_context():
             _context.clear_active()
 
 
+def _drain_writer(timeout: float = 10.0) -> None:
+    """FIFO barrier against the active WriterThread.
+
+    Warm handlers submit their cache writes fire-and-forget
+    (`set_via_writer` drops the WriteFuture, matching cache.set's
+    best-effort posture), so a warm-cache CLI exit means "writes
+    submitted", not "writes committed". The writer queue is FIFO:
+    awaiting a sentinel op guarantees every write submitted before
+    it has committed. Call between the CliRunner invocation and any
+    assertion that reads cache rows, or the assertion races the
+    writer thread (the #465 flake: on a loaded CI runner the last-
+    submitted key was still queued when the test's SELECT ran)."""
+    from mimir.broker.writes import WriteOp
+
+    writer = _context.get_active_writer()
+    writer.submit(WriteOp(label="test:drain", fn=lambda conn: None)).result(
+        timeout=timeout
+    )
+
+
 def test_warm_cache_parallel_propagates_refresh_window(
     seeded_db, _active_broker_context
 ):
@@ -81,6 +101,7 @@ def test_warm_cache_parallel_propagates_refresh_window(
 
     result = CliRunner().invoke(warm_cache_command, ["--workers", "4"])
     assert result.exit_code == 0
+    _drain_writer()
 
     with SessionLocal() as s:
         row = s.execute(
@@ -167,14 +188,13 @@ def test_warm_cache_subsystem_dashboards_populate_cache(
         s.commit()
         sub_id = sub.id
 
-    # `--workers 1` forces the serial path. The default
-    # `min(cpu_count, 8)` workers calls `cache.set()` concurrently
-    # from worker threads against the same SQLite file; on CI runners
-    # with many cores, the main thread's `cache.get()` below can race
-    # the worker's commit-and-checkpoint visibility cycle even though
-    # the `as_completed` join returned. The serial path is functionally
-    # equivalent for this assertion (we're checking row presence, not
-    # parallelism) and removes the flake.
+    # `--workers 1` keeps the CLI-side RPC dispatch serial so the
+    # broker processes one warm job at a time (deterministic write
+    # submission order). It does NOT close the visibility race the
+    # earlier version of this comment claimed it did: warm handlers
+    # submit cache writes fire-and-forget to the WriterThread, so
+    # CLI exit means "submitted", not "committed". `_drain_writer()`
+    # below is what makes the assertions safe (#465).
     #
     # `--tier slow` because that's the only tier that now dispatches
     # per-(inbox, subsystem) warm_subsystem RPCs (Option A,
@@ -184,6 +204,7 @@ def test_warm_cache_subsystem_dashboards_populate_cache(
         warm_cache_command, ["--workers", "1", "--tier", "slow"]
     )
     assert result.exit_code == 0
+    _drain_writer()
 
     # All four per-subsystem dashboard helpers must have cached a row
     # for this subsystem.
@@ -284,8 +305,11 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
         )
         s.commit()
 
-    # `--workers 1` for the same reason the sibling test uses it (avoid
-    # the parallel-commit-visibility race against the assertion below).
+    # `--workers 1` for serial RPC dispatch, same as the sibling test.
+    # The visibility race (#465: this key was missing on a loaded CI
+    # runner because the WriterThread hadn't committed it yet — it's
+    # the LAST write the alpha warm chain submits) is closed by
+    # `_drain_writer()` below, not by the worker count.
     # `--tier slow` because per-(inbox, subsystem) warm_subsystem RPCs
     # (which surface the reviewers list and warm articles_reviewed_by)
     # only dispatch on the slow tier per Option A (2026-06-01).
@@ -293,6 +317,7 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
         warm_cache_command, ["--workers", "1", "--tier", "slow"]
     )
     assert result.exit_code == 0
+    _drain_writer()
 
     from mimir.cache import _ns
 
@@ -360,13 +385,13 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
         s.execute(delete(CacheEntry))
         s.commit()
 
-    # `--workers 1` forces the serial path. See the matching comment
-    # on `test_warm_cache_subsystem_dashboards_populate_cache` for the
-    # CI flake this avoids: under default parallelism, worker-thread
-    # cache writes can lag the main-thread reads below even after
-    # `as_completed` reports done.
+    # `--workers 1` for serial RPC dispatch. The write-visibility
+    # race (warm handlers submit cache writes fire-and-forget; CLI
+    # exit doesn't imply commit, see #465) is closed by
+    # `_drain_writer()` below, not by the worker count.
     result = CliRunner().invoke(warm_cache_command, ["--workers", "1"])
     assert result.exit_code == 0
+    _drain_writer()
 
     # Cache rows actually landed and decode to well-formed XML with
     # the right schema-namespaced root element. A "<?xml" prefix
