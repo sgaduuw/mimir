@@ -117,3 +117,106 @@ class TestScoreAndClassify:
         _, _, weak = self._call(shared_authors={"a"})
         assert "token" in strong
         assert weak == ("participant",)
+
+
+def _seed_message(
+    s,
+    inbox,
+    message_id: str,
+    subject: str,
+    author: str,
+    days_ago: int,
+    thread_parent: str | None = None,
+):
+    """One Article + ArticleList row in `inbox`. Relative date so
+    window queries stay valid as wall-clock advances."""
+    from mimir.models import Article, ArticleList
+    from mimir.parser import normalize_subject
+
+    art = Article(
+        message_id=message_id,
+        subject=subject,
+        author=author,
+        date=datetime.now(timezone.utc) - timedelta(days=days_ago),
+        thread_parent=thread_parent,
+        subject_normalized=normalize_subject(subject),
+    )
+    s.add(art)
+    s.flush()
+    s.add(
+        ArticleList(
+            article_id=art.id,
+            inbox_id=inbox.id,
+            epoch="0.git",
+            commit_sha=format(art.id, "x").rjust(40, "0"),
+        )
+    )
+    return art
+
+
+class TestCandidates:
+    def test_three_predicate_families_and_exclusion(self, seeded_db):
+        from sqlalchemy import select as sa_select
+
+        from mimir.models import Inbox
+        from mimir.related import _candidates
+
+        with seeded_db() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            by_subject = _seed_message(
+                s, alpha, "c1@x", "bcachefs journal deadlock", "Alice", 30
+            )
+            by_token = _seed_message(
+                s, alpha, "c2@x", "fix journal replay hang", "Bob", 40
+            )
+            by_author = _seed_message(
+                s, alpha, "c3@x", "totally unrelated words", "Carol", 50
+            )
+            too_old = _seed_message(
+                s, alpha, "c4@x", "bcachefs journal deadlock", "Dave", 4000
+            )
+            excluded = _seed_message(
+                s, alpha, "c5@x", "bcachefs journal deadlock", "Eve", 10
+            )
+            s.commit()
+
+            rows = _candidates(
+                s,
+                alpha,
+                exclude_ids={excluded.id},
+                subject_normalized="bcachefs journal deadlock",
+                tokens=["journal"],
+                authors={"Carol"},
+                min_date=datetime.now(timezone.utc) - timedelta(days=365),
+            )
+            got_ids = {r.id for r in rows}
+            assert by_subject.id in got_ids  # exact subject_normalized
+            assert by_token.id in got_ids  # rare-token LIKE
+            assert by_author.id in got_ids  # shared author
+            assert too_old.id not in got_ids  # outside window
+            assert excluded.id not in got_ids  # in-thread exclusion
+
+    def test_no_predicates_returns_empty(self, seeded_db):
+        from sqlalchemy import select as sa_select
+
+        from mimir.models import Inbox
+        from mimir.related import _candidates
+
+        with seeded_db() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            assert (
+                _candidates(
+                    s,
+                    alpha,
+                    exclude_ids=set(),
+                    subject_normalized="",
+                    tokens=[],
+                    authors=set(),
+                    min_date=datetime.now(timezone.utc),
+                )
+                == []
+            )
