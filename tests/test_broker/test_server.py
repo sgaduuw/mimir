@@ -681,6 +681,59 @@ def test_extract_warm_priority_parses_zero_one_and_default(seeded_db):
     assert _extract_warm_priority(b'{"op":"warm_inbox","priority":"nope"}') == 1
 
 
+def test_worker_loop_survives_handler_exception(seeded_db, monkeypatch, caplog):
+    """An exception escaping `dispatch()` must NOT kill the worker
+    thread. The outer try/except in `_worker_loop` catches it, logs
+    at exception level, and loops back to dequeue the next item
+    (audit #478). Before the fix, the worker thread silently exited
+    and that queue stopped draining.
+    """
+    import logging
+    import socket as _socket
+    import threading
+    import time as _time
+
+    from mimir.broker import server as server_module
+    from mimir.broker.server import ClientConnection
+
+    sp = short_socket_path("worker-survives")
+    raised = threading.Event()
+
+    def _raising_dispatch(_line):
+        raised.set()
+        raise RuntimeError("simulated handler explosion")
+
+    with broker_running(sp) as server:
+        cache_workers = list(server._cache_worker_threads)
+        assert cache_workers, "expected at least one cache worker"
+        worker = cache_workers[0]
+        assert worker.is_alive()
+
+        monkeypatch.setattr(server_module, "dispatch", _raising_dispatch)
+
+        # The worker's per-item path needs a real socket to reach via
+        # `conn.sock`. The reply never lands (dispatch raised before
+        # `sendall`), so `peer.recv` would time out — we don't read.
+        sock, peer = _socket.socketpair(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        try:
+            with caplog.at_level(logging.ERROR, logger="mimir.broker.server"):
+                conn = ClientConnection(sock=sock)
+                server.cache_queue.put(
+                    (b'{"rpc_id":1,"op":"ping"}', conn, _time.perf_counter())
+                )
+                assert raised.wait(timeout=2.0), "dispatch was never called"
+                # Give the outer try/except a beat to log and loop back.
+                _time.sleep(0.2)
+        finally:
+            sock.close()
+            peer.close()
+
+        assert worker.is_alive(), "worker thread died after handler exception"
+        assert any(
+            "worker caught unhandled exception" in r.message for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+
 def test_concurrent_worker_replies_are_not_torn():
     """Two workers sending replies on the same connection
     simultaneously: each reply lands as a complete, parseable JSON
