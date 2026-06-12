@@ -14,7 +14,11 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy import Select, or_, select
+from sqlalchemy.orm import Session
+
 from mimir import cache
+from mimir.models import Article, ArticleList, Inbox
 
 logger = logging.getLogger(__name__)
 
@@ -156,3 +160,68 @@ def _rare_tokens(subject: str | None, top: int = 3) -> list[str]:
         t for t in _TOKEN_SPLIT.split(cleaned) if len(t) >= 4 and t not in _STOPWORDS
     }
     return sorted(tokens, key=lambda t: (-len(t), t))[:top]
+
+
+def _candidate_select(
+    inbox_id: int,
+    *,
+    subject_normalized: str,
+    tokens: list[str],
+    authors: set[str],
+    min_date: datetime,
+) -> Select | None:
+    """The candidate query. One walk of ix_articles_date descending
+    with LIMIT; the spec's three branches are OR predicates tested
+    per row during the walk. Returns None when no predicate applies
+    (empty subject, no tokens, no authors). Exposed separately from
+    `_candidates` so the plan-pin test can EXPLAIN the compiled SQL.
+    """
+    preds = []
+    if subject_normalized:
+        preds.append(Article.subject_normalized == subject_normalized)
+    for t in tokens:
+        preds.append(Article.subject_normalized.like(f"%{t}%"))
+    if authors:
+        preds.append(Article.author.in_(sorted(authors)))
+    if not preds:
+        return None
+    return (
+        select(
+            Article.id,
+            Article.message_id,
+            Article.subject_normalized,
+            Article.author,
+            Article.date,
+        )
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .where(
+            ArticleList.inbox_id == inbox_id,
+            Article.date >= min_date,
+            or_(*preds),
+        )
+        .order_by(Article.date.desc())
+        .limit(CANDIDATE_CAP)
+    )
+
+
+def _candidates(
+    session: Session,
+    inbox: Inbox,
+    *,
+    exclude_ids: set[int],
+    subject_normalized: str,
+    tokens: list[str],
+    authors: set[str],
+    min_date: datetime,
+):
+    """Execute the candidate query and drop in-thread rows."""
+    stmt = _candidate_select(
+        inbox.id,
+        subject_normalized=subject_normalized,
+        tokens=tokens,
+        authors=authors,
+        min_date=min_date,
+    )
+    if stmt is None:
+        return []
+    return [r for r in session.execute(stmt).all() if r.id not in exclude_ids]
