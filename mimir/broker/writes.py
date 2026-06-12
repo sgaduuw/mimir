@@ -70,8 +70,21 @@ class WriterThread:
         self._queue: queue.Queue = queue.Queue(maxsize=queue_depth)
         self._slow_warn_ms = slow_warn_ms
         self._thread: threading.Thread | None = None
+        # `_stop_lock` is held by both `submit()` (check `_stopped` +
+        # `_queue.put`) and `stop()` (set `_stopped` + put sentinel) so
+        # the two operations are atomic with respect to each other.
+        # Without this, a `submit()` whose `_stopped` check passes could
+        # `put()` AFTER `stop()` enqueued the shutdown sentinel; the
+        # writer would process the sentinel and exit, leaving the
+        # submitted future unresolved and the caller hung on `.result()`.
+        # Holding the lock briefly across `_queue.put()` is fine: the
+        # writer thread drains continuously, so backpressure stalls are
+        # bounded by the writer's per-op commit time, not by the lock.
+        # `_stopped` is a `threading.Event` rather than a bool so that
+        # the set/is_set primitives are documented thread-safe (the
+        # internal `_cond` provides the memory barrier).
         self._stop_lock = threading.Lock()
-        self._stopped = False
+        self._stopped = threading.Event()
 
     @classmethod
     def from_settings(cls) -> "WriterThread":
@@ -96,19 +109,20 @@ class WriterThread:
         that resolves when the commit lands (or rejects with the
         exception on rollback). Blocks if the queue is full
         (backpressure)."""
-        if self._stopped:
-            raise RuntimeError("WriterThread is stopped")
         future: WriteFuture = Future()
-        self._queue.put((op, future))
+        with self._stop_lock:
+            if self._stopped.is_set():
+                raise RuntimeError("WriterThread is stopped")
+            self._queue.put((op, future))
         return future
 
     def stop(self, timeout: float = 30.0) -> None:
         """Signal the writer to drain its queue and exit. Idempotent."""
         with self._stop_lock:
-            if self._stopped:
+            if self._stopped.is_set():
                 return
-            self._stopped = True
-        self._queue.put(_SHUTDOWN_SENTINEL)
+            self._stopped.set()
+            self._queue.put(_SHUTDOWN_SENTINEL)
         if self._thread is not None:
             self._thread.join(timeout=timeout)
 
@@ -124,16 +138,23 @@ class WriterThread:
         # mimir_is_broker=true, so attaching it here doesn't make the
         # writer read-only.
         event.listen(engine, "connect", _sqlite_pragmas)
-        conn = engine.connect()
         try:
-            while True:
-                item = self._queue.get()
-                if item is _SHUTDOWN_SENTINEL:
-                    return
-                op, future = item
-                self._run_one(conn, op, future)
+            # `with engine.connect()` so a `connect()` raise (wrong
+            # database_url, missing /data/db mount, permission error,
+            # SQLite busy at open) propagates out cleanly instead of
+            # leaving an unbound `conn` that the old bare-assignment
+            # finally couldn't `.close()`. The previous shape died
+            # silently on UnboundLocalError, the writer thread exited,
+            # and every subsequent `submit()` blocked forever on the
+            # full queue with the broker still advertising as healthy.
+            with engine.connect() as conn:
+                while True:
+                    item = self._queue.get()
+                    if item is _SHUTDOWN_SENTINEL:
+                        return
+                    op, future = item
+                    self._run_one(conn, op, future)
         finally:
-            conn.close()
             engine.dispose()
 
     def _run_one(self, conn, op: WriteOp, future: WriteFuture) -> None:
