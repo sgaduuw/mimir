@@ -681,6 +681,48 @@ def test_extract_warm_priority_parses_zero_one_and_default(seeded_db):
     assert _extract_warm_priority(b'{"op":"warm_inbox","priority":"nope"}') == 1
 
 
+def test_purge_loop_submits_via_writer_thread(seeded_db, monkeypatch, caplog):
+    """`_purge_loop` routes the expired-row DELETE through
+    `cache.purge_expired_via_writer(writer)` so every write funnels
+    through the single-writer invariant (audit #475). Pre-fix it
+    called `cache._direct_purge_expired()` directly, racing intra-
+    broker writers under load.
+    """
+    import logging
+    import threading
+    from unittest.mock import MagicMock
+
+    from mimir import cache
+    from mimir.broker.server import _purge_loop
+
+    # `_purge_loop` exits via `while not stop_event.wait(...)`. We
+    # short-circuit: first wait() returns False (loop body fires),
+    # second returns True (loop exits).
+    stop_event = MagicMock(spec=threading.Event)
+    stop_event.wait = MagicMock(side_effect=[False, True])
+
+    seen_writer: list[object] = []
+
+    def _spy(writer):
+        seen_writer.append(writer)
+        future = MagicMock()
+        future.result.return_value = 7
+        return future
+
+    monkeypatch.setattr(cache, "purge_expired_via_writer", _spy)
+
+    fake_writer = object()
+    with caplog.at_level(logging.INFO, logger="mimir.broker.server"):
+        _purge_loop(stop_event, fake_writer)
+
+    assert seen_writer == [fake_writer], (
+        "purge_loop should pass the writer through to purge_expired_via_writer"
+    )
+    assert any(
+        "broker purge: 7 expired rows deleted" in r.message for r in caplog.records
+    ), [r.message for r in caplog.records]
+
+
 def test_worker_loop_survives_handler_exception(seeded_db, monkeypatch, caplog):
     """An exception escaping `dispatch()` must NOT kill the worker
     thread. The outer try/except in `_worker_loop` catches it, logs
