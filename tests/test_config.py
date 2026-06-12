@@ -196,8 +196,12 @@ def test_settings_has_related_discussions_bot_senders_default():
 
 
 def test_settings_related_discussions_bot_senders_env_override(monkeypatch):
+    import json
+
     from mimir.config import Settings
 
-    monkeypatch.setenv("RELATED_DISCUSSIONS_BOT_SENDERS", "a@x.test,b@y.test")
+    monkeypatch.setenv(
+        "RELATED_DISCUSSIONS_BOT_SENDERS", json.dumps(["a@x.test", "b@y.test"])
+    )
     s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.related_discussions_bot_senders == ["a@x.test", "b@y.test"]
