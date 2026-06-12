@@ -106,12 +106,34 @@ def _ns(key: str) -> str:
 # Tag picked explicitly (not `cls.__name__`) so a rename in the source
 # can't silently invalidate previously-cached rows or, worse, decode
 # them into the wrong type.
+#
+# Thread-safety invariant: `_TYPES` and `_TAGS` are populated only at
+# module import time by top-level `cache.register("Tag", Cls)` calls
+# in each owning module (`mimir/dashboard.py`, `mimir/threading.py`,
+# `mimir/subsystems.py`, etc.). Python's import lock serialises module
+# initialisation, so these writes never race. Reads from `_encode` and
+# `_decode` happen on broker worker threads at runtime, after every
+# module has finished importing — so reads only ever see a frozen
+# dict.
+#
+# **DO NOT add a `cache.register(...)` call inside a function body or
+# any code path that runs after import.** Under free-threaded Python
+# (`PYTHON_GIL=0` in production) a late `register()` call would race
+# concurrent `_encode` / `_decode` reads on a worker thread; a
+# dict-resize race can corrupt the hash table or raise
+# `RuntimeError: dictionary changed size during iteration`. The audit
+# at 2026-06-12 (issue #471) confirmed all 17 callsites are at
+# module top level; any new caller should land in that pattern too.
 _TYPES: dict[str, type] = {}
 _TAGS: dict[type, str] = {}
 
 
 def register(tag: str, cls: type) -> None:
-    """Make `cls` round-trip through cache encode/decode under `tag`."""
+    """Make `cls` round-trip through cache encode/decode under `tag`.
+
+    Call only at module import time. See the comment above `_TYPES` /
+    `_TAGS` for the thread-safety invariant.
+    """
     _TYPES[tag] = cls
     _TAGS[cls] = tag
 
