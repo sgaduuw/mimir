@@ -178,3 +178,26 @@ def test_settings_related_discussions_window_days_env_override(monkeypatch):
 
     s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.related_discussions_window_days == 90
+
+
+def test_settings_has_related_discussions_bot_senders_default():
+    """Default denylist carries the three high-volume kernel bots
+    (syzbot, kernel test robot, tip-bot); their threads are excluded
+    from related-discussions candidates and suppress the panel on
+    bot-authored roots (#71 follow-up)."""
+    from mimir.config import Settings
+
+    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    assert s.related_discussions_bot_senders == [
+        "syzkaller.appspotmail.com",
+        "lkp@intel.com",
+        "tip-bot2@linutronix.de",
+    ]
+
+
+def test_settings_related_discussions_bot_senders_env_override(monkeypatch):
+    from mimir.config import Settings
+
+    monkeypatch.setenv("RELATED_DISCUSSIONS_BOT_SENDERS", "a@x.test,b@y.test")
+    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    assert s.related_discussions_bot_senders == ["a@x.test", "b@y.test"]

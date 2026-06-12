@@ -166,6 +166,24 @@ def _rare_tokens(subject: str | None, top: int = 3) -> list[str]:
     return sorted(tokens, key=lambda t: (-len(t), t))[:top]
 
 
+def is_bot_sender(author: str | None) -> bool:
+    """True when `author` matches a configured bot/automated sender.
+
+    Substring match (case-insensitive) against
+    `settings.related_discussions_bot_senders`. Used to drop bot
+    threads from related-discussions candidates and to suppress the
+    panel on bot-authored roots (#71): syzbot, the kernel test robot,
+    and tip-bot dominate the non-patch population and produce
+    low-value matches.
+    """
+    if not author:
+        return False
+    low = author.casefold()
+    return any(
+        tok.casefold() in low for tok in settings.related_discussions_bot_senders
+    )
+
+
 def _candidate_select(
     inbox_id: int,
     *,

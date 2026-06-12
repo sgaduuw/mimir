@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
 
 from mimir._outbound import validate_outbound_url
 
@@ -119,6 +119,38 @@ def _curated_default_trees() -> dict[str, "TreeConfig"]:
             walk_every_seconds=3600,
         ),
     }
+
+
+class _CsvEnvSettingsSource(EnvSettingsSource):
+    """Custom env source that accepts comma-separated strings for the
+    list[str] fields that document "Override via env (comma-sep in X)".
+    pydantic-settings 2.x applies json.loads to complex types before
+    passing them to pydantic validators, so a bare CSV string raises
+    JSONDecodeError; overriding decode_complex_value intercepts at the
+    right level. JSON-array strings (starting with `[`) fall through to
+    the default decoder unchanged, preserving backward compatibility for
+    any operator who already uses the JSON form.
+    """
+
+    # Fields that explicitly declare comma-sep env override in their
+    # docstring. Extend this set when new list[str] fields are added that
+    # also want the comma-sep convenience.
+    _CSV_FIELDS: frozenset[str] = frozenset(
+        {
+            "related_discussions_bot_senders",
+        }
+    )
+
+    def decode_complex_value(
+        self, field_name: str, field: object, value: str
+    ) -> object:
+        if (
+            field_name in self._CSV_FIELDS
+            and isinstance(value, str)
+            and not value.startswith("[")
+        ):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return super().decode_complex_value(field_name, field, value)
 
 
 class Settings(BaseSettings):
@@ -634,6 +666,38 @@ class Settings(BaseSettings):
     # _claude/specs/2026-06-12-related-discussions-design.md.
     # Override via RELATED_DISCUSSIONS_WINDOW_DAYS.
     related_discussions_window_days: int = 365
+
+    # Senders whose threads are treated as automated/bot noise by the
+    # related-discussions panel (#71): their threads are dropped from
+    # candidates and the panel is suppressed on bot-authored roots.
+    # Substring-matched (case-insensitive) against `Article.author`.
+    # Default covers the three high-volume kernel bots. Override via
+    # env (comma-sep in RELATED_DISCUSSIONS_BOT_SENDERS).
+    related_discussions_bot_senders: list[str] = [
+        "syzkaller.appspotmail.com",
+        "lkp@intel.com",
+        "tip-bot2@linutronix.de",
+    ]
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: object,
+        env_settings: object,
+        dotenv_settings: object,
+        file_secret_settings: object,
+    ) -> tuple[object, ...]:
+        # Replace the default EnvSettingsSource with _CsvEnvSettingsSource
+        # so list[str] fields that document "comma-sep in X" can be set
+        # with a plain CSV string in addition to pydantic-settings' default
+        # JSON-array form.
+        return (
+            init_settings,
+            _CsvEnvSettingsSource(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
+        )
 
 
 settings = Settings()
