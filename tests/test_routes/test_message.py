@@ -2374,3 +2374,98 @@ def test_bulk_msgid_linkify_select_uses_indexed_seek_no_full_scan(seeded_db):
         f"regression to a non-sargable WHERE clause (e.g. "
         f"function-on-column) would surface here. plan:\n{plan}"
     )
+
+
+class TestRelatedDiscussionsPanel:
+    def test_panel_renders_on_non_patch_thread(self, client, tmp_path):
+        """A non-patch thread with a related candidate surfaces the
+        "Related discussions" panel. The root is ingested with a real git
+        blob so the route's `read_message` call resolves; the prior article
+        is SQL-only (just DB rows) since the scorer only queries Article
+        columns, not the git blob."""
+        from sqlalchemy import select as sa_select
+
+        from mimir.extensions import SessionLocal
+        from mimir.models import Inbox
+        from tests.test_related import _seed_message
+
+        root_id, url = _ingest_one_article(
+            tmp_path,
+            "alpha",
+            "panel-root@x",
+            subject="bcachefs deadlock during journal replay",
+        )
+        # SQL-only "prior" article: appears as a candidate in the
+        # related-discussions scorer.
+        with SessionLocal() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            _seed_message(
+                s,
+                alpha,
+                "panel-prior@x",
+                "journal replay hangs on dirty mount",
+                "Carol",
+                60,
+            )
+            s.commit()
+        resp = client.get(url)
+        assert resp.status_code == 200
+        assert b"Related discussions" in resp.data
+
+    def test_panel_absent_on_patch_thread(self, client, tmp_path):
+        """A patch thread (any article in the thread has ArticleFile rows)
+        must not render the related-discussions panel; the route gate sets
+        `is_patch_thread=True` and `related_threads` stays empty."""
+        from sqlalchemy import select as sa_select
+
+        from mimir.extensions import SessionLocal
+        from mimir.models import ArticleFile, Inbox
+        from tests.test_related import _seed_message
+
+        root_id, url = _ingest_one_article(
+            tmp_path,
+            "alpha",
+            "patch-root@x",
+            subject="bcachefs deadlock during journal replay",
+        )
+        with SessionLocal() as s:
+            # Mark the root as a patch thread by adding an ArticleFile row.
+            s.add(ArticleFile(article_id=root_id, path="fs/bcachefs/super.c"))
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            _seed_message(
+                s,
+                alpha,
+                "patch-prior@x",
+                "journal replay hangs on dirty mount",
+                "Carol",
+                60,
+            )
+            s.commit()
+        resp = client.get(url)
+        assert resp.status_code == 200
+        assert b"Related discussions" not in resp.data
+
+    def test_helper_failure_does_not_500(self, client, tmp_path, monkeypatch):
+        """A RuntimeError raised inside `related_discussions` must be
+        swallowed (logged as ERROR) and the page must still return 200
+        without the panel."""
+
+        def _boom(*a, **kw):
+            raise RuntimeError("scoring bug")
+
+        import mimir.web.routes.message as message_route
+
+        monkeypatch.setattr(message_route, "related_discussions", _boom)
+        _, url = _ingest_one_article(
+            tmp_path,
+            "alpha",
+            "boom-root@x",
+            subject="some discussion",
+        )
+        resp = client.get(url)
+        assert resp.status_code == 200
+        assert b"Related discussions" not in resp.data
