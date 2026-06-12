@@ -343,6 +343,10 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     continue
                 try:
                     chunk = sock.recv(4096)
+                # PEP 758 (Python 3.14): the bare-comma form is the
+                # canonical tuple-of-exceptions syntax; `ruff format`
+                # rewrites parenthesised forms to this shape. NOT a
+                # Python 2 holdover (audit #482, closed as not-a-bug).
                 except OSError, ConnectionError:
                     return
                 if not chunk:
@@ -503,6 +507,8 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     try:
                         with conn.send_lock:
                             conn.sock.sendall(payload)
+                    # PEP 758 canonical tuple-of-exceptions form, see
+                    # `_reader_loop` above. Audit #482, not a bug.
                     except OSError, ConnectionError:
                         # Client closed mid-flight or socket reset.
                         # Drop the reply silently; the client treats
