@@ -29,6 +29,15 @@ changes, not internal refactors. Categories: **Added**,
     return value, which has a well-defined boundary via the future's
     internal Condition. Closes #479.
 
+- **`mimir.ingest.epoch._walk_epoch` now context-manages its dulwich
+  Repo.** Same shape as the v3.1.2 `mainline.py` fix: the generator
+  now wraps its body in `with Repo(...) as repo:` so the Repo's
+  pack-file mmaps release when the generator exhausts or when the
+  consumer abandons it (Python's `generator.close()` raises
+  `GeneratorExit` into the suspended frame, triggering `__exit__`).
+  Previously the Repo survived until GC, holding mmaps in VmData
+  across concurrent multi-inbox ingests. Closes #470.
+
 ## [3.1.2] - 2026-06-12
 
 ### Fixed
