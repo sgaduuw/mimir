@@ -152,6 +152,16 @@ changes, not internal refactors. Categories: **Added**,
   TLS declaration spells out the trap and the two acceptable fixes
   if a future handler ever needs to. Doc-only. Closes #486.
 
+- **`except OSError, ConnectionError:` in `mimir/broker/server.py`
+  is correctly using PEP 758's canonical tuple-of-exceptions form
+  for Python 3.14, not a Python-2 holdover.** Audit #482 mis-read
+  the syntax against a pre-3.14 mental model; `ast.parse` confirms
+  the AST is `ExceptHandler(type=Tuple(elts=[OSError,
+  ConnectionError]))` (a true tuple catch), and `ruff format` on
+  3.14 rewrites parenthesised forms to this shape. Inline comments
+  at both sites pin the audit number so the question doesn't get
+  re-asked. Closes #482.
+
 - **`mimir.broker._context._lock` overhead is now documented as
   measured, not speculated.** Audit #483 proposed replacing the
   per-call lock with a single immutable tuple read. Microbenchmark
