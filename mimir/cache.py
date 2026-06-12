@@ -238,6 +238,21 @@ def _should_dispatch_to_broker() -> bool:
 # checks it (in addition to `settings.mimir_is_broker`) to avoid a
 # self-RPC when broker + caller share a process (the in-process
 # test shape).
+#
+# Landmine to watch for (audit #486): thread-locals are scoped to the
+# thread that sets them. A handler that spawns helper threads (e.g. a
+# `ThreadPoolExecutor` inside a warm target) will see those threads
+# inherit no `_HANDLER_TLS.active = True` flag, so any `cache.set` from
+# inside the helper falls through to `_should_dispatch_to_broker() ->
+# True` and attempts a self-RPC back through the broker socket. With
+# the cache worker already busy dispatching the parent RPC, that
+# self-RPC sits on the queue forever -> deadlock.
+#
+# Today no handler spawns helper threads; this is a design landmine,
+# not a current bug. If that ever changes, either bracket the helper's
+# entry/exit with `_set_broker_handler_active(True)` / `(False)`, or
+# (preferred) factor the cache writes back into the dispatching
+# thread.
 _HANDLER_TLS = threading.local()
 
 

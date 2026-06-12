@@ -172,6 +172,17 @@ class BrokerClient:
             if self._sock is None:
                 self._connect_locked()
             if self._demux_thread is None or not self._demux_thread.is_alive():
+                if self._demux_thread is not None:
+                    # Wait for the old demux thread to fully exit before
+                    # spawning its replacement. `is_alive()` can flip to
+                    # False before the thread's `finally` clause has run
+                    # to completion; without the explicit join, two demux
+                    # threads could briefly read from the same `_rfile`
+                    # and garble reply parsing under free-threaded
+                    # Python (audit #485). 100 ms is generous: the
+                    # finally clause only does `_fail_all_pending` +
+                    # `_close_socket`, both microseconds.
+                    self._demux_thread.join(timeout=0.1)
                 t = threading.Thread(
                     target=self._demux_loop,
                     daemon=True,

@@ -55,6 +55,126 @@ changes, not internal refactors. Categories: **Added**,
     `submit()` blocked forever on the full queue while the broker
     still advertised itself as healthy. Closes #481.
 
+- **`mimir.cache` `_TYPES` / `_TAGS` import-time invariant is now
+  documented.** The two module-level dicts are mutated only at
+  import time via `cache.register()` calls at module top level, so
+  no runtime synchronisation is needed despite multi-threaded reads
+  after startup. Spelled out in comments + the `register()`
+  docstring so a future maintainer who adds a runtime
+  `cache.register()` call inside a handler can spot the regression
+  before it ships. Doc-only; no behaviour change. Closes #471.
+
+- **`mimir.broker.handlers.warm._SITEMAP_GAP_LOGGED` is now a
+  `threading.Event`** guarded by a `threading.Lock` with a
+  double-checked-locking pattern. The previous bare-`bool` flag
+  was a data race under free-threading: two warm workers landing
+  the misconfig WARNING at the same moment could each see the
+  flag as False and both log, or worse, observe a torn write on
+  the lock-free write. Fast path stays lock-free via the Event's
+  memory-barrier semantics. Closes #474.
+
+- **Broker shutdown reliability: three audit fixes bundled in
+  `mimir/broker/server.py`.**
+  - **`_worker_loop` wraps the per-item body in an outer
+    `try/except`** so an unhandled exception from `dispatch()` or
+    `sendall()` no longer silently kills the worker thread.
+    Previously the affected queue (cache / long / warm) stopped
+    draining and clients timed out with no alert; the only signal
+    was a traceback in the broker log. The inner `try/finally`
+    still fires `q.task_done()`. Closes #478.
+  - **The tracemalloc snapshotter takes a `stop_event`** and uses
+    `stop_event.wait(interval)` instead of `time.sleep(interval)`,
+    so `serve()` can join the snapshotter cleanly on shutdown
+    rather than abandoning it mid-`pickle.dump` and leaving
+    orphaned `.pkl.tmp` files in `/data/diagnostics/`. Closes #477.
+  - **`serve()`'s finally now joins each worker thread list
+    (cache, long, warm) and the tracemalloc snapshotter** with
+    bounded 5 s timeouts, giving in-flight replies a chance to land
+    before process exit. Daemon-thread reclamation still backs the
+    join timeouts. Closes #476.
+
+- **`mimir.ingest.replay._replay_loop` opens dulwich `Repo` per
+  row instead of accumulating `dict[str, Repo]` for the function
+  lifetime.** Two concurrent `Repo` instances over the same `.git`
+  path race on dulwich's shared pack-index C-state under
+  free-threading; replay vs warm-handler, or two concurrent
+  `admin failures replay` RPCs, can co-occupy the same epoch
+  directory. Per-row `with Repo(...) as repo:` scopes the Repo to
+  the blob fetch and closes it immediately. Replay is a low-volume
+  admin path; the per-row open is microseconds. Closes #480.
+
+- **`mimir.broker.pools.ReadSessionPool.close()` drains in-flight
+  sessions before disposing the engine.** Previously `close()`
+  released `_closed_lock` and went straight into
+  `engine.dispose()`; any warm handler still inside
+  `with pool.session() as session:` had its connection invalidated
+  mid-query and raised `OperationalError` on the next statement.
+  An in-flight counter under `_closed_lock` + a
+  `threading.Condition` lets `close()` wait up to `drain_timeout`
+  (default 30 s) for live sessions to drain; on timeout it logs a
+  WARNING and disposes anyway so a stuck handler can never block
+  broker shutdown. Closes #472.
+
+- **`_purge_loop` submits its expired-row DELETE via the
+  WriterThread** instead of opening its own `SessionLocal()` with
+  DEFERRED `BEGIN` semantics. Every write inside the broker now
+  funnels through the single-writer invariant; the snapshot-race
+  class of bug is closed for this path. The 30 s `.result()`
+  timeout matches the existing handler-side patterns; on timeout
+  the periodic-task try/except still logs and continues. Closes
+  #475.
+
+- **`serve()` registers a SIGTERM/SIGINT handler that fires
+  `server.shutdown()` exactly once.** Previously two signals in
+  quick succession would spawn two anonymous shutdown threads; the
+  second would hang on `socketserver.BaseServer.shutdown()`'s
+  internal one-shot Event, dangling the thread (though daemon
+  status still let the process exit). The handler is now built via
+  `_make_signal_handler(server)` which returns `(handler, state)`;
+  state carries the spawned shutdown thread so `serve()`'s finally
+  can join it. Closes #484.
+
+- **`BrokerClient._ensure_alive` joins the old demux thread before
+  spawning its replacement.** `threading.Thread.is_alive()` can
+  flip to False before the thread's `finally` clause has run to
+  completion; without the explicit join, a tiny window opens where
+  two demux threads briefly hold the same `_rfile` and garble
+  reply parsing under free-threaded Python. 100 ms timeout is
+  generous (the finally only does `_fail_all_pending` +
+  `_close_socket`, microseconds). Closes #485.
+
+- **`mimir.cache._HANDLER_TLS` thread-local landmine is now
+  documented.** A future handler that spawns helper threads (e.g.
+  a `ThreadPoolExecutor` inside a warm target) would see those
+  threads inherit no `_HANDLER_TLS.active = True` flag, falling
+  through to a self-RPC that deadlocks through the broker's queue.
+  Today no handler spawns helper threads; the comment block at the
+  TLS declaration spells out the trap and the two acceptable fixes
+  if a future handler ever needs to. Doc-only. Closes #486.
+
+- **`except OSError, ConnectionError:` in `mimir/broker/server.py`
+  is correctly using PEP 758's canonical tuple-of-exceptions form
+  for Python 3.14, not a Python-2 holdover.** Audit #482 mis-read
+  the syntax against a pre-3.14 mental model; `ast.parse` confirms
+  the AST is `ExceptHandler(type=Tuple(elts=[OSError,
+  ConnectionError]))` (a true tuple catch), and `ruff format` on
+  3.14 rewrites parenthesised forms to this shape. Inline comments
+  at both sites pin the audit number so the question doesn't get
+  re-asked. Closes #482.
+
+- **`mimir.broker._context._lock` overhead is now documented as
+  measured, not speculated.** Audit #483 proposed replacing the
+  per-call lock with a single immutable tuple read. Microbenchmark
+  (`_claude/bench-483-context-lock.py`) measured both shapes on
+  GIL-on and GIL-off (3.14t) interpreters at N in {1, 2, 4, 8, 16}
+  threads. Under free-threading the proposed lockless shape is
+  **1.6 to 2.3 x slower** under contention because two
+  module-attribute loads + tuple subscripts per call trip atomic
+  refcount increments harder than the lock's own backoff. At the
+  default N=8 warm workers the baseline costs ~131 ns / lookup ×
+  2 lookups / dispatch = 0.003 % of dispatch wall-time. Comment
+  block on `_lock` captures the numbers; lock stays. Closes #483.
+
 ## [3.1.2] - 2026-06-12
 
 ### Fixed
