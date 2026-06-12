@@ -28,6 +28,7 @@ SCORE_THRESHOLD = 2.0
 DECAY_HALF_LIFE_DAYS = 180.0
 CACHE_TTL = 3600
 
+# ASCII-only by design: lkml subjects are ASCII in practice; non-ASCII chars split (accented names degrade to fragments, acceptable for subject matching).
 _TOKEN_SPLIT = re.compile(r"[^a-z0-9_]+")
 _BRACKETED = re.compile(r"\[[^\]]*\]")
 # English function words common in subject lines plus lkml noise
@@ -48,7 +49,8 @@ def _rare_tokens(subject: str | None, top: int = 3) -> list[str]:
     """Distinctive tokens of a subject line, longest first.
 
     Lowercase, strip bracketed tags ([RFC], [BUG], ...), split on
-    non-alphanumerics, drop stopwords and tokens shorter than 4
+    anything outside [a-z0-9_] (underscores survive so kernel identifiers
+    like spin_lock_irqsave stay one token), drop stopwords and tokens shorter than 4
     chars, rank by descending length (longer is rarer in subject
     lines), alphabetical tie-break for determinism, take `top`.
     """
