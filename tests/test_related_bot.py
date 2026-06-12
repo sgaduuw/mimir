@@ -35,3 +35,104 @@ class TestIsBotSender:
         assert is_bot_sender("Some Robot <robo@x.test>")
         # Default bots no longer match once the list is overridden.
         assert not is_bot_sender("syzbot <x@syzkaller.appspotmail.com>")
+
+
+class TestBotExclusionInScorer:
+    def _alpha(self, s):
+        from sqlalchemy import select as sa_select
+
+        from mimir.models import Inbox
+
+        return s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+    def test_bot_rooted_candidate_is_excluded(self, seeded_db, caplog):
+        """A thread whose root author is a bot must not surface as a
+        related thread, even when it shares a strong token, and it
+        must be counted in bot_filtered."""
+        import logging
+
+        from mimir.related import related_discussions
+        from tests.test_related import _seed_message
+
+        with seeded_db() as s:
+            alpha = self._alpha(s)
+            root = _seed_message(
+                s,
+                alpha,
+                "human-root@x",
+                "bcachefs deadlock during journal replay",
+                "Alice",
+                2,
+            )
+            # Bot-authored thread sharing the 'journal' token.
+            _seed_message(
+                s,
+                alpha,
+                "bot-cand@x",
+                "journal replay warning in fs",
+                "syzbot <x@syzkaller.appspotmail.com>",
+                30,
+            )
+            # Human thread sharing the same token (control: must appear).
+            human = _seed_message(
+                s,
+                alpha,
+                "human-cand@x",
+                "journal replay hangs on dirty mount",
+                "Carol",
+                40,
+            )
+            s.commit()
+            with caplog.at_level(logging.INFO, logger="mimir.related"):
+                out = related_discussions(
+                    s,
+                    alpha,
+                    root_id=root.id,
+                    thread_article_ids={root.id},
+                    thread_authors={"Alice"},
+                )
+            ids = [r.article_id for r in out]
+            assert human.id in ids
+            assert all(r.subject != "journal replay warning in fs" for r in out)
+            line = next(
+                rec.getMessage()
+                for rec in caplog.records
+                if rec.getMessage().startswith("related-discussions:")
+            )
+            assert "bot_filtered=1" in line, line
+
+    def test_bot_coparticipant_does_not_generate_candidates(self, seeded_db):
+        """When a bot is among the thread's authors, it must not pull
+        in threads related only by sharing that bot as a participant."""
+        from mimir.related import related_discussions
+        from tests.test_related import _seed_message
+
+        with seeded_db() as s:
+            alpha = self._alpha(s)
+            root = _seed_message(
+                s,
+                alpha,
+                "cop-root@x",
+                "some unique human discussion",
+                "Alice",
+                2,
+            )
+            # A thread sharing ONLY the bot author, no token/subject overlap.
+            _seed_message(
+                s,
+                alpha,
+                "bot-only@x",
+                "totally different subject about hardware",
+                "syzbot <x@syzkaller.appspotmail.com>",
+                20,
+            )
+            s.commit()
+            out = related_discussions(
+                s,
+                alpha,
+                root_id=root.id,
+                thread_article_ids={root.id},
+                # The bot is a co-author of the current thread.
+                thread_authors={"Alice", "syzbot <x@syzkaller.appspotmail.com>"},
+            )
+            assert out == []
