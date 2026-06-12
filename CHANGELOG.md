@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.1.3] - 2026-06-12
+
 ### Fixed
 
 - **`mimir.inboxes` thread-safety under free-threaded Python.** Two
