@@ -334,6 +334,11 @@ def related_discussions(
         # current thread if a candidate walked back into it, and drop
         # threads whose root author is a bot (e.g. other syzbot
         # reports) wholesale, regardless of which reply matched.
+        # Note: bot rows are filtered here at the root, not in the SQL
+        # `_candidates` query, so they still consume CANDIDATE_CAP. On
+        # an inbox where bot threads dominate a token's matches this
+        # can crowd out older human candidates; `bot_filtered` in the
+        # log line surfaces the volume so #71's review can judge it.
         root_arts = {}
         bot_filtered = 0
         if evidence:

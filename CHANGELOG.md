@@ -9,6 +9,19 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
+## [Unreleased]
+
+### Changed
+
+- Related-discussions panel now excludes automated/bot senders
+  (syzbot, the kernel test robot, tip-bot by default; configurable
+  via `RELATED_DISCUSSIONS_BOT_SENDERS`). Bot-authored threads no
+  longer appear as related candidates and never count as a shared
+  participant, and the panel is suppressed entirely on bot-authored
+  roots. Production sampling showed the non-patch population is
+  dominated by these reports, where matches were low-value. The
+  instrumentation line gains a `bot_filtered=N` field. (#71)
+
 ## [3.2.0] - 2026-06-12
 
 ### Added
