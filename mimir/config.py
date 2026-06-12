@@ -635,5 +635,17 @@ class Settings(BaseSettings):
     # Override via RELATED_DISCUSSIONS_WINDOW_DAYS.
     related_discussions_window_days: int = 365
 
+    # Senders whose threads are treated as automated/bot noise by the
+    # related-discussions panel (#71): their threads are dropped from
+    # candidates and the panel is suppressed on bot-authored roots.
+    # Substring-matched (case-insensitive) against `Article.author`.
+    # Default covers the three high-volume kernel bots.
+    # Override via env as a JSON array (RELATED_DISCUSSIONS_BOT_SENDERS).
+    related_discussions_bot_senders: list[str] = [
+        "syzkaller.appspotmail.com",
+        "lkp@intel.com",
+        "tip-bot2@linutronix.de",
+    ]
+
 
 settings = Settings()
