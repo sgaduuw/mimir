@@ -182,8 +182,8 @@ class Settings(BaseSettings):
     # Senders whose email address is shown in full in the UI. Everyone
     # else's email gets hidden (display name kept). Substring match against
     # the address part, case-insensitive. Defaults cover well-known kernel
-    # maintainers and the kernel.org domain. Override via env (comma-sep
-    # in EMAIL_ALLOWLIST).
+    # maintainers and the kernel.org domain. Override via env as a JSON
+    # array (EMAIL_ALLOWLIST).
     email_allowlist: list[str] = [
         "torvalds@",
         "gregkh@",
@@ -192,7 +192,7 @@ class Settings(BaseSettings):
 
     # Inboxes that should appear first on the meta-index `/`, in this
     # order, regardless of alphabetical order. The rest follow
-    # alphabetically. Override via PINNED_INBOXES (comma-separated).
+    # alphabetically. Override via PINNED_INBOXES as a JSON array.
     # Default pins lkml since this archive treats it as the focal list;
     # set to empty to fall back to pure alphabetical.
     pinned_inboxes: list[str] = ["lkml"]
@@ -202,8 +202,8 @@ class Settings(BaseSettings):
     # for lists hosted on a domain we don't yet ship as a default can
     # add it here without a patch; the entries are unioned with the
     # baseline. Default empty (baseline covers kernel.org-adjacent
-    # ecosystems). Override via LIST_HOST_SUFFIX_OVERRIDES
-    # (comma-separated).
+    # ecosystems). Override via LIST_HOST_SUFFIX_OVERRIDES as a JSON
+    # array.
     list_host_suffix_overrides: list[str] = []
 
     # Inboxes treated as a *firehose* during canonical-inbox resolution
@@ -214,7 +214,7 @@ class Settings(BaseSettings):
     # non-firehose inbox in the article's link set matches. Mirrors
     # how kernel devs (and Google's crawler) actually treat the
     # topical lists as the conversational home. Override via
-    # CANONICAL_DEMOTED_INBOXES (comma-separated).
+    # CANONICAL_DEMOTED_INBOXES as a JSON array.
     canonical_demoted_inboxes: list[str] = ["lkml"]
 
     # Number of trusted reverse-proxy hops in front of the app. When
