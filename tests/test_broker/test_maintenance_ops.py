@@ -326,3 +326,40 @@ def test_dispatch_table_routes_phase_2_3_ops(op_name):
     # pydantic class (not None or a placeholder).
     assert callable(handler)
     assert hasattr(model, "model_validate")
+
+
+# ----- Phase 6a: run_analyze dual-dispatch fork ---------------------------
+
+
+def test_run_analyze_dispatches_via_writer_when_active(broker_active):
+    """Phase 6a: run_analyze submits a WriteOp when a broker writer is
+    active, rather than writing on the shared engine."""
+    from mimir.broker._context import get_active_writer
+    from mimir.maintenance import run_analyze
+
+    writer = get_active_writer()
+    submits = []
+    original = writer.submit
+    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    try:
+        result = run_analyze(full=False)
+    finally:
+        writer.submit = original
+
+    assert result.full is False
+    assert isinstance(result.elapsed_ms, int)
+    assert any(op.label.startswith("analyze") for op in submits), (
+        f"run_analyze must submit an analyze WriteOp; saw {[o.label for o in submits]}"
+    )
+
+
+def test_run_analyze_falls_back_to_engine_when_no_writer(seeded_db):
+    """With no active broker writer (startup / non-broker), run_analyze
+    uses the shared-engine path and still returns a result."""
+    from mimir.broker import _context
+    from mimir.maintenance import run_analyze
+
+    _context.clear_active()  # ensure no writer
+    result = run_analyze(full=False)
+    assert result.full is False
+    assert isinstance(result.elapsed_ms, int)
