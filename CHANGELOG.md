@@ -9,6 +9,19 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
+## [3.3.1] - 2026-06-13
+
+### Fixed
+
+- Related-discussions instrumentation (`related-discussions: ...`
+  lines, the #71 escalation-decision inputs) now actually reaches the
+  container log. It was emitted via the `mimir.related` module logger,
+  which has no INFO handler in the gunicorn web tier, so every line was
+  silently dropped in production (the panel rendered, but nothing was
+  logged). Now emitted through a dedicated `mimir.related.metric`
+  logger configured like the `mimir.request` access logger. No
+  behaviour change to the panel itself.
+
 ## [3.3.0] - 2026-06-13
 
 ### Changed
