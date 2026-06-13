@@ -402,3 +402,40 @@ def test_run_analyze_full_resets_analysis_limit_on_shared_engine_fallback(seeded
         f"after run_analyze(full=True) on the shared-engine fallback; "
         f"got {limit} (the reset try/finally is missing)"
     )
+
+
+# ----- load_maintainers ---------------------------------------------------
+
+
+def test_load_maintainers_dispatches_via_writer(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """Phase 6a: the MAINTAINERS replace lands as a WriteOp on the
+    active writer, and the subsystems triple is written correctly."""
+    from sqlalchemy import func, select
+
+    from mimir.broker._context import get_active_writer
+    from mimir.mainline import load_maintainers
+    from mimir.models import Subsystem
+
+    repo_path = tmp_path / "linux.git"
+    head_sha = _build_minimal_tree_with_maintainers(repo_path)
+
+    writer = get_active_writer()
+    submits = []
+    original = writer.submit
+    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    try:
+        ran, loaded, sha = load_maintainers(repo_path, tree_name="linus", force=True)
+    finally:
+        writer.submit = original
+
+    assert ran is True
+    assert loaded == 1
+    assert sha == head_sha
+    assert any("maintainers" in op.label for op in submits), (
+        f"expected a maintainers-replace WriteOp; saw {[o.label for o in submits]}"
+    )
+    with seeded_db() as s:
+        count = s.execute(select(func.count()).select_from(Subsystem)).scalar_one()
+    assert count == 1

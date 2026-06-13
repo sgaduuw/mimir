@@ -25,11 +25,11 @@ import subprocess
 from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from dulwich.repo import Repo
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, insert
+from sqlalchemy import delete, insert, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -541,6 +541,88 @@ def _submit_mainline_cursor_update(
     )
 
 
+def _submit_maintainers_replace(
+    writer,
+    tree_name: str,
+    head_sha: str,
+    force: bool,
+    sub_rows: list[dict],
+    path_rows_for: Callable[[list[int]], list[dict]],
+    maintainer_rows_for: Callable[[list[int]], list[dict]],
+    loaded: int,
+) -> WriteFuture:
+    """Phase 6a. Compose one WriteOp that re-reads MainlineState on the
+    writer connection (so the no-op decision and the write are one
+    transaction), and, when not a no-op, DELETEs the subsystems triple,
+    bulk-inserts the parsed rows wiring path/maintainer FKs to the
+    returned subsystem ids, and UPSERTs the cursor. Returns a future
+    resolving to (ran: bool, loaded: int).
+
+    The closure mirrors the legacy SessionLocal block's SQL exactly so
+    rows are indistinguishable from the pre-6a path. path_rows_for /
+    maintainer_rows_for build their row dicts from the RETURNING ids
+    (subsystem rows are inserted with sort_by_parameter_order so ids
+    align with sub_rows order)."""
+
+    def _fn(conn):
+        # Re-read MainlineState on the writer connection so the no-op
+        # decision and the replace are one transaction (the read+write
+        # atomicity that the legacy write_transaction + SessionLocal
+        # block gave). The writer is single-threaded, but keeping it one
+        # transaction preserves the BEGIN-IMMEDIATE-shaped invariant.
+        row = conn.execute(
+            select(MainlineState.last_commit_sha).where(
+                MainlineState.tree_name == tree_name
+            )
+        ).first()
+        last_sha = row[0] if row else None
+        if last_sha == head_sha and not force:
+            # Sentinel: the replace did not run. The caller skips the
+            # cache invalidations and returns (False, 0, head_sha).
+            return (False, 0)
+
+        # Replace-all in one transaction. The cascade FK on
+        # `subsystems.id` clears `subsystem_paths` +
+        # `subsystem_maintainers` via ON DELETE CASCADE; the writer
+        # connection carries `PRAGMA foreign_keys=ON` (registered via
+        # _sqlite_pragmas on the writer engine) so the cascade fires.
+        conn.execute(delete(Subsystem))
+
+        # `sort_by_parameter_order=True` on the RETURNING insert aligns
+        # the returned ids with the input order so path / maintainer
+        # rows wire to the right `subsystem_id` without a name lookup.
+        result = conn.execute(
+            insert(Subsystem).returning(Subsystem.id),
+            sub_rows,
+            execution_options={"sort_by_parameter_order": True},
+        )
+        sub_ids = [r[0] for r in result]
+
+        path_rows = path_rows_for(sub_ids)
+        maintainer_rows = maintainer_rows_for(sub_ids)
+        if path_rows:
+            conn.execute(insert(SubsystemPath), path_rows)
+        if maintainer_rows:
+            conn.execute(insert(SubsystemMaintainer), maintainer_rows)
+
+        # UPSERT the MAINTAINERS HEAD cursor. Distinct from the
+        # Link-trailer walker cursor (`commits_walked_to_sha`); only
+        # `last_commit_sha` is touched here.
+        conn.execute(
+            sqlite_insert(MainlineState)
+            .values(tree_name=tree_name, last_commit_sha=head_sha)
+            .on_conflict_do_update(
+                index_elements=["tree_name"],
+                set_={"last_commit_sha": head_sha},
+            )
+        )
+        return (True, loaded)
+
+    return writer.submit(
+        WriteOp(label=f"update_mainline:maintainers:{tree_name}", fn=_fn)
+    )
+
+
 def load_maintainers(
     tree_path: Path,
     tree_name: str = "linus",
@@ -573,67 +655,36 @@ def load_maintainers(
             ) from exc
         blob_bytes = repo[blob_sha].data
 
-    with (
-        write_transaction("update_mainline:maintainers"),
-        SessionLocal() as session,
-    ):
-        state = session.get(MainlineState, tree_name)
-        if state is None:
-            state = MainlineState(tree_name=tree_name)
-            session.add(state)
-        if state.last_commit_sha == head_sha and not force:
-            return False, 0, head_sha
+    # Phase 6a dual-dispatch: parse + build the row payloads BEFORE the
+    # write so the writer-lock hold is short, then either submit one
+    # composite WriteOp (in-broker) or fall back to the legacy
+    # write_transaction + SessionLocal block (startup / non-broker /
+    # tests). The closures defer path/maintainer row construction until
+    # the RETURNING ids are known so FKs wire to the right subsystem.
+    try:
+        from mimir.broker import _context
 
-        parsed = maintainers.parse(blob_bytes)
-        # Replace-all in one transaction. The cascade FK on
-        # `subsystems.id` clears `subsystem_paths` +
-        # `subsystem_maintainers` via ON DELETE CASCADE; SQLite
-        # needs `PRAGMA foreign_keys=ON` (set by `mimir.extensions`
-        # on every connection) for the cascade to fire.
-        session.execute(delete(Subsystem))
+        writer = _context.get_active_writer()
+    except RuntimeError:
+        writer = None
 
-        # Three bulk inserts beat ORM's per-row flush. The
-        # MAINTAINERS file expands to ~1.5k Subsystem rows + ~10k
-        # SubsystemPath rows + ~5k SubsystemMaintainer rows on the
-        # kernel tree; under `session.add(row)` the unit-of-work
-        # flushed each one individually at commit time, holding the
-        # writer lock for the full round-trip count.
-        #
-        # `sort_by_parameter_order=True` on the RETURNING insert
-        # is what aligns the returned ids with the input order so
-        # the path / maintainer rows can wire to the right
-        # `subsystem_id` without a name lookup. SQLite supports
-        # this since 3.35 (RETURNING) and SQLAlchemy 2.0's bulk
-        # ORM-style insert honours the option.
-        sub_rows = [{"name": sub.name, "status": sub.status} for sub in parsed]
-        result = session.execute(
-            insert(Subsystem).returning(Subsystem.id),
-            sub_rows,
-            execution_options={"sort_by_parameter_order": True},
-        )
-        sub_ids = [row[0] for row in result]
+    parsed = maintainers.parse(blob_bytes)
+    sub_rows = [{"name": sub.name, "status": sub.status} for sub in parsed]
 
-        path_rows = []
-        maintainer_rows = []
+    def _path_rows_for(sub_ids: list[int]) -> list[dict]:
+        rows: list[dict] = []
         for sub_id, sub in zip(sub_ids, parsed, strict=True):
             for glob in sub.files:
-                path_rows.append(
-                    {
-                        "subsystem_id": sub_id,
-                        "glob": glob,
-                        "is_exclude": False,
-                    }
-                )
+                rows.append({"subsystem_id": sub_id, "glob": glob, "is_exclude": False})
             for glob in sub.excludes:
-                path_rows.append(
-                    {
-                        "subsystem_id": sub_id,
-                        "glob": glob,
-                        "is_exclude": True,
-                    }
-                )
+                rows.append({"subsystem_id": sub_id, "glob": glob, "is_exclude": True})
+        return rows
+
+    def _maintainer_rows_for(sub_ids: list[int]) -> list[dict]:
+        rows: list[dict] = []
+        for sub_id, sub in zip(sub_ids, parsed, strict=True):
             for m in sub.maintainers:
-                maintainer_rows.append(
+                rows.append(
                     {
                         "subsystem_id": sub_id,
                         "role": m.role,
@@ -641,14 +692,61 @@ def load_maintainers(
                         "address": m.address,
                     }
                 )
-        if path_rows:
-            session.execute(insert(SubsystemPath), path_rows)
-        if maintainer_rows:
-            session.execute(insert(SubsystemMaintainer), maintainer_rows)
+        return rows
 
-        state.last_commit_sha = head_sha
-        session.commit()
-        loaded = len(parsed)
+    loaded = len(parsed)
+
+    if writer is not None:
+        ran, loaded_out = _submit_maintainers_replace(
+            writer,
+            tree_name,
+            head_sha,
+            force,
+            sub_rows,
+            _path_rows_for,
+            _maintainer_rows_for,
+            loaded,
+        ).result()
+        if not ran:
+            return False, 0, head_sha
+        loaded = loaded_out
+    else:
+        # Legacy shared-engine fallback (startup pre-serve, non-broker
+        # callers, tests). Same SQL as the writer closure; still wrapped
+        # in write_transaction for BEGIN IMMEDIATE on the shared pool
+        # (6a keeps this; 6b removes write_transaction).
+        with (
+            write_transaction("update_mainline:maintainers"),
+            SessionLocal() as session,
+        ):
+            state = session.get(MainlineState, tree_name)
+            if state is None:
+                state = MainlineState(tree_name=tree_name)
+                session.add(state)
+            if state.last_commit_sha == head_sha and not force:
+                return False, 0, head_sha
+            # The cascade FK on `subsystems.id` clears `subsystem_paths`
+            # + `subsystem_maintainers` via ON DELETE CASCADE; SQLite
+            # needs `PRAGMA foreign_keys=ON` (set by `mimir.extensions`
+            # on every connection) for the cascade to fire.
+            session.execute(delete(Subsystem))
+            # `sort_by_parameter_order=True` aligns the returned ids with
+            # the input order so path / maintainer rows wire to the right
+            # `subsystem_id` without a name lookup.
+            result = session.execute(
+                insert(Subsystem).returning(Subsystem.id),
+                sub_rows,
+                execution_options={"sort_by_parameter_order": True},
+            )
+            sub_ids = [row[0] for row in result]
+            path_rows = _path_rows_for(sub_ids)
+            maintainer_rows = _maintainer_rows_for(sub_ids)
+            if path_rows:
+                session.execute(insert(SubsystemPath), path_rows)
+            if maintainer_rows:
+                session.execute(insert(SubsystemMaintainer), maintainer_rows)
+            state.last_commit_sha = head_sha
+            session.commit()
 
     # Invalidate the two derived caches that key off MAINTAINERS:
     # the dynamic-allowlist (M:/R: address set, used by From-line +
