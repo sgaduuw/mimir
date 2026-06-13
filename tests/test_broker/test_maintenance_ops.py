@@ -363,3 +363,42 @@ def test_run_analyze_falls_back_to_engine_when_no_writer(seeded_db):
     result = run_analyze(full=False)
     assert result.full is False
     assert isinstance(result.elapsed_ms, int)
+
+
+def test_run_analyze_full_resets_analysis_limit_on_shared_engine_fallback(seeded_db):
+    """Regression: run_analyze(full=True) on the shared-engine fallback
+    path (no active writer) must reset analysis_limit back to the
+    settings default before returning the pooled connection.
+
+    SQLAlchemy's QueuePool reuses physical DBAPI connections across
+    checkouts. The 'connect' event (_sqlite_pragmas) fires only on a new
+    physical connection, NOT on pool checkout, so a connection that ran
+    'PRAGMA analysis_limit=0' retains that value on its next checkout.
+    A missing try/finally reset means a later ANALYZE on the same pooled
+    connection runs unbounded, reproducing the 1.36.4 regression class.
+
+    This test fails against the pre-fix code (the else: branch had no
+    try/finally reset) and passes after."""
+    from sqlalchemy import text
+
+    from mimir.broker import _context
+    from mimir.extensions import engine
+    from mimir.config import settings
+    from mimir.maintenance import run_analyze
+
+    _context.clear_active()  # take the shared-engine fallback path
+
+    run_analyze(full=True)
+
+    # Open a new connection from the same pool. Because the pool reuses
+    # physical connections, the checkout may land on the same DBAPI
+    # connection that just ran analysis_limit=0. If the reset was
+    # missing, this reads back 0 instead of the configured default.
+    with engine.begin() as conn:
+        limit = conn.execute(text("PRAGMA analysis_limit")).scalar()
+
+    assert limit == settings.analyze_limit, (
+        f"analysis_limit should be reset to {settings.analyze_limit} "
+        f"after run_analyze(full=True) on the shared-engine fallback; "
+        f"got {limit} (the reset try/finally is missing)"
+    )

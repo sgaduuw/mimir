@@ -94,11 +94,20 @@ def run_analyze(*, full: bool = False) -> AnalyzeResult:
     else:
         with engine.begin() as conn:
             if full:
-                # Shared engine re-applies analysis_limit on the next
-                # connect via _sqlite_pragmas, so no explicit reset is
-                # needed on this path.
+                # The pool reuses physical DBAPI connections across checkouts;
+                # _sqlite_pragmas fires on the "connect" event (new physical
+                # connection only), NOT on pool checkout. A connection that
+                # ran analysis_limit=0 here retains that value on its next
+                # checkout. The reset must therefore be explicit, the same
+                # shape as the writer path above.
                 conn.execute(text("PRAGMA analysis_limit=0"))
-            conn.execute(text("ANALYZE"))
+            try:
+                conn.execute(text("ANALYZE"))
+            finally:
+                if full:
+                    conn.execute(
+                        text(f"PRAGMA analysis_limit={settings.analyze_limit}")
+                    )
 
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
     return AnalyzeResult(full=full, elapsed_ms=elapsed_ms)
