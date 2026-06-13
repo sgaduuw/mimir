@@ -719,6 +719,20 @@ def delete(key: str) -> int:
     ages out via TTL).
     """
     nskey = _ns(key)
+    # Route through the active WriterThread when called from inside a
+    # broker handler thread (symmetric with set()). The worker loop
+    # sets the thread-local flag on entry; an active writer means we
+    # are in-broker and must not run _direct_delete on the shared
+    # engine (Phase 6a: single-writer invariant for deletes too).
+    if _broker_handler_active():
+        try:
+            from mimir.broker import _context
+
+            _writer = _context.get_active_writer()
+        except RuntimeError:
+            _writer = None
+        if _writer is not None:
+            return delete_via_writer(_writer, nskey).result()
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
 
@@ -770,6 +784,15 @@ def delete_for_inbox(inbox_name: str) -> int:
     Forwards to the broker daemon via RPC.
     `BrokerUnavailable` is logged + returns 0.
     """
+    if _broker_handler_active():
+        try:
+            from mimir.broker import _context
+
+            _writer = _context.get_active_writer()
+        except RuntimeError:
+            _writer = None
+        if _writer is not None:
+            return delete_for_inbox_via_writer(_writer, inbox_name).result()
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
 
