@@ -536,9 +536,11 @@ Routes:
   also shows a "Possibly related" surface of other archived
   messages with the same normalized subject (JWZ subject-based
   grouping).
-  Non-patch threads also show a **Related discussions** panel: up
-  to 5 prior threads from the same inbox ranked by subject-token
-  overlap, shared participants, and recency.
+  Non-patch threads (excluding those rooted by automated senders
+  like syzbot or the kernel test robot) also show a **Related
+  discussions** panel: up to 5 prior threads from the same inbox
+  ranked by subject-token overlap, shared participants, and
+  recency.
   The year/month must match the article's archived date;
   mismatches return 404. ETag-based conditional revalidation:
   responses carry `Cache-Control: public, no-cache` and a strong
