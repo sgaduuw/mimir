@@ -26,6 +26,22 @@ from mimir.threading import find_thread_root
 
 logger = logging.getLogger(__name__)
 
+# Dedicated logger for the #71 instrumentation line. The general
+# application loggers (mimir.*) have NO INFO handler in the gunicorn
+# web tier, so a plain `logger.info(...)` is silently dropped in
+# production (caught 2026-06-13: the panel renders but no
+# `related-discussions:` line ever reached the container log). Mirror
+# the proven `mimir.request` access-log logger in `mimir/web/hooks.py`:
+# own StreamHandler at INFO, `propagate = False` so it emits regardless
+# of root config and never double-logs through a reconfigured root.
+_metric_logger = logging.getLogger("mimir.related.metric")
+_metric_logger.propagate = False
+if not _metric_logger.handlers:
+    _mh = logging.StreamHandler()
+    _mh.setFormatter(logging.Formatter("%(message)s"))
+    _metric_logger.addHandler(_mh)
+    _metric_logger.setLevel(logging.INFO)
+
 # Panel and scoring tuning knobs. Module constants, not Settings:
 # they are scoring calibration, not per-deploy config. The candidate
 # window IS per-deploy and lives on Settings
@@ -388,7 +404,7 @@ def related_discussions(
         strong = sum(
             1 for item in result if "subject" in item.signals or "token" in item.signals
         )
-        logger.info(
+        _metric_logger.info(
             "related-discussions: inbox=%s root=%d candidates=%d "
             "rendered=%d strong=%d weak=%d bot_filtered=%d top=%.1f "
             "elapsed_ms=%d",
