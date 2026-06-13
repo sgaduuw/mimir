@@ -21,7 +21,8 @@ from pathlib import Path
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from mimir.extensions import engine, write_transaction
+from mimir.config import settings
+from mimir.extensions import engine
 
 
 class AnalyzeResult(BaseModel):
@@ -51,25 +52,54 @@ def run_analyze(*, full: bool = False) -> AnalyzeResult:
     inherited from `_sqlite_pragmas` (4000 in production). `full=True`
     overrides that to 0 for the duration of this pass so the
     weekly safety-net catches index distributions the default
-    bounded sample undersamples; this is the load-bearing fix from
-    1.36.4 (calibrated against the production cascade of 1.35.1
-    400-sample ANALYZE causing 400-second `get_thread` calls).
+    bounded sample undersamples (the 1.36.4 calibration).
 
-    The write is wrapped in `write_transaction(label=...)` so the
-    slow-write WARNING attributes the lock-hold cleanly: an operator
-    correlating a slow broker cache.set against the scheduler log
-    sees `label=analyze held=Nms` and knows the cause."""
+    Phase 6a dual-dispatch: when a broker WriterThread is active
+    (steady-state `handle_analyze` RPC), submit the ANALYZE as a
+    WriteOp so it serialises through the single writer. When no writer
+    is active (the pre-serve `_post_migrate_analyze_if_needed`, or
+    non-broker callers / tests), fall back to the shared-engine
+    `engine.begin()` path."""
     t0 = time.perf_counter()
-    label = "analyze_full" if full else "analyze"
-    with write_transaction(label):
+
+    try:
+        from mimir.broker import _context
+
+        writer = _context.get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        from mimir.broker.writes import WriteOp
+
+        label = "analyze_full" if full else "analyze"
+        default_limit = settings.analyze_limit
+
+        def _fn(conn):
+            if full:
+                # Override the persistent writer connection's limit for
+                # this pass, then restore the default. The writer reuses
+                # one connection across ops and never reconnects, so
+                # unlike the shared engine (which re-applies the default
+                # on every connect via _sqlite_pragmas) we MUST reset it
+                # here or the next bounded analyze runs unbounded.
+                conn.execute(text("PRAGMA analysis_limit=0"))
+            try:
+                conn.execute(text("ANALYZE"))
+            finally:
+                if full:
+                    conn.execute(text(f"PRAGMA analysis_limit={default_limit}"))
+
+        writer.submit(WriteOp(label=label, fn=_fn)).result()
+    else:
         with engine.begin() as conn:
             if full:
-                # Override the per-connection limit for the
-                # duration of this ANALYZE so the planner gets
-                # every-row samples. `_sqlite_pragmas` will
-                # re-apply the default on the next connect.
+                # Shared engine re-applies analysis_limit on the next
+                # connect via _sqlite_pragmas, so no explicit reset is
+                # needed on this path.
                 conn.execute(text("PRAGMA analysis_limit=0"))
             conn.execute(text("ANALYZE"))
+
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
     return AnalyzeResult(full=full, elapsed_ms=elapsed_ms)
 
