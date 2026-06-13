@@ -45,14 +45,16 @@ class TestBotExclusionInScorer:
 
         return s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
 
-    def test_bot_rooted_candidate_is_excluded(self, seeded_db, caplog):
+    def test_bot_rooted_candidate_is_excluded(self, seeded_db):
         """A thread whose root author is a bot must not surface as a
         related thread, even when it shares a strong token, and it
         must be counted in bot_filtered."""
-        import logging
-
         from mimir.related import related_discussions
-        from tests.test_related import _seed_message
+        from tests.test_related import (
+            _metric_line,
+            _seed_message,
+            capture_metric_lines,
+        )
 
         with seeded_db() as s:
             alpha = self._alpha(s)
@@ -83,7 +85,7 @@ class TestBotExclusionInScorer:
                 40,
             )
             s.commit()
-            with caplog.at_level(logging.INFO, logger="mimir.related"):
+            with capture_metric_lines() as buf:
                 out = related_discussions(
                     s,
                     alpha,
@@ -94,11 +96,7 @@ class TestBotExclusionInScorer:
             ids = [r.article_id for r in out]
             assert human.id in ids
             assert all(r.subject != "journal replay warning in fs" for r in out)
-            line = next(
-                rec.getMessage()
-                for rec in caplog.records
-                if rec.getMessage().startswith("related-discussions:")
-            )
+            line = _metric_line(buf)
             assert "bot_filtered=1" in line, line
 
     def test_bot_coparticipant_does_not_generate_candidates(self, seeded_db):
