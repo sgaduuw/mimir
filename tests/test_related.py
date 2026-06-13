@@ -2,8 +2,43 @@
 scoring for non-patch threads (#71).
 """
 
-import pytest
+import contextlib
+import logging
 from datetime import datetime, timedelta, timezone
+from io import StringIO
+
+import pytest
+
+
+@contextlib.contextmanager
+def capture_metric_lines():
+    """Capture lines from the dedicated `mimir.related.metric` logger.
+
+    `caplog` cannot see them: that logger has `propagate = False`, so
+    its records never reach the root handler caplog installs. That is
+    exactly the production condition (the gunicorn web tier has no INFO
+    handler on the root/app loggers), so capturing the line via this
+    helper, by attaching a handler directly to the dedicated logger,
+    is what makes these tests meaningful rather than just asserting
+    `logger.info` was called. Regression context: #71, 2026-06-13.
+    """
+    buf = StringIO()
+    handler = logging.StreamHandler(buf)
+    lg = logging.getLogger("mimir.related.metric")
+    lg.addHandler(handler)
+    try:
+        yield buf
+    finally:
+        lg.removeHandler(handler)
+
+
+def _metric_line(buf):
+    """The single `related-discussions:` line from a capture buffer."""
+    return next(
+        line
+        for line in buf.getvalue().splitlines()
+        if line.startswith("related-discussions:")
+    )
 
 
 class TestRareTokens:
@@ -304,9 +339,7 @@ class TestRelatedDiscussions:
         s.commit()
         return root, reply, tok_root, part_root, unrelated
 
-    def test_finds_scores_orders_and_logs(self, seeded_db, caplog):
-        import logging
-
+    def test_finds_scores_orders_and_logs(self, seeded_db):
         from sqlalchemy import select as sa_select
 
         from mimir.models import Inbox
@@ -318,7 +351,7 @@ class TestRelatedDiscussions:
             ).scalar_one()
             root, reply, tok_root, part_root, unrelated = self._setup_corpus(s, alpha)
 
-            with caplog.at_level(logging.INFO, logger="mimir.related"):
+            with capture_metric_lines() as buf:
                 out = related_discussions(
                     s,
                     alpha,
@@ -339,11 +372,7 @@ class TestRelatedDiscussions:
             assert "token" in tok_item.signals
             assert part_item.signals == ("participant",)
             # Instrumentation line carries the decision-rule fields.
-            line = next(
-                rec.getMessage()
-                for rec in caplog.records
-                if rec.getMessage().startswith("related-discussions:")
-            )
+            line = _metric_line(buf)
             for field in (
                 "inbox=alpha",
                 "candidates=",
@@ -410,12 +439,10 @@ class TestRelatedDiscussions:
             assert tok_root.id in ids
             assert tok_reply.id not in ids
 
-    def test_empty_render_still_logs_instrumentation(self, seeded_db, caplog):
+    def test_empty_render_still_logs_instrumentation(self, seeded_db):
         """The #71 escalation decision reads empty-rate from
         rendered=0 lines; an early-return that skips the log on
         empty results would silently bias the measurement."""
-        import logging
-
         from sqlalchemy import select as sa_select
 
         from mimir.models import Inbox
@@ -434,7 +461,7 @@ class TestRelatedDiscussions:
                 2,
             )
             s.commit()
-            with caplog.at_level(logging.INFO, logger="mimir.related"):
+            with capture_metric_lines() as buf:
                 out = related_discussions(
                     s,
                     alpha,
@@ -443,13 +470,57 @@ class TestRelatedDiscussions:
                     thread_authors={"Alice"},
                 )
             assert out == []
-            line = next(
-                rec.getMessage()
-                for rec in caplog.records
-                if rec.getMessage().startswith("related-discussions:")
-            )
+            line = _metric_line(buf)
             assert "rendered=0" in line, line
             assert "strong=0" in line and "weak=0" in line, line
+
+    def test_metric_emits_even_when_root_logger_is_warning(self, seeded_db):
+        """Production regression guard (#71, 2026-06-13).
+
+        The gunicorn web tier configures no INFO handler on the root or
+        general `mimir.*` loggers, so the original `logger.info(...)`
+        on `mimir.related` was silently dropped: the panel rendered but
+        no `related-discussions:` line ever reached the container log.
+        The metric must reach its own handler regardless of root config.
+        This fails against the pre-fix code (plain module logger), where
+        a WARNING root with no handler swallows the line.
+        """
+        from sqlalchemy import select as sa_select
+
+        from mimir.models import Inbox
+        from mimir.related import _metric_logger, related_discussions
+
+        # Configured like mimir.request: own handler, INFO, no propagate.
+        assert _metric_logger.propagate is False
+        assert _metric_logger.level == logging.INFO
+        assert _metric_logger.handlers
+
+        root = logging.getLogger()
+        saved = root.level
+        root.setLevel(logging.WARNING)  # simulate the production web tier
+        try:
+            with seeded_db() as s:
+                alpha = s.execute(
+                    sa_select(Inbox).where(Inbox.name == "alpha")
+                ).scalar_one()
+                root_art = _seed_message(
+                    s, alpha, "guard-root@x", "some lonely discussion", "Alice", 2
+                )
+                s.commit()
+                with capture_metric_lines() as buf:
+                    related_discussions(
+                        s,
+                        alpha,
+                        root_id=root_art.id,
+                        thread_article_ids={root_art.id},
+                        thread_authors={"Alice"},
+                    )
+                assert any(
+                    line.startswith("related-discussions:")
+                    for line in buf.getvalue().splitlines()
+                ), "metric line did not reach its dedicated handler"
+        finally:
+            root.setLevel(saved)
 
 
 class TestCandidatePlanPin:
