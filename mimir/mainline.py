@@ -541,6 +541,46 @@ def _submit_mainline_cursor_update(
     )
 
 
+def _submit_last_walked_at(
+    writer,
+    tree_name: str,
+    now: datetime,
+) -> WriteFuture:
+    """Phase 6a. Compose a WriteOp upserting the per-tree cadence
+    timestamp (`MainlineState.last_walked_at`) for one tree, submit
+    to the writer, return the future.
+
+    This is the steady-state cadence write the scheduler's
+    `update-mainline` tick advances on every successful per-tree
+    walk. Before 6a it ran on the shared engine via a plain
+    `SessionLocal()` get-or-create, which is a shared-engine writer
+    reachable from the broker long worker concurrently with the
+    WriterThread, defeating the single-writer invariant and staying
+    invisible to the slow-write deploy-observe gate (no
+    `write_transaction` wrapper).
+
+    UPSERT: works whether MainlineState has a row for this tree yet
+    or not. tree_name is the PK; on conflict, ONLY `last_walked_at`
+    is updated. `last_commit_sha` (the MAINTAINERS HEAD cursor) and
+    `commits_walked_to_sha` (the Link-trailer walker cursor) have
+    their own write paths and must not be clobbered here."""
+
+    def _fn(conn):
+        stmt = (
+            sqlite_insert(MainlineState)
+            .values(tree_name=tree_name, last_walked_at=now)
+            .on_conflict_do_update(
+                index_elements=["tree_name"],
+                set_={"last_walked_at": now},
+            )
+        )
+        conn.execute(stmt)
+
+    return writer.submit(
+        WriteOp(label=f"update_mainline:last_walked_at:{tree_name}", fn=_fn),
+    )
+
+
 def _submit_maintainers_replace(
     writer,
     tree_name: str,
@@ -905,13 +945,35 @@ def update_mainline(
             # regardless of which phases ran. Only failed walks (those
             # that raised above) leave the cursor untouched so the next
             # tick retries.
-            with SessionLocal() as session:
-                state = session.get(MainlineState, slug)
-                if state is None:
-                    state = MainlineState(tree_name=slug)
-                    session.add(state)
-                state.last_walked_at = now
-                session.commit()
+            #
+            # Phase 6a dual-dispatch fork: when a broker writer is
+            # active (steady-state serving, the scheduler's
+            # `update-mainline` tick on the long worker), route the
+            # cadence write through the single WriterThread so it
+            # joins the single-writer invariant. The UPSERT touches
+            # ONLY `last_walked_at`, so it never clobbers
+            # `last_commit_sha` / `commits_walked_to_sha` written by
+            # the maintainers-replace / cursor WriteOps. Fall back to
+            # the legacy SessionLocal get-or-create for non-broker
+            # callers (the `mimir update-mainline` CLI run pre-serve,
+            # tests, dev scripts).
+            from mimir.broker import _context
+
+            try:
+                writer = _context.get_active_writer()
+            except RuntimeError:
+                writer = None
+
+            if writer is not None:
+                _submit_last_walked_at(writer, slug, now).result(timeout=60)
+            else:
+                with SessionLocal() as session:
+                    state = session.get(MainlineState, slug)
+                    if state is None:
+                        state = MainlineState(tree_name=slug)
+                        session.add(state)
+                    state.last_walked_at = now
+                    session.commit()
         except Exception as exc:
             logger.warning("update_mainline: tree %s failed: %r", slug, exc)
             tr.ok = False

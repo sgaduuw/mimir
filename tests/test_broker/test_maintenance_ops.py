@@ -468,3 +468,60 @@ def test_load_maintainers_dispatches_via_writer(
             f"SubsystemMaintainer.subsystem_id={maintainer_rows[0].subsystem_id!r} "
             f"does not match Subsystem.id={subsystem_id!r} (RETURNING-id misalignment)"
         )
+
+
+# ----- Phase 6a: update_mainline last_walked_at cadence dual-fork ---------
+
+
+def test_update_mainline_last_walked_at_dispatches_via_writer(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """Phase 6a: the per-tree `last_walked_at` cadence write lands as a
+    WriteOp on the active writer (not on the shared engine via
+    SessionLocal), AND `MainlineState.last_walked_at` actually advances.
+
+    All three phase-skip flags are set so only the cadence write fires;
+    the maintainers / commits phases have their own coverage above. This
+    fails before the 6a dual-fork (the cadence block ran on the shared
+    engine, so no `update_mainline:last_walked_at` WriteOp was submitted)
+    and passes after."""
+    from sqlalchemy import select
+
+    from mimir.broker._context import get_active_writer
+    from mimir.mainline import update_mainline
+    from mimir.models import MainlineState
+
+    repo_path = tmp_path / "linux.git"
+    _build_minimal_tree_with_maintainers(repo_path)
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
+
+    writer = get_active_writer()
+    submits = []
+    original = writer.submit
+    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    try:
+        update_mainline(
+            skip_fetch=True,
+            skip_commits=True,
+            skip_maintainers=True,
+        )
+    finally:
+        writer.submit = original
+
+    assert any(
+        op.label.startswith("update_mainline:last_walked_at") for op in submits
+    ), (
+        "expected an update_mainline:last_walked_at WriteOp on the active "
+        f"writer; saw {[o.label for o in submits]}"
+    )
+
+    # The cadence timestamp must actually be persisted, not merely
+    # submitted: a WriteOp that no-ops would still satisfy the label
+    # assertion above.
+    with seeded_db() as s:
+        state = s.execute(
+            select(MainlineState).where(MainlineState.tree_name == "linus")
+        ).scalar_one()
+    assert state.last_walked_at is not None, (
+        "update_mainline must advance MainlineState.last_walked_at on a successful tick"
+    )
