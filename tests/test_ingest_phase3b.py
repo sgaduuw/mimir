@@ -505,20 +505,14 @@ def test_submit_analyze_runs_via_writer(writer, seeded_db):
 
 
 def test_ingest_inbox_uses_writer_thread_via_active_context(
-    seeded_db, tmp_path, monkeypatch, broker_active
+    seeded_db, tmp_path, broker_active
 ):
-    """Phase 3b contract: `ingest_inbox` must NOT call `write_transaction`.
+    """Phase 3b contract: `ingest_inbox` dispatches all writes as WriteOps
+    through the active WriterThread so the writer lock is held only for
+    the brief per-batch commit, not the full epoch walk.
 
-    The previous implementation held a write_transaction for the full
-    epoch walk, blocking concurrent cache.set RPCs. Phase 3b restructures
-    to dispatch all writes as WriteOps through the active WriterThread so
-    the writer lock is held only for the brief per-batch commit, not the
-    full epoch walk.
-
-    This test monkeypatches `write_transaction` to raise RuntimeError and
-    verifies that a normal `ingest_inbox` call succeeds without ever
-    triggering the guard. Any call to the patched function indicates scope
-    creep back to the old write-per-transaction model.
+    write_transaction was removed in Phase 6b; behavioral coverage here
+    pins that ingest_inbox correctly completes via the writer path.
     """
     from sqlalchemy import select
 
@@ -540,21 +534,6 @@ def test_ingest_inbox_uses_writer_thread_via_active_context(
         ix.mirror_path = str(mirror)
         s.commit()
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-
-    # Patch write_transaction to explode: any call is a contract violation.
-
-    def _forbidden(*args, **kwargs):
-        raise AssertionError(
-            "write_transaction must not be called by ingest_inbox "
-            "after Phase 3b (Tasks 6+7); all writes go through WriterThread"
-        )
-
-    # write_transaction is imported into orchestrate.py at module level.
-    # After the Phase 3b rewrite it is no longer imported there, so we
-    # patch mimir.extensions directly as well.
-    import mimir.extensions as ext_mod
-
-    monkeypatch.setattr(ext_mod, "write_transaction", _forbidden)
 
     from mimir.ingest import ingest_inbox
 
