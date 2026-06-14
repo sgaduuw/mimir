@@ -1,11 +1,11 @@
 """Warm-queue handlers (Phase 2.2).
 
 Each handler runs one per-inbox or one global warm cycle inside the
-broker process, against the broker's own SessionLocal. The cache
+broker process, reading on the broker's ReadSessionPool. The cache
 writes the warming helpers issue land via `cache.set`, which from
-inside the broker process bypasses the self-RPC (see
-`_should_dispatch_to_broker` in `mimir.cache`) and calls the
-`_direct_set` path. The broker's cache worker is therefore NOT
+inside a broker handler thread avoids the self-RPC (see
+`_should_dispatch_to_broker` in `mimir.cache`) and routes through the
+active WriterThread. The broker's cache worker is therefore NOT
 involved in warming, only the warm-workers are.
 
 Per-target exceptions are captured into the reply's `errors` list

@@ -866,3 +866,55 @@ def test_concurrent_worker_replies_are_not_torn():
     finally:
         sock.close()
         peer.close()
+
+
+def test_startup_writers_run_without_active_writer(seeded_db, monkeypatch):
+    """The three pre-serve startup writers run in build_server() before
+    serve() starts the WriterThread, so they must operate with no active
+    broker context (the fallback branch). Pin that get_active_writer()
+    is unset at the point build_server() runs them.
+
+    This test will fail loudly if a future startup-ordering change
+    starts the writer or calls set_active() before the startup writers
+    finish, which would silently route a startup write through a
+    not-yet-warmed WriterThread."""
+    from mimir.broker import _context, server
+
+    # Guarantee no stale active context from a previous test.
+    _context.clear_active()
+    observed: dict[str, object] = {}
+
+    real_analyze = server._post_migrate_analyze_if_needed
+
+    def _spy(sp):
+        # Record whether a writer is active at the moment build_server
+        # calls the startup writers.
+        try:
+            _context.get_active_writer()
+            observed["writer_active"] = True
+        except RuntimeError:
+            observed["writer_active"] = False
+        return real_analyze(sp)
+
+    monkeypatch.setattr(server, "_post_migrate_analyze_if_needed", _spy)
+
+    # Use a short path under /tmp so we stay within AF_UNIX 104-byte
+    # limit on macOS (tmp_path lives under /private/var/folders/...).
+    sp = short_socket_path("startup-writers-invariant")
+    srv = build_server(sp)
+    try:
+        assert observed.get("writer_active") is False, (
+            "startup writers must run with no active writer (fallback path); "
+            f"got writer_active={observed.get('writer_active')!r}"
+        )
+    finally:
+        # build_server() called start_workers() (daemon threads; no
+        # explicit stop needed) but did NOT call writer.start(), so
+        # the WriterThread has no live thread to join. Close the server
+        # socket and clean up.
+        srv.server_close()
+        if sp.exists():
+            sp.unlink()
+        # Drop any context that might have been set (there should be
+        # none, but be defensive in case a future change adds one).
+        _context.clear_active()
