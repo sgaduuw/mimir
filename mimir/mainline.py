@@ -697,10 +697,10 @@ def load_maintainers(
 
     # Phase 6a dual-dispatch: parse + build the row payloads BEFORE the
     # write so the writer-lock hold is short, then either submit one
-    # composite WriteOp (in-broker) or fall back to the legacy
-    # write_transaction + SessionLocal block (startup / non-broker /
-    # tests). The closures defer path/maintainer row construction until
-    # the RETURNING ids are known so FKs wire to the right subsystem.
+    # composite WriteOp (in-broker) or fall back to the plain
+    # SessionLocal block (startup / non-broker / tests). The closures
+    # defer path/maintainer row construction until the RETURNING ids
+    # are known so FKs wire to the right subsystem.
     try:
         from mimir.broker import _context
 
