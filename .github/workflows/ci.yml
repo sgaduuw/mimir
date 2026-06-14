@@ -1,17 +1,11 @@
 name: ci
 
 on:
-  # push CI runs only on `develop` (post-merge integration check) and
-  # on `v*` tags (release image build + publish). main / release/* /
-  # hotfix/* are deliberately NOT listed under push: each is gated by
-  # its pull_request to main or develop, so CI runs once on the PR
-  # rather than a second time on the branch push, and the release image
-  # is built on the v* tag. Listing a branch under both push and
-  # pull_request double-runs the full ~11-min test suite on the same
-  # commit (it bit every release cut before this was trimmed).
-  push:
-    branches: [develop]
-    tags: ['v*']
+  # CI is the pull-request gate: full lint/test/test-ft plus a docker
+  # build-verify on every PR. It runs on NO branch or tag push. The
+  # release image is built + published by release.yml on v* tags, which
+  # trusts this PR gate rather than re-running the suite. (develop is a
+  # loose integration branch; main is the PR-gated release branch.)
   pull_request:
     branches: [develop, main, "release/*", "hotfix/*"]
 
@@ -141,50 +135,23 @@ jobs:
         run: uv run pytest -v
 
   docker:
+    # Build-verify only: confirms the image builds (Dockerfile / base
+    # image / dep resolution) on every PR. It never logs in or pushes;
+    # publishing is release.yml's job on v* tags. Skip on fork PRs (we
+    # don't run untrusted fork build steps, and the build is single-arch).
     runs-on: ubuntu-latest
     needs: [lint, test, test-ft]
-    # Skip on PRs from forks, no creds, and our build is single-arch.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-    permissions:
-      contents: read
-      packages: write
+    if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
-      - name: Log in to GHCR
-        # PRs don't get push creds (forks would fail anyway). Pushes
-        # to develop and version tags authenticate with the workflow's
-        # GITHUB_TOKEN, no extra secret needed.
-        if: github.event_name == 'push'
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Image metadata
-        id: meta
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=branch
-            type=sha,format=short
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-
-      - name: Build and push
+      - name: Build (verify only, no push)
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
-          # PRs build for verification only; pushes publish to ghcr.io.
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
