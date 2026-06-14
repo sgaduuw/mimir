@@ -1,8 +1,16 @@
 name: ci
 
 on:
+  # push CI runs only on `develop` (post-merge integration check) and
+  # on `v*` tags (release image build + publish). main / release/* /
+  # hotfix/* are deliberately NOT listed under push: each is gated by
+  # its pull_request to main or develop, so CI runs once on the PR
+  # rather than a second time on the branch push, and the release image
+  # is built on the v* tag. Listing a branch under both push and
+  # pull_request double-runs the full ~11-min test suite on the same
+  # commit (it bit every release cut before this was trimmed).
   push:
-    branches: [develop, main, "release/*", "hotfix/*"]
+    branches: [develop]
     tags: ['v*']
   pull_request:
     branches: [develop, main, "release/*", "hotfix/*"]
@@ -148,7 +156,7 @@ jobs:
 
       - name: Log in to GHCR
         # PRs don't get push creds (forks would fail anyway). Pushes
-        # to main and version tags authenticate with the workflow's
+        # to develop and version tags authenticate with the workflow's
         # GITHUB_TOKEN, no extra secret needed.
         if: github.event_name == 'push'
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
