@@ -462,24 +462,12 @@ def test_submit_promote_list_address_sweep_promotes_eligible_inbox(writer, seede
 
 
 def test_backfill_article_files_uses_writer_thread_via_active_context(
-    seeded_db, tmp_path, monkeypatch, broker_active
+    seeded_db, tmp_path, broker_active
 ):
-    """Phase 3c contract: `backfill_article_files` must NOT call
-    `write_transaction`. Pre-3c held a write_transaction for the
-    whole walk; Phase 3c dispatches via the active WriterThread.
-    Monkeypatching `write_transaction` to raise asserts the new
-    code path never reaches it.
-    """
-    import mimir.extensions as ext_mod
-
-    def _forbidden(*args, **kwargs):
-        raise AssertionError(
-            "write_transaction must not be called by "
-            "backfill_article_files after Phase 3c"
-        )
-
-    monkeypatch.setattr(ext_mod, "write_transaction", _forbidden)
-
+    """Phase 3c contract: `backfill_article_files` dispatches via the
+    active WriterThread. The write_transaction guard is redundant now
+    that write_transaction is removed in Phase 6b; the behavioral
+    assertion (writer actually executed) is pinned by result.examined."""
     from mimir.patches import backfill_article_files
 
     result = backfill_article_files(limit=10)
@@ -490,20 +478,10 @@ def test_backfill_article_files_uses_writer_thread_via_active_context(
 
 
 def test_backfill_article_trailers_uses_writer_thread_via_active_context(
-    seeded_db, monkeypatch, broker_active
+    seeded_db, broker_active
 ):
-    """Phase 3c contract: `backfill_article_trailers` must NOT call
-    `write_transaction`."""
-    import mimir.extensions as ext_mod
-
-    def _forbidden(*args, **kwargs):
-        raise AssertionError(
-            "write_transaction must not be called by "
-            "backfill_article_trailers after Phase 3c"
-        )
-
-    monkeypatch.setattr(ext_mod, "write_transaction", _forbidden)
-
+    """Phase 3c contract: `backfill_article_trailers` dispatches via the
+    active WriterThread. write_transaction was removed in Phase 6b."""
     from mimir.trailers import backfill_article_trailers
 
     result = backfill_article_trailers(limit=10)
@@ -511,20 +489,10 @@ def test_backfill_article_trailers_uses_writer_thread_via_active_context(
 
 
 def test_backfill_patch_series_uses_writer_thread_via_active_context(
-    seeded_db, monkeypatch, broker_active
+    seeded_db, broker_active
 ):
-    """Phase 3c contract: `backfill_patch_series` must NOT call
-    `write_transaction`."""
-    import mimir.extensions as ext_mod
-
-    def _forbidden(*args, **kwargs):
-        raise AssertionError(
-            "write_transaction must not be called by "
-            "backfill_patch_series after Phase 3c"
-        )
-
-    monkeypatch.setattr(ext_mod, "write_transaction", _forbidden)
-
+    """Phase 3c contract: `backfill_patch_series` dispatches via the
+    active WriterThread. write_transaction was removed in Phase 6b."""
     from mimir.patch_series import backfill_patch_series
 
     result = backfill_patch_series(limit=10)
@@ -532,19 +500,10 @@ def test_backfill_patch_series_uses_writer_thread_via_active_context(
 
 
 def test_backfill_canonicals_uses_writer_thread_via_active_context(
-    seeded_db, monkeypatch, broker_active
+    seeded_db, broker_active
 ):
-    """Phase 3c contract: `backfill_canonicals` must NOT call
-    `write_transaction`."""
-    import mimir.extensions as ext_mod
-
-    def _forbidden(*args, **kwargs):
-        raise AssertionError(
-            "write_transaction must not be called by backfill_canonicals after Phase 3c"
-        )
-
-    monkeypatch.setattr(ext_mod, "write_transaction", _forbidden)
-
+    """Phase 3c contract: `backfill_canonicals` dispatches via the
+    active WriterThread. write_transaction was removed in Phase 6b."""
     from mimir.ingest.backfill import backfill_canonicals
 
     result = backfill_canonicals(limit=10)

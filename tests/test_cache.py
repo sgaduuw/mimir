@@ -1498,3 +1498,64 @@ def test_delete_for_inbox_dispatches_via_writer_when_broker_handler_active(
     assert any(lbl.startswith("cache.delete_for_inbox:") for lbl in labels), (
         f"delete_for_inbox must submit a WriteOp; saw {labels}"
     )
+
+
+def test_direct_and_writer_paths_write_identical_rows(broker_active, seeded_db):
+    """Option B: the direct path and the writer path share one
+    statement-builder per op, so they produce byte-identical cache rows
+    for the same inputs."""
+    from sqlalchemy import select
+
+    from mimir import cache
+    from mimir.broker._context import get_active_writer
+    from mimir.models import CacheEntry
+
+    nskey_a = cache._ns("dedupe-probe-a")
+    nskey_b = cache._ns("dedupe-probe-b")
+
+    # Direct path.
+    cache._direct_set(nskey_a, '"v"', ttl=999)
+    # Writer path (same payload + ttl).
+    writer = get_active_writer()
+    cache._set_via_writer_for_nskey(writer, nskey_b, '"v"', ttl=999).result()
+
+    with seeded_db() as s:
+        row_a = s.execute(
+            select(CacheEntry).where(CacheEntry.key == nskey_a)
+        ).scalar_one()
+        row_b = s.execute(
+            select(CacheEntry).where(CacheEntry.key == nskey_b)
+        ).scalar_one()
+
+    assert row_a.value == row_b.value == '"v"'
+    # expires_at computed from the same ttl within the same test second;
+    # allow a 2s skew for clock tick between the two writes.
+    assert abs(row_a.expires_at - row_b.expires_at) <= 2
+
+
+def test_no_production_module_references_direct_cache_helpers():
+    """Option B contract: _direct_set/_delete/_delete_for_inbox/
+    _purge_expired are test-only scaffolding. No production module under
+    mimir/ (other than cache.py's own definitions) may reference them."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent / "mimir"
+    offenders = []
+    for path in root.rglob("*.py"):
+        if path.name == "cache.py":
+            continue  # the definitions live here
+        text = path.read_text(encoding="utf-8")
+        for name in (
+            "_direct_set",
+            "_direct_delete",
+            "_direct_delete_for_inbox",
+            "_direct_purge_expired",
+        ):
+            # Allow bare comment mentions but flag actual references:
+            # a `(` after the name indicates a call.
+            if f"{name}(" in text:
+                offenders.append(f"{path}: {name}")
+    assert not offenders, (
+        "production modules must not call _direct_* cache helpers "
+        f"(test-only per Phase 6b Option B): {offenders}"
+    )
