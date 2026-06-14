@@ -314,19 +314,11 @@ def get_many(keys: list[str]) -> dict[str, Any]:
 MAX_CACHE_VALUE_BYTES = 8 * 1024 * 1024
 
 
-def _direct_set(nskey: str, payload: str, ttl: int) -> None:
-    """Direct-SQLite upsert into the cache table. Pre-namespaced key,
-    pre-encoded value (so this helper is symmetric with the broker's
-    handler, which receives the already-namespaced key and JSON
-    payload over the wire). Used by `set()` when broker mode is off,
-    and imported by `mimir.broker.handlers` so the broker daemon
-    runs the same write without recursing into broker mode."""
-    # Apply any active warm-cache TTL extension (see `ttl_extension`
-    # context manager) so warm-managed rows store the spec's
-    # `nominal + window` lifetime. No-op outside a warm cycle.
-    ttl = _apply_ttl_extension(ttl)
-    expires_at = _now() + ttl
-    stmt = (
+def _set_stmt(nskey: str, payload: str, expires_at: int):
+    """The cache UPSERT, shared by _direct_set and the *_via_writer
+    set paths. Returns a Core construct usable on a Session or a
+    Connection."""
+    return (
         sqlite_insert(CacheEntry)
         .values(key=nskey, value=payload, expires_at=expires_at)
         .on_conflict_do_update(
@@ -334,8 +326,43 @@ def _direct_set(nskey: str, payload: str, ttl: int) -> None:
             set_={"value": payload, "expires_at": expires_at},
         )
     )
+
+
+def _delete_one_stmt(nskey: str):
+    """Single-key cache DELETE, shared by _direct_delete and
+    delete_via_writer."""
+    return delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
+
+
+def _delete_for_inbox_stmt(inbox_name: str):
+    """Per-inbox cache DELETE, shared by _direct_delete_for_inbox and
+    delete_for_inbox_via_writer."""
+    return delete_stmt(CacheEntry).where(
+        or_(
+            CacheEntry.key.like(f"%:{inbox_name}"),
+            CacheEntry.key.like(f"%:{inbox_name}:%"),
+        )
+    )
+
+
+def _purge_expired_stmt(cutoff: int):
+    """Expired-row cache DELETE, shared by _direct_purge_expired and
+    purge_expired_via_writer."""
+    return delete_stmt(CacheEntry).where(CacheEntry.expires_at < cutoff)
+
+
+def _direct_set(nskey: str, payload: str, ttl: int) -> None:
+    """Test-only direct cache UPSERT on the shared engine. No
+    production caller as of Phase 6a: in-broker writes go through the
+    WriterThread, the web tier RPCs. Kept as synchronous test
+    scaffolding (Option B)."""
+    # Apply any active warm-cache TTL extension (see `ttl_extension`
+    # context manager) so warm-managed rows store the spec's
+    # `nominal + window` lifetime. No-op outside a warm cycle.
+    ttl = _apply_ttl_extension(ttl)
+    expires_at = _now() + ttl
     with SessionLocal() as session:
-        session.execute(stmt)
+        session.execute(_set_stmt(nskey, payload, expires_at))
         session.commit()
 
 
@@ -446,8 +473,6 @@ def set_via_writer(writer: Any, key: str, value: Any, ttl: int) -> Any:
     handler, long-ops, admin) still use `set()`; their migration
     is Phase 4 / Phase 5.
     """
-    from sqlalchemy import text
-
     from mimir.broker.writes import WriteOp
 
     nskey = _ns(key)
@@ -460,15 +485,7 @@ def set_via_writer(writer: Any, key: str, value: Any, ttl: int) -> Any:
     expires_at = _now() + ttl
 
     def _fn(conn: Any) -> None:
-        conn.execute(
-            text(
-                "INSERT INTO cache (key, value, expires_at) "
-                "VALUES (:k, :v, :e) "
-                "ON CONFLICT(key) DO UPDATE SET "
-                "value = excluded.value, expires_at = excluded.expires_at"
-            ),
-            {"k": nskey, "v": payload, "e": expires_at},
-        )
+        conn.execute(_set_stmt(nskey, payload, expires_at))
 
     return writer.submit(WriteOp(label=f"cache.set:{key}", fn=_fn))
 
@@ -485,8 +502,6 @@ def _set_via_writer_for_nskey(
     submits to the writer, returns the WriteFuture. Closure returns
     None.
     """
-    from sqlalchemy import text
-
     from mimir.broker.writes import WriteOp
 
     # Apply any active warm-cache TTL extension at submit time; see
@@ -496,15 +511,7 @@ def _set_via_writer_for_nskey(
     expires_at = _now() + ttl
 
     def _fn(conn: Any) -> None:
-        conn.execute(
-            text(
-                "INSERT INTO cache (key, value, expires_at) "
-                "VALUES (:k, :v, :e) "
-                "ON CONFLICT(key) DO UPDATE SET "
-                "value = excluded.value, expires_at = excluded.expires_at"
-            ),
-            {"k": nskey, "v": value_json, "e": expires_at},
-        )
+        conn.execute(_set_stmt(nskey, value_json, expires_at))
 
     return writer.submit(WriteOp(label=f"cache.set:{nskey}", fn=_fn))
 
@@ -518,13 +525,10 @@ def delete_via_writer(writer: Any, nskey: str) -> Any:
     `_direct_delete`); callers with a raw key should call `_ns(key)`
     first.
     """
-    from sqlalchemy import text
-
     from mimir.broker.writes import WriteOp
 
     def _fn(conn: Any) -> int:
-        result = conn.execute(text("DELETE FROM cache WHERE key = :k"), {"k": nskey})
-        return result.rowcount or 0
+        return conn.execute(_delete_one_stmt(nskey)).rowcount or 0
 
     return writer.submit(WriteOp(label=f"cache.delete:{nskey}", fn=_fn))
 
@@ -537,19 +541,10 @@ def delete_for_inbox_via_writer(writer: Any, inbox_name: str) -> Any:
     keys following the convention `<helper>:<inbox_name>[:<rest>]`
     match if they end with `:{name}` or contain `:{name}:`.
     """
-    from sqlalchemy import text
-
     from mimir.broker.writes import WriteOp
 
-    suffix_pat = f"%:{inbox_name}"
-    middle_pat = f"%:{inbox_name}:%"
-
     def _fn(conn: Any) -> int:
-        result = conn.execute(
-            text("DELETE FROM cache WHERE key LIKE :suffix OR key LIKE :middle"),
-            {"suffix": suffix_pat, "middle": middle_pat},
-        )
-        return result.rowcount or 0
+        return conn.execute(_delete_for_inbox_stmt(inbox_name)).rowcount or 0
 
     return writer.submit(WriteOp(label=f"cache.delete_for_inbox:{inbox_name}", fn=_fn))
 
@@ -563,18 +558,12 @@ def purge_expired_via_writer(writer: Any) -> Any:
     semantics as `_direct_purge_expired` which also evaluates `_now()`
     at call time.
     """
-    from sqlalchemy import text
-
     from mimir.broker.writes import WriteOp
 
     cutoff = _now()
 
     def _fn(conn: Any) -> int:
-        result = conn.execute(
-            text("DELETE FROM cache WHERE expires_at < :cutoff"),
-            {"cutoff": cutoff},
-        )
-        return result.rowcount or 0
+        return conn.execute(_purge_expired_stmt(cutoff)).rowcount or 0
 
     return writer.submit(WriteOp(label="cache.purge_expired", fn=_fn))
 
@@ -659,15 +648,10 @@ def keys() -> list[str]:
 
 
 def _direct_purge_expired() -> int:
-    """Direct-SQLite delete of every expired row. Used by
-    `purge_expired()` when broker mode is off, and by
-    `mimir.broker.handlers` (the broker daemon's internal periodic
-    purge timer runs this against its own writer connection)."""
-    now = _now()
+    """Test-only. See _direct_set."""
+    cutoff = _now()
     with SessionLocal() as session:
-        result = session.execute(
-            delete_stmt(CacheEntry).where(CacheEntry.expires_at < now)
-        )
+        result = session.execute(_purge_expired_stmt(cutoff))
         session.commit()
         return result.rowcount or 0
 
@@ -693,10 +677,9 @@ def purge_expired() -> int:
 
 
 def _direct_delete(nskey: str) -> int:
-    """Direct-SQLite delete of one cache row. Used by `delete()`
-    inside the broker process, and by `mimir.broker.handlers`."""
+    """Test-only. See _direct_set."""
     with SessionLocal() as session:
-        result = session.execute(delete_stmt(CacheEntry).where(CacheEntry.key == nskey))
+        result = session.execute(_delete_one_stmt(nskey))
         session.commit()
         return result.rowcount or 0
 
@@ -749,20 +732,9 @@ def delete(key: str) -> int:
 
 
 def _direct_delete_for_inbox(inbox_name: str) -> int:
-    """Direct-SQLite delete of every cache entry whose key references
-    `inbox_name`. Used by `delete_for_inbox()` inside the broker
-    process, and by `mimir.broker.handlers`."""
-    suffix_pat = f"%:{inbox_name}"
-    middle_pat = f"%:{inbox_name}:%"
+    """Test-only. See _direct_set."""
     with SessionLocal() as session:
-        result = session.execute(
-            delete_stmt(CacheEntry).where(
-                or_(
-                    CacheEntry.key.like(suffix_pat),
-                    CacheEntry.key.like(middle_pat),
-                )
-            )
-        )
+        result = session.execute(_delete_for_inbox_stmt(inbox_name))
         session.commit()
         return result.rowcount or 0
 

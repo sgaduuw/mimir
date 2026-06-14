@@ -18,7 +18,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from mimir.extensions import SessionLocal, write_transaction
+from mimir.extensions import SessionLocal
 from mimir.models import RobotsRule
 
 # User-agent token: 1-64 visible-ASCII chars, no whitespace.
@@ -209,7 +209,7 @@ def add_rule(
 
     # Legacy fallback path (no broker context active, e.g. direct CLI
     # invocations or tests that deliberately clear the context).
-    with write_transaction(f"robots:add:{ua}"), SessionLocal() as session:
+    with SessionLocal() as session:
         if session.get(RobotsRule, ua) is not None:
             raise RobotsValidationError(
                 f"user_agent {ua!r} already has a rule; use update"
@@ -342,7 +342,7 @@ def update_rule(
         )
 
     # Legacy fallback path.
-    with write_transaction(f"robots:update:{ua}"), SessionLocal() as session:
+    with SessionLocal() as session:
         rule = session.get(RobotsRule, ua)
         if rule is None:
             raise RobotsRuleNotFound(f"no rule for user_agent {ua!r}")
@@ -402,7 +402,7 @@ def remove_rule(user_agent: str) -> None:
         return
 
     # Legacy fallback path.
-    with write_transaction(f"robots:remove:{ua}"), SessionLocal() as session:
+    with SessionLocal() as session:
         result = session.execute(delete(RobotsRule).where(RobotsRule.user_agent == ua))
         if result.rowcount == 0:
             raise RobotsRuleNotFound(f"no rule for user_agent {ua!r}")
@@ -456,7 +456,7 @@ def reset_rules() -> None:
         return
 
     # Legacy fallback path.
-    with write_transaction("robots:reset"), SessionLocal() as session:
+    with SessionLocal() as session:
         session.execute(delete(RobotsRule))
         session.execute(
             sqlite_insert(RobotsRule).values(

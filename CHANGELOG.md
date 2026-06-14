@@ -11,6 +11,25 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Broker single-writer cleanup complete (two-pool Phase 6b): removed
+  the `write_transaction()` helper, the BEGIN-IMMEDIATE event listener,
+  and the slow-write logging now that every steady-state write funnels
+  through the single WriterThread (VACUUM and the pre-serve startup
+  bootstrap remain the two documented exceptions). De-duplicated the
+  cache-write SQL behind shared statement-builders; the `_direct_*`
+  cache helpers are retained as test-only scaffolding. The cache worker
+  thread is kept deliberately for dispatch-level concurrency.
+
+### Removed
+
+- Removed the unused `SQLITE_BUSY_TIMEOUT_MS_WRITES` and
+  `WRITE_TRANSACTION_SLOW_LOG_MS` env knobs (they tuned the now-removed
+  `write_transaction` mechanism). `SQLITE_BUSY_TIMEOUT_MS` is unchanged;
+  `Settings` uses `extra="ignore"`, so any leftover values in a deploy
+  env are harmless.
+
 ## [3.4.0] - 2026-06-14
 
 ### Changed
