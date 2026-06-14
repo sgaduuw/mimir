@@ -326,3 +326,202 @@ def test_dispatch_table_routes_phase_2_3_ops(op_name):
     # pydantic class (not None or a placeholder).
     assert callable(handler)
     assert hasattr(model, "model_validate")
+
+
+# ----- Phase 6a: run_analyze dual-dispatch fork ---------------------------
+
+
+def test_run_analyze_dispatches_via_writer_when_active(broker_active):
+    """Phase 6a: run_analyze submits a WriteOp when a broker writer is
+    active, rather than writing on the shared engine."""
+    from mimir.broker._context import get_active_writer
+    from mimir.maintenance import run_analyze
+
+    writer = get_active_writer()
+    submits = []
+    original = writer.submit
+    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    try:
+        result = run_analyze(full=False)
+    finally:
+        writer.submit = original
+
+    assert result.full is False
+    assert isinstance(result.elapsed_ms, int)
+    assert any(op.label.startswith("analyze") for op in submits), (
+        f"run_analyze must submit an analyze WriteOp; saw {[o.label for o in submits]}"
+    )
+
+
+def test_run_analyze_falls_back_to_engine_when_no_writer(seeded_db):
+    """With no active broker writer (startup / non-broker), run_analyze
+    uses the shared-engine path and still returns a result."""
+    from mimir.broker import _context
+    from mimir.maintenance import run_analyze
+
+    _context.clear_active()  # ensure no writer
+    result = run_analyze(full=False)
+    assert result.full is False
+    assert isinstance(result.elapsed_ms, int)
+
+
+def test_run_analyze_full_resets_analysis_limit_on_shared_engine_fallback(seeded_db):
+    """Regression: run_analyze(full=True) on the shared-engine fallback
+    path (no active writer) must reset analysis_limit back to the
+    settings default before returning the pooled connection.
+
+    SQLAlchemy's QueuePool reuses physical DBAPI connections across
+    checkouts. The 'connect' event (_sqlite_pragmas) fires only on a new
+    physical connection, NOT on pool checkout, so a connection that ran
+    'PRAGMA analysis_limit=0' retains that value on its next checkout.
+    A missing try/finally reset means a later ANALYZE on the same pooled
+    connection runs unbounded, reproducing the 1.36.4 regression class.
+
+    This test fails against the pre-fix code (the else: branch had no
+    try/finally reset) and passes after."""
+    from sqlalchemy import text
+
+    from mimir.broker import _context
+    from mimir.extensions import engine
+    from mimir.config import settings
+    from mimir.maintenance import run_analyze
+
+    _context.clear_active()  # take the shared-engine fallback path
+
+    run_analyze(full=True)
+
+    # Open a new connection from the same pool. Because the pool reuses
+    # physical connections, the checkout may land on the same DBAPI
+    # connection that just ran analysis_limit=0. If the reset was
+    # missing, this reads back 0 instead of the configured default.
+    with engine.begin() as conn:
+        limit = conn.execute(text("PRAGMA analysis_limit")).scalar()
+
+    assert limit == settings.analyze_limit, (
+        f"analysis_limit should be reset to {settings.analyze_limit} "
+        f"after run_analyze(full=True) on the shared-engine fallback; "
+        f"got {limit} (the reset try/finally is missing)"
+    )
+
+
+# ----- load_maintainers ---------------------------------------------------
+
+
+def test_load_maintainers_dispatches_via_writer(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """Phase 6a: the MAINTAINERS replace lands as a WriteOp on the
+    active writer, and the subsystems triple is written correctly."""
+    from sqlalchemy import func, select
+
+    from mimir.broker._context import get_active_writer
+    from mimir.mainline import load_maintainers
+    from mimir.models import Subsystem
+
+    repo_path = tmp_path / "linux.git"
+    head_sha = _build_minimal_tree_with_maintainers(repo_path)
+
+    writer = get_active_writer()
+    submits = []
+    original = writer.submit
+    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    try:
+        ran, loaded, sha = load_maintainers(repo_path, tree_name="linus", force=True)
+    finally:
+        writer.submit = original
+
+    assert ran is True
+    assert loaded == 1
+    assert sha == head_sha
+    assert any("maintainers" in op.label for op in submits), (
+        f"expected a maintainers-replace WriteOp; saw {[o.label for o in submits]}"
+    )
+    with seeded_db() as s:
+        count = s.execute(select(func.count()).select_from(Subsystem)).scalar_one()
+    assert count == 1
+
+    # Verify the FK wiring: the single subsystem's id must be the
+    # parent of every SubsystemPath and SubsystemMaintainer row.
+    # The fixture blob has exactly one F: line and one M: line, so
+    # each child table must have exactly one row, and that row's
+    # subsystem_id must match the Subsystem row's id.
+    from mimir.models import SubsystemMaintainer, SubsystemPath
+
+    with seeded_db() as s:
+        subsystem_id = s.execute(select(Subsystem.id)).scalar_one()
+
+        path_rows = s.execute(select(SubsystemPath)).scalars().all()
+        assert len(path_rows) == 1, (
+            f"expected 1 SubsystemPath row for the seeded subsystem; got {len(path_rows)}"
+        )
+        assert path_rows[0].subsystem_id == subsystem_id, (
+            f"SubsystemPath.subsystem_id={path_rows[0].subsystem_id!r} "
+            f"does not match Subsystem.id={subsystem_id!r} (RETURNING-id misalignment)"
+        )
+
+        maintainer_rows = s.execute(select(SubsystemMaintainer)).scalars().all()
+        assert len(maintainer_rows) == 1, (
+            f"expected 1 SubsystemMaintainer row for the seeded subsystem; "
+            f"got {len(maintainer_rows)}"
+        )
+        assert maintainer_rows[0].subsystem_id == subsystem_id, (
+            f"SubsystemMaintainer.subsystem_id={maintainer_rows[0].subsystem_id!r} "
+            f"does not match Subsystem.id={subsystem_id!r} (RETURNING-id misalignment)"
+        )
+
+
+# ----- Phase 6a: update_mainline last_walked_at cadence dual-fork ---------
+
+
+def test_update_mainline_last_walked_at_dispatches_via_writer(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """Phase 6a: the per-tree `last_walked_at` cadence write lands as a
+    WriteOp on the active writer (not on the shared engine via
+    SessionLocal), AND `MainlineState.last_walked_at` actually advances.
+
+    All three phase-skip flags are set so only the cadence write fires;
+    the maintainers / commits phases have their own coverage above. This
+    fails before the 6a dual-fork (the cadence block ran on the shared
+    engine, so no `update_mainline:last_walked_at` WriteOp was submitted)
+    and passes after."""
+    from sqlalchemy import select
+
+    from mimir.broker._context import get_active_writer
+    from mimir.mainline import update_mainline
+    from mimir.models import MainlineState
+
+    repo_path = tmp_path / "linux.git"
+    _build_minimal_tree_with_maintainers(repo_path)
+    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
+
+    writer = get_active_writer()
+    submits = []
+    original = writer.submit
+    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    try:
+        update_mainline(
+            skip_fetch=True,
+            skip_commits=True,
+            skip_maintainers=True,
+        )
+    finally:
+        writer.submit = original
+
+    assert any(
+        op.label.startswith("update_mainline:last_walked_at") for op in submits
+    ), (
+        "expected an update_mainline:last_walked_at WriteOp on the active "
+        f"writer; saw {[o.label for o in submits]}"
+    )
+
+    # The cadence timestamp must actually be persisted, not merely
+    # submitted: a WriteOp that no-ops would still satisfy the label
+    # assertion above.
+    with seeded_db() as s:
+        state = s.execute(
+            select(MainlineState).where(MainlineState.tree_name == "linus")
+        ).scalar_one()
+    assert state.last_walked_at is not None, (
+        "update_mainline must advance MainlineState.last_walked_at on a successful tick"
+    )

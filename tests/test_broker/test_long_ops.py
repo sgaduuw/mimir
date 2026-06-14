@@ -356,3 +356,28 @@ def test_long_worker_does_not_block_cache_worker(seeded_db, monkeypatch):
                 cache_client.close()
     finally:
         _handlers._DISPATCH["bootstrap_inboxes"] = real_entry
+
+
+# ----- Phase 6a: bootstrap_inboxes writer dispatch -----------------------
+
+
+def test_bootstrap_inboxes_dispatches_via_writer(seeded_db, broker_active):
+    """Phase 6a: bootstrap_inboxes submits a WriteOp when a broker
+    writer is active (the steady-state RPC path)."""
+    from mimir.broker._context import get_active_writer
+    from mimir.inboxes import bootstrap_inboxes
+
+    writer = get_active_writer()
+    submits = []
+    original = writer.submit
+    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    try:
+        result = bootstrap_inboxes()
+    finally:
+        writer.submit = original
+
+    assert isinstance(result, dict)  # bootstrap_inboxes returns {name: Inbox}
+    assert any("bootstrap" in op.label for op in submits), (
+        f"bootstrap_inboxes must submit a WriteOp when a writer is active; "
+        f"saw {[o.label for o in submits]}"
+    )
