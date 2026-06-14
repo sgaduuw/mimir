@@ -439,3 +439,32 @@ def test_load_maintainers_dispatches_via_writer(
     with seeded_db() as s:
         count = s.execute(select(func.count()).select_from(Subsystem)).scalar_one()
     assert count == 1
+
+    # Verify the FK wiring: the single subsystem's id must be the
+    # parent of every SubsystemPath and SubsystemMaintainer row.
+    # The fixture blob has exactly one F: line and one M: line, so
+    # each child table must have exactly one row, and that row's
+    # subsystem_id must match the Subsystem row's id.
+    from mimir.models import SubsystemMaintainer, SubsystemPath
+
+    with seeded_db() as s:
+        subsystem_id = s.execute(select(Subsystem.id)).scalar_one()
+
+        path_rows = s.execute(select(SubsystemPath)).scalars().all()
+        assert len(path_rows) == 1, (
+            f"expected 1 SubsystemPath row for the seeded subsystem; got {len(path_rows)}"
+        )
+        assert path_rows[0].subsystem_id == subsystem_id, (
+            f"SubsystemPath.subsystem_id={path_rows[0].subsystem_id!r} "
+            f"does not match Subsystem.id={subsystem_id!r} (RETURNING-id misalignment)"
+        )
+
+        maintainer_rows = s.execute(select(SubsystemMaintainer)).scalars().all()
+        assert len(maintainer_rows) == 1, (
+            f"expected 1 SubsystemMaintainer row for the seeded subsystem; "
+            f"got {len(maintainer_rows)}"
+        )
+        assert maintainer_rows[0].subsystem_id == subsystem_id, (
+            f"SubsystemMaintainer.subsystem_id={maintainer_rows[0].subsystem_id!r} "
+            f"does not match Subsystem.id={subsystem_id!r} (RETURNING-id misalignment)"
+        )
