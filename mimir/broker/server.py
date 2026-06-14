@@ -454,14 +454,17 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     t0 = time.perf_counter()
                     # Mark this worker thread as "currently dispatching a
                     # broker handler" so any reachable `cache.set` /
-                    # `cache.delete_for_inbox` etc. falls through to the
-                    # direct write path rather than attempting a self-RPC
-                    # back through the socket. Production handles the
-                    # same concern via `MIMIR_IS_BROKER=true` env at the
-                    # process level, but the in-process test environment
-                    # shares `settings.mimir_is_broker` between broker
-                    # thread and CLI invocations; the thread-local flag
-                    # is the right granularity in either case.
+                    # `cache.delete` / `cache.delete_for_inbox` avoids a
+                    # self-RPC back through the socket and instead routes
+                    # through the active WriterThread (the in-broker
+                    # single-writer path; it falls back to a direct write
+                    # only when no writer is registered, e.g. some tests).
+                    # Production handles the same concern via
+                    # `MIMIR_IS_BROKER=true` env at the process level, but
+                    # the in-process test environment shares
+                    # `settings.mimir_is_broker` between broker thread and
+                    # CLI invocations; the thread-local flag is the right
+                    # granularity in either case.
                     cache._set_broker_handler_active(True)
                     try:
                         reply = dispatch(line)
