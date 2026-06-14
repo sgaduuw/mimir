@@ -71,7 +71,8 @@ def test_add_rule_dispatches_via_writer(seeded_db, broker_active):
 
 def test_add_rule_falls_back_to_direct_when_no_context(seeded_db):
     """When called outside the broker context, `add_rule` must fall
-    back to the legacy `write_transaction() + SessionLocal()` path."""
+    back to the legacy direct `SessionLocal()` path (write_transaction
+    was removed in Phase 6b)."""
     from sqlalchemy import select
 
     from mimir.broker import _context
