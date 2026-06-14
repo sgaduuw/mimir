@@ -190,24 +190,12 @@ def test_purge_expired_via_writer_drops_expired_only(writer, seeded_db):
     assert stale_2 is None
 
 
-def test_cache_handlers_do_not_call_write_transaction(
-    seeded_db, monkeypatch, broker_active
-):
-    """Phase 4 contract: the broker cache handlers must NOT call
-    `write_transaction`. Pre-4 they wrapped `_direct_*` in
-    `write_transaction("broker:cache_*")`; Phase 4 dispatches via
-    the active WriterThread instead. Monkeypatching `write_transaction`
-    to raise asserts none of the four cache handlers reach it.
+def test_cache_handlers_do_not_call_write_transaction(seeded_db, broker_active):
+    """Phase 4 contract: the broker cache handlers dispatch via the
+    active WriterThread, not via write_transaction. write_transaction
+    was removed in Phase 6b; the behavioral assertions below pin
+    that all four handlers complete successfully via the writer path.
     """
-    import mimir.extensions as ext_mod
-
-    def _forbidden(*args, **kwargs):
-        raise AssertionError(
-            "write_transaction must not be called by Phase 4 cache handlers"
-        )
-
-    monkeypatch.setattr(ext_mod, "write_transaction", _forbidden)
-
     from mimir.broker.handlers.cache import (
         handle_cache_delete,
         handle_cache_delete_for_inbox,
