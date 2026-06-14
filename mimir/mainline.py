@@ -40,7 +40,7 @@ from mimir.datetime_utils import aware_utc
 
 if TYPE_CHECKING:
     from mimir.config import TreeConfig
-from mimir.extensions import SessionLocal, write_transaction
+from mimir.extensions import SessionLocal
 from mimir.models import (
     MainlineCommit,
     MainlineState,
@@ -752,13 +752,11 @@ def load_maintainers(
         loaded = loaded_out
     else:
         # Legacy shared-engine fallback (startup pre-serve, non-broker
-        # callers, tests). Same SQL as the writer closure; still wrapped
-        # in write_transaction for BEGIN IMMEDIATE on the shared pool
-        # (6a keeps this; 6b removes write_transaction).
-        with (
-            write_transaction("update_mainline:maintainers"),
-            SessionLocal() as session,
-        ):
+        # callers, tests). Same SQL as the writer closure. No
+        # write_transaction wrapper: removed in Phase 6b now that the
+        # broker is the sole writer on its own engine and no concurrent
+        # shared-engine committer exists during serving.
+        with SessionLocal() as session:
             state = session.get(MainlineState, tree_name)
             if state is None:
                 state = MainlineState(tree_name=tree_name)
