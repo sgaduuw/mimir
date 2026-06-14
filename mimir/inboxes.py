@@ -189,10 +189,12 @@ def bootstrap_inboxes() -> dict[str, Inbox]:
     rows untouched, return {name: Inbox} for every row in the table.
     Safe to call repeatedly and concurrently.
 
-    Owns its own session so callers can't accidentally have unrelated
-    pending writes committed alongside the bootstrap. Returned Inbox
-    instances are detached; pass them through `session.merge()` if you
-    need them attached to a working session.
+    Phase 6a: the write dispatches through the active WriterThread when
+    a broker context is set (the steady-state `handle_bootstrap_inboxes`
+    RPC); otherwise it runs on `SessionLocal` (the pre-serve
+    `_bootstrap_inboxes_if_needed`, exception class 2, and non-broker
+    callers / tests). The re-read and `_publish_names` nav-cache refresh
+    run on a read session after the write commits.
     """
     rows = [
         {
@@ -202,16 +204,36 @@ def bootstrap_inboxes() -> dict[str, Inbox]:
         }
         for name, cfg in settings.inboxes.items()
     ]
-    with SessionLocal() as session:
-        if rows:
-            stmt = (
-                sqlite_insert(Inbox)
-                .values(rows)
-                .on_conflict_do_nothing(index_elements=["name"])
-            )
-            session.execute(stmt)
-            session.commit()
 
+    try:
+        from mimir.broker import _context
+
+        writer = _context.get_active_writer()
+    except RuntimeError:
+        writer = None
+
+    if rows:
+        if writer is not None:
+            from mimir.broker.writes import WriteOp
+
+            def _fn(conn):
+                conn.execute(
+                    sqlite_insert(Inbox)
+                    .values(rows)
+                    .on_conflict_do_nothing(index_elements=["name"])
+                )
+
+            writer.submit(WriteOp(label="bootstrap_inboxes", fn=_fn)).result()
+        else:
+            with SessionLocal() as session:
+                session.execute(
+                    sqlite_insert(Inbox)
+                    .values(rows)
+                    .on_conflict_do_nothing(index_elements=["name"])
+                )
+                session.commit()
+
+    with SessionLocal() as session:
         out = {
             inbox.name: inbox
             for inbox in session.execute(select(Inbox)).scalars().all()

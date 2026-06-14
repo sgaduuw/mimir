@@ -9,6 +9,20 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
+## [Unreleased]
+
+### Changed
+
+- Broker single-writer cleanup (two-pool Phase 6a): the last
+  steady-state shared-engine writers now funnel through the single
+  WriterThread. `cache.delete` / `cache.delete_for_inbox`,
+  `run_analyze`, `load_maintainers`, the `update_mainline`
+  `last_walked_at` cadence write, and the steady-state
+  `bootstrap_inboxes` RPC dispatch via the writer when a broker context
+  is active, with a shared-engine fallback for the pre-serve startup
+  bootstrap and non-broker callers. VACUUM and the pre-serve startup
+  phase remain documented exceptions. No config or interface change.
+
 ## [3.3.1] - 2026-06-13
 
 ### Fixed
