@@ -42,7 +42,7 @@ def _writer_submit_recorder():
 def test_add_rule_dispatches_via_writer(seeded_db, broker_active):
     """Phase 5 contract: `mimir.robots.add_rule` dispatches via the
     active WriterThread when broker context is set, not via the
-    legacy `write_transaction() + SessionLocal()` path."""
+    legacy direct `SessionLocal()` path."""
     from sqlalchemy import select
 
     from mimir.models import RobotsRule
