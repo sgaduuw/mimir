@@ -35,18 +35,23 @@ from mimir.broker.protocol import (
     IngestInboxRequest,
     Reply,
 )
-from mimir.extensions import write_transaction
 
 
 def handle_bootstrap_inboxes(req: BootstrapInboxesRequest) -> Reply:
     """Reconcile `Settings.inboxes` env config into the `inboxes`
     table. Delegates to `mimir.inboxes.bootstrap_inboxes()` (the
     same function the scheduler-tasks container called directly
-    pre-Phase-2)."""
+    pre-Phase-2).
+
+    Phase 6a: bootstrap_inboxes now dispatches its own write through
+    the active WriterThread, so no shared-engine write_transaction
+    wrapper is needed here."""
     from mimir.inboxes import bootstrap_inboxes
 
-    with write_transaction("broker:bootstrap_inboxes"):
-        inboxes = bootstrap_inboxes()
+    # Phase 6a: bootstrap_inboxes now dispatches its own write through
+    # the active WriterThread, so no shared-engine write_transaction
+    # wrapper is needed here.
+    inboxes = bootstrap_inboxes()
     return Reply(rpc_id=req.rpc_id, ok=True, result={"inboxes": len(inboxes)})
 
 

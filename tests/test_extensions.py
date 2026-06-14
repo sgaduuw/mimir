@@ -477,3 +477,30 @@ def test_analyze_limit_default_is_4000():
     from mimir.config import Settings
 
     assert Settings.model_fields["analyze_limit"].default == 4000
+
+
+def test_full_analyze_writeop_resets_analysis_limit(broker_active):
+    """A full ANALYZE WriteOp sets analysis_limit=0 for its run, then
+    must restore the default on the persistent writer connection so the
+    next scheduled (bounded) analyze is not left unbounded."""
+    from sqlalchemy import text
+
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+    from mimir.config import settings
+    from mimir.maintenance import run_analyze
+
+    run_analyze(full=True)
+
+    writer = get_active_writer()
+
+    # Submit a probe WriteOp that reads analysis_limit on the SAME
+    # persistent writer connection used by the analyze op.
+    def _probe(conn):
+        return conn.execute(text("PRAGMA analysis_limit")).scalar()
+
+    limit = writer.submit(WriteOp(label="probe:analysis_limit", fn=_probe)).result()
+    assert limit == settings.analyze_limit, (
+        f"writer connection left analysis_limit={limit}, "
+        f"expected default {settings.analyze_limit}"
+    )
