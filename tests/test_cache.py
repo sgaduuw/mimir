@@ -1531,3 +1531,31 @@ def test_direct_and_writer_paths_write_identical_rows(broker_active, seeded_db):
     # expires_at computed from the same ttl within the same test second;
     # allow a 2s skew for clock tick between the two writes.
     assert abs(row_a.expires_at - row_b.expires_at) <= 2
+
+
+def test_no_production_module_references_direct_cache_helpers():
+    """Option B contract: _direct_set/_delete/_delete_for_inbox/
+    _purge_expired are test-only scaffolding. No production module under
+    mimir/ (other than cache.py's own definitions) may reference them."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent / "mimir"
+    offenders = []
+    for path in root.rglob("*.py"):
+        if path.name == "cache.py":
+            continue  # the definitions live here
+        text = path.read_text(encoding="utf-8")
+        for name in (
+            "_direct_set",
+            "_direct_delete",
+            "_direct_delete_for_inbox",
+            "_direct_purge_expired",
+        ):
+            # Allow bare comment mentions but flag actual references:
+            # a `(` after the name indicates a call.
+            if f"{name}(" in text:
+                offenders.append(f"{path}: {name}")
+    assert not offenders, (
+        "production modules must not call _direct_* cache helpers "
+        f"(test-only per Phase 6b Option B): {offenders}"
+    )
