@@ -1498,3 +1498,36 @@ def test_delete_for_inbox_dispatches_via_writer_when_broker_handler_active(
     assert any(lbl.startswith("cache.delete_for_inbox:") for lbl in labels), (
         f"delete_for_inbox must submit a WriteOp; saw {labels}"
     )
+
+
+def test_direct_and_writer_paths_write_identical_rows(broker_active, seeded_db):
+    """Option B: the direct path and the writer path share one
+    statement-builder per op, so they produce byte-identical cache rows
+    for the same inputs."""
+    from sqlalchemy import select
+
+    from mimir import cache
+    from mimir.broker._context import get_active_writer
+    from mimir.models import CacheEntry
+
+    nskey_a = cache._ns("dedupe-probe-a")
+    nskey_b = cache._ns("dedupe-probe-b")
+
+    # Direct path.
+    cache._direct_set(nskey_a, '"v"', ttl=999)
+    # Writer path (same payload + ttl).
+    writer = get_active_writer()
+    cache._set_via_writer_for_nskey(writer, nskey_b, '"v"', ttl=999).result()
+
+    with seeded_db() as s:
+        row_a = s.execute(
+            select(CacheEntry).where(CacheEntry.key == nskey_a)
+        ).scalar_one()
+        row_b = s.execute(
+            select(CacheEntry).where(CacheEntry.key == nskey_b)
+        ).scalar_one()
+
+    assert row_a.value == row_b.value == '"v"'
+    # expires_at computed from the same ttl within the same test second;
+    # allow a 2s skew for clock tick between the two writes.
+    assert abs(row_a.expires_at - row_b.expires_at) <= 2
