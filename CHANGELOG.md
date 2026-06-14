@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-06-14
+
 ### Changed
 
 - Broker single-writer cleanup complete (two-pool Phase 6b): removed
