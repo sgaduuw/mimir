@@ -22,7 +22,7 @@ contract directly so the regression surfaces in CI instead.
 from sqlalchemy import event, text
 
 from mimir.config import settings
-from mimir.extensions import SessionLocal, engine, write_transaction
+from mimir.extensions import SessionLocal, engine
 
 
 def _pragma(name: str):
@@ -369,6 +369,17 @@ def test_write_transaction_unlabelled_default(caplog, monkeypatch):
     slow = [r for r in caplog.records if "write_transaction slow" in r.getMessage()]
     assert slow, "expected a slow-write WARNING"
     assert "label=(unlabelled)" in slow[0].getMessage()
+
+
+def test_write_transaction_symbol_removed():
+    """Phase 6b: write_transaction and the BEGIN-IMMEDIATE machinery are
+    gone. The broker is the sole writer on its own engine, so no
+    shared-engine BEGIN-IMMEDIATE promotion is needed."""
+    import mimir.extensions as ext
+
+    assert not hasattr(ext, "write_transaction"), (
+        "write_transaction must be removed in Phase 6b"
+    )
 
 
 def test_analyze_limit_pragma_set_on_every_connection():
