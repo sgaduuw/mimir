@@ -1,9 +1,10 @@
 """Ingest pipeline split across four submodules:
 
 - `epoch`: the hot per-epoch walk (`ingest_epoch`), the `IngestResult`
-  model, and the shared helpers that `replay` / `backfill` / `orchestrate`
-  reuse (`_to_article`, `_flush_observations`, `_maybe_promote_list_address`).
-  The tz-coercion helper (`aware_utc`) moved out of this package into
+  model, and the shared helper (`_to_article`) that `replay` / `backfill`
+  / `orchestrate` reuse. The observation-flush and list-address-promotion
+  writes live as composite WriteOps in `._pending`. The tz-coercion
+  helper (`aware_utc`) moved out of this package into
   `mimir.datetime_utils` once a non-ingest caller (`patch_state.py`)
   needed the same shape.
 - `replay`: re-walking persisted `parse_failures` rows after a parser fix
@@ -23,7 +24,6 @@ from mimir.ingest.epoch import (
     PROGRESS_EVERY,
     PROMOTE_DOMINANCE,
     IngestResult,
-    _maybe_promote_list_address,
     ingest_epoch,
 )
 from mimir.ingest.orchestrate import (
@@ -43,7 +43,6 @@ __all__ = [
     "BackfillResult",
     "IngestResult",
     "ReplayResult",
-    "_maybe_promote_list_address",
     "backfill_canonicals",
     "discover_epochs",
     "ingest_all",
