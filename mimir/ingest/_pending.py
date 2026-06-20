@@ -129,9 +129,8 @@ def _submit_ingest_batch(writer, pending: "_PendingWrites") -> WriteFuture:
        Records with `delete=True` delete the row at the PK;
        records with `delete=False` upsert with bumped attempts +
        refreshed error fields + updated last_attempt timestamp.
-    4. InboxAddressObservation upsert batch. Mirrors `_flush_observations`
-       from `mimir/ingest/epoch.py`: counts are additive; `last_seen`
-       is the scalar MAX of existing and incoming.
+    4. InboxAddressObservation upsert batch: counts are additive;
+       `last_seen` is the scalar MAX of existing and incoming.
     5. Inbox.last_article_date conditional UPDATE. Only runs when
        `pending.last_article_date_candidate` is not None; updates
        only when the candidate is greater than the current value
@@ -313,9 +312,8 @@ def _submit_ingest_batch(writer, pending: "_PendingWrites") -> WriteFuture:
                         )
                     )
 
-        # Step 4: InboxAddressObservation upsert batch. Mirrors
-        # `_flush_observations` in epoch.py: counts are additive,
-        # last_seen takes the scalar max of existing and incoming.
+        # Step 4: InboxAddressObservation upsert batch: counts are
+        # additive, last_seen takes the scalar max of existing and incoming.
         if address_observations:
             rows = [
                 {
@@ -381,11 +379,12 @@ def _submit_ingest_batch(writer, pending: "_PendingWrites") -> WriteFuture:
 def _submit_promote_list_address(writer, inbox_id: int) -> WriteFuture:
     """Phase 3b of the two-pool restructure.
 
-    Compose a WriteOp that runs the same promotion semantics as the
-    legacy _maybe_promote_list_address(session, inbox_id) helper from
-    mimir/ingest/epoch.py. Reads the observations tally, checks for a
-    clear modal winner that meets the dominance threshold, and promotes
-    Inbox.list_address from NULL to that address.
+    Compose a WriteOp that promotes an inbox's `list_address`: read the
+    observations tally, check for a clear modal winner that meets the
+    count + dominance thresholds (MIN_PROMOTE_OBSERVATIONS /
+    PROMOTE_DOMINANCE), and promote Inbox.list_address from NULL to that
+    address. The gate boundaries are pinned by the promotion tests in
+    tests/test_ingest/test_epoch.py.
 
     Returns the WriteFuture so callers can await .result() before the
     next operation. Sub-ms execution time in practice.

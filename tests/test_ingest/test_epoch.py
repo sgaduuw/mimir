@@ -4,8 +4,8 @@ dup_batch / dup_db / failed), parse-failure persistence,
 patch-series key + position assignment at ingest time,
 diff-touched-paths + review-trailer extraction, the
 list-address observation tally + canonical-inbox pinning,
-auto-promotion (`_maybe_promote_list_address`), the kept-
-headers filter, and the tz-aware UTC normalisation for
+auto-promotion (the `_submit_promote_list_address` WriteOp
+gate), the kept-headers filter, and the tz-aware UTC normalisation for
 `-0000`-dated messages."""
 
 from datetime import datetime, timezone
@@ -17,9 +17,9 @@ from sqlalchemy import func, select
 from mimir.ingest import (
     MIN_PROMOTE_OBSERVATIONS,
     PROMOTE_DOMINANCE,
-    _maybe_promote_list_address,
     ingest_epoch,
 )
+from mimir.ingest._pending import _submit_promote_list_address
 from mimir.models import (
     Article,
     ArticleFile,
@@ -38,6 +38,21 @@ from tests.test_ingest._helpers import (
     _rfc5322,
     _rfc5322_with_date,
 )
+
+
+@pytest.fixture
+def writer():
+    """Function-scoped WriterThread for the list-address promotion
+    gate tests, mirroring the fixture in test_ingest_phase3b.py. The
+    autouse `_reset_db` fixture runs before this, so the DB is already
+    seeded; the writer commits via its own engine against the same
+    test DB the `seeded_db` sessions read from."""
+    from mimir.broker.writes import WriterThread
+
+    wt = WriterThread.from_settings()
+    wt.start()
+    yield wt
+    wt.stop(timeout=10)
 
 
 def test_ingest_new_message_creates_article(seeded_db, tmp_path, broker_active):
@@ -970,7 +985,7 @@ def test_ingest_canonical_null_when_no_known_address_matches(
         assert art.canonical_inbox_id is None
 
 
-def test_promote_list_address_below_threshold_skips(seeded_db):
+def test_promote_list_address_below_threshold_skips(seeded_db, writer):
     """Below MIN_PROMOTE_OBSERVATIONS samples, promotion stays its
     hand, even with a clear modal address."""
     alpha = _alpha(seeded_db)
@@ -984,14 +999,15 @@ def test_promote_list_address_below_threshold_skips(seeded_db):
             )
         )
         s.commit()
-        result = _maybe_promote_list_address(s, alpha.id)
-        s.commit()
+
+    _submit_promote_list_address(writer, alpha.id).result(timeout=10)
+
+    with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
-        assert result is None
         assert ix.list_address is None
 
 
-def test_promote_list_address_clear_modal_promotes(seeded_db):
+def test_promote_list_address_clear_modal_promotes(seeded_db, writer):
     """Above MIN_PROMOTE_OBSERVATIONS samples AND with the modal
     address's share of observations >= PROMOTE_DOMINANCE, promotion
     fires. Test data is derived from the constants so a future tuning
@@ -1027,14 +1043,15 @@ def test_promote_list_address_clear_modal_promotes(seeded_db):
             )
         )
         s.commit()
-        result = _maybe_promote_list_address(s, alpha.id)
-        s.commit()
+
+    _submit_promote_list_address(writer, alpha.id).result(timeout=10)
+
+    with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
-        assert result == "linux-fsdevel@vger.kernel.org"
         assert ix.list_address == "linux-fsdevel@vger.kernel.org"
 
 
-def test_promote_list_address_split_decision_skips(seeded_db):
+def test_promote_list_address_split_decision_skips(seeded_db, writer):
     """Above MIN_PROMOTE_OBSERVATIONS samples but with the modal
     address's share < PROMOTE_DOMINANCE, promotion skips so we don't
     lock in the wrong canonical. Derived from constants for the same
@@ -1067,10 +1084,11 @@ def test_promote_list_address_split_decision_skips(seeded_db):
             )
         )
         s.commit()
-        result = _maybe_promote_list_address(s, alpha.id)
-        s.commit()
+
+    _submit_promote_list_address(writer, alpha.id).result(timeout=10)
+
+    with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
-        assert result is None
         assert ix.list_address is None
 
 
@@ -1084,7 +1102,7 @@ def test_promote_list_address_split_decision_skips(seeded_db):
     ids=["below=skip", "at=promote", "above=promote"],
 )
 def test_promote_list_address_count_threshold_is_inclusive_at_min(
-    seeded_db, winner_count, should_promote
+    seeded_db, writer, winner_count, should_promote
 ):
     """The count gate at `_submit_promote_list_address` is
     `if top_count < MIN_PROMOTE_OBSERVATIONS: return None`, i.e.
@@ -1108,24 +1126,25 @@ def test_promote_list_address_count_threshold_is_inclusive_at_min(
             )
         )
         s.commit()
-        result = _maybe_promote_list_address(s, alpha.id)
-        s.commit()
+
+    _submit_promote_list_address(writer, alpha.id).result(timeout=10)
+
+    with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
 
     if should_promote:
-        assert result == "linux-fsdevel@vger.kernel.org", (
+        assert ix.list_address == "linux-fsdevel@vger.kernel.org", (
             f"with top_count={winner_count} and dominance=1.0, promotion "
             f"must fire (count gate is `< MIN_PROMOTE_OBSERVATIONS`, "
-            f"INCLUSIVE at the threshold). Got result={result!r}."
+            f"INCLUSIVE at the threshold). Got list_address="
+            f"{ix.list_address!r}."
         )
-        assert ix.list_address == "linux-fsdevel@vger.kernel.org"
     else:
-        assert result is None, (
+        assert ix.list_address is None, (
             f"with top_count={winner_count} (below MIN_PROMOTE_OBSERVATIONS="
             f"{MIN_PROMOTE_OBSERVATIONS}), promotion must skip. Got "
-            f"result={result!r}."
+            f"list_address={ix.list_address!r}."
         )
-        assert ix.list_address is None
 
 
 @pytest.mark.parametrize(
@@ -1141,7 +1160,7 @@ def test_promote_list_address_count_threshold_is_inclusive_at_min(
     ids=["0.69=skip", "0.70=promote", "0.71=promote"],
 )
 def test_promote_list_address_dominance_threshold_is_inclusive_at_min(
-    seeded_db, winner, runner, should_promote
+    seeded_db, writer, winner, runner, should_promote
 ):
     """The dominance gate at `_submit_promote_list_address` is
     `if top_count / (top_count + second_count) < PROMOTE_DOMINANCE:
@@ -1176,28 +1195,28 @@ def test_promote_list_address_dominance_threshold_is_inclusive_at_min(
             )
         )
         s.commit()
-        result = _maybe_promote_list_address(s, alpha.id)
-        s.commit()
+
+    _submit_promote_list_address(writer, alpha.id).result(timeout=10)
+
+    with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
 
     ratio = winner / (winner + runner)
     if should_promote:
-        assert result == "linux-fsdevel@vger.kernel.org", (
+        assert ix.list_address == "linux-fsdevel@vger.kernel.org", (
             f"with dominance ratio {ratio:.2f} (>= PROMOTE_DOMINANCE="
             f"{PROMOTE_DOMINANCE}), promotion must fire. Got "
-            f"result={result!r}."
+            f"list_address={ix.list_address!r}."
         )
-        assert ix.list_address == "linux-fsdevel@vger.kernel.org"
     else:
-        assert result is None, (
+        assert ix.list_address is None, (
             f"with dominance ratio {ratio:.2f} (< PROMOTE_DOMINANCE="
             f"{PROMOTE_DOMINANCE}), promotion must skip. Got "
-            f"result={result!r}."
+            f"list_address={ix.list_address!r}."
         )
-        assert ix.list_address is None
 
 
-def test_promote_list_address_already_set_no_overwrite(seeded_db):
+def test_promote_list_address_already_set_no_overwrite(seeded_db, writer):
     alpha = _alpha(seeded_db)
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
@@ -1211,10 +1230,11 @@ def test_promote_list_address_already_set_no_overwrite(seeded_db):
             )
         )
         s.commit()
-        result = _maybe_promote_list_address(s, alpha.id)
-        s.commit()
+
+    _submit_promote_list_address(writer, alpha.id).result(timeout=10)
+
+    with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
-        assert result is None
         assert ix.list_address == "operator-override@example.com"
 
 

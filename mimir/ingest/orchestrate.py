@@ -148,8 +148,8 @@ def ingest_inbox(
                 remaining -= r.new + r.linked + r.dup_batch + r.dup_db + r.failed
 
     # Promote `Inbox.list_address` if we now have enough observations.
-    # Dispatched as a WriteOp through the writer, same semantics as
-    # the legacy write_transaction + _maybe_promote_list_address path.
+    # Dispatched as a WriteOp through the writer (gate semantics live in
+    # `_submit_promote_list_address`).
     _submit_promote_list_address(writer, inbox.id).result(timeout=30)
 
     # Refresh planner stats when we've moved enough rows that prior
