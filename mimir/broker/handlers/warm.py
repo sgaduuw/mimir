@@ -37,16 +37,6 @@ from mimir.config import settings
 logger = logging.getLogger(__name__)
 
 
-# Back-compat constant retained for callers that invoke `_run_targets`
-# without a `priority`. Task 5 of the fast/slow tier split moved the
-# in-handler default to tier-aware sourcing from `settings.warm_cache_
-# {fast,slow}_refresh_window_sec` (see `_run_targets`); the handlers
-# always pass `priority=req.priority` so this fallback is only ever
-# hit by ad-hoc / test callers that omit the kwarg. Kept module-level
-# so tests can monkey-patch.
-WARM_REFRESH_WITHIN_SEC = 450
-
-
 # Config-drift guard (Layer 2): once-per-process flag for the
 # sitemap-labels-but-no-SITE_BASE_URL WARNING. A misconfigured broker
 # sees ~200 warm RPCs per scheduler fast-tier tick, each of which
