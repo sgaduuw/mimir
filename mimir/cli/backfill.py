@@ -18,19 +18,11 @@ yield finer interleaving with queued cache writes / ingest ticks.
 
 import click
 
-from mimir.cli._common import _broker_backfill_loop, _configure_logging
-
-
-def _verbose_broker_hint(verbose: int) -> None:
-    """A `-v` flag asks for per-batch progress that flows via the
-    broker's own log rather than the CLI's stdout. Tell the operator
-    once where to look instead of silently no-op'ing the flag."""
-    if verbose:
-        click.echo(
-            "per-batch progress flows via broker logs "
-            "(e.g. `podman logs -f mimir-broker`)",
-            err=True,
-        )
+from mimir.cli._common import (
+    _broker_backfill_loop,
+    _configure_logging,
+    _verbose_broker_hint,
+)
 
 
 @click.command("backfill-article-files")

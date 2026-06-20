@@ -248,16 +248,14 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
 
 
 def handle_warm_subsystem(req: WarmSubsystemRequest) -> Reply:
-    """Per-(inbox, subsystem) warm. Replaces the serial inner loop of
-    `_warm_subsystem_dashboards` for the case where the slow-tier CLI
-    fans out one RPC per (inbox, subsystem) at the dispatch site.
+    """Per-(inbox, subsystem) warm: the slow-tier CLI fans out one RPC
+    per (inbox, subsystem) at the dispatch site.
 
     The work delegates to `mimir.cli.cache._per_subsystem_warm_call`
-    so the dispatch shape stays single-source-of-truth with the
-    in-handler `_warm_subsystem_dashboards` path (which calls the
-    same helper). The whole sequence runs under `refresh_window` +
-    `ttl_extension` per `req.priority`, matching `handle_warm_inbox`
-    / `handle_warm_global` semantics.
+    so the per-subsystem warm shape stays single-source-of-truth
+    between this handler and the CLI fan-out. The whole sequence runs
+    under `refresh_window` + `ttl_extension` per `req.priority`,
+    matching `handle_warm_inbox` / `handle_warm_global` semantics.
 
     Production motivation 2026-06-01: linux-arm-kernel's slow-tier
     warm cycle took ~111 s wall time, ~107 s of which was the
