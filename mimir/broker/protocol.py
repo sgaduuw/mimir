@@ -14,9 +14,9 @@ the encoding side imports never reach the broker process.
 Op kinds: **cache** ops (sub-ms commits; `cache_set`, `cache_delete`,
 `cache_delete_for_inbox`, `cache_purge_expired`, `ping`) route to
 the broker's cache worker. **Long** ops (commit batches that run
-seconds to minutes; `bootstrap_inboxes` and the Phase 2.1+ additions
-to come: `ingest_epoch`, `backfill_*`, `update_mainline`, `analyze`,
-`vacuum`) route to the broker's long worker. The two workers compete
+seconds to minutes; `bootstrap_inboxes`, `ingest_epoch`,
+`backfill_*`, `update_mainline`, `analyze`, `vacuum`) route to the
+broker's long worker. The two workers compete
 for the SQLite writer lock at the SQLite level, so cache writes only
 wait for the long worker's current commit batch, not the whole long
 op. See `handlers.LONG_OPS` for the routing set.

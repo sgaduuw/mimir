@@ -1,5 +1,5 @@
-"""Writer-side infrastructure for Phase 1 of the broker two-pool
-restructure (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
+"""Writer-side infrastructure for the broker two-pool restructure
+(`_claude/specs/2026-05-29-broker-two-pool-design.md`).
 
 Three primitives:
 - `WriteOp`: dataclass holding a label + callable that runs inside
@@ -10,8 +10,9 @@ Three primitives:
 - `WriterThread`: the actor itself. Single thread, one writable
   SQLAlchemy connection, bounded queue, BEGIN IMMEDIATE per op.
 
-This is parallel infrastructure in Phase 1: no caller is migrated
-yet."""
+Every broker write funnels through the single `WriterThread` as of
+the Phase 6 completion (see CONTEXT.md), except VACUUM and the
+pre-serve startup bootstrap."""
 
 from __future__ import annotations
 
@@ -162,12 +163,12 @@ class WriterThread:
         try:
             with conn.begin():
                 # SQLAlchemy 2.0 conn.begin() is the standard transaction
-                # context. The BEGIN IMMEDIATE listener from
-                # mimir.extensions.write_transaction does NOT bind here
-                # (we use a fresh engine). For Phase 1 the writer is
-                # the only writer so the default DEFERRED is fine;
-                # Phase 2+ may switch to explicit BEGIN IMMEDIATE if
-                # contention with other writers becomes possible.
+                # context. This thread is the sole SQLite writer in the
+                # broker (two-pool Phase 6 complete), so the default
+                # DEFERRED begin is safe: there is no concurrent writer to
+                # race a snapshot upgrade against, and the writer's fresh
+                # engine wouldn't fire any shared-engine begin listener
+                # anyway.
                 result = op.fn(conn)
             elapsed_ms = int((time.perf_counter() - t0) * 1000)
             if elapsed_ms >= self._slow_warn_ms:
