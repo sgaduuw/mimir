@@ -26,7 +26,6 @@ from mimir.seo.json_ld import (
     _json_ld_inbox,
     _json_ld_message,
     _json_ld_search,
-    _json_ld_text_snippet,
 )
 from mimir.seo.sitemaps import (
     SITEMAP_RECENT_PER_INBOX,
@@ -46,7 +45,6 @@ __all__ = [
     "_json_ld_inbox",
     "_json_ld_message",
     "_json_ld_search",
-    "_json_ld_text_snippet",
     "atom_response",
     "inbox_sitemap_xml",
     "meta_sitemap_xml",
