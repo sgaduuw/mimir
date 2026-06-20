@@ -109,12 +109,6 @@ class WalkResult(BaseModel):
     last_walked_sha: str | None = None
 
 
-# Page size for batched commits. Each batch commits to SQLite and
-# resumes, a Ctrl-C mid-walk loses at most this many commits of
-# progress but no DB corruption.
-_BATCH = 500
-
-
 def walk_commits(
     session: Session,
     tree_path: Path,

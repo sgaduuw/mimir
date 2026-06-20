@@ -14,7 +14,6 @@ from mimir.cache_warm import (
     classify_zone,
     effective_window_sec,
     should_refresh,
-    stored_ttl_for,
 )
 
 
@@ -35,14 +34,6 @@ def test_effective_window_sec_zero_for_sub_2sec_nominal():
     identical to today's TTL-skip without the refresh-window
     mechanic). Guards the degenerate case."""
     assert effective_window_sec(nominal_ttl=1, window_sec=600) == 0
-
-
-def test_stored_ttl_for_extends_by_effective_window():
-    """stored_ttl = nominal_ttl + effective_window_sec(nominal_ttl,
-    window_sec). For sitemap (nominal=3600, window=600): stored=4200."""
-    assert stored_ttl_for(nominal_ttl=3600, window_sec=600) == 4200
-    # Short-TTL cap takes effect:
-    assert stored_ttl_for(nominal_ttl=300, window_sec=600) == 450
 
 
 def test_classify_zone_skip_when_remaining_above_2x_window():
