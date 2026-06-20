@@ -85,6 +85,18 @@ def _parse_pair(pair: str) -> tuple[str, str]:
     return label, substring
 
 
+def _verbose_broker_hint(verbose: int) -> None:
+    """A `-v` flag asks for per-batch progress that flows via the
+    broker's own log rather than the CLI's stdout. Tell the operator
+    once where to look instead of silently no-op'ing the flag."""
+    if verbose:
+        click.echo(
+            "per-batch progress flows via broker logs "
+            "(e.g. `podman logs -f mimir-broker`)",
+            err=True,
+        )
+
+
 def _broker_backfill_loop(
     call,
     *,
