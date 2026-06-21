@@ -11,6 +11,23 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.5.1] - 2026-06-21
+
+Internal cleanup release from a repo-wide dead-code audit. No
+user-facing behaviour, schema, config, or CLI/route changes; the
+deployed image just carries less dead code.
+
+### Removed
+
+- Dead internal code with no remaining caller: the ingest
+  `_flush_observations` / `_maybe_promote_list_address` ORM helpers
+  (the live paths are the `_submit_*` WriteOps), the broker
+  `WARM_REFRESH_WITHIN_SEC` constant, the uncalled CLI
+  `_warm_subsystem_dashboards` helper, `maintainers.iter_subsystem_paths`,
+  `cache_warm.stored_ttl_for`, the unused `SubsystemHit.lists` field,
+  and the `mainline._BATCH` constant. Also dropped the unused
+  `_json_ld_text_snippet` re-export from the `seo` package surface.
+
 ## [3.5.0] - 2026-06-14
 
 ### Changed
