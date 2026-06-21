@@ -38,7 +38,7 @@ Why this shape (rather than `ThreadingMixIn` per-connection):
 
 4. **Future-ready for batching.** A queue is the natural place
    to coalesce N cache.sets into one transaction when the
-   throughput needs it. Phase 1.5+ work.
+   throughput needs it. Not done; a future optimisation.
 
 The periodic-purge thread submits the expired-row DELETE through the
 broker's WriterThread on `PURGE_INTERVAL_SEC` cadence so every write
@@ -252,14 +252,12 @@ class _BrokerServer(socketserver.UnixStreamServer):
         self._cache_worker_threads: list[threading.Thread] = []
         self._long_worker_threads: list[threading.Thread] = []
         self._warm_worker_threads: list[threading.Thread] = []
-        # Phase 1 of the two-pool restructure
-        # (_claude/specs/2026-05-29-broker-two-pool-design.md): parallel
-        # infrastructure, no handler uses these yet. Future Phase 2+
-        # patches migrate handlers to dispatch reads through
-        # `self.read_pool.session()` and writes via
-        # `self.writer.submit(op)`. Owned by the server so lifecycle
-        # ordering (start before accept, stop after drain) is
-        # explicit.
+        # The two-pool restructure
+        # (_claude/specs/2026-05-29-broker-two-pool-design.md): handlers
+        # dispatch reads through `self.read_pool.session()` and writes
+        # via `self.writer.submit(op)` (migration complete as of
+        # Phase 6). Owned by the server so lifecycle ordering (start
+        # before accept, stop after drain) is explicit.
         self.read_pool = ReadSessionPool.from_settings()
         self.writer = WriterThread.from_settings()
 
@@ -480,8 +478,7 @@ class _BrokerServer(socketserver.UnixStreamServer):
                         # (high queue_wait_ms; many clients piling on)
                         # and back-of-queue contention
                         # (high dispatch_ms; SQLite writer lock held
-                        # by the other worker or, in Phase 1 deploys,
-                        # by direct scheduler-side writes).
+                        # by another in-broker worker's WriteOp).
                         logger.warning(
                             "broker slow rpc [%s] (%.1fms total = %.1fms queued + "
                             "%.1fms dispatch, qsize=%d): %.80s -> ok=%s",

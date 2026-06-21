@@ -19,20 +19,20 @@ The submodules split by concern:
   socket; one request per line, one reply per line.
 - `server`: daemon lifecycle. `socketserver.UnixStreamServer`
   subclass, accept loop, signal handler for clean shutdown.
-- `handlers`: RPC dispatch + per-op handlers. Each handler calls
-  `mimir.cache._direct_<op>(...)` against a pooled writer
-  connection wrapped in `write_transaction()`.
+- `handlers`: RPC dispatch + per-op handlers. Reads run on a
+  `ReadSessionPool` session; writes dispatch through the active
+  `WriterThread` (two-pool restructure, complete as of Phase 6).
 - `client`: connection lifecycle + RPC API on the calling side.
 """
 
 from mimir.broker.client import BrokerClient, BrokerUnavailable, get_broker_client
 from mimir.broker.server import serve
 
-# Phase 1 of the two-pool restructure
-# (_claude/specs/2026-05-29-broker-two-pool-design.md). Parallel
-# infrastructure: no caller uses these yet; Phase 2+ migrates
-# handlers to dispatch reads through ReadSessionPool and writes
-# through WriterThread.submit().
+# Two-pool restructure primitives
+# (_claude/specs/2026-05-29-broker-two-pool-design.md): the read pool
+# and the single writer thread the broker's handlers run reads and
+# writes through. Re-exported on the package surface per the house
+# "re-export the public surface" convention.
 from mimir.broker.pools import ReadSessionPool
 from mimir.broker.writes import WriteOp, WriterThread
 
