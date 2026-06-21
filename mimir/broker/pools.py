@@ -1,15 +1,12 @@
-"""Read-side session pool for Phase 1 of the broker two-pool
-restructure (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
+"""Read-side session pool for the broker two-pool restructure
+(`_claude/specs/2026-05-29-broker-two-pool-design.md`).
 
 Wraps a SQLAlchemy session factory whose pool enforces
 `PRAGMA query_only = 1` on every connect. The broker's read pool
 checks sessions out of this for the "compute / SQL-read" phase of
 every RPC; multiple read-pool threads hold sessions in parallel
-with zero writer-lock contention.
-
-This is parallel infrastructure in Phase 1: no caller is migrated
-yet. Phase 2+ will rewrite handlers to use this in place of the
-existing `mimir.extensions.SessionLocal`."""
+with zero writer-lock contention. The handler migration onto this
+pool completed across Phases 2-6 (see CONTEXT.md)."""
 
 from __future__ import annotations
 

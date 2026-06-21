@@ -196,7 +196,6 @@ class SubsystemHit(BaseModel):
     status: str | None = None
     # `[(role, name, address), ...]`. role is "M" or "R".
     maintainers: list[tuple[str, str, str]] = []
-    lists: list[str] = []  # not stored yet; reserved for future use
 
 
 def subsystems_for_article(

@@ -1,5 +1,5 @@
-"""Module-level active-broker registration for Phase 2 of the
-two-pool restructure (_claude/specs/2026-05-29-broker-two-pool-design.md).
+"""Module-level active-broker registration for the two-pool
+restructure (_claude/specs/2026-05-29-broker-two-pool-design.md).
 
 The broker server registers its ReadSessionPool + WriterThread
 here at startup so handler functions can reach them without
@@ -8,8 +8,8 @@ broker at any time, matching production (one broker process per
 container). The internal lock guards register/clear so the
 read-mostly accessors stay coherent across threads.
 
-Phase 2 callers: mimir/broker/handlers/warm.py. Subsequent
-phases (4, 5) add the cache and admin handlers."""
+Every broker handler family (warm, cache, long, admin) reaches the
+active pool + writer through these accessors."""
 
 from __future__ import annotations
 
