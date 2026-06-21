@@ -30,7 +30,6 @@ for replacing the DB rows transactionally.
 """
 
 from dataclasses import dataclass, field
-from typing import Iterable
 
 
 @dataclass
@@ -217,16 +216,3 @@ def _apply_tag(sub: Subsystem, tag: str, value: str) -> None:
             return
         name, address = parsed_addr
         sub.maintainers.append(MaintainerEntry(role=tag, name=name, address=address))
-
-
-def iter_subsystem_paths(
-    subsystems: Iterable[Subsystem],
-) -> Iterable[tuple[Subsystem, str, bool]]:
-    """Yield `(subsystem, path_pattern, is_exclude)` triples, handy
-    for bulk-inserting into the `subsystem_paths` table without each
-    caller writing the same nested loop."""
-    for sub in subsystems:
-        for path in sub.files:
-            yield sub, path, False
-        for path in sub.excludes:
-            yield sub, path, True

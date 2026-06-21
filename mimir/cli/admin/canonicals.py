@@ -12,7 +12,11 @@ chunk/resume contract.
 
 import click
 
-from mimir.cli._common import _broker_backfill_loop, _configure_logging
+from mimir.cli._common import (
+    _broker_backfill_loop,
+    _configure_logging,
+    _verbose_broker_hint,
+)
 from mimir.cli.admin import admin_group
 
 
@@ -66,12 +70,7 @@ def admin_canonicals_backfill_command(
     observations and resolving canonical_inbox_id from original
     To/Cc headers. Newest-first, idempotent, resumable."""
     _configure_logging(verbose)
-    if verbose:
-        click.echo(
-            "per-batch progress flows via broker logs "
-            "(e.g. `podman logs -f mimir-broker`)",
-            err=True,
-        )
+    _verbose_broker_hint(verbose)
     from mimir.broker.client import BrokerUnavailable, get_broker_client
 
     client = get_broker_client()

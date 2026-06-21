@@ -37,16 +37,6 @@ from mimir.config import settings
 logger = logging.getLogger(__name__)
 
 
-# Back-compat constant retained for callers that invoke `_run_targets`
-# without a `priority`. Task 5 of the fast/slow tier split moved the
-# in-handler default to tier-aware sourcing from `settings.warm_cache_
-# {fast,slow}_refresh_window_sec` (see `_run_targets`); the handlers
-# always pass `priority=req.priority` so this fallback is only ever
-# hit by ad-hoc / test callers that omit the kwarg. Kept module-level
-# so tests can monkey-patch.
-WARM_REFRESH_WITHIN_SEC = 450
-
-
 # Config-drift guard (Layer 2): once-per-process flag for the
 # sitemap-labels-but-no-SITE_BASE_URL WARNING. A misconfigured broker
 # sees ~200 warm RPCs per scheduler fast-tier tick, each of which
@@ -258,16 +248,14 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
 
 
 def handle_warm_subsystem(req: WarmSubsystemRequest) -> Reply:
-    """Per-(inbox, subsystem) warm. Replaces the serial inner loop of
-    `_warm_subsystem_dashboards` for the case where the slow-tier CLI
-    fans out one RPC per (inbox, subsystem) at the dispatch site.
+    """Per-(inbox, subsystem) warm: the slow-tier CLI fans out one RPC
+    per (inbox, subsystem) at the dispatch site.
 
     The work delegates to `mimir.cli.cache._per_subsystem_warm_call`
-    so the dispatch shape stays single-source-of-truth with the
-    in-handler `_warm_subsystem_dashboards` path (which calls the
-    same helper). The whole sequence runs under `refresh_window` +
-    `ttl_extension` per `req.priority`, matching `handle_warm_inbox`
-    / `handle_warm_global` semantics.
+    so the per-subsystem warm shape stays single-source-of-truth
+    between this handler and the CLI fan-out. The whole sequence runs
+    under `refresh_window` + `ttl_extension` per `req.priority`,
+    matching `handle_warm_inbox` / `handle_warm_global` semantics.
 
     Production motivation 2026-06-01: linux-arm-kernel's slow-tier
     warm cycle took ~111 s wall time, ~107 s of which was the

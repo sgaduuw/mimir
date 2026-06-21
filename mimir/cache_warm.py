@@ -45,14 +45,6 @@ def effective_window_sec(*, nominal_ttl: int, window_sec: int) -> int:
     return min(window_sec, nominal_ttl // 2)
 
 
-def stored_ttl_for(*, nominal_ttl: int, window_sec: int) -> int:
-    """Stored TTL = nominal + effective_window. Callers pass this
-    to `cache.set` when populating a warm-managed row."""
-    return nominal_ttl + effective_window_sec(
-        nominal_ttl=nominal_ttl, window_sec=window_sec
-    )
-
-
 def _effective_for_stored(*, stored_ttl: int, window_sec: int) -> int:
     """Recover effective_window from stored_ttl + window_sec.
 

@@ -6,9 +6,10 @@ from the last-seen commit forward, parse messages (sequentially or via
 a process pool), bucket each outcome (new / linked / dup_batch /
 dup_db / failed), and persist a per-epoch resume cursor.
 
-The shared helpers (`_to_article`, `_flush_observations`,
-`_maybe_promote_list_address`) and the `IngestResult` model are also
-imported by `.replay`, `.backfill`, and `.orchestrate`.
+The shared helper `_to_article` and the `IngestResult` model are also
+imported by `.replay`, `.backfill`, and `.orchestrate`. The Phase 3b
+write path (observation flush, list-address promotion) lives as
+composite WriteOps in `._pending`, not here.
 """
 
 import logging
@@ -29,8 +30,7 @@ if TYPE_CHECKING:
 
 from dulwich.repo import Repo
 from pydantic import BaseModel
-from sqlalchemy import func, select
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mimir.canonical import extract_list_addresses, pick_canonical_inbox_id
@@ -42,7 +42,6 @@ from mimir.models import (
     ArticleList,
     ArticleTrailer,
     Inbox,
-    InboxAddressObservation,
     IngestState,
     ParseFailure,
 )
@@ -325,72 +324,6 @@ def _to_article(
         files=[ArticleFile(path=p) for p in sorted(touched_paths)],
         trailers=trailer_rows,
     )
-
-
-def _flush_observations(
-    session: Session,
-    inbox_id: int,
-    pending: dict[str, tuple[int, datetime]],
-) -> None:
-    """Upsert pending in-memory observations for one inbox. Counts are
-    additive (existing + delta); last_seen is the max of existing and
-    incoming so a stale tail doesn't roll back a fresher timestamp."""
-    if not pending:
-        return
-    rows = [
-        {"inbox_id": inbox_id, "address": addr, "count": count, "last_seen": last_seen}
-        for addr, (count, last_seen) in pending.items()
-    ]
-    stmt = sqlite_insert(InboxAddressObservation).values(rows)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["inbox_id", "address"],
-        set_={
-            "count": InboxAddressObservation.count + stmt.excluded.count,
-            # SQLite's scalar max(a, b), keeps the freshest timestamp
-            # when a stale tail-end batch lands after a newer one.
-            "last_seen": func.max(
-                InboxAddressObservation.last_seen, stmt.excluded.last_seen
-            ),
-        },
-    )
-    session.execute(stmt)
-
-
-def _maybe_promote_list_address(session: Session, inbox_id: int) -> str | None:
-    """If this inbox has no `list_address` yet AND the observed-address
-    tally has a clear modal winner, promote it. Returns the promoted
-    address, or None if nothing happened (already set, not enough
-    samples, or no clear winner). Idempotent: caller can run on every
-    ingest tick; only the first qualifying call writes."""
-    inbox = session.get(Inbox, inbox_id)
-    if inbox is None or inbox.list_address is not None:
-        return None
-    rows = session.execute(
-        select(
-            InboxAddressObservation.address,
-            InboxAddressObservation.count,
-        )
-        .where(InboxAddressObservation.inbox_id == inbox_id)
-        .order_by(InboxAddressObservation.count.desc())
-        .limit(2)
-    ).all()
-    if not rows:
-        return None
-    top_addr, top_count = rows[0]
-    if top_count < MIN_PROMOTE_OBSERVATIONS:
-        return None
-    second_count = rows[1][1] if len(rows) > 1 else 0
-    if top_count / max(top_count + second_count, 1) < PROMOTE_DOMINANCE:
-        return None
-    inbox.list_address = top_addr
-    logger.info(
-        "auto-promoted list_address: %s -> %s (n=%d, dominance=%.0f%%)",
-        inbox.name,
-        top_addr,
-        top_count,
-        100 * top_count / max(top_count + second_count, 1),
-    )
-    return top_addr
 
 
 def _to_article_insert(

@@ -10,11 +10,9 @@ per-inbox cache rows instead of re-doing the underlying SQL.
 
 import os
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 import click
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from mimir import cache as cache_mod
 from mimir.config import settings
@@ -73,7 +71,7 @@ WARM_TOP_SUBSYSTEMS_PER_INBOX = 20
 def _build_fast_inbox_targets(
     inbox: Inbox,
     sitemap_base: str = "",
-) -> list[tuple[str, "object"]]:
+) -> list[tuple[str, object]]:
     """Fast tier per-inbox warm targets: the cheap, freshness-
     sensitive helpers that the front page and crawlers read
     constantly. Sub-100 ms each; the whole list is ~300-500 ms
@@ -118,9 +116,9 @@ def _build_fast_inbox_targets(
 
 def _build_slow_inbox_targets(
     inbox: Inbox,
-    today: "datetime.date",
-    yesterday: "datetime.date",
-) -> list[tuple[str, "object"]]:
+    today: date,
+    yesterday: date,
+) -> list[tuple[str, object]]:
     """Slow tier per-inbox warm targets: the heavy queries
     dominated by subsystem-dashboard cost (50-100 s per inbox on
     broad-F: subsystems like linux-arm-kernel). Designed to fire on
@@ -205,10 +203,10 @@ def _build_slow_inbox_targets(
 
 def _build_inbox_targets(
     inbox: Inbox,
-    today: "datetime.date",
-    yesterday: "datetime.date",
+    today: date,
+    yesterday: date,
     sitemap_base: str = "",
-) -> list[tuple[str, "object"]]:
+) -> list[tuple[str, object]]:
     """Legacy combined builder: fast + slow concatenated. Kept so
     `mimir warm-cache --tier all` (the operator one-off) and any
     callers that haven't been migrated still get the full target
@@ -226,7 +224,7 @@ def _build_inbox_targets(
 
 def _build_fast_global_targets(
     sitemap_base: str = "",
-) -> list[tuple[str, "object"]]:
+) -> list[tuple[str, object]]:
     """Fast tier global warm targets: sitemap:index + sitemap:meta
     only, and only when sitemap_base is non-empty. Sub-100 ms each;
     designed to fire on the per-minute scheduler tick alongside the
@@ -253,7 +251,7 @@ def _build_fast_global_targets(
     return targets
 
 
-def _build_slow_global_targets() -> list[tuple[str, "object"]]:
+def _build_slow_global_targets() -> list[tuple[str, object]]:
     """Slow tier global warm targets: just
     `most_active_subsystems_global (7d)`. The aggregator reads per-
     inbox cache rows, so it MUST run after the per-inbox slow tier
@@ -269,7 +267,7 @@ def _build_slow_global_targets() -> list[tuple[str, "object"]]:
 
 def _build_global_targets(
     sitemap_base: str = "",
-) -> list[tuple[str, "object"]]:
+) -> list[tuple[str, object]]:
     """Legacy combined builder: fast + slow concatenated. Kept so
     `mimir warm-cache --tier all` (the operator one-off) and any
     callers that haven't been migrated still get the full target
@@ -291,15 +289,14 @@ def _per_subsystem_warm_call(
     for one (inbox, subsystem) pair, returning the list of warmed labels
     for the broker handler's reply payload.
 
-    Mirrors the per-subsystem inner body of `_warm_subsystem_dashboards`
-    exactly so cache keys match the route call sites: same helper args,
-    same `SUBSYSTEM_RECENT_PATCHES_LIMIT` / `REVIEWS_PER_PAGE_LIMIT`
-    constants, same reviewer dedup. This is the broker handler's entry
-    point for `warm_subsystem` (per-(inbox, subsystem) RPC dispatched
-    at the slow-tier CLI fan-out), and the helper that
-    `_warm_subsystem_dashboards` now delegates its per-subsystem body
-    to. Single source of truth keeps the warm shape consistent across
-    the in-handler path and the CLI fan-out path.
+    The helper args mirror the `subsystem_dashboard` route call sites
+    (same `SUBSYSTEM_RECENT_PATCHES_LIMIT` / `REVIEWS_PER_PAGE_LIMIT`
+    constants, same reviewer dedup) so the warmed cache keys match what
+    the route reads. This is the broker handler's entry point for
+    `warm_subsystem` (per-(inbox, subsystem) RPC dispatched at the
+    slow-tier CLI fan-out); single-sourcing the per-subsystem warm
+    shape here keeps the in-handler path and the CLI fan-out path
+    consistent.
     """
     warmed: list[str] = []
     recent_articles_in_subsystem(
@@ -342,56 +339,6 @@ def _per_subsystem_warm_call(
             f"{inbox.name}/{sub.name} articles_reviewed_by:{r.address_normalized}"
         )
     return warmed
-
-
-def _warm_subsystem_dashboards(session, inbox: Inbox, top_n: int) -> None:
-    """Pre-warm the per-subsystem dashboard helpers AND the per-reviewer
-    pages each one surfaces, for the top-N most active subsystems in
-    `inbox`.
-
-    Per subsystem we fire the four dashboard helpers
-    (`recent_articles_in_subsystem`, `active_threads_in_subsystem`,
-    `daily_volume_in_subsystem`, `active_reviewers_in_subsystem`); the
-    helpers' arguments must match the `subsystem_dashboard` route call
-    sites in `mimir/web/routes/dashboards.py`, or the cache keys
-    diverge and the route still does cold work.
-
-    On top of that, we capture the reviewer addresses surfaced by
-    `active_reviewers_in_subsystem` across all top-N subsystems,
-    dedup, and warm `articles_reviewed_by` for each. Prolific
-    reviewers (Greg KH, david@kernel.org, etc.) appear under many
-    subsystems so the dedup cuts the warm count roughly in half;
-    typical bound is ~50-100 unique addresses per inbox. Pays the
-    heavy `articles_reviewed_by` query on the warm-cache sidecar
-    instead of the request path. External report 2026-05-16 (#195).
-    """
-    top = most_active_subsystems_in_inbox(session, inbox, days=7, limit=top_n)
-    if not top:
-        return
-    # Bulk-load the Subsystems with their paths preloaded, one query
-    # instead of N. The helpers below access `subsystem.paths` for the
-    # F:/X: glob filters.
-    sub_ids = [row.id for row in top]
-    subs = (
-        session.execute(
-            select(Subsystem)
-            .options(selectinload(Subsystem.paths))
-            .where(Subsystem.id.in_(sub_ids))
-        )
-        .scalars()
-        .all()
-    )
-    sub_by_id = {s.id: s for s in subs}
-    for row in top:
-        sub = sub_by_id.get(row.id)
-        if sub is None:
-            continue
-        # `refresh_window` is active in the calling context; each
-        # helper invocation inside `_per_subsystem_warm_call` falls
-        # through to a no-op when the cached row is far from expiry.
-        # Delegating keeps the per-subsystem warm shape single-
-        # sourced with the `warm_subsystem` broker handler's body.
-        _per_subsystem_warm_call(session, inbox, sub)
 
 
 @click.command("warm-cache")
@@ -498,8 +445,9 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
     # inbox so the CLI can fan out one `warm_subsystem` RPC per
     # (inbox, subsystem) pair alongside the per-inbox warm_inbox RPCs.
     # This is Option A from the 2026-06-01 design: turn the previously
-    # serial inner loop of `_warm_subsystem_dashboards` into N parallel
-    # broker-queue jobs. With 8 broker warm workers, linux-arm-kernel's
+    # serial per-subsystem warm loop into N parallel broker-queue jobs
+    # (one `warm_subsystem` RPC each). With 8 broker warm workers,
+    # linux-arm-kernel's
     # slow-tier wall time drops from ~111 s to roughly the per-inbox-
     # cheap targets time + (107 s / 8) ~= 14 s of subsystem work.
     #
