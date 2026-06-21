@@ -3,7 +3,7 @@ resolve `canonical_inbox_id` from each article's original To/Cc
 headers.
 
 Idempotent + resumable: by default skips articles that already have
-a canonical set. Mid-walk re-runs `_maybe_promote_list_address`
+a canonical set. Mid-walk re-runs the list-address promotion sweep
 periodically so that auto-promotion fires after the first ~50 newest
 messages per inbox accumulate observations, and the bulk of the
 walk resolves canonicals against a settled list_address map.
@@ -89,8 +89,8 @@ def backfill_canonicals(
     `WHERE canonical_inbox_id IS NULL` filter naturally picks up where
     a previous run left off).
 
-    Mid-walk, every `promote_every` articles we re-run
-    `_maybe_promote_list_address` for inboxes still at NULL, that way
+    Mid-walk, every `promote_every` articles we re-run the
+    list-address promotion sweep for inboxes still at NULL, that way
     auto-promotion fires early in the pass (after the first ~50 newest
     messages per inbox accumulate observations) and the bulk of the
     walk resolves canonicals against a settled list_address map.

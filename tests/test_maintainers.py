@@ -5,9 +5,7 @@ tests/test_cli_maintainers.py against a fake bare repo.
 
 from mimir.maintainers import (
     MaintainerEntry,
-    Subsystem,
     _split_addr,
-    iter_subsystem_paths,
     parse,
 )
 
@@ -224,20 +222,6 @@ def test_parse_handles_non_ascii_names_via_surrogateescape():
     blob = _section("FOO\nM:\tJos\xe9 Doe <j@example>\nS:\tMaintained\nF:\tfoo/\n")
     sub = parse(blob)[0]
     assert sub.maintainers[0].address == "j@example"
-
-
-def test_iter_subsystem_paths_yields_includes_then_excludes():
-    sub = Subsystem(
-        name="FOO",
-        files=["fs/foo/", "include/foo.h"],
-        excludes=["fs/foo/legacy/"],
-    )
-    rows = list(iter_subsystem_paths([sub]))
-    assert rows == [
-        (sub, "fs/foo/", False),
-        (sub, "include/foo.h", False),
-        (sub, "fs/foo/legacy/", True),
-    ]
 
 
 def test_split_addr_handles_simple_form():
