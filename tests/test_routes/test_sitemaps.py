@@ -172,8 +172,8 @@ def test_maintainers_sitemap_xml_lists_seeded_maintainers(client):
 
 def test_maintainers_sitemap_xml_has_no_lastmod(client):
     """Slice-1 contract: no per-url `<lastmod>` in the body, and no
-    `Last-Modified` response header (the payload's `last_modified`
-    is None, so `_sitemap_response` skips the header entirely)."""
+    `Last-Modified` response header (sitemaps are unconditional; no
+    surface sets the header, see `_sitemap_response`)."""
     import xml.etree.ElementTree as ET
 
     _seed_subsystem(
@@ -186,6 +186,11 @@ def test_maintainers_sitemap_xml_has_no_lastmod(client):
     r = client.get("/sitemap-maintainers.xml")
     assert r.status_code == 200
     assert r.headers.get("Last-Modified") is None
+    # Now that no sitemap surface carries a conditional validator, an
+    # explicit Cache-Control is the only thing keeping this one off CDN
+    # heuristic caching. Guards the `web.maintainers_sitemap` entry in
+    # hooks.py against being dropped.
+    assert r.headers.get("Cache-Control") == "public, max-age=300"
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     for u in root.findall("s:url", ns):
@@ -289,89 +294,68 @@ def test_inbox_sitemap_articles_scoped_to_that_inbox(client):
 
 
 # ---------------------------------------------------------------------------
-# Conditional GET / Last-Modified contract (the bit Google needs to
-# re-fetch the sitemap on a real change).
+# Unconditional-response contract. Sitemaps carry NO `Last-Modified` /
+# `ETag` and never 304. The earlier date-based conditional GET pinned
+# stale STRUCTURAL versions in downstream caches (Cloudflare's edge,
+# crawlers): the `Last-Modified` was the max article date, which does
+# not advance when a deploy changes the sitemap's shape (e.g. adding
+# `/sitemap-maintainers.xml` in 3.6.0), so `If-Modified-Since` kept
+# returning 304 and every edge served the pre-deploy body until the
+# next day's first article bumped the date. See sitemaps.py module
+# docstring.
 # ---------------------------------------------------------------------------
 
 
-def test_sitemap_xml_carries_last_modified_header(client):
-    """The sitemap index response sets `Last-Modified` to the global
-    most-recent article date. Without this header, Google has no
-    cheap way to know the sitemap changed and deprioritises
-    re-fetching."""
+def test_sitemap_xml_has_no_conditional_validator(client):
+    """The sitemap index carries no `Last-Modified` / `ETag`, so no
+    downstream cache can revalidate-and-pin a stale body."""
     _clear_sitemap_cache()
     r = client.get("/sitemap.xml")
     assert r.status_code == 200
-    assert r.headers.get("Last-Modified") is not None
-    # Seeded data's max article date is art3's 2024-03-01. The header is
-    # RFC 9110 HTTP-date format (start of day UTC), so the string must
-    # at least mention that calendar date.
-    assert "01 Mar 2024" in r.headers["Last-Modified"]
+    assert r.headers.get("Last-Modified") is None
+    assert r.headers.get("ETag") is None
 
 
-def test_meta_sitemap_xml_carries_last_modified_header(client):
-    """`/meta-sitemap.xml`'s `Last-Modified` matches the global-max
-    article date (same value its body's `<lastmod>` carries)."""
+def test_meta_sitemap_xml_has_no_conditional_validator(client):
+    """`/meta-sitemap.xml` carries no conditional-GET validator."""
     _clear_sitemap_cache()
     r = client.get("/meta-sitemap.xml")
     assert r.status_code == 200
-    assert r.headers.get("Last-Modified") is not None
-    assert "01 Mar 2024" in r.headers["Last-Modified"]
+    assert r.headers.get("Last-Modified") is None
+    assert r.headers.get("ETag") is None
 
 
-def test_inbox_sitemap_xml_carries_last_modified_header(client):
-    """Per-inbox sitemap's `Last-Modified` matches the inbox's
-    most-recent article date. Scoped per-inbox so updates to one
-    inbox don't make Google re-fetch sitemaps for unchanged
-    inboxes."""
+def test_inbox_sitemap_xml_has_no_conditional_validator(client):
+    """Per-inbox sitemap carries no conditional-GET validator."""
     _clear_sitemap_cache()
     r = client.get("/alpha/sitemap.xml")
     assert r.status_code == 200
-    assert r.headers.get("Last-Modified") is not None
-    # alpha's max article date is also 2024-03-01 (art3 cross-post).
-    assert "01 Mar 2024" in r.headers["Last-Modified"]
+    assert r.headers.get("Last-Modified") is None
+    assert r.headers.get("ETag") is None
 
 
-def test_sitemap_xml_returns_304_when_if_modified_since_matches(client):
-    """A crawler that already saw today's content sends
-    `If-Modified-Since: <date>`; mimir returns 304 Not Modified with
-    no body. This is the cheap path: Google avoids re-downloading;
-    mimir avoids recomputing (the body is cached anyway but a 304
-    skips even the header-write)."""
+def test_sitemap_xml_ignores_if_modified_since_returns_full_body(client):
+    """Regression guard for the 3.6.0 stale-sitemap bug: a conditional
+    `If-Modified-Since` (even one dated far in the future) must return
+    200 with the full body, NEVER a 304. A 304 here is exactly what let
+    Cloudflare pin the pre-deploy index that omitted the maintainers
+    urlset."""
     _clear_sitemap_cache()
-    # First request: prime + grab the Last-Modified value.
-    r = client.get("/sitemap.xml")
-    assert r.status_code == 200
-    last_mod = r.headers["Last-Modified"]
-    # Second request, conditional: must come back 304 with no body.
-    r2 = client.get("/sitemap.xml", headers={"If-Modified-Since": last_mod})
-    assert r2.status_code == 304
-    # 304 responses must not carry a body per RFC 9110 section 15.4.5.
-    assert r2.get_data() == b""
-
-
-def test_inbox_sitemap_xml_returns_304_when_if_modified_since_matches(client):
-    """Conditional GET on a per-inbox sitemap: same 304 contract."""
-    _clear_sitemap_cache()
-    r = client.get("/alpha/sitemap.xml")
-    assert r.status_code == 200
-    last_mod = r.headers["Last-Modified"]
-    r2 = client.get("/alpha/sitemap.xml", headers={"If-Modified-Since": last_mod})
-    assert r2.status_code == 304
-    assert r2.get_data() == b""
-
-
-def test_sitemap_xml_returns_200_when_if_modified_since_is_older(client):
-    """When the crawler's `If-Modified-Since` is older than the
-    sitemap's `Last-Modified`, mimir returns 200 with the fresh body.
-    This is the path that gets Google to re-index after an ingest."""
-    _clear_sitemap_cache()
-    # Use a Sunday in 2020 as the conditional date: well before any
-    # seeded article. mimir must return the current body.
     r = client.get(
         "/sitemap.xml",
-        headers={"If-Modified-Since": "Sun, 01 Mar 2020 00:00:00 GMT"},
+        headers={"If-Modified-Since": "Wed, 01 Jan 2031 00:00:00 GMT"},
     )
     assert r.status_code == 200
-    # Body actually carries content (not a 304 leak).
     assert b"<sitemapindex" in r.get_data()
+
+
+def test_inbox_sitemap_xml_ignores_if_modified_since_returns_full_body(client):
+    """Same regression guard on a per-inbox sitemap: conditional GET
+    still yields 200 + body, never a stale-pinning 304."""
+    _clear_sitemap_cache()
+    r = client.get(
+        "/alpha/sitemap.xml",
+        headers={"If-Modified-Since": "Wed, 01 Jan 2031 00:00:00 GMT"},
+    )
+    assert r.status_code == 200
+    assert b"<urlset" in r.get_data()
