@@ -31,6 +31,7 @@ from mimir.seo.sitemaps import (
     SITEMAP_RECENT_PER_INBOX,
     SITEMAP_TTL_SEC,
     inbox_sitemap_xml,
+    maintainers_sitemap_xml,
     meta_sitemap_xml,
     sitemap_index_xml,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "_json_ld_search",
     "atom_response",
     "inbox_sitemap_xml",
+    "maintainers_sitemap_xml",
     "meta_sitemap_xml",
     "sitemap_index_xml",
 ]

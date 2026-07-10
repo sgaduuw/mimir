@@ -1,9 +1,9 @@
 """Sitemap XML for crawlers.
 
-Three cached surfaces feeding `/sitemap.xml`, `/meta-sitemap.xml`, and
-`/<inbox>/sitemap.xml`. Cache keys are stable; bumping
-`cache.NAMESPACE_VERSION` invalidates everything if a payload shape
-changes, so per-route expiry is purely about freshness.
+Four cached surfaces feeding `/sitemap.xml`, `/meta-sitemap.xml`,
+`/sitemap-maintainers.xml`, and `/<inbox>/sitemap.xml`. Cache keys are
+stable; bumping `cache.NAMESPACE_VERSION` invalidates everything if a
+payload shape changes, so per-route expiry is purely about freshness.
 
 Each surface returns a `SitemapPayload` carrying both the XML body and
 the most-recent `<lastmod>` date represented in that body. Route
@@ -14,12 +14,14 @@ relying on body-content compare which they deprioritise.
 """
 
 from dataclasses import dataclass
+from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from mimir import cache
+from mimir.maintainer_directory import all_maintainers
 from mimir.models import Article, ArticleList, Inbox
 
 SITEMAP_RECENT_PER_INBOX = 5000
@@ -93,10 +95,11 @@ def _per_inbox_latest_date(session) -> dict[str, str | None]:
 def sitemap_index_xml(
     session: Session, base: str, *, force: bool = False
 ) -> SitemapPayload:
-    """Cached body of `/sitemap.xml`. Lists `/meta-sitemap.xml` plus one
-    `/<inbox>/sitemap.xml` per configured inbox. Same cache key as the
-    route uses (`sitemap:index`) so `warm-cache` can pre-populate it
-    via `force=True`. The `last_modified` field of the returned
+    """Cached body of `/sitemap.xml`. Lists `/meta-sitemap.xml`, one
+    `/<inbox>/sitemap.xml` per configured inbox, and
+    `/sitemap-maintainers.xml`. Same cache key as the route uses
+    (`sitemap:index`) so `warm-cache` can pre-populate it via
+    `force=True`. The `last_modified` field of the returned
     `SitemapPayload` is the global-max article date (max across all
     per-inbox lastmods), which drives the `Last-Modified` response
     header at the route layer."""
@@ -115,6 +118,11 @@ def sitemap_index_xml(
                     per_inbox_latest.get(inbox.name),
                 )
             )
+        # Reuse global_latest as the maintainers urlset's lastmod: it's
+        # free (already computed above) and a reasonable proxy for
+        # "maintainer-relevant activity changed" without an extra
+        # per-maintainer date query.
+        entries.append((f"{base}/sitemap-maintainers.xml", global_latest))
         return SitemapPayload(
             body=_build_sitemap_index_xml(entries),
             last_modified=global_latest,
@@ -148,6 +156,37 @@ def meta_sitemap_xml(
     return cache.get_or_compute(
         session,
         "sitemap:meta",
+        SITEMAP_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
+def maintainers_sitemap_xml(
+    session: Session, base: str, *, force: bool = False
+) -> SitemapPayload:
+    """Cached body of `/sitemap-maintainers.xml`. One-urlset listing
+    every maintainer's profile page (`/maintainers/<address>`).
+
+    Slice-1 decision: no per-url `<lastmod>` and `last_modified=None`
+    on the returned payload, so the route emits a plain 200 with no
+    `Last-Modified` header. `all_maintainers` doesn't carry a
+    per-maintainer "last active" date, and deriving one would mean a
+    date query per maintainer (~4000 on the production MAINTAINERS
+    corpus) just to populate a freshness hint crawlers treat as
+    secondary to discovery. Revisit if maintainer profile pages ever
+    gain a cheap last-changed signal."""
+
+    def compute() -> SitemapPayload:
+        entries: list[tuple[str, str | None]] = [
+            (f"{base}/maintainers/{quote(addr, safe='@')}", None)
+            for addr, _name in all_maintainers(session)
+        ]
+        return SitemapPayload(body=_build_sitemap_xml(entries), last_modified=None)
+
+    return cache.get_or_compute(
+        session,
+        "sitemap:maintainers",
         SITEMAP_TTL_SEC,
         compute,
         force=force,

@@ -26,6 +26,7 @@ from mimir.web import errors  # noqa: F401  (branded 4xx/5xx handlers)
 # reachable from the same path.
 from mimir.seo import (
     inbox_sitemap_xml,
+    maintainers_sitemap_xml,
     meta_sitemap_xml,
     sitemap_index_xml,
 )
@@ -59,10 +60,7 @@ from mimir.web.routes.feeds import (
     author_feed,
     inbox_feed,
 )
-from mimir.web.routes.message import (
-    LONG_THREAD_SIDEBAR_THRESHOLD,
-    message,
-)
+from mimir.web.routes.message import message
 from mimir.web.routes.search import (
     AUTHOR_VIEW_LIMIT,
     SEARCH_QUERY_MAX_LEN,
@@ -93,7 +91,6 @@ from mimir.web.urls import (
 __all__ = [
     "AUTHOR_VIEW_LIMIT",
     "FEED_ENTRY_LIMIT",
-    "LONG_THREAD_SIDEBAR_THRESHOLD",
     "MONTH_THREAD_CAP",
     "OG_IMAGE_ALT",
     "OG_IMAGE_FILENAME",
@@ -135,6 +132,7 @@ __all__ = [
     "inbox_feed",
     "inbox_sitemap_xml",
     "index",
+    "maintainers_sitemap_xml",
     "message",
     "meta_sitemap_xml",
     "reviewer_view",

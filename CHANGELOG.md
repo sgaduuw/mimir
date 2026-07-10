@@ -11,6 +11,31 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-07-10
+
+### Added
+
+- Global maintainer profile pages at `/maintainers/<address>`: a
+  cross-inbox surface for each MAINTAINERS `M:` maintainer showing
+  the subsystems they maintain plus links to every inbox with
+  indexed review-trailer activity from them. The address is
+  lowercased to a single canonical URL; a non-maintainer address
+  returns 404.
+- `/sitemap-maintainers.xml`, a urlset listing every maintainer
+  profile page, and a matching entry in the `/sitemap.xml` index
+  (alongside `/meta-sitemap.xml` and the per-inbox sitemaps). Warmed
+  in the fast tier by `warm-cache`.
+
+### Changed
+
+- Message-page thread tree now always renders as a box stacked above
+  the message body, at every thread length and viewport width.
+  Previously, threads of 20+ messages were promoted to a sticky
+  right-rail layout on wide viewports while shorter threads stacked,
+  which made the page jump around depending on thread length and
+  window size. The three-state fold (`closed` / `partial` /
+  `expanded`) is unchanged.
+
 ## [3.5.1] - 2026-06-21
 
 Internal cleanup release from a repo-wide dead-code audit. No
