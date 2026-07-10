@@ -11,6 +11,24 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-07-10
+
+### Fixed
+
+- Sitemaps no longer send a `Last-Modified` header or honour
+  `If-Modified-Since`; every sitemap surface now returns an
+  unconditional 200. The previous conditional GET used the max
+  article date as its validator, which does not change when the
+  sitemap's *structure* changes via a deploy, so after 3.6.0 shipped
+  the new `/sitemap-maintainers.xml` entry, Cloudflare's edge (and any
+  crawler issuing `If-Modified-Since`) kept getting 304 and served the
+  pre-deploy sitemap index that omitted it. Per-URL `<lastmod>` inside
+  the XML and `Cache-Control: max-age=300` are unchanged.
+- `/sitemap-maintainers.xml` now carries `Cache-Control: max-age=300`
+  like the other sitemap surfaces (it was missing from the per-endpoint
+  table since 3.6.0). With the conditional GET gone, an explicit
+  `Cache-Control` is what keeps it off CDN heuristic caching.
+
 ## [3.6.0] - 2026-07-10
 
 ### Added

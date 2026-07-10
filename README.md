@@ -576,12 +576,11 @@ Routes:
   sitemap.
 - `GET /sitemap.xml`, sitemap index pointing at `/meta-sitemap.xml`,
   one `/<inbox>/sitemap.xml` per configured inbox, and
-  `/sitemap-maintainers.xml`. Each response carries `Last-Modified`
-  derived from the most-recent content date and honours
-  `If-Modified-Since` (304 Not Modified on a conditional GET that
-  already covers the latest content), so crawlers like Google can
-  re-fetch on a real change rather than on full-body diffs. Cached
-  for 1 h.
+  `/sitemap-maintainers.xml`. Responses are unconditional (no
+  `Last-Modified` / `ETag`, always 200): a date-based validator
+  pinned stale structural versions in downstream caches. Freshness
+  is carried by the per-URL `<lastmod>` inside the XML; edges cache
+  briefly via `Cache-Control: max-age=300`. Body cached for 1 h.
 - `GET /sitemap-maintainers.xml`, one urlset listing every
   `/maintainers/<address>` profile page (one URL per MAINTAINERS
   `M:` maintainer). No per-URL `<lastmod>`. Cached for 1 h.

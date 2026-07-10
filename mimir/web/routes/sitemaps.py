@@ -11,18 +11,23 @@ cross-posted articles now appear in each linked inbox's sitemap
 (every one is a real URL, and the page's own `<link rel="canonical">`
 tells search engines which to keep).
 
-Each response carries a `Last-Modified` header derived from the
-sitemap's most-recent content date, and honours `If-Modified-Since`
-for conditional GETs (returning 304 Not Modified when the resource
-hasn't advanced past the requested timestamp). Without these headers
-Google has no cheap way to know the sitemap changed and deprioritises
-re-fetching; with them, a crawler that already saw today's content
-gets a 304 and mimir avoids regenerating an unchanged response.
+Responses are deliberately unconditional: they carry no
+`Last-Modified` / `ETag` validator and always return 200 with the
+current body. An earlier version set `Last-Modified` to the sitemap's
+newest content date and honoured `If-Modified-Since` (304 Not
+Modified), but that date only advances when a newer article lands,
+not when the sitemap's *structure* changes via a deploy (e.g. adding
+the `/sitemap-maintainers.xml` entry in 3.6.0). Conditional GET then
+pinned every downstream cache (Cloudflare's edge, and any crawler
+issuing `If-Modified-Since`) to the pre-deploy body until the next
+day's first article happened to bump the date past the cached value.
+Dropping the HTTP validator makes each fetch a full 200; the per-URL
+`<lastmod>` inside the XML stays the crawler-facing freshness signal,
+and the per-endpoint `Cache-Control: max-age=300` (set in hooks.py)
+still lets edges cache briefly and re-fetch fresh.
 """
 
-from datetime import datetime, timezone
-
-from flask import Response, request
+from flask import Response
 
 from mimir.extensions import SessionLocal
 from mimir.seo import (
@@ -37,30 +42,16 @@ from mimir.web.urls import _get_inbox_or_404, _site_base
 
 
 def _sitemap_response(payload: SitemapPayload) -> Response:
-    """Build a Response for one sitemap surface. Sets `Last-Modified`
-    when the payload carries a date, then calls
-    `response.make_conditional(request)` which:
+    """Build a 200 Response for one sitemap surface.
 
-    - Honours `If-Modified-Since`: returns 304 (no body) when the
-      request's date is greater-than-or-equal-to the response's
-      `Last-Modified`.
-    - Adds an automatic ETag if none is set, so `If-None-Match`
-      also works.
-
-    Payloads with `last_modified=None` (corner case: a sitemap covering
-    an empty inbox or one with no datable content) skip the header,
-    in which case crawlers see a normal 200 every time.
+    Deliberately unconditional (no `Last-Modified` / `ETag`, no
+    `make_conditional`): a date-based validator pinned stale
+    structural versions in downstream caches. See the module
+    docstring for the full why. `payload.last_modified` is retained
+    on the dataclass as the sitemap's newest-content-date, it just no
+    longer drives an HTTP conditional-GET header.
     """
-    response = Response(payload.body, mimetype="application/xml; charset=utf-8")
-    if payload.last_modified:
-        # Parse YYYY-MM-DD as start-of-day UTC. Sitemap content has
-        # daily granularity; matching the header to the body's
-        # `<lastmod>` keeps the two surfaces consistent.
-        response.last_modified = datetime.strptime(
-            payload.last_modified, "%Y-%m-%d"
-        ).replace(tzinfo=timezone.utc)
-        response.make_conditional(request)
-    return response
+    return Response(payload.body, mimetype="application/xml; charset=utf-8")
 
 
 @bp_web.route("/sitemap.xml")

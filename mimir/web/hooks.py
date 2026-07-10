@@ -98,6 +98,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.sitemap": "public, max-age=300",
     "web.meta_sitemap": "public, max-age=300",
     "web.inbox_sitemap": "public, max-age=300",
+    "web.maintainers_sitemap": "public, max-age=300",
     "web.message_id_lookup": "public, max-age=3600",
     "web.message_id_lookup_inbox": "public, max-age=3600",
     # web.message uses ETag-based conditional revalidation (set inside
