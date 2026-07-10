@@ -48,16 +48,6 @@ from mimir.web.urls import (
 logger = logging.getLogger(__name__)
 
 
-# Threshold above which the message-page layout switches from
-# "thread tree above body" to "thread tree as a right rail" on
-# wide viewports. Picked from issue #68's >~20-message guideline:
-# below this, the above-body box is fine; above it, the box's
-# height cap ends up paginating most of the tree out of view and
-# the rail layout (mutt / Thunderbird / Discourse) is what
-# everyone expects. The CSS still falls back to above-body on
-# narrow viewports regardless of length.
-LONG_THREAD_SIDEBAR_THRESHOLD = 20
-
 # Hard cap on the distinct-Message-ID sets that feed the in-body
 # linkifier's two bulk-SELECTs. Typical messages carry <10 refs;
 # the cap is well above any real ask. Past it the additional refs
@@ -414,11 +404,6 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
     if article.thread_parent and article.thread_parent in thread_urls:
         parent_url = thread_urls[article.thread_parent]
 
-    # Long threads switch to a right-rail tree layout on wide
-    # viewports, see LONG_THREAD_SIDEBAR_THRESHOLD. Narrow
-    # viewports stack regardless via the CSS media query.
-    long_thread = len(thread) >= LONG_THREAD_SIDEBAR_THRESHOLD
-
     # HTMX intra-thread swap: when the click came from a tree link, return
     # only the message-body partial (just the <article id="msg">). The
     # surrounding tree + nav stay put on the client; the client-side script
@@ -448,7 +433,6 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             related_patches=related_patches,
             patch_state=patch_state,
             lifecycle_status=lifecycle_status,
-            long_thread=long_thread,
         )
     )
     response.set_etag(etag)
