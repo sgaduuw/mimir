@@ -45,6 +45,7 @@ from mimir.web import (
     FEED_ENTRY_LIMIT,
     SUBSYSTEM_RECENT_PATCHES_LIMIT,
     inbox_sitemap_xml,
+    maintainers_sitemap_xml,
     meta_sitemap_xml,
     sitemap_index_xml,
 )
@@ -225,11 +226,11 @@ def _build_inbox_targets(
 def _build_fast_global_targets(
     sitemap_base: str = "",
 ) -> list[tuple[str, object]]:
-    """Fast tier global warm targets: sitemap:index + sitemap:meta
-    only, and only when sitemap_base is non-empty. Sub-100 ms each;
-    designed to fire on the per-minute scheduler tick alongside the
-    fast per-inbox targets so crawler-facing surfaces stay within a
-    minute of fresh.
+    """Fast tier global warm targets: sitemap:index + sitemap:meta +
+    sitemap:maintainers, and only when sitemap_base is non-empty.
+    Sub-100 ms each; designed to fire on the per-minute scheduler
+    tick alongside the fast per-inbox targets so crawler-facing
+    surfaces stay within a minute of fresh.
 
     Empty list when sitemap_base is unset: no other fast-tier global
     surfaces exist today, so an unconfigured site_base_url means the
@@ -246,6 +247,12 @@ def _build_fast_global_targets(
             (
                 "sitemap:meta",
                 lambda s, base=sitemap_base: meta_sitemap_xml(s, base),
+            )
+        )
+        targets.append(
+            (
+                "sitemap:maintainers",
+                lambda s, base=sitemap_base: maintainers_sitemap_xml(s, base),
             )
         )
     return targets
@@ -274,9 +281,10 @@ def _build_global_targets(
     list. New scheduler-side callers use _build_fast_global_targets /
     _build_slow_global_targets directly.
 
-    Order is sitemap:index, sitemap:meta, most_active_subsystems_global
-    when sitemap_base is set, matching the pre-split shape (which
-    inserted the sitemap targets at positions 0 and 1)."""
+    Order is sitemap:index, sitemap:meta, sitemap:maintainers,
+    most_active_subsystems_global when sitemap_base is set, matching
+    the pre-split shape (which inserted the sitemap targets at the
+    front)."""
     return _build_fast_global_targets(sitemap_base) + _build_slow_global_targets()
 
 

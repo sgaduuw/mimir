@@ -11,6 +11,19 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- Global maintainer profile pages at `/maintainers/<address>`: a
+  cross-inbox surface for each MAINTAINERS `M:` maintainer showing
+  the subsystems they maintain plus links to every inbox with
+  indexed review-trailer activity from them. The address is
+  lowercased to a single canonical URL; a non-maintainer address
+  returns 404.
+- `/sitemap-maintainers.xml`, a urlset listing every maintainer
+  profile page, and a matching entry in the `/sitemap.xml` index
+  (alongside `/meta-sitemap.xml` and the per-inbox sitemaps). Warmed
+  in the fast tier by `warm-cache`.
+
 ## [3.5.1] - 2026-06-21
 
 Internal cleanup release from a repo-wide dead-code audit. No
