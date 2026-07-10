@@ -26,6 +26,7 @@ from mimir.web import errors  # noqa: F401  (branded 4xx/5xx handlers)
 # reachable from the same path.
 from mimir.seo import (
     inbox_sitemap_xml,
+    maintainers_sitemap_xml,
     meta_sitemap_xml,
     sitemap_index_xml,
 )
@@ -135,6 +136,7 @@ __all__ = [
     "inbox_feed",
     "inbox_sitemap_xml",
     "index",
+    "maintainers_sitemap_xml",
     "message",
     "meta_sitemap_xml",
     "reviewer_view",
