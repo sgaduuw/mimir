@@ -10,6 +10,7 @@ from mimir.web.routes import attachments  # noqa: F401
 from mimir.web.routes import dashboards  # noqa: F401
 from mimir.web.routes import feeds  # noqa: F401
 from mimir.web.routes import health  # noqa: F401
+from mimir.web.routes import maintainers  # noqa: F401
 from mimir.web.routes import message as message_route  # noqa: F401
 from mimir.web.routes import message_id  # noqa: F401
 from mimir.web.routes import search  # noqa: F401

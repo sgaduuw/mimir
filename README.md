@@ -448,6 +448,8 @@ mimir/
                          attention + quiet-for-N+-days queues).
   maintainers.py         MAINTAINERS file parser (no DB)
   maintainer_allowlist.py  dynamic email allowlist sourced from MAINTAINERS
+  maintainer_directory.py  cross-inbox read helpers for the global
+                         /maintainers/<address> profile page
   mainline.py            mainline-tree end-to-end: MAINTAINERS reload +
                          Link-trailer commit walker + update_mainline
                          orchestrator
@@ -468,8 +470,8 @@ mimir/
                          (request/response hooks + context processor),
                          urls (URL composition + site-base memo).
   templates/             Jinja2 (base, index, inbox, daily, since, year,
-                         month, search, author, reviewer, subsystem,
-                         message, attachment_preview, _recent_items)
+                         month, search, author, reviewer, maintainer,
+                         subsystem, message, attachment_preview, _recent_items)
 alembic/                 migrations
 tests/                   pytest
 Inboxes/                 default mirror root (per-inbox subdirs; gitignored)
@@ -572,13 +574,22 @@ Routes:
   bypass the route cache via `Cache-Control: no-store`.
 - `GET /robots.txt`, disallows `/*/attachment/*` and points at the
   sitemap.
-- `GET /sitemap.xml`, sitemap index pointing at `/meta-sitemap.xml`
-  plus one `/<inbox>/sitemap.xml` per configured inbox. Each
-  response carries `Last-Modified` derived from the most-recent
-  content date and honours `If-Modified-Since` (304 Not Modified
-  on a conditional GET that already covers the latest content),
-  so crawlers like Google can re-fetch on a real change rather
-  than on full-body diffs. Cached for 1 h.
+- `GET /sitemap.xml`, sitemap index pointing at `/meta-sitemap.xml`,
+  one `/<inbox>/sitemap.xml` per configured inbox, and
+  `/sitemap-maintainers.xml`. Each response carries `Last-Modified`
+  derived from the most-recent content date and honours
+  `If-Modified-Since` (304 Not Modified on a conditional GET that
+  already covers the latest content), so crawlers like Google can
+  re-fetch on a real change rather than on full-body diffs. Cached
+  for 1 h.
+- `GET /sitemap-maintainers.xml`, one urlset listing every
+  `/maintainers/<address>` profile page (one URL per MAINTAINERS
+  `M:` maintainer). No per-URL `<lastmod>`. Cached for 1 h.
+- `GET /maintainers/<address>`, global (cross-inbox) profile page
+  for one MAINTAINERS `M:` maintainer: the subsystems they maintain
+  plus links to every inbox with indexed review-trailer activity
+  from them. 404 for a non-maintainer address. The address is
+  lowercased to one canonical URL.
 - `GET /security.txt` and `GET /.well-known/security.txt`  
   RFC 9116 contact info. 404 unless `SECURITY_CONTACT` is set.
 - `GET /privacy`, GDPR Art. 13 transparency notice: controller

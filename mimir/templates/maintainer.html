@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ profile.name or profile.address }} | Maintainers | {{ site_name }}{% endblock %}
+{% block meta_description %}MAINTAINERS entry and cross-inbox review activity for {{ profile.name or profile.address }}.{% endblock %}
+{% block content %}
+<h1>{{ profile.name or profile.address }}</h1>
+<p><code>{{ profile.address }}</code></p>
+
+<h2>Maintains</h2>
+{% if profile.subsystems %}
+<ul>
+  {% for subsystem_name, status in profile.subsystems %}
+  {# ponytail: not linked; the subsystem dashboard route is inbox-scoped and needs an inbox context, deferred #}
+  <li>{{ subsystem_name }} <small>{{ status or '' }}</small></li>
+  {% endfor %}
+</ul>
+{% else %}
+<p><em>No indexed subsystems.</em></p>
+{% endif %}
+
+<h2>Review activity</h2>
+{% if profile.review_inboxes %}
+<ul>
+  {% for inbox in profile.review_inboxes %}
+  <li><a href="{{ url_for('web.reviewer_view', inbox_name=inbox, address=profile.address) }}">{{ inbox }}</a></li>
+  {% endfor %}
+</ul>
+{% else %}
+<p><em>No indexed review activity yet.</em></p>
+{% endif %}
+{% endblock %}

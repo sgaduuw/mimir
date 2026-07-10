@@ -26,7 +26,6 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
 {%- if thread and thread|length > 1 %} data-thread-root-id="{{ thread[0].id }}" data-thread-context="{{ 'root' if thread[0].message_id == article.message_id else 'deep' }}"{%- endif -%}
 {% endblock %}
 {% block content %}
-<div class="message-page-grid{% if long_thread %} message-page-grid--with-sidebar{% endif %}">
 {% if thread|length > 1 or parent_off_list %}
 {# Three-state fold for the thread tree. State lives on <html data-thread-fold>
    and is set by the inline script just below before this section paints, so
@@ -88,7 +87,6 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    via the html_data_attrs block above) carry the per-page context the
    controller needs. #}
 {% endif %}
-<div class="message-page-main">
 {# Badges row: activity chip + lifecycle pill (with tooltip).
    Placed under the Subject heading and above the From block; the
    eye reads "is this warm?" + "where is this on the path to
@@ -148,6 +146,4 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
   </details>
 </section>
 {% endif %}
-</div>{# /.message-page-main #}
-</div>{# /.message-page-grid #}
 {% endblock %}
