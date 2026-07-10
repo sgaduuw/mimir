@@ -24,6 +24,16 @@ changes, not internal refactors. Categories: **Added**,
   (alongside `/meta-sitemap.xml` and the per-inbox sitemaps). Warmed
   in the fast tier by `warm-cache`.
 
+### Changed
+
+- Message-page thread tree now always renders as a box stacked above
+  the message body, at every thread length and viewport width.
+  Previously, threads of 20+ messages were promoted to a sticky
+  right-rail layout on wide viewports while shorter threads stacked,
+  which made the page jump around depending on thread length and
+  window size. The three-state fold (`closed` / `partial` /
+  `expanded`) is unchanged.
+
 ## [3.5.1] - 2026-06-21
 
 Internal cleanup release from a repo-wide dead-code audit. No
