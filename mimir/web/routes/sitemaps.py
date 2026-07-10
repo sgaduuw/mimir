@@ -1,9 +1,15 @@
-"""`/sitemap.xml`, `/meta-sitemap.xml`, and `/<inbox>/sitemap.xml`.
+"""`/sitemap.xml`, `/meta-sitemap.xml`, `/sitemap-maintainers.xml`,
+and `/<inbox>/sitemap.xml`.
 
-The split (issue #10) replaced a single monolithic sitemap with one
-global URL cap (1000) and a COALESCE join to pick the canonical inbox
-per cross-posted article. Per-inbox sitemaps don't need either; each
-one lists its own URLs.
+`/sitemap.xml` is a `<sitemapindex>` pointing at `/meta-sitemap.xml`
+(a one-URL urlset for `/`), one `/<inbox>/sitemap.xml` per configured
+inbox, and `/sitemap-maintainers.xml` (a urlset of every maintainer
+profile page). Crawlers fetch the sub-sitemaps independently and
+skip unchanged inboxes via each entry's `<lastmod>`. The index/meta
+split (issue #10) replaced the earlier single monolithic urlset;
+cross-posted articles now appear in each linked inbox's sitemap
+(every one is a real URL, and the page's own `<link rel="canonical">`
+tells search engines which to keep).
 
 Each response carries a `Last-Modified` header derived from the
 sitemap's most-recent content date, and honours `If-Modified-Since`
@@ -21,6 +27,7 @@ from flask import Response, request
 from mimir.extensions import SessionLocal
 from mimir.seo import (
     inbox_sitemap_xml,
+    maintainers_sitemap_xml,
     meta_sitemap_xml,
     sitemap_index_xml,
 )
@@ -58,16 +65,11 @@ def _sitemap_response(payload: SitemapPayload) -> Response:
 
 @bp_web.route("/sitemap.xml")
 def sitemap() -> Response:
-    """Sitemap index. Lists `/meta-sitemap.xml` plus one
-    `/<inbox>/sitemap.xml` per configured inbox. Crawlers fetch
-    sub-sitemaps independently and can skip unchanged inboxes
-    between visits via the per-entry `<lastmod>`. Cached for
-    SITEMAP_TTL_SEC.
-
-    The split (issue #10) replaced a single monolithic sitemap with
-    one global URL cap (1000) and a COALESCE join to pick the
-    canonical inbox per cross-posted article. Per-inbox sitemaps
-    don't need either, each one lists its own URLs."""
+    """Sitemap index. Lists `/meta-sitemap.xml`, one
+    `/<inbox>/sitemap.xml` per configured inbox, and
+    `/sitemap-maintainers.xml`. Crawlers fetch sub-sitemaps
+    independently and can skip unchanged inboxes between visits via
+    the per-entry `<lastmod>`. Cached for SITEMAP_TTL_SEC."""
     with SessionLocal() as session:
         payload = sitemap_index_xml(session, _site_base())
     return _sitemap_response(payload)
@@ -81,6 +83,17 @@ def meta_sitemap() -> Response:
     is the global most-recent article date."""
     with SessionLocal() as session:
         payload = meta_sitemap_xml(session, _site_base())
+    return _sitemap_response(payload)
+
+
+@bp_web.route("/sitemap-maintainers.xml")
+def maintainers_sitemap() -> Response:
+    """Urlset listing every maintainer's profile page
+    (`/maintainers/<address>`). No per-url `<lastmod>` (slice-1
+    decision, see `maintainers_sitemap_xml`'s docstring), so this
+    response never carries `Last-Modified`."""
+    with SessionLocal() as session:
+        payload = maintainers_sitemap_xml(session, _site_base())
     return _sitemap_response(payload)
 
 

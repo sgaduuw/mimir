@@ -1,16 +1,17 @@
 """Tests for mimir/web/routes/sitemaps.py: the meta-sitemap,
-per-inbox sitemap, `<lastmod>` correctness, cache invalidation
-after canonical-inbox flips."""
+per-inbox sitemap, maintainers sitemap, `<lastmod>` correctness,
+cache invalidation after canonical-inbox flips."""
 
-from tests.test_routes._helpers import _clear_sitemap_cache
+from tests.test_routes._helpers import _clear_sitemap_cache, _seed_subsystem
 
 
 def test_sitemap_xml(client):
     """`/sitemap.xml` is the sitemap index: a `<sitemapindex>` of
-    `<sitemap>` children, one per inbox sub-sitemap plus `/meta-sitemap.xml`.
-    Every linked sub-sitemap URL must itself resolve (200) -- a
-    crawler that follows a 404 sitemap link reports the site as
-    broken even if `/sitemap.xml` itself rendered fine."""
+    `<sitemap>` children, one per inbox sub-sitemap plus
+    `/meta-sitemap.xml` and `/sitemap-maintainers.xml`. Every linked
+    sub-sitemap URL must itself resolve (200) -- a crawler that
+    follows a 404 sitemap link reports the site as broken even if
+    `/sitemap.xml` itself rendered fine."""
     import xml.etree.ElementTree as ET
     from urllib.parse import urlparse
 
@@ -31,6 +32,7 @@ def test_sitemap_xml(client):
         "/meta-sitemap.xml",
         "/alpha/sitemap.xml",
         "/beta/sitemap.xml",
+        "/sitemap-maintainers.xml",
     }
     found_paths = {urlparse(loc).path for loc in locs}
     assert expected_sub_sitemaps.issubset(found_paths), (
@@ -88,8 +90,10 @@ def test_sitemap_cross_post_appears_in_each_linked_inbox(client):
 def test_sitemap_index_sub_sitemap_lastmods(client):
     """The sitemap index emits a `<lastmod>` per sub-sitemap so
     crawlers can skip unchanged inboxes. With seeded data, alpha,
-    beta, and the meta-sitemap all carry the global max 2024-03-01
-    (art3's cross-post date)."""
+    beta, the meta-sitemap, and the maintainers sitemap all carry
+    the global max 2024-03-01 (art3's cross-post date); the
+    maintainers entry reuses `global_latest` as a free proxy since
+    there's no per-maintainer date to derive it from."""
     import xml.etree.ElementTree as ET
 
     _clear_sitemap_cache()
@@ -107,9 +111,13 @@ def test_sitemap_index_sub_sitemap_lastmods(client):
     meta_loc = next(loc for loc in lastmods if loc.endswith("/meta-sitemap.xml"))
     alpha_loc = next(loc for loc in lastmods if loc.endswith("/alpha/sitemap.xml"))
     beta_loc = next(loc for loc in lastmods if loc.endswith("/beta/sitemap.xml"))
+    maintainers_loc = next(
+        loc for loc in lastmods if loc.endswith("/sitemap-maintainers.xml")
+    )
     assert lastmods[meta_loc] == "2024-03-01"
     assert lastmods[alpha_loc] == "2024-03-01"
     assert lastmods[beta_loc] == "2024-03-01"
+    assert lastmods[maintainers_loc] == "2024-03-01"
 
 
 def test_meta_sitemap_lastmod_is_global_max(client):
@@ -127,6 +135,61 @@ def test_meta_sitemap_lastmod_is_global_max(client):
     assert len(urls) == 1
     assert urls[0].find("s:loc", ns).text.endswith("/")
     assert urls[0].find("s:lastmod", ns).text == "2024-03-01"
+
+
+def test_maintainers_sitemap_xml_lists_seeded_maintainers(client):
+    """`/sitemap-maintainers.xml` is a urlset whose `<loc>`s include
+    `/maintainers/<address>` for every distinct `M:` maintainer,
+    address lowercased per `all_maintainers`."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlparse
+
+    _seed_subsystem(
+        "NETWORKING",
+        "Maintained",
+        ["net/"],
+        maintainers=[("M", "Alice Maintainer", "Alice@Example.com")],
+    )
+    _seed_subsystem(
+        "STORAGE",
+        "Maintained",
+        ["fs/"],
+        maintainers=[("M", "Bob Maintainer", "bob@example.com")],
+    )
+    _clear_sitemap_cache()
+    r = client.get("/sitemap-maintainers.xml")
+    assert r.status_code == 200
+    assert r.mimetype == "application/xml"
+    root = ET.fromstring(r.get_data())
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    locs = {u.find("s:loc", ns).text for u in root.findall("s:url", ns)}
+    found_paths = {urlparse(loc).path for loc in locs}
+    # all_maintainers lowercases addresses via SQL func.lower, so the
+    # URL carries the lowercased form regardless of the source casing.
+    assert "/maintainers/alice@example.com" in found_paths
+    assert "/maintainers/bob@example.com" in found_paths
+
+
+def test_maintainers_sitemap_xml_has_no_lastmod(client):
+    """Slice-1 contract: no per-url `<lastmod>` in the body, and no
+    `Last-Modified` response header (the payload's `last_modified`
+    is None, so `_sitemap_response` skips the header entirely)."""
+    import xml.etree.ElementTree as ET
+
+    _seed_subsystem(
+        "NETWORKING",
+        "Maintained",
+        ["net/"],
+        maintainers=[("M", "Alice Maintainer", "alice@example.com")],
+    )
+    _clear_sitemap_cache()
+    r = client.get("/sitemap-maintainers.xml")
+    assert r.status_code == 200
+    assert r.headers.get("Last-Modified") is None
+    root = ET.fromstring(r.get_data())
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    for u in root.findall("s:url", ns):
+        assert u.find("s:lastmod", ns) is None
 
 
 def test_inbox_sitemap_dashboard_lastmod_is_inbox_max(client):
