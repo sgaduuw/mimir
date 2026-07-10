@@ -253,40 +253,12 @@ ul.year-decade-list strong { display: inline-block; min-width: 4em; }
 
 /* --- Message-page thread context + fold states (from message.html) --- */
 
-/* Long-thread sidebar layout (issue #68 slice 2). For threads
-   above LONG_THREAD_SIDEBAR_THRESHOLD on wide viewports, the
-   thread tree becomes a right rail and the message body / asides
-   flow as the main column. Narrow viewports always stack
-   (thread above body), regardless of length. */
-@media (min-width: 60rem) {
-  .message-page-grid--with-sidebar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 22rem;
-    grid-template-areas: "main sidebar";
-    column-gap: 1.5rem;
-    align-items: start;
-  }
-  .message-page-grid--with-sidebar > .message-page-main {
-    grid-area: main;
-    min-width: 0;
-  }
-  .message-page-grid--with-sidebar > .thread-context {
-    grid-area: sidebar;
-    position: sticky;
-    top: 1rem;
-    /* No height/max-height on the wrapper itself, the inner
-       scroll container caps to viewport so the rail can never
-       extend beyond what the user can see, regardless of the
-       article body's height (which sets the grid cell). */
-  }
-  /* In sidebar mode the inner box scrolls within a viewport-
-     relative cap, not the above-body 50vh box. The `8rem`
-     leaves room for the toolbar above + a margin so the bottom
-     of the rail visually clears the viewport bottom. */
-  .message-page-grid--with-sidebar .thread-context .thread-box {
-    max-height: calc(100vh - 8rem);
-  }
-}
+/* The thread tree always renders as a capped scroll box stacked above
+   the message body (see `.thread-box` max-height below), at every thread
+   length and viewport width. An earlier layout (issue #68 slice 2)
+   promoted long threads to a right rail on wide viewports; it was
+   removed because the length/width-conditional placement made the page
+   jump around unpredictably. */
 .thread-context { margin-block: 1rem; }
 /* Toolbar sits flush against the top of the box in `partial` and visibly
    standalone elsewhere. The label collapses to the summary line in
