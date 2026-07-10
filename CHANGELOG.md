@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-07-10
+
 ### Added
 
 - Global maintainer profile pages at `/maintainers/<address>`: a
