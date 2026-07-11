@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}indexed mailing list archives | {{ site_name }}{% endblock %}
 {% block content %}
+{% from "_sparkline.html" import spark_bars %}
 <section class="index-hero">
   <figure>
     {# `alt` and `title` carry the same text: what the image depicts
@@ -57,17 +58,7 @@
     <svg class="inbox-card-spark" viewBox="0 0 186 24"
          preserveAspectRatio="none"
          aria-label="Daily message volume in {{ ix.name }}, last 30 days">
-      {% for day, count in ix.spark.days %}
-        {% set h = (count / ix.spark.max_count * 22) if ix.spark.max_count > 0 else 0 %}
-        <rect x="{{ loop.index0 * 6 }}"
-              y="{{ 23 - h }}"
-              width="5"
-              height="{{ h if h > 0 else 1 }}"
-              fill="currentColor"
-              opacity="0.55">
-          <title>{{ day.strftime('%Y-%m-%d') }}: {{ count }} message{{ '' if count == 1 else 's' }}</title>
-        </rect>
-      {% endfor %}
+      {{ spark_bars(ix.spark, 6, 5, 24) }}
     </svg>
     {% endif %}
   </a>
@@ -117,17 +108,7 @@
     <svg class="subsystem-card-spark" viewBox="0 0 84 20"
          preserveAspectRatio="none"
          aria-label="Daily message volume in {{ s.name|lower }}, last 7 days">
-      {% for day, count in s.spark.days %}
-        {% set h = (count / s.spark.max_count * 18) if s.spark.max_count > 0 else 0 %}
-        <rect x="{{ loop.index0 * 12 }}"
-              y="{{ 19 - h }}"
-              width="11"
-              height="{{ h if h > 0 else 1 }}"
-              fill="currentColor"
-              opacity="0.55">
-          <title>{{ day.strftime('%Y-%m-%d') }}: {{ count }} message{{ '' if count == 1 else 's' }}</title>
-        </rect>
-      {% endfor %}
+      {{ spark_bars(s.spark, 12, 11, 20) }}
     </svg>
     {% endif %}
   </a>
