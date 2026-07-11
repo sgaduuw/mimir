@@ -148,21 +148,12 @@
 {% endblock %}
 
 {% block footer_extra %}
+  {% from "_sparkline.html" import spark_bars %}
   {% if spark and spark.days %}
   <small>Last 30 days:</small>
   <svg width="180" height="28" class="dashboard-sparkline-svg"
        aria-label="Daily message volume, last 30 days">
-    {% for day, count in spark.days %}
-      {% set h = (count / spark.max_count * 26) if spark.max_count > 0 else 0 %}
-      <rect x="{{ loop.index0 * 6 }}"
-            y="{{ 27 - h }}"
-            width="5"
-            height="{{ h if h > 0 else 1 }}"
-            fill="currentColor"
-            opacity="0.55">
-        <title>{{ day.strftime('%Y-%m-%d') }}: {{ count }} message{{ '' if count == 1 else 's' }}</title>
-      </rect>
-    {% endfor %}
+    {{ spark_bars(spark, 6, 5, 28) }}
   </svg>
   <br>
   {% endif %}
