@@ -11,6 +11,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.6.2] - 2026-07-14
+
+### Changed
+
+- Dependency refresh: `dulwich` 1.2.8 -> 1.2.10 (the git-backed blob
+  read path) and `ruff` 0.15.20 -> 0.15.21 (dev tooling). No behaviour,
+  schema, config, or route change.
+
 ## [3.6.1] - 2026-07-10
 
 ### Fixed
