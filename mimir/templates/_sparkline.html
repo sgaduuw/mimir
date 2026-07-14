@@ -1,0 +1,16 @@
+{# Daily-volume bar sparkline: the per-day <rect> loop, shared by the
+   inbox card + subsystem card (index.html) and the inbox footer
+   (inbox.html). The caller owns the <svg> wrapper (class, sizing mode,
+   aria-label) because those differ by placement, responsive card vs
+   fixed footer, see _claude/specs/2026-07-11-sparkline-macro-design.md.
+
+   Geometry derives from the SVG's coordinate-space `height`: bars scale
+   to `height - 2` and sit on a `height - 1` baseline, leaving ~1px top
+   and a 1px minimum bar so empty days still tick. `fill="currentColor"`
+   + `opacity` so the bars adapt to the light/dark theme. #}
+{% macro spark_bars(spark, step, bar_width, height) -%}
+{% for day, count in spark.days -%}
+{% set h = (count / spark.max_count * (height - 2)) if spark.max_count > 0 else 0 -%}
+<rect x="{{ loop.index0 * step }}" y="{{ (height - 1) - h }}" width="{{ bar_width }}" height="{{ h if h > 0 else 1 }}" fill="currentColor" opacity="0.55"><title>{{ day.strftime('%Y-%m-%d') }}: {{ count }} message{{ '' if count == 1 else 's' }}</title></rect>
+{% endfor %}
+{%- endmacro %}

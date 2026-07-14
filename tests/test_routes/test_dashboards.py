@@ -118,9 +118,15 @@ def test_meta_index_hero_image_has_substantive_alt(client):
 def test_meta_index_sparkline_renders_when_inbox_has_messages(client):
     """Seeded inboxes have messages, so each card carries a
     `<svg class="inbox-card-spark">` 30-day daily-volume sparkline.
+
+    Also guards the `spark_bars` macro wiring (`_sparkline.html`): the
+    <svg> wrapper lives in the template but the per-day `<rect>` bars now
+    come from the shared macro, so assert a real bar rendered, not just
+    an empty wrapper.
     """
     body = client.get("/").data.decode()
     assert 'class="inbox-card-spark"' in body
+    assert '<rect x="0"' in body and 'fill="currentColor"' in body
 
 
 def test_meta_index_card_link_targets_inbox_dashboard(client):
