@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ (parsed.subject|clean_subject or '(no subject)') | truncate(80) }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block title %}{{ (parsed.subject|clean_subject or '(no subject)') | truncate(50) }} | {{ site_name }}{% endblock %}
 {% block og_type %}article{% endblock %}
 {% block meta_description %}
 {%- set _from = parsed.author|display_name -%}
