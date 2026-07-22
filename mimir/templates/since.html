@@ -3,7 +3,7 @@
 {% block meta_description %}Threads on {{ inbox_name }} with activity since {{ since.strftime('%Y-%m-%d') }}.{% endblock %}
 {% block content %}
 <section>
-  <h2>Since <small><em>({{ since.strftime('%Y-%m-%d') }})</em></small></h2>
+  <h1>Since <small><em>({{ since.strftime('%Y-%m-%d') }})</em></small></h1>
 
   {% if capped %}
     <p><small><em>Window capped at {{ max_days }} days; showing activity from
