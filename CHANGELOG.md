@@ -11,6 +11,18 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.6.3] - 2026-07-22
+
+### Fixed
+
+- SEO markup: message, daily, month, year, since, series-diff, and
+  attachment-preview pages now lead with an `<h1>` (the subject /
+  page heading) instead of `<h2>`, so every page carries the single
+  top-level heading crawlers expect. Message-page `<title>` drops the
+  redundant inbox segment and truncates the subject shorter
+  (`<subject> | <site>`), keeping titles under the ~65-char SERP
+  budget. Both surfaced by Bing Webmaster Tools recommendations.
+
 ## [3.6.2] - 2026-07-14
 
 ### Changed
