@@ -64,11 +64,13 @@ def test_message_url_four_tuple_identity_404s_on_mismatch(
         )
 
 
-def test_message_subject_truncated_to_80(client, tmp_path):
+def test_message_subject_truncated_in_title(client, tmp_path):
     """Long subjects (patch series with v17 RFC 23/47 etc.) get
-    truncated at 80 chars in <title> so SERPs don't overflow.
-    Drives the real route end-to-end with a freshly-ingested article
-    rather than testing Jinja's filter in isolation."""
+    truncated in <title> so SERPs don't overflow (Bing "title too
+    long"). The title drops the inbox segment and keeps
+    `<subject> | <site>`, so the whole thing lands under ~65 chars.
+    Drives the real route end-to-end rather than testing Jinja's
+    filter in isolation."""
     long_subject = "x" * 200
     _, url = _ingest_one_article(
         tmp_path,
@@ -79,11 +81,30 @@ def test_message_subject_truncated_to_80(client, tmp_path):
     r = client.get(url)
     assert r.status_code == 200
     title = _title_of(r.data.decode())
-    assert title.endswith(" | alpha | mimir")
+    # Inbox segment dropped; suffix is just the site name.
+    assert title.endswith(" | mimir")
+    assert " | alpha | " not in title
     # The subject portion shouldn't be the full 200-char input.
-    subject_part = title.rsplit(" | alpha | mimir", 1)[0]
-    assert len(subject_part) <= 84  # Jinja truncate(80) keeps ~81 incl ellipsis
+    subject_part = title.rsplit(" | mimir", 1)[0]
+    assert len(subject_part) <= 55  # Jinja truncate(50) keeps ~53 incl ellipsis
     assert subject_part != long_subject
+
+
+def test_message_page_has_single_h1(client, tmp_path):
+    """The message page leads with exactly one <h1> (the subject),
+    not <h2> (Bing "the <h1> tag is missing"; a11y convention that
+    content pages lead with h1, cf. test_search.py). The subject
+    <h1> lives in the `_message_body.html` partial, so it also
+    holds after an HTMX intra-thread swap."""
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "h1@example.com",
+        subject="single h1 please",
+    )
+    body = client.get(url).data.decode()
+    assert body.count("<h1") == 1
+    assert "<h1>single h1 please</h1>" in body
 
 
 def test_thread_summary_helper_counts_and_relative_time(frozen_clock):
