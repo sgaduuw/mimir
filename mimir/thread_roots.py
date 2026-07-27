@@ -11,7 +11,7 @@ inbox it is linked to. Everything here is therefore scoped per inbox.
 
 import logging
 
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 # run that needs more passes than this has hit something pathological
 # and should stop rather than spin.
 MAX_PASSES = 1200
+
+# Upper bound on a single verification walk up the parent chain.
+# `threading.MAX_DEPTH` caps the read side at 1000, so anything
+# deeper is pathological and treated as cyclic.
+MAX_CYCLE_WALK = 1000
 
 
 def seed_roots(session: Session, inbox_id: int) -> int:
@@ -87,34 +92,63 @@ def propagate(session: Session, inbox_id: int) -> int:
 
 
 def break_cycle(session: Session, inbox_id: int) -> int:
-    """Self-root the lowest remaining unrooted article in this inbox.
+    """Self-root one member of an actual cycle, if a stall is one.
 
-    Propagation stalls only on a cycle: every member is waiting for a
-    parent that is itself waiting. Nothing seeds them, because none has
-    an absent parent. Picking the lowest article id and self-rooting it
-    lets the next propagation pass carry that root around the loop, so
-    the whole cycle converges on one member rather than fragmenting.
+    Propagation stalls when every remaining row is waiting on a parent
+    that is itself waiting. That is USUALLY a cycle, but not always: a
+    row can also be unrooted for an unrelated reason (a row inserted
+    outside `seed_roots`'s view, or a concurrent ingest landing between
+    passes). Self-rooting the lowest unrooted article blindly then
+    produces a WRONG root rather than an arbitrary-but-coherent one,
+    because on a plain chain the child routinely holds the lower
+    article id (its parent arrived in a later epoch).
 
-    Deliberately NOT what `find_thread_root` returns for a cycle (it
-    walks to MAX_DEPTH and lands wherever `1000 mod cycle_length` puts
-    it, which is not a root in any useful sense). The disagreement is
-    intentional and `verify_thread_roots` excludes cycles rather than
-    reporting them as corruption.
+    So the stalled set is checked for membership in a cycle first, by
+    walking `thread_parent` up from each candidate and seeing whether
+    it returns to itself. Only a genuine cycle member is self-rooted,
+    which lets the next propagation pass carry that root around the
+    loop so the cycle converges on one member. A stall with no cycle in
+    it is left alone: those rows stay NULL, which is a state readers
+    handle (they fall back to the recursive CTE) and a later run can
+    still repair.
     """
-    return session.execute(
+    rows = session.execute(
         text(
             """
-            UPDATE article_lists
-               SET thread_root_id = article_id
-             WHERE inbox_id = :ix
-               AND article_id = (
-                   SELECT MIN(article_id) FROM article_lists
-                    WHERE inbox_id = :ix AND thread_root_id IS NULL
-               )
+            SELECT al.article_id, a.message_id, a.thread_parent
+              FROM article_lists al
+              JOIN articles a ON a.id = al.article_id
+             WHERE al.inbox_id = :ix AND al.thread_root_id IS NULL
+             ORDER BY al.article_id
             """
         ),
         {"ix": inbox_id},
-    ).rowcount
+    ).all()
+    if not rows:
+        return 0
+
+    # Parent map restricted to this inbox: a chain leaving the inbox is
+    # not a cycle here even if it loops elsewhere.
+    parent_of = {mid: parent for _aid, mid, parent in rows}
+
+    for article_id, mid, _parent in rows:
+        seen = {mid}
+        cur = parent_of.get(mid)
+        while cur is not None:
+            if cur == mid:
+                # Walked back to where we started: a real cycle.
+                return session.execute(
+                    text(
+                        "UPDATE article_lists SET thread_root_id = article_id "
+                        "WHERE inbox_id = :ix AND article_id = :aid"
+                    ),
+                    {"ix": inbox_id, "aid": article_id},
+                ).rowcount
+            if cur in seen:
+                break
+            seen.add(cur)
+            cur = parent_of.get(cur)
+    return 0
 
 
 def backfill_inbox(session: Session, inbox_id: int) -> dict[str, int]:
@@ -168,8 +202,12 @@ def verify_thread_roots(session: Session, inbox, limit: int = 200) -> list[dict]
     """
     from mimir.models import Article, ArticleList
     from mimir.threading import find_thread_root
-    from sqlalchemy import select
 
+    # RANDOM, not newest-first. `ORDER BY id DESC` samples only the
+    # most recent rows, which on this corpus is roughly the last hour
+    # of ingest, so a daily run would structurally never see corruption
+    # written during a deploy window, i.e. exactly the damage worth
+    # detecting.
     rows = session.execute(
         select(Article.id, Article.message_id, ArticleList.thread_root_id)
         .join(ArticleList, ArticleList.article_id == Article.id)
@@ -177,23 +215,40 @@ def verify_thread_roots(session: Session, inbox, limit: int = 200) -> list[dict]
             ArticleList.inbox_id == inbox.id,
             ArticleList.thread_root_id.is_not(None),
         )
-        .order_by(Article.id.desc())
+        .order_by(func.random())
         .limit(limit)
     ).all()
 
-    parents = dict(
-        session.execute(select(Article.message_id, Article.thread_parent)).all()
-    )
-
     def _is_cyclic(mid: str) -> bool:
+        """Walk up from one message, bounded, scoped to this inbox.
+
+        Deliberately NOT a whole-corpus parent map: that materialised
+        every article in the database (~2.4 GB resident at production
+        scale) to answer a question about at most `limit` rows, in a
+        CLI process that may be memory-capped. It was also GLOBAL, so a
+        single sender-controlled cycle anywhere would mark every
+        downstream message cyclic and silently exempt it from
+        verification, which is a false-negative path in the one
+        detector this failure mode has.
+        """
         seen = {mid}
-        cur = parents.get(mid)
-        while cur:
-            if cur in seen:
+        cur = mid
+        for _ in range(MAX_CYCLE_WALK):
+            parent = session.scalar(
+                select(Article.thread_parent)
+                .join(ArticleList, ArticleList.article_id == Article.id)
+                .where(
+                    Article.message_id == cur,
+                    ArticleList.inbox_id == inbox.id,
+                )
+            )
+            if parent is None:
+                return False
+            if parent in seen:
                 return True
-            seen.add(cur)
-            cur = parents.get(cur)
-        return False
+            seen.add(parent)
+            cur = parent
+        return True
 
     mismatches: list[dict] = []
     for art_id, mid, stored_root in rows:

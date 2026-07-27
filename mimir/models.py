@@ -152,6 +152,12 @@ class ArticleList(Base):
     same message under different SHAs."""
 
     __tablename__ = "article_lists"
+    __table_args__ = (
+        # Every consumer asks an inbox-scoped question: the roots in
+        # this inbox, whether this article is one, how many rows share
+        # a root here.
+        Index("ix_article_lists_thread_root", "inbox_id", "thread_root_id"),
+    )
 
     article_id: Mapped[int] = mapped_column(
         ForeignKey("articles.id", ondelete="CASCADE"), primary_key=True

@@ -215,6 +215,10 @@ def backfill_thread_roots_command(
     _configure_logging(0)
     client = get_broker_client()
     counts = client.backfill_thread_roots(inbox=inbox)
+    if inbox and not counts.get("inboxes"):
+        # A typo'd inbox matched nothing. Reporting the usual summary
+        # would read as "done" when nothing ran.
+        raise click.ClickException(f"no such inbox: {inbox}")
     click.echo(
         "thread-roots: {inboxes} inbox(es), {seeded} seeded, "
         "{propagated} propagated, {cycles_broken} cycle(s) broken".format(

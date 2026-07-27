@@ -47,8 +47,24 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # The FK is declared, not just the column. Without it
+    # `ondelete="SET NULL"` on the model is inert (SQLite enforces
+    # only what the schema actually carries, and every connection sets
+    # `PRAGMA foreign_keys=ON`), so deleting an article would leave
+    # siblings pointing at a nonexistent id. That is reachable:
+    # `inboxes.delete_inbox(keep_orphan_articles=False)` deletes orphan
+    # articles, and a thread whose root row is deleted would then have
+    # NO member satisfying `thread_root_id = article_id`, so it would
+    # silently vanish from every "roots in this inbox" query.
     with op.batch_alter_table("article_lists") as batch:
         batch.add_column(sa.Column("thread_root_id", sa.Integer(), nullable=True))
+        batch.create_foreign_key(
+            "fk_article_lists_thread_root_id_articles",
+            "articles",
+            ["thread_root_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
     # Composite and inbox-first because every consumer asks an
     # inbox-scoped question: "the roots in this inbox" (sitemap), "is
     # this article a root here", "how many articles share this root

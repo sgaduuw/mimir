@@ -274,6 +274,20 @@ def _replay_loop(
             conn_or_session.delete(row)
         out.recovered += 1
 
+    # Replay inserts `article_lists` rows directly, so their
+    # materialised thread root is unset. Left alone those rows stay
+    # NULL permanently, even on a corpus where the backfill has already
+    # run and the operator has no reason to run it again, and every
+    # later reply to one of them stays NULL too. Resolving here keeps
+    # the column self-maintaining rather than leaving a hole that only
+    # a remembered follow-up command would close.
+    #
+    # Idempotent and cheap: the passes only touch rows that are still
+    # NULL, so on a fully-backfilled corpus with nothing recovered this
+    # is a couple of no-op statements.
+    if out.recovered:
+        _resolve_roots_after_replay(conn_or_session, inbox_id)
+
     # Flush still-failed updates: one UPDATE per row so each carries
     # its specific error_class / error_message.
     if is_conn:
@@ -296,6 +310,36 @@ def _replay_loop(
         conn_or_session.commit()
 
     return out
+
+
+def _resolve_roots_after_replay(conn_or_session, inbox_id: int) -> None:
+    """Run the thread-root passes for one inbox after a replay.
+
+    `replay_failures` runs against either a writer Connection (broker
+    path) or a Session (legacy path); `thread_roots`' passes take a
+    Session, so wrap a Connection in one. The passes are the same ones
+    the backfill uses and are idempotent, so this converges the rows
+    replay just inserted without disturbing anything already correct.
+    """
+    from sqlalchemy.orm import Session as _Session
+
+    from mimir.thread_roots import MAX_PASSES, break_cycle, propagate, seed_roots
+
+    def _run(session) -> None:
+        seed_roots(session, inbox_id)
+        for _ in range(MAX_PASSES):
+            if propagate(session, inbox_id):
+                continue
+            if break_cycle(session, inbox_id):
+                continue
+            break
+
+    if isinstance(conn_or_session, _Session):
+        _run(conn_or_session)
+    else:
+        with _Session(bind=conn_or_session) as session:
+            _run(session)
+            session.flush()
 
 
 def replay_failures(
