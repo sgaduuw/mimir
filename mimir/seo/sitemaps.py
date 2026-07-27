@@ -18,7 +18,7 @@ from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
 from mimir.maintainer_directory import all_maintainers
@@ -121,25 +121,48 @@ def _recent_thread_roots_query(inbox: Inbox):
 
 
 def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
-    """Of `root_ids`, those whose thread is just themselves here.
+    """Of `root_ids`, those whose thread is just themselves in this
+    inbox (no reply hangs off them here).
 
-    A count over `ix_article_lists_thread_root`: a root with exactly
-    one row naming it is a single-message thread. That replaces the
-    correlated EXISTS over `thread_parent` this used to need, which in
-    its first (JOIN) form was O(ids x inbox rows) and took minutes per
-    sitemap render on lkml.
+    Deliberately still derived from `thread_parent` rather than from
+    `article_lists.thread_root_id`, unlike its sibling
+    `_recent_thread_roots_query`. A `GROUP BY thread_root_id HAVING
+    count = 1` counts only POPULATED members, so mid-backfill (root
+    seeded, replies still NULL) a five-message thread counts as one and
+    gets published as a message URL while its own page canonicalises to
+    the thread URL, i.e. the sitemap listing a page that disclaims
+    itself. `handle_backfill_thread_roots` commits one pass per
+    WriteOp, so that state is reachable and committed on every inbox,
+    and durable if a run is interrupted.
+
+    The column form also buys nothing measurable here: 3.0-4.1 ms
+    against 3.4 ms for this one on 5000 ids, at both 500k and 2.1M
+    rows. Faster-looking and wrong is a bad trade.
+
+    Correlated EXISTS, not a join: as a join the planner stops driving
+    from `articles IN (ids)` past a few hundred ids and scans every
+    article-list row in the inbox instead, i.e. O(ids x inbox rows),
+    measured at 3950 ms for 5000 ids over a 50k-row inbox.
     """
     if not root_ids:
         return set()
-    rows = session.execute(
-        select(ArticleList.thread_root_id, func.count(ArticleList.article_id))
+    child = aliased(Article)
+    has_reply = (
+        select(child.id)
+        .join(ArticleList, ArticleList.article_id == child.id)
         .where(
+            child.thread_parent == Article.message_id,
             ArticleList.inbox_id == inbox.id,
-            ArticleList.thread_root_id.in_(root_ids),
+            child.id != Article.id,
         )
-        .group_by(ArticleList.thread_root_id)
-    ).all()
-    return {root_id for root_id, count in rows if count == 1}
+        .exists()
+    )
+    with_replies = set(
+        session.execute(select(Article.id).where(Article.id.in_(root_ids), has_reply))
+        .scalars()
+        .all()
+    )
+    return set(root_ids) - with_replies
 
 
 def sitemap_index_xml(
@@ -298,16 +321,17 @@ def inbox_sitemap_xml(
         # elsewhere. One fat thread document per entry is also the
         # whole point of the consolidation.
         #
-        # "Is a thread root" is a per-row EXISTS, not the recursive
-        # walk-up `find_thread_root` does: a message is a root in this
-        # inbox when it has no `thread_parent`, or when that parent
-        # isn't in this inbox (an off-list ancestor, which
-        # `find_thread_root` also treats as the top).
+        # Roots come from the materialised column: `thread_root_id =
+        # article_id` is one indexed comparison, which replaced a
+        # correlated EXISTS over `thread_parent` and with it the whole
+        # EXISTS-versus-JOIN tradeoff (no shape suited both lkml and
+        # the ~199 small inboxes). Rows still awaiting the backfill
+        # carry NULL, fail the comparison, and are simply absent until
+        # it reaches them: freshness, not correctness.
         #
-        # Inbox membership is a JOIN and the root test a correlated
-        # EXISTS; see `_recent_thread_roots_query` for the measurements
-        # behind that split (the all-EXISTS form is much faster on lkml
-        # and much slower on the ~199 small inboxes).
+        # `_singleton_root_ids` deliberately does NOT use the column;
+        # see its docstring for why counting populated members
+        # misclassifies mid-backfill.
         #
         # Cross-posted articles still appear in each linked inbox's
         # sitemap; the page's own canonical resolves which to keep.

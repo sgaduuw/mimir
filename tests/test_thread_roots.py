@@ -18,6 +18,12 @@ work lived in an interaction the then-current guard held fixed:
   because the root is per-inbox and a cross-posted reply routinely
   hangs off a root present in only one of its inboxes.
 
+The oracle is `_find_thread_root_cte`, never `find_thread_root`. Once
+the latter reads the column, using it here reduces every assertion to
+`root_id == root_id`: measured, that silently cost 14 of 17 detections
+against a write-path mutation. The whole point of this file is to
+recompute the answer independently.
+
 Cycles carry an explicit carve-out, see `CYCLIC`.
 """
 
@@ -27,7 +33,7 @@ from sqlalchemy import select
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox
 from mimir.thread_roots import backfill_inbox
-from mimir.threading import find_thread_root
+from mimir.threading import _find_thread_root_cte
 from tests.test_routes._helpers import seed_thread_shape
 
 # Shape -> ordered (message_id, parent) edges. The list order IS the
@@ -78,10 +84,9 @@ def _roots_by_inbox(
 ) -> dict[str, tuple[int | None, int]]:
     """`message_id -> (thread_root_id, article_id)` for one inbox.
 
-    Scoped to `only` because the shared conftest seeds articles
-    directly rather than through ingest, so those rows legitimately
-    carry NULL (the column means "not yet computed", which is what the
-    backfill is for) and would otherwise drown the shape under test.
+    Scoped to `only` so the shape under test is not drowned by the
+    shared conftest corpus, which seeds its own rows (with roots, as
+    production always has).
     """
     with SessionLocal() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
@@ -118,7 +123,7 @@ def _assert_invariant(inbox_name: str, shape: str) -> None:
                     f"{shape}/{inbox_name}: cycle fragmented across roots {shared}"
                 )
                 continue
-            expected_mid = find_thread_root(s, inbox, mid)
+            expected_mid = _find_thread_root_cte(s, inbox, mid)
             expected_id = materialised[expected_mid][1] if expected_mid else art_id
             assert root_id == expected_id, (
                 f"{shape}/{inbox_name}: {mid} has thread_root_id={root_id}, "
@@ -330,7 +335,7 @@ def _assert_invariant_for(inbox_name: str, mids: set[str], label: str) -> None:
     with SessionLocal() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
         for mid, (root_id, art_id) in materialised.items():
-            expected_mid = find_thread_root(s, inbox, mid) or mid
+            expected_mid = _find_thread_root_cte(s, inbox, mid) or mid
             expected_id = materialised.get(expected_mid, (None, art_id))[1]
             assert root_id == expected_id, (
                 f"{label}: {mid} has thread_root_id={root_id}, "
@@ -887,4 +892,48 @@ def test_verifier_does_not_read_the_column_it_is_checking(client, tmp_path):
 
     assert any(m["message_id"] == "cv3@x" for m in found), (
         f"verifier agreed with the corrupted column: {found}"
+    )
+
+
+def test_fast_path_ignores_a_root_no_longer_linked_to_this_inbox(client, tmp_path):
+    """`find_thread_root` promises the topmost ancestor PRESENT IN THIS
+    INBOX, and the fast path must keep that promise.
+
+    A stored root can stop being a member without the FK's `SET NULL`
+    firing: `reindex --from-scratch` drops an epoch's `article_lists`
+    rows while the articles survive, so siblings keep pointing at a row
+    that is no longer here. Answering with it would return a root the
+    recursive walk would never give, and the caller would then render
+    an empty thread.
+    """
+    from sqlalchemy import delete, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.threading import _find_thread_root_cte, find_thread_root
+
+    seed_thread_shape(
+        tmp_path, "alpha", [("fp1@x", None), ("fp2@x", "fp1@x"), ("fp3@x", "fp2@x")]
+    )
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        root_id = s.execute(
+            select(Article.id).where(Article.message_id == "fp1@x")
+        ).scalar_one()
+        # Unlink the root from this inbox; the article row survives, so
+        # the children's thread_root_id still points at it.
+        s.execute(
+            delete(ArticleList).where(
+                ArticleList.article_id == root_id,
+                ArticleList.inbox_id == inbox.id,
+            )
+        )
+        s.commit()
+
+        fast = find_thread_root(s, inbox, "fp3@x")
+        walk = _find_thread_root_cte(s, inbox, "fp3@x")
+
+    assert fast == walk, (
+        f"fast path answered {fast!r} with a root that is no longer in "
+        f"this inbox; the walk says {walk!r}"
     )
