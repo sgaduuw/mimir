@@ -151,6 +151,37 @@ def break_cycle(session: Session, inbox_id: int) -> int:
     return 0
 
 
+def drive_passes(run) -> dict[str, int]:
+    """Run the seed / propagate / break-cycle convergence to fixpoint.
+
+    `run(pass_fn) -> rowcount` is the only thing the three callers
+    disagree about: the backfill handler submits each pass as its own
+    WriteOp so the single writer is released between them, while the
+    in-session and replay callers just execute inline. Keeping one copy
+    of the loop matters more than the six lines it saves, because the
+    termination logic has to be right in all three and the copies had
+    already drifted (the replay one had no exhaustion signal at all).
+    """
+    counts = {
+        "seeded": run(seed_roots),
+        "propagated": 0,
+        "cycles_broken": 0,
+        "exhausted": 0,
+    }
+    for _ in range(MAX_PASSES):
+        moved = run(propagate)
+        if moved:
+            counts["propagated"] += moved
+            continue
+        if run(break_cycle):
+            counts["cycles_broken"] += 1
+            continue
+        break
+    else:
+        counts["exhausted"] = 1
+    return counts
+
+
 def backfill_inbox(session: Session, inbox_id: int) -> dict[str, int]:
     """Populate `thread_root_id` for one inbox, all passes in ONE
     session. Idempotent: only touches NULL rows, so a re-run resumes a
@@ -162,30 +193,14 @@ def backfill_inbox(session: Session, inbox_id: int) -> dict[str, int]:
     single writer that long would queue every web-tier cache write
     behind it.
     """
-    seeded = seed_roots(session, inbox_id)
-    propagated = 0
-    cycles_broken = 0
-    for _ in range(MAX_PASSES):
-        moved = propagate(session, inbox_id)
-        if moved:
-            propagated += moved
-            continue
-        # Stalled: either done, or only cycles remain.
-        if break_cycle(session, inbox_id):
-            cycles_broken += 1
-            continue
-        break
-    else:
+    counts = drive_passes(lambda fn: fn(session, inbox_id))
+    if counts["exhausted"]:
         logger.warning(
-            "thread-roots: inbox %s hit MAX_PASSES (%s); rows may remain unrooted",
+            "thread-roots: inbox %s hit MAX_PASSES (%s); rows remain unrooted",
             inbox_id,
             MAX_PASSES,
         )
-    return {
-        "seeded": seeded,
-        "propagated": propagated,
-        "cycles_broken": cycles_broken,
-    }
+    return counts
 
 
 def verify_thread_roots(session: Session, inbox, limit: int = 200) -> list[dict]:

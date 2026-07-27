@@ -90,17 +90,11 @@ def handle_backfill_thread_roots(req: "BackfillThreadRootsRequest") -> Reply:
     interrupted run resumes and live ingest is never clobbered.
     """
     from sqlalchemy import select
-    from sqlalchemy.orm import Session
 
     from mimir.broker import _context
     from mimir.broker.writes import WriteOp
     from mimir.models import Inbox
-    from mimir.thread_roots import (
-        MAX_PASSES,
-        break_cycle,
-        propagate,
-        seed_roots,
-    )
+    from mimir.thread_roots import MAX_PASSES, drive_passes
 
     writer = _context.get_active_writer()
     pool = _context.get_active_pool()
@@ -111,39 +105,40 @@ def handle_backfill_thread_roots(req: "BackfillThreadRootsRequest") -> Reply:
             stmt = stmt.where(Inbox.name == req.inbox)
         inboxes = list(read_session.execute(stmt).all())
 
-    totals = {"seeded": 0, "propagated": 0, "cycles_broken": 0, "inboxes": 0}
-
-    def _run(label: str, fn, inbox_id: int) -> int:
-        def _op(conn):
-            with Session(bind=conn) as session:
-                moved = fn(session, inbox_id)
-                session.flush()
-                return moved
-
-        return writer.submit(WriteOp(label=label, fn=_op)).result(timeout=600) or 0
+    totals = {
+        "seeded": 0,
+        "propagated": 0,
+        "cycles_broken": 0,
+        "inboxes": 0,
+        "exhausted": 0,
+    }
 
     for inbox_id, name in inboxes:
         totals["inboxes"] += 1
-        totals["seeded"] += _run(f"thread_roots:seed:{name}", seed_roots, inbox_id)
-        for _ in range(MAX_PASSES):
-            moved = _run(f"thread_roots:propagate:{name}", propagate, inbox_id)
-            if moved:
-                totals["propagated"] += moved
-                continue
-            if _run(f"thread_roots:cycle:{name}", break_cycle, inbox_id):
-                totals["cycles_broken"] += 1
-                continue
-            break
-        else:
-            # Exhausting the budget means rows are still unrooted, so
-            # reporting ok with no signal would let a truncated
-            # backfill read as a complete one.
+
+        def _run(fn, _id=inbox_id, _name=name):
+            """One pass, one WriteOp: the writer is released between
+            them so web-tier cache writes drain instead of queueing
+            behind a full-corpus run."""
+            return (
+                writer.submit(
+                    WriteOp(
+                        label=f"thread_roots:{fn.__name__}:{_name}",
+                        fn=lambda conn: fn(conn, _id),
+                    )
+                ).result(timeout=600)
+                or 0
+            )
+
+        counts = drive_passes(_run)
+        for key in ("seeded", "propagated", "cycles_broken", "exhausted"):
+            totals[key] += counts[key]
+        if counts["exhausted"]:
             logger.warning(
                 "thread-roots: inbox %s hit MAX_PASSES (%s); rows remain unrooted",
                 name,
                 MAX_PASSES,
             )
-            totals["exhausted"] = totals.get("exhausted", 0) + 1
 
     return Reply(rpc_id=req.rpc_id, ok=True, result=totals)
 

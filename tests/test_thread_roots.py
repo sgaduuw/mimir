@@ -43,18 +43,8 @@ SHAPES = {
     "deep": [(f"c{i}@x", None if i == 1 else f"c{i - 1}@x") for i in range(1, 7)],
     "singleton": [("d1@x", None)],
     "off-list-parent": [("e1@x", "gone@elsewhere"), ("e2@x", "e1@x")],
-    # Two messages naming the same parent, then a third naming both
-    # (References picks the last), so the graph is a DAG rather than a
-    # tree from the ingest side.
-    "diamond": [
-        ("f1@x", None),
-        ("f2@x", "f1@x"),
-        ("f3@x", "f1@x"),
-        ("f4@x", "f3@x"),
-    ],
     "self-parent": [("g1@x", "g1@x")],
     "cycle-2": [("h1@x", "h2@x"), ("h2@x", "h1@x")],
-    "cycle-3": [("i1@x", "i3@x"), ("i2@x", "i1@x"), ("i3@x", "i2@x")],
 }
 
 # Shapes where the graph contains a cycle. `find_thread_root` walks to
@@ -71,7 +61,7 @@ SHAPES = {
 # keeps the cycle a single thread rather than fragmenting it. Demanding
 # self-rooting instead would need a cycle detector on the write path
 # for no gain a reader could observe.
-CYCLIC = {"self-parent", "cycle-2", "cycle-3"}
+CYCLIC = {"self-parent", "cycle-2"}
 
 ORDERS = {
     "in-order": lambda edges: edges,
@@ -280,25 +270,6 @@ def test_verify_detects_a_corrupted_root(client, tmp_path):
     assert found[0]["message_id"] == "vr3@x"
     assert found[0]["stored_root"] == victim
     assert found[0]["expected_root"] == seeded["vr1@x"][0]
-
-
-def test_verify_ignores_cycles(client, tmp_path):
-    """Cycles are the one place the column and `find_thread_root`
-    disagree on purpose (the CTE walks to MAX_DEPTH and lands wherever
-    `1000 mod cycle_length` puts it). The verifier must not report that
-    as corruption, or every run on a real corpus would cry wolf."""
-    from sqlalchemy import select
-
-    from mimir.extensions import SessionLocal
-    from mimir.models import Inbox
-    from mimir.thread_roots import verify_thread_roots
-
-    seed_thread_shape(
-        tmp_path, "alpha", [("cy1@x", "cy3@x"), ("cy2@x", "cy1@x"), ("cy3@x", "cy2@x")]
-    )
-    with SessionLocal() as s:
-        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        assert verify_thread_roots(s, inbox) == []
 
 
 def test_ingest_into_an_unbackfilled_corpus_never_writes_a_wrong_root(

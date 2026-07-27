@@ -294,9 +294,8 @@ def _replay_loop(
         # exactly the permanent-NULL hole it exists to close. Portfolio
         # MEMORY 2026-06-13: bulk raw SQL after ORM adds needs an
         # explicit flush under autoflush=False.
-        flush = getattr(conn_or_session, "flush", None)
-        if flush is not None:
-            flush()
+        if not is_conn:
+            conn_or_session.flush()
         _resolve_roots_after_replay(conn_or_session, inbox_id)
 
     # Flush still-failed updates: one UPDATE per row so each carries
@@ -326,31 +325,16 @@ def _replay_loop(
 def _resolve_roots_after_replay(conn_or_session, inbox_id: int) -> None:
     """Run the thread-root passes for one inbox after a replay.
 
-    `replay_failures` runs against either a writer Connection (broker
-    path) or a Session (legacy path); `thread_roots`' passes take a
-    Session, so wrap a Connection in one. The passes are the same ones
-    the backfill uses and are idempotent, so this converges the rows
-    replay just inserted without disturbing anything already correct.
+    `replay_failures` holds either a writer Connection (broker path) or
+    a Session (legacy path). The passes only `execute(text(...))` and
+    read `.rowcount`, which both support identically, so neither needs
+    wrapping. They are the same idempotent passes the backfill uses, so
+    this converges the rows replay just inserted without disturbing
+    anything already correct.
     """
-    from sqlalchemy.orm import Session as _Session
+    from mimir.thread_roots import drive_passes
 
-    from mimir.thread_roots import MAX_PASSES, break_cycle, propagate, seed_roots
-
-    def _run(session) -> None:
-        seed_roots(session, inbox_id)
-        for _ in range(MAX_PASSES):
-            if propagate(session, inbox_id):
-                continue
-            if break_cycle(session, inbox_id):
-                continue
-            break
-
-    if isinstance(conn_or_session, _Session):
-        _run(conn_or_session)
-    else:
-        with _Session(bind=conn_or_session) as session:
-            _run(session)
-            session.flush()
+    drive_passes(lambda fn: fn(conn_or_session, inbox_id))
 
 
 def replay_failures(
