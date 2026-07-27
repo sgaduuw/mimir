@@ -283,6 +283,31 @@ def _patch_state(*, is_patch=True, trailers=(), landings=(), series=()):
     )
 
 
+def _rev(version, *, current):
+    """A revision entry. Only `version` / `is_current` feed the
+    synthesis line; the rest is inert filler."""
+    from mimir.patch_state import StateSeriesEntry
+
+    return StateSeriesEntry(
+        version=version,
+        article_id=0,
+        date=None,
+        url="",
+        is_current=current,
+        diff_url=None,
+    )
+
+
+def _landing(tree, sha, when=None):
+    """A mainline landing. `tree_label` mirrors `tree_name` here; the
+    real resolver prettifies it, which the synthesis doesn't depend on."""
+    from mimir.patch_state import StateMainlineLanding
+
+    return StateMainlineLanding(
+        commit_sha=sha, tree_name=tree, tree_label=tree, committed_at=when
+    )
+
+
 def test_patch_synthesis_composes_revision_review_and_landing_clauses():
     """The full sentence: revision position, review-trailer roll-up
     with the maintainer subset, and the mainline landing. This is the
@@ -290,32 +315,11 @@ def test_patch_synthesis_composes_revision_review_and_landing_clauses():
     what the pills claim."""
     from datetime import datetime, timezone
 
-    from mimir.patch_state import (
-        StateMainlineLanding,
-        StateSeriesEntry,
-        StateTrailerCount,
-    )
+    from mimir.patch_state import StateTrailerCount
     from mimir.web.filters import _patch_synthesis_filter
 
     state = _patch_state(
-        series=[
-            StateSeriesEntry(
-                version="v1",
-                article_id=1,
-                date=None,
-                url="/a/1",
-                is_current=False,
-                diff_url=None,
-            ),
-            StateSeriesEntry(
-                version="v2",
-                article_id=2,
-                date=None,
-                url="/a/2",
-                is_current=True,
-                diff_url=None,
-            ),
-        ],
+        series=[_rev("v1", current=False), _rev("v2", current=True)],
         trailers=[
             StateTrailerCount(role="Reviewed-by", total=3, maintainer_count=2),
             StateTrailerCount(role="Acked-by", total=1, maintainer_count=0),
@@ -323,19 +327,59 @@ def test_patch_synthesis_composes_revision_review_and_landing_clauses():
             StateTrailerCount(role="Signed-off-by", total=5, maintainer_count=5),
         ],
         landings=[
-            StateMainlineLanding(
-                commit_sha="abc123def4567890",
-                tree_name="net-next",
-                tree_label="net-next",
-                committed_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            _landing(
+                "linus", "abc123def4567890", datetime(2026, 6, 1, tzinfo=timezone.utc)
             )
         ],
     )
     out = _patch_synthesis_filter(state)
     assert out == (
         "Revision v2 of 2 in this series; 4 review trailers "
-        "(2 from subsystem maintainers); landed in net-next as "
+        "(2 from subsystem maintainers); landed in mainline as "
         "abc123def456 on 2026-06-01."
+    )
+
+
+def test_patch_synthesis_prefers_linus_landing_over_earlier_subsystem_tree():
+    """A patch that reached mainline carries SEVERAL landings (subsystem
+    tree, then linux-next, then Linus), ordered oldest-first. Reporting
+    the first row would say "queued in net-next" directly beneath a
+    LANDED badge showing the Linus sha, getting wrong the one fact
+    ("did this land?") the sentence exists to answer.
+
+    Mirrors `lifecycle_status`'s tree priority: Linus wins when present.
+    """
+    from datetime import datetime, timezone
+
+    from mimir.web.filters import _patch_synthesis_filter
+
+    state = _patch_state(
+        landings=[
+            _landing("net-next", "n" * 16, datetime(2026, 6, 1, tzinfo=timezone.utc)),
+            _landing("linus", "1" * 16, datetime(2026, 6, 20, tzinfo=timezone.utc)),
+        ],
+    )
+    assert _patch_synthesis_filter(state) == (
+        "Landed in mainline as 111111111111 on 2026-06-20."
+    )
+
+
+def test_patch_synthesis_reports_earliest_tree_as_queued_when_not_in_mainline():
+    """With no Linus landing the patch has NOT landed, so the sentence
+    says "queued", matching the QUEUED badge, and names the earliest
+    non-Linus tree (again mirroring the badge)."""
+    from datetime import datetime, timezone
+
+    from mimir.web.filters import _patch_synthesis_filter
+
+    state = _patch_state(
+        landings=[
+            _landing("net-next", "a" * 16, datetime(2026, 6, 1, tzinfo=timezone.utc)),
+            _landing("linux-next", "b" * 16, datetime(2026, 6, 5, tzinfo=timezone.utc)),
+        ],
+    )
+    assert _patch_synthesis_filter(state) == (
+        "Queued in net-next as aaaaaaaaaaaa on 2026-06-01."
     )
 
 
@@ -355,20 +399,11 @@ def test_patch_synthesis_singularises_and_omits_absent_clauses():
     maintainer parenthetical is omitted at zero, and a single-revision
     patch gets no revision clause (matching `_revisions_fold.html`,
     which only renders at >= 2)."""
-    from mimir.patch_state import StateSeriesEntry, StateTrailerCount
+    from mimir.patch_state import StateTrailerCount
     from mimir.web.filters import _patch_synthesis_filter
 
     state = _patch_state(
-        series=[
-            StateSeriesEntry(
-                version="v1",
-                article_id=1,
-                date=None,
-                url="/a/1",
-                is_current=True,
-                diff_url=None,
-            )
-        ],
+        series=[_rev("v1", current=True)],
         trailers=[StateTrailerCount(role="Tested-by", total=1, maintainer_count=0)],
     )
     assert _patch_synthesis_filter(state) == "1 review trailer."
