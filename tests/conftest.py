@@ -166,9 +166,12 @@ def _session_broker(_migrate_db):
         server.read_pool.close()
         if sock_path.exists():
             sock_path.unlink()
-        # Sentinels + dir cleanup.
-        for name in (".migrated", ".bootstrapped", ".broker_initial_analyze"):
-            (sock_dir / name).unlink(missing_ok=True)
+        # Sentinels + dir cleanup. Sweep whatever the broker left
+        # rather than naming each sentinel: the list went stale every
+        # time startup gained one, and the failure surfaced as an
+        # unrelated "Directory not empty" in teardown.
+        for leftover in sock_dir.iterdir():
+            leftover.unlink(missing_ok=True)
         sock_dir.rmdir()
 
 

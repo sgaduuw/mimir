@@ -766,6 +766,101 @@ def _post_migrate_analyze_if_needed(socket_path: Path) -> None:
     )
 
 
+def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
+    """Populate `article_lists.thread_root_id` before the broker serves.
+
+    W8's column is read by `find_thread_root` and by the sitemap's root
+    and singleton tests. Readers fall back to the recursive walk while
+    a row is NULL, so a partially-filled corpus is correct, but the
+    sitemap simply omits threads it has not reached yet: deploy without
+    filling and the archive's own sitemap under-reports until somebody
+    remembers to run the command.
+
+    "Somebody remembers" is not a mechanism, so this runs it. Same
+    shape as the post-migrate ANALYZE above: sentinel-gated, in
+    `build_server`, therefore complete before `serve()` opens the
+    socket and before the web tier's healthcheck dependency is
+    satisfied. Delete the sentinel to force a re-run.
+
+    Cost is one-time and proportional to corpus size, measured ~10 s
+    per 500k rows, so ~2 min on the production corpus, paid once on
+    the deploy that introduces the column. Subsequent restarts skip it,
+    and ingest maintains the column incrementally from then on.
+
+    Verification runs after, and deliberately does NOT gate startup. A
+    mismatch means the column disagrees with a recomputed
+    `find_thread_root`, which is serious, but wedging the broker on it
+    would turn a reporting problem into an outage, and the failure it
+    detects is not made worse by the site being up. It is logged at
+    ERROR so the post-deploy smoke can grep for it.
+    """
+    sentinel = socket_path.parent / ".thread_roots_backfilled"
+    if sentinel.exists():
+        logger.debug("broker: thread-roots sentinel %s present, skipping", sentinel)
+        return
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.thread_roots import backfill_inbox, verify_thread_roots
+
+    logger.info("broker: backfilling thread roots (one-time)")
+    t0 = time.monotonic()
+    totals = {"seeded": 0, "propagated": 0, "cycles_broken": 0, "exhausted": 0}
+    try:
+        with SessionLocal() as session:
+            inboxes = list(session.execute(select(Inbox)).scalars())
+            for inbox in inboxes:
+                counts = backfill_inbox(session, inbox.id)
+                for key in totals:
+                    totals[key] += counts.get(key, 0)
+            session.commit()
+    except Exception:
+        # Don't refuse to start: readers fall back to the recursive
+        # walk while rows are NULL, so an unfilled column is slow and
+        # under-reported, not wrong. No sentinel, so the next restart
+        # retries.
+        logger.exception(
+            "broker: thread-roots backfill failed, continuing without sentinel"
+        )
+        return
+
+    elapsed = time.monotonic() - t0
+    if totals["exhausted"]:
+        logger.error(
+            "broker: thread-roots backfill hit the pass budget on %d inbox(es); "
+            "rows remain unrooted, re-run `mimir backfill-thread-roots`",
+            totals["exhausted"],
+        )
+    else:
+        sentinel.touch()
+    logger.info(
+        "broker: thread-roots backfill complete in %.1fs "
+        "(seeded=%d propagated=%d cycles=%d)",
+        elapsed,
+        totals["seeded"],
+        totals["propagated"],
+        totals["cycles_broken"],
+    )
+
+    try:
+        with SessionLocal() as session:
+            for inbox in session.execute(select(Inbox)).scalars():
+                bad = verify_thread_roots(session, inbox)
+                if bad:
+                    logger.error(
+                        "broker: thread-roots verification found %d mismatch(es) "
+                        "in inbox %s, e.g. %s; the materialised column disagrees "
+                        "with find_thread_root",
+                        len(bad),
+                        inbox.name,
+                        bad[0],
+                    )
+    except Exception:
+        logger.exception("broker: thread-roots verification failed to run")
+
+
 def _purge_loop(stop_event: threading.Event, writer: WriterThread) -> None:
     """Periodic purge of expired cache rows. Submitted as a WriteOp via
     the broker's `WriterThread` so every write funnels through the
@@ -838,6 +933,7 @@ def build_server(socket_path: Path) -> _BrokerServer:
     _migrate_if_needed(sp)
     _bootstrap_inboxes_if_needed(sp)
     _post_migrate_analyze_if_needed(sp)
+    _backfill_thread_roots_if_needed(sp)
     # Config-drift guard (Layer 1): the broker can serve every non-
     # sitemap surface with SITE_BASE_URL unset, but the sitemap warm
     # targets (sitemap:index, sitemap:meta, sitemap:inbox:*) silently
