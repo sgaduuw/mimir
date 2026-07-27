@@ -274,6 +274,30 @@ def _replay_loop(
             conn_or_session.delete(row)
         out.recovered += 1
 
+    # Replay inserts `article_lists` rows directly, so their
+    # materialised thread root is unset. Left alone those rows stay
+    # NULL permanently, even on a corpus where the backfill has already
+    # run and the operator has no reason to run it again, and every
+    # later reply to one of them stays NULL too. Resolving here keeps
+    # the column self-maintaining rather than leaving a hole that only
+    # a remembered follow-up command would close.
+    #
+    # Idempotent and cheap: the passes only touch rows that are still
+    # NULL, so on a fully-backfilled corpus with nothing recovered this
+    # is a couple of no-op statements.
+    if out.recovered:
+        # Flush first on the Session path. `SessionLocal` is
+        # `autoflush=False`, and the passes below are raw `text()`
+        # UPDATEs, so without this they would run against a database
+        # that has not yet seen the ORM rows this loop just `add()`ed
+        # and the whole call would be a silent no-op, re-creating
+        # exactly the permanent-NULL hole it exists to close. Portfolio
+        # MEMORY 2026-06-13: bulk raw SQL after ORM adds needs an
+        # explicit flush under autoflush=False.
+        if not is_conn:
+            conn_or_session.flush()
+        _resolve_roots_after_replay(conn_or_session, inbox_id)
+
     # Flush still-failed updates: one UPDATE per row so each carries
     # its specific error_class / error_message.
     if is_conn:
@@ -296,6 +320,27 @@ def _replay_loop(
         conn_or_session.commit()
 
     return out
+
+
+def _resolve_roots_after_replay(conn_or_session, inbox_id: int) -> None:
+    """Run the thread-root passes for one inbox after a replay.
+
+    `replay_failures` holds either a writer Connection (broker path) or
+    a Session (legacy path). The passes only `execute(text(...))` and
+    read `.rowcount`, which both support identically, so neither needs
+    wrapping. They are the same idempotent passes the backfill uses, so
+    this converges the rows replay just inserted without disturbing
+    anything already correct.
+    """
+    from mimir.thread_roots import drive_passes
+
+    counts = drive_passes(lambda fn: fn(conn_or_session, inbox_id))
+    if counts["exhausted"]:
+        logger.warning(
+            "thread-roots: inbox %s hit the pass budget during replay; "
+            "rows remain unrooted, run backfill-thread-roots",
+            inbox_id,
+        )
 
 
 def replay_failures(

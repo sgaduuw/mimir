@@ -361,12 +361,21 @@ def test_replay_failures_cross_post_links_existing_article(
             f"expected 1 Article row for cross-posted msgid, got {len(arts)}"
         )
         # The alpha article_lists row now exists.
-        s.execute(
+        link = s.execute(
             select(ArticleList).where(
                 ArticleList.article_id == arts[0].id,
                 ArticleList.inbox_id == alpha.id,
             )
         ).scalar_one()
+        # ...and carries a materialised thread root. Replay inserts
+        # `article_lists` rows directly, so without an explicit resolve
+        # they land permanently NULL, even on a corpus the backfill has
+        # already swept and that the operator has no reason to sweep
+        # again. Each such hole is then inherited by every later reply.
+        assert link.thread_root_id == arts[0].id, (
+            "replay left the new link's thread root unresolved; a single "
+            "message thread must root at itself"
+        )
         # And the failure row is gone.
         assert (
             s.execute(
@@ -381,3 +390,77 @@ def test_replay_failures_cross_post_links_existing_article(
 # Inbox.last_article_date (#216): bumped at ingest-commit time so the
 # front-page "Last activity" string doesn't ride the 24h
 # `archive_stats` cache window.
+
+
+def test_replay_resolves_thread_roots_on_the_non_broker_path(
+    seeded_db, tmp_path, monkeypatch
+):
+    """The Session path, which no other replay test reaches.
+
+    Every other test here takes `broker_active`, so `conn_or_session`
+    is a Connection and the flush guard is a no-op by construction:
+    deleting the flush entirely left the whole suite green. That made
+    the fix for the autoflush=False no-op unpinned, which is how it
+    would have regressed silently.
+
+    Without `broker_active`, `replay_failures` falls to
+    `SessionLocal()`, which is autoflush=False. The root passes are raw
+    `text()` UPDATEs, so without an explicit flush they run against a
+    database that has not seen the ORM inserts this replay just made,
+    and leave the recovered rows permanently unrooted.
+    """
+    import mimir.parser
+    from mimir.broker import _context
+    from mimir.models import Article, ArticleList
+
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "np-mirror"
+    mirror_root.mkdir()
+    _build_pubinbox_repo(
+        mirror_root / "0.git", [_rfc5322("np@example.com", body=b"x" * 500)]
+    )
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        s.commit()
+
+    # Cap the parser so ingest records a failure rather than an article.
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 200)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", mirror_root / "0.git", workers=1)
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 1_000_000)
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+
+    # conftest registers an active broker context for the whole test
+    # session, so omitting the `broker_active` fixture is NOT enough:
+    # `get_active_writer()` still succeeds and replay takes the
+    # Connection path. Clear it around the replay call only (ingest
+    # above genuinely requires the broker) so the legacy Session branch
+    # actually runs. That this is the only way to reach it is why the
+    # branch had no coverage.
+    saved_pool, saved_writer = _context._active_pool, _context._active_writer
+    _context.clear_active()
+    try:
+        result = replay_failures(ix)
+    finally:
+        _context.set_active(saved_pool, saved_writer)
+    assert result.recovered == 1, result
+
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == "np@example.com")
+        ).scalar_one()
+        link = s.execute(
+            select(ArticleList).where(
+                ArticleList.article_id == art.id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one()
+
+    assert link.thread_root_id == art.id, (
+        "the non-broker replay path left the row unrooted; the raw-SQL "
+        "passes ran before the ORM inserts were flushed"
+    )

@@ -221,6 +221,21 @@ class UpdateMainlineRequest(_BrokerRequest):
     force: bool = False
 
 
+class BackfillThreadRootsRequest(_BrokerRequest):
+    """Populate `article_lists.thread_root_id` for rows that predate
+    the column (W8). Per-inbox because the root is per-inbox; `inbox`
+    of None means every configured inbox.
+
+    A write, so it runs on the broker like every other backfill. Unlike
+    the per-article walkers it is a handful of bulk UPDATE passes
+    rather than a blob-reading walk, so it needs no chunk/continuation
+    protocol: each pass is a single statement the writer commits
+    whole."""
+
+    op: Literal["backfill_thread_roots"] = "backfill_thread_roots"
+    inbox: str | None = None
+
+
 class AnalyzeRequest(_BrokerRequest):
     """Run `ANALYZE` on the broker. `full=True` overrides the
     per-connection `analysis_limit` for this pass (no cap) so the
