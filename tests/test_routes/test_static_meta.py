@@ -201,3 +201,28 @@ def test_og_image_png_served(client):
 
     width, height = struct.unpack(">II", r.data[16:24])
     assert (width, height) == (1200, 630)
+
+
+def test_robots_txt_disallows_api_and_search_surfaces(client):
+    """`/api/` (htmx partials, one URL per offset) and `/*/search`
+    (internal search results, one URL per query) are crawl-budget
+    sinks that can never be a useful search result. Pins them in the
+    default `*` stanza so a future edit to the defaults can't quietly
+    drop them."""
+    body = client.get("/robots.txt").get_data(as_text=True)
+    assert "Disallow: /api/" in body
+    assert "Disallow: /*/search" in body
+    # The pre-existing attachment rule must survive the addition.
+    assert "Disallow: /*/attachment/" in body
+
+
+def test_since_view_is_noindex_and_omits_canonical(client, tmp_path):
+    """The "what I missed" window is ~90 near-duplicate URLs per inbox
+    over overlapping thread sets, so it carries `noindex`. base.html
+    suppresses the canonical link when noindex is set (a canonical on a
+    page we're asking not to index is a mixed signal). `noindex` alone
+    implies follow, so the outbound thread links stay a crawl path."""
+    _ingest_one_article(tmp_path, "alpha", "since-noindex@example.com")
+    html = client.get("/alpha/since/2026-01-01").get_data(as_text=True)
+    assert '<meta name="robots" content="noindex">' in html
+    assert '<link rel="canonical"' not in html

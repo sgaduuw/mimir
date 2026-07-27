@@ -136,6 +136,17 @@ def threads_since_view(inbox_name: str, since_str: str):
         threads=threads,
         total_messages=total or 0,
         lifecycle_status_by_id=lifecycle_status_by_id,
+        # "What I missed" is a personal catch-up window, not archival
+        # content: every date in the 90-day cap is a distinct URL over
+        # heavily overlapping thread sets, so indexing them would be
+        # ~90 near-duplicate pages per inbox competing with the thread
+        # pages they link to. `noindex` implies follow (only an
+        # explicit `nofollow` disables it), so the outbound links stay
+        # a crawl path into real content. Not robots-disallowed like
+        # `/api/` and `/*/search`: no template links here, so there is
+        # no crawl budget to reclaim, and a shared link should still
+        # render and pass equity onward.
+        noindex=True,
     )
 
 
