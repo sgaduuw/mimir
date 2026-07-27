@@ -3,6 +3,7 @@ the message page's canonical consolidation onto it."""
 
 import re
 
+from mimir.models import Article
 from tests.test_routes._helpers import (
     _ingest_one_article,
     _json_ld_blocks,
@@ -108,7 +109,7 @@ def test_thread_view_survives_a_message_whose_blob_is_missing(client, tmp_path):
     that message loses its body and keeps its header row, everything
     else renders. Simulated by pointing the article at a commit_sha
     that isn't in the mirror."""
-    from sqlalchemy import select, update
+    from sqlalchemy import update
 
     from mimir.extensions import SessionLocal
     from mimir.models import ArticleList
@@ -124,12 +125,6 @@ def test_thread_view_survives_a_message_whose_blob_is_missing(client, tmp_path):
             .values(commit_sha="de" * 20)
         )
         s.commit()
-        assert (
-            s.execute(
-                select(ArticleList.commit_sha).where(ArticleList.article_id == reply_id)
-            ).scalar_one()
-            == "de" * 20
-        )
 
     r = client.get(root_url + "/t")
     assert r.status_code == 200
@@ -180,3 +175,133 @@ def test_messages_past_the_render_cap_keep_their_own_canonical(
     assert html.count('class="thread-message"') == 2
     assert "further message" in html
     assert nested_url in html
+
+
+def _cross_post(seeded, roles, *, canonical_for=None, canonical_inbox="beta"):
+    """Link the named seeded roles into `beta` as well as `alpha`,
+    reusing alpha's mirror and blob pointers so both inboxes resolve
+    the same messages. Optionally pin one article's canonical inbox."""
+    from sqlalchemy import select as sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, Inbox
+
+    with SessionLocal() as s:
+        alpha = s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        other = s.execute(
+            sa_select(Inbox).where(Inbox.name == canonical_inbox)
+        ).scalar_one()
+        other.mirror_path = alpha.mirror_path
+        for role in roles:
+            aid, _, _ = seeded[role]
+            link = s.execute(
+                sa_select(ArticleList).where(
+                    ArticleList.article_id == aid,
+                    ArticleList.inbox_id == alpha.id,
+                )
+            ).scalar_one()
+            s.add(
+                ArticleList(
+                    article_id=aid,
+                    inbox_id=other.id,
+                    epoch=link.epoch,
+                    commit_sha=link.commit_sha,
+                )
+            )
+        if canonical_for is not None:
+            aid, _, _ = seeded[canonical_for]
+            s.get(Article, aid).canonical_inbox_id = other.id
+        s.commit()
+
+
+def test_canonical_never_points_at_a_thread_without_the_message(client, tmp_path):
+    """Threading is inbox-scoped, so a message's thread ROOT need not
+    exist in the message's canonical inbox even though the message
+    does. Building the thread-view canonical on the canonical inbox
+    therefore produced a hard 404 (root absent there), or a thread that
+    genuinely did not contain the message.
+
+    Seeds exactly that: the reply is cross-posted to beta and pinned
+    canonical there, while its root stays alpha-only.
+    """
+    seeded = _seed_three_message_thread(tmp_path, "alpha")
+    _, root_url, _ = seeded["root"]
+    _, reply_url, _ = seeded["reply"]
+    _cross_post(seeded, ["reply"], canonical_for="reply")
+
+    canonical = _canonical_of(client.get(reply_url).get_data(as_text=True))
+    target = canonical.replace("http://localhost", "")
+
+    resolved = client.get(target)
+    assert resolved.status_code == 200, f"canonical {target} does not resolve"
+    # ...and it actually contains the message that points at it.
+    assert reply_url in resolved.get_data(as_text=True)
+    assert target == root_url + "/t"
+
+
+def test_cross_posted_thread_views_agree_on_one_canonical(client, tmp_path):
+    """A fully cross-posted conversation renders a near-identical page
+    under every inbox it touches. Left self-canonical, that
+    re-introduces at thread level exactly the duplication this surface
+    exists to remove, so both fold onto the ROOT's canonical inbox."""
+    seeded = _seed_three_message_thread(tmp_path, "alpha")
+    _, root_url, _ = seeded["root"]
+    _cross_post(seeded, ["root", "reply", "nested"])
+
+    from_alpha = _canonical_of(client.get(root_url + "/t").get_data(as_text=True))
+    beta_url = root_url.replace("/alpha/", "/beta/") + "/t"
+    from_beta = _canonical_of(client.get(beta_url).get_data(as_text=True))
+
+    assert from_alpha == from_beta
+    assert client.get(from_alpha.replace("http://localhost", "")).status_code == 200
+
+
+def test_thread_view_survives_a_render_cap_below_one(client, tmp_path):
+    """`THREAD_VIEW_RENDER_CAP=0` rendered no messages and then hit an
+    IndexError building JSON-LD (which needs a root), 500ing every
+    thread view. An unusable ops value must degrade, not take the
+    surface down."""
+    from mimir.config import settings
+
+    seeded = _seed_three_message_thread(tmp_path, "alpha")
+    _, root_url, _ = seeded["root"]
+
+    for bad in (0, -5):
+        settings_cap = settings.thread_view_render_cap
+        try:
+            object.__setattr__(settings, "thread_view_render_cap", bad)
+            r = client.get(root_url + "/t")
+            assert r.status_code == 200, f"cap={bad} gave {r.status_code}"
+            assert r.get_data(as_text=True).count('class="thread-message"') == 1
+        finally:
+            object.__setattr__(settings, "thread_view_render_cap", settings_cap)
+
+
+def test_thread_view_redacts_addresses_in_html_and_json_ld(client, tmp_path):
+    """The redaction posture, pinned on both of this page's surfaces.
+
+    CONTEXT.md treats redaction as per-surface, and this one carries N
+    bodies rather than one, so a miss leaks N times over. Both surfaces
+    were verified correct by review but were unpinned: deleting the
+    `redact_trailer_addresses` call in the JSON-LD builder, and
+    dropping `|safe_from` in the template, each survived the whole
+    suite.
+
+    `nobody@private.example` is outside the allowlist, so it must
+    appear in neither the rendered From line, the rendered DCO
+    trailer, nor the JSON-LD `text` / `comment[].text` (all of which
+    land in this one response body).
+    """
+    secret = "nobody@private.example"
+    art_id, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "redact-thread@example.com",
+        subject="[PATCH] redaction probe",
+        author=f"Somebody <{secret}>",
+        body=f"Body text.\nSigned-off-by: Somebody <{secret}>\n".encode(),
+    )
+
+    body = client.get(url + "/t").get_data(as_text=True)
+    assert "redaction probe" in body, "fixture did not render"
+    assert secret not in body

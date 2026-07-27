@@ -17,7 +17,7 @@ changes, not internal refactors. Categories: **Added**,
   in one conversation rendered on a single page, with the reply tree's
   full text inline. Additive, the per-message reading model is
   unchanged. Rendering is capped at `THREAD_VIEW_RENDER_CAP` messages
-  (default 200) and the remainder is linked rather than inlined. `/t`
+  (default 50) and the remainder is linked rather than inlined. `/t`
   on a reply 301s to its thread's root, so a conversation has exactly
   one URL. Carries `DiscussionForumPosting` JSON-LD with every reply as
   a `comment`, the forum-thread shape a single message page cannot

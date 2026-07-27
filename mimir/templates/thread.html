@@ -24,7 +24,7 @@ Full thread ({{ _n }} message{{ '' if _n == 1 else 's' }}) in {{ inbox_name }}: 
 {# Anchored so a permalink can deep-link into the conversation, and so
    the message pages' "read the whole thread" link can land on the
    right message. #}
-<article class="thread-message" id="m{{ node.id }}" data-article-id="{{ node.id }}">
+<article class="thread-message" id="m{{ node.id }}">
   <header>
     <h2><a href="{{ url }}">{{ node.subject|clean_subject or '(no subject)' }}</a></h2>
     <p>
@@ -54,7 +54,7 @@ Full thread ({{ _n }} message{{ '' if _n == 1 else 's' }}) in {{ inbox_name }}: 
 {# Past the render cap. Real anchors, not JS, so these stay a crawl
    path to the messages this page didn't inline (and which therefore
    keep their own canonical). #}
-<section class="thread-overflow">
+<section>
   <h2>{{ overflow_links|length }} further message{{ '' if overflow_links|length == 1 else 's' }}</h2>
   <ul>
     {% for node, url in overflow_links %}

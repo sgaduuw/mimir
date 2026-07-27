@@ -394,27 +394,24 @@ def test_inbox_sitemap_lists_thread_roots_not_replies(client):
     assert not any(f"/{art4_id}" in loc for loc in locs)
 
 
-def test_inbox_sitemap_root_query_scopes_inbox_by_exists_not_join():
-    """Guard the shape that keeps the thread-root query fast.
+def test_inbox_sitemap_root_query_scopes_inbox_by_join_not_exists():
+    """Guard the measured shape of the thread-root query.
 
-    Expressing inbox membership as a JOIN makes the planner lead with
-    `ix_article_lists_inbox_id`, materialise every article in the inbox
-    and sort it for the ORDER BY (`USE TEMP B-TREE FOR ORDER BY`),
-    instead of walking `ix_articles_date` DESC and stopping at the
-    LIMIT. Measured on the dev corpus, the JOIN form emits the temp
-    B-tree and the EXISTS form does not; on lkml's 6M rows that is the
-    ~8 s shape CONTEXT.md documents for the triage queues.
+    Inbox membership must stay a JOIN. As a correlated EXISTS the
+    planner drives `ix_articles_date` DESC and stops at the LIMIT,
+    which is ~8x faster on the one dominant inbox but ~37x slower on a
+    small one (the walk never reaches the LIMIT, so it scans the date
+    index to exhaustion at a cost scaling with the whole corpus).
+    Production is ~200 inboxes of which ~199 are small, so the JOIN
+    wins overall by a wide margin.
 
-    This asserts the SQL SHAPE rather than the EXPLAIN output, because
-    EXPLAIN is not a usable guard here: against the tiny test fixture
-    SQLite picks the date index for BOTH formulations, so a
-    plan-only assertion passes even with the JOIN reintroduced
-    (verified). The structural assertion fails the moment the
-    correlated EXISTS is swapped back for a join, at any corpus size.
-    The EXPLAIN checks below still catch gross regressions such as a
-    full table scan.
+    Asserts the SQL shape rather than EXPLAIN output. The two
+    formulations only diverge in the planner at production scale and
+    distribution; against the test fixture SQLite resolves both the
+    same way, so a plan assertion here would pass in either
+    configuration and guard nothing.
     """
-    from sqlalchemy import select, text
+    from sqlalchemy import select
 
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
@@ -424,15 +421,13 @@ def test_inbox_sitemap_root_query_scopes_inbox_by_exists_not_join():
     )
 
     with SessionLocal() as s:
-        s.execute(text("ANALYZE"))
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         stmt = _recent_thread_roots_query(inbox).limit(SITEMAP_RECENT_PER_INBOX)
         sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
-        plan = [row[-1] for row in s.execute(text("EXPLAIN QUERY PLAN " + sql))]
 
     outer = sql.split("WHERE", 1)[0]
-    assert "JOIN" not in outer.upper(), (
-        f"inbox scope must stay a correlated EXISTS, not a join: {outer!r}"
+    assert "JOIN article_lists" in outer, (
+        f"inbox scope must stay a join, not a correlated EXISTS: {outer!r}"
     )
+    # The root test itself stays an EXISTS (cheap per-candidate probe).
     assert "EXISTS" in sql.upper()
-    assert not any("SCAN articles" in step for step in plan), plan

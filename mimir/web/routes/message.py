@@ -370,10 +370,25 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                     else session.get(Article, root_node.id)
                 )
                 if root_article is not None and root_article.date is not None:
-                    thread_view_url = _thread_view_url(
-                        root_article,
-                        _canonical_inbox_name(article, all_links) or inbox.name,
-                    )
+                    # The thread view is built in the REQUESTED inbox,
+                    # not the canonical one. Threading is inbox-scoped
+                    # (`get_thread` walks within one inbox), so `thread`
+                    # above, and therefore the containment check, only
+                    # describe THIS inbox's conversation. The article is
+                    # a member of every inbox it is linked to, but its
+                    # thread ROOT need not be: a reply cross-posted to
+                    # lkml + a topical list routinely hangs off a root
+                    # that exists in only one of them. Pointing at the
+                    # canonical inbox's thread view therefore produced
+                    # a hard 404, or a page that genuinely did not
+                    # contain this message.
+                    #
+                    # Cross-inbox consolidation still happens, once, on
+                    # the thread view itself (see `routes/thread.py`),
+                    # so this is a two-hop chain in which every hop is
+                    # resolvable and truthful, rather than one hop that
+                    # can be neither.
+                    thread_view_url = _thread_view_url(root_article, inbox.name)
                     canonical_url = base + thread_view_url
         # Canonical inbox is what JSON-LD's isPartOf and the breadcrumb
         # should reflect, not necessarily the current URL's inbox.

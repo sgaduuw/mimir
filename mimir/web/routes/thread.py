@@ -22,7 +22,7 @@ from sqlalchemy import select
 import mimir
 from mimir.config import settings
 from mimir.extensions import SessionLocal
-from mimir.models import Article, ArticleList
+from mimir.models import Article, ArticleList, Inbox
 from mimir.seo import _json_ld_thread
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import subsystems_for_article
@@ -31,6 +31,7 @@ from mimir.web._blueprint import bp_web
 from mimir.web.filters import _thread_summary
 from mimir.web.urls import (
     _abort_404_if_url_date_mismatches,
+    _canonical_inbox_name,
     _get_inbox_or_404,
     _msg_url,
     _site_base,
@@ -96,7 +97,11 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
             (n.date for n in nodes if n.date is not None),
             default=article.date,
         )
-        cap = settings.thread_view_render_cap
+        # A cap below 1 would render no messages and then IndexError in
+        # the JSON-LD builder (which needs a root), 500ing every thread
+        # view. Clamp rather than validate: this is an ops knob and an
+        # unusable value should degrade, not take the surface down.
+        cap = max(1, settings.thread_view_render_cap)
         etag_input = (
             f"thread|{article.id}|{mimir.__version__}|{cap}|{len(nodes)}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}"
@@ -130,15 +135,40 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
         overflow_links = [(n, _msg_url(n, inbox.name)) for n in overflow]
 
         root_node = nodes[0]
-        root_article = session.get(Article, root_node.id)
-        subsystem_names = (
-            [h.name for h in subsystems_for_article(session, root_node.id)]
-            if root_article is not None
-            else []
+        subsystem_names = [
+            h.name for h in subsystems_for_article(session, root_node.id)
+        ]
+
+        # This is the ONE place cross-inbox consolidation happens for
+        # threads, and it keys on the ROOT's canonical inbox rather
+        # than this article's. A fully cross-posted conversation
+        # otherwise renders a near-identical page under every inbox it
+        # touches, each self-canonical, which would re-introduce at the
+        # thread level exactly the duplication this surface exists to
+        # remove.
+        #
+        # Gated on the root actually being linked to that inbox. It
+        # always is when `canonical_inbox_id` is set (that column
+        # references one of the article's own links), but the fallback
+        # ordering can name an inbox for a *different* article, so the
+        # membership check is what keeps this from pointing at a 404.
+        root_links: list[tuple[int, str]] = list(
+            session.execute(
+                select(Inbox.id, Inbox.name)
+                .join(ArticleList, ArticleList.inbox_id == Inbox.id)
+                .where(ArticleList.article_id == root_node.id)
+                .order_by(Inbox.name)
+            ).all()
         )
+        root_article = session.get(Article, root_node.id)
+        canonical_inbox = inbox.name
+        if root_article is not None:
+            picked = _canonical_inbox_name(root_article, root_links)
+            if picked and any(name == picked for _id, name in root_links):
+                canonical_inbox = picked
 
         base = _site_base()
-        canonical_url = base + _thread_view_url(root_article or article, inbox.name)
+        canonical_url = base + _thread_view_url(root_node, canonical_inbox)
         page_json_ld = _json_ld_thread(
             nodes=rendered_nodes,
             parsed_by_id={n.id: p for n, p, _ in messages if p is not None},
