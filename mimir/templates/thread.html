@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}{{ (root.subject|clean_subject or '(no subject)') | truncate(50) }} | {{ site_name }}{% endblock %}
+{% block og_type %}article{% endblock %}
+{% block meta_description %}
+{%- set _n = total_count -%}
+Full thread ({{ _n }} message{{ '' if _n == 1 else 's' }}) in {{ inbox_name }}: {{ (root.subject|clean_subject or '(no subject)') | truncate(120) }}
+{%- endblock %}
+{% block content %}
+{# One <h1> for the page (the thread's subject); per-message headings
+   below are <h2>, since each message is a section of this document
+   rather than a page of its own. Matches the lead-with-h1 rule from
+   3.6.3. #}
+<h1>{{ root.subject|clean_subject or '(no subject)' }}</h1>
+{# The root's status surfaces, mirroring the message page. Message
+   pages canonicalise here, so without these the consolidation would
+   drop the lifecycle prose, subsystem attribution, and review roll-up
+   that make this archive distinctive in search. #}
+{% if subsystem_hits %}
+<p><small><strong>Subsystems:</strong>
+  {% for hit in subsystem_hits %}<a href="/{{ current_inbox }}/subsystem/{{ hit.name|lower|urlencode }}/">{{ hit.name|lower }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+</small></p>
+{% endif %}
+{% if patch_state and patch_state.is_patch and lifecycle_status %}
+<div class="msg-badges">
+  {%- with status = lifecycle_status %}
+  {%- include "_lifecycle_badges.html" %}
+  {%- endwith %}
+</div>
+{% endif %}
+{% set synthesis = patch_state|patch_synthesis %}
+{% if synthesis %}
+<p><small>{{ synthesis }}</small></p>
+{% endif %}
+<p>
+  <small>
+    {{ total_count }} message{{ '' if total_count == 1 else 's' }},
+    {{ thread_summary.author_count }} author{{ '' if thread_summary.author_count == 1 else 's' }},
+    {{ thread_summary.last_activity_rel }}
+    &middot; <a href="{{ root_url }}">open the first message on its own page</a>
+  </small>
+</p>
+
+{% for node, parsed, url in messages %}
+{# Anchored so a permalink can deep-link into the conversation, and so
+   the message pages' "read the whole thread" link can land on the
+   right message. #}
+<article class="thread-message" id="m{{ node.id }}">
+  <header>
+    <h2><a href="{{ url }}">{{ node.subject|clean_subject or '(no subject)' }}</a></h2>
+    <p>
+      <strong>From:</strong> {{ node.author|safe_from }}<br>
+      <strong>Date:</strong> {{ node.date.strftime('%Y-%m-%d %H:%M:%S %z') if node.date else '?' }}
+    </p>
+  </header>
+  {% if parsed and parsed.body %}
+  {# Message-ID linkification and the parent-quote jump link are both
+     omitted: they need per-message bulk lookups, and inside a
+     whole-thread render the referenced messages are almost always
+     already on this page. #}
+  {{ parsed.body|render_body }}
+  {% elif parsed %}
+  <p><em>(no body)</em></p>
+  {% else %}
+  {# The blob was unreachable for this one message (mirror gap, or a
+     repacked epoch). The rest of the conversation still renders; only
+     this body is missing. #}
+  <p><small><em>Message body unavailable.
+    <a href="{{ url }}">Try the message page</a>.</em></small></p>
+  {% endif %}
+</article>
+{% endfor %}
+
+{% if overflow_links %}
+{# Past the render cap. Real anchors, not JS, so these stay a crawl
+   path to the messages this page didn't inline (and which therefore
+   keep their own canonical). #}
+<section>
+  <h2>{{ overflow_links|length }} further message{{ '' if overflow_links|length == 1 else 's' }}</h2>
+  <ul>
+    {% for node, url in overflow_links %}
+    <li>
+      <a href="{{ url }}">{{ node.subject|clean_subject or '(no subject)' }}</a>
+      <small>&middot; {{ node.author|safe_from }}
+        &middot; {{ node.date.strftime('%Y-%m-%d') if node.date else '' }}</small>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

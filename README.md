@@ -569,6 +569,25 @@ Routes:
   patch hunks. 24h cached, source emails are immutable in the
   mirror. Linked from each non-current entry in the patch page's
   Revisions fold (the `[diff vs current]` chip).
+- `GET /<inbox>/<YYYY>/<MM>/<root-id>/t`, whole-thread view: every
+  message in the conversation rendered inline on one page, newest
+  reply last, each linking to its own message page. Rendering is
+  capped at `THREAD_VIEW_RENDER_CAP` messages (default 50); past
+  that the remainder is listed as links rather than inlined.
+  Requesting `/t` on a reply 301s to its thread root, so a
+  conversation has exactly one URL per inbox. Message pages in a
+  multi-message thread carry a `<link rel="canonical">` pointing here;
+  messages past the cap and single-message threads keep their own
+  (this page would not contain them, or would be the poorer page). The
+  view repeats the root's subsystem attribution, lifecycle badges and
+  lifecycle prose so the canonical target is not thinner than the
+  pages consolidating onto it. Thread views are self-canonical per
+  inbox: threading is inbox-scoped, so each inbox's copy of a
+  conversation can have different membership and pointing one at
+  another would hand authority to a page missing content. The
+  per-inbox sitemap lists these thread URLs rather than one URL per
+  message. Emits `DiscussionForumPosting` JSON-LD with each reply as
+  a `comment`. Same ETag revalidation as the message page.
 - `GET /<inbox>/<YYYY>/<MM>/<article-id>/attachment/<n>`, binary
   download of the n-th attachment, served from the dulwich-fetched
   blob.
@@ -593,6 +612,14 @@ Routes:
   pinned stale structural versions in downstream caches. Freshness
   is carried by the per-URL `<lastmod>` inside the XML; edges cache
   briefly via `Cache-Control: max-age=300`. Body cached for 1 h.
+- `GET /<inbox>/sitemap.xml`, per-inbox urlset: the dashboard, the
+  year and month archives that have messages, and the most recent
+  thread views (one URL per conversation, not one per message, since
+  message pages canonicalise to their thread). Each thread's
+  `<lastmod>` is the root's date, the thread's start rather than its
+  latest activity; deriving the latter needs the batched recursive
+  walk-up `active_threads` uses, and `<lastmod>` can only delay a
+  re-crawl, never pin one. Cached for 1 h.
 - `GET /sitemap-maintainers.xml`, one urlset listing every
   `/maintainers/<address>` profile page (one URL per MAINTAINERS
   `M:` maintainer). No per-URL `<lastmod>`. Cached for 1 h.

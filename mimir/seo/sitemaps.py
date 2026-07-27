@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import aliased
 from sqlalchemy.orm import Session
 
 from mimir import cache
@@ -90,6 +91,92 @@ def _per_inbox_latest_date(session) -> dict[str, str | None]:
         .group_by(Inbox.id)
     ).all()
     return {name: (dt.strftime("%Y-%m-%d") if dt else None) for name, dt in rows}
+
+
+def _recent_thread_roots_query(inbox: Inbox):
+    """`(article_id, date)` for this inbox's thread roots, newest first.
+
+    Inbox membership is a JOIN, the root test a correlated EXISTS, and
+    that split is measured rather than assumed.
+
+    Making inbox membership an EXISTS too lets the planner drive
+    `ix_articles_date` DESC and stop at the LIMIT, which is ~8x faster
+    on the single dominant inbox (lkml). It is ~37x SLOWER on a small
+    one, because the walk can never reach the LIMIT and so scans the
+    date index to exhaustion, probing two correlated subqueries per
+    row, at a cost that scales with the WHOLE corpus rather than the
+    inbox. Production is ~200 inboxes of which ~199 are small, and this
+    runs per inbox on every hourly sitemap warm, so the JOIN is the
+    right trade by a wide margin (benchmarked on a skewed 606k-row
+    corpus: JOIN ~244 ms + 199 x ~2.7 ms, versus EXISTS ~30 ms + 199 x
+    ~100 ms).
+
+    This is the 2.8.0 lesson (MEMORY.md 2026-05-29) with its direction
+    inverted: measure against the WORST-shaped inboxes, not the one
+    that shows a clean win. W8 (materialised thread roots) removes the
+    tradeoff entirely by making the root test a column comparison.
+    """
+    parent = aliased(Article)
+    parent_in_inbox = (
+        select(ArticleList.article_id)
+        .join(parent, parent.id == ArticleList.article_id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            parent.message_id == Article.thread_parent,
+        )
+        .exists()
+    )
+    return (
+        select(Article.id, Article.date)
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            Article.date.is_not(None),
+            or_(Article.thread_parent.is_(None), ~parent_in_inbox),
+        )
+        .order_by(Article.date.desc())
+    )
+
+
+def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
+    """Of `root_ids`, those whose thread is just themselves in this
+    inbox (no reply hangs off them here).
+
+    Correlated EXISTS, not a join, and the difference is not cosmetic.
+    As a join the planner stops driving from `articles IN (ids)` past a
+    few hundred ids and drives from `ix_article_lists_inbox_id`
+    instead, scanning every article-list row in the inbox and probing
+    back, i.e. O(ids x inbox rows). Measured at 3950 ms for 5000 ids
+    over a 50k-row inbox and fitting `ids x rows x 1.6e-5 ms` across
+    corpus sizes, which extrapolates to minutes per sitemap render on
+    lkml. `SITEMAP_RECENT_PER_INBOX` is 5000, so every busy inbox hits
+    the worst case exactly, on every hourly warm and on any crawler
+    cache miss. The EXISTS form is 5 ms on the same input.
+
+    Same shape and the same reason as the sibling
+    `_recent_thread_roots_query`, and as CONTEXT.md's
+    `_subsystem_path_filter_exists_sql` note: EXISTS when the outer set
+    is already narrowed and the inner test is a per-candidate probe.
+    """
+    if not root_ids:
+        return set()
+    child = aliased(Article)
+    has_reply = (
+        select(child.id)
+        .join(ArticleList, ArticleList.article_id == child.id)
+        .where(
+            child.thread_parent == Article.message_id,
+            ArticleList.inbox_id == inbox.id,
+            child.id != Article.id,
+        )
+        .exists()
+    )
+    with_replies = set(
+        session.execute(select(Article.id).where(Article.id.in_(root_ids), has_reply))
+        .scalars()
+        .all()
+    )
+    return set(root_ids) - with_replies
 
 
 def sitemap_index_xml(
@@ -240,29 +327,55 @@ def inbox_sitemap_xml(
         for y, m in sorted(year_month_rows, reverse=True):
             entries.append((f"{base}/{inbox.name}/{y}/{m}/", None))
 
-        # Recent articles in the inbox, one URL per article at
-        # the inbox's own URL. No canonical-fallback dance:
-        # cross-posted articles will appear in each linked
-        # inbox's sitemap, which is correct (each is a real,
-        # crawlable URL, the canonical `<link>` on the page
-        # itself tells search engines which to keep).
-        recent = session.execute(
-            select(Article.id, Article.date)
-            .join(ArticleList, ArticleList.article_id == Article.id)
-            .where(
-                ArticleList.inbox_id == inbox.id,
-                Article.date.is_not(None),
-            )
-            .order_by(Article.date.desc())
-            .limit(SITEMAP_RECENT_PER_INBOX)
+        # Recent THREADS in the inbox, one URL per thread, pointing at
+        # the whole-thread view. Individual message pages canonicalise
+        # there (see `mimir.web.routes.message`), and a sitemap should
+        # list canonical URLs, so listing per-message URLs here would
+        # hand crawlers ~10x the URLs only to redirect their attention
+        # elsewhere. One fat thread document per entry is also the
+        # whole point of the consolidation.
+        #
+        # "Is a thread root" is a per-row EXISTS, not the recursive
+        # walk-up `find_thread_root` does: a message is a root in this
+        # inbox when it has no `thread_parent`, or when that parent
+        # isn't in this inbox (an off-list ancestor, which
+        # `find_thread_root` also treats as the top).
+        #
+        # Inbox membership is a JOIN and the root test a correlated
+        # EXISTS; see `_recent_thread_roots_query` for the measurements
+        # behind that split (the all-EXISTS form is much faster on lkml
+        # and much slower on the ~199 small inboxes).
+        #
+        # Cross-posted articles still appear in each linked inbox's
+        # sitemap; the page's own canonical resolves which to keep.
+        recent_roots = session.execute(
+            _recent_thread_roots_query(inbox).limit(SITEMAP_RECENT_PER_INBOX)
         ).all()
-        for art_id, date in recent:
-            entries.append(
-                (
-                    f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}",
-                    date.strftime("%Y-%m-%d"),
-                )
-            )
+        # Which URL to list has to match what that page's own canonical
+        # says, or the sitemap publishes a page that disclaims itself.
+        # A single-message thread's canonical is the MESSAGE page (it is
+        # already the whole conversation, and carries the patch surfaces
+        # `/t` omits), so listing `/t` there would publish the thinner
+        # of two self-canonical near-duplicates and drop the canonical
+        # one entirely. Mirrors the `len(thread) > 1` rule in
+        # `mimir.web.routes.message`.
+        singleton_ids = _singleton_root_ids(
+            session, inbox, [art_id for art_id, _ in recent_roots]
+        )
+        for art_id, date in recent_roots:
+            # `<lastmod>` is the thread's START date, not its latest
+            # activity: deriving the latter needs the batched recursive
+            # walk-up `active_threads` uses, which CONTEXT.md measures
+            # at ~700 ms for a 12k-message window and which would run
+            # here over the whole corpus. `<lastmod>` can only delay a
+            # re-crawl, never pin one (the 3.6.1 reasoning), so an
+            # understated date on a long-running thread costs freshness
+            # rather than correctness. Deep + fresher coverage is W2's
+            # year-segmented sitemaps.
+            loc = f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}"
+            if art_id not in singleton_ids:
+                loc += "/t"
+            entries.append((loc, date.strftime("%Y-%m-%d")))
         return SitemapPayload(
             body=_build_sitemap_xml(entries),
             last_modified=inbox_latest,

@@ -36,6 +36,9 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
   <header class="thread-toolbar">
     <span class="thread-label">
       <span class="thread-count">Thread ({{ thread|length }} message{{ '' if thread|length == 1 else 's' }})</span>
+      {# Link to the whole-thread view. Also the crawl path to the URL
+         this page canonicalises to, so it must be a real anchor. #}
+      {% if thread_view_url %}<a href="{{ thread_view_url }}">read the whole thread</a>{% endif %}
       <span class="thread-summary">
         {{ thread|length }} message{{ '' if thread|length == 1 else 's' }},
         {{ thread_summary.author_count }} author{{ '' if thread_summary.author_count == 1 else 's' }},
