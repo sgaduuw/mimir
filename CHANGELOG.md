@@ -28,6 +28,23 @@ changes, not internal refactors. Categories: **Added**,
   Reply counts are per-message rather than per-thread, and all three
   fields are omitted when empty rather than emitted as zero / `[]`.
 
+### Changed
+
+- `robots.txt` now disallows `/api/` and `/*/search` in the default
+  `*` stanza. `/api/` serves htmx load-more partials (one URL per
+  offset, never a page) and `/*/search` is internal search results
+  (one URL per query, a thin duplicate slice of content already
+  indexed at its own URL); crawling either spends budget that should
+  reach archive content. Existing deploys are updated by migration
+  `e3aa78c72a8d`, which appends only the missing entries so an
+  operator's curated disallow list is preserved.
+- The `/<inbox>/since/<date>` catch-up view is now `noindex`. Every
+  date inside the 90-day cap is a distinct URL over heavily
+  overlapping thread sets, so indexing them put ~90 near-duplicate
+  pages per inbox in competition with the thread pages they link to.
+  `noindex` implies follow, so those outbound links remain a crawl
+  path into real content.
+
 ## [3.6.3] - 2026-07-22
 
 ### Fixed

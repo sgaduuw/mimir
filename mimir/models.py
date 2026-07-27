@@ -417,9 +417,10 @@ class MainlineCommit(Base):
 
 class RobotsRule(Base):
     """One row per `User-agent:` stanza in the rendered `/robots.txt`.
-    The `*` stanza is the structural default (seeded by the migration
-    with `crawl_delay=5, disallow_paths=["/*/attachment/"]`, matching
-    the previous hardcoded template). Per-bot rows added via
+    The `*` stanza is the structural default, seeded from
+    `mimir.robots._DEFAULT_STAR_DISALLOW` (crawl-delay plus the
+    attachment / htmx-partial / internal-search disallows). Per-bot
+    rows added via
     `admin robots add <ua>` produce additional stanzas (e.g. a
     `User-agent: GPTBot` block).
 
