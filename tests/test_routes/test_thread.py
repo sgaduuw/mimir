@@ -504,6 +504,14 @@ def test_sitemap_lists_the_canonical_url_for_every_thread_shape(client, tmp_path
     near-duplicates and drops the canonical one entirely, with nothing
     relating them. `message.py` already carries this rule; the sitemap
     has to mirror it.
+
+    Scoped to a SINGLE inbox on purpose. Across inboxes the rule is
+    deliberately weaker: a cross-posted article is listed in every
+    linked inbox's sitemap even though its canonical elects one of
+    them, which is the pre-existing accepted behaviour (each entry is
+    a real crawlable URL and the page's own canonical resolves which
+    to keep). Asserting the strong form globally would fail on that
+    by design.
     """
     import xml.etree.ElementTree as ET
 
@@ -590,3 +598,64 @@ def test_thread_etag_moves_when_the_root_lands_in_mainline(client, tmp_path):
 
     after = client.get(root_url + "/t").headers["ETag"]
     assert before != after, "ETag did not move when the root's lifecycle changed"
+
+
+def test_thread_etag_moves_when_maintainers_rules_change(client, tmp_path):
+    """The page renders the root's subsystem attribution, which changes
+    on any `update-mainline` MAINTAINERS reparse (every 10 minutes in
+    prod) without adding a message. Same consequence as the lifecycle
+    hole: the edge and crawlers keep the old body indefinitely.
+
+    Versioned through `MainlineState.last_commit_sha` (the HEAD at the
+    last MAINTAINERS load), so one scalar covers the whole rule
+    snapshot rather than re-deriving this article's matches before the
+    304 short-circuit."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineState
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("r1@x", None), ("r2@x", "r1@x")])
+    _root_id, root_url = seeded["r1@x"]
+
+    with SessionLocal() as s:
+        s.add(MainlineState(tree_name="linus", last_commit_sha="a" * 40))
+        s.commit()
+    before = client.get(root_url + "/t").headers["ETag"]
+
+    with SessionLocal() as s:
+        row = s.get(MainlineState, "linus")
+        row.last_commit_sha = "b" * 40
+        s.commit()
+    after = client.get(root_url + "/t").headers["ETag"]
+
+    assert before != after, "ETag did not move on a MAINTAINERS reparse"
+
+
+def test_single_message_rule_agrees_between_message_page_and_thread_view(
+    client,
+    tmp_path,
+):
+    """The two surfaces must count the same thread.
+
+    `thread.py` de-duplicates nodes (a self-referential In-Reply-To
+    makes the recursive CTE re-emit one article per level), so a
+    self-parent renders ONE message. `message.py` gates consolidation
+    on the same walk, and if it counts the UNDEDUPED rows it sees 1001
+    and consolidates onto a `/t` that shows a single message and drops
+    the message page's attachments and related surfaces, i.e. exactly
+    the trade the single-message rule exists to prevent. Unlike the
+    containment check, `len()` has no safe direction.
+    """
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("sp1@x", "sp1@x")])
+    _aid, url = seeded["sp1@x"]
+
+    canonical = _canonical_of(client.get(url).get_data(as_text=True))
+    rendered = client.get(url + "/t").get_data(as_text=True)
+    count = rendered.count('class="thread-message"')
+
+    assert count == 1
+    assert canonical.endswith(url), (
+        f"a {count}-message thread view must not be the canonical target"
+    )

@@ -34,7 +34,7 @@ from mimir.rendering.linkify import _extract_lore_msgid
 from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import recent_patches_touching, subsystems_for_article
-from mimir.threading import find_thread_root, get_thread
+from mimir.threading import dedupe_thread, find_thread_root, get_thread
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _thread_summary
 from mimir.web.urls import (
@@ -86,7 +86,9 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         root_msgid = (
             find_thread_root(session, inbox, article.message_id) or article.message_id
         )
-        thread = get_thread(session, inbox, root_msgid)
+        # Deduped so the consolidation gate below counts the same
+        # thread the view renders (see `dedupe_thread`).
+        thread = dedupe_thread(get_thread(session, inbox, root_msgid))
 
         # Conditional-GET (ETag) for the message page. Inputs:
         # - article.id: invariant for the resource itself.
@@ -377,12 +379,6 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # URL even once the page's canonical points at the thread.
         # Only the `<link rel="canonical">` (and `og:url`, which
         # follows it in base.html) moves.
-        # `message_canonical_url` stays the message's own URL and keeps
-        # feeding the JSON-LD entity: a DiscussionForumPosting on this
-        # page IS this message, so its `@id` must remain the message's
-        # URL even once the page's canonical points at the thread.
-        # Only the `<link rel="canonical">` (and `og:url`, which
-        # follows it in base.html) moves.
         message_canonical_url = canonical_url
         thread_view_url: str | None = None
 
@@ -418,7 +414,9 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                         session, target_inbox, article.message_id
                     )
                     if target_root:
-                        target_thread = get_thread(session, target_inbox, target_root)
+                        target_thread = dedupe_thread(
+                            get_thread(session, target_inbox, target_root)
+                        )
 
             cap = settings.thread_view_render_cap
             position = next(

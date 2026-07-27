@@ -142,24 +142,37 @@ def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
     """Of `root_ids`, those whose thread is just themselves in this
     inbox (no reply hangs off them here).
 
-    One query for the whole page of roots rather than a thread walk
-    each: a root has a reply iff some article in this inbox names it as
-    `thread_parent`.
+    Correlated EXISTS, not a join, and the difference is not cosmetic.
+    As a join the planner stops driving from `articles IN (ids)` past a
+    few hundred ids and drives from `ix_article_lists_inbox_id`
+    instead, scanning every article-list row in the inbox and probing
+    back, i.e. O(ids x inbox rows). Measured at 3950 ms for 5000 ids
+    over a 50k-row inbox and fitting `ids x rows x 1.6e-5 ms` across
+    corpus sizes, which extrapolates to minutes per sitemap render on
+    lkml. `SITEMAP_RECENT_PER_INBOX` is 5000, so every busy inbox hits
+    the worst case exactly, on every hourly warm and on any crawler
+    cache miss. The EXISTS form is 5 ms on the same input.
+
+    Same shape and the same reason as the sibling
+    `_recent_thread_roots_query`, and as CONTEXT.md's
+    `_subsystem_path_filter_exists_sql` note: EXISTS when the outer set
+    is already narrowed and the inner test is a per-candidate probe.
     """
     if not root_ids:
         return set()
     child = aliased(Article)
-    with_replies = set(
-        session.execute(
-            select(Article.id)
-            .join(child, child.thread_parent == Article.message_id)
-            .join(ArticleList, ArticleList.article_id == child.id)
-            .where(
-                Article.id.in_(root_ids),
-                ArticleList.inbox_id == inbox.id,
-                child.id != Article.id,
-            )
+    has_reply = (
+        select(child.id)
+        .join(ArticleList, ArticleList.article_id == child.id)
+        .where(
+            child.thread_parent == Article.message_id,
+            ArticleList.inbox_id == inbox.id,
+            child.id != Article.id,
         )
+        .exists()
+    )
+    with_replies = set(
+        session.execute(select(Article.id).where(Article.id.in_(root_ids), has_reply))
         .scalars()
         .all()
     )
