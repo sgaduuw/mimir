@@ -332,6 +332,27 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # Canonical inbox is what JSON-LD's isPartOf and the breadcrumb
         # should reflect, not necessarily the current URL's inbox.
         canonical_inbox_name = _canonical_inbox_name(article, all_links) or inbox.name
+        # Resolved before the JSON-LD build (rather than with the rest
+        # of the patch-page surfaces below) because `about` / `keywords`
+        # carry the subsystem names. Same query either way.
+        subsystem_hits = subsystems_for_article(session, article.id)
+        # Replies to THIS message, not the whole thread: the
+        # DiscussionForumPosting entity is the single message, so the
+        # thread total would be inaccurate on every reply page.
+        #
+        # Only counted when rendering the canonical inbox. `get_thread`
+        # is scoped to the REQUESTED inbox while the emitted entity's
+        # `@id` is the CANONICAL inbox's URL, so a cross-posted article
+        # whose replies landed in only one of its inboxes would
+        # otherwise describe one `@id` with two different reply counts
+        # depending on which URL the crawler fetched. Zero omits the
+        # field, which is the honest answer from a non-canonical
+        # rendering.
+        direct_reply_count = (
+            sum(1 for n in thread if n.thread_parent == article.message_id)
+            if canonical_inbox_name == inbox.name
+            else 0
+        )
         page_json_ld = (
             _json_ld_message(
                 article,
@@ -339,6 +360,8 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 canonical_url or "",
                 canonical_inbox_name,
                 base,
+                reply_count=direct_reply_count,
+                subsystem_names=[h.name for h in subsystem_hits],
             )
             if canonical_url
             else None
@@ -349,7 +372,6 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # so a single connection covers the whole render, opening a
         # second SessionLocal here previously cost an extra connect /
         # WAL-snapshot acquire per message page.
-        subsystem_hits = subsystems_for_article(session, article.id)
         touched_paths = list(
             session.execute(
                 select(ArticleFile.path).where(ArticleFile.article_id == article.id)

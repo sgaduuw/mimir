@@ -11,6 +11,23 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- Patch pages carry a one-line plain-text summary of the patch's
+  lifecycle under the status badges ("Revision v3 of 3 in this series;
+  4 review trailers (2 from subsystem maintainers); landed in net-next
+  as deadbeefcafe on 2026-06-01"). The badges already encoded this as
+  pills, which read well for a human but are opaque to a search engine;
+  the prose restatement is indexable text for the long-tail queries
+  ("did $series land", "who reviewed $patch") no other LKML mirror
+  answers.
+- Message-page `DiscussionForumPosting` JSON-LD gains
+  `interactionStatistic` (replies to that message), plus `about` and
+  `keywords` carrying the matched subsystem names, so the structured
+  data reflects the same mimir-derived signals the rendered page shows.
+  Reply counts are per-message rather than per-thread, and all three
+  fields are omitted when empty rather than emitted as zero / `[]`.
+
 ## [3.6.3] - 2026-07-22
 
 ### Fixed
