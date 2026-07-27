@@ -134,8 +134,8 @@ def _json_ld_message(
     inbox_name: str,
     base: str,
     *,
-    reply_count: int = 0,
-    subsystem_names: Sequence[str] = (),
+    reply_count: int,
+    subsystem_names: Sequence[str],
 ) -> dict:
     """schema.org @graph carrying both DiscussionForumPosting (the
     primary signal, eligible for Google's "Discussions and forums"

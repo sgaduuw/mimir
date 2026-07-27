@@ -2663,3 +2663,85 @@ def test_message_json_ld_omits_subsystem_fields_when_no_match(
     )
     assert "about" not in plain
     assert "keywords" not in plain
+
+
+def test_message_json_ld_reply_count_only_emitted_from_canonical_inbox(
+    client,
+    tmp_path,
+):
+    """`interactionStatistic` must not describe one `@id` two ways.
+
+    `get_thread` is scoped to the REQUESTED inbox, but the emitted
+    entity's `@id` is always the CANONICAL inbox's URL. So a
+    cross-posted root whose replies landed only in the non-canonical
+    inbox would, from that inbox's URL, claim "1 reply" about an `@id`
+    that the canonical rendering describes as having none.
+
+    Seed exactly that: root in alpha + beta (alpha wins canonical,
+    alphabetically), reply in beta only. Both renderings must agree.
+    """
+    from sqlalchemy import select as _sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from tests.test_related import _seed_message
+
+    art_id, alpha_url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "xpost-root@example.com",
+        subject="cross-posted root",
+    )
+    with SessionLocal() as s:
+        alpha = s.execute(_sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(_sa_select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        # A real cross-post resolves the same blob from either inbox, so
+        # beta needs alpha's mirror and alpha's (epoch, commit_sha)
+        # pointer. Without both, the beta URL 404s in `read_message`
+        # before it can emit any JSON-LD.
+        beta.mirror_path = alpha.mirror_path
+        alpha_link = s.execute(
+            _sa_select(ArticleList).where(
+                ArticleList.article_id == art_id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one()
+        s.add(
+            ArticleList(
+                article_id=art_id,
+                inbox_id=beta.id,
+                epoch=alpha_link.epoch,
+                commit_sha=alpha_link.commit_sha,
+            )
+        )
+        # The reply exists ONLY in beta, the non-canonical inbox.
+        _seed_message(
+            s,
+            beta,
+            "xpost-reply@example.com",
+            "Re: cross-posted root",
+            "Replier",
+            0,
+            thread_parent="xpost-root@example.com",
+        )
+        s.commit()
+        root = s.get(Article, art_id)
+        beta_url = f"/beta/{root.date.year}/{root.date.month:02d}/{art_id}"
+
+    def _posting(url):
+        blocks = _json_ld_blocks(client.get(url).data.decode())
+        return next(
+            g for g in blocks[0]["@graph"] if g["@type"] == "DiscussionForumPosting"
+        )
+
+    from_alpha = _posting(alpha_url)
+    from_beta = _posting(beta_url)
+
+    # Same entity from both URLs.
+    assert from_alpha["@id"] == from_beta["@id"]
+    # ...therefore the same claim about it. Beta sees the reply in its
+    # own thread scope but must not attribute it to alpha's `@id`.
+    assert from_alpha.get("interactionStatistic") == from_beta.get(
+        "interactionStatistic"
+    )
+    assert "interactionStatistic" not in from_beta

@@ -312,6 +312,12 @@ def _relative_time_filter(then: datetime | None) -> str:
 # this tuple; three strings don't earn a shared module.
 _REVIEW_TRAILER_ROLES = ("Reviewed-by", "Acked-by", "Tested-by")
 
+# Linus's tree is the one that means "mainline". Mirrors the
+# `tree_name = 'linus'` literal in `mimir/lifecycle_status.py`'s bulk
+# SQL, which is what decides LANDED vs QUEUED on the badge this
+# sentence restates.
+_LINUS_TREE_NAME = "linus"
+
 
 @bp_web.app_template_filter("patch_synthesis")
 def _patch_synthesis_filter(patch_state) -> str:
@@ -333,7 +339,7 @@ def _patch_synthesis_filter(patch_state) -> str:
 
     clauses: list[str] = []
 
-    revisions = patch_state.series or []
+    revisions = patch_state.series
     if len(revisions) >= 2:
         current = next((e for e in revisions if e.is_current), None)
         if current is not None:
@@ -343,25 +349,35 @@ def _patch_synthesis_filter(patch_state) -> str:
         else:
             clauses.append(f"one of {len(revisions)} revisions in this series")
 
-    reviews = sum(
-        t.total for t in (patch_state.trailers or []) if t.role in _REVIEW_TRAILER_ROLES
-    )
-    maintainer_reviews = sum(
-        t.maintainer_count
-        for t in (patch_state.trailers or [])
-        if t.role in _REVIEW_TRAILER_ROLES
-    )
+    reviewed = [t for t in patch_state.trailers if t.role in _REVIEW_TRAILER_ROLES]
+    reviews = sum(t.total for t in reviewed)
+    maintainer_reviews = sum(t.maintainer_count for t in reviewed)
     if reviews:
         clause = f"{reviews} review {'trailer' if reviews == 1 else 'trailers'}"
         if maintainer_reviews:
             clause += f" ({maintainer_reviews} from subsystem maintainers)"
         clauses.append(clause)
 
-    landing = next(iter(patch_state.mainline_landings or []), None)
-    if landing is not None:
-        clause = f"landed in {landing.tree_label} as {landing.commit_sha[:12]}"
-        if landing.committed_at is not None:
-            clause += f" on {landing.committed_at:%Y-%m-%d}"
+    # Mirror the lifecycle badge's tree priority. A patch that reached
+    # mainline routinely carries several landings (subsystem tree, then
+    # linux-next, then Linus), ordered oldest-first, so taking the first
+    # row would report "landed in net-next" directly under a LANDED
+    # badge showing the Linus sha. Answering "did this land in
+    # mainline?" is the whole point of the sentence, so Linus wins when
+    # present; otherwise report the earliest other tree, which is what
+    # the QUEUED badge shows.
+    landings = patch_state.mainline_landings
+    landed = next((c for c in landings if c.tree_name == _LINUS_TREE_NAME), None)
+    queued = next((c for c in landings if c.tree_name != _LINUS_TREE_NAME), None)
+    if landed is not None:
+        clause = f"landed in mainline as {landed.commit_sha[:12]}"
+        if landed.committed_at is not None:
+            clause += f" on {landed.committed_at:%Y-%m-%d}"
+        clauses.append(clause)
+    elif queued is not None:
+        clause = f"queued in {queued.tree_label} as {queued.commit_sha[:12]}"
+        if queued.committed_at is not None:
+            clause += f" on {queued.committed_at:%Y-%m-%d}"
         clauses.append(clause)
 
     if not clauses:

@@ -112,7 +112,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    Renders only when there's something to say (see `patch_synthesis`). #}
 {% set synthesis = patch_state|patch_synthesis %}
 {% if synthesis %}
-<p class="patch-synthesis"><small>{{ synthesis }}</small></p>
+<p><small>{{ synthesis }}</small></p>
 {% endif %}
 {% include "_revisions_fold.html" %}
 {% include "_message_body.html" %}

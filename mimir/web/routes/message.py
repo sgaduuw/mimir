@@ -339,8 +339,19 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # Replies to THIS message, not the whole thread: the
         # DiscussionForumPosting entity is the single message, so the
         # thread total would be inaccurate on every reply page.
-        direct_reply_count = sum(
-            1 for n in thread if n.thread_parent == article.message_id
+        #
+        # Only counted when rendering the canonical inbox. `get_thread`
+        # is scoped to the REQUESTED inbox while the emitted entity's
+        # `@id` is the CANONICAL inbox's URL, so a cross-posted article
+        # whose replies landed in only one of its inboxes would
+        # otherwise describe one `@id` with two different reply counts
+        # depending on which URL the crawler fetched. Zero omits the
+        # field, which is the honest answer from a non-canonical
+        # rendering.
+        direct_reply_count = (
+            sum(1 for n in thread if n.thread_parent == article.message_id)
+            if canonical_inbox_name == inbox.name
+            else 0
         )
         page_json_ld = (
             _json_ld_message(
