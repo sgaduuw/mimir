@@ -937,3 +937,61 @@ def test_fast_path_ignores_a_root_no_longer_linked_to_this_inbox(client, tmp_pat
         f"fast path answered {fast!r} with a root that is no longer in "
         f"this inbox; the walk says {walk!r}"
     )
+
+
+def test_broker_startup_backfills_thread_roots(client, tmp_path):
+    """The backfill runs itself, rather than relying on an operator.
+
+    W8's column is read by `find_thread_root` and the sitemap. Readers
+    fall back while a row is NULL, so an unfilled corpus is correct but
+    under-reported: deploy without filling and the sitemap silently
+    omits threads until somebody remembers the command. "Somebody
+    remembers" is not a mechanism.
+
+    It is sentinel-gated inside `build_server`, so it completes before
+    `serve()` opens the socket and therefore before the web tier's
+    healthcheck dependency is satisfied. This exercises the real
+    startup function against a corpus rewound to the post-migration
+    state.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, Inbox
+
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("bs1@x", None), ("bs2@x", "bs1@x"), ("bs3@x", "bs2@x")],
+    )
+    mids = set(seeded)
+
+    with SessionLocal() as s:
+        s.execute(update(ArticleList).values(thread_root_id=None))
+        s.commit()
+
+    assert all(root is None for root, _a in _roots_by_inbox("alpha", mids).values())
+
+    sentinel_dir = tmp_path / "sock"
+    sentinel_dir.mkdir()
+    _backfill_thread_roots_if_needed(sentinel_dir / "broker.sock")
+
+    roots = _roots_by_inbox("alpha", mids)
+    assert all(root is not None for root, _a in roots.values()), roots
+    _assert_invariant_for("alpha", mids, "broker startup backfill")
+    assert (sentinel_dir / ".thread_roots_backfilled").exists()
+
+    # Second call is a no-op: the sentinel keeps restarts cheap.
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.inbox_id == inbox.id)
+            .values(thread_root_id=None)
+        )
+        s.commit()
+    _backfill_thread_roots_if_needed(sentinel_dir / "broker.sock")
+    assert all(root is None for root, _a in _roots_by_inbox("alpha", mids).values()), (
+        "sentinel did not short-circuit the second run"
+    )
