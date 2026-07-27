@@ -2571,3 +2571,95 @@ class TestRelatedDiscussionsPanel:
         resp = client.get(url)
         assert resp.status_code == 200
         assert b"Related discussions" not in resp.data
+
+
+def test_message_json_ld_interaction_statistic_counts_direct_replies(
+    client,
+    tmp_path,
+):
+    """`interactionStatistic` on the DiscussionForumPosting counts
+    replies to THAT message, not the whole thread.
+
+    The entity is the single message, so a reply page claiming the
+    thread's total would be inaccurate structured data. In the seeded
+    3-message chain (root -> reply -> nested), the root has exactly one
+    direct child and the nested leaf has none, so the leaf omits the
+    field entirely rather than emitting a zero count.
+    """
+    seeded = _seed_three_message_thread(tmp_path, "alpha")
+
+    _, root_url, _ = seeded["root"]
+    posting = next(
+        g
+        for g in _json_ld_blocks(client.get(root_url).data.decode())[0]["@graph"]
+        if g["@type"] == "DiscussionForumPosting"
+    )
+    stat = posting["interactionStatistic"]
+    assert stat["@type"] == "InteractionCounter"
+    assert stat["interactionType"] == "https://schema.org/ReplyAction"
+    # One direct child (the reply). The nested reply hangs off the
+    # reply, not the root, so it must NOT be counted here.
+    assert stat["userInteractionCount"] == 1
+
+    _, nested_url, _ = seeded["nested"]
+    leaf = next(
+        g
+        for g in _json_ld_blocks(client.get(nested_url).data.decode())[0]["@graph"]
+        if g["@type"] == "DiscussionForumPosting"
+    )
+    assert "interactionStatistic" not in leaf
+
+
+def test_message_json_ld_carries_subsystem_about_and_keywords(
+    client,
+    tmp_path,
+):
+    """Matched subsystems ride into the structured data as `about`
+    (schema.org Things) and `keywords`.
+
+    These are the topical terms for the page, and they're mimir-unique
+    (derived from MAINTAINERS path-matching, not present in the raw
+    message), so they're the signal worth handing a crawler. An article
+    touching no known subsystem emits neither field rather than an
+    empty list.
+    """
+    _seed_subsystem("BCACHEFS", "Supported", ["fs/bcachefs/"])
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "subsys-jsonld@example.com",
+        subject="[PATCH] bcachefs: fix a thing",
+        body=b"diff --git a/fs/bcachefs/btree.c b/fs/bcachefs/btree.c\n",
+    )
+    posting = next(
+        g
+        for g in _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+        if g["@type"] == "DiscussionForumPosting"
+    )
+    assert posting["about"] == [{"@type": "Thing", "name": "BCACHEFS"}]
+    assert posting["keywords"] == ["BCACHEFS"]
+
+
+def test_message_json_ld_omits_subsystem_fields_when_no_match(
+    client,
+    tmp_path,
+):
+    """An article touching no known subsystem omits `about` /
+    `keywords` entirely rather than emitting empty lists, which would
+    read as broken data to a consumer. Separate test because
+    `_ingest_one_article` builds a fresh `0.git` per call and can't
+    share a tmp_path with the matching case."""
+    _seed_subsystem("BCACHEFS", "Supported", ["fs/bcachefs/"])
+    _, plain_url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "nosubsys-jsonld@example.com",
+        subject="just a question",
+    )
+    plain = next(
+        g
+        for g in _json_ld_blocks(client.get(plain_url).data.decode())[0]["@graph"]
+        if g["@type"] == "DiscussionForumPosting"
+    )
+    assert "about" not in plain
+    assert "keywords" not in plain
