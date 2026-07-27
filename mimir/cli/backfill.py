@@ -229,6 +229,15 @@ def backfill_thread_roots_command(
         )
     )
 
+    if counts.get("exhausted"):
+        # The log line only reaches the broker's stdout; without this
+        # a truncated backfill returns the same summary as a complete
+        # one and reads as done.
+        raise click.ClickException(
+            f"{counts['exhausted']} inbox(es) hit the pass budget; "
+            "rows remain unrooted. Re-run to continue."
+        )
+
     if not verify:
         return
 
