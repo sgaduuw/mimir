@@ -235,3 +235,67 @@ def test_cross_post_ingested_separately_roots_per_inbox(client, tmp_path):
         "in beta the parent is absent, so the reply must be its own root; "
         "inheriting alpha's root here would make the column inbox-blind"
     )
+
+
+def test_verify_detects_a_corrupted_root(client, tmp_path):
+    """The verifier is the only thing that can see this failure.
+
+    A wrong `thread_root_id` splits a conversation while both halves
+    keep rendering and nothing errors, so there is no symptom to notice
+    and no exception to catch. Corrupt one row by hand and confirm the
+    recompute catches it, and that a clean corpus reports nothing.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.thread_roots import verify_thread_roots
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("vr1@x", None), ("vr2@x", "vr1@x"), ("vr3@x", "vr2@x")]
+    )
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        assert verify_thread_roots(s, inbox) == [], "clean corpus reported mismatches"
+
+        victim = s.execute(
+            select(Article.id).where(Article.message_id == "vr3@x")
+        ).scalar_one()
+        # Point it at itself: the shape a lost re-rooting produces, and
+        # the one that silently splits the thread in two.
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.article_id == victim,
+                ArticleList.inbox_id == inbox.id,
+            )
+            .values(thread_root_id=victim)
+        )
+        s.commit()
+
+        found = verify_thread_roots(s, inbox)
+
+    assert len(found) == 1, f"corruption not detected: {found}"
+    assert found[0]["message_id"] == "vr3@x"
+    assert found[0]["stored_root"] == victim
+    assert found[0]["expected_root"] == seeded["vr1@x"][0]
+
+
+def test_verify_ignores_cycles(client, tmp_path):
+    """Cycles are the one place the column and `find_thread_root`
+    disagree on purpose (the CTE walks to MAX_DEPTH and lands wherever
+    `1000 mod cycle_length` puts it). The verifier must not report that
+    as corruption, or every run on a real corpus would cry wolf."""
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.thread_roots import verify_thread_roots
+
+    seed_thread_shape(
+        tmp_path, "alpha", [("cy1@x", "cy3@x"), ("cy2@x", "cy1@x"), ("cy3@x", "cy2@x")]
+    )
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        assert verify_thread_roots(s, inbox) == []

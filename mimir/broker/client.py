@@ -25,6 +25,7 @@ from pathlib import Path
 
 from mimir.broker.protocol import (
     AnalyzeRequest,
+    BackfillThreadRootsRequest,
     BackfillArticleFilesRequest,
     BackfillArticleTrailersRequest,
     BackfillCanonicalsRequest,
@@ -610,6 +611,20 @@ class BrokerClient:
         reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"update_mainline: {reply.error}")
+        return reply.result or {}
+
+    def backfill_thread_roots(
+        self, *, inbox: str | None = None, timeout: float = 3600.0
+    ) -> dict:
+        """W8 backfill: populate `article_lists.thread_root_id`.
+
+        Long timeout because a cold run walks every inbox; the passes
+        themselves are bulk UPDATEs, so the wall time is dominated by
+        corpus size rather than per-row work."""
+        req = BackfillThreadRootsRequest(rpc_id=0, inbox=inbox)
+        reply = self._rpc(req, timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"backfill_thread_roots: {reply.error}")
         return reply.result or {}
 
     def analyze(self, *, full: bool = False, timeout: float = 600.0) -> dict:
