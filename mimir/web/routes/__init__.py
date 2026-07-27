@@ -17,4 +17,5 @@ from mimir.web.routes import search  # noqa: F401
 from mimir.web.routes import series_diff  # noqa: F401
 from mimir.web.routes import sitemaps  # noqa: F401
 from mimir.web.routes import static_meta  # noqa: F401
+from mimir.web.routes import thread as thread_route  # noqa: F401
 from mimir.web.routes import timeviews  # noqa: F401

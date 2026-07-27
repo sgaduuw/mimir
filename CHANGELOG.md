@@ -13,6 +13,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- Whole-thread view at `/<inbox>/<YYYY>/<MM>/<root-id>/t`: every message
+  in one conversation rendered on a single page, with the reply tree's
+  full text inline. Additive, the per-message reading model is
+  unchanged. Rendering is capped at `THREAD_VIEW_RENDER_CAP` messages
+  (default 50) and the remainder is linked rather than inlined. `/t`
+  on a reply 301s to its thread's root, so a conversation has exactly
+  one URL. Carries `DiscussionForumPosting` JSON-LD with every reply as
+  a `comment`, the forum-thread shape a single message page cannot
+  express.
 - Patch pages carry a one-line plain-text summary of the patch's
   lifecycle under the status badges ("Revision v3 of 3 in this series;
   4 review trailers (2 from subsystem maintainers); landed in net-next
@@ -30,6 +39,19 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- Message pages in a multi-message thread now canonicalise to their
+  thread view, and the per-inbox sitemap lists one thread URL per
+  conversation instead of one URL per message. Most replies are a line
+  or two, so a 60-message thread presented as 60 thin near-duplicate
+  URLs competing with each other; consolidating gives search engines
+  one substantial document per thread. Three cases deliberately keep
+  their own canonical, because the thread view would not contain them
+  or would be the poorer page: messages past the render cap,
+  single-message threads (the message page already IS the whole
+  conversation, and carries the patch surfaces), and thread views
+  themselves, which stay self-canonical per inbox since threading is
+  inbox-scoped and each inbox's copy of a conversation can have
+  different membership.
 - `robots.txt` now disallows `/api/` and `/*/search` in the default
   `*` stanza. `/api/` serves htmx load-more partials (one URL per
   offset, never a page) and `/*/search` is internal search results

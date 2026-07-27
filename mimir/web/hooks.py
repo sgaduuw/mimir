@@ -108,6 +108,10 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # while the within-window stale-after-deploy problem (a code change
     # leaving cached pages mis-rendered up to max-age) goes away.
     "web.message": "public, no-cache",
+    # Same ETag-revalidation posture as web.message, and the payoff is
+    # larger here: a 304 skips up to `thread_view_render_cap` git blob
+    # fetches and parses, which is the whole cost of this page.
+    "web.thread_view": "public, no-cache",
     "web.attachment_download": "public, max-age=3600, immutable",
     "web.attachment_preview": "public, max-age=3600, immutable",
 }

@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 import mimir
 from mimir import cache
+from mimir.config import settings
 from mimir.canonical import extract_list_addresses
 from mimir.extensions import SessionLocal
 from mimir.models import (
@@ -33,7 +34,7 @@ from mimir.rendering.linkify import _extract_lore_msgid
 from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import recent_patches_touching, subsystems_for_article
-from mimir.threading import find_thread_root, get_thread
+from mimir.threading import dedupe_thread, find_thread_root, get_thread
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _thread_summary
 from mimir.web.urls import (
@@ -43,6 +44,7 @@ from mimir.web.urls import (
     _get_inbox_or_404,
     _msg_url,
     _site_base,
+    _thread_view_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,7 +86,9 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         root_msgid = (
             find_thread_root(session, inbox, article.message_id) or article.message_id
         )
-        thread = get_thread(session, inbox, root_msgid)
+        # Deduped so the consolidation gate below counts the same
+        # thread the view renders (see `dedupe_thread`).
+        thread = dedupe_thread(get_thread(session, inbox, root_msgid))
 
         # Conditional-GET (ETag) for the message page. Inputs:
         # - article.id: invariant for the resource itself.
@@ -329,8 +333,23 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         cross_post_inboxes = [n for ix_id, n in all_links if ix_id != inbox.id]
         base = _site_base()
         canonical_url = _canonical_url_for(article, all_links, base=base)
-        # Canonical inbox is what JSON-LD's isPartOf and the breadcrumb
-        # should reflect, not necessarily the current URL's inbox.
+
+        # Consolidate onto the whole-thread view when this message is
+        # actually rendered there. Most replies are a line or two, so
+        # one thread of N messages otherwise presents as N thin,
+        # near-duplicate URLs competing with each other; pointing them
+        # at the conversation gives search engines one substantial
+        # document per thread instead.
+        #
+        # Conditional on the message being INSIDE the thread view's
+        # render cap. Past the cap the thread view only links to a
+        # message rather than containing it, and a canonical pointing
+        # at a page that does not contain this content would be a false
+        # claim. Those messages keep their own self-canonical.
+        #
+        # Built on the canonical inbox, so this composes with (rather
+        # than fights) the existing cross-post consolidation: a
+        # cross-posted thread still collapses to one inbox first.
         canonical_inbox_name = _canonical_inbox_name(article, all_links) or inbox.name
         # Resolved before the JSON-LD build (rather than with the rest
         # of the patch-page surfaces below) because `about` / `keywords`
@@ -353,17 +372,90 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             if canonical_inbox_name == inbox.name
             else 0
         )
+
+        # `message_canonical_url` stays the message's own URL and keeps
+        # feeding the JSON-LD entity: a DiscussionForumPosting on this
+        # page IS this message, so its `@id` must remain the message's
+        # URL even once the page's canonical points at the thread.
+        # Only the `<link rel="canonical">` (and `og:url`, which
+        # follows it in base.html) moves.
+        message_canonical_url = canonical_url
+        thread_view_url: str | None = None
+
+        # Consolidate onto the thread view, resolved in the inbox the
+        # canonical already points at.
+        #
+        # Doing this in the REQUESTED inbox instead produces a CHAIN on
+        # cross-posts: this page would point at its own inbox's thread
+        # view while `_canonical_url_for` had already elected a
+        # different inbox, so the other arm canonicalises here and here
+        # canonicalises onward. Every hop is individually truthful,
+        # which is why a per-page check misses it; the composition is
+        # the defect, and search engines do not follow chains reliably.
+        #
+        # Threading is inbox-scoped, so the target inbox's copy of the
+        # conversation is a DIFFERENT node set: the root may be absent
+        # there, the article may sit past the cap there, or the thread
+        # may be a singleton there. Every one of those is checked
+        # against the target's own walk rather than assumed from this
+        # inbox's, which is what the first two attempts at this got
+        # wrong. Anything unmet falls back to the plain cross-post
+        # canonical, which is exactly the pre-existing behaviour.
+        if canonical_url:
+            target_inbox = inbox
+            target_thread = thread
+            if canonical_inbox_name != inbox.name:
+                target_inbox = session.execute(
+                    select(Inbox).where(Inbox.name == canonical_inbox_name)
+                ).scalar_one_or_none()
+                target_thread = []
+                if target_inbox is not None:
+                    target_root = find_thread_root(
+                        session, target_inbox, article.message_id
+                    )
+                    if target_root:
+                        target_thread = dedupe_thread(
+                            get_thread(session, target_inbox, target_root)
+                        )
+
+            cap = settings.thread_view_render_cap
+            position = next(
+                (
+                    i
+                    for i, n in enumerate(target_thread)
+                    if n.message_id == article.message_id
+                ),
+                None,
+            )
+            # `len(target_thread) > 1` because a single-message thread
+            # has nothing to consolidate: the message page already IS
+            # the whole conversation and is the RICHER of the two
+            # (subsystem header, lifecycle badges, the indexable
+            # lifecycle prose, attachments, related patches).
+            if (
+                target_inbox is not None
+                and len(target_thread) > 1
+                and position is not None
+                and position < cap
+            ):
+                root_node = target_thread[0]
+                root_article = session.get(Article, root_node.id)
+                if root_article is not None and root_article.date is not None:
+                    thread_view_url = _thread_view_url(root_article, target_inbox.name)
+                    canonical_url = base + thread_view_url
+
         page_json_ld = (
             _json_ld_message(
                 article,
                 parsed,
-                canonical_url or "",
+                message_canonical_url or "",
                 canonical_inbox_name,
                 base,
                 reply_count=direct_reply_count,
                 subsystem_names=[h.name for h in subsystem_hits],
+                page_canonical_url=canonical_url,
             )
-            if canonical_url
+            if message_canonical_url
             else None
         )
 
@@ -450,6 +542,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             related_threads=related_threads,
             cross_post_inboxes=cross_post_inboxes,
             canonical_url=canonical_url,
+            thread_view_url=thread_view_url,
             page_json_ld=page_json_ld,
             subsystem_hits=subsystem_hits,
             related_patches=related_patches,
