@@ -400,20 +400,18 @@ def test_inbox_sitemap_lists_thread_roots_not_replies(client):
     assert not any(f"/{art4_id}" in loc for loc in locs)
 
 
-def test_inbox_sitemap_root_query_scopes_inbox_by_join_not_exists():
-    """Guard the measured shape of the thread-root query.
+def test_inbox_sitemap_root_query_uses_the_materialised_column():
+    """The root test is a column comparison, not a subquery.
 
-    Inbox membership must stay a JOIN; see `_recent_thread_roots_query`
-    for the measurements behind that (they live in one place so W8
-    re-measuring them does not leave a stale copy here).
-
-    Asserts the SQL shape rather than EXPLAIN output. The two
-    formulations only diverge in the planner at production scale and
-    distribution; against the test fixture SQLite resolves both the
-    same way, so a plan assertion here would pass in either
-    configuration and guard nothing.
+    This replaces a guard on the EXISTS-versus-JOIN spelling, which was
+    load-bearing while the predicate had to derive rootness from
+    `thread_parent`: one form was ~37x slower on the ~199 small
+    inboxes, the other ~8x slower on lkml, and getting it wrong cost
+    two review rounds. Materialising the root removes the choice
+    entirely, so what needs pinning now is that the query stays on the
+    column rather than drifting back to deriving it.
     """
-    from sqlalchemy import select, text
+    from sqlalchemy import select
 
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
@@ -427,16 +425,8 @@ def test_inbox_sitemap_root_query_scopes_inbox_by_join_not_exists():
         stmt = _recent_thread_roots_query(inbox).limit(SITEMAP_RECENT_PER_INBOX)
         sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
-    outer = sql.split("WHERE", 1)[0]
-    assert "JOIN article_lists" in outer, (
-        f"inbox scope must stay a join, not a correlated EXISTS: {outer!r}"
+    assert "thread_root_id = articles.id" in sql.replace("\n", " "), sql
+    assert "EXISTS" not in sql.upper(), (
+        f"the root test derived rootness again instead of reading the column: {sql}"
     )
-    # The root test itself stays an EXISTS (cheap per-candidate probe).
-    assert "EXISTS" in sql.upper()
-    # Separate, coarser guard: whatever the shape, the query must never
-    # degenerate into a full table scan. Catches a dropped index or a
-    # predicate rewrite that defeats one, which the shape assertion
-    # above cannot see.
-    with SessionLocal() as s:
-        plan = [row[-1] for row in s.execute(text("EXPLAIN QUERY PLAN " + sql))]
-    assert not any("SCAN articles" in step for step in plan), plan
+    assert "thread_parent" not in sql, sql
