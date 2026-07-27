@@ -25,6 +25,7 @@ from mimir.seo.json_ld import (
     _json_ld_index,
     _json_ld_inbox,
     _json_ld_message,
+    _json_ld_thread,
     _json_ld_search,
 )
 from mimir.seo.sitemaps import (
@@ -45,6 +46,7 @@ __all__ = [
     "_json_ld_index",
     "_json_ld_inbox",
     "_json_ld_message",
+    "_json_ld_thread",
     "_json_ld_search",
     "atom_response",
     "inbox_sitemap_xml",

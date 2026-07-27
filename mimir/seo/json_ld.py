@@ -345,3 +345,155 @@ def _json_ld_author(
             "url": f"{base}/{inbox_name}/",
         },
     }
+
+
+def _json_ld_thread(
+    *,
+    nodes,
+    parsed_by_id: dict,
+    canonical_url: str,
+    inbox_name: str,
+    base: str,
+    total_replies: int,
+    subsystem_names: Sequence[str],
+) -> dict:
+    """schema.org payload for the whole-thread view: one
+    `DiscussionForumPosting` for the root carrying every reply as a
+    `comment` array.
+
+    This is Google's recommended shape for a forum thread and the
+    reason the thread view exists as an indexable surface: a single
+    message page can only ever describe one post, while this describes
+    the conversation, which is the substantial document.
+
+    `interactionStatistic` here legitimately counts the WHOLE thread
+    (unlike `_json_ld_message`, where the entity is a single message
+    and the thread total would be a false claim), because the entity
+    IS the thread. It reports every reply, including any past the
+    render cap: the count describes the discussion, not this page's
+    rendered subset.
+
+    `nodes` are the RENDERED ThreadNodes; `parsed_by_id` maps node id
+    to ParsedArticle for those whose blob resolved. A node with no
+    parsed body still contributes a comment (author + date + subject
+    are known from SQL), it just carries no `text`.
+
+    Every comment body goes through the same trailer redaction as the
+    visible HTML before snippeting. CONTEXT.md's redaction invariants
+    apply per surface, and this surface carries N bodies rather than
+    one, so a miss here would leak N times over.
+    """
+    from mimir.web import (
+        _allowlisted_email,
+        _clean_subject_filter,
+        _display_name_filter,
+        _redact_trailer_address,
+        _msg_url,
+    )
+
+    def _author(raw: str | None) -> dict:
+        name = _display_name_filter(raw)
+        person: dict = {"@type": "Person", "name": name}
+        email = _allowlisted_email(raw)
+        if email:
+            person["email"] = email
+        return person
+
+    def _iso(dt) -> str | None:
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    def _text_for(node) -> str | None:
+        parsed = parsed_by_id.get(node.id)
+        if parsed is None or not parsed.body:
+            return None
+        return _json_ld_text_snippet(
+            redact_trailer_addresses(parsed.body, _redact_trailer_address)
+        )
+
+    root = nodes[0]
+    root_subject = _clean_subject_filter(root.subject) or "(no subject)"
+    payload: dict = {
+        "@type": "DiscussionForumPosting",
+        "@id": canonical_url,
+        "url": canonical_url,
+        "mainEntityOfPage": canonical_url,
+        "headline": root_subject,
+        "author": _author(root.author),
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": inbox_name,
+            "url": f"{base}/{inbox_name}/",
+        },
+    }
+    root_text = _text_for(root)
+    if root_text:
+        payload["text"] = root_text
+    root_date = _iso(root.date)
+    if root_date:
+        payload["datePublished"] = root_date
+        payload["dateModified"] = _iso(nodes[-1].date) or root_date
+    if total_replies > 0:
+        payload["interactionStatistic"] = {
+            "@type": "InteractionCounter",
+            "interactionType": "https://schema.org/ReplyAction",
+            "userInteractionCount": total_replies,
+        }
+    if subsystem_names:
+        payload["about"] = [
+            {"@type": "Thing", "name": name} for name in subsystem_names
+        ]
+        payload["keywords"] = list(subsystem_names)
+
+    comments: list[dict] = []
+    for node in nodes[1:]:
+        comment: dict = {
+            "@type": "Comment",
+            "@id": base + _msg_url(node, inbox_name),
+            "url": base + _msg_url(node, inbox_name),
+            "author": _author(node.author),
+        }
+        when = _iso(node.date)
+        if when:
+            comment["datePublished"] = when
+        body = _text_for(node)
+        if body:
+            comment["text"] = body
+        comments.append(comment)
+    if comments:
+        payload["comment"] = comments
+
+    return {
+        "@context": "https://schema.org",
+        "@graph": [
+            payload,
+            {
+                "@type": "BreadcrumbList",
+                "itemListElement": [
+                    {
+                        "@type": "ListItem",
+                        "position": 1,
+                        "name": settings.site_name,
+                        "item": base + "/",
+                    },
+                    {
+                        "@type": "ListItem",
+                        "position": 2,
+                        "name": inbox_name,
+                        "item": f"{base}/{inbox_name}/",
+                    },
+                    {
+                        "@type": "ListItem",
+                        "position": 3,
+                        "name": root_subject
+                        if len(root_subject) <= 80
+                        else root_subject[:77] + "...",
+                        "item": canonical_url,
+                    },
+                ],
+            },
+        ],
+    }

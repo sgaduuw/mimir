@@ -78,7 +78,7 @@ def test_sitemap_cross_post_appears_in_each_linked_inbox(client):
         return [
             u.find("s:loc", ns).text
             for u in root.findall("s:url", ns)
-            if u.find("s:loc", ns).text.endswith(f"/{art_id}")
+            if u.find("s:loc", ns).text.endswith(f"/{art_id}/t")
         ]
 
     alpha_locs = article_locs("alpha")
@@ -214,8 +214,9 @@ def test_inbox_sitemap_dashboard_lastmod_is_inbox_max(client):
 
 
 def test_inbox_sitemap_article_lastmod_matches_article_date(client):
-    """In a per-inbox sitemap, the per-article `<lastmod>` is the
-    article's own date in YYYY-MM-DD."""
+    """In a per-inbox sitemap, a thread entry's `<lastmod>` is the
+    root article's own date in YYYY-MM-DD (the thread's start; see
+    `inbox_sitemap_xml` for why not its latest activity)."""
     import xml.etree.ElementTree as ET
     from sqlalchemy import select
     from mimir.extensions import SessionLocal
@@ -235,7 +236,7 @@ def test_inbox_sitemap_article_lastmod_matches_article_date(client):
     art1_lastmod = None
     for u in root.findall("s:url", ns):
         loc = u.find("s:loc", ns).text
-        if loc.endswith(f"/{art1_id}"):
+        if loc.endswith(f"/{art1_id}/t"):
             lm = u.find("s:lastmod", ns)
             art1_lastmod = lm.text if lm is not None else None
             break
@@ -270,7 +271,7 @@ def test_inbox_sitemap_404_for_unknown_inbox(client):
 
 
 def test_inbox_sitemap_articles_scoped_to_that_inbox(client):
-    """Articles only linked to beta (art2) don't appear in alpha's
+    """Threads only linked to beta (art2) don't appear in alpha's
     sitemap, and vice versa."""
     import xml.etree.ElementTree as ET
     from sqlalchemy import select
@@ -287,10 +288,10 @@ def test_inbox_sitemap_articles_scoped_to_that_inbox(client):
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     alpha_root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
     alpha_locs = {u.find("s:loc", ns).text for u in alpha_root.findall("s:url", ns)}
-    assert not any(loc.endswith(f"/{art2_id}") for loc in alpha_locs)
+    assert not any(loc.endswith(f"/{art2_id}/t") for loc in alpha_locs)
     beta_root = ET.fromstring(client.get("/beta/sitemap.xml").get_data())
     beta_locs = {u.find("s:loc", ns).text for u in beta_root.findall("s:url", ns)}
-    assert any(loc.endswith(f"/{art2_id}") for loc in beta_locs)
+    assert any(loc.endswith(f"/{art2_id}/t") for loc in beta_locs)
 
 
 # ---------------------------------------------------------------------------
@@ -359,3 +360,79 @@ def test_inbox_sitemap_xml_ignores_if_modified_since_returns_full_body(client):
     )
     assert r.status_code == 200
     assert b"<urlset" in r.get_data()
+
+
+def test_inbox_sitemap_lists_thread_roots_not_replies(client):
+    """The sitemap lists one thread URL per conversation, not one URL
+    per message. art4 is a reply to art1, so only art1's thread view is
+    listed; art4 has no entry of its own. Listing replies would hand
+    crawlers ~10x the URLs, every one of which canonicalises to the
+    thread view anyway."""
+    import xml.etree.ElementTree as ET
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as s:
+        art1_id = s.execute(
+            select(Article.id).where(Article.message_id == "art1@example.com")
+        ).scalar_one()
+        art4_id = s.execute(
+            select(Article.id).where(Article.message_id == "art4@example.com")
+        ).scalar_one()
+
+    _clear_sitemap_cache()
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
+    locs = {u.find("s:loc", ns).text for u in root.findall("s:url", ns)}
+
+    assert any(loc.endswith(f"/{art1_id}/t") for loc in locs)
+    # The reply appears nowhere, neither as a thread URL nor a bare
+    # message URL.
+    assert not any(f"/{art4_id}" in loc for loc in locs)
+
+
+def test_inbox_sitemap_root_query_scopes_inbox_by_exists_not_join():
+    """Guard the shape that keeps the thread-root query fast.
+
+    Expressing inbox membership as a JOIN makes the planner lead with
+    `ix_article_lists_inbox_id`, materialise every article in the inbox
+    and sort it for the ORDER BY (`USE TEMP B-TREE FOR ORDER BY`),
+    instead of walking `ix_articles_date` DESC and stopping at the
+    LIMIT. Measured on the dev corpus, the JOIN form emits the temp
+    B-tree and the EXISTS form does not; on lkml's 6M rows that is the
+    ~8 s shape CONTEXT.md documents for the triage queues.
+
+    This asserts the SQL SHAPE rather than the EXPLAIN output, because
+    EXPLAIN is not a usable guard here: against the tiny test fixture
+    SQLite picks the date index for BOTH formulations, so a
+    plan-only assertion passes even with the JOIN reintroduced
+    (verified). The structural assertion fails the moment the
+    correlated EXISTS is swapped back for a join, at any corpus size.
+    The EXPLAIN checks below still catch gross regressions such as a
+    full table scan.
+    """
+    from sqlalchemy import select, text
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.seo.sitemaps import (
+        SITEMAP_RECENT_PER_INBOX,
+        _recent_thread_roots_query,
+    )
+
+    with SessionLocal() as s:
+        s.execute(text("ANALYZE"))
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        stmt = _recent_thread_roots_query(inbox).limit(SITEMAP_RECENT_PER_INBOX)
+        sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        plan = [row[-1] for row in s.execute(text("EXPLAIN QUERY PLAN " + sql))]
+
+    outer = sql.split("WHERE", 1)[0]
+    assert "JOIN" not in outer.upper(), (
+        f"inbox scope must stay a correlated EXISTS, not a join: {outer!r}"
+    )
+    assert "EXISTS" in sql.upper()
+    assert not any("SCAN articles" in step for step in plan), plan
