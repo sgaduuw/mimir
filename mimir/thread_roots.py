@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 MAX_PASSES = 1200
 
 
-def _seed_roots(session: Session, inbox_id: int) -> int:
+def seed_roots(session: Session, inbox_id: int) -> int:
     """Self-root every row whose parent is absent from this inbox.
 
     That is exactly the set `find_thread_root` calls a root: no
@@ -53,7 +53,7 @@ def _seed_roots(session: Session, inbox_id: int) -> int:
     ).rowcount
 
 
-def _propagate(session: Session, inbox_id: int) -> int:
+def propagate(session: Session, inbox_id: int) -> int:
     """Give every still-unrooted row its parent's root, one level."""
     return session.execute(
         text(
@@ -86,7 +86,7 @@ def _propagate(session: Session, inbox_id: int) -> int:
     ).rowcount
 
 
-def _break_cycle(session: Session, inbox_id: int) -> int:
+def break_cycle(session: Session, inbox_id: int) -> int:
     """Self-root the lowest remaining unrooted article in this inbox.
 
     Propagation stalls only on a cycle: every member is waiting for a
@@ -118,20 +118,26 @@ def _break_cycle(session: Session, inbox_id: int) -> int:
 
 
 def backfill_inbox(session: Session, inbox_id: int) -> dict[str, int]:
-    """Populate `thread_root_id` for one inbox. Idempotent: only ever
-    touches rows that are still NULL, so a re-run after a partial pass
-    resumes rather than redoing, and live ingest writing alongside it
-    is not clobbered."""
-    seeded = _seed_roots(session, inbox_id)
+    """Populate `thread_root_id` for one inbox, all passes in ONE
+    session. Idempotent: only touches NULL rows, so a re-run resumes a
+    partial pass and never clobbers live ingest.
+
+    For non-broker callers (tests, dev scripts). The broker handler
+    drives the same passes but submits each as its own WriteOp, because
+    a full run is ~2 minutes on the production corpus and holding the
+    single writer that long would queue every web-tier cache write
+    behind it.
+    """
+    seeded = seed_roots(session, inbox_id)
     propagated = 0
     cycles_broken = 0
     for _ in range(MAX_PASSES):
-        moved = _propagate(session, inbox_id)
+        moved = propagate(session, inbox_id)
         if moved:
             propagated += moved
             continue
         # Stalled: either done, or only cycles remain.
-        if _break_cycle(session, inbox_id):
+        if break_cycle(session, inbox_id):
             cycles_broken += 1
             continue
         break
@@ -157,7 +163,7 @@ def verify_thread_roots(session: Session, inbox, limit: int = 200) -> list[dict]
 
     Cyclic threads are excluded rather than reported, because the
     column and `find_thread_root` disagree there by design (see
-    `_break_cycle`). A row is treated as cyclic when walking up from it
+    `break_cycle`). A row is treated as cyclic when walking up from it
     re-enters a message already seen.
     """
     from mimir.models import Article, ArticleList

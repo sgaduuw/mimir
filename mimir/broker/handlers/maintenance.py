@@ -31,6 +31,7 @@ re-raise as `ClickException` with the operator-facing text intact.
 import logging
 
 from mimir.broker.protocol import (
+    BackfillThreadRootsRequest,
     AnalyzeRequest,
     FailuresReplayRequest,
     InboxAddTrackedAuthorRequest,
@@ -70,6 +71,71 @@ def handle_update_mainline(req: UpdateMainlineRequest) -> Reply:
         force=req.force,
     )
     return Reply(rpc_id=req.rpc_id, ok=True, result=result.model_dump(mode="json"))
+
+
+def handle_backfill_thread_roots(req: "BackfillThreadRootsRequest") -> Reply:
+    """Fill in `thread_root_id` per inbox, ONE PASS PER WriteOp.
+
+    Measured at ~10 s for 500k rows and ~2 min extrapolated to the
+    production corpus. Submitting that as a single WriteOp would hold
+    the single writer for the whole run, queueing every web-tier
+    `cache.set` behind it, which is exactly the shape the two-pool
+    restructure broke up (CONTEXT.md, Phases 3a-3c: one continuous
+    transaction becomes N short bursts so concurrent cache writes drain
+    between them). Each pass here is one bulk UPDATE of a few hundred
+    ms, so the writer is released ~80 times over a full run instead of
+    once.
+
+    Idempotent per pass: every statement only touches NULL rows, so an
+    interrupted run resumes and live ingest is never clobbered.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from mimir.broker import _context
+    from mimir.broker.writes import WriteOp
+    from mimir.models import Inbox
+    from mimir.thread_roots import (
+        MAX_PASSES,
+        break_cycle,
+        propagate,
+        seed_roots,
+    )
+
+    writer = _context.get_active_writer()
+    pool = _context.get_active_pool()
+
+    with pool.session() as read_session:
+        stmt = select(Inbox.id, Inbox.name)
+        if req.inbox:
+            stmt = stmt.where(Inbox.name == req.inbox)
+        inboxes = list(read_session.execute(stmt).all())
+
+    totals = {"seeded": 0, "propagated": 0, "cycles_broken": 0, "inboxes": 0}
+
+    def _run(label: str, fn, inbox_id: int) -> int:
+        def _op(conn):
+            with Session(bind=conn) as session:
+                moved = fn(session, inbox_id)
+                session.flush()
+                return moved
+
+        return writer.submit(WriteOp(label=label, fn=_op)).result(timeout=600) or 0
+
+    for inbox_id, name in inboxes:
+        totals["inboxes"] += 1
+        totals["seeded"] += _run(f"thread_roots:seed:{name}", seed_roots, inbox_id)
+        for _ in range(MAX_PASSES):
+            moved = _run(f"thread_roots:propagate:{name}", propagate, inbox_id)
+            if moved:
+                totals["propagated"] += moved
+                continue
+            if _run(f"thread_roots:cycle:{name}", break_cycle, inbox_id):
+                totals["cycles_broken"] += 1
+                continue
+            break
+
+    return Reply(rpc_id=req.rpc_id, ok=True, result=totals)
 
 
 def handle_analyze(req: AnalyzeRequest) -> Reply:

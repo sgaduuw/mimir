@@ -53,6 +53,7 @@ from mimir.broker.handlers.longops import (
 )
 from mimir.broker.handlers.maintenance import (
     handle_analyze,
+    handle_backfill_thread_roots,
     handle_failures_replay,
     handle_inbox_add_tracked_author,
     handle_inbox_clear_tracked_authors,
@@ -75,6 +76,7 @@ from mimir.broker.handlers.warm import (
 )
 from mimir.broker.protocol import (
     AnalyzeRequest,
+    BackfillThreadRootsRequest,
     BackfillArticleFilesRequest,
     BackfillArticleTrailersRequest,
     BackfillCanonicalsRequest,
@@ -123,6 +125,7 @@ LONG_OPS: frozenset[str] = frozenset(
         "backfill_canonicals",
         "update_mainline",
         "analyze",
+        "backfill_thread_roots",
         "vacuum",
         "failures_replay",
         "inbox_create",
@@ -188,6 +191,10 @@ _DISPATCH: dict[str, tuple[type, Callable]] = {
     ),
     "update_mainline": (UpdateMainlineRequest, handle_update_mainline),
     "analyze": (AnalyzeRequest, handle_analyze),
+    "backfill_thread_roots": (
+        BackfillThreadRootsRequest,
+        handle_backfill_thread_roots,
+    ),
     "vacuum": (VacuumRequest, handle_vacuum),
     "failures_replay": (FailuresReplayRequest, handle_failures_replay),
     "inbox_create": (InboxCreateRequest, handle_inbox_create),

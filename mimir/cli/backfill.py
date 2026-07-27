@@ -167,3 +167,83 @@ def backfill_patch_series_command(
         f"in_series_orphan={result.in_series_orphan} "
         f"not_cover={result.not_cover} skipped={result.skipped}"
     )
+
+
+@click.command("backfill-thread-roots")
+@click.option(
+    "--inbox",
+    default=None,
+    help="Only this inbox. Default: every configured inbox.",
+)
+@click.option(
+    "--verify",
+    is_flag=True,
+    help="After filling, recompute a sample of roots and report any "
+    "that disagree with `find_thread_root`.",
+)
+@click.option(
+    "--sample",
+    type=int,
+    default=200,
+    help="Rows per inbox to recompute under --verify.",
+)
+def backfill_thread_roots_command(
+    inbox: str | None,
+    verify: bool,
+    sample: int,
+) -> None:
+    """Populate `article_lists.thread_root_id` for rows predating it.
+
+    Idempotent and resumable: only NULL rows are touched, so a re-run
+    picks up where an interrupted one stopped and never clobbers what
+    live ingest wrote alongside it. Readers fall back to the recursive
+    CTE wherever the column is still NULL, so a partially-filled corpus
+    is correct, just not yet fast.
+
+    `--verify` is the important half. The failure mode this column
+    introduces is invisible: a maintenance bug splits a conversation in
+    two, both halves render fine, and nothing errors. Only recomputing
+    catches it, so verify after a backfill and periodically thereafter.
+    """
+    from sqlalchemy import select
+
+    from mimir.broker.client import get_broker_client
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.thread_roots import verify_thread_roots
+
+    _configure_logging(0)
+    client = get_broker_client()
+    counts = client.backfill_thread_roots(inbox=inbox)
+    click.echo(
+        "thread-roots: {inboxes} inbox(es), {seeded} seeded, "
+        "{propagated} propagated, {cycles_broken} cycle(s) broken".format(
+            inboxes=counts.get("inboxes", 0),
+            seeded=counts.get("seeded", 0),
+            propagated=counts.get("propagated", 0),
+            cycles_broken=counts.get("cycles_broken", 0),
+        )
+    )
+
+    if not verify:
+        return
+
+    total = 0
+    with SessionLocal() as session:
+        stmt = select(Inbox)
+        if inbox:
+            stmt = stmt.where(Inbox.name == inbox)
+        for ix in session.execute(stmt).scalars():
+            mismatches = verify_thread_roots(session, ix, limit=sample)
+            total += len(mismatches)
+            for m in mismatches[:10]:
+                click.echo(
+                    f"  MISMATCH {ix.name} {m['message_id']}: "
+                    f"stored={m['stored_root']} expected={m['expected_root']}"
+                )
+    if total:
+        raise click.ClickException(
+            f"{total} thread-root mismatch(es); the column disagrees with "
+            "find_thread_root, which means maintenance is wrong"
+        )
+    click.echo("thread-roots: verified, no mismatches")
