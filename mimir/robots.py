@@ -409,18 +409,28 @@ def remove_rule(user_agent: str) -> None:
         session.commit()
 
 
-# Seeded defaults for the `*` stanza, identical to the previous
-# hardcoded template (`Crawl-delay: 5`, `Disallow: /*/attachment/`)
-# plus the Content-Signal posture from
+# Seeded defaults for the `*` stanza: `Crawl-delay: 5`, the crawl-budget
+# disallows below, and the Content-Signal posture from
 # https://blog.cloudflare.com/content-signals-policy/: search=yes
 # (this IS a publicly-indexed archive, see SEO posture in
 # CONTEXT.md); ai-train=no + ai-input=no (matches the "redaction as
 # friction layer" posture, and Cloudflare's own recommended default).
-# The two migrations that create + extend `robots_rules` seed these
-# same values; this constant is the single source of truth for
-# `reset_rules`.
+# The migrations that create + extend `robots_rules` seed the same
+# values; this constant is the single source of truth for
+# `reset_rules` and for fresh seeds.
 _DEFAULT_STAR_CRAWL_DELAY = 5
-_DEFAULT_STAR_DISALLOW: tuple[str, ...] = ("/*/attachment/",)
+# `/api/` is the htmx load-more endpoint: HTML partials, one URL per
+# offset, never a useful search result. `/*/search` is internal search
+# results, which Google's own guidance says to keep out of the crawl.
+# Both are about crawl budget, not index hygiene (`?q=` URLs already
+# canonicalise to the bare search page). Existing deploys get these via
+# the e3aa78c72a8d data migration, since this constant is only read by
+# `reset_rules()` and a fresh seed; keep the two in step.
+_DEFAULT_STAR_DISALLOW: tuple[str, ...] = (
+    "/*/attachment/",
+    "/api/",
+    "/*/search",
+)
 _DEFAULT_STAR_CONTENT_SIGNALS: dict[str, str] = {
     "search": "yes",
     "ai-train": "no",

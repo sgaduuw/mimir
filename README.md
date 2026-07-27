@@ -297,13 +297,24 @@ defunct inbox.
 ## Managing robots.txt
 
 `/robots.txt` is rendered from the `robots_rules` table on every
-request. The migration seeds a `*` stanza with the previous
-hardcoded values plus Cloudflare-style Content-Signal defaults
-(`Crawl-delay: 5`, `Disallow: /*/attachment/`,
-`Content-Signal: search=yes, ai-input=no, ai-train=no`), so a
-fresh deploy serves the structurally-same body it always did
-with an additional Content-Signal line. Operator mutates the
-table via:
+request. Migrations seed a `*` stanza with Cloudflare-style
+Content-Signal defaults plus the crawl-budget disallows:
+
+```
+Crawl-delay: 5
+Content-Signal: search=yes, ai-input=no, ai-train=no
+Disallow: /*/attachment/
+Disallow: /api/
+Disallow: /*/search
+```
+
+`/api/` is the htmx load-more endpoint (HTML partials, one URL per
+offset) and `/*/search` is internal search results (one URL per
+query); neither can be a useful search result, so keeping crawlers
+out of both leaves more crawl budget for archive content. Both are
+appended to existing deploys by migration `e3aa78c72a8d`, which only
+adds what's missing so a curated disallow list survives. Operator
+mutates the table via:
 
 ```sh
 mimir admin robots list
@@ -572,8 +583,9 @@ Routes:
 - `GET /healthz` and `GET /readyz`, cheap probes for orchestrators.
   `/healthz` does no DB work; `/readyz` runs a `SELECT 1`. Both
   bypass the route cache via `Cache-Control: no-store`.
-- `GET /robots.txt`, disallows `/*/attachment/*` and points at the
-  sitemap.
+- `GET /robots.txt`, disallows `/*/attachment/`, `/api/`, and
+  `/*/search`, and points at the sitemap. Rendered from the
+  `robots_rules` table, see "Managing robots.txt".
 - `GET /sitemap.xml`, sitemap index pointing at `/meta-sitemap.xml`,
   one `/<inbox>/sitemap.xml` per configured inbox, and
   `/sitemap-maintainers.xml`. Responses are unconditional (no
