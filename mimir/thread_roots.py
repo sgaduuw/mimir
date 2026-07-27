@@ -200,6 +200,8 @@ def verify_thread_roots(session: Session, inbox, limit: int = 200) -> list[dict]
     `break_cycle`). A row is treated as cyclic when walking up from it
     re-enters a message already seen.
     """
+    from sqlalchemy.orm import aliased
+
     from mimir.models import Article, ArticleList
     from mimir.threading import find_thread_root
 
@@ -250,9 +252,39 @@ def verify_thread_roots(session: Session, inbox, limit: int = 200) -> list[dict]
             cur = parent
         return True
 
+    def _parent_root(mid: str):
+        """The stored root of this row's in-inbox parent, if any."""
+        return session.execute(
+            select(ArticleList.thread_root_id)
+            .join(Article, Article.id == ArticleList.article_id)
+            .join(
+                _Child := aliased(Article),
+                _Child.thread_parent == Article.message_id,
+            )
+            .where(_Child.message_id == mid, ArticleList.inbox_id == inbox.id)
+        ).scalar()
+
     mismatches: list[dict] = []
     for art_id, mid, stored_root in rows:
         if _is_cyclic(mid):
+            # Downstream of a cycle is NOT itself a cycle member, and
+            # skipping it outright let one crafted `In-Reply-To` loop
+            # exempt every message that ever replied into it, in the
+            # only detector this failure mode has. The CTE genuinely
+            # disagrees inside the loop, so full agreement can't be
+            # demanded, but COHERENCE can: a row must share its
+            # parent's root.
+            parent_root = _parent_root(mid)
+            if parent_root is not None and stored_root != parent_root:
+                mismatches.append(
+                    {
+                        "article_id": art_id,
+                        "message_id": mid,
+                        "stored_root": stored_root,
+                        "expected_root": parent_root,
+                        "note": "downstream of a cycle; checked for coherence",
+                    }
+                )
             continue
         expected_mid = find_thread_root(session, inbox, mid) or mid
         expected_id = session.scalar(

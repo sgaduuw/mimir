@@ -472,3 +472,240 @@ def test_seed_roots_is_inbox_scoped(client, tmp_path):
         "the parent lives in another inbox, so this row is a root here "
         "and seed_roots must claim it"
     )
+
+
+def test_child_first_batch_into_an_unbackfilled_corpus_leaves_nothing_stale(
+    client,
+    tmp_path,
+):
+    """The blocker's second form: a stale SIBLING rather than the
+    arriving row.
+
+    Post-migration everything is NULL. A batch arrives child-first (the
+    `parent-last` axis, routine across epoch boundaries): the child
+    self-roots correctly, then its parent arrives, finds ITS parent
+    unrooted, and returns early. If that early return also skips the
+    subtree, the child keeps a root that is now stale and non-NULL, so
+    both backfill passes skip it forever.
+
+    NULL has to propagate down the subtree, not just stop at the row.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, Inbox
+    from mimir.thread_roots import backfill_inbox
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    seed_thread_shape(tmp_path / "a", "alpha", [("st-r@x", None), ("st-m@x", "st-r@x")])
+    with SessionLocal() as s:
+        s.execute(update(ArticleList).values(thread_root_id=None))
+        s.commit()
+
+    # One batch, child before parent.
+    seed_thread_shape(
+        tmp_path / "b", "alpha", [("st-b@x", "st-a@x"), ("st-a@x", "st-m@x")]
+    )
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        backfill_inbox(s, inbox.id)
+        s.commit()
+
+    _assert_invariant_for(
+        "alpha",
+        {"st-r@x", "st-m@x", "st-a@x", "st-b@x"},
+        "child-first batch, unbackfilled corpus",
+    )
+
+
+def test_break_cycle_only_fires_on_a_real_cycle(client, tmp_path):
+    """Pins HIGH-3's fix directly.
+
+    Blind self-rooting of the lowest unrooted article writes a WRONG
+    root on a plain chain, because the child routinely holds the lower
+    id. Every other NULL row is rooted first here so `MIN(article_id)`
+    cannot land on an unrelated one, which is what made a looser
+    version of this test pass under the mutant.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.thread_roots import break_cycle
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    # Child ingested first, so it holds the lower article id.
+    seed_thread_shape(tmp_path / "a", "alpha", [("bc-child@x", "bc-parent@x")])
+    seed_thread_shape(tmp_path / "b", "alpha", [("bc-parent@x", "bc-root@x")])
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        targets = {
+            mid: aid
+            for mid, aid in s.execute(select(Article.message_id, Article.id)).all()
+        }
+        # Root everything except the two-message chain, so the stall is
+        # unambiguous and MIN() must pick one of them.
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.inbox_id == inbox.id)
+            .values(thread_root_id=ArticleList.article_id)
+        )
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.article_id.in_(
+                    [targets["bc-child@x"], targets["bc-parent@x"]]
+                ),
+            )
+            .values(thread_root_id=None)
+        )
+        s.commit()
+
+        fired = break_cycle(s, inbox.id)
+        s.commit()
+
+    assert fired == 0, (
+        "a non-cycle stall must be left alone; self-rooting the lowest "
+        "article id writes a wrong root whenever the child holds it"
+    )
+
+
+def test_replay_resolves_roots_on_the_session_path(client, tmp_path):
+    """Pins MEDIUM-4, on the branch that was silently a no-op.
+
+    `SessionLocal` is autoflush=False and the passes are raw text()
+    UPDATEs, so without an explicit flush they ran against a database
+    that had not seen replay's ORM inserts and did nothing at all.
+    """
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    seed_thread_shape(
+        tmp_path, "alpha", [("rp-root@x", None), ("rp-kid@x", "rp-root@x")]
+    )
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        beta.mirror_path = alpha.mirror_path
+        # Link them into beta the way replay does: bare rows, no root.
+        for mid in ("rp-root@x", "rp-kid@x"):
+            link = s.execute(
+                select(ArticleList)
+                .join(Article, Article.id == ArticleList.article_id)
+                .where(Article.message_id == mid, ArticleList.inbox_id == alpha.id)
+            ).scalar_one()
+            s.add(
+                ArticleList(
+                    article_id=link.article_id,
+                    inbox_id=beta.id,
+                    epoch=link.epoch,
+                    commit_sha=link.commit_sha,
+                )
+            )
+        from mimir.ingest.replay import _resolve_roots_after_replay
+
+        s.flush()
+        _resolve_roots_after_replay(s, beta.id)
+        s.commit()
+
+    got = _roots_by_inbox("beta", {"rp-root@x", "rp-kid@x"})
+    assert all(r is not None for r, _a in got.values()), (
+        f"rows left unrooted on the session path: {got}"
+    )
+
+
+def test_verify_catches_corruption_downstream_of_a_cycle(client, tmp_path):
+    """A clean tail hanging off a cycle is not itself cyclic.
+
+    Skipping it outright let one crafted `In-Reply-To` loop exempt
+    every message that ever replied into it, in the only detector this
+    failure mode has. Full CTE agreement can't be demanded inside a
+    cycle, but a row sharing its parent's root can be.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.thread_roots import verify_thread_roots
+
+    seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [
+            ("dc1@x", "dc2@x"),
+            ("dc2@x", "dc1@x"),
+            ("dc3@x", "dc1@x"),
+            ("dc4@x", "dc3@x"),
+        ],
+    )
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        assert verify_thread_roots(s, inbox, limit=500) == []
+
+        victim = s.execute(
+            select(Article.id).where(Article.message_id == "dc4@x")
+        ).scalar_one()
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.article_id == victim,
+                ArticleList.inbox_id == inbox.id,
+            )
+            .values(thread_root_id=victim)
+        )
+        s.commit()
+        found = verify_thread_roots(s, inbox, limit=500)
+
+    assert any(m["message_id"] == "dc4@x" for m in found), (
+        f"corruption downstream of a cycle went unreported: {found}"
+    )
+
+
+def test_verify_samples_randomly_not_newest_first(client, tmp_path):
+    """`ORDER BY id DESC` samples roughly the last hour of ingest, so a
+    daily verify run structurally could not see corruption written
+    during a deploy window, which is exactly the damage worth finding.
+    Corrupt an OLD row and confirm a small sample reaches it."""
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.thread_roots import verify_thread_roots
+
+    edges = [("rs1@x", None)] + [(f"rs{i}@x", f"rs{i - 1}@x") for i in range(2, 40)]
+    seed_thread_shape(tmp_path, "alpha", edges)
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        victim = s.execute(
+            select(Article.id).where(Article.message_id == "rs2@x")
+        ).scalar_one()
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.article_id == victim,
+                ArticleList.inbox_id == inbox.id,
+            )
+            .values(thread_root_id=victim)
+        )
+        s.commit()
+
+        # Small samples, repeated: newest-first would never reach an
+        # old row, random sampling reaches it with high probability.
+        hits = sum(
+            1
+            for _ in range(60)
+            if any(
+                m["message_id"] == "rs2@x"
+                for m in verify_thread_roots(s, inbox, limit=5)
+            )
+        )
+
+    assert hits > 0, "a small sample never reached an old corrupted row"
