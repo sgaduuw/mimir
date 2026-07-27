@@ -27,6 +27,7 @@ changes, not internal refactors. Categories: **Added**,
   data reflects the same mimir-derived signals the rendered page shows.
   Reply counts are per-message rather than per-thread, and all three
   fields are omitted when empty rather than emitted as zero / `[]`.
+
 ### Changed
 
 - `robots.txt` now disallows `/api/` and `/*/search` in the default
