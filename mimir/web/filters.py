@@ -304,6 +304,72 @@ def _relative_time_filter(then: datetime | None) -> str:
     return _relative_time(then)
 
 
+# Trailer roles that count as review feedback for the synthesis line.
+# Mirrors `_REVIEW_TRAILER_ROLES` in `mimir/subsystems_dashboard/triage.py`
+# (which `mimir/lifecycle_status.py` also mirrors): Signed-off-by is
+# authorship and Reported-by is bug attribution, neither is review.
+# Duplicated rather than shared, following the existing convention for
+# this tuple; three strings don't earn a shared module.
+_REVIEW_TRAILER_ROLES = ("Reviewed-by", "Acked-by", "Tested-by")
+
+
+@bp_web.app_template_filter("patch_synthesis")
+def _patch_synthesis_filter(patch_state) -> str:
+    """One-sentence, human-readable summary of a patch's lifecycle,
+    composed from data the state card already carries.
+
+    Exists for SEO index-shaping (design doc 2026-07-27, W3b): the
+    badges and the state card encode this same information as glyphs
+    and pills, which read well for a human scanning but give a crawler
+    nothing indexable. Rendering it once as prose gives the page
+    unique, query-matching text ("landed in net-next as abc123") that
+    no other LKML mirror emits, without changing what the badges do.
+
+    Returns "" for non-patch articles and for patches with nothing
+    worth saying, so the template can render it unconditionally.
+    """
+    if patch_state is None or not patch_state.is_patch:
+        return ""
+
+    clauses: list[str] = []
+
+    revisions = patch_state.series or []
+    if len(revisions) >= 2:
+        current = next((e for e in revisions if e.is_current), None)
+        if current is not None:
+            clauses.append(
+                f"revision {current.version} of {len(revisions)} in this series"
+            )
+        else:
+            clauses.append(f"one of {len(revisions)} revisions in this series")
+
+    reviews = sum(
+        t.total for t in (patch_state.trailers or []) if t.role in _REVIEW_TRAILER_ROLES
+    )
+    maintainer_reviews = sum(
+        t.maintainer_count
+        for t in (patch_state.trailers or [])
+        if t.role in _REVIEW_TRAILER_ROLES
+    )
+    if reviews:
+        clause = f"{reviews} review {'trailer' if reviews == 1 else 'trailers'}"
+        if maintainer_reviews:
+            clause += f" ({maintainer_reviews} from subsystem maintainers)"
+        clauses.append(clause)
+
+    landing = next(iter(patch_state.mainline_landings or []), None)
+    if landing is not None:
+        clause = f"landed in {landing.tree_label} as {landing.commit_sha[:12]}"
+        if landing.committed_at is not None:
+            clause += f" on {landing.committed_at:%Y-%m-%d}"
+        clauses.append(clause)
+
+    if not clauses:
+        return ""
+    sentence = "; ".join(clauses)
+    return sentence[0].upper() + sentence[1:] + "."
+
+
 @bp_web.app_template_filter("is_allowlisted_address")
 def _is_allowlisted_address_filter(address: str | None) -> bool:
     """True iff `address` is in the allowlist (static tokens

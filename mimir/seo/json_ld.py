@@ -13,6 +13,7 @@ import-time cycle (web imports JSON-LD builders from this module at
 module load).
 """
 
+from collections.abc import Sequence
 from datetime import timezone
 from urllib.parse import quote
 
@@ -132,6 +133,9 @@ def _json_ld_message(
     canonical_url: str,
     inbox_name: str,
     base: str,
+    *,
+    reply_count: int = 0,
+    subsystem_names: Sequence[str] = (),
 ) -> dict:
     """schema.org @graph carrying both DiscussionForumPosting (the
     primary signal, eligible for Google's "Discussions and forums"
@@ -162,7 +166,25 @@ def _json_ld_message(
 
     Prefers `parsed.date` (the original RFC 5322 Date header) over
     `article.date` (the public-inbox commit time), the message's
-    actual send date is more meaningful to search engines."""
+    actual send date is more meaningful to search engines.
+
+    `reply_count` / `subsystem_names` carry the discussion + topical
+    signals mimir already computes for the rendered page, so the
+    structured data reflects the same uniquely-mimir data a reader
+    sees (SEO index-shaping design, 2026-07-27 W3a):
+
+    - `interactionStatistic` counts replies to **this** message
+      (direct children in the thread graph), not the whole thread.
+      A DiscussionForumPosting is the single message, so claiming the
+      thread's total here would be inaccurate structured data on every
+      reply page. Omitted entirely at zero, an explicit
+      `userInteractionCount: 0` is noise, not signal.
+    - `about` / `keywords` carry the matched subsystem names. These
+      are the genuinely topical terms for the page (`net`, `bcachefs`).
+      The `[PATCH v3]`-style subject tag is deliberately NOT emitted as
+      a keyword: nobody searches "PATCH v3", so it would dilute the
+      keyword set with boilerplate rather than describe the subject
+      matter."""
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring). The redaction helpers and display filter live in
     # web.py with the rest of the visible-HTML pipeline.
@@ -222,6 +244,17 @@ def _json_ld_message(
     if iso_date:
         forum_post["datePublished"] = iso_date
         forum_post["dateModified"] = iso_date
+    if reply_count > 0:
+        forum_post["interactionStatistic"] = {
+            "@type": "InteractionCounter",
+            "interactionType": "https://schema.org/ReplyAction",
+            "userInteractionCount": reply_count,
+        }
+    if subsystem_names:
+        forum_post["about"] = [
+            {"@type": "Thing", "name": name} for name in subsystem_names
+        ]
+        forum_post["keywords"] = list(subsystem_names)
     return {
         "@context": "https://schema.org",
         "@graph": [

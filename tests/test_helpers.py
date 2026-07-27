@@ -263,3 +263,112 @@ def test_redact_trailer_address_substring_match_is_intentionally_loose(monkeypat
     # even though the actual host is `kernel.org.evil.example`. The
     # redactor returns the allowlisted form.
     assert out == "<attacker@kernel.org.evil.example>"
+
+
+# web.filters._patch_synthesis_filter (SEO W3b synthesis prose)
+
+
+def _patch_state(*, is_patch=True, trailers=(), landings=(), series=()):
+    """Build a PatchState with only the fields the synthesis line
+    reads. Constructed directly rather than via `patch_state_for_article`
+    so each case pins one branch without seeding a corpus."""
+    from mimir.patch_state import PatchState
+
+    return PatchState(
+        is_patch=is_patch,
+        trailers=list(trailers),
+        mainline_landings=list(landings),
+        series=list(series),
+        days_since_last_reply=None,
+    )
+
+
+def test_patch_synthesis_composes_revision_review_and_landing_clauses():
+    """The full sentence: revision position, review-trailer roll-up
+    with the maintainer subset, and the mainline landing. This is the
+    indexable restatement of the badges, so the facts have to match
+    what the pills claim."""
+    from datetime import datetime, timezone
+
+    from mimir.patch_state import (
+        StateMainlineLanding,
+        StateSeriesEntry,
+        StateTrailerCount,
+    )
+    from mimir.web.filters import _patch_synthesis_filter
+
+    state = _patch_state(
+        series=[
+            StateSeriesEntry(
+                version="v1",
+                article_id=1,
+                date=None,
+                url="/a/1",
+                is_current=False,
+                diff_url=None,
+            ),
+            StateSeriesEntry(
+                version="v2",
+                article_id=2,
+                date=None,
+                url="/a/2",
+                is_current=True,
+                diff_url=None,
+            ),
+        ],
+        trailers=[
+            StateTrailerCount(role="Reviewed-by", total=3, maintainer_count=2),
+            StateTrailerCount(role="Acked-by", total=1, maintainer_count=0),
+            # Authorship, not review: must not inflate the count.
+            StateTrailerCount(role="Signed-off-by", total=5, maintainer_count=5),
+        ],
+        landings=[
+            StateMainlineLanding(
+                commit_sha="abc123def4567890",
+                tree_name="net-next",
+                tree_label="net-next",
+                committed_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+        ],
+    )
+    out = _patch_synthesis_filter(state)
+    assert out == (
+        "Revision v2 of 2 in this series; 4 review trailers "
+        "(2 from subsystem maintainers); landed in net-next as "
+        "abc123def456 on 2026-06-01."
+    )
+
+
+def test_patch_synthesis_empty_for_non_patch_and_bare_patch():
+    """Renders nothing when there's nothing to say, so the template
+    can call it unconditionally: a non-patch article, and a patch with
+    no revisions / reviews / landing, both yield ""."""
+    from mimir.web.filters import _patch_synthesis_filter
+
+    assert _patch_synthesis_filter(None) == ""
+    assert _patch_synthesis_filter(_patch_state(is_patch=False)) == ""
+    assert _patch_synthesis_filter(_patch_state()) == ""
+
+
+def test_patch_synthesis_singularises_and_omits_absent_clauses():
+    """One review reads "1 review trailer" (not "trailers"), the
+    maintainer parenthetical is omitted at zero, and a single-revision
+    patch gets no revision clause (matching `_revisions_fold.html`,
+    which only renders at >= 2)."""
+    from mimir.patch_state import StateSeriesEntry, StateTrailerCount
+    from mimir.web.filters import _patch_synthesis_filter
+
+    state = _patch_state(
+        series=[
+            StateSeriesEntry(
+                version="v1",
+                article_id=1,
+                date=None,
+                url="/a/1",
+                is_current=True,
+                diff_url=None,
+            )
+        ],
+        trailers=[StateTrailerCount(role="Tested-by", total=1, maintainer_count=0)],
+    )
+    assert _patch_synthesis_filter(state) == "1 review trailer."

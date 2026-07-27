@@ -105,6 +105,15 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
   {%- endwith %}
 </div>
 {% endif %}
+{# Prose restatement of the badges above. The pills read well for a
+   human scanning the page but are opaque to a crawler; this line is
+   the same lifecycle facts as indexable text, which is what wins the
+   long-tail "did $series land" queries no other mirror answers.
+   Renders only when there's something to say (see `patch_synthesis`). #}
+{% set synthesis = patch_state|patch_synthesis %}
+{% if synthesis %}
+<p class="patch-synthesis"><small>{{ synthesis }}</small></p>
+{% endif %}
 {% include "_revisions_fold.html" %}
 {% include "_message_body.html" %}
 {# Related patches: other recent articles touching at least one
