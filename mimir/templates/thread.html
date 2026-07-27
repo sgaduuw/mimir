@@ -11,6 +11,26 @@ Full thread ({{ _n }} message{{ '' if _n == 1 else 's' }}) in {{ inbox_name }}: 
    rather than a page of its own. Matches the lead-with-h1 rule from
    3.6.3. #}
 <h1>{{ root.subject|clean_subject or '(no subject)' }}</h1>
+{# The root's status surfaces, mirroring the message page. Message
+   pages canonicalise here, so without these the consolidation would
+   drop the lifecycle prose, subsystem attribution, and review roll-up
+   that make this archive distinctive in search. #}
+{% if subsystem_hits %}
+<p><small><strong>Subsystems:</strong>
+  {% for hit in subsystem_hits %}<a href="/{{ current_inbox }}/subsystem/{{ hit.name|lower|urlencode }}/">{{ hit.name|lower }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+</small></p>
+{% endif %}
+{% if patch_state and patch_state.is_patch and lifecycle_status %}
+<div class="msg-badges">
+  {%- with status = lifecycle_status %}
+  {%- include "_lifecycle_badges.html" %}
+  {%- endwith %}
+</div>
+{% endif %}
+{% set synthesis = patch_state|patch_synthesis %}
+{% if synthesis %}
+<p><small>{{ synthesis }}</small></p>
+{% endif %}
 <p>
   <small>
     {{ total_count }} message{{ '' if total_count == 1 else 's' }},

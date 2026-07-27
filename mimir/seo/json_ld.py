@@ -130,6 +130,34 @@ def _json_ld_text_snippet(body: str | None) -> str | None:
 BREADCRUMB_NAME_MAX = 80
 
 
+UNKNOWN_SENDER = "unknown sender"
+
+
+def _person(raw: str | None, *, base: str, inbox_name: str, with_url: bool) -> dict:
+    """schema.org `Person` for a message sender, redaction-aware.
+
+    `name` is the display name only (never the `<hidden>` placeholder,
+    which reads as broken data in metadata even though it is right on
+    the rendered page). `email` rides along only for allowlisted
+    senders, mirroring exactly what `_safe_from_filter` shows.
+
+    `with_url` points at the per-inbox author view, which Google wants
+    as a stable "more posts by this author" target for Discussions
+    eligibility. Off for thread comments: repeating the same per-inbox
+    URL for every participant adds no signal.
+    """
+    from mimir.web import _allowlisted_email, _display_name_filter
+
+    name = _display_name_filter(raw)
+    person: dict = {"@type": "Person", "name": name}
+    email = _allowlisted_email(raw)
+    if email:
+        person["email"] = email
+    if with_url and name and name != UNKNOWN_SENDER:
+        person["url"] = f"{base}/{inbox_name}/author/{quote(name, safe='')}"
+    return person
+
+
 def _graph_with_breadcrumbs(
     entity: dict,
     *,
@@ -251,25 +279,11 @@ def _json_ld_message(
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring). The redaction helpers and display filter live in
     # web.py with the rest of the visible-HTML pipeline.
-    from mimir.web import (
-        _allowlisted_email,
-        _display_name_filter,
-        _redact_trailer_address,
-    )
+    from mimir.web import _redact_trailer_address
 
     iso_date = _iso_datetime(parsed.date or article.date)
     subject = parsed.subject or "(no subject)"
-    author_name = _display_name_filter(parsed.author)
-    author: dict = {"@type": "Person", "name": author_name}
-    author_email = _allowlisted_email(parsed.author)
-    if author_email:
-        author["email"] = author_email
-    # Per-inbox author view is a substring match on the From field;
-    # the display name is exactly what'll match the author's other
-    # posts. Skip the URL when we fell back to "unknown sender"
-    # that token doesn't match anyone.
-    if author_name and author_name != "unknown sender":
-        author["url"] = f"{base}/{inbox_name}/author/{quote(author_name, safe='')}"
+    author = _person(parsed.author, base=base, inbox_name=inbox_name, with_url=True)
     forum_post: dict = {
         "@type": "DiscussionForumPosting",
         "@id": canonical_url,
@@ -417,28 +431,7 @@ def _json_ld_thread(
     apply per surface, and this surface carries N bodies rather than
     one, so a miss here would leak N times over.
     """
-    from mimir.web import (
-        _allowlisted_email,
-        _clean_subject_filter,
-        _display_name_filter,
-        _redact_trailer_address,
-        _msg_url,
-    )
-
-    def _author(raw: str | None, *, with_url: bool) -> dict:
-        name = _display_name_filter(raw)
-        person: dict = {"@type": "Person", "name": name}
-        email = _allowlisted_email(raw)
-        if email:
-            person["email"] = email
-        # `author.url` on the thread's root mirrors `_json_ld_message`
-        # (Google wants a stable "more posts by this author" target for
-        # Discussions eligibility). Deliberately NOT emitted on every
-        # comment: it would repeat the same per-inbox author URL for
-        # each participant with no added signal.
-        if with_url and name and name != "unknown sender":
-            person["url"] = f"{base}/{inbox_name}/author/{quote(name, safe='')}"
-        return person
+    from mimir.web import _clean_subject_filter, _msg_url, _redact_trailer_address
 
     def _text_for(node) -> str | None:
         parsed = parsed_by_id.get(node.id)
@@ -456,7 +449,7 @@ def _json_ld_thread(
         "url": canonical_url,
         "mainEntityOfPage": canonical_url,
         "headline": root_subject,
-        "author": _author(root.author, with_url=True),
+        "author": _person(root.author, base=base, inbox_name=inbox_name, with_url=True),
         "isPartOf": {
             "@type": "WebSite",
             "name": inbox_name,
@@ -488,7 +481,9 @@ def _json_ld_thread(
             "@type": "Comment",
             "@id": base + _msg_url(node, inbox_name),
             "url": base + _msg_url(node, inbox_name),
-            "author": _author(node.author, with_url=False),
+            "author": _person(
+                node.author, base=base, inbox_name=inbox_name, with_url=False
+            ),
         }
         when = _iso_datetime(node.date)
         if when:

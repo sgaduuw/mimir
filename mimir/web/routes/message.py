@@ -356,7 +356,13 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # follows it in base.html) moves.
         message_canonical_url = canonical_url
         thread_view_url: str | None = None
-        if canonical_url and thread:
+        # `len(thread) > 1` because a single-message thread has
+        # nothing to consolidate: the message page already IS the whole
+        # conversation, and it is the RICHER of the two (subsystem
+        # header, lifecycle badges, the indexable lifecycle prose,
+        # attachments, related patches). Pointing it at `/t` would trade
+        # all of that away for no consolidation gain.
+        if canonical_url and len(thread) > 1:
             cap = settings.thread_view_render_cap
             position = next(
                 (i for i, n in enumerate(thread) if n.message_id == article.message_id),
