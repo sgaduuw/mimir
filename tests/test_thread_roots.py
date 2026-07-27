@@ -299,3 +299,176 @@ def test_verify_ignores_cycles(client, tmp_path):
     with SessionLocal() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         assert verify_thread_roots(s, inbox) == []
+
+
+def test_ingest_into_an_unbackfilled_corpus_never_writes_a_wrong_root(
+    client,
+    tmp_path,
+):
+    """The deploy sequence, which is the reachable path to corruption.
+
+    The broker runs `alembic upgrade head` at startup and `mimir-tasks`
+    starts firing `update` on its cadence, while `backfill-thread-roots`
+    is a manual operator action that may be hours later. So for a while
+    EVERY existing row is NULL, and replies keep arriving.
+
+    Inheriting the parent's ARTICLE ID in that window looks harmless
+    (it is non-NULL and plausible) but is wrong whenever the parent is
+    not itself a root, and because it is non-NULL both `seed_roots` and
+    `propagate` skip it forever: the backfill can never repair it. That
+    is silent, permanent thread fragmentation.
+
+    NULL is the correct answer while the parent is unresolved: readers
+    fall back to the recursive CTE, and the backfill fixes it.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, Inbox
+    from mimir.thread_roots import backfill_inbox
+
+    (tmp_path / "a").mkdir()
+    seed_thread_shape(
+        tmp_path / "a",
+        "alpha",
+        [("dep1@x", None), ("dep2@x", "dep1@x"), ("dep3@x", "dep2@x")],
+    )
+    # Simulate the post-migration state: every root unset.
+    with SessionLocal() as s:
+        s.execute(update(ArticleList).values(thread_root_id=None))
+        s.commit()
+
+    # An `update` tick lands a reply to a message whose root is unset.
+    (tmp_path / "b").mkdir()
+    seed_thread_shape(tmp_path / "b", "alpha", [("dep4@x", "dep3@x")])
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        backfill_inbox(s, inbox.id)
+        s.commit()
+
+    _assert_invariant_for(
+        "alpha", {"dep1@x", "dep2@x", "dep3@x", "dep4@x"}, "post-migration ingest"
+    )
+
+
+def _assert_invariant_for(inbox_name: str, mids: set[str], label: str) -> None:
+    """The invariant for an explicit message-id set (shapes built
+    across several `seed_thread_shape` calls aren't in `SHAPES`)."""
+    materialised = _roots_by_inbox(inbox_name, mids)
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        for mid, (root_id, art_id) in materialised.items():
+            expected_mid = find_thread_root(s, inbox, mid) or mid
+            expected_id = materialised.get(expected_mid, (None, art_id))[1]
+            assert root_id == expected_id, (
+                f"{label}: {mid} has thread_root_id={root_id}, "
+                f"but find_thread_root says {expected_mid} (id={expected_id})"
+            )
+
+
+def test_descendants_reroot_is_scoped_to_one_inbox(client, tmp_path):
+    """The re-root must not reach into other inboxes.
+
+    This is the same class as the parent-lookup scoping bug found by
+    mutation testing, still open on the UPDATE side: dropping
+    `inbox_id` from the descendants statement re-roots a subtree in
+    EVERY inbox that carries it, which is wrong wherever the parent is
+    absent from one of them.
+
+    `beta` holds only the reply, so in beta it is its own root. `alpha`
+    ingests the reply first and the root last, which fires the re-root
+    in alpha; beta must be untouched.
+    """
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    seed_thread_shape(tmp_path / "b", "beta", [("sc-reply@x", "sc-root@x")])
+    seed_thread_shape(
+        tmp_path / "a", "alpha", [("sc-reply@x", "sc-root@x"), ("sc-root@x", None)]
+    )
+
+    alpha = _roots_by_inbox("alpha", {"sc-root@x", "sc-reply@x"})
+    beta = _roots_by_inbox("beta", {"sc-reply@x"})
+
+    assert alpha["sc-reply@x"][0] == alpha["sc-root@x"][1], (
+        "in alpha the late root must claim its descendant"
+    )
+    assert beta["sc-reply@x"][0] == beta["sc-reply@x"][1], (
+        "in beta the root is absent, so the reply stays its own root; "
+        "re-rooting it here would make the UPDATE inbox-blind"
+    )
+
+
+def test_reroot_does_not_walk_through_a_message_absent_from_this_inbox(
+    client,
+    tmp_path,
+):
+    """The descendants CTE's base case is inbox-scoped too.
+
+    Chain root -> mid -> tail, with `mid` absent from alpha. In alpha
+    the tail's parent is missing, so `find_thread_root` calls the tail
+    its own root. If the walk can pass through `mid` anyway, the late
+    root claims a grandchild it does not actually own here.
+    """
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    # `mid` exists only in beta.
+    seed_thread_shape(tmp_path / "b", "beta", [("wt-mid@x", "wt-root@x")])
+    seed_thread_shape(
+        tmp_path / "a",
+        "alpha",
+        [("wt-tail@x", "wt-mid@x"), ("wt-root@x", None)],
+    )
+
+    alpha = _roots_by_inbox("alpha", {"wt-root@x", "wt-tail@x"})
+    assert alpha["wt-tail@x"][0] == alpha["wt-tail@x"][1], (
+        "the tail's parent is absent from alpha, so it is its own root; "
+        "walking through an absent message would hand it to the root"
+    )
+
+
+def test_seed_roots_is_inbox_scoped(client, tmp_path):
+    """Direct unit assertion on `seed_roots`.
+
+    An end-to-end test cannot pin this: when `seed_roots` wrongly skips
+    a row, `break_cycle` used to self-root the stall and accidentally
+    produce the right answer, so the bug hid behind another one. Assert
+    the pass itself.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.thread_roots import seed_roots
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    seed_thread_shape(tmp_path / "b", "beta", [("ss-parent@x", None)])
+    seed_thread_shape(tmp_path / "a", "alpha", [("ss-child@x", "ss-parent@x")])
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        child = s.execute(
+            select(Article.id).where(Article.message_id == "ss-child@x")
+        ).scalar_one()
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.inbox_id == alpha.id)
+            .values(thread_root_id=None)
+        )
+        s.commit()
+
+        seed_roots(s, alpha.id)
+        s.commit()
+
+        got = s.execute(
+            select(ArticleList.thread_root_id).where(
+                ArticleList.article_id == child,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one()
+
+    assert got == child, (
+        "the parent lives in another inbox, so this row is a root here "
+        "and seed_roots must claim it"
+    )

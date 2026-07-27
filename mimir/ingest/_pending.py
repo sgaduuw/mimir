@@ -129,15 +129,19 @@ def _resolve_thread_root(conn, inbox_id: int, article_id: int, parent_msgid) -> 
     with both halves rendering fine. This is the case CONTEXT.md cites
     as the reason materialised roots were deferred.
 
-    The subtree walk uses `UNION` rather than `UNION ALL` so a cyclic
-    `thread_parent` (sender-controlled, unguarded at ingest) terminates
-    instead of spinning to the recursion limit. Under a cycle the
+    A cyclic `thread_parent` (sender-controlled, unguarded at ingest)
+    cannot spin the subtree walk: `thread_parent` is single-valued, so
+    any cycle reachable from this article must contain it, and the
+    `a.id != :aid` guard cuts the walk there. (`UNION` rather than
+    `UNION ALL` dedupes, but it is the guard that terminates, not the
+    set semantics.) Under a cycle the
     members converge on whichever member was reached first; that is
     deliberately NOT what `find_thread_root` returns (it walks to
     MAX_DEPTH and lands wherever `1000 mod cycle_length` puts it), and
     the difference is documented in `tests/test_thread_roots.py`.
     """
     root_id = None
+    parent_present = False
     if parent_msgid:
         row = conn.execute(
             text(
@@ -151,7 +155,28 @@ def _resolve_thread_root(conn, inbox_id: int, article_id: int, parent_msgid) -> 
         # very row; treat it as having no parent rather than pointing
         # the article at its own unset root.
         if row is not None and row[1] != article_id:
-            root_id = row[0] if row[0] is not None else row[1]
+            parent_present = True
+            root_id = row[0]
+
+    if parent_present and root_id is None:
+        # The parent exists here but has no root yet. Do NOT fall back
+        # to the parent's article id: that is only correct when the
+        # parent happens to BE a root, and it is wrong whenever it is
+        # not. Worse, it is wrong in a way nothing can repair, because
+        # `seed_roots` and `propagate` both key on `IS NULL` and would
+        # skip the row forever.
+        #
+        # This is the state of every row between the migration landing
+        # and the backfill finishing, so it is the normal deploy
+        # window rather than an edge case: the broker migrates at
+        # startup, `mimir-tasks` starts firing `update` immediately,
+        # and the backfill is a manual operator step that may be hours
+        # later. Leaving NULL is correct and cheap: readers fall back
+        # to the recursive CTE while it is unset, and the backfill
+        # resolves it properly. In steady state, when the parent is
+        # already rooted, this branch never fires.
+        return
+
     if root_id is None:
         root_id = article_id
 
@@ -341,10 +366,16 @@ def _submit_ingest_batch(writer, pending: "_PendingWrites") -> WriteFuture:
             )
             # Maintain the materialised root for this (article, inbox)
             # pair, and re-root anything that was waiting on it.
-            parent_msgid = conn.execute(
-                text("SELECT thread_parent FROM articles WHERE id = :aid"),
-                {"aid": article_id},
-            ).scalar()
+            # The accumulator already carries the parent for rows this
+            # batch inserted; only cross-post links (article_index -1,
+            # article already in the DB) need the lookup.
+            if al.article_index != -1:
+                parent_msgid = articles[al.article_index].thread_parent
+            else:
+                parent_msgid = conn.execute(
+                    text("SELECT thread_parent FROM articles WHERE id = :aid"),
+                    {"aid": article_id},
+                ).scalar()
             _resolve_thread_root(conn, al.inbox_id, article_id, parent_msgid)
 
         # Step 3: ParseFailure DELETEs and UPSERTs.

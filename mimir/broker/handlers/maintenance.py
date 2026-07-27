@@ -134,6 +134,16 @@ def handle_backfill_thread_roots(req: "BackfillThreadRootsRequest") -> Reply:
                 totals["cycles_broken"] += 1
                 continue
             break
+        else:
+            # Exhausting the budget means rows are still unrooted, so
+            # reporting ok with no signal would let a truncated
+            # backfill read as a complete one.
+            logger.warning(
+                "thread-roots: inbox %s hit MAX_PASSES (%s); rows remain unrooted",
+                name,
+                MAX_PASSES,
+            )
+            totals["exhausted"] = totals.get("exhausted", 0) + 1
 
     return Reply(rpc_id=req.rpc_id, ok=True, result=totals)
 
