@@ -680,3 +680,162 @@ def test_verify_samples_randomly_not_newest_first(client, tmp_path):
         )
 
     assert hits > 0, "a small sample never reached an old corrupted row"
+
+
+def test_verify_does_a_full_recompute_not_just_coherence(client, tmp_path):
+    """The verifier must not silently degrade to the weaker check.
+
+    Adding the downstream-of-cycle coherence branch created a way for
+    the strong check to disappear: if `_is_cyclic` starts returning
+    True for ordinary rows (a shrunk `MAX_CYCLE_WALK` does exactly
+    that), every row falls to coherence-only, which cannot see a
+    subtree that is UNIFORMLY rooted at a wrong id. That shape is
+    internally consistent, so each row agrees with its parent, and it
+    is precisely what the original ingest bug produced.
+
+    A mutant shrinking `MAX_CYCLE_WALK` to 1 was caught before the
+    coherence branch existed and stopped being caught after, so this
+    pins the recompute directly.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.thread_roots import verify_thread_roots
+
+    seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("fr1@x", None), ("fr2@x", "fr1@x"), ("fr3@x", "fr2@x")],
+    )
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        wrong = s.execute(
+            select(Article.id).where(Article.message_id == "fr3@x")
+        ).scalar_one()
+        ids = [
+            aid
+            for (aid,) in s.execute(
+                select(Article.id).where(
+                    Article.message_id.in_(["fr1@x", "fr2@x", "fr3@x"])
+                )
+            ).all()
+        ]
+        # Uniformly wrong: every row points at fr3, so parent/child
+        # agree everywhere and coherence alone sees nothing.
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.article_id.in_(ids),
+            )
+            .values(thread_root_id=wrong)
+        )
+        s.commit()
+        found = verify_thread_roots(s, inbox, limit=500)
+
+    assert len(found) >= 2, (
+        f"a uniformly mis-rooted subtree needs the full recompute to see; "
+        f"coherence alone reports {found}"
+    )
+
+
+def test_backfill_reports_exhaustion_when_the_pass_budget_runs_out(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    """`exhausted` is the only thing distinguishing a truncated
+    backfill from a complete one; both otherwise return the same
+    counts."""
+    from sqlalchemy import select
+
+    from mimir import thread_roots
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    monkeypatch.setattr(thread_roots, "MAX_PASSES", 2)
+    edges = [("ex1@x", None)] + [(f"ex{i}@x", f"ex{i - 1}@x") for i in range(2, 8)]
+    seed_thread_shape(tmp_path, "alpha", edges)
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        s.execute(
+            __import__("sqlalchemy")
+            .update(__import__("mimir.models", fromlist=["ArticleList"]).ArticleList)
+            .values(thread_root_id=None)
+        )
+        s.commit()
+        counts = thread_roots.backfill_inbox(s, inbox.id)
+        s.commit()
+
+    assert counts["exhausted"] == 1, counts
+
+
+def test_backfill_handler_submits_one_writeop_per_pass(client, tmp_path):
+    """c33765b's headline property: the writer is released between
+    passes so web-tier cache writes drain instead of queueing behind a
+    full-corpus run. Collapsing the passes back into one WriteOp is
+    invisible to every other assertion."""
+    from mimir.broker import _context
+    from mimir.broker.handlers.maintenance import handle_backfill_thread_roots
+    from mimir.broker.protocol import BackfillThreadRootsRequest
+
+    seed_thread_shape(
+        tmp_path, "alpha", [("wo1@x", None), ("wo2@x", "wo1@x"), ("wo3@x", "wo2@x")]
+    )
+
+    writer = _context.get_active_writer()
+    labels: list[str] = []
+    real_submit = writer.submit
+
+    def _spy(op):
+        labels.append(op.label)
+        return real_submit(op)
+
+    writer.submit = _spy  # type: ignore[method-assign]
+    try:
+        handle_backfill_thread_roots(
+            BackfillThreadRootsRequest(rpc_id=1, inbox="alpha")
+        )
+    finally:
+        writer.submit = real_submit  # type: ignore[method-assign]
+
+    thread_ops = [x for x in labels if x.startswith("thread_roots:")]
+    assert len(thread_ops) >= 2, f"passes were collapsed into one WriteOp: {labels}"
+    assert thread_ops[0].startswith("thread_roots:seed_roots"), thread_ops
+
+
+def test_cli_fails_when_the_backfill_is_truncated(client, tmp_path, monkeypatch):
+    """A truncated backfill must not exit 0.
+
+    The exhaustion warning only reaches the broker's own log, so
+    without a non-zero exit the operator sees the same summary line as
+    a complete run and has no reason to re-run.
+    """
+    from click.testing import CliRunner
+
+    from mimir.cli.backfill import backfill_thread_roots_command
+
+    monkeypatch.setattr(
+        "mimir.broker.client.get_broker_client",
+        lambda: type(
+            "_C",
+            (),
+            {
+                "backfill_thread_roots": staticmethod(
+                    lambda **_kw: {
+                        "inboxes": 1,
+                        "seeded": 1,
+                        "propagated": 0,
+                        "cycles_broken": 0,
+                        "exhausted": 1,
+                    }
+                )
+            },
+        )(),
+    )
+
+    result = CliRunner().invoke(backfill_thread_roots_command, [])
+    assert result.exit_code != 0, result.output
+    assert "pass budget" in result.output

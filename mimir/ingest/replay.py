@@ -334,7 +334,13 @@ def _resolve_roots_after_replay(conn_or_session, inbox_id: int) -> None:
     """
     from mimir.thread_roots import drive_passes
 
-    drive_passes(lambda fn: fn(conn_or_session, inbox_id))
+    counts = drive_passes(lambda fn: fn(conn_or_session, inbox_id))
+    if counts["exhausted"]:
+        logger.warning(
+            "thread-roots: inbox %s hit the pass budget during replay; "
+            "rows remain unrooted, run backfill-thread-roots",
+            inbox_id,
+        )
 
 
 def replay_failures(
