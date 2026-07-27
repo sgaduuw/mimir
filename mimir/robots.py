@@ -420,7 +420,18 @@ def remove_rule(user_agent: str) -> None:
 # same values; this constant is the single source of truth for
 # `reset_rules`.
 _DEFAULT_STAR_CRAWL_DELAY = 5
-_DEFAULT_STAR_DISALLOW: tuple[str, ...] = ("/*/attachment/",)
+# `/api/` is the htmx load-more endpoint: HTML partials, one URL per
+# offset, never a useful search result. `/*/search` is internal search
+# results, which Google's own guidance says to keep out of the crawl.
+# Both are about crawl budget, not index hygiene (`?q=` URLs already
+# canonicalise to the bare search page). Existing deploys get these via
+# the e3aa78c72a8d data migration, since this constant is only read by
+# `reset_rules()` and a fresh seed; keep the two in step.
+_DEFAULT_STAR_DISALLOW: tuple[str, ...] = (
+    "/*/attachment/",
+    "/api/",
+    "/*/search",
+)
 _DEFAULT_STAR_CONTENT_SIGNALS: dict[str, str] = {
     "search": "yes",
     "ai-train": "no",

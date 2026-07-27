@@ -24,7 +24,7 @@ def test_migration_seeds_star_row():
         rule = robots.get_rule(session, "*")
     assert rule is not None
     assert rule.crawl_delay == 5
-    assert rule.disallow_paths == ["/*/attachment/"]
+    assert rule.disallow_paths == ["/*/attachment/", "/api/", "/*/search"]
 
 
 def test_list_rules_orders_star_first_then_alphabetical():
@@ -175,7 +175,7 @@ def test_reset_rules_drops_extras_and_reseeds_star():
     assert [r.user_agent for r in rules] == ["*"]
     star = rules[0]
     assert star.crawl_delay == 5
-    assert star.disallow_paths == ["/*/attachment/"]
+    assert star.disallow_paths == ["/*/attachment/", "/api/", "/*/search"]
     assert star.content_signals == {
         "search": "yes",
         "ai-train": "no",
@@ -201,6 +201,8 @@ def test_render_matches_seeded_defaults():
         + "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
         + "Crawl-delay: 5\n"
         + "Disallow: /*/attachment/\n"
+        + "Disallow: /api/\n"
+        + "Disallow: /*/search\n"
         + "\n"
         + "Sitemap: https://example.com/sitemap.xml\n"
     )
@@ -251,6 +253,8 @@ def test_render_emits_per_ua_stanzas():
         + "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
         + "Crawl-delay: 5\n"
         + "Disallow: /*/attachment/\n"
+        + "Disallow: /api/\n"
+        + "Disallow: /*/search\n"
         + "\n"
         + "User-agent: ClaudeBot\n"
         + "Crawl-delay: 20\n"
@@ -293,9 +297,12 @@ def test_render_with_only_degenerate_rows_still_emits_sitemap():
     carry the Sitemap directive so crawlers can discover the index."""
     robots.reset_rules()
     # Mutate the seeded `*` row into a no-op.
+    # Strip whatever the seeded defaults are, not a hardcoded subset:
+    # leaving one behind would keep the row non-degenerate and quietly
+    # stop exercising the case this test exists for.
     robots.update_rule(
         "*",
-        remove_disallow=["/*/attachment/"],
+        remove_disallow=list(robots._DEFAULT_STAR_DISALLOW),
         clear_crawl_delay=True,
         clear_all_content_signals=True,
     )
@@ -387,3 +394,99 @@ def test_reset_rules_reseeds_content_signals():
         "ai-train": "no",
         "ai-input": "no",
     }
+
+
+# e3aa78c72a8d: backfilling the `*` stanza on EXISTING deploys.
+#
+# The route-level test in test_routes/test_static_meta.py proves fresh
+# seeds get the new paths, but it passes via `_DEFAULT_STAR_DISALLOW`,
+# not via the migration. Prod already has a seeded `*` row, and
+# `render_robots_txt` reads rows rather than the constant, so the
+# migration is the ONLY thing that reaches a running deploy. Untested,
+# it is precisely the "ships silently inert" failure mode.
+
+
+def _run_migration(direction: str) -> None:
+    """Drive the migration's upgrade/downgrade against the test DB.
+
+    `Operations.context` installs the global `op` proxy the migration
+    module reaches for, so the real function body runs rather than a
+    reimplementation of it.
+    """
+    import importlib.util
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    from mimir.extensions import engine
+
+    spec = importlib.util.spec_from_file_location(
+        "_mig_e3aa78c72a8d",
+        "alembic/versions/e3aa78c72a8d_seed_robots_disallow_for_api_and_search_.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    with engine.begin() as conn:
+        ctx = MigrationContext.configure(conn)
+        with Operations.context(ctx):
+            getattr(module, direction)()
+
+
+def _star_paths() -> list[str]:
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import RobotsRule
+
+    with SessionLocal() as s:
+        row = s.execute(
+            select(RobotsRule).where(RobotsRule.user_agent == "*")
+        ).scalar_one()
+        return list(row.disallow_paths or [])
+
+
+def _set_star_paths(paths: list[str]) -> None:
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import RobotsRule
+
+    with SessionLocal() as s:
+        s.execute(
+            update(RobotsRule)
+            .where(RobotsRule.user_agent == "*")
+            .values(disallow_paths=paths)
+        )
+        s.commit()
+
+
+def test_migration_appends_new_disallow_paths_to_existing_star_row():
+    """The pre-migration prod shape: a `*` row carrying only the
+    attachment rule. Upgrade must append, not replace."""
+    _set_star_paths(["/*/attachment/"])
+    _run_migration("upgrade")
+    assert _star_paths() == ["/*/attachment/", "/api/", "/*/search"]
+
+
+def test_migration_is_idempotent_and_preserves_operator_edits():
+    """Re-running must not duplicate entries, and an operator's own
+    curated paths must survive (the migration appends what's missing
+    rather than rewriting the list, matching the 82e825291162
+    content_signals backfill's don't-clobber guard)."""
+    _set_star_paths(["/*/attachment/", "/operator-private/"])
+    _run_migration("upgrade")
+    _run_migration("upgrade")
+    paths = _star_paths()
+    assert paths.count("/api/") == 1
+    assert paths.count("/*/search") == 1
+    assert "/operator-private/" in paths
+
+
+def test_migration_downgrade_removes_only_what_it_added():
+    """Downgrade drops the two paths this revision introduced and
+    leaves everything else, including operator additions, intact."""
+    _set_star_paths(["/*/attachment/", "/operator-private/"])
+    _run_migration("upgrade")
+    _run_migration("downgrade")
+    assert _star_paths() == ["/*/attachment/", "/operator-private/"]
