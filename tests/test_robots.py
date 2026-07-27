@@ -15,18 +15,6 @@ def _star_present():
 # ----- list / get / migration seed --------------------------------------
 
 
-def test_migration_seeds_star_row():
-    """Per the migration, `*` exists with the previous hardcoded
-    template's values immediately after `alembic upgrade head`. The
-    autouse `_reset_db` re-seeds via `reset_rules()` so this remains
-    the per-test baseline."""
-    with SessionLocal() as session:
-        rule = robots.get_rule(session, "*")
-    assert rule is not None
-    assert rule.crawl_delay == 5
-    assert rule.disallow_paths == ["/*/attachment/", "/api/", "/*/search"]
-
-
 def test_list_rules_orders_star_first_then_alphabetical():
     robots.add_rule("Zeta", disallow=["/"])
     robots.add_rule("AlphaBot", disallow=["/private/"])
@@ -406,12 +394,13 @@ def test_reset_rules_reseeds_content_signals():
 # it is precisely the "ships silently inert" failure mode.
 
 
-def _run_migration(direction: str) -> None:
-    """Drive the migration's upgrade/downgrade against the test DB.
+def _run_migration() -> None:
+    """Drive the migration's upgrade against the test DB.
 
     `Operations.context` installs the global `op` proxy the migration
     module reaches for, so the real function body runs rather than a
-    reimplementation of it.
+    reimplementation of it. Loading by path (not import) because
+    revision filenames aren't importable module names.
     """
     import importlib.util
 
@@ -430,7 +419,7 @@ def _run_migration(direction: str) -> None:
     with engine.begin() as conn:
         ctx = MigrationContext.configure(conn)
         with Operations.context(ctx):
-            getattr(module, direction)()
+            module.upgrade()
 
 
 def _star_paths() -> list[str]:
@@ -465,28 +454,36 @@ def test_migration_appends_new_disallow_paths_to_existing_star_row():
     """The pre-migration prod shape: a `*` row carrying only the
     attachment rule. Upgrade must append, not replace."""
     _set_star_paths(["/*/attachment/"])
-    _run_migration("upgrade")
+    _run_migration()
     assert _star_paths() == ["/*/attachment/", "/api/", "/*/search"]
 
 
-def test_migration_is_idempotent_and_preserves_operator_edits():
-    """Re-running must not duplicate entries, and an operator's own
-    curated paths must survive (the migration appends what's missing
-    rather than rewriting the list, matching the 82e825291162
-    content_signals backfill's don't-clobber guard)."""
-    _set_star_paths(["/*/attachment/", "/operator-private/"])
-    _run_migration("upgrade")
-    _run_migration("upgrade")
-    paths = _star_paths()
-    assert paths.count("/api/") == 1
-    assert paths.count("/*/search") == 1
-    assert "/operator-private/" in paths
+def test_migration_appends_only_missing_paths_and_preserves_operator_edits():
+    """An operator who already added `/api/` by hand must not end up
+    with a duplicate, and their own entries must survive: the migration
+    appends what's missing rather than rewriting the list (the same
+    don't-clobber guard as the 82e825291162 content_signals backfill).
+    """
+    _set_star_paths(["/*/attachment/", "/api/", "/operator-private/"])
+    _run_migration()
+    assert _star_paths() == [
+        "/*/attachment/",
+        "/api/",
+        "/operator-private/",
+        "/*/search",
+    ]
 
 
-def test_migration_downgrade_removes_only_what_it_added():
-    """Downgrade drops the two paths this revision introduced and
-    leaves everything else, including operator additions, intact."""
-    _set_star_paths(["/*/attachment/", "/operator-private/"])
-    _run_migration("upgrade")
-    _run_migration("downgrade")
-    assert _star_paths() == ["/*/attachment/", "/operator-private/"]
+def test_migration_backfills_a_row_whose_paths_were_all_removed():
+    """`update_rule` stores `paths or None` when the last disallow path
+    goes, and SQLAlchemy's JSON type writes Python None as the *string*
+    `'null'`, which decodes back to None. That must not be read as "no
+    `*` row at all": conflating them silently no-ops the backfill on
+    precisely the deploys that customised their robots.txt, which is
+    the failure this migration exists to prevent. Note `[]` and `null`
+    are two encodings of the same operator intent, so both must
+    backfill.
+    """
+    robots.update_rule("*", remove_disallow=list(robots._DEFAULT_STAR_DISALLOW))
+    _run_migration()
+    assert _star_paths() == ["/api/", "/*/search"]

@@ -55,45 +55,43 @@ depends_on: Union[str, Sequence[str], None] = None
 _ADDED_DISALLOW = ("/api/", "/*/search")
 
 
-def _star_disallow_paths(conn) -> list[str] | None:
-    """Current disallow list on the `*` row, or None when there is no
-    such row. Raw `sa.text` bypasses the JSON type, so the value
-    arrives as the stored string rather than a decoded list."""
+def upgrade() -> None:
+    conn = op.get_bind()
     row = conn.execute(
         sa.text("SELECT disallow_paths FROM robots_rules WHERE user_agent = '*'")
     ).first()
-    if row is None:
-        return None
-    return json.loads(row[0]) if row[0] else []
-
-
-def _write_star_disallow_paths(conn, paths: list[str]) -> None:
-    conn.execute(
-        sa.text(
-            "UPDATE robots_rules SET disallow_paths = :paths WHERE user_agent = '*'"
-        ).bindparams(paths=json.dumps(paths))
-    )
-
-
-def upgrade() -> None:
-    conn = op.get_bind()
-    paths = _star_disallow_paths(conn)
     # No `*` row means the table was never seeded (a deploy that hasn't
     # bootstrapped, or one where the operator dropped it). `reset_rules`
     # applies the constant when it next runs; nothing to backfill.
-    if paths is None:
+    if row is None:
         return
+    # Raw `sa.text` bypasses the JSON type, so the value arrives as the
+    # stored string. Two different stored shapes both mean "no disallow
+    # paths": `[]`, and the string `'null'` that SQLAlchemy's JSON type
+    # writes for Python None, which is what `update_rule` stores
+    # (`paths or None`) once an operator removes the last path. Collapse
+    # both to [] so the append still happens; treating the decoded None
+    # as "no row" would silently no-op the backfill on exactly the
+    # deploy that has customised its robots.txt.
+    paths = (json.loads(row[0]) if row[0] else None) or []
     missing = [p for p in _ADDED_DISALLOW if p not in paths]
     if not missing:
         return
-    _write_star_disallow_paths(conn, paths + missing)
+    conn.execute(
+        sa.text(
+            "UPDATE robots_rules SET disallow_paths = :paths WHERE user_agent = '*'"
+        ).bindparams(paths=json.dumps(paths + missing))
+    )
 
 
 def downgrade() -> None:
-    conn = op.get_bind()
-    paths = _star_disallow_paths(conn)
-    if paths is None:
-        return
-    kept = [p for p in paths if p not in _ADDED_DISALLOW]
-    if kept != paths:
-        _write_star_disallow_paths(conn, kept)
+    # Deliberately a no-op. This chain is forward-only (c8e2a47f1d20
+    # raises NotImplementedError, 2892bee6ba19 is a bare pass) and
+    # mimir's release flow runs no migration smoke, so a data reversal
+    # here would be dead code. It would also be actively wrong:
+    # removing by value cannot distinguish a path this revision added
+    # from one the operator added themselves, so it would strip an
+    # operator's own `/api/` entry, breaking the very guarantee
+    # upgrade()'s append-only guard exists to provide. Two extra
+    # Disallow lines on an older mimir are harmless.
+    pass
