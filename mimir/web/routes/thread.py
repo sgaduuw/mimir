@@ -153,14 +153,19 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
             # this article's own subtree rather than 404, so the page
             # still works for a reader.
             # Only redirect to a FIXED POINT. `thread_parent` comes
-            # straight from sender-controlled `In-Reply-To`, has no
-            # cycle guard at ingest, and `find_thread_root` walks to
-            # MAX_DEPTH rather than to a fixed point, so under a cycle
-            # it returns a node whose own root is a different node
-            # again. Redirecting blindly makes `/t` an infinite 301
-            # loop, each hop paying a 1000-row recursive CTE, on a
-            # no-cache endpoint the sitemap advertises. Render this
-            # article's own subtree instead.
+            # straight from sender-controlled `In-Reply-To` with no
+            # cycle guard at ingest, so a cyclic thread can yield a
+            # root whose own root is a different node again, and
+            # redirecting blindly makes `/t` an infinite 301 loop on a
+            # no-cache endpoint the sitemap advertises.
+            #
+            # Still required after W8, though the reason narrowed: for
+            # rows with a materialised root the column converges cycle
+            # members on one self-rooted member, so the fixed point
+            # holds. It is the NULL rows, still answered by the
+            # recursive walk (which stops at MAX_DEPTH rather than at a
+            # fixed point), that can still produce a non-settling
+            # root.
             settles = root is not None and (
                 find_thread_root(session, inbox, root.message_id) == root.message_id
             )

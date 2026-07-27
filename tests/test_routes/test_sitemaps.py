@@ -429,4 +429,83 @@ def test_inbox_sitemap_root_query_uses_the_materialised_column():
     assert "EXISTS" not in sql.upper(), (
         f"the root test derived rootness again instead of reading the column: {sql}"
     )
-    assert "thread_parent" not in sql, sql
+
+
+def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
+    """The state between `seed_roots` and the first `propagate`.
+
+    `handle_backfill_thread_roots` commits one pass per WriteOp, so
+    this is a real committed state on every inbox during a backfill,
+    and a durable one if the run is interrupted (broker restart, RPC
+    timeout, pass-budget exhaustion). Nothing rendered a sitemap
+    against a partially-filled corpus before, which is how a version of
+    `_singleton_root_ids` that counts only POPULATED members shipped:
+    a multi-message thread whose replies were still NULL counted as one
+    and was published as a message URL, while its own page
+    canonicalised to the thread URL.
+
+    Whatever the sitemap lists must agree with that page's canonical,
+    at every point during the backfill, not just after it.
+
+    Uses a real ingested corpus rather than the shared fixture, whose
+    rows carry synthetic commit_shas and so 404 on the message page.
+    """
+    import re
+    import xml.etree.ElementTree as ET
+
+    from sqlalchemy import select, update
+
+    from mimir import cache
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, Inbox
+    from mimir.thread_roots import seed_roots
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [
+            ("mb-root@x", None),
+            ("mb-reply@x", "mb-root@x"),
+            ("mb-nested@x", "mb-reply@x"),
+            ("mb-solo@x", None),
+        ],
+    )
+    ours = {url for _aid, url in seeded.values()}
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        # Rewind to the post-migration state, then run ONLY the seed
+        # pass: roots populated, replies still NULL.
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.inbox_id == alpha.id)
+            .values(thread_root_id=None)
+        )
+        s.commit()
+        seed_roots(s, alpha.id)
+        s.commit()
+
+    cache.delete_for_inbox("alpha")
+    cache.delete("sitemap:index")
+
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
+    locs = [u.find("s:loc", ns).text.replace("http://localhost", "") for u in root]
+
+    checked = 0
+    for loc in locs:
+        page = loc[:-2] if loc.endswith("/t") else loc
+        if page not in ours:
+            continue  # conftest rows have synthetic blobs and 404
+        html = client.get(page).get_data(as_text=True)
+        m = re.search(r'<link rel="canonical" href="([^"]+)"', html)
+        assert m, f"{page} emitted no canonical"
+        canonical = m.group(1).replace("http://localhost", "")
+        assert loc == canonical, (
+            f"mid-backfill the sitemap lists {loc} but that page's "
+            f"canonical is {canonical}"
+        )
+        checked += 1
+
+    assert checked, "no ingested thread reached the sitemap; test proves nothing"

@@ -103,6 +103,14 @@ def find_thread_root(session: Session, inbox: Inbox, message_id: str) -> str | N
     That fallback is what lets the column ship without a blocking
     backfill: a partially-filled corpus is correct, just not yet fast.
 
+    The root's own membership is re-checked, so this keeps the
+    contract in the first line: the topmost ancestor PRESENT IN THIS
+    INBOX. A stored root can stop being a member without the FK's
+    `SET NULL` firing, because `reindex --from-scratch` drops
+    `article_lists` rows while the article survives. Without the
+    re-check the fast path would answer with a root the walk would
+    never return, and the caller would render an empty thread.
+
     NOT used by `thread_roots.verify_thread_roots`, which deliberately
     calls `_find_thread_root_cte` instead. Verification exists to catch
     a wrong column value, and a verifier that reads the column it is
@@ -115,6 +123,8 @@ def find_thread_root(session: Session, inbox: Inbox, message_id: str) -> str | N
               FROM article_lists al
               JOIN articles a ON a.id = al.article_id
               JOIN articles root ON root.id = al.thread_root_id
+              JOIN article_lists rl
+                ON rl.article_id = root.id AND rl.inbox_id = al.inbox_id
              WHERE al.inbox_id = :inbox_id AND a.message_id = :mid
             """
         ),
