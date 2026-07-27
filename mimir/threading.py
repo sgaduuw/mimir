@@ -74,6 +74,27 @@ def _coerce_dt(value) -> datetime | None:
         return None
 
 
+def dedupe_thread(nodes: list) -> list:
+    """Drop repeated articles from a `get_thread` walk, preserving order.
+
+    A cyclic `thread_parent` (sender-controlled `In-Reply-To`, no cycle
+    guard at ingest) makes the recursive CTE re-emit the same article
+    once per level up to MAX_DEPTH. Both the thread view and the
+    message page's consolidation gate must count the SAME thread: the
+    view renders the deduped list, so a gate counting the raw one sees
+    1001 messages where the page shows 1, and consolidates onto a
+    single-message thread view, which is exactly what the
+    single-message rule exists to prevent.
+    """
+    seen: set[int] = set()
+    out = []
+    for node in nodes:
+        if node.id not in seen:
+            seen.add(node.id)
+            out.append(node)
+    return out
+
+
 def find_thread_root(session: Session, inbox: Inbox, message_id: str) -> str | None:
     """Return the message_id of the topmost ancestor present in this inbox.
     Walks only within the inbox (via the article_lists join) so threads

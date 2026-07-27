@@ -17,18 +17,24 @@ import hashlib
 import logging
 
 from flask import Response, abort, make_response, redirect, render_template, request
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 import mimir
 from mimir.config import settings
 from mimir.extensions import SessionLocal
-from mimir.models import Article, ArticleList
+from mimir.models import (
+    Article,
+    ArticleList,
+    ArticleTrailer,
+    MainlineCommit,
+    MainlineState,
+)
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.patch_state import patch_state_for_article
 from mimir.seo import _json_ld_thread
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import subsystems_for_article
-from mimir.threading import find_thread_root, get_thread
+from mimir.threading import dedupe_thread, find_thread_root, get_thread
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _thread_summary
 from mimir.web.urls import (
@@ -40,6 +46,43 @@ from mimir.web.urls import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _render_state_tag(session, root_id: int, root_msgid: str) -> str:
+    """Validator input covering everything the page renders ABOUT the
+    root that no message carries: its landing state, its review
+    roll-up, and its subsystem attribution.
+
+    Three indexed reads rather than a `lifecycle_status_for_articles`
+    probe, for two reasons. It has to run BEFORE the 304
+    short-circuit (it feeds the validator), and that helper computes a
+    recursive CTE and then WRITES a cache row, which in the web tier is
+    a broker RPC: the cheap path would have acquired a query, a CTE and
+    a write on the single-writer broker, on exactly the URLs the
+    sitemap aims crawlers at. And it only covers lifecycle, while the
+    page also renders the subsystem line, which moves on any
+    `update-mainline` MAINTAINERS reparse (every 10 minutes in prod)
+    without touching the node count or the thread's max date.
+
+    `MainlineState.last_commit_sha` is the HEAD at the last MAINTAINERS
+    load, so it versions the whole subsystem-rule snapshot in one
+    scalar instead of re-deriving this article's matches.
+    """
+    landings = session.execute(
+        select(
+            func.count(MainlineCommit.commit_sha),
+            func.max(MainlineCommit.committed_at),
+        ).where(MainlineCommit.message_id == root_msgid)
+    ).one()
+    trailers = session.scalar(
+        select(func.count(ArticleTrailer.id)).where(
+            ArticleTrailer.article_id == root_id
+        )
+    )
+    rules_version = session.scalar(
+        select(MainlineState.last_commit_sha).where(MainlineState.tree_name == "linus")
+    )
+    return f"{landings[0]}|{landings[1] or ''}|{trailers or 0}|{rules_version or ''}"
 
 
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>/t")
@@ -100,18 +143,7 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
         nodes = get_thread(session, inbox, root_msgid)
         if not nodes:
             abort(404)
-        # De-duplicate by article id, preserving order. A cyclic
-        # `thread_parent` makes the recursive CTE re-emit the same
-        # article once per level up to MAX_DEPTH, which rendered one
-        # message dozens of times and produced hundreds of identical
-        # overflow links.
-        seen_ids: set[int] = set()
-        deduped = []
-        for node in nodes:
-            if node.id not in seen_ids:
-                seen_ids.add(node.id)
-                deduped.append(node)
-        nodes = deduped
+        nodes = dedupe_thread(nodes)
 
         # ETag before any blob read, mirroring the message route: on a
         # 304 we skip the whole render, which matters more here than
@@ -131,23 +163,17 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
         # view. Clamp rather than validate: this is an ops knob and an
         # unusable value should degrade, not take the surface down.
         cap = max(1, settings.thread_view_render_cap)
-        # The root's lifecycle is an ETag input because the page now
-        # renders it. A patch landing in mainline changes the badge and
-        # the synthesis prose without adding a message, so it moves
-        # neither `len(nodes)` nor `thread_max_date`; without this the
-        # edge and every crawler holding the old validator would be
-        # told indefinitely that the patch has NOT landed, pinning the
+        # Everything the page renders ABOUT the root that no message
+        # carries: landing state, review roll-up, subsystem
+        # attribution. None of them moves `len(nodes)` or
+        # `thread_max_date`, so without this a patch landing (or a
+        # MAINTAINERS reparse, every 10 minutes in prod) leaves the
+        # edge and every crawler holding a validator that pins the
         # exact "did $series land" text this release made canonical.
-        lifecycle_probe = lifecycle_status_for_articles(session, [root_id_for_etag])
-        lifecycle_tag = ""
-        info = lifecycle_probe.get(root_id_for_etag)
-        if info is not None:
-            lifecycle_tag = (
-                f"{info.state_value}|{info.tree or ''}|{info.count_suffix or ''}"
-            )
+        state_tag = _render_state_tag(session, root_id_for_etag, root_msgid)
         etag_input = (
             f"thread|{article.id}|{mimir.__version__}|{cap}|{len(nodes)}|"
-            f"{thread_max_date.isoformat() if thread_max_date else ''}|{lifecycle_tag}"
+            f"{thread_max_date.isoformat() if thread_max_date else ''}|{state_tag}"
         )
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
         if etag in request.if_none_match:
