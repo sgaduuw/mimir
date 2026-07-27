@@ -31,6 +31,12 @@ No data migration here on purpose. Backfilling inside the migration
 would hold the writer for the length of a full-corpus walk, on the
 single-writer broker, during container startup and before the
 healthcheck sentinel is touched.
+
+The FK does force SQLite into a batch-mode table rebuild, so this is
+not a free `ADD COLUMN`: measured at ~8 s wall on a seeded 6M-row
+corpus (rebuild plus the index). That is writer hold at broker startup
+before the sentinel flips, which is the right place to pay it, but it
+is not instant and should not be described as such.
 """
 
 from typing import Sequence, Union

@@ -361,12 +361,21 @@ def test_replay_failures_cross_post_links_existing_article(
             f"expected 1 Article row for cross-posted msgid, got {len(arts)}"
         )
         # The alpha article_lists row now exists.
-        s.execute(
+        link = s.execute(
             select(ArticleList).where(
                 ArticleList.article_id == arts[0].id,
                 ArticleList.inbox_id == alpha.id,
             )
         ).scalar_one()
+        # ...and carries a materialised thread root. Replay inserts
+        # `article_lists` rows directly, so without an explicit resolve
+        # they land permanently NULL, even on a corpus the backfill has
+        # already swept and that the operator has no reason to sweep
+        # again. Each such hole is then inherited by every later reply.
+        assert link.thread_root_id == arts[0].id, (
+            "replay left the new link's thread root unresolved; a single "
+            "message thread must root at itself"
+        )
         # And the failure row is gone.
         assert (
             s.execute(

@@ -286,6 +286,17 @@ def _replay_loop(
     # NULL, so on a fully-backfilled corpus with nothing recovered this
     # is a couple of no-op statements.
     if out.recovered:
+        # Flush first on the Session path. `SessionLocal` is
+        # `autoflush=False`, and the passes below are raw `text()`
+        # UPDATEs, so without this they would run against a database
+        # that has not yet seen the ORM rows this loop just `add()`ed
+        # and the whole call would be a silent no-op, re-creating
+        # exactly the permanent-NULL hole it exists to close. Portfolio
+        # MEMORY 2026-06-13: bulk raw SQL after ORM adds needs an
+        # explicit flush under autoflush=False.
+        flush = getattr(conn_or_session, "flush", None)
+        if flush is not None:
+            flush()
         _resolve_roots_after_replay(conn_or_session, inbox_id)
 
     # Flush still-failed updates: one UPDATE per row so each carries

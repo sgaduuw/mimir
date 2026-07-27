@@ -110,6 +110,46 @@ class _PendingWrites:
     last_commit_sha: str | None = None
 
 
+def _set_subtree_root(conn, inbox_id: int, article_id: int, root_id) -> None:
+    """Set `thread_root_id` for everything hanging off `article_id` in
+    this inbox. `root_id=None` invalidates the subtree so the backfill
+    recomputes it.
+
+    A cyclic `thread_parent` (sender-controlled, unguarded at ingest)
+    cannot spin this: `thread_parent` is single-valued, so any cycle
+    reachable from this article must contain it, and the
+    `a.id != :aid` guard cuts the walk there.
+    """
+    conn.execute(
+        text(
+            """
+            WITH RECURSIVE descendants(id) AS (
+                SELECT a.id
+                  FROM articles a
+                  JOIN article_lists al ON al.article_id = a.id
+                  JOIN articles self ON self.id = :aid
+                 WHERE al.inbox_id = :ix
+                   AND a.thread_parent = self.message_id
+                   AND a.id != :aid
+                UNION
+                SELECT a.id
+                  FROM articles a
+                  JOIN article_lists al ON al.article_id = a.id
+                  JOIN articles p ON p.message_id = a.thread_parent
+                  JOIN descendants d ON d.id = p.id
+                 WHERE al.inbox_id = :ix
+                   AND a.id != :aid
+            )
+            UPDATE article_lists
+               SET thread_root_id = :root
+             WHERE inbox_id = :ix
+               AND article_id IN (SELECT id FROM descendants)
+            """
+        ),
+        {"aid": article_id, "ix": inbox_id, "root": root_id},
+    )
+
+
 def _resolve_thread_root(conn, inbox_id: int, article_id: int, parent_msgid) -> None:
     """Set `article_lists.thread_root_id` for one freshly-inserted
     `(article, inbox)` row, then re-root anything that was waiting on it.
@@ -159,24 +199,32 @@ def _resolve_thread_root(conn, inbox_id: int, article_id: int, parent_msgid) -> 
             root_id = row[0]
 
     if parent_present and root_id is None:
-        # The parent exists here but has no root yet. Do NOT fall back
-        # to the parent's article id: that is only correct when the
-        # parent happens to BE a root, and it is wrong whenever it is
-        # not. Worse, it is wrong in a way nothing can repair, because
-        # `seed_roots` and `propagate` both key on `IS NULL` and would
-        # skip the row forever.
+        # The parent is here but has no root yet. Do NOT fall back to
+        # the parent's article id: that is only right when the parent
+        # happens to BE a root, and when it is not the row is wrong AND
+        # unrepairable, because `seed_roots` and `propagate` both key on
+        # `IS NULL` and skip anything non-NULL forever.
         #
         # This is the state of every row between the migration landing
-        # and the backfill finishing, so it is the normal deploy
-        # window rather than an edge case: the broker migrates at
-        # startup, `mimir-tasks` starts firing `update` immediately,
-        # and the backfill is a manual operator step that may be hours
-        # later. Leaving NULL is correct and cheap: readers fall back
-        # to the recursive CTE while it is unset, and the backfill
-        # resolves it properly. In steady state, when the parent is
-        # already rooted, this branch never fires.
+        # and the backfill finishing, which is the normal deploy window:
+        # the broker migrates at startup, `mimir-tasks` begins firing
+        # `update` immediately, and the backfill is a manual operator
+        # step that may be hours later.
+        #
+        # Leave this row NULL, AND invalidate anything already hanging
+        # off it. A descendant that self-rooted earlier (its parent was
+        # absent at the time) is now stale, and stale is worse than
+        # unset: it is non-NULL, so `seed_roots` and `propagate` both
+        # skip it forever and the backfill can never repair it. That is
+        # the same permanent-corruption shape as inheriting the
+        # parent's id, just displaced onto a sibling.
+        #
+        # NULL is always safe to write here: it means "not yet
+        # computed", readers fall back to the recursive CTE, and the
+        # backfill recomputes the whole subtree correctly. The cost is
+        # recomputation, never a wrong answer.
+        _set_subtree_root(conn, inbox_id, article_id, None)
         return
-
     if root_id is None:
         root_id = article_id
 
@@ -188,34 +236,7 @@ def _resolve_thread_root(conn, inbox_id: int, article_id: int, parent_msgid) -> 
         {"root": root_id, "aid": article_id, "ix": inbox_id},
     )
 
-    conn.execute(
-        text(
-            """
-            WITH RECURSIVE descendants(id) AS (
-                SELECT a.id
-                  FROM articles a
-                  JOIN article_lists al ON al.article_id = a.id
-                  JOIN articles self ON self.id = :aid
-                 WHERE al.inbox_id = :ix
-                   AND a.thread_parent = self.message_id
-                   AND a.id != :aid
-                UNION
-                SELECT a.id
-                  FROM articles a
-                  JOIN article_lists al ON al.article_id = a.id
-                  JOIN articles p ON p.message_id = a.thread_parent
-                  JOIN descendants d ON d.id = p.id
-                 WHERE al.inbox_id = :ix
-                   AND a.id != :aid
-            )
-            UPDATE article_lists
-               SET thread_root_id = :root
-             WHERE inbox_id = :ix
-               AND article_id IN (SELECT id FROM descendants)
-            """
-        ),
-        {"aid": article_id, "ix": inbox_id, "root": root_id},
-    )
+    _set_subtree_root(conn, inbox_id, article_id, root_id)
 
 
 def _submit_ingest_batch(writer, pending: "_PendingWrites") -> WriteFuture:
