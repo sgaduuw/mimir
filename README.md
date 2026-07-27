@@ -572,7 +572,7 @@ Routes:
 - `GET /<inbox>/<YYYY>/<MM>/<root-id>/t`, whole-thread view: every
   message in the conversation rendered inline on one page, newest
   reply last, each linking to its own message page. Rendering is
-  capped at `THREAD_VIEW_RENDER_CAP` messages (default 200); past
+  capped at `THREAD_VIEW_RENDER_CAP` messages (default 50); past
   that the remainder is listed as links rather than inlined.
   Requesting `/t` on a reply 301s to its thread root, so a
   conversation has exactly one URL. Message pages carry a

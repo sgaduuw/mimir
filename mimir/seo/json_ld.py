@@ -14,10 +14,10 @@ module load).
 """
 
 from collections.abc import Sequence
-from datetime import timezone
 from urllib.parse import quote
 
 from mimir.config import settings
+from mimir.datetime_utils import aware_utc
 from mimir.models import Article
 from mimir.parser import ParsedArticle
 from mimir.rendering import redact_trailer_addresses
@@ -127,6 +127,69 @@ def _json_ld_text_snippet(body: str | None) -> str | None:
     return head[:cut].rstrip() + "..."
 
 
+BREADCRUMB_NAME_MAX = 80
+
+
+def _graph_with_breadcrumbs(
+    entity: dict,
+    *,
+    base: str,
+    inbox_name: str,
+    subject: str,
+    canonical_url: str,
+) -> dict:
+    """Wrap a page entity in the `@graph` envelope plus the
+    Site -> Inbox -> Subject BreadcrumbList every content page emits.
+
+    One home for the SERP truncation rule, which was previously
+    spelled once per builder; two copies of an 80/77 constant in one
+    module is exactly the drift this collapses.
+    """
+    name = (
+        subject
+        if len(subject) <= BREADCRUMB_NAME_MAX
+        else subject[: BREADCRUMB_NAME_MAX - 3] + "..."
+    )
+    return {
+        "@context": "https://schema.org",
+        "@graph": [
+            entity,
+            {
+                "@type": "BreadcrumbList",
+                "itemListElement": [
+                    {
+                        "@type": "ListItem",
+                        "position": 1,
+                        "name": settings.site_name,
+                        "item": base + "/",
+                    },
+                    {
+                        "@type": "ListItem",
+                        "position": 2,
+                        "name": inbox_name,
+                        "item": f"{base}/{inbox_name}/",
+                    },
+                    {
+                        "@type": "ListItem",
+                        "position": 3,
+                        "name": name,
+                        "item": canonical_url,
+                    },
+                ],
+            },
+        ],
+    }
+
+
+def _iso_datetime(dt) -> str | None:
+    """ISO-8601 with offset, or None. Naive datetimes (an RFC 5322
+    `-0000` Date) are normalised through the project's `aware_utc`
+    rather than re-implementing the tzinfo fill per builder."""
+    if dt is None:
+        return None
+    return aware_utc(dt).strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
 def _json_ld_message(
     article: Article,
     parsed: ParsedArticle,
@@ -194,15 +257,8 @@ def _json_ld_message(
         _redact_trailer_address,
     )
 
-    raw_date = parsed.date or article.date
-    if raw_date is not None and raw_date.tzinfo is None:
-        # `-0000` Date headers come back tz-naive from
-        # parsedate_to_datetime; emit aware UTC so consumers don't
-        # see schema-invalid bare datetimes.
-        raw_date = raw_date.replace(tzinfo=timezone.utc)
-    iso_date = raw_date.strftime("%Y-%m-%dT%H:%M:%S%z") if raw_date else None
+    iso_date = _iso_datetime(parsed.date or article.date)
     subject = parsed.subject or "(no subject)"
-    breadcrumb_subject = subject if len(subject) <= 80 else subject[:77] + "..."
     author_name = _display_name_filter(parsed.author)
     author: dict = {"@type": "Person", "name": author_name}
     author_email = _allowlisted_email(parsed.author)
@@ -255,35 +311,13 @@ def _json_ld_message(
             {"@type": "Thing", "name": name} for name in subsystem_names
         ]
         forum_post["keywords"] = list(subsystem_names)
-    return {
-        "@context": "https://schema.org",
-        "@graph": [
-            forum_post,
-            {
-                "@type": "BreadcrumbList",
-                "itemListElement": [
-                    {
-                        "@type": "ListItem",
-                        "position": 1,
-                        "name": settings.site_name,
-                        "item": base + "/",
-                    },
-                    {
-                        "@type": "ListItem",
-                        "position": 2,
-                        "name": inbox_name,
-                        "item": f"{base}/{inbox_name}/",
-                    },
-                    {
-                        "@type": "ListItem",
-                        "position": 3,
-                        "name": breadcrumb_subject,
-                        "item": canonical_url,
-                    },
-                ],
-            },
-        ],
-    }
+    return _graph_with_breadcrumbs(
+        forum_post,
+        base=base,
+        inbox_name=inbox_name,
+        subject=subject,
+        canonical_url=canonical_url,
+    )
 
 
 def _json_ld_search(
@@ -391,20 +425,20 @@ def _json_ld_thread(
         _msg_url,
     )
 
-    def _author(raw: str | None) -> dict:
+    def _author(raw: str | None, *, with_url: bool) -> dict:
         name = _display_name_filter(raw)
         person: dict = {"@type": "Person", "name": name}
         email = _allowlisted_email(raw)
         if email:
             person["email"] = email
+        # `author.url` on the thread's root mirrors `_json_ld_message`
+        # (Google wants a stable "more posts by this author" target for
+        # Discussions eligibility). Deliberately NOT emitted on every
+        # comment: it would repeat the same per-inbox author URL for
+        # each participant with no added signal.
+        if with_url and name and name != "unknown sender":
+            person["url"] = f"{base}/{inbox_name}/author/{quote(name, safe='')}"
         return person
-
-    def _iso(dt) -> str | None:
-        if dt is None:
-            return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.strftime("%Y-%m-%dT%H:%M:%S%z")
 
     def _text_for(node) -> str | None:
         parsed = parsed_by_id.get(node.id)
@@ -422,7 +456,7 @@ def _json_ld_thread(
         "url": canonical_url,
         "mainEntityOfPage": canonical_url,
         "headline": root_subject,
-        "author": _author(root.author),
+        "author": _author(root.author, with_url=True),
         "isPartOf": {
             "@type": "WebSite",
             "name": inbox_name,
@@ -432,10 +466,10 @@ def _json_ld_thread(
     root_text = _text_for(root)
     if root_text:
         payload["text"] = root_text
-    root_date = _iso(root.date)
+    root_date = _iso_datetime(root.date)
     if root_date:
         payload["datePublished"] = root_date
-        payload["dateModified"] = _iso(nodes[-1].date) or root_date
+        payload["dateModified"] = _iso_datetime(nodes[-1].date) or root_date
     if total_replies > 0:
         payload["interactionStatistic"] = {
             "@type": "InteractionCounter",
@@ -454,9 +488,9 @@ def _json_ld_thread(
             "@type": "Comment",
             "@id": base + _msg_url(node, inbox_name),
             "url": base + _msg_url(node, inbox_name),
-            "author": _author(node.author),
+            "author": _author(node.author, with_url=False),
         }
-        when = _iso(node.date)
+        when = _iso_datetime(node.date)
         if when:
             comment["datePublished"] = when
         body = _text_for(node)
@@ -466,34 +500,10 @@ def _json_ld_thread(
     if comments:
         payload["comment"] = comments
 
-    return {
-        "@context": "https://schema.org",
-        "@graph": [
-            payload,
-            {
-                "@type": "BreadcrumbList",
-                "itemListElement": [
-                    {
-                        "@type": "ListItem",
-                        "position": 1,
-                        "name": settings.site_name,
-                        "item": base + "/",
-                    },
-                    {
-                        "@type": "ListItem",
-                        "position": 2,
-                        "name": inbox_name,
-                        "item": f"{base}/{inbox_name}/",
-                    },
-                    {
-                        "@type": "ListItem",
-                        "position": 3,
-                        "name": root_subject
-                        if len(root_subject) <= 80
-                        else root_subject[:77] + "...",
-                        "item": canonical_url,
-                    },
-                ],
-            },
-        ],
-    }
+    return _graph_with_breadcrumbs(
+        payload,
+        base=base,
+        inbox_name=inbox_name,
+        subject=root_subject,
+        canonical_url=canonical_url,
+    )

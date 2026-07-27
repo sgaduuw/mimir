@@ -96,19 +96,27 @@ def _per_inbox_latest_date(session) -> dict[str, str | None]:
 def _recent_thread_roots_query(inbox: Inbox):
     """`(article_id, date)` for this inbox's thread roots, newest first.
 
-    Extracted so the plan-pin test can EXPLAIN exactly the statement
-    the sitemap runs. See the call site for why every predicate is a
-    correlated EXISTS rather than a join.
+    Inbox membership is a JOIN, the root test a correlated EXISTS, and
+    that split is measured rather than assumed.
+
+    Making inbox membership an EXISTS too lets the planner drive
+    `ix_articles_date` DESC and stop at the LIMIT, which is ~8x faster
+    on the single dominant inbox (lkml). It is ~37x SLOWER on a small
+    one, because the walk can never reach the LIMIT and so scans the
+    date index to exhaustion, probing two correlated subqueries per
+    row, at a cost that scales with the WHOLE corpus rather than the
+    inbox. Production is ~200 inboxes of which ~199 are small, and this
+    runs per inbox on every hourly sitemap warm, so the JOIN is the
+    right trade by a wide margin (benchmarked on a skewed 606k-row
+    corpus: JOIN ~244 ms + 199 x ~2.7 ms, versus EXISTS ~30 ms + 199 x
+    ~100 ms).
+
+    This is the 2.8.0 lesson (MEMORY.md 2026-05-29) with its direction
+    inverted: measure against the WORST-shaped inboxes, not the one
+    that shows a clean win. W8 (materialised thread roots) removes the
+    tradeoff entirely by making the root test a column comparison.
     """
     parent = aliased(Article)
-    in_inbox = (
-        select(ArticleList.article_id)
-        .where(
-            ArticleList.article_id == Article.id,
-            ArticleList.inbox_id == inbox.id,
-        )
-        .exists()
-    )
     parent_in_inbox = (
         select(ArticleList.article_id)
         .join(parent, parent.id == ArticleList.article_id)
@@ -120,9 +128,10 @@ def _recent_thread_roots_query(inbox: Inbox):
     )
     return (
         select(Article.id, Article.date)
+        .join(ArticleList, ArticleList.article_id == Article.id)
         .where(
+            ArticleList.inbox_id == inbox.id,
             Article.date.is_not(None),
-            in_inbox,
             or_(Article.thread_parent.is_(None), ~parent_in_inbox),
         )
         .order_by(Article.date.desc())
@@ -291,18 +300,10 @@ def inbox_sitemap_xml(
         # isn't in this inbox (an off-list ancestor, which
         # `find_thread_root` also treats as the top).
         #
-        # BOTH inbox membership and the root test are correlated
-        # EXISTS rather than joins, and that shape is load-bearing.
-        # Joining `article_lists` for the inbox scope makes the planner
-        # lead with `ix_article_lists_inbox_id`, materialise every one
-        # of the inbox's articles (6M+ on lkml), and sort them for the
-        # ORDER BY, `USE TEMP B-TREE FOR ORDER BY` in EXPLAIN, which is
-        # the same shape CONTEXT.md measured at ~8 s on the triage
-        # queues. As EXISTS the planner instead drives
-        # `ix_articles_date` DESC, predicate-tests each candidate via
-        # the `article_lists` PK and `ix_articles_message_id`, and
-        # stops at the LIMIT. Pinned by
-        # `test_inbox_sitemap_root_query_walks_the_date_index`.
+        # Inbox membership is a JOIN and the root test a correlated
+        # EXISTS; see `_recent_thread_roots_query` for the measurements
+        # behind that split (the all-EXISTS form is much faster on lkml
+        # and much slower on the ~199 small inboxes).
         #
         # Cross-posted articles still appear in each linked inbox's
         # sitemap; the page's own canonical resolves which to keep.
