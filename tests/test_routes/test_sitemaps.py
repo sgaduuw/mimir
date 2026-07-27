@@ -397,13 +397,9 @@ def test_inbox_sitemap_lists_thread_roots_not_replies(client):
 def test_inbox_sitemap_root_query_scopes_inbox_by_join_not_exists():
     """Guard the measured shape of the thread-root query.
 
-    Inbox membership must stay a JOIN. As a correlated EXISTS the
-    planner drives `ix_articles_date` DESC and stops at the LIMIT,
-    which is ~8x faster on the one dominant inbox but ~37x slower on a
-    small one (the walk never reaches the LIMIT, so it scans the date
-    index to exhaustion at a cost scaling with the whole corpus).
-    Production is ~200 inboxes of which ~199 are small, so the JOIN
-    wins overall by a wide margin.
+    Inbox membership must stay a JOIN; see `_recent_thread_roots_query`
+    for the measurements behind that (they live in one place so W8
+    re-measuring them does not leave a stale copy here).
 
     Asserts the SQL shape rather than EXPLAIN output. The two
     formulations only diverge in the planner at production scale and
@@ -411,7 +407,7 @@ def test_inbox_sitemap_root_query_scopes_inbox_by_join_not_exists():
     same way, so a plan assertion here would pass in either
     configuration and guard nothing.
     """
-    from sqlalchemy import select
+    from sqlalchemy import select, text
 
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
@@ -431,3 +427,10 @@ def test_inbox_sitemap_root_query_scopes_inbox_by_join_not_exists():
     )
     # The root test itself stays an EXISTS (cheap per-candidate probe).
     assert "EXISTS" in sql.upper()
+    # Separate, coarser guard: whatever the shape, the query must never
+    # degenerate into a full table scan. Catches a dropped index or a
+    # predicate rewrite that defeats one, which the shape assertion
+    # above cannot see.
+    with SessionLocal() as s:
+        plan = [row[-1] for row in s.execute(text("EXPLAIN QUERY PLAN " + sql))]
+    assert not any("SCAN articles" in step for step in plan), plan

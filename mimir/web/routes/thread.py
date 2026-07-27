@@ -10,7 +10,7 @@ individual message pages canonicalise to.
 
 Rendering is capped at `settings.thread_view_render_cap`; past that the
 tail is linked rather than inlined, and those messages keep their own
-canonical (see `mimir.web.urls.thread_view_url_for_message`).
+canonical (see the containment gate in `mimir.web.routes.message`).
 """
 
 import hashlib
@@ -22,7 +22,9 @@ from sqlalchemy import select
 import mimir
 from mimir.config import settings
 from mimir.extensions import SessionLocal
-from mimir.models import Article, ArticleList, Inbox
+from mimir.models import Article, ArticleList
+from mimir.lifecycle_status import lifecycle_status_for_articles
+from mimir.patch_state import patch_state_for_article
 from mimir.seo import _json_ld_thread
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import subsystems_for_article
@@ -31,7 +33,6 @@ from mimir.web._blueprint import bp_web
 from mimir.web.filters import _thread_summary
 from mimir.web.urls import (
     _abort_404_if_url_date_mismatches,
-    _canonical_inbox_name,
     _get_inbox_or_404,
     _msg_url,
     _site_base,
@@ -135,40 +136,55 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
         overflow_links = [(n, _msg_url(n, inbox.name)) for n in overflow]
 
         root_node = nodes[0]
-        subsystem_names = [
-            h.name for h in subsystems_for_article(session, root_node.id)
-        ]
+        subsystem_hits = subsystems_for_article(session, root_node.id)
+        subsystem_names = [h.name for h in subsystem_hits]
 
-        # This is the ONE place cross-inbox consolidation happens for
-        # threads, and it keys on the ROOT's canonical inbox rather
-        # than this article's. A fully cross-posted conversation
-        # otherwise renders a near-identical page under every inbox it
-        # touches, each self-canonical, which would re-introduce at the
-        # thread level exactly the duplication this surface exists to
-        # remove.
-        #
-        # Gated on the root actually being linked to that inbox. It
-        # always is when `canonical_inbox_id` is set (that column
-        # references one of the article's own links), but the fallback
-        # ordering can name an inbox for a *different* article, so the
-        # membership check is what keeps this from pointing at a 404.
-        root_links: list[tuple[int, str]] = list(
-            session.execute(
-                select(Inbox.id, Inbox.name)
-                .join(ArticleList, ArticleList.inbox_id == Inbox.id)
-                .where(ArticleList.article_id == root_node.id)
-                .order_by(Inbox.name)
-            ).all()
-        )
+        # The root's patch surfaces. Message pages in a multi-message
+        # thread canonicalise here, and the message page is otherwise
+        # the RICHER document, so without these the consolidation would
+        # trade away exactly the lifecycle prose this release added as
+        # indexable text for "did $series land" queries, plus the
+        # subsystem attribution and review roll-up no other LKML mirror
+        # emits. Three reads per thread render, not per message.
         root_article = session.get(Article, root_node.id)
-        canonical_inbox = inbox.name
+        root_patch_state = None
+        root_lifecycle = None
         if root_article is not None:
-            picked = _canonical_inbox_name(root_article, root_links)
-            if picked and any(name == picked for _id, name in root_links):
-                canonical_inbox = picked
+            root_patch_state = patch_state_for_article(
+                session,
+                root_article,
+                thread_dates=[n.date for n in nodes],
+                subsystem_ids=[h.id for h in subsystem_hits],
+                inbox_name=inbox.name,
+            )
+            root_lifecycle = lifecycle_status_for_articles(session, [root_node.id]).get(
+                root_node.id
+            )
 
+        # Self-canonical, deliberately. Cross-inbox thread
+        # consolidation was tried and reverted: `get_thread` is
+        # inbox-scoped, so the "same" thread has DIFFERENT membership
+        # in each inbox (a reply that trimmed one list from its Cc is
+        # simply absent there). Pointing one inbox's thread page at
+        # another's therefore hands authority to a page that may omit
+        # content this one renders, which is the exact false-containment
+        # failure this surface exists to avoid. Gating on the root being
+        # present in the target is not sufficient: root membership says
+        # nothing about reply membership, and the target may not even
+        # treat that article as its root, so the canonical can land on a
+        # 301.
+        #
+        # The cost is that a fully cross-posted conversation renders a
+        # near-identical page per inbox. That residual is small (the
+        # message-level consolidation already collapsed N messages to 1
+        # page per inbox, so this is 2 URLs where there were 2N) and
+        # search engines dedupe near-identical pages on their own. A
+        # truthful weaker signal beats a stronger false one.
+        #
+        # W8 does not change this: per-inbox threading is fundamental to
+        # the data model, not an artefact of how roots are computed.
         base = _site_base()
-        canonical_url = base + _thread_view_url(root_node, canonical_inbox)
+        canonical_url = base + _thread_view_url(root_node, inbox.name)
         page_json_ld = _json_ld_thread(
             nodes=rendered_nodes,
             parsed_by_id={n.id: p for n, p, _ in messages if p is not None},
@@ -193,6 +209,9 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
             canonical_url=canonical_url,
             page_json_ld=page_json_ld,
             root_url=_msg_url(root_node, inbox.name),
+            subsystem_hits=subsystem_hits,
+            patch_state=root_patch_state,
+            lifecycle_status=root_lifecycle,
         )
     )
     response.set_etag(etag)

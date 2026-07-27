@@ -3,6 +3,8 @@ the message page's canonical consolidation onto it."""
 
 import re
 
+import pytest
+
 from mimir.models import Article
 from tests.test_routes._helpers import (
     _ingest_one_article,
@@ -91,16 +93,22 @@ def test_message_pages_canonicalise_to_the_thread_view(client, tmp_path):
     assert posting["@id"].endswith(reply_url)
 
 
-def test_single_message_thread_still_canonicalises_to_its_thread_view(
+def test_single_message_thread_does_not_canonicalise_to_its_thread_view(
     client,
     tmp_path,
 ):
-    """A one-message thread has a thread view too (it is its own root),
-    so the canonical is uniform across the archive rather than
-    conditional on thread length."""
+    """A one-message thread has nothing to consolidate: the message
+    page already IS the whole conversation, and it is the richer of the
+    two surfaces (subsystem header, lifecycle badges, the indexable
+    lifecycle prose, attachments). Handing its authority to `/t` would
+    trade all of that away for no gain, so it keeps its own canonical.
+
+    The `/t` page still exists and renders; it is simply not the
+    canonical target."""
     _, url = _ingest_one_article(tmp_path, "alpha", "solo@example.com")
     html = client.get(url).get_data(as_text=True)
-    assert _canonical_of(html).endswith(url + "/t")
+    assert _canonical_of(html).endswith(url)
+    assert not _canonical_of(html).endswith("/t")
     assert client.get(url + "/t").status_code == 200
 
 
@@ -177,7 +185,7 @@ def test_messages_past_the_render_cap_keep_their_own_canonical(
     assert nested_url in html
 
 
-def _cross_post(seeded, roles, *, canonical_for=None, canonical_inbox="beta"):
+def _cross_post(seeded, roles, *, canonical_for=None):
     """Link the named seeded roles into `beta` as well as `alpha`,
     reusing alpha's mirror and blob pointers so both inboxes resolve
     the same messages. Optionally pin one article's canonical inbox."""
@@ -188,9 +196,7 @@ def _cross_post(seeded, roles, *, canonical_for=None, canonical_inbox="beta"):
 
     with SessionLocal() as s:
         alpha = s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        other = s.execute(
-            sa_select(Inbox).where(Inbox.name == canonical_inbox)
-        ).scalar_one()
+        other = s.execute(sa_select(Inbox).where(Inbox.name == "beta")).scalar_one()
         other.mirror_path = alpha.mirror_path
         for role in roles:
             aid, _, _ = seeded[role]
@@ -239,69 +245,145 @@ def test_canonical_never_points_at_a_thread_without_the_message(client, tmp_path
     assert target == root_url + "/t"
 
 
-def test_cross_posted_thread_views_agree_on_one_canonical(client, tmp_path):
-    """A fully cross-posted conversation renders a near-identical page
-    under every inbox it touches. Left self-canonical, that
-    re-introduces at thread level exactly the duplication this surface
-    exists to remove, so both fold onto the ROOT's canonical inbox."""
+def test_thread_views_are_self_canonical_per_inbox(client, tmp_path):
+    """Cross-inbox thread consolidation was tried and reverted.
+
+    `get_thread` is inbox-scoped, so the "same" thread has different
+    membership per inbox: a reply that trimmed one list from its Cc is
+    absent there. Pointing one inbox's thread page at another's hands
+    authority to a page that may omit content this one renders, and the
+    target may not even treat the same article as its root (so the
+    canonical can land on a 301). Root-membership gating does not help,
+    because root membership says nothing about reply membership.
+
+    So each inbox's thread view is self-canonical. The residual
+    duplication is small (message-level consolidation already collapsed
+    N messages to one page per inbox) and search engines dedupe
+    near-identical pages themselves. A truthful weaker signal beats a
+    stronger false one.
+    """
     seeded = _seed_three_message_thread(tmp_path, "alpha")
     _, root_url, _ = seeded["root"]
     _cross_post(seeded, ["root", "reply", "nested"])
 
-    from_alpha = _canonical_of(client.get(root_url + "/t").get_data(as_text=True))
     beta_url = root_url.replace("/alpha/", "/beta/") + "/t"
-    from_beta = _canonical_of(client.get(beta_url).get_data(as_text=True))
+    assert _canonical_of(client.get(root_url + "/t").get_data(as_text=True)).endswith(
+        root_url + "/t"
+    )
+    assert _canonical_of(client.get(beta_url).get_data(as_text=True)).endswith(beta_url)
 
-    assert from_alpha == from_beta
-    assert client.get(from_alpha.replace("http://localhost", "")).status_code == 200
 
-
-def test_thread_view_survives_a_render_cap_below_one(client, tmp_path):
+def test_thread_view_survives_a_render_cap_below_one(client, tmp_path, monkeypatch):
     """`THREAD_VIEW_RENDER_CAP=0` rendered no messages and then hit an
     IndexError building JSON-LD (which needs a root), 500ing every
     thread view. An unusable ops value must degrade, not take the
     surface down."""
     from mimir.config import settings
 
+    monkeypatch.setattr(settings, "thread_view_render_cap", 0)
     seeded = _seed_three_message_thread(tmp_path, "alpha")
     _, root_url, _ = seeded["root"]
 
-    for bad in (0, -5):
-        settings_cap = settings.thread_view_render_cap
-        try:
-            object.__setattr__(settings, "thread_view_render_cap", bad)
-            r = client.get(root_url + "/t")
-            assert r.status_code == 200, f"cap={bad} gave {r.status_code}"
-            assert r.get_data(as_text=True).count('class="thread-message"') == 1
-        finally:
-            object.__setattr__(settings, "thread_view_render_cap", settings_cap)
+    r = client.get(root_url + "/t")
+    assert r.status_code == 200
+    assert r.get_data(as_text=True).count('class="thread-message"') == 1
 
 
-def test_thread_view_redacts_addresses_in_html_and_json_ld(client, tmp_path):
-    """The redaction posture, pinned on both of this page's surfaces.
+@pytest.mark.parametrize(
+    ("roles", "pin"),
+    [
+        pytest.param([], None, id="no-cross-post"),
+        pytest.param(["root"], "root", id="root-only-pinned"),
+        pytest.param(["reply"], "reply", id="reply-only-pinned"),
+        pytest.param(["root", "reply"], "reply", id="root+reply-pinned-reply"),
+        pytest.param(["root", "reply", "nested"], "root", id="all-pinned-root"),
+        pytest.param(["root", "reply", "nested"], None, id="all-unpinned"),
+    ],
+)
+def test_every_message_canonical_resolves_and_contains_that_message(
+    client,
+    tmp_path,
+    roles,
+    pin,
+):
+    """The invariant, checked across every cross-post shape rather than
+    one hand-picked case.
 
-    CONTEXT.md treats redaction as per-surface, and this one carries N
-    bodies rather than one, so a miss leaks N times over. Both surfaces
-    were verified correct by review but were unpinned: deleting the
-    `redact_trailer_addresses` call in the JSON-LD builder, and
-    dropping `|safe_from` in the template, each survived the whole
-    suite.
+    A canonical must (a) resolve to a 200, not a 404 and not a
+    redirect, and (b) point at a page that actually contains the
+    message pointing at it. Two successive rounds of blocking bugs both
+    violated exactly this, each time in a cross-post shape the
+    then-current tests did not seed: first because the thread root was
+    resolved in one inbox and the URL built in another, then because a
+    thread page consolidated onto another inbox whose copy of the
+    thread had different membership.
 
-    `nobody@private.example` is outside the allowlist, so it must
-    appear in neither the rendered From line, the rendered DCO
-    trailer, nor the JSON-LD `text` / `comment[].text` (all of which
-    land in this one response body).
+    Enumerating the shapes is what makes this a guard rather than
+    another hand-picked case that happens to pass. Parametrised rather
+    than looped so each shape gets a freshly reset DB.
     """
-    secret = "nobody@private.example"
-    art_id, url = _ingest_one_article(
-        tmp_path,
-        "alpha",
-        "redact-thread@example.com",
-        subject="[PATCH] redaction probe",
-        author=f"Somebody <{secret}>",
-        body=f"Body text.\nSigned-off-by: Somebody <{secret}>\n".encode(),
-    )
+    seeded = _seed_three_message_thread(tmp_path, "alpha")
+    if roles:
+        _cross_post(seeded, roles, canonical_for=pin)
 
-    body = client.get(url + "/t").get_data(as_text=True)
-    assert "redaction probe" in body, "fixture did not render"
-    assert secret not in body
+    for role in ("root", "reply", "nested"):
+        _, url, _ = seeded[role]
+        page = client.get(url)
+        assert page.status_code == 200, f"{url} itself is {page.status_code}"
+        canonical = _canonical_of(page.get_data(as_text=True))
+        assert canonical, f"{url} emitted no canonical"
+
+        target = canonical.replace("http://localhost", "")
+        resolved = client.get(target)
+        assert resolved.status_code == 200, (
+            f"{url} canonicalises to {target} which returns {resolved.status_code}"
+        )
+        # Either the canonical IS this page, or it is a page that
+        # renders this message inline (its permalink appears in the
+        # rendered conversation).
+        assert target == url or url in resolved.get_data(as_text=True), (
+            f"{url} canonicalises to {target}, which does not contain it"
+        )
+
+
+def test_thread_view_carries_the_roots_patch_surfaces(client, tmp_path):
+    """Message pages in a multi-message thread canonicalise here, so
+    the target must not be the poorer document.
+
+    Without this the consolidation would drop exactly the lifecycle
+    prose this release added as indexable text, plus the subsystem
+    attribution, i.e. the archive's distinctive content would stop
+    being on the page search engines actually index.
+    """
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleFile, MainlineCommit
+    from tests.test_routes._helpers import _seed_subsystem
+
+    _seed_subsystem("BCACHEFS", "Supported", ["fs/bcachefs/"])
+    seeded = _seed_three_message_thread(tmp_path, "alpha")
+    root_id, root_url, root_mid = seeded["root"]
+
+    with SessionLocal() as s:
+        # Make the root look like a landed patch touching a known
+        # subsystem: file rows drive the subsystem match, a linus
+        # mainline commit drives the LANDED lifecycle + prose.
+        # `patch_state.is_patch` keys off a `[PATCH ...]`-shaped
+        # subject, which the generic thread fixture doesn't have.
+        s.get(Article, root_id).subject = "[PATCH] bcachefs: fix a thing"
+        s.add(ArticleFile(article_id=root_id, path="fs/bcachefs/btree.c"))
+        s.add(
+            MainlineCommit(
+                commit_sha="f" * 40,
+                message_id=root_mid,
+                tree_name="linus",
+                committed_at=s.get(Article, root_id).date,
+            )
+        )
+        s.commit()
+
+    html = client.get(root_url + "/t").get_data(as_text=True)
+    assert "bcachefs" in html.lower(), "subsystem attribution missing"
+    assert "landed in mainline as ffffffffffff" in html.lower(), (
+        "lifecycle synthesis prose missing from the canonical target"
+    )

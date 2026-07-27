@@ -39,13 +39,19 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
-- Message pages now canonicalise to their thread view, and the per-inbox
-  sitemap lists one thread URL per conversation instead of one URL per
-  message. Most replies are a line or two, so a 60-message thread
-  presented as 60 thin near-duplicate URLs competing with each other;
-  consolidating gives search engines one substantial document per
-  thread. Messages past the render cap keep their own canonical, since
-  the thread view does not contain them.
+- Message pages in a multi-message thread now canonicalise to their
+  thread view, and the per-inbox sitemap lists one thread URL per
+  conversation instead of one URL per message. Most replies are a line
+  or two, so a 60-message thread presented as 60 thin near-duplicate
+  URLs competing with each other; consolidating gives search engines
+  one substantial document per thread. Three cases deliberately keep
+  their own canonical, because the thread view would not contain them
+  or would be the poorer page: messages past the render cap,
+  single-message threads (the message page already IS the whole
+  conversation, and carries the patch surfaces), and thread views
+  themselves, which stay self-canonical per inbox since threading is
+  inbox-scoped and each inbox's copy of a conversation can have
+  different membership.
 - `robots.txt` now disallows `/api/` and `/*/search` in the default
   `*` stanza. `/api/` serves htmx load-more partials (one URL per
   offset, never a page) and `/*/search` is internal search results
