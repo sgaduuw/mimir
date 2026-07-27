@@ -12,9 +12,16 @@ inbox it is linked to. Everything here is therefore scoped per inbox.
 import logging
 
 from sqlalchemy import func, select, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+# The passes take a Session OR a Core Connection: they only
+# `execute(text(...))` and read `.rowcount`, which both support
+# identically, and the broker handler runs them straight on the
+# writer's Connection. Both are real callers, so the annotation says
+# so rather than implying a wrapper is needed.
 
 # Safety stop for the propagation loop. Real lkml threads rarely exceed
 # ~50 deep and `threading.MAX_DEPTH` caps the read side at 1000, so a
@@ -28,7 +35,7 @@ MAX_PASSES = 1200
 MAX_CYCLE_WALK = 1000
 
 
-def seed_roots(session: Session, inbox_id: int) -> int:
+def seed_roots(session: Session | Connection, inbox_id: int) -> int:
     """Self-root every row whose parent is absent from this inbox.
 
     That is exactly the set `find_thread_root` calls a root: no
@@ -58,7 +65,7 @@ def seed_roots(session: Session, inbox_id: int) -> int:
     ).rowcount
 
 
-def propagate(session: Session, inbox_id: int) -> int:
+def propagate(session: Session | Connection, inbox_id: int) -> int:
     """Give every still-unrooted row its parent's root, one level."""
     return session.execute(
         text(
@@ -91,7 +98,7 @@ def propagate(session: Session, inbox_id: int) -> int:
     ).rowcount
 
 
-def break_cycle(session: Session, inbox_id: int) -> int:
+def break_cycle(session: Session | Connection, inbox_id: int) -> int:
     """Self-root one member of an actual cycle, if a stall is one.
 
     Propagation stalls when every remaining row is waiting on a parent
