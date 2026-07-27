@@ -489,3 +489,75 @@ def _ingest_series_pair(tmp_path, inbox_name, v1_messages, v2_messages):
         ).scalar_one()
         assert cover.patch_series_key is not None
         return cover.patch_series_key
+
+
+def seed_thread_shape(tmp_path, inbox_name, edges, *, date_for=None):
+    """Build an ARBITRARY thread shape in one bare repo and ingest it.
+
+    `edges` is an ordered list of `(message_id, parent_message_id|None)`.
+    Cycles, self-parents, branches, and forward references are all
+    expressible, because the point of this helper is to exercise the
+    shapes real ingest can produce from attacker- or
+    accident-controlled `In-Reply-To` headers, not just the tidy linear
+    thread `_seed_three_message_thread` builds.
+
+    `date_for` optionally maps message_id -> RFC 5322 Date string, for
+    month/year-boundary shapes.
+
+    Returns `{message_id: (article_id, url)}`.
+    """
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.ingest import ingest_epoch
+    from mimir.models import Article, Inbox
+
+    repo_dir = tmp_path / "0.git"
+    repo = Repo.init_bare(str(repo_dir), mkdir=True)
+    prev = None
+    for i, (mid, parent) in enumerate(edges):
+        extra = b""
+        if parent is not None:
+            extra += b"In-Reply-To: <" + parent.encode() + b">\r\n"
+        date = (date_for or {}).get(mid, "Mon, 1 Jan 2024 00:00:00 +0000")
+        raw = (
+            b"Message-ID: <" + mid.encode() + b">\r\n"
+            b"From: a@b.example\r\n"
+            b"Subject: shape msg\r\n"
+            b"Date: " + date.encode() + b"\r\n" + extra + b"\r\n"
+            b"body"
+        )
+        blob = Blob.from_string(raw)
+        repo.object_store.add_object(blob)
+        tree = Tree()
+        tree.add(b"m", 0o100644, blob.id)
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.parents = [prev] if prev else []
+        commit.author = commit.committer = b"test <t@x>"
+        commit.commit_time = commit.author_time = 1704067200 + i
+        commit.commit_timezone = commit.author_timezone = 0
+        commit.encoding = b"UTF-8"
+        commit.message = b"add"
+        repo.object_store.add_object(commit)
+        prev = commit.id
+    repo.refs[b"HEAD"] = prev
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        ix.mirror_path = str(tmp_path)
+        s.commit()
+        ingest_epoch(s, ix, "0.git", repo_dir, workers=1)
+        out = {}
+        for mid, _parent in edges:
+            art = s.execute(
+                select(Article).where(Article.message_id == mid)
+            ).scalar_one()
+            out[mid] = (
+                art.id,
+                f"/{inbox_name}/{art.date.year}/{art.date.month:02d}/{art.id}",
+            )
+        return out

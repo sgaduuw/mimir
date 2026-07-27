@@ -138,6 +138,34 @@ def _recent_thread_roots_query(inbox: Inbox):
     )
 
 
+def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
+    """Of `root_ids`, those whose thread is just themselves in this
+    inbox (no reply hangs off them here).
+
+    One query for the whole page of roots rather than a thread walk
+    each: a root has a reply iff some article in this inbox names it as
+    `thread_parent`.
+    """
+    if not root_ids:
+        return set()
+    child = aliased(Article)
+    with_replies = set(
+        session.execute(
+            select(Article.id)
+            .join(child, child.thread_parent == Article.message_id)
+            .join(ArticleList, ArticleList.article_id == child.id)
+            .where(
+                Article.id.in_(root_ids),
+                ArticleList.inbox_id == inbox.id,
+                child.id != Article.id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return set(root_ids) - with_replies
+
+
 def sitemap_index_xml(
     session: Session, base: str, *, force: bool = False
 ) -> SitemapPayload:
@@ -310,6 +338,17 @@ def inbox_sitemap_xml(
         recent_roots = session.execute(
             _recent_thread_roots_query(inbox).limit(SITEMAP_RECENT_PER_INBOX)
         ).all()
+        # Which URL to list has to match what that page's own canonical
+        # says, or the sitemap publishes a page that disclaims itself.
+        # A single-message thread's canonical is the MESSAGE page (it is
+        # already the whole conversation, and carries the patch surfaces
+        # `/t` omits), so listing `/t` there would publish the thinner
+        # of two self-canonical near-duplicates and drop the canonical
+        # one entirely. Mirrors the `len(thread) > 1` rule in
+        # `mimir.web.routes.message`.
+        singleton_ids = _singleton_root_ids(
+            session, inbox, [art_id for art_id, _ in recent_roots]
+        )
         for art_id, date in recent_roots:
             # `<lastmod>` is the thread's START date, not its latest
             # activity: deriving the latter needs the batched recursive
@@ -320,12 +359,10 @@ def inbox_sitemap_xml(
             # understated date on a long-running thread costs freshness
             # rather than correctness. Deep + fresher coverage is W2's
             # year-segmented sitemaps.
-            entries.append(
-                (
-                    f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}/t",
-                    date.strftime("%Y-%m-%d"),
-                )
-            )
+            loc = f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}"
+            if art_id not in singleton_ids:
+                loc += "/t"
+            entries.append((loc, date.strftime("%Y-%m-%d")))
         return SitemapPayload(
             body=_build_sitemap_xml(entries),
             last_modified=inbox_latest,

@@ -221,28 +221,31 @@ def _cross_post(seeded, roles, *, canonical_for=None):
 
 
 def test_canonical_never_points_at_a_thread_without_the_message(client, tmp_path):
-    """Threading is inbox-scoped, so a message's thread ROOT need not
+    """Round-1 regression, kept because it names the specific bug.
+
+    Threading is inbox-scoped, so a message's thread ROOT need not
     exist in the message's canonical inbox even though the message
-    does. Building the thread-view canonical on the canonical inbox
-    therefore produced a hard 404 (root absent there), or a thread that
-    genuinely did not contain the message.
+    does. Building the thread-view canonical from the requested
+    inbox's root while naming the canonical inbox produced a hard 404.
 
     Seeds exactly that: the reply is cross-posted to beta and pinned
-    canonical there, while its root stays alpha-only.
+    canonical there, while its root stays alpha-only. Consolidation now
+    resolves against BETA's copy of the conversation, where the reply
+    is a singleton, so the canonical is beta's message page rather than
+    any thread view. What matters is the invariant, not which URL wins:
+    it resolves, contains the message, and is terminal.
     """
     seeded = _seed_three_message_thread(tmp_path, "alpha")
-    _, root_url, _ = seeded["root"]
     _, reply_url, _ = seeded["reply"]
     _cross_post(seeded, ["reply"], canonical_for="reply")
 
+    _assert_canonical_invariants(
+        client,
+        [reply_url, reply_url.replace("/alpha/", "/beta/")],
+        "root-not-in-target",
+    )
     canonical = _canonical_of(client.get(reply_url).get_data(as_text=True))
-    target = canonical.replace("http://localhost", "")
-
-    resolved = client.get(target)
-    assert resolved.status_code == 200, f"canonical {target} does not resolve"
-    # ...and it actually contains the message that points at it.
-    assert reply_url in resolved.get_data(as_text=True)
-    assert target == root_url + "/t"
+    assert canonical.endswith(reply_url.replace("/alpha/", "/beta/"))
 
 
 def test_thread_views_are_self_canonical_per_inbox(client, tmp_path):
@@ -295,6 +298,11 @@ def test_thread_view_survives_a_render_cap_below_one(client, tmp_path, monkeypat
         pytest.param([], None, id="no-cross-post"),
         pytest.param(["root"], "root", id="root-only-pinned"),
         pytest.param(["reply"], "reply", id="reply-only-pinned"),
+        # Unpinned: canonical falls back to the alphabetically-first
+        # inbox, so the OTHER arm's canonical points across inboxes.
+        # This is the shape that produces a chain.
+        pytest.param(["reply"], None, id="reply-only-unpinned"),
+        pytest.param(["root", "reply"], None, id="root+reply-unpinned"),
         pytest.param(["root", "reply"], "reply", id="root+reply-pinned-reply"),
         pytest.param(["root", "reply", "nested"], "root", id="all-pinned-root"),
         pytest.param(["root", "reply", "nested"], None, id="all-unpinned"),
@@ -326,24 +334,17 @@ def test_every_message_canonical_resolves_and_contains_that_message(
     if roles:
         _cross_post(seeded, roles, canonical_for=pin)
 
+    urls = []
     for role in ("root", "reply", "nested"):
         _, url, _ = seeded[role]
-        page = client.get(url)
-        assert page.status_code == 200, f"{url} itself is {page.status_code}"
-        canonical = _canonical_of(page.get_data(as_text=True))
-        assert canonical, f"{url} emitted no canonical"
-
-        target = canonical.replace("http://localhost", "")
-        resolved = client.get(target)
-        assert resolved.status_code == 200, (
-            f"{url} canonicalises to {target} which returns {resolved.status_code}"
-        )
-        # Either the canonical IS this page, or it is a page that
-        # renders this message inline (its permalink appears in the
-        # rendered conversation).
-        assert target == url or url in resolved.get_data(as_text=True), (
-            f"{url} canonicalises to {target}, which does not contain it"
-        )
+        urls.append(url)
+        # A cross-posted article is reachable under EVERY linked inbox,
+        # and each of those URLs has to satisfy the contract too. Only
+        # checking the origin inbox is how the previous round missed a
+        # canonical chain that only appears from the other arm.
+        if role in roles:
+            urls.append(url.replace("/alpha/", "/beta/"))
+    _assert_canonical_invariants(client, urls, f"roles={roles} pin={pin}")
 
 
 def test_thread_view_carries_the_roots_patch_surfaces(client, tmp_path):
@@ -387,3 +388,205 @@ def test_thread_view_carries_the_roots_patch_surfaces(client, tmp_path):
     assert "landed in mainline as ffffffffffff" in html.lower(), (
         "lifecycle synthesis prose missing from the canonical target"
     )
+
+
+def _assert_canonical_invariants(client, urls, label):
+    """The full canonical contract, asserted for every URL in `urls`.
+
+    Stricter than the earlier six-shape guard, which varied only the
+    cross-post dimension over a single tidy 3-message linear thread and
+    so could not see thread-graph pathologies at all. Checks four
+    things, because previous rounds each satisfied some subset:
+
+    1. the canonical RESOLVES: 200, not 404 and not a redirect;
+    2. it CONTAINS the message (or is the page itself);
+    3. it is TERMINAL, i.e. the target does not itself canonicalise
+       somewhere else. A chain is a defect even when every hop is
+       individually truthful, which is the shape that slipped through
+       the last round;
+    4. any `/t` URL reached terminates rather than looping.
+    """
+    for url in urls:
+        page = client.get(url)
+        assert page.status_code == 200, f"{label}: {url} -> {page.status_code}"
+        canonical = _canonical_of(page.get_data(as_text=True))
+        assert canonical, f"{label}: {url} emitted no canonical"
+        target = canonical.replace("http://localhost", "")
+
+        resolved = client.get(target)
+        assert resolved.status_code == 200, (
+            f"{label}: {url} canonicalises to {target} -> {resolved.status_code}"
+        )
+        body = resolved.get_data(as_text=True)
+        # Containment is by ARTICLE, not by URL string: a cross-inbox
+        # canonical renders the same article under the target inbox's
+        # path, so matching the requesting URL verbatim would report a
+        # false violation. The trailing `"` anchors the id so article 5
+        # doesn't match article 15.
+        article_id = url.rsplit("/", 1)[-1]
+        contained = re.search(rf'/\d{{4}}/\d{{2}}/{article_id}"', body) is not None
+        assert target == url or contained, (
+            f"{label}: {url} canonicalises to {target}, which does not contain it"
+        )
+        onward = _canonical_of(body)
+        if onward:
+            assert onward.replace("http://localhost", "") == target, (
+                f"{label}: canonical chain {url} -> {target} -> "
+                f"{onward.replace('http://localhost', '')}"
+            )
+
+
+def _assert_no_redirect_loop(client, urls, label, limit=6):
+    """Following `/t` must terminate. A `thread_parent` cycle is
+    constructible by anyone who can post to the list (they control both
+    their Message-ID and their In-Reply-To), and `find_thread_root`
+    walks to MAX_DEPTH rather than to a fixed point, so the redirect
+    target need not be its own root."""
+    for url in urls:
+        seen = []
+        cur = url + "/t"
+        for _ in range(limit):
+            r = client.get(cur)
+            if r.status_code != 301:
+                break
+            assert cur not in seen, f"{label}: /t redirect loop at {cur} ({seen})"
+            seen.append(cur)
+            cur = r.headers["Location"].replace("http://localhost", "")
+        else:
+            raise AssertionError(
+                f"{label}: /t did not settle within {limit} hops: {seen}"
+            )
+
+
+THREAD_SHAPES = {
+    "linear-3": [("s1@x", None), ("s2@x", "s1@x"), ("s3@x", "s2@x")],
+    "branched": [
+        ("b1@x", None),
+        ("b2@x", "b1@x"),
+        ("b3@x", "b1@x"),
+        ("b4@x", "b2@x"),
+    ],
+    "deep-6": [(f"d{i}@x", None if i == 1 else f"d{i - 1}@x") for i in range(1, 7)],
+    "single": [("solo1@x", None)],
+    "off-list-parent": [("o1@x", "missing@elsewhere"), ("o2@x", "o1@x")],
+    # Pathological, and reachable: `thread_parent` has no cycle guard
+    # and its value comes straight from sender-controlled headers.
+    "self-parent": [("c0@x", "c0@x")],
+    "cycle-3": [("y1@x", "y3@x"), ("y2@x", "y1@x"), ("y3@x", "y2@x")],
+}
+
+
+@pytest.mark.parametrize("shape", sorted(THREAD_SHAPES))
+def test_canonical_invariants_hold_across_thread_shapes(client, tmp_path, shape):
+    """The guard, re-armed along the axis it was previously blind to.
+
+    The prior version parametrised six CROSS-POST shapes over exactly
+    one THREAD shape (3 messages, linear, acyclic, all dated, same
+    month). An adversarial pass broke three of four novel thread shapes
+    using the guard's own assertion body, so the coverage claim was
+    false even though every parameter passed.
+    """
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", THREAD_SHAPES[shape])
+    urls = [url for _id, url in seeded.values()]
+    _assert_no_redirect_loop(client, urls, shape)
+    _assert_canonical_invariants(client, urls, shape)
+
+
+def test_sitemap_lists_the_canonical_url_for_every_thread_shape(client, tmp_path):
+    """Whatever the sitemap lists must be the page that page's own
+    canonical points at.
+
+    For a single-message thread the message page is canonical (it IS
+    the whole conversation, and carries the patch surfaces `/t` omits),
+    so listing `/t` instead publishes the thinner of two self-canonical
+    near-duplicates and drops the canonical one entirely, with nothing
+    relating them. `message.py` already carries this rule; the sitemap
+    has to mirror it.
+    """
+    import xml.etree.ElementTree as ET
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("solo-sm@x", None), ("m1-sm@x", None), ("m2-sm@x", "m1-sm@x")],
+    )
+    from mimir import cache
+
+    cache.delete_for_inbox("alpha")
+    cache.delete("sitemap:index")
+
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
+    locs = {u.find("s:loc", ns).text.replace("http://localhost", "") for u in root}
+
+    for mid, (_aid, url) in seeded.items():
+        listed = {loc for loc in locs if loc in (url, url + "/t")}
+        if not listed:
+            continue
+        canonical = _canonical_of(client.get(url).get_data(as_text=True)).replace(
+            "http://localhost", ""
+        )
+        assert listed == {canonical}, (
+            f"{mid}: sitemap lists {listed} but the canonical is {canonical}"
+        )
+
+
+def test_thread_view_never_renders_the_same_message_twice(client, tmp_path):
+    """A self-referential `In-Reply-To` (sender-controlled, and the
+    likeliest ACCIDENTAL cycle) makes `get_thread`'s recursive CTE
+    re-emit one article once per level to MAX_DEPTH, so the page
+    rendered the same body dozens of times and emitted hundreds of
+    identical overflow links from a single message."""
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("dup1@x", "dup1@x")])
+    _aid, url = seeded["dup1@x"]
+
+    html = client.get(url + "/t").get_data(as_text=True)
+    assert html.count('class="thread-message"') == 1, "duplicate nodes rendered"
+    assert "further message" not in html, "duplicate nodes leaked into overflow"
+
+
+def test_thread_etag_moves_when_the_root_lands_in_mainline(client, tmp_path):
+    """A stale validator must not pin the lifecycle claim.
+
+    The page renders the root's landing state, but a patch landing adds
+    no message, so it moves neither the node count nor the thread's max
+    date. Without the lifecycle in the ETag, the edge and every crawler
+    holding the old validator keep being told the patch has NOT landed,
+    indefinitely, until a deploy bumps the version. That pins exactly
+    the "did $series land" prose this release made canonical. Same
+    class as the 3.6.1 sitemap incident.
+    """
+    from datetime import datetime, timezone
+
+    from mimir import cache
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("e1@x", None), ("e2@x", "e1@x")])
+    root_id, root_url = seeded["e1@x"]
+
+    before = client.get(root_url + "/t").headers["ETag"]
+
+    with SessionLocal() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha="a" * 40,
+                message_id="e1@x",
+                tree_name="linus",
+                committed_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            )
+        )
+        s.commit()
+    # Lifecycle is cached per ARTICLE (`lifecycle_status:<id>`), not
+    # per inbox, so an inbox-scoped purge would not clear it.
+    cache.delete(f"lifecycle_status:{root_id}")
+
+    after = client.get(root_url + "/t").headers["ETag"]
+    assert before != after, "ETag did not move when the root's lifecycle changed"

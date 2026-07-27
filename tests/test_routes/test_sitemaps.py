@@ -58,7 +58,10 @@ def test_sitemap_cross_post_appears_in_each_linked_inbox(client):
     `/beta/sitemap.xml`, each one is a real, crawlable URL, and the
     canonical `<link>` on the page itself tells search engines which
     to keep. The sitemap doesn't try to enforce one-canonical-URL-per-
-    article anymore (that was the old global-sitemap design)."""
+    article anymore (that was the old global-sitemap design).
+
+    art3 has no replies, so it is listed as a message URL rather than
+    `/t`, matching what its own canonical says."""
     import xml.etree.ElementTree as ET
     from sqlalchemy import select
     from mimir.extensions import SessionLocal
@@ -78,7 +81,7 @@ def test_sitemap_cross_post_appears_in_each_linked_inbox(client):
         return [
             u.find("s:loc", ns).text
             for u in root.findall("s:url", ns)
-            if u.find("s:loc", ns).text.endswith(f"/{art_id}/t")
+            if u.find("s:loc", ns).text.endswith(f"/{art_id}")
         ]
 
     alpha_locs = article_locs("alpha")
@@ -272,7 +275,10 @@ def test_inbox_sitemap_404_for_unknown_inbox(client):
 
 def test_inbox_sitemap_articles_scoped_to_that_inbox(client):
     """Threads only linked to beta (art2) don't appear in alpha's
-    sitemap, and vice versa."""
+    sitemap, and vice versa.
+
+    art2 has no replies, so it is a single-message thread and the
+    sitemap lists its MESSAGE URL (which is its canonical), not `/t`."""
     import xml.etree.ElementTree as ET
     from sqlalchemy import select
     from mimir.extensions import SessionLocal
@@ -288,10 +294,10 @@ def test_inbox_sitemap_articles_scoped_to_that_inbox(client):
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     alpha_root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
     alpha_locs = {u.find("s:loc", ns).text for u in alpha_root.findall("s:url", ns)}
-    assert not any(loc.endswith(f"/{art2_id}/t") for loc in alpha_locs)
+    assert not any(loc.endswith(f"/{art2_id}") for loc in alpha_locs)
     beta_root = ET.fromstring(client.get("/beta/sitemap.xml").get_data())
     beta_locs = {u.find("s:loc", ns).text for u in beta_root.findall("s:url", ns)}
-    assert any(loc.endswith(f"/{art2_id}/t") for loc in beta_locs)
+    assert any(loc.endswith(f"/{art2_id}") for loc in beta_locs)
 
 
 # ---------------------------------------------------------------------------
