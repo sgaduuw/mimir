@@ -342,35 +342,47 @@ def _reset_db():
 
         s.add_all(
             [
+                # `thread_root_id` is set here because production rows
+                # always have one: ingest resolves it on insert and the
+                # backfill fills in anything older. Seeding rows without
+                # it would leave the fixture in a state the running
+                # system never reaches (NULL means "not yet computed"),
+                # and every consumer would then read the corpus as
+                # empty.
                 ArticleList(
                     article_id=art1.id,
                     inbox_id=alpha.id,
                     epoch="0.git",
                     commit_sha="aa" * 20,
+                    thread_root_id=art1.id,
                 ),
                 ArticleList(
                     article_id=art2.id,
                     inbox_id=beta.id,
                     epoch="0.git",
                     commit_sha="bb" * 20,
+                    thread_root_id=art2.id,
                 ),
                 ArticleList(
                     article_id=art3.id,
                     inbox_id=alpha.id,
                     epoch="0.git",
                     commit_sha="cc" * 20,
+                    thread_root_id=art3.id,
                 ),
                 ArticleList(
                     article_id=art3.id,
                     inbox_id=beta.id,
                     epoch="0.git",
                     commit_sha="cd" * 20,
+                    thread_root_id=art3.id,
                 ),
                 ArticleList(
                     article_id=art4.id,
                     inbox_id=alpha.id,
                     epoch="0.git",
                     commit_sha="dd" * 20,
+                    thread_root_id=art1.id,
                 ),
             ]
         )

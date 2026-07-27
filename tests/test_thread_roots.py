@@ -839,3 +839,52 @@ def test_cli_fails_when_the_backfill_is_truncated(client, tmp_path, monkeypatch)
     result = CliRunner().invoke(backfill_thread_roots_command, [])
     assert result.exit_code != 0, result.output
     assert "pass budget" in result.output
+
+
+def test_verifier_does_not_read_the_column_it_is_checking(client, tmp_path):
+    """The verifier must recompute, not consult.
+
+    `find_thread_root` now reads `thread_root_id` when populated, which
+    is the whole point of the column. If the verifier used that entry
+    point it would compare the column against itself and agree with any
+    corruption by construction, silently turning the one detector for
+    an invisible failure into a no-op.
+
+    Corrupt a row and confirm both that the verifier still catches it
+    AND that the fast path has genuinely been poisoned (so the test
+    would fail if the verifier switched to `find_thread_root`).
+    """
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.thread_roots import verify_thread_roots
+    from mimir.threading import find_thread_root
+
+    seed_thread_shape(
+        tmp_path, "alpha", [("cv1@x", None), ("cv2@x", "cv1@x"), ("cv3@x", "cv2@x")]
+    )
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        victim = s.execute(
+            select(Article.id).where(Article.message_id == "cv3@x")
+        ).scalar_one()
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.article_id == victim,
+                ArticleList.inbox_id == inbox.id,
+            )
+            .values(thread_root_id=victim)
+        )
+        s.commit()
+
+        # The fast path now returns the corrupted answer...
+        assert find_thread_root(s, inbox, "cv3@x") == "cv3@x"
+        # ...and the verifier still reports the corruption, which it
+        # could only do by recomputing independently.
+        found = verify_thread_roots(s, inbox, limit=500)
+
+    assert any(m["message_id"] == "cv3@x" for m in found), (
+        f"verifier agreed with the corrupted column: {found}"
+    )

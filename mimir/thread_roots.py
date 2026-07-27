@@ -225,7 +225,7 @@ def verify_thread_roots(session: Session, inbox, limit: int = 200) -> list[dict]
     from sqlalchemy.orm import aliased
 
     from mimir.models import Article, ArticleList
-    from mimir.threading import find_thread_root
+    from mimir.threading import _find_thread_root_cte
 
     # RANDOM, not newest-first. `ORDER BY id DESC` samples only the
     # most recent rows, which on this corpus is roughly the last hour
@@ -308,7 +308,7 @@ def verify_thread_roots(session: Session, inbox, limit: int = 200) -> list[dict]
                     }
                 )
             continue
-        expected_mid = find_thread_root(session, inbox, mid) or mid
+        expected_mid = _find_thread_root_cte(session, inbox, mid) or mid
         expected_id = session.scalar(
             select(Article.id).where(Article.message_id == expected_mid)
         )

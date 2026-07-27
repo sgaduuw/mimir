@@ -17,8 +17,7 @@ from dataclasses import dataclass
 from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import aliased
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from mimir import cache
@@ -96,87 +95,51 @@ def _per_inbox_latest_date(session) -> dict[str, str | None]:
 def _recent_thread_roots_query(inbox: Inbox):
     """`(article_id, date)` for this inbox's thread roots, newest first.
 
-    Inbox membership is a JOIN, the root test a correlated EXISTS, and
-    that split is measured rather than assumed.
+    A root is `thread_root_id = article_id`, one indexed comparison
+    against `ix_article_lists_thread_root`. That replaces the previous
+    correlated EXISTS over `thread_parent`, and with it the whole
+    EXISTS-versus-JOIN tradeoff that cost two review rounds: the JOIN
+    form was ~37x slower on the ~199 small inboxes, the EXISTS form
+    ~8x slower on lkml, and neither shape is needed now that the answer
+    is materialised.
 
-    Making inbox membership an EXISTS too lets the planner drive
-    `ix_articles_date` DESC and stop at the LIMIT, which is ~8x faster
-    on the single dominant inbox (lkml). It is ~37x SLOWER on a small
-    one, because the walk can never reach the LIMIT and so scans the
-    date index to exhaustion, probing two correlated subqueries per
-    row, at a cost that scales with the WHOLE corpus rather than the
-    inbox. Production is ~200 inboxes of which ~199 are small, and this
-    runs per inbox on every hourly sitemap warm, so the JOIN is the
-    right trade by a wide margin (benchmarked on a skewed 606k-row
-    corpus: JOIN ~244 ms + 199 x ~2.7 ms, versus EXISTS ~30 ms + 199 x
-    ~100 ms).
-
-    This is the 2.8.0 lesson (MEMORY.md 2026-05-29) with its direction
-    inverted: measure against the WORST-shaped inboxes, not the one
-    that shows a clean win. W8 (materialised thread roots) removes the
-    tradeoff entirely by making the root test a column comparison.
+    Rows still awaiting the backfill carry NULL, which fails the
+    comparison, so they are simply absent from the sitemap until the
+    backfill reaches them rather than being listed wrongly. Freshness,
+    not correctness.
     """
-    parent = aliased(Article)
-    parent_in_inbox = (
-        select(ArticleList.article_id)
-        .join(parent, parent.id == ArticleList.article_id)
-        .where(
-            ArticleList.inbox_id == inbox.id,
-            parent.message_id == Article.thread_parent,
-        )
-        .exists()
-    )
     return (
         select(Article.id, Article.date)
         .join(ArticleList, ArticleList.article_id == Article.id)
         .where(
             ArticleList.inbox_id == inbox.id,
             Article.date.is_not(None),
-            or_(Article.thread_parent.is_(None), ~parent_in_inbox),
+            ArticleList.thread_root_id == Article.id,
         )
         .order_by(Article.date.desc())
     )
 
 
 def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
-    """Of `root_ids`, those whose thread is just themselves in this
-    inbox (no reply hangs off them here).
+    """Of `root_ids`, those whose thread is just themselves here.
 
-    Correlated EXISTS, not a join, and the difference is not cosmetic.
-    As a join the planner stops driving from `articles IN (ids)` past a
-    few hundred ids and drives from `ix_article_lists_inbox_id`
-    instead, scanning every article-list row in the inbox and probing
-    back, i.e. O(ids x inbox rows). Measured at 3950 ms for 5000 ids
-    over a 50k-row inbox and fitting `ids x rows x 1.6e-5 ms` across
-    corpus sizes, which extrapolates to minutes per sitemap render on
-    lkml. `SITEMAP_RECENT_PER_INBOX` is 5000, so every busy inbox hits
-    the worst case exactly, on every hourly warm and on any crawler
-    cache miss. The EXISTS form is 5 ms on the same input.
-
-    Same shape and the same reason as the sibling
-    `_recent_thread_roots_query`, and as CONTEXT.md's
-    `_subsystem_path_filter_exists_sql` note: EXISTS when the outer set
-    is already narrowed and the inner test is a per-candidate probe.
+    A count over `ix_article_lists_thread_root`: a root with exactly
+    one row naming it is a single-message thread. That replaces the
+    correlated EXISTS over `thread_parent` this used to need, which in
+    its first (JOIN) form was O(ids x inbox rows) and took minutes per
+    sitemap render on lkml.
     """
     if not root_ids:
         return set()
-    child = aliased(Article)
-    has_reply = (
-        select(child.id)
-        .join(ArticleList, ArticleList.article_id == child.id)
+    rows = session.execute(
+        select(ArticleList.thread_root_id, func.count(ArticleList.article_id))
         .where(
-            child.thread_parent == Article.message_id,
             ArticleList.inbox_id == inbox.id,
-            child.id != Article.id,
+            ArticleList.thread_root_id.in_(root_ids),
         )
-        .exists()
-    )
-    with_replies = set(
-        session.execute(select(Article.id).where(Article.id.in_(root_ids), has_reply))
-        .scalars()
-        .all()
-    )
-    return set(root_ids) - with_replies
+        .group_by(ArticleList.thread_root_id)
+    ).all()
+    return {root_id for root_id, count in rows if count == 1}
 
 
 def sitemap_index_xml(

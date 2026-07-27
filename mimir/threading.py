@@ -97,8 +97,42 @@ def dedupe_thread(nodes: list) -> list:
 
 def find_thread_root(session: Session, inbox: Inbox, message_id: str) -> str | None:
     """Return the message_id of the topmost ancestor present in this inbox.
-    Walks only within the inbox (via the article_lists join) so threads
-    don't span inboxes.
+
+    Reads the materialised `article_lists.thread_root_id` when it is
+    populated, and falls back to the recursive walk while it is NULL.
+    That fallback is what lets the column ship without a blocking
+    backfill: a partially-filled corpus is correct, just not yet fast.
+
+    NOT used by `thread_roots.verify_thread_roots`, which deliberately
+    calls `_find_thread_root_cte` instead. Verification exists to catch
+    a wrong column value, and a verifier that reads the column it is
+    checking would agree with any corruption by construction.
+    """
+    row = session.execute(
+        text(
+            """
+            SELECT root.message_id
+              FROM article_lists al
+              JOIN articles a ON a.id = al.article_id
+              JOIN articles root ON root.id = al.thread_root_id
+             WHERE al.inbox_id = :inbox_id AND a.message_id = :mid
+            """
+        ),
+        {"inbox_id": inbox.id, "mid": message_id},
+    ).scalar()
+    if row is not None:
+        return row
+    return _find_thread_root_cte(session, inbox, message_id)
+
+
+def _find_thread_root_cte(
+    session: Session, inbox: Inbox, message_id: str
+) -> str | None:
+    """The recursive walk-up, ignoring the materialised column.
+
+    Kept as the independent source of truth: it is both the fallback
+    for unfilled rows and the oracle `verify_thread_roots` recomputes
+    against.
     """
     sql = text(
         """
