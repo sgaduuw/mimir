@@ -81,13 +81,37 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
             # to build a URL from) leaves nothing to redirect to; render
             # this article's own subtree rather than 404, so the page
             # still works for a reader.
-            if root is not None and root.date is not None:
+            # Only redirect to a FIXED POINT. `thread_parent` comes
+            # straight from sender-controlled `In-Reply-To`, has no
+            # cycle guard at ingest, and `find_thread_root` walks to
+            # MAX_DEPTH rather than to a fixed point, so under a cycle
+            # it returns a node whose own root is a different node
+            # again. Redirecting blindly makes `/t` an infinite 301
+            # loop, each hop paying a 1000-row recursive CTE, on a
+            # no-cache endpoint the sitemap advertises. Render this
+            # article's own subtree instead.
+            settles = root is not None and (
+                find_thread_root(session, inbox, root.message_id) == root.message_id
+            )
+            if settles and root.date is not None:
                 return redirect(_thread_view_url(root, inbox.name), code=301)
             root_msgid = article.message_id
 
         nodes = get_thread(session, inbox, root_msgid)
         if not nodes:
             abort(404)
+        # De-duplicate by article id, preserving order. A cyclic
+        # `thread_parent` makes the recursive CTE re-emit the same
+        # article once per level up to MAX_DEPTH, which rendered one
+        # message dozens of times and produced hundreds of identical
+        # overflow links.
+        seen_ids: set[int] = set()
+        deduped = []
+        for node in nodes:
+            if node.id not in seen_ids:
+                seen_ids.add(node.id)
+                deduped.append(node)
+        nodes = deduped
 
         # ETag before any blob read, mirroring the message route: on a
         # 304 we skip the whole render, which matters more here than
@@ -98,14 +122,32 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
             (n.date for n in nodes if n.date is not None),
             default=article.date,
         )
+        root_id_for_etag = next(
+            (n.id for n in nodes if n.message_id == root_msgid),
+            nodes[0].id,
+        )
         # A cap below 1 would render no messages and then IndexError in
         # the JSON-LD builder (which needs a root), 500ing every thread
         # view. Clamp rather than validate: this is an ops knob and an
         # unusable value should degrade, not take the surface down.
         cap = max(1, settings.thread_view_render_cap)
+        # The root's lifecycle is an ETag input because the page now
+        # renders it. A patch landing in mainline changes the badge and
+        # the synthesis prose without adding a message, so it moves
+        # neither `len(nodes)` nor `thread_max_date`; without this the
+        # edge and every crawler holding the old validator would be
+        # told indefinitely that the patch has NOT landed, pinning the
+        # exact "did $series land" text this release made canonical.
+        lifecycle_probe = lifecycle_status_for_articles(session, [root_id_for_etag])
+        lifecycle_tag = ""
+        info = lifecycle_probe.get(root_id_for_etag)
+        if info is not None:
+            lifecycle_tag = (
+                f"{info.state_value}|{info.tree or ''}|{info.count_suffix or ''}"
+            )
         etag_input = (
             f"thread|{article.id}|{mimir.__version__}|{cap}|{len(nodes)}|"
-            f"{thread_max_date.isoformat() if thread_max_date else ''}"
+            f"{thread_max_date.isoformat() if thread_max_date else ''}|{lifecycle_tag}"
         )
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
         if etag in request.if_none_match:
@@ -135,7 +177,13 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
 
         overflow_links = [(n, _msg_url(n, inbox.name)) for n in overflow]
 
-        root_node = nodes[0]
+        # The root by identity, not by position: `get_thread`'s
+        # `sort_path` is NULL for a dateless node and NULL sorts first,
+        # so `nodes[0]` is not reliably the root.
+        root_node = next(
+            (n for n in nodes if n.message_id == root_msgid),
+            nodes[0],
+        )
         subsystem_hits = subsystems_for_article(session, root_node.id)
         subsystem_names = [h.name for h in subsystem_hits]
 
@@ -192,6 +240,7 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
             inbox_name=inbox.name,
             base=base,
             total_replies=len(nodes) - 1,
+            last_activity=thread_max_date,
             subsystem_names=subsystem_names,
         )
 

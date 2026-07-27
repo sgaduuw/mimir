@@ -227,6 +227,7 @@ def _json_ld_message(
     *,
     reply_count: int,
     subsystem_names: Sequence[str],
+    page_canonical_url: str | None = None,
 ) -> dict:
     """schema.org @graph carrying both DiscussionForumPosting (the
     primary signal, eligible for Google's "Discussions and forums"
@@ -325,12 +326,17 @@ def _json_ld_message(
             {"@type": "Thing", "name": name} for name in subsystem_names
         ]
         forum_post["keywords"] = list(subsystem_names)
+    # The breadcrumb leaf follows the PAGE's canonical, not the
+    # entity's `@id`. BreadcrumbList is a SERP-rendered navigation
+    # path, so pointing it at a URL the page itself disclaims (once
+    # consolidation moves the canonical to the thread view) puts a
+    # third URL in a document that already carries two.
     return _graph_with_breadcrumbs(
         forum_post,
         base=base,
         inbox_name=inbox_name,
         subject=subject,
-        canonical_url=canonical_url,
+        canonical_url=page_canonical_url or canonical_url,
     )
 
 
@@ -403,6 +409,7 @@ def _json_ld_thread(
     inbox_name: str,
     base: str,
     total_replies: int,
+    last_activity=None,
     subsystem_names: Sequence[str],
 ) -> dict:
     """schema.org payload for the whole-thread view: one
@@ -462,7 +469,11 @@ def _json_ld_thread(
     root_date = _iso_datetime(root.date)
     if root_date:
         payload["datePublished"] = root_date
-        payload["dateModified"] = _iso_datetime(nodes[-1].date) or root_date
+        # The thread's newest date, not `nodes[-1]`: that is the
+        # depth-first-last node of the CAPPED slice, so on any branched
+        # or truncated thread it understates freshness, and it can even
+        # fall below datePublished when a reply carries an earlier date.
+        payload["dateModified"] = _iso_datetime(last_activity) or root_date
     if total_replies > 0:
         payload["interactionStatistic"] = {
             "@type": "InteractionCounter",
