@@ -122,7 +122,9 @@ class Article(Base):
     # Cross-posted messages share one Article + multiple ArticleList
     # rows (one per inbox they appeared in).
     lists: Mapped[list["ArticleList"]] = relationship(
-        back_populates="article", cascade="all, delete-orphan"
+        back_populates="article",
+        cascade="all, delete-orphan",
+        foreign_keys="ArticleList.article_id",
     )
 
     # Diff-touched paths for articles whose body parses as a patch.
@@ -150,6 +152,12 @@ class ArticleList(Base):
     same message under different SHAs."""
 
     __tablename__ = "article_lists"
+    __table_args__ = (
+        # Every consumer asks an inbox-scoped question: the roots in
+        # this inbox, whether this article is one, how many rows share
+        # a root here.
+        Index("ix_article_lists_thread_root", "inbox_id", "thread_root_id"),
+    )
 
     article_id: Mapped[int] = mapped_column(
         ForeignKey("articles.id", ondelete="CASCADE"), primary_key=True
@@ -159,8 +167,22 @@ class ArticleList(Base):
     )
     epoch: Mapped[str] = mapped_column(String)
     commit_sha: Mapped[str] = mapped_column(String)
+    # Materialised thread root for this article IN THIS INBOX. Roots
+    # point at themselves, so `thread_root_id == article_id` is the
+    # root test. NULL means "not yet computed" (the column predates the
+    # backfill for a given row), NOT "is a root"; readers fall back to
+    # `threading.find_thread_root`'s recursive CTE while it is NULL.
+    # Per-inbox rather than on `articles` because threading is
+    # inbox-scoped: a cross-posted reply can hang off a root that
+    # exists in only one of its inboxes and be its own root in the
+    # other.
+    thread_root_id: Mapped[int | None] = mapped_column(
+        ForeignKey("articles.id", ondelete="SET NULL"), nullable=True
+    )
 
-    article: Mapped[Article] = relationship(back_populates="lists")
+    article: Mapped[Article] = relationship(
+        back_populates="lists", foreign_keys=[article_id]
+    )
     inbox: Mapped[Inbox] = relationship()
 
 
