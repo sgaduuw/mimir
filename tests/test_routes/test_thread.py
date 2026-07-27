@@ -659,3 +659,47 @@ def test_single_message_rule_agrees_between_message_page_and_thread_view(
     assert canonical.endswith(url), (
         f"a {count}-message thread view must not be the canonical target"
     )
+
+
+def test_thread_etag_moves_when_a_newer_revision_is_posted(client, tmp_path):
+    """Posting a v2 supersedes the v1 thread without touching it.
+
+    It flips v1's badge to SUPERSEDED and rewrites its synthesis prose
+    to "revision 1 of 2", but the newer revision is a different article
+    in a different thread, so it moves neither the node count, the
+    thread's max date, the landing state, the trailer count, nor the
+    MAINTAINERS cursor. Posting a v2 is the most routine patch workflow
+    on the list, and "is this the current revision" is squarely in the
+    query family this surface exists to answer, so a stale validator
+    here pins exactly the wrong answer.
+    """
+    from sqlalchemy import select as sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("v1a@x", None), ("v1b@x", "v1a@x")])
+    root_id, root_url = seeded["v1a@x"]
+
+    with SessionLocal() as s:
+        root = s.get(Article, root_id)
+        root.patch_series_key = "serieskey"
+        root.patch_series_version = "v1"
+        root.patch_series_position = 0
+        s.commit()
+
+    before = client.get(root_url + "/t").headers["ETag"]
+
+    # The v2 cover letter: same series key and position, newer version.
+    with SessionLocal() as s:
+        other = s.execute(
+            sa_select(Article).where(Article.message_id == "v1b@x")
+        ).scalar_one()
+        other.patch_series_key = "serieskey"
+        other.patch_series_version = "v2"
+        other.patch_series_position = 0
+        s.commit()
+
+    after = client.get(root_url + "/t").headers["ETag"]
+    assert before != after, "ETag did not move when a newer revision appeared"

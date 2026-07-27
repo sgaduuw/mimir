@@ -82,7 +82,35 @@ def _render_state_tag(session, root_id: int, root_msgid: str) -> str:
     rules_version = session.scalar(
         select(MainlineState.last_commit_sha).where(MainlineState.tree_name == "linus")
     )
-    return f"{landings[0]}|{landings[1] or ''}|{trailers or 0}|{rules_version or ''}"
+    # Supersedance and the revision count come from SIBLING articles
+    # sharing this patch's series key, so they live in neither the
+    # landing, trailer, nor rules reads above. Posting a v2 flips this
+    # thread's badge to SUPERSEDED and rewrites its synthesis prose to
+    # "revision 1 of 2", without adding a message to it. Posting a v2
+    # is the most routine patch workflow on the list, and "is this the
+    # current revision" is squarely in the query family this surface
+    # exists to answer.
+    series = session.execute(
+        select(Article.patch_series_key, Article.patch_series_position).where(
+            Article.id == root_id
+        )
+    ).one_or_none()
+    series_tag = ""
+    if series is not None and series[0]:
+        count, newest = session.execute(
+            select(
+                func.count(Article.id),
+                func.max(Article.patch_series_version),
+            ).where(
+                Article.patch_series_key == series[0],
+                func.coalesce(Article.patch_series_position, 0) == (series[1] or 0),
+            )
+        ).one()
+        series_tag = f"{count}|{newest or ''}"
+    return (
+        f"{landings[0]}|{landings[1] or ''}|{trailers or 0}|"
+        f"{rules_version or ''}|{series_tag}"
+    )
 
 
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>/t")
