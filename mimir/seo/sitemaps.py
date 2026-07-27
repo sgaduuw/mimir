@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import aliased
 from sqlalchemy.orm import Session
 
 from mimir import cache
@@ -90,6 +91,42 @@ def _per_inbox_latest_date(session) -> dict[str, str | None]:
         .group_by(Inbox.id)
     ).all()
     return {name: (dt.strftime("%Y-%m-%d") if dt else None) for name, dt in rows}
+
+
+def _recent_thread_roots_query(inbox: Inbox):
+    """`(article_id, date)` for this inbox's thread roots, newest first.
+
+    Extracted so the plan-pin test can EXPLAIN exactly the statement
+    the sitemap runs. See the call site for why every predicate is a
+    correlated EXISTS rather than a join.
+    """
+    parent = aliased(Article)
+    in_inbox = (
+        select(ArticleList.article_id)
+        .where(
+            ArticleList.article_id == Article.id,
+            ArticleList.inbox_id == inbox.id,
+        )
+        .exists()
+    )
+    parent_in_inbox = (
+        select(ArticleList.article_id)
+        .join(parent, parent.id == ArticleList.article_id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            parent.message_id == Article.thread_parent,
+        )
+        .exists()
+    )
+    return (
+        select(Article.id, Article.date)
+        .where(
+            Article.date.is_not(None),
+            in_inbox,
+            or_(Article.thread_parent.is_(None), ~parent_in_inbox),
+        )
+        .order_by(Article.date.desc())
+    )
 
 
 def sitemap_index_xml(
@@ -240,26 +277,51 @@ def inbox_sitemap_xml(
         for y, m in sorted(year_month_rows, reverse=True):
             entries.append((f"{base}/{inbox.name}/{y}/{m}/", None))
 
-        # Recent articles in the inbox, one URL per article at
-        # the inbox's own URL. No canonical-fallback dance:
-        # cross-posted articles will appear in each linked
-        # inbox's sitemap, which is correct (each is a real,
-        # crawlable URL, the canonical `<link>` on the page
-        # itself tells search engines which to keep).
-        recent = session.execute(
-            select(Article.id, Article.date)
-            .join(ArticleList, ArticleList.article_id == Article.id)
-            .where(
-                ArticleList.inbox_id == inbox.id,
-                Article.date.is_not(None),
-            )
-            .order_by(Article.date.desc())
-            .limit(SITEMAP_RECENT_PER_INBOX)
+        # Recent THREADS in the inbox, one URL per thread, pointing at
+        # the whole-thread view. Individual message pages canonicalise
+        # there (see `mimir.web.routes.message`), and a sitemap should
+        # list canonical URLs, so listing per-message URLs here would
+        # hand crawlers ~10x the URLs only to redirect their attention
+        # elsewhere. One fat thread document per entry is also the
+        # whole point of the consolidation.
+        #
+        # "Is a thread root" is a per-row EXISTS, not the recursive
+        # walk-up `find_thread_root` does: a message is a root in this
+        # inbox when it has no `thread_parent`, or when that parent
+        # isn't in this inbox (an off-list ancestor, which
+        # `find_thread_root` also treats as the top).
+        #
+        # BOTH inbox membership and the root test are correlated
+        # EXISTS rather than joins, and that shape is load-bearing.
+        # Joining `article_lists` for the inbox scope makes the planner
+        # lead with `ix_article_lists_inbox_id`, materialise every one
+        # of the inbox's articles (6M+ on lkml), and sort them for the
+        # ORDER BY, `USE TEMP B-TREE FOR ORDER BY` in EXPLAIN, which is
+        # the same shape CONTEXT.md measured at ~8 s on the triage
+        # queues. As EXISTS the planner instead drives
+        # `ix_articles_date` DESC, predicate-tests each candidate via
+        # the `article_lists` PK and `ix_articles_message_id`, and
+        # stops at the LIMIT. Pinned by
+        # `test_inbox_sitemap_root_query_walks_the_date_index`.
+        #
+        # Cross-posted articles still appear in each linked inbox's
+        # sitemap; the page's own canonical resolves which to keep.
+        recent_roots = session.execute(
+            _recent_thread_roots_query(inbox).limit(SITEMAP_RECENT_PER_INBOX)
         ).all()
-        for art_id, date in recent:
+        for art_id, date in recent_roots:
+            # `<lastmod>` is the thread's START date, not its latest
+            # activity: deriving the latter needs the batched recursive
+            # walk-up `active_threads` uses, which CONTEXT.md measures
+            # at ~700 ms for a 12k-message window and which would run
+            # here over the whole corpus. `<lastmod>` can only delay a
+            # re-crawl, never pin one (the 3.6.1 reasoning), so an
+            # understated date on a long-running thread costs freshness
+            # rather than correctness. Deep + fresher coverage is W2's
+            # year-segmented sitemaps.
             entries.append(
                 (
-                    f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}",
+                    f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}/t",
                     date.strftime("%Y-%m-%d"),
                 )
             )

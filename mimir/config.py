@@ -584,6 +584,17 @@ class Settings(BaseSettings):
     # Override via SUBSYSTEM_TRIAGE_MAX_AGE_DAYS.
     subsystem_triage_max_age_days: int = 180
 
+    # Hard upper bound on messages rendered inline by the whole-thread
+    # view (`/<inbox>/<YYYY>/<MM>/<root_id>/t`). Each rendered message
+    # is a git blob fetch plus a parse (~2 ms warm per CONTEXT.md), so
+    # an uncapped render of a pathological 2000-message thread is
+    # seconds of work and a multi-MB response. Past the cap the view
+    # links to the remaining messages instead of inlining them, and
+    # those messages keep their own self-canonical (the thread view
+    # cannot claim to contain what it did not render). Override via
+    # THREAD_VIEW_RENDER_CAP.
+    thread_view_render_cap: int = 200
+
     # Hard upper bound on age of "related patches" surfaced on a
     # message page (1.36.3). The `recent_patches_touching` helper
     # joins `article_files` by `path IN (...)` and asks for the

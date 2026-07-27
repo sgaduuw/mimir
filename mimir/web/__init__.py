@@ -86,6 +86,7 @@ from mimir.web.urls import (
     _get_inbox_or_404,
     _msg_url,
     _site_base,
+    _thread_view_url,
     _year_decade_groups,
 )
 
@@ -125,6 +126,7 @@ __all__ = [
     "_render_body_filter",
     "_safe_from_filter",
     "_site_base",
+    "_thread_view_url",
     "_thread_summary",
     "_year_decade_groups",
     "author_feed",
