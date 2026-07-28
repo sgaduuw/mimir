@@ -2,6 +2,8 @@
 per-inbox sitemap, maintainers sitemap, `<lastmod>` correctness,
 cache invalidation after canonical-inbox flips."""
 
+import pytest
+
 from tests.test_routes._helpers import _clear_sitemap_cache, _seed_subsystem
 
 
@@ -216,14 +218,23 @@ def test_inbox_sitemap_dashboard_lastmod_is_inbox_max(client):
         assert urls[0].find("s:lastmod", ns).text == "2024-03-01"
 
 
-def test_inbox_sitemap_article_lastmod_matches_article_date(client):
-    """In a per-inbox sitemap, a thread entry's `<lastmod>` is the
-    root article's own date in YYYY-MM-DD (the thread's start; see
-    `inbox_sitemap_xml` for why not its latest activity)."""
+def test_inbox_sitemap_article_lastmod_is_the_threads_latest_activity(client):
+    """A thread entry's `<lastmod>` is the date of the NEWEST message
+    in the thread, not the root's own date.
+
+    The URL keeps the root's date (that is the thread's identity), so
+    the two dates appear in the same entry and must not be conflated.
+    This test previously pinned the root's date, which was the correct
+    contract only while deriving last activity needed a recursive walk;
+    the materialised thread root made it a grouped aggregate.
+
+    The seeded thread has a reply strictly newer than its root, so this
+    fails if the two are swapped back.
+    """
     import xml.etree.ElementTree as ET
-    from sqlalchemy import select
+    from sqlalchemy import func, select
     from mimir.extensions import SessionLocal
-    from mimir.models import Article
+    from mimir.models import Article, ArticleList, Inbox
 
     with SessionLocal() as s:
         art1 = s.execute(
@@ -231,6 +242,19 @@ def test_inbox_sitemap_article_lastmod_matches_article_date(client):
         ).scalar_one()
         art1_id = art1.id
         art1_date = art1.date
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        newest = s.scalar(
+            select(func.max(Article.date))
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == alpha.id,
+                ArticleList.thread_root_id == art1_id,
+            )
+        )
+    assert newest is not None and newest > art1_date, (
+        "fixture no longer has a reply newer than its root, so this test "
+        "cannot tell start-date from last-activity"
+    )
 
     _clear_sitemap_cache()
     r = client.get("/alpha/sitemap.xml")
@@ -243,7 +267,10 @@ def test_inbox_sitemap_article_lastmod_matches_article_date(client):
             lm = u.find("s:lastmod", ns)
             art1_lastmod = lm.text if lm is not None else None
             break
-    assert art1_lastmod == art1_date.strftime("%Y-%m-%d")
+    assert art1_lastmod == newest.strftime("%Y-%m-%d"), (
+        f"expected the thread's latest activity {newest:%Y-%m-%d}, got "
+        f"{art1_lastmod} (the root's own date is {art1_date:%Y-%m-%d})"
+    )
 
 
 def test_inbox_sitemap_lists_year_and_month_archives(client):
@@ -569,3 +596,255 @@ def test_inbox_json_ld_item_list_points_at_thread_views(client):
     # A single-message thread keeps its own URL: its message page IS
     # the whole conversation and is the richer of the two.
     assert urls[1] == "https://example.test/alpha/2024/03/22", urls
+
+
+def _set_article_date(article_id: int, when):
+    """Force one article's `date`.
+
+    `articles.date` is the public-inbox commit timestamp, not the
+    RFC 5322 `Date:` header, so the seeding helper's `date_for` (which
+    writes the header) cannot move it.
+    """
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as s:
+        s.execute(update(Article).where(Article.id == article_id).values(date=when))
+        s.commit()
+
+
+def test_thread_lastmod_is_scoped_to_the_inbox(client, tmp_path):
+    """The same root can head threads of different lengths in each
+    inbox it is cross-posted to, so its last-activity date differs per
+    inbox.
+
+    Written first because this is the axis that produced three separate
+    blocking bugs in the surrounding work: every test held it at one
+    inbox, so dropping the inbox scoping entirely passed the suite.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.seo.sitemaps import _thread_last_activity
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("la1@x", None), ("la2@x", "la1@x")])
+    root_id = seeded["la1@x"][0]
+    # `articles.date` is the public-inbox COMMIT time, not the `Date:`
+    # header (CONTEXT.md), so `seed_thread_shape`'s `date_for` cannot
+    # move it. Set it directly.
+    _set_article_date(seeded["la2@x"][0], datetime(2024, 6, 5, tzinfo=timezone.utc))
+
+    # Cross-post the ROOT only into beta: alpha's thread runs to June,
+    # beta's copy is a lone January message.
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        src = (
+            s.execute(select(ArticleList).where(ArticleList.article_id == root_id))
+            .scalars()
+            .first()
+        )
+        s.add(
+            ArticleList(
+                article_id=root_id,
+                inbox_id=beta.id,
+                epoch=src.epoch,
+                commit_sha=src.commit_sha,
+                thread_root_id=root_id,
+            )
+        )
+        s.commit()
+
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        alpha_latest = _thread_last_activity(s, alpha, [root_id])[root_id]
+        beta_latest = _thread_last_activity(s, beta, [root_id])[root_id]
+        root_date = s.get(Article, root_id).date
+
+    assert alpha_latest.strftime("%Y-%m") == "2024-06", alpha_latest
+    assert beta_latest == root_date, (
+        f"beta holds only the root, so its thread's last activity is the "
+        f"root's own date; got {beta_latest}"
+    )
+
+
+def test_thread_lastmod_understates_rather_than_overstates_mid_backfill(
+    client, tmp_path
+):
+    """A reply whose `thread_root_id` is not yet filled is not counted.
+
+    Be precise about what this does and does not guard, because the
+    name oversells it. It catches ZERO single-line mutations of the
+    query: `IN (...)` excludes NULL and `GROUP BY` buckets NULL
+    separately, so the assertion is a SQL tautology for any variation
+    of this shape. Do not trust it to pin the mid-backfill arithmetic.
+
+    What it does pin, and is the only test in the suite that does, is
+    the MEMBERSHIP SOURCE: rewrite membership from the materialised
+    column to a `thread_parent` walk and this is what fails, because
+    such a walk would count the unbackfilled reply. That matters
+    because the sibling `_singleton_root_ids` deliberately uses the
+    `thread_parent` form, so "make these two consistent" is a plausible
+    future edit, and it would silently change what a mid-backfill
+    sitemap advertises.
+
+    The safety direction it documents is real: `<lastmod>` can only
+    DELAY a re-crawl, never pin one, so understating costs freshness
+    until the backfill lands, while overstating would spend crawl
+    budget on documents that had not changed.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.seo.sitemaps import _thread_last_activity
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("mb1@x", None), ("mb2@x", "mb1@x")])
+    root_id = seeded["mb1@x"][0]
+    reply_id = seeded["mb2@x"][0]
+    _set_article_date(reply_id, datetime(2024, 6, 5, tzinfo=timezone.utc))
+
+    with SessionLocal() as s:
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.article_id == reply_id)
+            .values(thread_root_id=None)
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        latest = _thread_last_activity(s, alpha, [root_id])[root_id]
+        root_date = s.get(Article, root_id).date
+
+    assert latest == root_date, (
+        f"an unbackfilled reply must not contribute; got {latest}"
+    )
+
+
+@pytest.mark.parametrize(
+    "shape,newest",
+    [
+        # (message_id -> day-of-month) plus which one is newest. The
+        # point of every case is that the newest message is NOT the
+        # last one to arrive, so "last row wins" and "max" disagree.
+        ({"n1": 9, "n2": 2, "n3": 3}, "n1"),  # newest is the root
+        ({"n1": 1, "n2": 9, "n3": 3}, "n2"),  # newest in the middle
+        ({"n1": 1, "n2": 3, "n3": 2}, "n2"),  # newest is an earlier sibling
+    ],
+    ids=["newest_is_root", "newest_in_middle", "newest_earlier_sibling"],
+)
+def test_thread_lastmod_is_the_max_not_the_last_row(client, tmp_path, shape, newest):
+    """The aggregate must be a MAX, not "whichever member came last".
+
+    `group_by(thread_root_id)` -> `group_by(article_id)` survived the
+    ENTIRE suite, because every existing fixture happens to have its
+    newest-dated member arrive last, which makes last-row-wins and max
+    indistinguishable. The axis held fixed was WHICH MEMBER CARRIES THE
+    NEWEST DATE.
+
+    That axis is not exotic here: `articles.date` is the archive commit
+    time, so a child legitimately predating its parent is documented
+    behaviour, not a corner case.
+
+    The expected value is computed from the dates this test sets, not
+    by re-running the production query, so it cannot agree with a
+    broken implementation by construction.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.seo.sitemaps import _thread_last_activity
+    from tests.test_routes._helpers import seed_thread_shape
+
+    mids = list(shape)
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [(f"{mids[0]}@x", None)] + [(f"{m}@x", f"{mids[0]}@x") for m in mids[1:]],
+    )
+    for mid, day in shape.items():
+        _set_article_date(
+            seeded[f"{mid}@x"][0], datetime(2024, 5, day, tzinfo=timezone.utc)
+        )
+
+    root_id = seeded[f"{mids[0]}@x"][0]
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        got = _thread_last_activity(s, alpha, [root_id])[root_id]
+
+    # Compare the rendered form: that is what reaches the sitemap, and
+    # SQLite hands back naive datetimes where the seeder wrote aware ones.
+    assert got.strftime("%Y-%m-%d") == f"2024-05-{shape[newest]:02d}", (
+        f"expected the max ({newest}, day {shape[newest]}), got {got}"
+    )
+
+
+def test_singleton_lastmod_survives_a_corrupt_thread_root(client, tmp_path):
+    """A single-message page never changes, so its `<lastmod>` must be
+    its own date even if the materialised column says otherwise.
+
+    `_singleton_root_ids` reads `thread_parent` while
+    `_thread_last_activity` reads `article_lists.thread_root_id`. When
+    those disagree, which only a wrong column value can cause, the
+    aggregate can hand a singleton a date from some other thread. This
+    diff is what turns such a column bug from "the wrong URL is listed"
+    into "a page that cannot have changed claims it did", the direction
+    the design calls unsafe, so the coherence is asserted rather than
+    assumed.
+
+    Verified by pointing an unrelated article's root at this one, which
+    is what a W8 write-path bug produces.
+    """
+    import xml.etree.ElementTree as ET
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from tests.test_routes._helpers import seed_thread_shape
+
+    solo = seed_thread_shape(tmp_path, "alpha", [("cs1@x", None)])
+    other_mirror = tmp_path / "other"
+    other_mirror.mkdir()
+    other = seed_thread_shape(other_mirror, "alpha", [("cs2@x", None)])
+    solo_id = solo["cs1@x"][0]
+    _set_article_date(other["cs2@x"][0], datetime(2029, 12, 31, tzinfo=timezone.utc))
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        # The corruption: an unrelated article claims this root.
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.article_id == other["cs2@x"][0],
+                ArticleList.inbox_id == alpha.id,
+            )
+            .values(thread_root_id=solo_id)
+        )
+        s.commit()
+        solo_date = s.get(Article, solo_id).date
+
+    _clear_sitemap_cache()
+    root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    for u in root.findall("s:url", ns):
+        loc = u.find("s:loc", ns).text
+        if loc.endswith(f"/{solo_id}"):
+            lm = u.find("s:lastmod", ns)
+            assert lm is not None and lm.text == solo_date.strftime("%Y-%m-%d"), (
+                f"single-message page {loc} advertises lastmod {lm.text if lm is not None else None}, "
+                f"but it can only ever have changed on {solo_date:%Y-%m-%d}"
+            )
+            break
+    else:
+        raise AssertionError(f"singleton {solo_id} absent from the sitemap")

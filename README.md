@@ -624,10 +624,12 @@ Routes:
   year and month archives that have messages, and the most recent
   thread views (one URL per conversation, not one per message, since
   message pages canonicalise to their thread). Each thread's
-  `<lastmod>` is the root's date, the thread's start rather than its
-  latest activity; deriving the latter needs the batched recursive
-  walk-up `active_threads` uses, and `<lastmod>` can only delay a
-  re-crawl, never pin one. Cached for 1 h.
+  `<lastmod>` is the date of its NEWEST message, so a thread that
+  gains a reply announces that it changed; the URL still carries the
+  root's date, since that is the thread's identity. (Until the
+  materialised thread root landed this was the root's date, because
+  deriving last activity needed a recursive walk-up per thread.)
+  Cached for 1 h.
 - `GET /sitemap-maintainers.xml`, one urlset listing every
   `/maintainers/<address>` profile page (one URL per MAINTAINERS
   `M:` maintainer). No per-URL `<lastmod>`. Cached for 1 h.
