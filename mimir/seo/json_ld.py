@@ -65,6 +65,39 @@ def _json_ld_index(base: str, inboxes=()) -> dict:
     return payload
 
 
+def _thread_url_for(thread, inbox_name: str) -> str:
+    """Whole-thread URL for an `ActiveThread` with replies, else its
+    message URL.
+
+    `reply_count > 0` is exactly "this thread has more than one message
+    in this inbox", which is the consolidation rule, and it needs no
+    query. The equivalence is worth spelling out because the field is a
+    WINDOWED count and that looks like it should break it:
+
+    - `reply_count > 0` means at least one non-root message was seen in
+      the window, so the thread has at least two messages. Sound.
+    - `reply_count == 0` means the only in-window message was the root.
+      Replies can only follow their root in time, and the window ends
+      now, so a root inside the window cannot have replies outside it.
+      The thread really is a single message. Also sound.
+
+    Inbox-scoped on purpose, matching what it replaces: this list is
+    rendered on `/<inbox>/`, so its URLs stay in that inbox rather than
+    hopping to each thread's canonical inbox. `reply_count` is computed
+    per inbox too, so the count and the URL agree.
+
+    Also immune to the cyclic-`thread_parent` inflation that
+    `dedupe_thread` exists to absorb: this counts recent messages
+    grouped by root, not a downward walk, so a cycle cannot re-emit an
+    article and fake a multi-message thread.
+    """
+    from mimir.web import _msg_url, _thread_view_url
+
+    if getattr(thread, "reply_count", 0) > 0:
+        return _thread_view_url(thread, inbox_name)
+    return _msg_url(thread, inbox_name)
+
+
 def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
     """schema.org payload for `/<inbox_name>/`, a `DiscussionForum`
     container plus an `ItemList` of the currently-most-active threads
@@ -74,7 +107,7 @@ def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
     """
     # Lazy imports break a `web → seo → web` cycle: these helpers
     # live in web.py with the rest of the display filters.
-    from mimir.web import _clean_subject_filter, _msg_url
+    from mimir.web import _clean_subject_filter
 
     payload: dict = {
         "@context": "https://schema.org",
@@ -91,7 +124,7 @@ def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
                 {
                     "@type": "ListItem",
                     "position": i + 1,
-                    "url": f"{base}{_msg_url(t, inbox.name)}",
+                    "url": f"{base}{_thread_url_for(t, inbox.name)}",
                     "name": _clean_subject_filter(t.subject) or "(no subject)",
                 }
                 for i, t in enumerate(active_threads)

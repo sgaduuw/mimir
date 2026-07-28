@@ -99,6 +99,17 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- IndexNow now announces the thread view for a conversation with
+  replies, rather than each new message's own URL. Since message pages
+  in a multi-message thread canonicalise to their thread view, the old
+  push told search engines about a page that disclaims itself, and the
+  consolidated page that actually grew was never announced at all. A
+  batch of replies to one thread now pushes one URL instead of one per
+  reply.
+- The "most active threads" structured data on `/<inbox>/` links each
+  discussion to its thread view rather than to its root message, so
+  the `ItemList` handed to search engines agrees with the canonical of
+  the page it names.
 - `mimir reindex` now fails immediately with an explanation instead of
   partway through. It needs an active broker writer, which only the
   broker's own serve loop establishes, so against a deployed instance
