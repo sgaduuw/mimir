@@ -61,6 +61,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- A thread's `<lastmod>` in the sitemap is now the date of its newest
+  message rather than the root's own date, so a thread that gains a
+  reply announces that it changed. Previously the date never moved
+  after the thread started, which meant the consolidated page had no
+  freshness signal on the one channel Google reads: it does not
+  consume IndexNow, so the sitemap is all it has.
 - The broker's healthcheck `start_period` rises from 60 s to 180 s.
   A deploy that runs a schema migration now also runs the one-time
   thread-root backfill before accepting RPCs, and the total
@@ -99,12 +105,6 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
-- A thread's `<lastmod>` in the sitemap is now the date of its newest
-  message rather than the root's own date, so a thread that gains a
-  reply announces that it changed. Previously the date never moved
-  after the thread started, which meant the consolidated page had no
-  freshness signal on the one channel Google reads: it does not
-  consume IndexNow, so the sitemap is all it has.
 - IndexNow now announces the thread view for a conversation with
   replies, rather than each new message's own URL. Since message pages
   in a multi-message thread canonicalise to their thread view, the old
