@@ -1025,13 +1025,21 @@ def test_reindex_from_scratch_never_leaves_a_root_the_walk_cannot_reach(
     from click.testing import CliRunner
 
     from mimir.cli.ingest import reindex_command
-    from mimir.threading import _find_thread_root_cte, find_thread_root
 
     # One message per epoch, so reindexing an epoch removes exactly one
     # link row and leaves the rest of the chain in place.
     chain = [("rx1@x", None), ("rx2@x", "rx1@x"), ("rx3@x", "rx2@x")]
     for i, edge in enumerate(chain):
         _seed_epoch(tmp_path, "alpha", f"{i}.git", [edge])
+    # A second thread in a second inbox, so the reset's `inbox_id`
+    # scope has something to be wrong about.
+    beta_mirror = tmp_path / "beta-mirror"
+    beta_mirror.mkdir()
+    other = seed_thread_shape(
+        beta_mirror, "beta", [("rxb1@x", None), ("rxb2@x", "rxb1@x")]
+    )
+    other_before = _roots_by_inbox("beta", set(other))
+    assert all(r is not None for r, _a in other_before.values())
     victim = {"root": 0, "middle": 1, "leaf": 2}[position]
 
     # Re-point the victim epoch at a repo that no longer carries its
@@ -1046,16 +1054,25 @@ def test_reindex_from_scratch_never_leaves_a_root_the_walk_cannot_reach(
     )
     assert result.exit_code == 0, result.output
 
-    survivors = [mid for i, (mid, _p) in enumerate(chain) if i != victim]
-    with SessionLocal() as s:
-        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        for mid in survivors:
-            fast = find_thread_root(s, inbox, mid)
-            walk = _find_thread_root_cte(s, inbox, mid)
-            assert fast == walk, (
-                f"after reindexing the {position} epoch, {mid} resolves to "
-                f"{fast!r} via the column but {walk!r} via the walk"
-            )
+    survivors = {mid for i, (mid, _p) in enumerate(chain) if i != victim}
+
+    # Assert the STORED value against the independent oracle, not
+    # `find_thread_root` against it. `find_thread_root` falls back to
+    # the CTE whenever the column is NULL, so comparing the two is
+    # satisfied by construction on exactly the state the reset
+    # produces: an earlier version of this assertion stayed green with
+    # the entire rebuild step deleted.
+    _assert_invariant_for("alpha", survivors, f"reindex/{position}")
+    assert _nulls_remaining("alpha") == 0, (
+        f"reindexing the {position} epoch left rows unrooted; the rebuild "
+        "did not run or did not finish"
+    )
+    # The other inbox must be untouched. The reset is whole-inbox, and
+    # nothing here would notice it going whole-DATABASE: production is
+    # ~200 inboxes and every test in this file drives one.
+    assert _roots_by_inbox("beta", other_before.keys()) == other_before, (
+        "reindexing alpha changed beta's roots"
+    )
 
 
 def test_broker_startup_backfills_thread_roots(client, tmp_path):
@@ -1278,3 +1295,131 @@ def test_startup_verification_reports_a_mismatch(client, tmp_path, caplog):
     assert any("verification found" in r.message for r in caplog.records), (
         f"verification did not report the corrupted root: {caplog.records}"
     )
+
+
+def test_reindex_from_scratch_refuses_when_it_cannot_rebuild(client, tmp_path):
+    """Never destroy in a context that cannot finish the job.
+
+    `ingest_epoch` resolves its writer from the broker context, which
+    only `serve()` sets, so a plain CLI process raises the moment the
+    re-walk starts. The destructive half runs and COMMITS before that,
+    so without a pre-check a `--from-scratch` in the wrong process
+    deletes an epoch's links, blanks the inbox's roots, and dies. And
+    nothing repairs it: the startup backfill is sentinel-gated, the
+    scheduler has no thread-roots pass, and `verify_thread_roots` only
+    samples non-NULL rows so it cannot see an all-NULL inbox.
+
+    The suite hides this by default because conftest installs a broker
+    context session-wide, so this clears it to get the production shape.
+    """
+    from click.testing import CliRunner
+
+    from mimir.broker import _context
+    from mimir.cli.ingest import reindex_command
+
+    _seed_epoch(tmp_path, "alpha", "0.git", [("nb1@x", None)])
+    _seed_epoch(tmp_path, "alpha", "1.git", [("nb2@x", "nb1@x")])
+    mids = {"nb1@x", "nb2@x"}
+    before = _roots_by_inbox("alpha", mids)
+    assert all(r is not None for r, _a in before.values())
+
+    pool, writer = _context.get_active_pool(), _context.get_active_writer()
+    _context.clear_active()
+    try:
+        result = CliRunner().invoke(
+            reindex_command, ["alpha", "1.git", "--from-scratch"]
+        )
+    finally:
+        _context.set_active(pool, writer)
+
+    assert result.exit_code != 0, result.output
+    assert "active broker writer" in result.output, result.output
+    assert _roots_by_inbox("alpha", mids) == before, (
+        "refused the run but destroyed state on the way out"
+    )
+    assert _nulls_remaining("alpha") == 0
+
+
+def test_reindex_from_scratch_rebuilds_even_when_the_rewalk_fails(
+    client, tmp_path, monkeypatch
+):
+    """The failure path is the one that matters.
+
+    A re-walk that dies partway (bad blob, OOM, Ctrl-C) would otherwise
+    leave the whole inbox unrooted with nothing scheduled to repair it,
+    which is strictly worse than the stale roots this command exists to
+    clear.
+    """
+    from click.testing import CliRunner
+
+    import mimir.cli.ingest as cli_ingest
+    from mimir.cli.ingest import reindex_command
+
+    _seed_epoch(tmp_path, "alpha", "0.git", [("rf1@x", None)])
+    _seed_epoch(tmp_path, "alpha", "1.git", [("rf2@x", "rf1@x")])
+    _seed_epoch(tmp_path, "alpha", "2.git", [("rf3@x", "rf2@x")])
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("simulated mid-walk failure")
+
+    monkeypatch.setattr(cli_ingest, "ingest_epoch", _boom)
+    result = CliRunner().invoke(reindex_command, ["alpha", "1.git", "--from-scratch"])
+
+    assert result.exit_code != 0
+    assert _nulls_remaining("alpha") == 0, (
+        "a failed re-walk left the inbox unrooted with nothing to repair it"
+    )
+    _assert_invariant_for("alpha", {"rf1@x", "rf3@x"}, "reindex/failed-rewalk")
+
+
+def test_reindex_from_scratch_leaves_roots_alone_when_nothing_was_deleted(
+    client, tmp_path
+):
+    """A mistyped epoch must not blank the inbox.
+
+    `9.git` is a valid epoch name that this inbox never ingested, so
+    the delete matches nothing. Resetting anyway would destroy every
+    root in the inbox on a typo.
+    """
+    from click.testing import CliRunner
+    from dulwich.repo import Repo
+
+    from mimir.cli.ingest import reindex_command
+
+    _seed_epoch(tmp_path, "alpha", "0.git", [("nd1@x", None)])
+    _seed_epoch(tmp_path, "alpha", "1.git", [("nd2@x", "nd1@x")])
+    mids = {"nd1@x", "nd2@x"}
+    before = _roots_by_inbox("alpha", mids)
+
+    Repo.init_bare(str(tmp_path / "9.git"), mkdir=True)
+    result = CliRunner().invoke(reindex_command, ["alpha", "9.git", "--from-scratch"])
+
+    assert "deleted 0 existing inbox-links" in result.output, result.output
+    assert _roots_by_inbox("alpha", mids) == before, (
+        "reset the inbox's roots even though nothing was deleted"
+    )
+
+
+def test_reindex_from_scratch_fails_loudly_on_a_truncated_rebuild(
+    client, tmp_path, monkeypatch
+):
+    """Exit non-zero when the rebuild is truncated.
+
+    Same reasoning as `mimir backfill-thread-roots`: without this the
+    summary line is identical to a complete run and reads as done. It
+    matters more here, because this command is what created the NULLs.
+    """
+    from click.testing import CliRunner
+
+    import mimir.thread_roots
+    from mimir.cli.ingest import reindex_command
+
+    _seed_epoch(tmp_path, "alpha", "0.git", [("tr1@x", None)])
+    _seed_epoch(tmp_path, "alpha", "1.git", [("tr2@x", "tr1@x")])
+    _seed_epoch(tmp_path, "alpha", "2.git", [("tr3@x", "tr2@x")])
+    monkeypatch.setattr(mimir.thread_roots, "MAX_PASSES", 1)
+
+    result = CliRunner().invoke(reindex_command, ["alpha", "1.git", "--from-scratch"])
+
+    assert result.exit_code != 0, result.output
+    assert "pass budget" in result.output, result.output

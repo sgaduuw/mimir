@@ -167,6 +167,36 @@ def reindex_command(
     if not epoch_path.exists():
         raise click.ClickException(f"epoch repo not found: {epoch_path}")
 
+    if from_scratch:
+        # Fail BEFORE destroying anything. `ingest_epoch` resolves its
+        # writer from the broker context, which only `serve()` ever
+        # sets, so a plain CLI process raises `RuntimeError("No active
+        # broker")` the moment the re-walk starts. That is pre-existing
+        # (this command has been unusable outside the broker since the
+        # single-writer migration), but the destructive half runs and
+        # COMMITS first, so without this check a `--from-scratch` in the
+        # wrong process deletes an epoch's links, blanks the inbox's
+        # thread roots, and then dies before it can put anything back.
+        #
+        # Nothing repairs that afterwards: the startup backfill is
+        # sentinel-gated and the sentinel already exists post-deploy,
+        # the scheduler has no thread-roots pass, and
+        # `verify_thread_roots` only samples non-NULL rows so it is
+        # structurally blind to an all-NULL inbox. The sitemap would
+        # silently drop every thread in that inbox until a human
+        # noticed. Refusing up front is the whole fix.
+        from mimir.broker._context import get_active_writer
+
+        try:
+            get_active_writer()
+        except RuntimeError:
+            raise click.ClickException(
+                "reindex --from-scratch needs an active broker writer, and this "
+                "process has none, so it would delete rows it cannot rebuild. "
+                "Run it inside the broker process, or re-walk non-destructively "
+                f"with `mimir reindex {inbox_name} {epoch}` (no --from-scratch)."
+            )
+
     with SessionLocal() as session:
         # Re-attach the detached Inbox bootstrap_inboxes returned.
         inbox = session.merge(inbox)
@@ -206,34 +236,55 @@ def reindex_command(
             # State the blast radius plainly, because "readers fall back"
             # undersells it: the sitemap's root test IS the column, so
             # between here and the backfill below this inbox contributes
-            # ZERO thread URLs to its sitemap. That is the price of a
-            # destructive, operator-initiated rebuild, and it is bounded
-            # by this command rather than left for someone to notice.
-            session.execute(
-                update(ArticleList)
-                .where(ArticleList.inbox_id == inbox.id)
-                .values(thread_root_id=None)
-            )
+            # ZERO thread URLs to its sitemap. The `finally` around the
+            # re-walk is what bounds that window to this command even
+            # when the re-walk fails.
+            #
+            # Conditional on having actually deleted something: a
+            # mistyped epoch (valid name, never ingested) reports
+            # "deleted 0" and must not then blank the inbox.
+            if deleted:
+                session.execute(
+                    update(ArticleList)
+                    .where(ArticleList.inbox_id == inbox.id)
+                    .values(thread_root_id=None)
+                )
 
         state = session.get(IngestState, (inbox.id, epoch))
         if state is not None:
             state.last_commit_sha = None
         session.commit()
 
-        result = ingest_epoch(session, inbox, epoch, epoch_path, workers=workers)
-
-        if from_scratch:
-            # Re-fill what the reset above cleared. The re-walk only
-            # re-roots the rows it re-links, so every other epoch in this
-            # inbox would otherwise stay NULL (correct but slow) until
-            # someone remembered to run the backfill by hand. Doing it
-            # here keeps `reindex --from-scratch` self-contained.
-            counts = backfill_inbox(session, inbox.id)
-            session.commit()
-            click.echo(
-                f"thread roots rebuilt for {inbox_name}: "
-                f"seeded={counts['seeded']} propagated={counts['propagated']}"
-            )
+        try:
+            result = ingest_epoch(session, inbox, epoch, epoch_path, workers=workers)
+        finally:
+            if from_scratch and deleted:
+                # Re-fill what the reset cleared, in a `finally` because
+                # the failure path is the one that matters: a re-walk
+                # that dies on a bad blob would otherwise leave the whole
+                # inbox unrooted with nothing scheduled to repair it.
+                # Every pass only touches NULL rows, so running this
+                # after a partial re-walk is safe and simply roots
+                # whatever did land.
+                session.rollback()
+                counts = backfill_inbox(session, inbox.id)
+                session.commit()
+                click.echo(
+                    f"thread roots rebuilt for {inbox_name}: "
+                    f"seeded={counts['seeded']} propagated={counts['propagated']} "
+                    f"cycles={counts['cycles_broken']}"
+                )
+                if counts["exhausted"]:
+                    # Same reasoning as `mimir backfill-thread-roots`:
+                    # without a non-zero exit a truncated rebuild prints
+                    # the same summary as a complete one and reads as
+                    # done. It matters more here, because this command is
+                    # what created the NULLs.
+                    raise click.ClickException(
+                        f"thread-root rebuild for {inbox_name} hit the pass "
+                        "budget; rows remain unrooted, re-run "
+                        "`mimir backfill-thread-roots`"
+                    )
 
     click.echo(
         f"{inbox_name}/{result.epoch}: new={result.new} linked={result.linked} "
