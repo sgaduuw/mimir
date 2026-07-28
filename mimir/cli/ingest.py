@@ -18,7 +18,7 @@ import logging
 from pathlib import Path
 
 import click
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 from mimir import indexnow
 from mimir.cli._common import _EPOCH_RE, _configure_logging, _select_inboxes
@@ -27,6 +27,7 @@ from mimir.extensions import SessionLocal
 from mimir.ingest import DEFAULT_WORKERS, ingest_epoch
 from mimir.models import ArticleList, IngestState
 from mimir.sync import sync_epochs
+from mimir.thread_roots import backfill_inbox
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,29 @@ def reindex_command(
             click.echo(
                 f"deleted {deleted} existing inbox-links for {inbox_name}/{epoch}"
             )
+            # Reset the whole inbox's materialised roots, not just this
+            # epoch's. Deleting one epoch's link rows breaks the parent
+            # chain for descendants living in OTHER epochs: they keep a
+            # `thread_root_id` pointing at a root the recursive walk can
+            # no longer reach, because the hop through the removed
+            # message is gone. `find_thread_root`'s fast path re-checks
+            # that the ROOT is still a member, which it is, so it would
+            # keep answering with it and disagree with the walk. That
+            # surfaces as a permanent 301 from a survivor's thread view
+            # to a thread that no longer contains it, which crawlers
+            # then cache.
+            #
+            # Scoping the reset to the affected descendants would mean a
+            # downward walk from every deleted article; NULLing the inbox
+            # is one statement and lands in the safe state the column was
+            # designed around (NULL means "not yet computed", so readers
+            # fall back to the CTE: correct, just slower). The backfill
+            # after the re-walk restores the fast path.
+            session.execute(
+                update(ArticleList)
+                .where(ArticleList.inbox_id == inbox.id)
+                .values(thread_root_id=None)
+            )
 
         state = session.get(IngestState, (inbox.id, epoch))
         if state is not None:
@@ -190,6 +214,19 @@ def reindex_command(
         session.commit()
 
         result = ingest_epoch(session, inbox, epoch, epoch_path, workers=workers)
+
+        if from_scratch:
+            # Re-fill what the reset above cleared. The re-walk only
+            # re-roots the rows it re-links, so every other epoch in this
+            # inbox would otherwise stay NULL (correct but slow) until
+            # someone remembered to run the backfill by hand. Doing it
+            # here keeps `reindex --from-scratch` self-contained.
+            counts = backfill_inbox(session, inbox.id)
+            session.commit()
+            click.echo(
+                f"thread roots rebuilt for {inbox_name}: "
+                f"seeded={counts['seeded']} propagated={counts['propagated']}"
+            )
 
     click.echo(
         f"{inbox_name}/{result.epoch}: new={result.new} linked={result.linked} "
