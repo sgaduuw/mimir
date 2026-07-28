@@ -522,3 +522,50 @@ def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
         checked += 1
 
     assert checked, "no ingested thread reached the sitemap; test proves nothing"
+
+
+def _active_thread(article_id, *, reply_count, subject="A thread"):
+    from datetime import datetime, timezone
+
+    from mimir.threading import ActiveThread
+
+    return ActiveThread(
+        id=article_id,
+        inbox_name="alpha",
+        message_id=f"t{article_id}@x",
+        subject=subject,
+        author="a@b.example",
+        date=datetime(2024, 3, 1, tzinfo=timezone.utc),
+        recent_count=reply_count + 1,
+        reply_count=reply_count,
+        last_activity=datetime(2024, 3, 1, tzinfo=timezone.utc),
+    )
+
+
+def test_inbox_json_ld_item_list_points_at_thread_views(client):
+    """The `ItemList` on `/<inbox>/` claims to be the active
+    DISCUSSIONS, so a discussion with replies must point at the thread
+    view rather than at its root message.
+
+    Pointing at the root message put structured data handed to Google
+    at odds with the page it names, which disclaims itself via
+    `<link rel="canonical">`.
+    """
+    from mimir.seo.json_ld import _json_ld_inbox
+
+    class _Inbox:
+        name = "alpha"
+
+    payload = _json_ld_inbox(
+        "https://example.test",
+        _Inbox(),
+        active_threads=[
+            _active_thread(11, reply_count=4, subject="Has replies"),
+            _active_thread(22, reply_count=0, subject="Solo"),
+        ],
+    )
+    urls = [item["url"] for item in payload["mainEntity"]["itemListElement"]]
+    assert urls[0] == "https://example.test/alpha/2024/03/11/t", urls
+    # A single-message thread keeps its own URL: its message page IS
+    # the whole conversation and is the richer of the two.
+    assert urls[1] == "https://example.test/alpha/2024/03/22", urls
