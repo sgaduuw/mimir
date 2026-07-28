@@ -131,6 +131,61 @@ def _recent_thread_roots_query(inbox: Inbox):
     )
 
 
+def _thread_last_activity(session, inbox: Inbox, root_ids: list[int]) -> dict:
+    """`root_id -> newest message date in that thread, in this inbox.`
+
+    The `<lastmod>` for a thread URL has to be the date of the newest
+    message IN it, not the root's own date. Those differ by the whole
+    life of the conversation, and the difference is the entire point:
+    a thread that gains a reply is a document that CHANGED, and the
+    root's date never moves, so before this the consolidated page (the
+    one this workstream exists to get indexed) announced nothing when
+    it grew. Google does not consume IndexNow, so the sitemap is its
+    only freshness channel for that event.
+
+    This was previously left undone for a stated reason: deriving last
+    activity "needs the batched recursive walk-up `active_threads`
+    uses", measured in CONTEXT.md at ~700 ms for a 12k-message window.
+    W8 removed that: thread membership is now a column, so this is one
+    grouped aggregate over an indexed `(inbox_id, thread_root_id)`
+    range rather than a recursive walk.
+
+    Scoped to one inbox because threading is: the same root can head
+    threads of different lengths, and therefore different last-activity
+    dates, in each inbox it is cross-posted to.
+
+    Measured on a 998k-row / 200-inbox corpus with realistic thread
+    sizes: 9.4 ms for an lkml-shaped inbox at the 5000-root sitemap
+    cap, 0.47 ms for a small inbox (553 roots). EXPLAIN uses
+    `ix_article_lists_thread_root` on BOTH columns, unlike
+    `_recent_thread_roots_query` which only seeks on `inbox_id`. The
+    199 small inboxes are FASTER here rather than slower, because the
+    cost is bounded by root count and not by inbox size, so the shape
+    that dominates production (199-of-200 are small) is the cheap one.
+    Whole warm cycle across 200 inboxes is ~100 ms.
+
+    Mid-backfill a reply whose `thread_root_id` is still NULL is not
+    counted, so the answer can be older than the truth. That direction
+    is safe. `<lastmod>` can only delay a re-crawl, never pin one (the
+    3.6.1 conditional-GET reasoning), so an understated date costs
+    freshness until the backfill lands; an overstated one would waste
+    crawl budget on documents that had not changed.
+    """
+    if not root_ids:
+        return {}
+    rows = session.execute(
+        select(ArticleList.thread_root_id, func.max(Article.date))
+        .join(Article, Article.id == ArticleList.article_id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            ArticleList.thread_root_id.in_(root_ids),
+            Article.date.is_not(None),
+        )
+        .group_by(ArticleList.thread_root_id)
+    ).all()
+    return {root_id: dt for root_id, dt in rows if dt is not None}
+
+
 def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
     """Of `root_ids`, those whose thread is just themselves in this
     inbox (no reply hangs off them here).
@@ -363,20 +418,20 @@ def inbox_sitemap_xml(
         singleton_ids = _singleton_root_ids(
             session, inbox, [art_id for art_id, _ in recent_roots]
         )
+        last_activity = _thread_last_activity(
+            session, inbox, [art_id for art_id, _ in recent_roots]
+        )
         for art_id, date in recent_roots:
-            # `<lastmod>` is the thread's START date, not its latest
-            # activity: deriving the latter needs the batched recursive
-            # walk-up `active_threads` uses, which CONTEXT.md measures
-            # at ~700 ms for a 12k-message window and which would run
-            # here over the whole corpus. `<lastmod>` can only delay a
-            # re-crawl, never pin one (the 3.6.1 reasoning), so an
-            # understated date on a long-running thread costs freshness
-            # rather than correctness. Deep + fresher coverage is W2's
-            # year-segmented sitemaps.
+            # The URL keeps the ROOT's date, because that is the
+            # thread's identity and the page lives there. `<lastmod>`
+            # is the thread's LATEST activity, which is a different
+            # date and the one crawlers act on.
             loc = f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}"
             if art_id not in singleton_ids:
                 loc += "/t"
-            entries.append((loc, date.strftime("%Y-%m-%d")))
+            entries.append(
+                (loc, (last_activity.get(art_id) or date).strftime("%Y-%m-%d"))
+            )
         return SitemapPayload(
             body=_build_sitemap_xml(entries),
             last_modified=inbox_latest,
