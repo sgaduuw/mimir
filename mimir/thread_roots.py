@@ -28,15 +28,32 @@ logger = logging.getLogger(__name__)
 # from an early guess, "~10 s per 500k", "2.3 s per 500k, linear"), and
 # two of them were wrong; the drift is what this constant exists to
 # stop. Benchmarked 2026-07-28 on a 1.2M-row / 200-inbox corpus with
-# realistic thread depth: 11.4 s total (the one lkml-shaped inbox is
-# ~87% of it, the ~199 small ones ~1.6 s combined).
-#
-# Extrapolating to the production ~6M gives ~55 s, and that is a FLOOR
-# rather than an estimate: pass count grows with thread depth and 6M is
-# well outside the measured range. Anything gating on this (the broker
-# healthcheck's `start_period`, an operator's patience) should budget
-# accordingly.
+# realistic thread depth: 11.4 s total.
 FULL_RUN_SECONDS_AT_1M_ROWS = 11.4
+
+# What the production corpus ACTUALLY held when last measured. Read
+# straight off prod on 2026-07-28, not estimated:
+#   203 inboxes, 17.3M articles, 28.8M article_lists rows.
+#   Largest inbox lkml at 6.4M rows; 5 inboxes >= 1M, 55 in 100k-1M,
+#   102 in 10k-100k, 41 below 10k.
+#
+# This constant exists because the previous figure was WRONG BY 5x and
+# nobody noticed through a spec, several docstrings, two synthetic
+# benchmarks and three independent reviews. Every one of them said
+# "~6M rows", which is lkml ALONE mistaken for the whole corpus. The
+# budget derived from it (a 180 s healthcheck `start_period`) would
+# have aborted the deploy it was written for.
+#
+# Two rules follow, and they are why this is a named constant rather
+# than prose:
+#   1. It is a FLOOR with a date attached, never a fact. The corpus
+#      only ever grows.
+#   2. Anything that gates on it (the broker healthcheck window, a
+#      migration's expected wall time, a sitemap urlset limit) must be
+#      re-derived from a fresh measurement, not from this number's last
+#      value. Re-measure with:
+#        SELECT COUNT(*) FROM article_lists;
+PROD_ARTICLE_LIST_ROWS_AT_2026_07_28 = 28_800_000
 
 # Safety stop for the propagation loop. Real lkml threads rarely exceed
 # ~50 deep and `threading.MAX_DEPTH` caps the read side at 1000, so a
