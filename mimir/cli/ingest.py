@@ -202,6 +202,13 @@ def reindex_command(
             # designed around (NULL means "not yet computed", so readers
             # fall back to the CTE: correct, just slower). The backfill
             # after the re-walk restores the fast path.
+            #
+            # State the blast radius plainly, because "readers fall back"
+            # undersells it: the sitemap's root test IS the column, so
+            # between here and the backfill below this inbox contributes
+            # ZERO thread URLs to its sitemap. That is the price of a
+            # destructive, operator-initiated rebuild, and it is bounded
+            # by this command rather than left for someone to notice.
             session.execute(
                 update(ArticleList)
                 .where(ArticleList.inbox_id == inbox.id)
