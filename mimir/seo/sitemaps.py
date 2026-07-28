@@ -14,6 +14,7 @@ relying on body-content compare which they deprioritise.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
@@ -131,7 +132,9 @@ def _recent_thread_roots_query(inbox: Inbox):
     )
 
 
-def _thread_last_activity(session, inbox: Inbox, root_ids: list[int]) -> dict:
+def _thread_last_activity(
+    session, inbox: Inbox, root_ids: list[int]
+) -> dict[int, datetime]:
     """`root_id -> newest message date in that thread, in this inbox.`
 
     The `<lastmod>` for a thread URL has to be the date of the newest
@@ -183,7 +186,9 @@ def _thread_last_activity(session, inbox: Inbox, root_ids: list[int]) -> dict:
         )
         .group_by(ArticleList.thread_root_id)
     ).all()
-    return {root_id: dt for root_id, dt in rows if dt is not None}
+    # No `is not None` filter: the WHERE already excludes NULL dates,
+    # so a group cannot aggregate to NULL.
+    return dict(rows)
 
 
 def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
@@ -429,9 +434,23 @@ def inbox_sitemap_xml(
             loc = f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}"
             if art_id not in singleton_ids:
                 loc += "/t"
-            entries.append(
-                (loc, (last_activity.get(art_id) or date).strftime("%Y-%m-%d"))
+            # A singleton's thread is just itself, so its lastmod is its
+            # own date by definition. Saying so explicitly rather than
+            # letting the aggregate answer keeps this coherent with
+            # `_singleton_root_ids` BY CONSTRUCTION: that function reads
+            # `thread_parent` while the aggregate reads the materialised
+            # column, and a wrong column value could otherwise make a
+            # single-message page (which by definition never changes)
+            # advertise a `<lastmod>` from some other thread. For correct
+            # data this branch is a no-op.
+            #
+            # `or date` is belt-and-braces, not a real case: every root
+            # `_recent_thread_roots_query` yields has a non-NULL dated row
+            # that the aggregate counts, in the same session snapshot.
+            lastmod = (
+                date if art_id in singleton_ids else (last_activity.get(art_id) or date)
             )
+            entries.append((loc, lastmod.strftime("%Y-%m-%d")))
         return SitemapPayload(
             body=_build_sitemap_xml(entries),
             last_modified=inbox_latest,
