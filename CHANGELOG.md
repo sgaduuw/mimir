@@ -27,6 +27,14 @@ changes, not internal refactors. Categories: **Added**,
   that cannot complete withholds its sentinel so the next restart
   retries, and logs `backfill incomplete` for the post-deploy smoke to
   grep.
+- `mimir reindex --from-scratch` now rebuilds the inbox's thread roots
+  after the re-walk, and refuses to start unless it can. Dropping one
+  epoch's rows breaks the parent chain for replies living in other
+  epochs, which previously left them pointing at a root no longer
+  reachable: a permanent redirect from a reply's thread view to a
+  thread that no longer contained it. The rebuild also runs when the
+  re-walk fails, so an interrupted run cannot leave an inbox unrooted,
+  and the command exits non-zero if it could not finish.
 - Whole-thread view at `/<inbox>/<YYYY>/<MM>/<root-id>/t`: every message
   in one conversation rendered on a single page, with the reply tree's
   full text inline. Additive, the per-message reading model is
