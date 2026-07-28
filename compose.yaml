@@ -77,10 +77,31 @@ services:
       interval: 10s
       timeout: 2s
       retries: 3
-      # Generous start_period: a fresh deploy runs alembic upgrade +
-      # bootstrap_inboxes + bounded ANALYZE on first startup before
-      # accepting RPCs. Subsequent restarts skip via sentinel.
-      start_period: 60s
+      # start_period has to cover everything the broker does BEFORE it
+      # accepts RPCs, on the one deploy that introduces a schema change:
+      # alembic upgrade (the thread_root_id migration alone rebuilds the
+      # article_lists table, ~8 s at production scale) + bootstrap_inboxes
+      # + bounded post-migrate ANALYZE + the one-time thread-root backfill
+      # (~55 s at 6M rows) + a second bounded ANALYZE after it. Call it
+      # ~90 s, so 60 s was not enough and would have failed the deploy:
+      # both `mimir` and `mimir-tasks` gate on this healthcheck, and
+      # compose aborts the whole `up` when a depends_on dependency goes
+      # unhealthy.
+      #
+      # Note the broker's socket is bound and listening this whole time
+      # (UnixStreamServer binds in its constructor), so a ping connects
+      # and then hangs until accept() starts. It reads as a timeout, not
+      # a refused connection.
+      #
+      # Thread-root VERIFICATION is deliberately not in that budget: it
+      # runs on a daemon thread after startup, because it is not allowed
+      # to gate anything and cost ~23 s on a 200-inbox corpus.
+      #
+      # Subsequent restarts skip each step via its own sentinel. If the
+      # backfill exhausts its pass budget it withholds its sentinel on
+      # purpose, so every restart re-pays it: watch the broker log for
+      # "backfill incomplete" rather than raising this number.
+      start_period: 180s
 
   mimir:
     build: .

@@ -400,20 +400,18 @@ def test_inbox_sitemap_lists_thread_roots_not_replies(client):
     assert not any(f"/{art4_id}" in loc for loc in locs)
 
 
-def test_inbox_sitemap_root_query_scopes_inbox_by_join_not_exists():
-    """Guard the measured shape of the thread-root query.
+def test_inbox_sitemap_root_query_uses_the_materialised_column():
+    """The root test is a column comparison, not a subquery.
 
-    Inbox membership must stay a JOIN; see `_recent_thread_roots_query`
-    for the measurements behind that (they live in one place so W8
-    re-measuring them does not leave a stale copy here).
-
-    Asserts the SQL shape rather than EXPLAIN output. The two
-    formulations only diverge in the planner at production scale and
-    distribution; against the test fixture SQLite resolves both the
-    same way, so a plan assertion here would pass in either
-    configuration and guard nothing.
+    This replaces a guard on the EXISTS-versus-JOIN spelling, which was
+    load-bearing while the predicate had to derive rootness from
+    `thread_parent`: one form was ~37x slower on the ~199 small
+    inboxes, the other ~8x slower on lkml, and getting it wrong cost
+    two review rounds. Materialising the root removes the choice
+    entirely, so what needs pinning now is that the query stays on the
+    column rather than drifting back to deriving it.
     """
-    from sqlalchemy import select, text
+    from sqlalchemy import select
 
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
@@ -427,16 +425,100 @@ def test_inbox_sitemap_root_query_scopes_inbox_by_join_not_exists():
         stmt = _recent_thread_roots_query(inbox).limit(SITEMAP_RECENT_PER_INBOX)
         sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
-    outer = sql.split("WHERE", 1)[0]
-    assert "JOIN article_lists" in outer, (
-        f"inbox scope must stay a join, not a correlated EXISTS: {outer!r}"
+    assert "thread_root_id = articles.id" in sql.replace("\n", " "), sql
+    assert "EXISTS" not in sql.upper(), (
+        f"the root test derived rootness again instead of reading the column: {sql}"
     )
-    # The root test itself stays an EXISTS (cheap per-candidate probe).
-    assert "EXISTS" in sql.upper()
-    # Separate, coarser guard: whatever the shape, the query must never
-    # degenerate into a full table scan. Catches a dropped index or a
-    # predicate rewrite that defeats one, which the shape assertion
-    # above cannot see.
+
+    # Separate, coarser guard, carried over from the pre-column version
+    # of this test: whatever the spelling, the query must never
+    # degenerate into a full table scan. This catches a dropped index or
+    # a predicate rewrite that defeats one, neither of which the string
+    # assertions above can see. Both of this workstream's measured
+    # performance disasters were plan-shape regressions.
+    from sqlalchemy import text
+
     with SessionLocal() as s:
         plan = [row[-1] for row in s.execute(text("EXPLAIN QUERY PLAN " + sql))]
     assert not any("SCAN articles" in step for step in plan), plan
+
+
+def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
+    """The state between `seed_roots` and the first `propagate`.
+
+    Both backfill drivers commit one pass at a time (the RPC handler
+    per WriteOp, the broker's startup path via the same `drive_passes`
+    seam), so this is a real committed state on every inbox,
+    and a durable one if the run is interrupted (broker restart, RPC
+    timeout, pass-budget exhaustion). Nothing rendered a sitemap
+    against a partially-filled corpus before, which is how a version of
+    `_singleton_root_ids` that counts only POPULATED members shipped:
+    a multi-message thread whose replies were still NULL counted as one
+    and was published as a message URL, while its own page
+    canonicalised to the thread URL.
+
+    Whatever the sitemap lists must agree with that page's canonical,
+    at every point during the backfill, not just after it.
+
+    Uses a real ingested corpus rather than the shared fixture, whose
+    rows carry synthetic commit_shas and so 404 on the message page.
+    """
+    import re
+    import xml.etree.ElementTree as ET
+
+    from sqlalchemy import select, update
+
+    from mimir import cache
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, Inbox
+    from mimir.thread_roots import seed_roots
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [
+            ("mb-root@x", None),
+            ("mb-reply@x", "mb-root@x"),
+            ("mb-nested@x", "mb-reply@x"),
+            ("mb-solo@x", None),
+        ],
+    )
+    ours = {url for _aid, url in seeded.values()}
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        # Rewind to the post-migration state, then run ONLY the seed
+        # pass: roots populated, replies still NULL.
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.inbox_id == alpha.id)
+            .values(thread_root_id=None)
+        )
+        s.commit()
+        seed_roots(s, alpha.id)
+        s.commit()
+
+    cache.delete_for_inbox("alpha")
+    cache.delete("sitemap:index")
+
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
+    locs = [u.find("s:loc", ns).text.replace("http://localhost", "") for u in root]
+
+    checked = 0
+    for loc in locs:
+        page = loc[:-2] if loc.endswith("/t") else loc
+        if page not in ours:
+            continue  # conftest rows have synthetic blobs and 404
+        html = client.get(page).get_data(as_text=True)
+        m = re.search(r'<link rel="canonical" href="([^"]+)"', html)
+        assert m, f"{page} emitted no canonical"
+        canonical = m.group(1).replace("http://localhost", "")
+        assert loc == canonical, (
+            f"mid-backfill the sitemap lists {loc} but that page's "
+            f"canonical is {canonical}"
+        )
+        checked += 1
+
+    assert checked, "no ingested thread reached the sitemap; test proves nothing"

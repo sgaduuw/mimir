@@ -17,9 +17,8 @@ from dataclasses import dataclass
 from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import aliased
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
 from mimir.maintainer_directory import all_maintainers
@@ -96,43 +95,37 @@ def _per_inbox_latest_date(session) -> dict[str, str | None]:
 def _recent_thread_roots_query(inbox: Inbox):
     """`(article_id, date)` for this inbox's thread roots, newest first.
 
-    Inbox membership is a JOIN, the root test a correlated EXISTS, and
-    that split is measured rather than assumed.
+    A root is `thread_root_id = article_id`: a plain per-row comparison
+    between two columns of the same already-fetched row. Note what the
+    planner actually does, because the obvious reading is wrong: the
+    index seek is on `inbox_id` alone (EXPLAIN picks
+    `ix_article_lists_inbox_id`), and the root test is then a filter
+    over that narrowed set, NOT a seek against
+    `ix_article_lists_thread_root`. A two-column equality between
+    columns of the same row is not sargable.
 
-    Making inbox membership an EXISTS too lets the planner drive
-    `ix_articles_date` DESC and stop at the LIMIT, which is ~8x faster
-    on the single dominant inbox (lkml). It is ~37x SLOWER on a small
-    one, because the walk can never reach the LIMIT and so scans the
-    date index to exhaustion, probing two correlated subqueries per
-    row, at a cost that scales with the WHOLE corpus rather than the
-    inbox. Production is ~200 inboxes of which ~199 are small, and this
-    runs per inbox on every hourly sitemap warm, so the JOIN is the
-    right trade by a wide margin (benchmarked on a skewed 606k-row
-    corpus: JOIN ~244 ms + 199 x ~2.7 ms, versus EXISTS ~30 ms + 199 x
-    ~100 ms).
+    The win is therefore about what the predicate no longer does, not
+    about a new index: it replaces a correlated EXISTS over
+    `thread_parent` evaluated per candidate row, and with it the whole
+    EXISTS-versus-JOIN tradeoff that cost two review rounds (the JOIN
+    form was ~37x slower on the ~199 small inboxes, the EXISTS form
+    ~8x slower on lkml). Measured on a 559k-row skewed corpus, new
+    versus old: lkml-shaped inbox 87 ms versus 181 ms, small inbox
+    0.154 ms versus 0.329 ms. Faster on both shapes, including the
+    199-of-200 case that the earlier attempt regressed.
 
-    This is the 2.8.0 lesson (MEMORY.md 2026-05-29) with its direction
-    inverted: measure against the WORST-shaped inboxes, not the one
-    that shows a clean win. W8 (materialised thread roots) removes the
-    tradeoff entirely by making the root test a column comparison.
+    Rows still awaiting the backfill carry NULL, which fails the
+    comparison, so they are simply absent from the sitemap until the
+    backfill reaches them rather than being listed wrongly. Freshness,
+    not correctness.
     """
-    parent = aliased(Article)
-    parent_in_inbox = (
-        select(ArticleList.article_id)
-        .join(parent, parent.id == ArticleList.article_id)
-        .where(
-            ArticleList.inbox_id == inbox.id,
-            parent.message_id == Article.thread_parent,
-        )
-        .exists()
-    )
     return (
         select(Article.id, Article.date)
         .join(ArticleList, ArticleList.article_id == Article.id)
         .where(
             ArticleList.inbox_id == inbox.id,
             Article.date.is_not(None),
-            or_(Article.thread_parent.is_(None), ~parent_in_inbox),
+            ArticleList.thread_root_id == Article.id,
         )
         .order_by(Article.date.desc())
     )
@@ -142,21 +135,27 @@ def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
     """Of `root_ids`, those whose thread is just themselves in this
     inbox (no reply hangs off them here).
 
-    Correlated EXISTS, not a join, and the difference is not cosmetic.
-    As a join the planner stops driving from `articles IN (ids)` past a
-    few hundred ids and drives from `ix_article_lists_inbox_id`
-    instead, scanning every article-list row in the inbox and probing
-    back, i.e. O(ids x inbox rows). Measured at 3950 ms for 5000 ids
-    over a 50k-row inbox and fitting `ids x rows x 1.6e-5 ms` across
-    corpus sizes, which extrapolates to minutes per sitemap render on
-    lkml. `SITEMAP_RECENT_PER_INBOX` is 5000, so every busy inbox hits
-    the worst case exactly, on every hourly warm and on any crawler
-    cache miss. The EXISTS form is 5 ms on the same input.
+    Deliberately still derived from `thread_parent` rather than from
+    `article_lists.thread_root_id`, unlike its sibling
+    `_recent_thread_roots_query`. A `GROUP BY thread_root_id HAVING
+    count = 1` counts only POPULATED members, so mid-backfill (root
+    seeded, replies still NULL) a five-message thread counts as one and
+    gets published as a message URL while its own page canonicalises to
+    the thread URL, i.e. the sitemap listing a page that disclaims
+    itself. BOTH backfill drivers commit one pass at a time (the RPC
+    handler submits each as its own WriteOp; the broker's startup path
+    drives the same `drive_passes` seam and commits between passes), so
+    that state is reachable and committed on every inbox, and durable
+    if a run is interrupted.
 
-    Same shape and the same reason as the sibling
-    `_recent_thread_roots_query`, and as CONTEXT.md's
-    `_subsystem_path_filter_exists_sql` note: EXISTS when the outer set
-    is already narrowed and the inner test is a per-candidate probe.
+    The column form also buys nothing measurable here: 3.0-4.1 ms
+    against 3.4 ms for this one on 5000 ids, at both 500k and 2.1M
+    rows. Faster-looking and wrong is a bad trade.
+
+    Correlated EXISTS, not a join: as a join the planner stops driving
+    from `articles IN (ids)` past a few hundred ids and scans every
+    article-list row in the inbox instead, i.e. O(ids x inbox rows),
+    measured at 3950 ms for 5000 ids over a 50k-row inbox.
     """
     if not root_ids:
         return set()
@@ -335,16 +334,18 @@ def inbox_sitemap_xml(
         # elsewhere. One fat thread document per entry is also the
         # whole point of the consolidation.
         #
-        # "Is a thread root" is a per-row EXISTS, not the recursive
-        # walk-up `find_thread_root` does: a message is a root in this
-        # inbox when it has no `thread_parent`, or when that parent
-        # isn't in this inbox (an off-list ancestor, which
-        # `find_thread_root` also treats as the top).
+        # Roots come from the materialised column; see
+        # `_recent_thread_roots_query` for the plan shape, the
+        # measurements, and why NULL rows are absent rather than listed
+        # wrongly. Kept as a pointer rather than a second copy of the
+        # numbers, because a duplicated measurement is one that goes
+        # stale. Rows still awaiting the backfill
+        # carry NULL, fail the comparison, and are simply absent until
+        # it reaches them: freshness, not correctness.
         #
-        # Inbox membership is a JOIN and the root test a correlated
-        # EXISTS; see `_recent_thread_roots_query` for the measurements
-        # behind that split (the all-EXISTS form is much faster on lkml
-        # and much slower on the ~199 small inboxes).
+        # `_singleton_root_ids` deliberately does NOT use the column;
+        # see its docstring for why counting populated members
+        # misclassifies mid-backfill.
         #
         # Cross-posted articles still appear in each linked inbox's
         # sitemap; the page's own canonical resolves which to keep.

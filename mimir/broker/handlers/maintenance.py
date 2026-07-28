@@ -76,8 +76,10 @@ def handle_update_mainline(req: UpdateMainlineRequest) -> Reply:
 def handle_backfill_thread_roots(req: "BackfillThreadRootsRequest") -> Reply:
     """Fill in `thread_root_id` per inbox, ONE PASS PER WriteOp.
 
-    Measured at ~10 s for 500k rows and ~2 min extrapolated to the
-    production corpus. Submitting that as a single WriteOp would hold
+    Cost is measured once, in `mimir.thread_roots`
+    (`FULL_RUN_SECONDS_AT_1M_ROWS`); do not restate the number here,
+    that duplication has already gone stale twice. Submitting a full
+    run as a single WriteOp would hold
     the single writer for the whole run, queueing every web-tier
     `cache.set` behind it, which is exactly the shape the two-pool
     restructure broke up (CONTEXT.md, Phases 3a-3c: one continuous
