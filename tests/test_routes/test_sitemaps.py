@@ -848,3 +848,196 @@ def test_singleton_lastmod_survives_a_corrupt_thread_root(client, tmp_path):
             break
     else:
         raise AssertionError(f"singleton {solo_id} absent from the sitemap")
+
+
+def _locs(client, url):
+    import xml.etree.ElementTree as ET
+
+    r = client.get(url)
+    assert r.status_code == 200, f"{url} -> {r.status_code}"
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(r.get_data())
+    return [u.find("s:loc", ns).text for u in root.findall("s:url", ns)]
+
+
+def test_month_sitemap_reaches_threads_the_flat_sitemap_caps_off(
+    client, tmp_path, monkeypatch
+):
+    """The point of the whole workstream: the deep archive.
+
+    `/<inbox>/sitemap.xml` lists only the most recent
+    `SITEMAP_RECENT_PER_INBOX` threads, so on the real corpus
+    (28.8M rows) everything older sat in NO sitemap and was
+    unreachable by sitemap-driven discovery. A thread past that cap
+    must still appear in its month.
+    """
+    from datetime import datetime, timezone
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_RECENT_PER_INBOX", 1)
+    seeded = seed_thread_shape(tmp_path, "alpha", [("old1@x", None)])
+    old_id = seeded["old1@x"][0]
+    _set_article_date(old_id, datetime(2011, 3, 9, tzinfo=timezone.utc))
+
+    other = tmp_path / "recent"
+    other.mkdir()
+    newer = seed_thread_shape(other, "alpha", [("new1@x", None)])
+    _set_article_date(newer["new1@x"][0], datetime(2026, 7, 1, tzinfo=timezone.utc))
+
+    _clear_sitemap_cache()
+    flat = _locs(client, "/alpha/sitemap.xml")
+    assert not any(f"/{old_id}" in loc for loc in flat), (
+        "fixture failed to push the old thread past the recent cap"
+    )
+    month = _locs(client, "/alpha/2011/03/sitemap.xml")
+    assert any(loc.endswith(f"/{old_id}") for loc in month), month
+
+
+def test_month_sitemap_pages_are_disjoint_and_complete(client, tmp_path, monkeypatch):
+    """Pages are `LIMIT`/`OFFSET` slices, so an unstable or
+    non-deterministic order silently drops and duplicates URLs across
+    the boundary. Assert the union is exactly the whole month and the
+    intersection is empty.
+
+    Page size is monkeypatched rather than seeding 45,000 threads; the
+    boundary behaviour is what matters and it is size-independent.
+    """
+    from datetime import datetime, timezone
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 2)
+    ids = []
+    for i in range(5):
+        mirror = tmp_path / f"m{i}"
+        mirror.mkdir()
+        seeded = seed_thread_shape(mirror, "alpha", [(f"pg{i}@x", None)])
+        art_id = seeded[f"pg{i}@x"][0]
+        _set_article_date(art_id, datetime(2019, 4, 1 + i, tzinfo=timezone.utc))
+        ids.append(art_id)
+
+    _clear_sitemap_cache()
+    p1 = _locs(client, "/alpha/2019/04/sitemap.xml")
+    p2 = _locs(client, "/alpha/2019/04/sitemap-2.xml")
+    p3 = _locs(client, "/alpha/2019/04/sitemap-3.xml")
+
+    assert len(p1) == 2 and len(p2) == 2 and len(p3) == 1, (p1, p2, p3)
+    seen = p1 + p2 + p3
+    assert len(seen) == len(set(seen)), f"a URL appears on two pages: {seen}"
+    assert {loc.rsplit("/", 1)[-1] for loc in seen} == {str(i) for i in ids}, seen
+
+    # One past the end is absent, not an empty urlset a crawler would
+    # keep re-fetching.
+    assert client.get("/alpha/2019/04/sitemap-4.xml").status_code == 404
+
+
+def test_sitemap_index_enumerates_every_month_page(client, tmp_path, monkeypatch):
+    """sitemaps.org forbids an index referencing another index, so the
+    pages cannot hide behind a nested index and the top-level index
+    must name each one. An index that advertises fewer pages than exist
+    leaves those URLs undiscoverable, which is the failure this
+    workstream is about.
+    """
+    import xml.etree.ElementTree as ET
+    from datetime import datetime, timezone
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 2)
+    for i in range(3):
+        mirror = tmp_path / f"ix{i}"
+        mirror.mkdir()
+        seeded = seed_thread_shape(mirror, "alpha", [(f"ixp{i}@x", None)])
+        _set_article_date(
+            seeded[f"ixp{i}@x"][0], datetime(2015, 8, 1 + i, tzinfo=timezone.utc)
+        )
+
+    _clear_sitemap_cache()
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(client.get("/sitemap.xml").get_data())
+    locs = {sm_el.find("s:loc", ns).text for sm_el in root.findall("s:sitemap", ns)}
+    aug = {loc for loc in locs if "/alpha/2015/08/" in loc}
+    assert len(aug) == 2, f"expected 2 pages for 3 roots at size 2, got {aug}"
+    # Everything the index advertises must resolve.
+    for loc in aug:
+        assert client.get(loc[loc.index("/alpha") :]).status_code == 200, loc
+
+
+def test_month_sitemap_rejects_impossible_months(client):
+    """Both segments come from the URL, so an out-of-range month would
+    otherwise build a nonsense date range rather than 404."""
+    for bad in ("/alpha/2024/00/sitemap.xml", "/alpha/2024/13/sitemap.xml"):
+        assert client.get(bad).status_code == 404, bad
+
+
+def test_month_sitemap_is_scoped_to_its_inbox(client, tmp_path):
+    """The axis that produced three blocking bugs in this workstream:
+    every test used one inbox, so dropping the inbox filter passed."""
+    from datetime import datetime, timezone
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("sc1@x", None)])
+    art_id = seeded["sc1@x"][0]
+    _set_article_date(art_id, datetime(2013, 2, 4, tzinfo=timezone.utc))
+
+    _clear_sitemap_cache()
+    assert any(
+        loc.endswith(f"/{art_id}")
+        for loc in _locs(client, "/alpha/2013/02/sitemap.xml")
+    )
+    assert client.get("/beta/2013/02/sitemap.xml").status_code == 404, (
+        "alpha's thread leaked into beta's month sitemap"
+    )
+
+
+def test_month_sitemap_pages_stay_disjoint_when_dates_collide(
+    client, tmp_path, monkeypatch
+):
+    """Ties in the sort key are the case that actually needs the
+    tiebreak.
+
+    `LIMIT`/`OFFSET` over an ORDER BY with ties has no defined order in
+    SQL, so page 1 and page 2 may both return the same row and drop
+    another. Real commit timestamps collide constantly inside a busy
+    month, so this is the normal case, not a corner one, and the
+    sibling paging test cannot see it because every root there has a
+    distinct date.
+
+    Be honest about the limit of this guard: removing the `Article.id`
+    tiebreak does NOT make it fail. SQLite happens to order this plan
+    stably, so no mutation available here falsifies the tiebreak. It is
+    kept as defence against a plan change (a different index chosen
+    after ANALYZE, a schema change) making the order non-deterministic,
+    where the failure would be silently dropped URLs. What this test
+    genuinely pins is the disjoint-and-complete property of paging,
+    with ties present.
+    """
+    from datetime import datetime, timezone
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 2)
+    same = datetime(2018, 9, 12, 6, 30, 0, tzinfo=timezone.utc)
+    ids = []
+    for i in range(5):
+        mirror = tmp_path / f"tie{i}"
+        mirror.mkdir()
+        seeded = seed_thread_shape(mirror, "alpha", [(f"tie{i}@x", None)])
+        art_id = seeded[f"tie{i}@x"][0]
+        _set_article_date(art_id, same)
+        ids.append(art_id)
+
+    _clear_sitemap_cache()
+    seen = (
+        _locs(client, "/alpha/2018/09/sitemap.xml")
+        + _locs(client, "/alpha/2018/09/sitemap-2.xml")
+        + _locs(client, "/alpha/2018/09/sitemap-3.xml")
+    )
+    assert len(seen) == len(set(seen)), f"a URL appears on two pages: {seen}"
+    assert {loc.rsplit("/", 1)[-1] for loc in seen} == {str(i) for i in ids}, seen
