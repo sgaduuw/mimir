@@ -13,8 +13,8 @@ to repeat per call.
 """
 
 from flask import abort, g, request
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import Session, aliased
 
 from mimir.canonical import fallback_canonical_name
 from mimir.config import settings
@@ -158,40 +158,47 @@ def _canonical_inbox_names_for(
     session: Session,
     article_ids: list[int],
 ) -> dict[int, str]:
-    """Resolve article_id → canonical inbox name for a batch (typically
-    a feed's worth, ≤50). Uses `canonical_inbox_id` when set; falls
-    back to the alphabetically-first linked inbox with
-    `Settings.canonical_demoted_inboxes` sorted to the back. Total
-    ≤2 queries regardless of batch size."""
+    """Resolve article_id → canonical inbox name for a batch.
+
+    Delegates the rule to `mimir.canonical.fallback_canonical_name`
+    rather than re-deriving it. That matters: the rule is "use
+    `canonical_inbox_id` when set AND PRESENT IN LINKS, else the
+    alphabetically-first linked inbox with demoted names at the back",
+    and this function used to drop the present-in-links half. It is not
+    a hypothetical difference. `canonical_inbox_id` is assigned at
+    ingest by matching To:/Cc: list addresses against every inbox that
+    has a `list_address`, with nothing requiring the article to be
+    linked to that inbox, so a message archived only in lkml but
+    addressed to a topical list carries that list's id and no row
+    there. Resolving to it yields a URL that 404s.
+
+    Two queries regardless of batch size.
+    """
     if not article_ids:
         return {}
-    out: dict[int, str] = {}
-    rows = session.execute(
-        select(Article.id, Inbox.name)
-        .join(Inbox, Article.canonical_inbox_id == Inbox.id)
-        .where(Article.id.in_(article_ids))
-    ).all()
-    for art_id, inbox_name in rows:
-        out[art_id] = inbox_name
-    missing = [aid for aid in article_ids if aid not in out]
-    if missing:
-        # Pull every linked inbox for the missing set and bucket in
-        # Python rather than expressing the two-tier order in a SQL
-        # CASE. For a ≤50-article feed with 1-3 inboxes each, the
-        # extra rows pulled are negligible and the call-site clarity
-        # win is worth it.
-        link_rows = session.execute(
-            select(ArticleList.article_id, Inbox.name)
-            .join(Inbox, Inbox.id == ArticleList.inbox_id)
-            .where(ArticleList.article_id.in_(missing))
+    canonical_ids = {
+        art_id: canon_id
+        for art_id, canon_id in session.execute(
+            select(Article.id, Article.canonical_inbox_id).where(
+                Article.id.in_(article_ids)
+            )
         ).all()
-        demoted_names = frozenset(settings.canonical_demoted_inboxes)
-        names_by_article: dict[int, list[str]] = {}
-        for art_id, name in link_rows:
-            names_by_article.setdefault(art_id, []).append(name)
-        for art_id, names in names_by_article.items():
-            non_demoted = sorted(n for n in names if n not in demoted_names)
-            out[art_id] = non_demoted[0] if non_demoted else min(names)
+    }
+    links_by_article: dict[int, list[tuple[int, str]]] = {}
+    for art_id, ix_id, name in session.execute(
+        select(ArticleList.article_id, Inbox.id, Inbox.name)
+        .join(Inbox, Inbox.id == ArticleList.inbox_id)
+        .where(ArticleList.article_id.in_(article_ids))
+    ).all():
+        links_by_article.setdefault(art_id, []).append((ix_id, name))
+
+    out: dict[int, str] = {}
+    for art_id in article_ids:
+        name = fallback_canonical_name(
+            canonical_ids.get(art_id), links_by_article.get(art_id, [])
+        )
+        if name is not None:
+            out[art_id] = name
     return out
 
 
@@ -202,16 +209,14 @@ def _advertised_urls_for(
 ) -> dict[int, str]:
     """`article_id -> the URL to ADVERTISE for that article's conversation.`
 
-    For surfaces that push or publish URLs to machines: IndexNow, atom
-    feed entry links, and the `ItemList` JSON-LD on the index and inbox
-    pages. Returns the thread view when the article's thread has more
-    than one message in its canonical inbox, and the plain message URL
-    otherwise.
+    For surfaces that push or publish URLs to machines: the IndexNow
+    push today. Returns the thread view when the article's thread has
+    more than one message in its canonical inbox, and the plain message
+    URL otherwise.
 
     Deliberately a DIFFERENT question from the one
     `mimir.web.routes.message` answers when it decides what a page
-    claims as its own `<link rel="canonical">`, and the difference is
-    worth stating because the two look like they should be one rule:
+    claims as its own `<link rel="canonical">`:
 
     - A *page* cedes its canonical to the thread view only when the
       thread view actually CONTAINS it, so it also checks the message's
@@ -222,19 +227,34 @@ def _advertised_urls_for(
       sitemap already does: list one URL per conversation and no
       individual replies at all.
 
-    They agree everywhere except a past-cap reply, where this returns
-    the thread URL while the reply's own page still self-canonicalises.
-    That is the same trade the sitemap already makes, and the
-    alternative costs a full ordered thread walk per article on the
-    ingest path to compute a position that only changes the answer for
-    a rare case.
+    Everything here is keyed on the `(article, inbox)` PAIR, never on
+    the article or the root alone. Threading is inbox-scoped, so the
+    same root can head a five-message thread in one inbox and a
+    single-message one in another; deciding on the root alone let a
+    singleton thread inherit a sibling inbox's thread URL and advertise
+    a duplicate-content page that no other surface lists.
 
-    Mid-backfill safety: an article whose `thread_root_id` is still
-    NULL falls back to its message URL. Never wrong, just less
-    consolidated until the backfill reaches it.
+    Two cases, and only one of them needs to ask the database:
 
-    Bounded queries: four regardless of batch size, all keyed on
-    indexed columns.
+    - The article is NOT its own root, so it is a reply, so the thread
+      has at least the root and this article. Multi-message by
+      construction.
+    - The article IS its own root, so the question is whether anything
+      replied to it in this inbox.
+
+    That second test uses the same `thread_parent` EXISTS that
+    `mimir.seo.sitemaps._singleton_root_ids` uses, and for the reason
+    documented there: counting POPULATED `thread_root_id` rows instead
+    undercounts mid-backfill, so a thread whose replies are not yet
+    filled reads as a singleton and gets advertised as a message URL
+    while its own page canonicalises to the thread view. Two
+    advertising surfaces must not disagree about what a singleton is.
+
+    Mid-backfill safety: an article whose own `thread_root_id` is still
+    NULL falls back to its message URL, because without a root there is
+    no thread URL to name. Less consolidated, never dangling.
+
+    Four queries regardless of batch size, all on indexed columns.
     """
     if not articles:
         return {}
@@ -251,11 +271,6 @@ def _advertised_urls_for(
             )
         ).all()
     }
-
-    # The article's root IN ITS CANONICAL INBOX. Threading is
-    # inbox-scoped, so reading the root from any other inbox's row
-    # would be a different thread; pairs are matched explicitly rather
-    # than filtering on article_id alone.
     wanted = {
         (art_id, inbox_ids[name])
         for art_id, name in canonical_names.items()
@@ -263,8 +278,12 @@ def _advertised_urls_for(
     }
     if not wanted:
         return {}
+
+    # The article's root IN ITS CANONICAL INBOX. Reading it from any
+    # other inbox's row would be a different thread, so pairs are
+    # matched explicitly rather than filtering on article_id alone.
     root_by_pair: dict[tuple[int, int], int] = {}
-    rows = session.execute(
+    for art_id, ix_id, root_id in session.execute(
         select(
             ArticleList.article_id, ArticleList.inbox_id, ArticleList.thread_root_id
         ).where(
@@ -272,38 +291,50 @@ def _advertised_urls_for(
             ArticleList.inbox_id.in_({ix for _a, ix in wanted}),
             ArticleList.thread_root_id.is_not(None),
         )
-    ).all()
-    for art_id, ix_id, root_id in rows:
+    ).all():
         if (art_id, ix_id) in wanted:
             root_by_pair[(art_id, ix_id)] = root_id
 
-    # How many messages hang off each root, in the inbox that matters.
-    sizes: dict[tuple[int, int], int] = {}
-    if root_by_pair:
-        size_rows = session.execute(
-            select(
-                ArticleList.inbox_id,
-                ArticleList.thread_root_id,
-                func.count(),
-            )
-            .where(
-                ArticleList.thread_root_id.in_(set(root_by_pair.values())),
-                ArticleList.inbox_id.in_({ix for _a, ix in root_by_pair}),
-            )
-            .group_by(ArticleList.inbox_id, ArticleList.thread_root_id)
-        ).all()
-        for ix_id, root_id, n in size_rows:
-            sizes[(ix_id, root_id)] = n
-
-    multi_roots = {
-        root_id
-        for (_art, ix_id), root_id in root_by_pair.items()
-        if sizes.get((ix_id, root_id), 1) > 1
+    # Only pairs where the article IS the root need asking; a reply is
+    # multi-message by construction.
+    root_pairs = {
+        (ix_id, root_id)
+        for (art_id, ix_id), root_id in root_by_pair.items()
+        if root_id == art_id
     }
+    roots_with_replies: set[tuple[int, int]] = set()
+    if root_pairs:
+        child = aliased(Article)
+        child_link = aliased(ArticleList)
+        has_reply = (
+            select(child.id)
+            .join(child_link, child_link.article_id == child.id)
+            .where(
+                child.thread_parent == Article.message_id,
+                child_link.inbox_id == ArticleList.inbox_id,
+                child.id != Article.id,
+            )
+            .exists()
+        )
+        for ix_id, art_id in session.execute(
+            select(ArticleList.inbox_id, ArticleList.article_id)
+            .join(Article, Article.id == ArticleList.article_id)
+            .where(
+                ArticleList.article_id.in_({r for _ix, r in root_pairs}),
+                ArticleList.inbox_id.in_({ix for ix, _r in root_pairs}),
+                has_reply,
+            )
+        ).all():
+            roots_with_replies.add((ix_id, art_id))
+
+    consolidated: dict[int, int] = {}
+    for (art_id, ix_id), root_id in root_by_pair.items():
+        if root_id != art_id or (ix_id, root_id) in roots_with_replies:
+            consolidated[art_id] = root_id
     root_articles = {
         a.id: a
         for a in session.execute(
-            select(Article).where(Article.id.in_(multi_roots))
+            select(Article).where(Article.id.in_(set(consolidated.values())))
         ).scalars()
     }
 
@@ -312,9 +343,7 @@ def _advertised_urls_for(
         article = by_id.get(art_id)
         if article is None or article.date is None:
             continue
-        ix_id = inbox_ids.get(name)
-        root_id = root_by_pair.get((art_id, ix_id)) if ix_id is not None else None
-        root = root_articles.get(root_id) if root_id is not None else None
+        root = root_articles.get(consolidated.get(art_id))
         if root is not None and root.date is not None:
             out[art_id] = base + _thread_view_url(root, name)
         else:

@@ -106,6 +106,14 @@ changes, not internal refactors. Categories: **Added**,
   consolidated page that actually grew was never announced at all. A
   batch of replies to one thread now pushes one URL instead of one per
   reply.
+- Cross-posted articles could resolve to a canonical inbox they are
+  not actually archived in, because the batch resolver used
+  `canonical_inbox_id` without checking the article is linked there,
+  diverging from the shared rule every other caller uses.
+  `canonical_inbox_id` is assigned from To:/Cc: list addresses at
+  ingest and does not imply a copy exists in that inbox, so atom feed
+  entry links could point at a URL that 404s. Now delegates to
+  `fallback_canonical_name` like the rest.
 - The "most active threads" structured data on `/<inbox>/` links each
   discussion to its thread view rather than to its root message, so
   the `ItemList` handed to search engines agrees with the canonical of
