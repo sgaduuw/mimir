@@ -1041,3 +1041,129 @@ def test_month_sitemap_pages_stay_disjoint_when_dates_collide(
     )
     assert len(seen) == len(set(seen)), f"a URL appears on two pages: {seen}"
     assert {loc.rsplit("/", 1)[-1] for loc in seen} == {str(i) for i in ids}, seen
+
+
+def test_month_sitemap_lists_roots_not_replies(client, tmp_path):
+    """One URL per conversation, exactly as the flat sitemap does.
+
+    Every other month-sitemap test seeds SINGLE-MESSAGE threads, so
+    "roots, not replies" was never exercised and three separate
+    mutations survived the whole suite: dropping the root predicate
+    made the month sitemap emit every message with `/t` glued onto
+    replies, i.e. non-canonical URLs that each page disclaims.
+
+    Asserted against the flat sitemap rather than a hardcoded list, so
+    the two can never drift apart on the same thread.
+    """
+    from datetime import datetime, timezone
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("rr1@x", None), ("rr2@x", "rr1@x"), ("rr3@x", "rr2@x")],
+    )
+    when = datetime(2023, 9, 14, tzinfo=timezone.utc)
+    for mid in seeded:
+        _set_article_date(seeded[mid][0], when)
+    root_id = seeded["rr1@x"][0]
+
+    _clear_sitemap_cache()
+    month = _locs(client, "/alpha/2023/09/sitemap.xml")
+    assert month == [
+        loc for loc in _locs(client, "/alpha/sitemap.xml") if f"/{root_id}" in loc
+    ], month
+    assert len(month) == 1 and month[0].endswith(f"/{root_id}/t"), month
+    for mid in ("rr2@x", "rr3@x"):
+        assert not any(str(seeded[mid][0]) in loc for loc in month), (
+            f"{mid} is a reply and must not get its own sitemap URL: {month}"
+        )
+
+
+def test_month_sitemap_excludes_the_first_instant_of_the_next_month(client, tmp_path):
+    """The range is half-open. `<=` instead of `<` admits a root dated
+    exactly `YYYY-MM-01 00:00:00` into the previous month, which both
+    duplicates it and desyncs the page from the index's own count
+    (that buckets via strftime). Commit timestamps have second
+    precision, so this is reachable, not theoretical.
+    """
+    from datetime import datetime, timezone
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("bd1@x", None)])
+    edge_id = seeded["bd1@x"][0]
+    _set_article_date(edge_id, datetime(2020, 7, 1, 0, 0, 0, tzinfo=timezone.utc))
+
+    _clear_sitemap_cache()
+    assert client.get("/alpha/2020/06/sitemap.xml").status_code == 404, (
+        "a root dated midnight on 1 July leaked into June"
+    )
+    assert any(
+        loc.endswith(f"/{edge_id}")
+        for loc in _locs(client, "/alpha/2020/07/sitemap.xml")
+    )
+
+
+def test_month_sitemap_404s_do_not_write_cache_rows(client, tmp_path):
+    """A 404 must not cost a write.
+
+    `year`, `month` and `page` come straight off the URL, so the key
+    space is unbounded and unauthenticated. Caching misses turns free
+    404s into a stream of writes through the broker, which is the
+    single SQLite writer for the whole system and already the
+    contended resource. Review confirmed 78 requests producing 78
+    cache rows.
+    """
+    from sqlalchemy import func, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    def rows() -> int:
+        with SessionLocal() as s:
+            return s.scalar(select(func.count()).select_from(CacheEntry))
+
+    _clear_sitemap_cache()
+    before = rows()
+    for url in (
+        "/alpha/2031/01/sitemap.xml",
+        "/alpha/2031/02/sitemap.xml",
+        "/alpha/2031/03/sitemap-2.xml",
+        "/alpha/1999/11/sitemap-7.xml",
+    ):
+        assert client.get(url).status_code == 404, url
+    assert rows() == before, "a 404 wrote a cache row"
+
+
+def test_month_sitemap_rejects_out_of_range_segments_without_500ing(client):
+    """Year 0 and year 9999 both raise from `datetime` (the latter
+    because the month range needs `year + 1`), and a huge page number
+    used to overflow on the way into SQLite. All were 500s on public
+    URLs, reachable with no data and no auth."""
+    for bad in (
+        "/alpha/2024/00/sitemap.xml",
+        "/alpha/2024/13/sitemap.xml",
+        "/alpha/0/1/sitemap.xml",
+        "/alpha/9999/12/sitemap.xml",
+        "/alpha/99999/1/sitemap.xml",
+        "/alpha/2024/06/sitemap-1000000000000000.xml",
+    ):
+        assert client.get(bad).status_code == 404, f"{bad} did not 404"
+
+
+def test_month_sitemap_sends_cache_control(client, tmp_path):
+    """Every other sitemap surface is edge-shielded; these are ~32k
+    URLs the index actively points crawlers at, and they are not
+    warm-cache targets, so each miss is a cold compute at the origin."""
+    from datetime import datetime, timezone
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("cc1@x", None)])
+    _set_article_date(seeded["cc1@x"][0], datetime(2017, 5, 3, tzinfo=timezone.utc))
+    _clear_sitemap_cache()
+    r = client.get("/alpha/2017/05/sitemap.xml")
+    assert r.status_code == 200
+    assert r.headers.get("Cache-Control") == "public, max-age=300", dict(r.headers)
