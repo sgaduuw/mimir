@@ -82,6 +82,7 @@ from mimir.web.routes.attachments import _content_disposition
 from mimir.web.urls import (
     _canonical_inbox_name,
     _canonical_inbox_names_for,
+    _advertised_urls_for,
     _canonical_url_for,
     _get_inbox_or_404,
     _msg_url,
@@ -106,6 +107,7 @@ __all__ = [
     "_allowlisted_email",
     "_canonical_inbox_name",
     "_canonical_inbox_names_for",
+    "_advertised_urls_for",
     "_canonical_url_for",
     "_clean_subject_filter",
     "_content_disposition",

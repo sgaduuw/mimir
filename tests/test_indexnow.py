@@ -403,3 +403,85 @@ def test_update_no_echo_when_notify_returns_zero(
     _push_indexnow(["art2@example.com"])
     captured = capsys.readouterr()
     assert "indexnow:" not in captured.out
+
+
+def test_build_urls_emits_the_thread_url_for_a_multi_message_thread(client, tmp_path):
+    """The document that changed is the THREAD, so that is what gets
+    pushed.
+
+    Before this, a reply pushed its own message URL, which the page
+    itself disclaims via `<link rel="canonical">`, while the
+    consolidated page that actually grew was never announced at all.
+    That left the one page this workstream wants indexed with no
+    signal on the fastest channel mimir has.
+
+    Seeded through real ingest rather than direct INSERT, because
+    `thread_root_id` is maintained BY ingest and a hand-built row would
+    leave it NULL and silently exercise the fallback instead.
+    """
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("in1@x", None), ("in2@x", "in1@x"), ("in3@x", "in2@x")],
+    )
+    root_id, _url = seeded["in1@x"]
+
+    with SessionLocal() as s:
+        urls = indexnow.build_urls(
+            s, ["in1@x", "in2@x", "in3@x"], base="https://example.test"
+        )
+
+    # All three collapse onto one thread URL: deduping is a straight
+    # win against the endpoint's per-request URL budget.
+    assert len(urls) == 1, urls
+    assert urls[0].endswith(f"/{root_id}/t"), urls
+    assert urls[0].startswith("https://example.test/alpha/")
+
+
+def test_build_urls_keeps_the_message_url_for_a_single_message_thread(client, tmp_path):
+    """A single-message thread has nothing to consolidate, and its own
+    page is the richer one, so it stays its own URL."""
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("solo@x", None)])
+    art_id, _url = seeded["solo@x"]
+
+    with SessionLocal() as s:
+        urls = indexnow.build_urls(s, ["solo@x"], base="https://example.test")
+
+    assert len(urls) == 1
+    assert urls[0].endswith(f"/{art_id}")
+    assert not urls[0].endswith("/t")
+
+
+def test_build_urls_falls_back_to_the_message_url_before_the_backfill(client, tmp_path):
+    """A NULL `thread_root_id` must degrade to the message URL.
+
+    That is the state between the migration and the backfill. Pushing
+    nothing would lose the notification; guessing a thread URL without
+    a known root would push a URL that may not exist.
+    """
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("nb1@x", None), ("nb2@x", "nb1@x")])
+    with SessionLocal() as s:
+        s.execute(update(ArticleList).values(thread_root_id=None))
+        s.commit()
+
+    with SessionLocal() as s:
+        urls = indexnow.build_urls(s, ["nb1@x", "nb2@x"], base="https://example.test")
+
+    assert len(urls) == 2, urls
+    assert all(not u.endswith("/t") for u in urls), urls
+    assert {u.rsplit("/", 1)[-1] for u in urls} == {
+        str(seeded["nb1@x"][0]),
+        str(seeded["nb2@x"][0]),
+    }

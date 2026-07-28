@@ -13,7 +13,7 @@ to repeat per call.
 """
 
 from flask import abort, g, request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from mimir.canonical import fallback_canonical_name
@@ -192,4 +192,131 @@ def _canonical_inbox_names_for(
         for art_id, names in names_by_article.items():
             non_demoted = sorted(n for n in names if n not in demoted_names)
             out[art_id] = non_demoted[0] if non_demoted else min(names)
+    return out
+
+
+def _advertised_urls_for(
+    session: Session,
+    articles: list[Article],
+    base: str = "",
+) -> dict[int, str]:
+    """`article_id -> the URL to ADVERTISE for that article's conversation.`
+
+    For surfaces that push or publish URLs to machines: IndexNow, atom
+    feed entry links, and the `ItemList` JSON-LD on the index and inbox
+    pages. Returns the thread view when the article's thread has more
+    than one message in its canonical inbox, and the plain message URL
+    otherwise.
+
+    Deliberately a DIFFERENT question from the one
+    `mimir.web.routes.message` answers when it decides what a page
+    claims as its own `<link rel="canonical">`, and the difference is
+    worth stating because the two look like they should be one rule:
+
+    - A *page* cedes its canonical to the thread view only when the
+      thread view actually CONTAINS it, so it also checks the message's
+      position against `thread_view_render_cap`. A reply past the cap is
+      linked, not inlined, so it keeps its own canonical.
+    - An *advertising* surface names the entry point for a
+      conversation, and does not need containment. It matches what the
+      sitemap already does: list one URL per conversation and no
+      individual replies at all.
+
+    They agree everywhere except a past-cap reply, where this returns
+    the thread URL while the reply's own page still self-canonicalises.
+    That is the same trade the sitemap already makes, and the
+    alternative costs a full ordered thread walk per article on the
+    ingest path to compute a position that only changes the answer for
+    a rare case.
+
+    Mid-backfill safety: an article whose `thread_root_id` is still
+    NULL falls back to its message URL. Never wrong, just less
+    consolidated until the backfill reaches it.
+
+    Bounded queries: four regardless of batch size, all keyed on
+    indexed columns.
+    """
+    if not articles:
+        return {}
+    by_id = {a.id: a for a in articles}
+    canonical_names = _canonical_inbox_names_for(session, list(by_id))
+    if not canonical_names:
+        return {}
+
+    inbox_ids = {
+        name: ix_id
+        for ix_id, name in session.execute(
+            select(Inbox.id, Inbox.name).where(
+                Inbox.name.in_(set(canonical_names.values()))
+            )
+        ).all()
+    }
+
+    # The article's root IN ITS CANONICAL INBOX. Threading is
+    # inbox-scoped, so reading the root from any other inbox's row
+    # would be a different thread; pairs are matched explicitly rather
+    # than filtering on article_id alone.
+    wanted = {
+        (art_id, inbox_ids[name])
+        for art_id, name in canonical_names.items()
+        if name in inbox_ids
+    }
+    if not wanted:
+        return {}
+    root_by_pair: dict[tuple[int, int], int] = {}
+    rows = session.execute(
+        select(
+            ArticleList.article_id, ArticleList.inbox_id, ArticleList.thread_root_id
+        ).where(
+            ArticleList.article_id.in_({a for a, _ix in wanted}),
+            ArticleList.inbox_id.in_({ix for _a, ix in wanted}),
+            ArticleList.thread_root_id.is_not(None),
+        )
+    ).all()
+    for art_id, ix_id, root_id in rows:
+        if (art_id, ix_id) in wanted:
+            root_by_pair[(art_id, ix_id)] = root_id
+
+    # How many messages hang off each root, in the inbox that matters.
+    sizes: dict[tuple[int, int], int] = {}
+    if root_by_pair:
+        size_rows = session.execute(
+            select(
+                ArticleList.inbox_id,
+                ArticleList.thread_root_id,
+                func.count(),
+            )
+            .where(
+                ArticleList.thread_root_id.in_(set(root_by_pair.values())),
+                ArticleList.inbox_id.in_({ix for _a, ix in root_by_pair}),
+            )
+            .group_by(ArticleList.inbox_id, ArticleList.thread_root_id)
+        ).all()
+        for ix_id, root_id, n in size_rows:
+            sizes[(ix_id, root_id)] = n
+
+    multi_roots = {
+        root_id
+        for (_art, ix_id), root_id in root_by_pair.items()
+        if sizes.get((ix_id, root_id), 1) > 1
+    }
+    root_articles = {
+        a.id: a
+        for a in session.execute(
+            select(Article).where(Article.id.in_(multi_roots))
+        ).scalars()
+    }
+
+    out: dict[int, str] = {}
+    for art_id, name in canonical_names.items():
+        article = by_id.get(art_id)
+        if article is None or article.date is None:
+            continue
+        ix_id = inbox_ids.get(name)
+        root_id = root_by_pair.get((art_id, ix_id)) if ix_id is not None else None
+        root = root_articles.get(root_id) if root_id is not None else None
+        if root is not None and root.date is not None:
+            out[art_id] = base + _thread_view_url(root, name)
+        else:
+            out[art_id] = base + _msg_url(article, name)
     return out
