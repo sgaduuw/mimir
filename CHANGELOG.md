@@ -13,6 +13,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- Per-month sitemaps at `/<inbox>/<YYYY>/<MM>/sitemap.xml` put the
+  historical archive into a sitemap for the first time. The per-inbox
+  sitemap caps at the 5,000 most recent threads, so on the production
+  corpus everything older was undiscoverable by sitemap-driven
+  crawling. A month that exceeds 45,000 URLs pages into
+  `sitemap-2.xml` and so on, staying under the protocol's 50,000
+  per-urlset limit; the index enumerates every page. The flat
+  `/<inbox>/sitemap.xml` stays as the recent-activity view, so no URL
+  crawlers already hold stops resolving.
 - Each message now records its thread's root per inbox
   (`article_lists.thread_root_id`), so the sitemap can list one entry
   per conversation with a truthful `<lastmod>` instead of re-deriving
