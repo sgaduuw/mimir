@@ -78,8 +78,13 @@ services:
       timeout: 2s
       retries: 3
       # Generous start_period: a fresh deploy runs alembic upgrade +
-      # bootstrap_inboxes + bounded ANALYZE on first startup before
-      # accepting RPCs. Subsequent restarts skip via sentinel.
+      # bootstrap_inboxes + bounded ANALYZE + the one-time thread-root
+      # backfill (~30 s at production scale, the longest of the four)
+      # before accepting RPCs. Subsequent restarts skip each via its
+      # own sentinel. If the backfill ever exhausts its pass budget it
+      # withholds its sentinel deliberately, so every restart re-runs
+      # it: watch the broker log for "backfill incomplete" rather than
+      # raising this number.
       start_period: 60s
 
   mimir:

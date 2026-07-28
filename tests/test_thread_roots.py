@@ -1114,3 +1114,167 @@ def test_broker_startup_backfills_thread_roots(client, tmp_path):
     assert all(root is None for root, _a in _roots_by_inbox("alpha", mids).values()), (
         "sentinel did not short-circuit the second run"
     )
+
+
+def _null_all_roots():
+    from sqlalchemy import update
+
+    from mimir.models import ArticleList
+
+    with SessionLocal() as s:
+        s.execute(update(ArticleList).values(thread_root_id=None))
+        s.commit()
+
+
+def _nulls_remaining(inbox_name: str) -> int:
+    from sqlalchemy import func
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        return s.execute(
+            select(func.count())
+            .select_from(ArticleList)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.thread_root_id.is_(None),
+            )
+        ).scalar_one()
+
+
+def test_startup_backfill_covers_every_inbox(client, tmp_path):
+    """Production is ~200 inboxes; the original guard seeded one.
+
+    With a single inbox, a startup pass that covers only the first and
+    skips the rest is indistinguishable from a correct one, so
+    `for inbox in inboxes[:1]` passed the entire suite.
+    """
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("mi1@x", None), ("mi2@x", "mi1@x")])
+    _cross_post_all("alpha", "beta", only=list(seeded))
+    _null_all_roots()
+
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    _backfill_thread_roots_if_needed(sock / "broker.sock")
+
+    for name in ("alpha", "beta"):
+        assert _nulls_remaining(name) == 0, f"{name} was left unfilled"
+        _assert_invariant_for(name, set(seeded), f"startup backfill/{name}")
+
+
+def test_startup_backfill_withholds_the_sentinel_when_the_pass_budget_blows(
+    client, tmp_path, monkeypatch
+):
+    """The sentinel is the ONLY thing that makes this retry.
+
+    Touching it over a partial fill is permanent: no later restart
+    re-runs, and every unrooted thread stays missing from the sitemap
+    forever. Deleting the `else:` guarding `sentinel.touch()` passed the
+    entire suite, which is exactly the silent-under-reporting this
+    function exists to prevent.
+    """
+    import mimir.thread_roots
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+
+    seed_thread_shape(
+        tmp_path, "alpha", [("pb1@x", None), ("pb2@x", "pb1@x"), ("pb3@x", "pb2@x")]
+    )
+    _null_all_roots()
+    # One pass cannot propagate a three-deep chain, so the run exhausts.
+    monkeypatch.setattr(mimir.thread_roots, "MAX_PASSES", 1)
+
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    _backfill_thread_roots_if_needed(sock / "broker.sock")
+
+    assert _nulls_remaining("alpha") > 0, "test did not actually exhaust the budget"
+    assert not (sock / ".thread_roots_backfilled").exists(), (
+        "sentinel was written over a partial fill; no restart will ever retry"
+    )
+
+
+def test_startup_backfill_commits_per_inbox_and_withholds_on_failure(
+    client, tmp_path, monkeypatch
+):
+    """A failure on the last inbox must not discard the first 199.
+
+    The run committed once after the loop, so any error, SIGKILL, or
+    OOM threw away every completed inbox: the opposite of the
+    "interrupted runs resume" property `backfill_inbox` documents.
+    """
+    import mimir.thread_roots
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("pc1@x", None), ("pc2@x", "pc1@x")])
+    _cross_post_all("alpha", "beta", only=list(seeded))
+    _null_all_roots()
+
+    with SessionLocal() as s:
+        beta_id = s.execute(select(Inbox.id).where(Inbox.name == "beta")).scalar_one()
+
+    real = mimir.thread_roots.backfill_inbox
+
+    def _fail_on_beta(session, inbox_id):
+        if inbox_id == beta_id:
+            raise RuntimeError("injected failure on the second inbox")
+        return real(session, inbox_id)
+
+    monkeypatch.setattr(mimir.thread_roots, "backfill_inbox", _fail_on_beta)
+
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    _backfill_thread_roots_if_needed(sock / "broker.sock")
+
+    assert _nulls_remaining("alpha") == 0, (
+        "the failing inbox rolled back work that had already succeeded"
+    )
+    assert not (sock / ".thread_roots_backfilled").exists(), (
+        "sentinel was written even though an inbox errored"
+    )
+
+
+def test_startup_verification_reports_a_mismatch(client, tmp_path, caplog):
+    """The verification block is the only detector for a failure the
+    docstring itself calls invisible, and deleting it wholesale passed
+    the entire suite.
+
+    Asserting on the log is the contract here: the block deliberately
+    does not raise or gate startup, so the ERROR line IS its output.
+    The broker CLI installs a root handler at INFO
+    (`_configure_logging(max(verbose, 1))`), so unlike the web tier this
+    line does reach the container log for the post-deploy smoke to grep.
+    """
+    import logging
+
+    from sqlalchemy import update
+
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("vm1@x", None), ("vm2@x", "vm1@x"), ("vm3@x", "vm2@x")]
+    )
+    # Corrupt one row to a plausible-but-wrong root. The backfill only
+    # touches NULLs, so it will leave this alone and verification is
+    # what has to catch it.
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        wrong = seeded["vm3@x"][0]
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.article_id == seeded["vm2@x"][0],
+            )
+            .values(thread_root_id=wrong)
+        )
+        s.commit()
+
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    with caplog.at_level(logging.ERROR, logger="mimir.broker.server"):
+        _backfill_thread_roots_if_needed(sock / "broker.sock")
+
+    assert any("verification found" in r.message for r in caplog.records), (
+        f"verification did not report the corrupted root: {caplog.records}"
+    )

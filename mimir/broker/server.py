@@ -782,10 +782,22 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     socket and before the web tier's healthcheck dependency is
     satisfied. Delete the sentinel to force a re-run.
 
-    Cost is one-time and proportional to corpus size, measured ~10 s
-    per 500k rows, so ~2 min on the production corpus, paid once on
-    the deploy that introduces the column. Subsequent restarts skip it,
-    and ingest maintains the column incrementally from then on.
+    Cost is one-time and proportional to corpus size, measured 2.3 s
+    per 500k rows and linear from 200k to 1M, so ~30 s on the
+    production corpus, paid once on the deploy that introduces the
+    column. Subsequent restarts skip it, and ingest maintains the
+    column incrementally from then on. (An earlier draft of this
+    docstring said ~2 min from a much rougher estimate; the number
+    above is benchmarked, and it matters because `compose.yaml`'s
+    healthcheck `start_period` has to cover this step.)
+
+    Committed per inbox, not once at the end. A single transaction
+    across ~200 inboxes would discard every completed inbox when the
+    last one fails, and would hold SQLite's only write lock for the
+    whole run. Per-inbox commits are what make the "interrupted runs
+    resume" property that `backfill_inbox` documents actually true
+    here: a SIGKILL mid-run keeps everything already committed, and
+    the next start resumes, because each pass only touches NULL rows.
 
     Verification runs after, and deliberately does NOT gate startup. A
     mismatch means the column disagrees with a recomputed
@@ -808,14 +820,27 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     logger.info("broker: backfilling thread roots (one-time)")
     t0 = time.monotonic()
     totals = {"seeded": 0, "propagated": 0, "cycles_broken": 0, "exhausted": 0}
+    failed = 0
     try:
         with SessionLocal() as session:
             inboxes = list(session.execute(select(Inbox)).scalars())
             for inbox in inboxes:
-                counts = backfill_inbox(session, inbox.id)
+                try:
+                    counts = backfill_inbox(session, inbox.id)
+                    # Per inbox, so a later failure cannot roll back
+                    # what already succeeded.
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    failed += 1
+                    logger.exception(
+                        "broker: thread-roots backfill failed for inbox %s, "
+                        "continuing with the rest",
+                        inbox.name,
+                    )
+                    continue
                 for key in totals:
                     totals[key] += counts.get(key, 0)
-            session.commit()
     except Exception:
         # Don't refuse to start: readers fall back to the recursive
         # walk while rows are NULL, so an unfilled column is slow and
@@ -827,14 +852,34 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         return
 
     elapsed = time.monotonic() - t0
-    if totals["exhausted"]:
+    if totals["exhausted"] or failed:
+        # Withhold the sentinel: it is the ONLY thing preventing this
+        # from being retried, and a partial fill that never retries is
+        # permanent silent under-reporting in the sitemap.
         logger.error(
-            "broker: thread-roots backfill hit the pass budget on %d inbox(es); "
-            "rows remain unrooted, re-run `mimir backfill-thread-roots`",
+            "broker: thread-roots backfill incomplete "
+            "(pass budget hit on %d inbox(es), errored on %d); rows remain "
+            "unrooted, re-run `mimir backfill-thread-roots`",
             totals["exhausted"],
+            failed,
         )
     else:
         sentinel.touch()
+        # The fill rewrote every row of a column ANALYZE may have
+        # sampled while it was 100% NULL (the post-migrate pass runs
+        # before this one, and its own sentinel means reordering would
+        # not help on a corpus that already has it). Re-sample so the
+        # planner sees the real distribution rather than a column that
+        # looks single-valued.
+        try:
+            from mimir.maintenance import run_analyze
+
+            run_analyze(full=False)
+        except Exception:
+            logger.exception(
+                "broker: post-backfill ANALYZE failed; planner stats for "
+                "thread_root_id may under-value the index until the next pass"
+            )
     logger.info(
         "broker: thread-roots backfill complete in %.1fs "
         "(seeded=%d propagated=%d cycles=%d)",

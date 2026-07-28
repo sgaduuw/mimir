@@ -13,6 +13,20 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- Each message now records its thread's root per inbox
+  (`article_lists.thread_root_id`), so the sitemap can list one entry
+  per conversation with a truthful `<lastmod>` instead of re-deriving
+  the root on every read. Threading is inbox-scoped, so the column is
+  too: a cross-posted message legitimately has different roots in
+  different inboxes.
+- `mimir backfill-thread-roots [--verify]` fills the column for messages
+  that predate it, and re-verifies a random sample against an
+  independent recomputation. Operators do not normally need to run it:
+  the broker fills the column itself at startup, before it opens its
+  socket and therefore before the web tier is allowed to serve. A run
+  that cannot complete withholds its sentinel so the next restart
+  retries, and logs `backfill incomplete` for the post-deploy smoke to
+  grep.
 - Whole-thread view at `/<inbox>/<YYYY>/<MM>/<root-id>/t`: every message
   in one conversation rendered on a single page, with the reply tree's
   full text inline. Additive, the per-message reading model is
