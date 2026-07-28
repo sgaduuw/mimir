@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from mimir._outbound import OUTBOUND_OPENER
 from mimir.config import settings
-from mimir.models import Article, ArticleList, Inbox
+from mimir.models import Article
 from mimir.web import _advertised_urls_for
 
 logger = logging.getLogger(__name__)
@@ -82,22 +82,12 @@ def build_urls(session: Session, message_ids: list[str], base: str) -> list[str]
     )
     if not articles:
         return []
-    # One bulk query for the (article_id, inbox_id, inbox_name)
-    # joins so we don't N+1 the inbox lookup per article.
-    rows = session.execute(
-        select(ArticleList.article_id, Inbox.id, Inbox.name)
-        .join(Inbox, Inbox.id == ArticleList.inbox_id)
-        .where(ArticleList.article_id.in_([a.id for a in articles]))
-    ).all()
-    links_by_article: dict[int, list[tuple[int, str]]] = {}
-    for article_id, ix_id, ix_name in rows:
-        links_by_article.setdefault(article_id, []).append((ix_id, ix_name))
-
     base = base.rstrip("/")
-    # Only articles that actually resolve to an inbox; the helper
-    # re-derives the canonical pick itself, but an article with no
-    # links at all has no URL to push under any rule.
-    linked = [a for a in articles if a.date is not None and links_by_article.get(a.id)]
+    # No link pre-fetch: `_advertised_urls_for` resolves the canonical
+    # inbox itself and omits any article it cannot place, so filtering
+    # here on a second copy of the same join was a wasted round-trip
+    # per tick, on batches of up to a thousand articles.
+    linked = [a for a in articles if a.date is not None]
     advertised = _advertised_urls_for(session, linked, base=base)
     # Dedupe while preserving order: several replies in one batch
     # collapse onto their shared thread URL.

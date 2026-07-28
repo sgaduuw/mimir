@@ -76,10 +76,26 @@ def _thread_url_for(thread, inbox_name: str) -> str:
 
     - `reply_count > 0` means at least one non-root message was seen in
       the window, so the thread has at least two messages. Sound.
-    - `reply_count == 0` means the only in-window message was the root.
-      Replies can only follow their root in time, and the window ends
-      now, so a root inside the window cannot have replies outside it.
-      The thread really is a single message. Also sound.
+    - `reply_count == 0` does NOT prove the thread is a single message,
+      and an earlier version of this docstring claimed it did. The
+      argument was "replies can only follow their root in time, so a
+      root inside the window cannot have replies outside it". That
+      relies on `articles.date` being send time. It is not: it is the
+      public-inbox commit time, i.e. ARCHIVAL order (see CONTEXT.md
+      "articles.date = public-inbox commit timestamp"). A child
+      archived before its parent is a documented, handled reality here
+      (`ingest/_pending.py`, "a child ingested before its parent, which
+      happens across epoch boundaries"), and in that case the reply's
+      date is earlier than its root's, so it can fall outside a window
+      the root is inside.
+
+      The consequence is bounded and in the safe direction: such a
+      thread is UNDER-consolidated, advertised as a message URL exactly
+      as it was before this change, so it is an incomplete fix rather
+      than a regression. Closing it properly needs a real per-thread
+      count, i.e. a query on a hot page, which is not worth it for a
+      hint; if this list ever becomes load-bearing, that is the trade
+      to revisit.
 
     Inbox-scoped on purpose, matching what it replaces: this list is
     rendered on `/<inbox>/`, so its URLs stay in that inbox rather than
@@ -93,7 +109,7 @@ def _thread_url_for(thread, inbox_name: str) -> str:
     """
     from mimir.web import _msg_url, _thread_view_url
 
-    if getattr(thread, "reply_count", 0) > 0:
+    if thread.reply_count > 0:
         return _thread_view_url(thread, inbox_name)
     return _msg_url(thread, inbox_name)
 
