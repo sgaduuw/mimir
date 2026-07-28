@@ -778,44 +778,59 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
 
     "Somebody remembers" is not a mechanism, so this runs it. Same
     shape as the post-migrate ANALYZE above: sentinel-gated, in
-    `build_server`, therefore complete before `serve()` opens the
-    socket and before the web tier's healthcheck dependency is
-    satisfied. Delete the sentinel to force a re-run.
+    `build_server`, so it completes before the broker ACCEPTS RPCs and
+    therefore before the web tier's healthcheck dependency is
+    satisfied. (Not "before the socket opens": `UnixStreamServer`
+    binds and listens in its constructor, so `connect(2)` succeeds
+    throughout this window and `broker-ping` hangs into its timeout
+    rather than failing fast. That distinction is why this step counts
+    against the healthcheck's `start_period` rather than being
+    invisible to it.)
 
-    Cost is one-time and proportional to corpus size, measured 2.3 s
-    per 500k rows and linear from 200k to 1M, so ~30 s on the
-    production corpus, paid once on the deploy that introduces the
-    column. Subsequent restarts skip it, and ingest maintains the
-    column incrementally from then on. (An earlier draft of this
-    docstring said ~2 min from a much rougher estimate; the number
-    above is benchmarked, and it matters because `compose.yaml`'s
-    healthcheck `start_period` has to cover this step.)
+    Cost is one-time and proportional to corpus size; see
+    `mimir.thread_roots` for the measurements. Treat the extrapolation
+    to production scale as a FLOOR, not an estimate: pass count grows
+    with thread depth and 6M rows is well outside the measured range.
+    `compose.yaml`'s `start_period` has to cover this plus the
+    migration, bootstrap and both ANALYZEs.
 
-    Committed per inbox, not once at the end. A single transaction
-    across ~200 inboxes would discard every completed inbox when the
-    last one fails, and would hold SQLite's only write lock for the
-    whole run. Per-inbox commits are what make the "interrupted runs
-    resume" property that `backfill_inbox` documents actually true
-    here: a SIGKILL mid-run keeps everything already committed, and
-    the next start resumes, because each pass only touches NULL rows.
+    Committed per PASS, not per inbox and not once at the end, using
+    the same `drive_passes` seam the broker's RPC handler uses. Per-
+    inbox looks resumable and is not, for the only inbox where it
+    matters: lkml alone is ~87%% of the total run, so a SIGKILL lands
+    inside it with overwhelming probability and would discard all of
+    it. Committing per pass makes "interrupted runs resume" true at
+    the granularity the docstring on `backfill_inbox` claims, because
+    every pass only touches NULL rows.
 
-    Verification runs after, and deliberately does NOT gate startup. A
-    mismatch means the column disagrees with a recomputed
-    `find_thread_root`, which is serious, but wedging the broker on it
-    would turn a reporting problem into an outage, and the failure it
-    detects is not made worse by the site being up. It is logged at
-    ERROR so the post-deploy smoke can grep for it.
+    Verification does NOT run here. It is explicitly not allowed to
+    gate startup, and it costs ~23 s on a 200-inbox corpus (its per-
+    inbox cost is near-constant, so the ~199 small inboxes dominate),
+    which is pure added latency in front of the healthcheck. It runs
+    on a daemon thread instead, see `_verify_thread_roots_async`.
     """
     sentinel = socket_path.parent / ".thread_roots_backfilled"
-    if sentinel.exists():
+    if sentinel.exists() and not _has_unrooted_rows():
         logger.debug("broker: thread-roots sentinel %s present, skipping", sentinel)
         return
+    if sentinel.exists():
+        # Sentinel set but rows are NULL again. Reachable by rolling
+        # back to a pre-column image (whose ORM omits the column on
+        # INSERT) and then rolling forward: the sentinel would
+        # short-circuit forever, and nothing else would notice, since
+        # `verify_thread_roots` samples only non-NULL rows and the
+        # sitemap's root test IS the column. Re-running is cheap when
+        # there is nothing to do.
+        logger.warning(
+            "broker: thread-roots sentinel present but unrooted rows exist; "
+            "re-running the backfill"
+        )
 
     from sqlalchemy import select
 
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
-    from mimir.thread_roots import backfill_inbox, verify_thread_roots
+    from mimir.thread_roots import drive_passes
 
     logger.info("broker: backfilling thread roots (one-time)")
     t0 = time.monotonic()
@@ -826,10 +841,22 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
             inboxes = list(session.execute(select(Inbox)).scalars())
             for inbox in inboxes:
                 try:
-                    counts = backfill_inbox(session, inbox.id)
-                    # Per inbox, so a later failure cannot roll back
-                    # what already succeeded.
-                    session.commit()
+
+                    def _run_pass(fn, _ix=inbox):
+                        moved = fn(session, _ix.id)
+                        # Commit each pass, so an interrupted run keeps
+                        # everything up to the last completed pass even
+                        # inside the one big inbox.
+                        session.commit()
+                        return moved
+
+                    counts = drive_passes(_run_pass)
+                    if counts["exhausted"]:
+                        logger.warning(
+                            "broker: thread-roots backfill hit MAX_PASSES on "
+                            "inbox %s; rows remain unrooted",
+                            inbox.name,
+                        )
                 except Exception:
                     session.rollback()
                     failed += 1
@@ -889,21 +916,79 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         totals["cycles_broken"],
     )
 
+    _verify_thread_roots_async()
+
+
+def _has_unrooted_rows() -> bool:
+    """Is any `article_lists` row still NULL? One indexed EXISTS."""
+    from sqlalchemy import exists, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList
+
     try:
         with SessionLocal() as session:
-            for inbox in session.execute(select(Inbox)).scalars():
-                bad = verify_thread_roots(session, inbox)
-                if bad:
-                    logger.error(
-                        "broker: thread-roots verification found %d mismatch(es) "
-                        "in inbox %s, e.g. %s; the materialised column disagrees "
-                        "with find_thread_root",
-                        len(bad),
-                        inbox.name,
-                        bad[0],
-                    )
+            return bool(
+                session.scalar(
+                    select(exists().where(ArticleList.thread_root_id.is_(None)))
+                )
+            )
     except Exception:
-        logger.exception("broker: thread-roots verification failed to run")
+        # Treat "cannot tell" as "nothing to do": the caller's next
+        # step is a backfill, and failing that query means the DB is
+        # in no state to run one.
+        logger.exception("broker: could not check for unrooted rows")
+        return False
+
+
+def _verify_thread_roots_async() -> threading.Thread:
+    """Recompute a sample per inbox and report disagreements, off the
+    startup path.
+
+    Verification is explicitly not allowed to gate startup: a mismatch
+    is serious, but wedging the broker on it turns a reporting problem
+    into an outage, and the failure it detects is not made worse by the
+    site being up. It used to run inline anyway, which meant it could
+    not fail the healthcheck but could still DELAY it past
+    `start_period`, measured at ~23 s on a 200-inbox corpus. Its
+    per-inbox cost is near-constant (a bounded walk-up plus a recursive
+    CTE per sampled row), so the ~199 small inboxes dominate the bill
+    regardless of how small they are.
+
+    A daemon thread keeps the value without the latency. The work is
+    read-only, so running it alongside live traffic is safe, and the
+    thread dies with the process.
+    """
+
+    def _run() -> None:
+        from sqlalchemy import select
+
+        from mimir.extensions import SessionLocal
+        from mimir.models import Inbox
+        from mimir.thread_roots import verify_thread_roots
+
+        try:
+            with SessionLocal() as session:
+                for inbox in session.execute(select(Inbox)).scalars():
+                    bad = verify_thread_roots(session, inbox)
+                    if bad:
+                        logger.error(
+                            "broker: thread-roots verification found %d "
+                            "mismatch(es) in inbox %s, e.g. %s; the "
+                            "materialised column disagrees with find_thread_root",
+                            len(bad),
+                            inbox.name,
+                            bad[0],
+                        )
+        except Exception:
+            logger.exception("broker: thread-roots verification failed to run")
+
+    # Returned so tests can join it. Callers on the startup path
+    # deliberately do not: the whole point is that it is off the
+    # critical path.
+    t = threading.Thread(target=_run, name="thread-roots-verify", daemon=True)
+    t.start()
+    return t
 
 
 def _purge_loop(stop_event: threading.Event, writer: WriterThread) -> None:

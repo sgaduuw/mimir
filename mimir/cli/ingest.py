@@ -167,35 +167,44 @@ def reindex_command(
     if not epoch_path.exists():
         raise click.ClickException(f"epoch repo not found: {epoch_path}")
 
-    if from_scratch:
-        # Fail BEFORE destroying anything. `ingest_epoch` resolves its
-        # writer from the broker context, which only `serve()` ever
-        # sets, so a plain CLI process raises `RuntimeError("No active
-        # broker")` the moment the re-walk starts. That is pre-existing
-        # (this command has been unusable outside the broker since the
-        # single-writer migration), but the destructive half runs and
-        # COMMITS first, so without this check a `--from-scratch` in the
-        # wrong process deletes an epoch's links, blanks the inbox's
-        # thread roots, and then dies before it can put anything back.
-        #
-        # Nothing repairs that afterwards: the startup backfill is
-        # sentinel-gated and the sentinel already exists post-deploy,
-        # the scheduler has no thread-roots pass, and
-        # `verify_thread_roots` only samples non-NULL rows so it is
-        # structurally blind to an all-NULL inbox. The sitemap would
-        # silently drop every thread in that inbox until a human
-        # noticed. Refusing up front is the whole fix.
-        from mimir.broker._context import get_active_writer
+    # Fail BEFORE touching anything. `ingest_epoch` resolves its writer
+    # from the broker context, which only `serve()` ever sets, so ANY
+    # `reindex` from a CLI process raises `RuntimeError("No active
+    # broker")` the moment the re-walk starts. That is pre-existing: the
+    # command has been unusable outside the broker since the
+    # single-writer migration, and there is no `reindex` RPC to route it
+    # through (see issue #547).
+    #
+    # It matters here because `--from-scratch`'s destructive half runs
+    # and COMMITS first. Without this check it deletes an epoch's links,
+    # blanks the inbox's thread roots, and dies before putting anything
+    # back, and nothing repairs that: the startup backfill is
+    # sentinel-gated, the scheduler has no thread-roots pass, and
+    # `verify_thread_roots` samples only non-NULL rows so it is
+    # structurally blind to an all-NULL inbox. The sitemap would
+    # silently drop every thread in that inbox.
+    #
+    # Checked for both forms, not just the destructive one, because the
+    # plain form fails identically and an error naming it as the safe
+    # alternative would be a lie.
+    from mimir.broker._context import get_active_writer
 
-        try:
-            get_active_writer()
-        except RuntimeError:
-            raise click.ClickException(
-                "reindex --from-scratch needs an active broker writer, and this "
-                "process has none, so it would delete rows it cannot rebuild. "
-                "Run it inside the broker process, or re-walk non-destructively "
-                f"with `mimir reindex {inbox_name} {epoch}` (no --from-scratch)."
+    try:
+        get_active_writer()
+    except RuntimeError:
+        raise click.ClickException(
+            "reindex needs an active broker writer and this process has none, "
+            "so the re-walk would fail partway. There is currently no way to "
+            "run it against a deployed instance (see issue #547); it works in "
+            "a local dev checkout where the broker context is set. "
+            + (
+                "Refusing before deleting anything, because --from-scratch "
+                "would drop this epoch's links and blank the inbox's thread "
+                "roots before failing."
+                if from_scratch
+                else ""
             )
+        )
 
     with SessionLocal() as session:
         # Re-attach the detached Inbox bootstrap_inboxes returned.
@@ -233,10 +242,9 @@ def reindex_command(
             # fall back to the CTE: correct, just slower). The backfill
             # after the re-walk restores the fast path.
             #
-            # State the blast radius plainly, because "readers fall back"
-            # undersells it: the sitemap's root test IS the column, so
-            # between here and the backfill below this inbox contributes
-            # ZERO thread URLs to its sitemap. The `finally` around the
+            # Blast radius: the sitemap's root test IS the column, so
+            # between here and the rebuild this inbox contributes ZERO
+            # thread URLs to its sitemap. The `finally` around the
             # re-walk is what bounds that window to this command even
             # when the re-walk fails.
             #

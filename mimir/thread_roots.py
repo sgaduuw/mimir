@@ -23,6 +23,21 @@ logger = logging.getLogger(__name__)
 # writer's Connection. Both are real callers, so the annotation says
 # so rather than implying a wrapper is needed.
 
+# Measured cost of a full run, the ONE canonical copy of this number.
+# Three docstrings used to carry three different values for it (~2 min
+# from an early guess, "~10 s per 500k", "2.3 s per 500k, linear"), and
+# two of them were wrong; the drift is what this constant exists to
+# stop. Benchmarked 2026-07-28 on a 1.2M-row / 200-inbox corpus with
+# realistic thread depth: 11.4 s total (the one lkml-shaped inbox is
+# ~87% of it, the ~199 small ones ~1.6 s combined).
+#
+# Extrapolating to the production ~6M gives ~55 s, and that is a FLOOR
+# rather than an estimate: pass count grows with thread depth and 6M is
+# well outside the measured range. Anything gating on this (the broker
+# healthcheck's `start_period`, an operator's patience) should budget
+# accordingly.
+FULL_RUN_SECONDS_AT_1M_ROWS = 11.4
+
 # Safety stop for the propagation loop. Real lkml threads rarely exceed
 # ~50 deep and `threading.MAX_DEPTH` caps the read side at 1000, so a
 # run that needs more passes than this has hit something pathological
@@ -194,11 +209,13 @@ def backfill_inbox(session: Session, inbox_id: int) -> dict[str, int]:
     session. Idempotent: only touches NULL rows, so a re-run resumes a
     partial pass and never clobbers live ingest.
 
-    For non-broker callers (tests, dev scripts). The broker handler
-    drives the same passes but submits each as its own WriteOp, because
-    a full run is ~2 minutes on the production corpus and holding the
-    single writer that long would queue every web-tier cache write
-    behind it.
+    For non-broker callers (tests, dev scripts) that want the whole run
+    in one transaction. Both in-broker drivers instead commit one pass
+    at a time (the RPC handler submits each as its own WriteOp; the
+    startup path drives the same `drive_passes` seam and commits
+    between passes), because holding the single writer for a full run
+    would queue every web-tier cache write behind it. See
+    `FULL_RUN_SECONDS_AT_1M_ROWS` for how long that is.
     """
     counts = drive_passes(lambda fn: fn(session, inbox_id))
     if counts["exhausted"]:
