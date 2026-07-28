@@ -115,7 +115,12 @@ def month_sitemap(inbox_name: str, year: int, month: int, page: int = 1) -> Resp
     date range, and a page beyond the end 404s rather than serving an
     empty urlset a crawler would keep re-fetching.
     """
-    if not 1 <= month <= 12 or page < 1:
+    # Every segment is attacker-supplied. Beyond the obvious month
+    # range: year 0 and year 9999 both raise from `datetime` (the
+    # latter because the month range needs `year + 1`), and an
+    # astronomically large page number used to overflow when it reached
+    # SQLite. All of those were 500s on a public URL.
+    if not 1 <= month <= 12 or not 1 <= year <= 9998 or not 1 <= page <= 10_000:
         abort(404)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
