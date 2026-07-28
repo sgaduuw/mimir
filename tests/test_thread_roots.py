@@ -895,7 +895,10 @@ def test_verifier_does_not_read_the_column_it_is_checking(client, tmp_path):
     )
 
 
-def test_fast_path_ignores_a_root_no_longer_linked_to_this_inbox(client, tmp_path):
+@pytest.mark.parametrize("root_survives_elsewhere", [False, True])
+def test_fast_path_ignores_a_root_no_longer_linked_to_this_inbox(
+    client, tmp_path, root_survives_elsewhere
+):
     """`find_thread_root` promises the topmost ancestor PRESENT IN THIS
     INBOX, and the fast path must keep that promise.
 
@@ -905,6 +908,14 @@ def test_fast_path_ignores_a_root_no_longer_linked_to_this_inbox(client, tmp_pat
     that is no longer here. Answering with it would return a root the
     recursive walk would never give, and the caller would then render
     an empty thread.
+
+    Parametrised over whether ANOTHER inbox still carries the root,
+    because that is what makes the membership re-check's `inbox_id`
+    scoping load-bearing. With the root gone from every inbox, an
+    unscoped re-check misses it too and the bug is invisible; with a
+    cross-post keeping it alive elsewhere (the common case on lkml,
+    where nearly everything is cross-posted) an unscoped check happily
+    answers with a root that belongs to a different inbox.
     """
     from sqlalchemy import delete, select
 
@@ -915,6 +926,8 @@ def test_fast_path_ignores_a_root_no_longer_linked_to_this_inbox(client, tmp_pat
     seed_thread_shape(
         tmp_path, "alpha", [("fp1@x", None), ("fp2@x", "fp1@x"), ("fp3@x", "fp2@x")]
     )
+    if root_survives_elsewhere:
+        _cross_post_all("alpha", "beta", only=["fp1@x"])
     with SessionLocal() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         root_id = s.execute(
@@ -937,6 +950,112 @@ def test_fast_path_ignores_a_root_no_longer_linked_to_this_inbox(client, tmp_pat
         f"fast path answered {fast!r} with a root that is no longer in "
         f"this inbox; the walk says {walk!r}"
     )
+
+
+def _seed_epoch(tmp_path, inbox_name, epoch, edges):
+    """Ingest `edges` as their own epoch repo under the inbox's mirror.
+
+    `seed_thread_shape` hardcodes `0.git`, so a thread spread across
+    epochs (which is what makes `reindex --from-scratch` interesting,
+    since it drops ONE epoch's link rows) cannot be expressed with it.
+    """
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+
+    from mimir.ingest import ingest_epoch
+
+    repo_dir = tmp_path / epoch
+    repo = Repo.init_bare(str(repo_dir), mkdir=True)
+    prev = None
+    for i, (mid, parent) in enumerate(edges):
+        extra = b""
+        if parent is not None:
+            extra += b"In-Reply-To: <" + parent.encode() + b">\r\n"
+        raw = (
+            b"Message-ID: <" + mid.encode() + b">\r\n"
+            b"From: a@b.example\r\n"
+            b"Subject: shape msg\r\n"
+            b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n" + extra + b"\r\n"
+            b"body"
+        )
+        blob = Blob.from_string(raw)
+        repo.object_store.add_object(blob)
+        tree = Tree()
+        tree.add(b"m", 0o100644, blob.id)
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.parents = [prev] if prev else []
+        commit.author = commit.committer = b"test <t@x>"
+        commit.commit_time = commit.author_time = 1704067200 + i
+        commit.commit_timezone = commit.author_timezone = 0
+        commit.encoding = b"UTF-8"
+        commit.message = b"add"
+        repo.object_store.add_object(commit)
+        prev = commit.id
+    repo.refs[b"HEAD"] = prev
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        ix.mirror_path = str(tmp_path)
+        s.commit()
+        ingest_epoch(s, ix, epoch, repo_dir, workers=1)
+    return repo_dir
+
+
+@pytest.mark.parametrize("position", ["root", "middle", "leaf"])
+def test_reindex_from_scratch_never_leaves_a_root_the_walk_cannot_reach(
+    client, tmp_path, position
+):
+    """Drive the REAL `reindex --from-scratch`, across separate epochs.
+
+    Two axes, both of which had been held fixed. The MECHANISM: every
+    other test here simulates the destructive path with a direct DELETE,
+    so nothing exercised the command that actually produces this state.
+    The POSITION: the pre-existing fast-path guard only ever unlinked the
+    ROOT, which is the one case the fast path's own re-check already
+    covers. Unlinking a middle message leaves the root a member, so the
+    re-check passes while the walk stops at the orphan, and the column
+    and the walk disagree.
+
+    The re-walk normally restores the removed message and the disagreement
+    heals. This seeds the case where it does not, because the epoch's blob
+    is gone, which is exactly when the damage is permanent.
+    """
+    from click.testing import CliRunner
+
+    from mimir.cli.ingest import reindex_command
+    from mimir.threading import _find_thread_root_cte, find_thread_root
+
+    # One message per epoch, so reindexing an epoch removes exactly one
+    # link row and leaves the rest of the chain in place.
+    chain = [("rx1@x", None), ("rx2@x", "rx1@x"), ("rx3@x", "rx2@x")]
+    for i, edge in enumerate(chain):
+        _seed_epoch(tmp_path, "alpha", f"{i}.git", [edge])
+    victim = {"root": 0, "middle": 1, "leaf": 2}[position]
+
+    # Re-point the victim epoch at a repo that no longer carries its
+    # message, so the re-walk cannot restore it.
+    import shutil
+
+    shutil.rmtree(tmp_path / f"{victim}.git")
+    _seed_epoch(tmp_path, "alpha", f"{victim}.git", [("rx9@x", None)])
+
+    result = CliRunner().invoke(
+        reindex_command, ["alpha", f"{victim}.git", "--from-scratch"]
+    )
+    assert result.exit_code == 0, result.output
+
+    survivors = [mid for i, (mid, _p) in enumerate(chain) if i != victim]
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        for mid in survivors:
+            fast = find_thread_root(s, inbox, mid)
+            walk = _find_thread_root_cte(s, inbox, mid)
+            assert fast == walk, (
+                f"after reindexing the {position} epoch, {mid} resolves to "
+                f"{fast!r} via the column but {walk!r} via the walk"
+            )
 
 
 def test_broker_startup_backfills_thread_roots(client, tmp_path):

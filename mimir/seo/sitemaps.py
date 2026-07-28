@@ -95,13 +95,24 @@ def _per_inbox_latest_date(session) -> dict[str, str | None]:
 def _recent_thread_roots_query(inbox: Inbox):
     """`(article_id, date)` for this inbox's thread roots, newest first.
 
-    A root is `thread_root_id = article_id`, one indexed comparison
-    against `ix_article_lists_thread_root`. That replaces the previous
-    correlated EXISTS over `thread_parent`, and with it the whole
-    EXISTS-versus-JOIN tradeoff that cost two review rounds: the JOIN
+    A root is `thread_root_id = article_id`: a plain per-row comparison
+    between two columns of the same already-fetched row. Note what the
+    planner actually does, because the obvious reading is wrong: the
+    index seek is on `inbox_id` alone (EXPLAIN picks
+    `ix_article_lists_inbox_id`), and the root test is then a filter
+    over that narrowed set, NOT a seek against
+    `ix_article_lists_thread_root`. A two-column equality between
+    columns of the same row is not sargable.
+
+    The win is therefore about what the predicate no longer does, not
+    about a new index: it replaces a correlated EXISTS over
+    `thread_parent` evaluated per candidate row, and with it the whole
+    EXISTS-versus-JOIN tradeoff that cost two review rounds (the JOIN
     form was ~37x slower on the ~199 small inboxes, the EXISTS form
-    ~8x slower on lkml, and neither shape is needed now that the answer
-    is materialised.
+    ~8x slower on lkml). Measured on a 559k-row skewed corpus, new
+    versus old: lkml-shaped inbox 87 ms versus 181 ms, small inbox
+    0.154 ms versus 0.329 ms. Faster on both shapes, including the
+    199-of-200 case that the earlier attempt regressed.
 
     Rows still awaiting the backfill carry NULL, which fails the
     comparison, so they are simply absent from the sitemap until the
@@ -322,10 +333,12 @@ def inbox_sitemap_xml(
         # whole point of the consolidation.
         #
         # Roots come from the materialised column: `thread_root_id =
-        # article_id` is one indexed comparison, which replaced a
-        # correlated EXISTS over `thread_parent` and with it the whole
-        # EXISTS-versus-JOIN tradeoff (no shape suited both lkml and
-        # the ~199 small inboxes). Rows still awaiting the backfill
+        # article_id` is a per-row comparison over an inbox-scoped seek
+        # (see `_recent_thread_roots_query` for why it is NOT an index
+        # seek on the root column). It replaced a correlated EXISTS over
+        # `thread_parent` and with it the whole EXISTS-versus-JOIN
+        # tradeoff (no shape suited both lkml and the ~199 small
+        # inboxes). Rows still awaiting the backfill
         # carry NULL, fail the comparison, and are simply absent until
         # it reaches them: freshness, not correctness.
         #

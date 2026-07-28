@@ -430,6 +430,18 @@ def test_inbox_sitemap_root_query_uses_the_materialised_column():
         f"the root test derived rootness again instead of reading the column: {sql}"
     )
 
+    # Separate, coarser guard, carried over from the pre-column version
+    # of this test: whatever the spelling, the query must never
+    # degenerate into a full table scan. This catches a dropped index or
+    # a predicate rewrite that defeats one, neither of which the string
+    # assertions above can see. Both of this workstream's measured
+    # performance disasters were plan-shape regressions.
+    from sqlalchemy import text
+
+    with SessionLocal() as s:
+        plan = [row[-1] for row in s.execute(text("EXPLAIN QUERY PLAN " + sql))]
+    assert not any("SCAN articles" in step for step in plan), plan
+
 
 def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
     """The state between `seed_roots` and the first `propagate`.
