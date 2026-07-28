@@ -766,6 +766,231 @@ def _post_migrate_analyze_if_needed(socket_path: Path) -> None:
     )
 
 
+def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
+    """Populate `article_lists.thread_root_id` before the broker serves.
+
+    W8's column is read by `find_thread_root` and by the sitemap's root
+    and singleton tests. Readers fall back to the recursive walk while
+    a row is NULL, so a partially-filled corpus is correct, but the
+    sitemap simply omits threads it has not reached yet: deploy without
+    filling and the archive's own sitemap under-reports until somebody
+    remembers to run the command.
+
+    "Somebody remembers" is not a mechanism, so this runs it. Same
+    shape as the post-migrate ANALYZE above: sentinel-gated, in
+    `build_server`, so it completes before the broker ACCEPTS RPCs and
+    therefore before the web tier's healthcheck dependency is
+    satisfied. (Not "before the socket opens": `UnixStreamServer`
+    binds and listens in its constructor, so `connect(2)` succeeds
+    throughout this window and `broker-ping` hangs into its timeout
+    rather than failing fast. That distinction is why this step counts
+    against the healthcheck's `start_period` rather than being
+    invisible to it.)
+
+    Cost is one-time and proportional to corpus size; see
+    `mimir.thread_roots` for the measurements. Treat the extrapolation
+    to production scale as a FLOOR, not an estimate: pass count grows
+    with thread depth and 6M rows is well outside the measured range.
+    `compose.yaml`'s `start_period` has to cover this plus the
+    migration, bootstrap and both ANALYZEs.
+
+    Committed per PASS, not per inbox and not once at the end, using
+    the same `drive_passes` seam the broker's RPC handler uses. Per-
+    inbox looks resumable and is not, for the only inbox where it
+    matters: lkml alone is ~87%% of the total run, so a SIGKILL lands
+    inside it with overwhelming probability and would discard all of
+    it. Committing per pass makes "interrupted runs resume" true at
+    the granularity the docstring on `backfill_inbox` claims, because
+    every pass only touches NULL rows.
+
+    Verification does NOT run here. It is explicitly not allowed to
+    gate startup, and it costs ~23 s on a 200-inbox corpus (its per-
+    inbox cost is near-constant, so the ~199 small inboxes dominate),
+    which is pure added latency in front of the healthcheck. It runs
+    on a daemon thread instead, see `_verify_thread_roots_async`.
+    """
+    sentinel = socket_path.parent / ".thread_roots_backfilled"
+    if sentinel.exists() and not _has_unrooted_rows():
+        logger.debug("broker: thread-roots sentinel %s present, skipping", sentinel)
+        return
+    if sentinel.exists():
+        # Sentinel set but rows are NULL again. Reachable by rolling
+        # back to a pre-column image (whose ORM omits the column on
+        # INSERT) and then rolling forward: the sentinel would
+        # short-circuit forever, and nothing else would notice, since
+        # `verify_thread_roots` samples only non-NULL rows and the
+        # sitemap's root test IS the column. Re-running is cheap when
+        # there is nothing to do.
+        logger.warning(
+            "broker: thread-roots sentinel present but unrooted rows exist; "
+            "re-running the backfill"
+        )
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.thread_roots import drive_passes
+
+    logger.info("broker: backfilling thread roots (one-time)")
+    t0 = time.monotonic()
+    totals = {"seeded": 0, "propagated": 0, "cycles_broken": 0, "exhausted": 0}
+    failed = 0
+    try:
+        with SessionLocal() as session:
+            inboxes = list(session.execute(select(Inbox)).scalars())
+            for inbox in inboxes:
+                try:
+
+                    def _run_pass(fn, _ix=inbox):
+                        moved = fn(session, _ix.id)
+                        # Commit each pass, so an interrupted run keeps
+                        # everything up to the last completed pass even
+                        # inside the one big inbox.
+                        session.commit()
+                        return moved
+
+                    counts = drive_passes(_run_pass)
+                    if counts["exhausted"]:
+                        logger.warning(
+                            "broker: thread-roots backfill hit MAX_PASSES on "
+                            "inbox %s; rows remain unrooted",
+                            inbox.name,
+                        )
+                except Exception:
+                    session.rollback()
+                    failed += 1
+                    logger.exception(
+                        "broker: thread-roots backfill failed for inbox %s, "
+                        "continuing with the rest",
+                        inbox.name,
+                    )
+                    continue
+                for key in totals:
+                    totals[key] += counts.get(key, 0)
+    except Exception:
+        # Don't refuse to start: readers fall back to the recursive
+        # walk while rows are NULL, so an unfilled column is slow and
+        # under-reported, not wrong. No sentinel, so the next restart
+        # retries.
+        logger.exception(
+            "broker: thread-roots backfill failed, continuing without sentinel"
+        )
+        return
+
+    elapsed = time.monotonic() - t0
+    if totals["exhausted"] or failed:
+        # Withhold the sentinel: it is the ONLY thing preventing this
+        # from being retried, and a partial fill that never retries is
+        # permanent silent under-reporting in the sitemap.
+        logger.error(
+            "broker: thread-roots backfill incomplete "
+            "(pass budget hit on %d inbox(es), errored on %d); rows remain "
+            "unrooted, re-run `mimir backfill-thread-roots`",
+            totals["exhausted"],
+            failed,
+        )
+    else:
+        sentinel.touch()
+        # The fill rewrote every row of a column ANALYZE may have
+        # sampled while it was 100% NULL (the post-migrate pass runs
+        # before this one, and its own sentinel means reordering would
+        # not help on a corpus that already has it). Re-sample so the
+        # planner sees the real distribution rather than a column that
+        # looks single-valued.
+        try:
+            from mimir.maintenance import run_analyze
+
+            run_analyze(full=False)
+        except Exception:
+            logger.exception(
+                "broker: post-backfill ANALYZE failed; planner stats for "
+                "thread_root_id may under-value the index until the next pass"
+            )
+    logger.info(
+        "broker: thread-roots backfill complete in %.1fs "
+        "(seeded=%d propagated=%d cycles=%d)",
+        elapsed,
+        totals["seeded"],
+        totals["propagated"],
+        totals["cycles_broken"],
+    )
+
+    _verify_thread_roots_async()
+
+
+def _has_unrooted_rows() -> bool:
+    """Is any `article_lists` row still NULL? One indexed EXISTS."""
+    from sqlalchemy import exists, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList
+
+    try:
+        with SessionLocal() as session:
+            return bool(
+                session.scalar(
+                    select(exists().where(ArticleList.thread_root_id.is_(None)))
+                )
+            )
+    except Exception:
+        # Treat "cannot tell" as "nothing to do": the caller's next
+        # step is a backfill, and failing that query means the DB is
+        # in no state to run one.
+        logger.exception("broker: could not check for unrooted rows")
+        return False
+
+
+def _verify_thread_roots_async() -> threading.Thread:
+    """Recompute a sample per inbox and report disagreements, off the
+    startup path.
+
+    Verification is explicitly not allowed to gate startup: a mismatch
+    is serious, but wedging the broker on it turns a reporting problem
+    into an outage, and the failure it detects is not made worse by the
+    site being up. It used to run inline anyway, which meant it could
+    not fail the healthcheck but could still DELAY it past
+    `start_period`, measured at ~23 s on a 200-inbox corpus. Its
+    per-inbox cost is near-constant (a bounded walk-up plus a recursive
+    CTE per sampled row), so the ~199 small inboxes dominate the bill
+    regardless of how small they are.
+
+    A daemon thread keeps the value without the latency. The work is
+    read-only, so running it alongside live traffic is safe, and the
+    thread dies with the process.
+    """
+
+    def _run() -> None:
+        from sqlalchemy import select
+
+        from mimir.extensions import SessionLocal
+        from mimir.models import Inbox
+        from mimir.thread_roots import verify_thread_roots
+
+        try:
+            with SessionLocal() as session:
+                for inbox in session.execute(select(Inbox)).scalars():
+                    bad = verify_thread_roots(session, inbox)
+                    if bad:
+                        logger.error(
+                            "broker: thread-roots verification found %d "
+                            "mismatch(es) in inbox %s, e.g. %s; the "
+                            "materialised column disagrees with find_thread_root",
+                            len(bad),
+                            inbox.name,
+                            bad[0],
+                        )
+        except Exception:
+            logger.exception("broker: thread-roots verification failed to run")
+
+    # Returned so tests can join it. Callers on the startup path
+    # deliberately do not: the whole point is that it is off the
+    # critical path.
+    t = threading.Thread(target=_run, name="thread-roots-verify", daemon=True)
+    t.start()
+    return t
+
+
 def _purge_loop(stop_event: threading.Event, writer: WriterThread) -> None:
     """Periodic purge of expired cache rows. Submitted as a WriteOp via
     the broker's `WriterThread` so every write funnels through the
@@ -838,6 +1063,7 @@ def build_server(socket_path: Path) -> _BrokerServer:
     _migrate_if_needed(sp)
     _bootstrap_inboxes_if_needed(sp)
     _post_migrate_analyze_if_needed(sp)
+    _backfill_thread_roots_if_needed(sp)
     # Config-drift guard (Layer 1): the broker can serve every non-
     # sitemap surface with SITE_BASE_URL unset, but the sitemap warm
     # targets (sitemap:index, sitemap:meta, sitemap:inbox:*) silently

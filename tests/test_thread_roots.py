@@ -18,6 +18,12 @@ work lived in an interaction the then-current guard held fixed:
   because the root is per-inbox and a cross-posted reply routinely
   hangs off a root present in only one of its inboxes.
 
+The oracle is `_find_thread_root_cte`, never `find_thread_root`. Once
+the latter reads the column, using it here reduces every assertion to
+`root_id == root_id`: measured, that silently cost 14 of 17 detections
+against a write-path mutation. The whole point of this file is to
+recompute the answer independently.
+
 Cycles carry an explicit carve-out, see `CYCLIC`.
 """
 
@@ -27,7 +33,7 @@ from sqlalchemy import select
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox
 from mimir.thread_roots import backfill_inbox
-from mimir.threading import find_thread_root
+from mimir.threading import _find_thread_root_cte
 from tests.test_routes._helpers import seed_thread_shape
 
 # Shape -> ordered (message_id, parent) edges. The list order IS the
@@ -78,10 +84,9 @@ def _roots_by_inbox(
 ) -> dict[str, tuple[int | None, int]]:
     """`message_id -> (thread_root_id, article_id)` for one inbox.
 
-    Scoped to `only` because the shared conftest seeds articles
-    directly rather than through ingest, so those rows legitimately
-    carry NULL (the column means "not yet computed", which is what the
-    backfill is for) and would otherwise drown the shape under test.
+    Scoped to `only` so the shape under test is not drowned by the
+    shared conftest corpus, which seeds its own rows (with roots, as
+    production always has).
     """
     with SessionLocal() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
@@ -118,7 +123,7 @@ def _assert_invariant(inbox_name: str, shape: str) -> None:
                     f"{shape}/{inbox_name}: cycle fragmented across roots {shared}"
                 )
                 continue
-            expected_mid = find_thread_root(s, inbox, mid)
+            expected_mid = _find_thread_root_cte(s, inbox, mid)
             expected_id = materialised[expected_mid][1] if expected_mid else art_id
             assert root_id == expected_id, (
                 f"{shape}/{inbox_name}: {mid} has thread_root_id={root_id}, "
@@ -330,7 +335,7 @@ def _assert_invariant_for(inbox_name: str, mids: set[str], label: str) -> None:
     with SessionLocal() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
         for mid, (root_id, art_id) in materialised.items():
-            expected_mid = find_thread_root(s, inbox, mid) or mid
+            expected_mid = _find_thread_root_cte(s, inbox, mid) or mid
             expected_id = materialised.get(expected_mid, (None, art_id))[1]
             assert root_id == expected_id, (
                 f"{label}: {mid} has thread_root_id={root_id}, "
@@ -839,3 +844,573 @@ def test_cli_fails_when_the_backfill_is_truncated(client, tmp_path, monkeypatch)
     result = CliRunner().invoke(backfill_thread_roots_command, [])
     assert result.exit_code != 0, result.output
     assert "pass budget" in result.output
+
+
+def test_verifier_does_not_read_the_column_it_is_checking(client, tmp_path):
+    """The verifier must recompute, not consult.
+
+    `find_thread_root` now reads `thread_root_id` when populated, which
+    is the whole point of the column. If the verifier used that entry
+    point it would compare the column against itself and agree with any
+    corruption by construction, silently turning the one detector for
+    an invisible failure into a no-op.
+
+    Corrupt a row and confirm both that the verifier still catches it
+    AND that the fast path has genuinely been poisoned (so the test
+    would fail if the verifier switched to `find_thread_root`).
+    """
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.thread_roots import verify_thread_roots
+    from mimir.threading import find_thread_root
+
+    seed_thread_shape(
+        tmp_path, "alpha", [("cv1@x", None), ("cv2@x", "cv1@x"), ("cv3@x", "cv2@x")]
+    )
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        victim = s.execute(
+            select(Article.id).where(Article.message_id == "cv3@x")
+        ).scalar_one()
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.article_id == victim,
+                ArticleList.inbox_id == inbox.id,
+            )
+            .values(thread_root_id=victim)
+        )
+        s.commit()
+
+        # The fast path now returns the corrupted answer...
+        assert find_thread_root(s, inbox, "cv3@x") == "cv3@x"
+        # ...and the verifier still reports the corruption, which it
+        # could only do by recomputing independently.
+        found = verify_thread_roots(s, inbox, limit=500)
+
+    assert any(m["message_id"] == "cv3@x" for m in found), (
+        f"verifier agreed with the corrupted column: {found}"
+    )
+
+
+@pytest.mark.parametrize("root_survives_elsewhere", [False, True])
+def test_fast_path_ignores_a_root_no_longer_linked_to_this_inbox(
+    client, tmp_path, root_survives_elsewhere
+):
+    """`find_thread_root` promises the topmost ancestor PRESENT IN THIS
+    INBOX, and the fast path must keep that promise.
+
+    A stored root can stop being a member without the FK's `SET NULL`
+    firing: `reindex --from-scratch` drops an epoch's `article_lists`
+    rows while the articles survive, so siblings keep pointing at a row
+    that is no longer here. Answering with it would return a root the
+    recursive walk would never give, and the caller would then render
+    an empty thread.
+
+    Parametrised over whether ANOTHER inbox still carries the root,
+    because that is what makes the membership re-check's `inbox_id`
+    scoping load-bearing. With the root gone from every inbox, an
+    unscoped re-check misses it too and the bug is invisible; with a
+    cross-post keeping it alive elsewhere (the common case on lkml,
+    where nearly everything is cross-posted) an unscoped check happily
+    answers with a root that belongs to a different inbox.
+    """
+    from sqlalchemy import delete, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.threading import _find_thread_root_cte, find_thread_root
+
+    seed_thread_shape(
+        tmp_path, "alpha", [("fp1@x", None), ("fp2@x", "fp1@x"), ("fp3@x", "fp2@x")]
+    )
+    if root_survives_elsewhere:
+        _cross_post_all("alpha", "beta", only=["fp1@x"])
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        root_id = s.execute(
+            select(Article.id).where(Article.message_id == "fp1@x")
+        ).scalar_one()
+        # Unlink the root from this inbox; the article row survives, so
+        # the children's thread_root_id still points at it.
+        s.execute(
+            delete(ArticleList).where(
+                ArticleList.article_id == root_id,
+                ArticleList.inbox_id == inbox.id,
+            )
+        )
+        s.commit()
+
+        fast = find_thread_root(s, inbox, "fp3@x")
+        walk = _find_thread_root_cte(s, inbox, "fp3@x")
+
+    assert fast == walk, (
+        f"fast path answered {fast!r} with a root that is no longer in "
+        f"this inbox; the walk says {walk!r}"
+    )
+
+
+@pytest.mark.parametrize("position", ["root", "middle", "leaf"])
+def test_reindex_from_scratch_never_leaves_a_root_the_walk_cannot_reach(
+    client, tmp_path, position
+):
+    """Drive the REAL `reindex --from-scratch`, across separate epochs.
+
+    Two axes, both of which had been held fixed. The MECHANISM: every
+    other test here simulates the destructive path with a direct DELETE,
+    so nothing exercised the command that actually produces this state.
+    The POSITION: the pre-existing fast-path guard only ever unlinked the
+    ROOT, which is the one case the fast path's own re-check already
+    covers. Unlinking a middle message leaves the root a member, so the
+    re-check passes while the walk stops at the orphan, and the column
+    and the walk disagree.
+
+    The re-walk normally restores the removed message and the disagreement
+    heals. This seeds the case where it does not, because the epoch's blob
+    is gone, which is exactly when the damage is permanent.
+    """
+    from click.testing import CliRunner
+
+    from mimir.cli.ingest import reindex_command
+
+    # One message per epoch, so reindexing an epoch removes exactly one
+    # link row and leaves the rest of the chain in place.
+    chain = [("rx1@x", None), ("rx2@x", "rx1@x"), ("rx3@x", "rx2@x")]
+    for i, edge in enumerate(chain):
+        seed_thread_shape(tmp_path, "alpha", [edge], epoch=f"{i}.git")
+    # A second thread in a second inbox, so the reset's `inbox_id`
+    # scope has something to be wrong about.
+    beta_mirror = tmp_path / "beta-mirror"
+    beta_mirror.mkdir()
+    other = seed_thread_shape(
+        beta_mirror, "beta", [("rxb1@x", None), ("rxb2@x", "rxb1@x")]
+    )
+    other_before = _roots_by_inbox("beta", set(other))
+    assert all(r is not None for r, _a in other_before.values())
+    victim = {"root": 0, "middle": 1, "leaf": 2}[position]
+
+    # Re-point the victim epoch at a repo that no longer carries its
+    # message, so the re-walk cannot restore it.
+    import shutil
+
+    shutil.rmtree(tmp_path / f"{victim}.git")
+    seed_thread_shape(tmp_path, "alpha", [("rx9@x", None)], epoch=f"{victim}.git")
+
+    result = CliRunner().invoke(
+        reindex_command, ["alpha", f"{victim}.git", "--from-scratch"]
+    )
+    assert result.exit_code == 0, result.output
+
+    survivors = {mid for i, (mid, _p) in enumerate(chain) if i != victim}
+
+    # Assert the STORED value against the independent oracle, not
+    # `find_thread_root` against it. `find_thread_root` falls back to
+    # the CTE whenever the column is NULL, so comparing the two is
+    # satisfied by construction on exactly the state the reset
+    # produces: an earlier version of this assertion stayed green with
+    # the entire rebuild step deleted.
+    _assert_invariant_for("alpha", survivors, f"reindex/{position}")
+    assert _nulls_remaining("alpha") == 0, (
+        f"reindexing the {position} epoch left rows unrooted; the rebuild "
+        "did not run or did not finish"
+    )
+    # The other inbox must be untouched. The reset is whole-inbox, and
+    # nothing here would notice it going whole-DATABASE: production is
+    # ~200 inboxes and every test in this file drives one.
+    assert _roots_by_inbox("beta", other_before.keys()) == other_before, (
+        "reindexing alpha changed beta's roots"
+    )
+
+
+def test_broker_startup_backfills_thread_roots(client, tmp_path, monkeypatch):
+    """The backfill runs itself, rather than relying on an operator.
+
+    W8's column is read by `find_thread_root` and the sitemap. Readers
+    fall back while a row is NULL, so an unfilled corpus is correct but
+    under-reported: deploy without filling and the sitemap silently
+    omits threads until somebody remembers the command. "Somebody
+    remembers" is not a mechanism.
+
+    It is sentinel-gated inside `build_server`, so it completes before
+    `serve()` opens the socket and therefore before the web tier's
+    healthcheck dependency is satisfied. This exercises the real
+    startup function against a corpus rewound to the post-migration
+    state.
+    """
+    from sqlalchemy import update
+
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList
+
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("bs1@x", None), ("bs2@x", "bs1@x"), ("bs3@x", "bs2@x")],
+    )
+    mids = set(seeded)
+
+    with SessionLocal() as s:
+        s.execute(update(ArticleList).values(thread_root_id=None))
+        s.commit()
+
+    assert all(root is None for root, _a in _roots_by_inbox("alpha", mids).values())
+
+    sentinel_dir = tmp_path / "sock"
+    sentinel_dir.mkdir()
+    _backfill_thread_roots_if_needed(sentinel_dir / "broker.sock")
+
+    roots = _roots_by_inbox("alpha", mids)
+    assert all(root is not None for root, _a in roots.values()), roots
+    _assert_invariant_for("alpha", mids, "broker startup backfill")
+    assert (sentinel_dir / ".thread_roots_backfilled").exists()
+
+    # Second call with nothing to do is a no-op: the sentinel keeps
+    # restarts cheap. Probe it by making the backfill explode, so a
+    # short-circuit is the only way through.
+    import mimir.thread_roots
+
+    def _explode(*_a, **_kw):
+        raise AssertionError("backfill ran despite the sentinel and a full column")
+
+    monkeypatch.setattr(mimir.thread_roots, "drive_passes", _explode)
+    _backfill_thread_roots_if_needed(sentinel_dir / "broker.sock")
+    monkeypatch.undo()
+
+
+def test_startup_backfill_reruns_when_the_sentinel_lies(client, tmp_path):
+    """Sentinel present but rows NULL again: re-run, do not short-circuit.
+
+    Reachable by rolling back to a pre-column image, whose ORM omits
+    the column on INSERT, and then rolling forward. The sentinel would
+    otherwise short-circuit forever and nothing else would notice:
+    `verify_thread_roots` samples only non-NULL rows, so it is
+    structurally blind to this, and the sitemap's root test IS the
+    column, so those threads would silently vanish from it.
+    """
+    from sqlalchemy import update
+
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+    from mimir.models import ArticleList
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("sl1@x", None), ("sl2@x", "sl1@x")])
+    mids = set(seeded)
+
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    sentinel = sock / ".thread_roots_backfilled"
+    sentinel.touch()
+
+    with SessionLocal() as s:
+        s.execute(update(ArticleList).values(thread_root_id=None))
+        s.commit()
+
+    _backfill_thread_roots_if_needed(sock / "broker.sock")
+
+    assert _nulls_remaining("alpha") == 0, (
+        "a stale sentinel short-circuited a corpus that had gone unrooted"
+    )
+    _assert_invariant_for("alpha", mids, "stale-sentinel rerun")
+
+
+def _null_all_roots():
+    from sqlalchemy import update
+
+    from mimir.models import ArticleList
+
+    with SessionLocal() as s:
+        s.execute(update(ArticleList).values(thread_root_id=None))
+        s.commit()
+
+
+def _nulls_remaining(inbox_name: str) -> int:
+    from sqlalchemy import func
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        return s.execute(
+            select(func.count())
+            .select_from(ArticleList)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.thread_root_id.is_(None),
+            )
+        ).scalar_one()
+
+
+def test_startup_backfill_covers_every_inbox(client, tmp_path):
+    """Production is ~200 inboxes; the original guard seeded one.
+
+    With a single inbox, a startup pass that covers only the first and
+    skips the rest is indistinguishable from a correct one, so
+    `for inbox in inboxes[:1]` passed the entire suite.
+    """
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("mi1@x", None), ("mi2@x", "mi1@x")])
+    _cross_post_all("alpha", "beta", only=list(seeded))
+    _null_all_roots()
+
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    _backfill_thread_roots_if_needed(sock / "broker.sock")
+
+    for name in ("alpha", "beta"):
+        assert _nulls_remaining(name) == 0, f"{name} was left unfilled"
+        _assert_invariant_for(name, set(seeded), f"startup backfill/{name}")
+
+
+def test_startup_backfill_withholds_the_sentinel_when_the_pass_budget_blows(
+    client, tmp_path, monkeypatch
+):
+    """The sentinel is the ONLY thing that makes this retry.
+
+    Touching it over a partial fill is permanent: no later restart
+    re-runs, and every unrooted thread stays missing from the sitemap
+    forever. Deleting the `else:` guarding `sentinel.touch()` passed the
+    entire suite, which is exactly the silent-under-reporting this
+    function exists to prevent.
+    """
+    import mimir.thread_roots
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+
+    seed_thread_shape(
+        tmp_path, "alpha", [("pb1@x", None), ("pb2@x", "pb1@x"), ("pb3@x", "pb2@x")]
+    )
+    _null_all_roots()
+    # One pass cannot propagate a three-deep chain, so the run exhausts.
+    monkeypatch.setattr(mimir.thread_roots, "MAX_PASSES", 1)
+
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    _backfill_thread_roots_if_needed(sock / "broker.sock")
+
+    assert _nulls_remaining("alpha") > 0, "test did not actually exhaust the budget"
+    assert not (sock / ".thread_roots_backfilled").exists(), (
+        "sentinel was written over a partial fill; no restart will ever retry"
+    )
+
+
+def test_startup_backfill_commits_per_inbox_and_withholds_on_failure(
+    client, tmp_path, monkeypatch
+):
+    """A failure on the last inbox must not discard the first 199.
+
+    The run committed once after the loop, so any error, SIGKILL, or
+    OOM threw away every completed inbox: the opposite of the
+    "interrupted runs resume" property `backfill_inbox` documents.
+    """
+    import mimir.thread_roots
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("pc1@x", None), ("pc2@x", "pc1@x")])
+    _cross_post_all("alpha", "beta", only=list(seeded))
+    _null_all_roots()
+
+    with SessionLocal() as s:
+        beta_id = s.execute(select(Inbox.id).where(Inbox.name == "beta")).scalar_one()
+
+    real = mimir.thread_roots.seed_roots
+
+    def _fail_on_beta(session, inbox_id):
+        if inbox_id == beta_id:
+            raise RuntimeError("injected failure on the second inbox")
+        return real(session, inbox_id)
+
+    # Patched at the pass level, because the startup path drives the
+    # passes itself (to commit between them) rather than calling
+    # `backfill_inbox`.
+    monkeypatch.setattr(mimir.thread_roots, "seed_roots", _fail_on_beta)
+
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    _backfill_thread_roots_if_needed(sock / "broker.sock")
+
+    assert _nulls_remaining("alpha") == 0, (
+        "the failing inbox rolled back work that had already succeeded"
+    )
+    assert not (sock / ".thread_roots_backfilled").exists(), (
+        "sentinel was written even though an inbox errored"
+    )
+
+
+def test_startup_verification_reports_a_mismatch(client, tmp_path, caplog):
+    """The verification block is the only detector for a failure the
+    docstring itself calls invisible, and deleting it wholesale passed
+    the entire suite.
+
+    Asserting on the log is the contract here: the block deliberately
+    does not raise or gate startup, so the ERROR line IS its output.
+    The broker CLI installs a root handler at INFO
+    (`_configure_logging(max(verbose, 1))`), so unlike the web tier this
+    line does reach the container log for the post-deploy smoke to grep.
+    """
+    import logging
+    import threading
+
+    from sqlalchemy import update
+
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("vm1@x", None), ("vm2@x", "vm1@x"), ("vm3@x", "vm2@x")]
+    )
+    # Corrupt one row to a plausible-but-wrong root. The backfill only
+    # touches NULLs, so it will leave this alone and verification is
+    # what has to catch it.
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        wrong = seeded["vm3@x"][0]
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.article_id == seeded["vm2@x"][0],
+            )
+            .values(thread_root_id=wrong)
+        )
+        s.commit()
+
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    with caplog.at_level(logging.ERROR, logger="mimir.broker.server"):
+        _backfill_thread_roots_if_needed(sock / "broker.sock")
+        # Verification runs on a daemon thread so it cannot delay the
+        # healthcheck; join it here so the assertion is not racy.
+        for t in threading.enumerate():
+            if t.name == "thread-roots-verify":
+                t.join(timeout=30)
+
+    assert any("verification found" in r.message for r in caplog.records), (
+        f"verification did not report the corrupted root: {caplog.records}"
+    )
+
+
+def test_reindex_from_scratch_refuses_when_it_cannot_rebuild(client, tmp_path):
+    """Never destroy in a context that cannot finish the job.
+
+    `ingest_epoch` resolves its writer from the broker context, which
+    only `serve()` sets, so a plain CLI process raises the moment the
+    re-walk starts. The destructive half runs and COMMITS before that,
+    so without a pre-check a `--from-scratch` in the wrong process
+    deletes an epoch's links, blanks the inbox's roots, and dies. And
+    nothing repairs it: the startup backfill is sentinel-gated, the
+    scheduler has no thread-roots pass, and `verify_thread_roots` only
+    samples non-NULL rows so it cannot see an all-NULL inbox.
+
+    The suite hides this by default because conftest installs a broker
+    context session-wide, so this clears it to get the production shape.
+    """
+    from click.testing import CliRunner
+
+    from mimir.broker import _context
+    from mimir.cli.ingest import reindex_command
+
+    seed_thread_shape(tmp_path, "alpha", [("nb1@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("nb2@x", "nb1@x")], epoch="1.git")
+    mids = {"nb1@x", "nb2@x"}
+    before = _roots_by_inbox("alpha", mids)
+    assert all(r is not None for r, _a in before.values())
+
+    pool, writer = _context.get_active_pool(), _context.get_active_writer()
+    _context.clear_active()
+    try:
+        result = CliRunner().invoke(
+            reindex_command, ["alpha", "1.git", "--from-scratch"]
+        )
+    finally:
+        _context.set_active(pool, writer)
+
+    assert result.exit_code != 0, result.output
+    assert "active broker writer" in result.output, result.output
+    assert _roots_by_inbox("alpha", mids) == before, (
+        "refused the run but destroyed state on the way out"
+    )
+    assert _nulls_remaining("alpha") == 0
+
+
+def test_reindex_from_scratch_rebuilds_even_when_the_rewalk_fails(
+    client, tmp_path, monkeypatch
+):
+    """The failure path is the one that matters.
+
+    A re-walk that dies partway (bad blob, OOM, Ctrl-C) would otherwise
+    leave the whole inbox unrooted with nothing scheduled to repair it,
+    which is strictly worse than the stale roots this command exists to
+    clear.
+    """
+    from click.testing import CliRunner
+
+    import mimir.cli.ingest as cli_ingest
+    from mimir.cli.ingest import reindex_command
+
+    seed_thread_shape(tmp_path, "alpha", [("rf1@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("rf2@x", "rf1@x")], epoch="1.git")
+    seed_thread_shape(tmp_path, "alpha", [("rf3@x", "rf2@x")], epoch="2.git")
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("simulated mid-walk failure")
+
+    monkeypatch.setattr(cli_ingest, "ingest_epoch", _boom)
+    result = CliRunner().invoke(reindex_command, ["alpha", "1.git", "--from-scratch"])
+
+    assert result.exit_code != 0
+    assert _nulls_remaining("alpha") == 0, (
+        "a failed re-walk left the inbox unrooted with nothing to repair it"
+    )
+    _assert_invariant_for("alpha", {"rf1@x", "rf3@x"}, "reindex/failed-rewalk")
+
+
+def test_reindex_from_scratch_leaves_roots_alone_when_nothing_was_deleted(
+    client, tmp_path
+):
+    """A mistyped epoch must not blank the inbox.
+
+    `9.git` is a valid epoch name that this inbox never ingested, so
+    the delete matches nothing. Resetting anyway would destroy every
+    root in the inbox on a typo.
+    """
+    from click.testing import CliRunner
+    from dulwich.repo import Repo
+
+    from mimir.cli.ingest import reindex_command
+
+    seed_thread_shape(tmp_path, "alpha", [("nd1@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("nd2@x", "nd1@x")], epoch="1.git")
+    mids = {"nd1@x", "nd2@x"}
+    before = _roots_by_inbox("alpha", mids)
+
+    Repo.init_bare(str(tmp_path / "9.git"), mkdir=True)
+    result = CliRunner().invoke(reindex_command, ["alpha", "9.git", "--from-scratch"])
+
+    assert "deleted 0 existing inbox-links" in result.output, result.output
+    assert _roots_by_inbox("alpha", mids) == before, (
+        "reset the inbox's roots even though nothing was deleted"
+    )
+
+
+def test_reindex_from_scratch_fails_loudly_on_a_truncated_rebuild(
+    client, tmp_path, monkeypatch
+):
+    """Exit non-zero when the rebuild is truncated.
+
+    Same reasoning as `mimir backfill-thread-roots`: without this the
+    summary line is identical to a complete run and reads as done. It
+    matters more here, because this command is what created the NULLs.
+    """
+    from click.testing import CliRunner
+
+    import mimir.thread_roots
+    from mimir.cli.ingest import reindex_command
+
+    seed_thread_shape(tmp_path, "alpha", [("tr1@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("tr2@x", "tr1@x")], epoch="1.git")
+    seed_thread_shape(tmp_path, "alpha", [("tr3@x", "tr2@x")], epoch="2.git")
+    monkeypatch.setattr(mimir.thread_roots, "MAX_PASSES", 1)
+
+    result = CliRunner().invoke(reindex_command, ["alpha", "1.git", "--from-scratch"])
+
+    assert result.exit_code != 0, result.output
+    assert "pass budget" in result.output, result.output
