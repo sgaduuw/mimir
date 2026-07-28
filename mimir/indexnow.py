@@ -29,8 +29,8 @@ from sqlalchemy.orm import Session
 
 from mimir._outbound import OUTBOUND_OPENER
 from mimir.config import settings
-from mimir.models import Article, ArticleList, Inbox
-from mimir.web import _canonical_url_for
+from mimir.models import Article
+from mimir.web import _advertised_urls_for
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +49,29 @@ def build_urls(session: Session, message_ids: list[str], base: str) -> list[str]
     """Translate a list of newly-ingested message IDs into a list of
     canonical absolute URLs ready for the IndexNow `urlList` payload.
 
-    Resolves the canonical inbox per article (preferring
-    `Article.canonical_inbox_id`, falling back to the alphabetically-
-    first linked inbox) and composes `<base>/<inbox>/<YYYY>/<MM>/<id>`.
+    Resolves the canonical inbox per article and emits the URL that
+    surface actually wants indexed: the THREAD view when the article's
+    thread has replies, the message URL when it does not. See
+    `mimir.web.urls._advertised_urls_for`.
+
+    Pushing the message URL unconditionally, which is what this did
+    before the thread-view work, had two costs. It told Bing "this
+    changed" about a page that disclaims itself via
+    `<link rel="canonical">`; and, worse, the consolidated document
+    that actually grew when a reply landed was never announced at all,
+    so the one page this whole workstream wants indexed had no
+    freshness signal on the fastest channel mimir has.
+
+    Consolidating also DEDUPES: fifty replies to one thread now push
+    one URL rather than fifty, which is a straight win against the
+    endpoint's per-request URL budget.
+
     Articles with no linked inbox (corrupt rows, shouldn't happen) or
     no date are skipped silently, the alternative is a dangling URL
     in the push, which is worse than a missed notification.
 
-    Two queries: one for Articles, one for their ArticleList joins.
-    Both bounded by len(message_ids), which is capped above by the
-    `update` caller, no risk of pulling the full archive.
+    Query count is bounded and independent of batch size; the batch
+    itself is capped by the `update` caller.
     """
     if not message_ids:
         return []
@@ -69,31 +82,21 @@ def build_urls(session: Session, message_ids: list[str], base: str) -> list[str]
     )
     if not articles:
         return []
-    # One bulk query for the (article_id, inbox_id, inbox_name)
-    # joins so we don't N+1 the inbox lookup per article.
-    rows = session.execute(
-        select(ArticleList.article_id, Inbox.id, Inbox.name)
-        .join(Inbox, Inbox.id == ArticleList.inbox_id)
-        .where(ArticleList.article_id.in_([a.id for a in articles]))
-    ).all()
-    links_by_article: dict[int, list[tuple[int, str]]] = {}
-    for article_id, ix_id, ix_name in rows:
-        links_by_article.setdefault(article_id, []).append((ix_id, ix_name))
-
     base = base.rstrip("/")
+    # No link pre-fetch: `_advertised_urls_for` resolves the canonical
+    # inbox itself and omits any article it cannot place, so filtering
+    # here on a second copy of the same join was a wasted round-trip
+    # per tick, on batches of up to a thousand articles.
+    linked = [a for a in articles if a.date is not None]
+    advertised = _advertised_urls_for(session, linked, base=base)
+    # Dedupe while preserving order: several replies in one batch
+    # collapse onto their shared thread URL.
     urls: list[str] = []
-    for article in articles:
-        if article.date is None:
-            continue
-        links = links_by_article.get(article.id, [])
-        if not links:
-            continue
-        # Canonical-pick + path-format lives in `mimir.web`; this
-        # call yields the same string the web route would render
-        # as `<link rel="canonical">`, so IndexNow pushes match
-        # the URL search engines see on subsequent crawls.
-        url = _canonical_url_for(article, links, base=base)
-        if url is not None:
+    seen: set[str] = set()
+    for article in linked:
+        url = advertised.get(article.id)
+        if url is not None and url not in seen:
+            seen.add(url)
             urls.append(url)
     return urls
 

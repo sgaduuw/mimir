@@ -65,6 +65,55 @@ def _json_ld_index(base: str, inboxes=()) -> dict:
     return payload
 
 
+def _thread_url_for(thread, inbox_name: str) -> str:
+    """Whole-thread URL for an `ActiveThread` with replies, else its
+    message URL.
+
+    `reply_count > 0` is exactly "this thread has more than one message
+    in this inbox", which is the consolidation rule, and it needs no
+    query. The equivalence is worth spelling out because the field is a
+    WINDOWED count and that looks like it should break it:
+
+    - `reply_count > 0` means at least one non-root message was seen in
+      the window, so the thread has at least two messages. Sound.
+    - `reply_count == 0` does NOT prove the thread is a single message,
+      and an earlier version of this docstring claimed it did. The
+      argument was "replies can only follow their root in time, so a
+      root inside the window cannot have replies outside it". That
+      relies on `articles.date` being send time. It is not: it is the
+      public-inbox commit time, i.e. ARCHIVAL order (see CONTEXT.md
+      "articles.date = public-inbox commit timestamp"). A child
+      archived before its parent is a documented, handled reality here
+      (`ingest/_pending.py`, "a child ingested before its parent, which
+      happens across epoch boundaries"), and in that case the reply's
+      date is earlier than its root's, so it can fall outside a window
+      the root is inside.
+
+      The consequence is bounded and in the safe direction: such a
+      thread is UNDER-consolidated, advertised as a message URL exactly
+      as it was before this change, so it is an incomplete fix rather
+      than a regression. Closing it properly needs a real per-thread
+      count, i.e. a query on a hot page, which is not worth it for a
+      hint; if this list ever becomes load-bearing, that is the trade
+      to revisit.
+
+    Inbox-scoped on purpose, matching what it replaces: this list is
+    rendered on `/<inbox>/`, so its URLs stay in that inbox rather than
+    hopping to each thread's canonical inbox. `reply_count` is computed
+    per inbox too, so the count and the URL agree.
+
+    Also immune to the cyclic-`thread_parent` inflation that
+    `dedupe_thread` exists to absorb: this counts recent messages
+    grouped by root, not a downward walk, so a cycle cannot re-emit an
+    article and fake a multi-message thread.
+    """
+    from mimir.web import _msg_url, _thread_view_url
+
+    if thread.reply_count > 0:
+        return _thread_view_url(thread, inbox_name)
+    return _msg_url(thread, inbox_name)
+
+
 def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
     """schema.org payload for `/<inbox_name>/`, a `DiscussionForum`
     container plus an `ItemList` of the currently-most-active threads
@@ -74,7 +123,7 @@ def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
     """
     # Lazy imports break a `web → seo → web` cycle: these helpers
     # live in web.py with the rest of the display filters.
-    from mimir.web import _clean_subject_filter, _msg_url
+    from mimir.web import _clean_subject_filter
 
     payload: dict = {
         "@context": "https://schema.org",
@@ -91,7 +140,7 @@ def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
                 {
                     "@type": "ListItem",
                     "position": i + 1,
-                    "url": f"{base}{_msg_url(t, inbox.name)}",
+                    "url": f"{base}{_thread_url_for(t, inbox.name)}",
                     "name": _clean_subject_filter(t.subject) or "(no subject)",
                 }
                 for i, t in enumerate(active_threads)

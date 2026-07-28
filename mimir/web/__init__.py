@@ -81,6 +81,7 @@ from mimir.web.routes.timeviews import MONTH_THREAD_CAP
 from mimir.web.routes.attachments import _content_disposition
 from mimir.web.urls import (
     _canonical_inbox_name,
+    _advertised_urls_for,
     _canonical_inbox_names_for,
     _canonical_url_for,
     _get_inbox_or_404,
@@ -105,6 +106,7 @@ __all__ = [
     "SUBSYSTEM_RECENT_PATCHES_LIMIT",
     "_allowlisted_email",
     "_canonical_inbox_name",
+    "_advertised_urls_for",
     "_canonical_inbox_names_for",
     "_canonical_url_for",
     "_clean_subject_filter",
