@@ -184,6 +184,14 @@ uv run mimir reindex lkml 0.git                    # rewind state, re-walk; dedu
 uv run mimir reindex lkml 0.git --from-scratch     # also DELETE this inbox's links to that epoch first
 ```
 
+> **Local development only, currently.** `reindex` needs an active
+> broker writer, which only the broker's own `serve()` establishes, and
+> there is no `reindex` RPC to route it through. Against a deployed
+> instance it exits with an error naming
+> [#547](https://github.com/sgaduuw/mimir/issues/547) rather than
+> running partway. Use `mimir admin failures replay` to retry recorded
+> parse failures in the meantime.
+
 Output is one line per epoch, e.g.:
 
 ```

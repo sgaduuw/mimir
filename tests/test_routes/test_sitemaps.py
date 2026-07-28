@@ -446,8 +446,9 @@ def test_inbox_sitemap_root_query_uses_the_materialised_column():
 def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
     """The state between `seed_roots` and the first `propagate`.
 
-    `handle_backfill_thread_roots` commits one pass per WriteOp, so
-    this is a real committed state on every inbox during a backfill,
+    Both backfill drivers commit one pass at a time (the RPC handler
+    per WriteOp, the broker's startup path via the same `drive_passes`
+    seam), so this is a real committed state on every inbox,
     and a durable one if the run is interrupted (broker restart, RPC
     timeout, pass-budget exhaustion). Nothing rendered a sitemap
     against a partially-filled corpus before, which is how a version of

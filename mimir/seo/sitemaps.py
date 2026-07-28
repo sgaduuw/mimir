@@ -142,9 +142,11 @@ def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
     seeded, replies still NULL) a five-message thread counts as one and
     gets published as a message URL while its own page canonicalises to
     the thread URL, i.e. the sitemap listing a page that disclaims
-    itself. `handle_backfill_thread_roots` commits one pass per
-    WriteOp, so that state is reachable and committed on every inbox,
-    and durable if a run is interrupted.
+    itself. BOTH backfill drivers commit one pass at a time (the RPC
+    handler submits each as its own WriteOp; the broker's startup path
+    drives the same `drive_passes` seam and commits between passes), so
+    that state is reachable and committed on every inbox, and durable
+    if a run is interrupted.
 
     The column form also buys nothing measurable here: 3.0-4.1 ms
     against 3.4 ms for this one on 5000 ids, at both 500k and 2.1M
@@ -332,13 +334,12 @@ def inbox_sitemap_xml(
         # elsewhere. One fat thread document per entry is also the
         # whole point of the consolidation.
         #
-        # Roots come from the materialised column: `thread_root_id =
-        # article_id` is a per-row comparison over an inbox-scoped seek
-        # (see `_recent_thread_roots_query` for why it is NOT an index
-        # seek on the root column). It replaced a correlated EXISTS over
-        # `thread_parent` and with it the whole EXISTS-versus-JOIN
-        # tradeoff (no shape suited both lkml and the ~199 small
-        # inboxes). Rows still awaiting the backfill
+        # Roots come from the materialised column; see
+        # `_recent_thread_roots_query` for the plan shape, the
+        # measurements, and why NULL rows are absent rather than listed
+        # wrongly. Kept as a pointer rather than a second copy of the
+        # numbers, because a duplicated measurement is one that goes
+        # stale. Rows still awaiting the backfill
         # carry NULL, fail the comparison, and are simply absent until
         # it reaches them: freshness, not correctness.
         #

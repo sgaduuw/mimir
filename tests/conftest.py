@@ -122,10 +122,21 @@ def _session_broker(_migrate_db):
 
     # Pre-touch the self-bootstrap sentinels so `build_server`'s
     # _migrate_if_needed / _bootstrap_inboxes_if_needed /
-    # _post_migrate_analyze_if_needed all short-circuit.
+    # _post_migrate_analyze_if_needed / _backfill_thread_roots_if_needed
+    # all short-circuit. The last one is the newest and is easy to
+    # forget: without it every test session pays a real backfill and
+    # spawns the verification daemon thread, which then races whatever
+    # the tests are asserting about roots.
+    #
+    # Note the thread-roots sentinel is necessary but not sufficient:
+    # that step re-runs anyway if any row is still NULL (a stale
+    # sentinel is a real production hazard, see the rollback case), so
+    # the fixtures below seed `thread_root_id` rather than leaving it
+    # for the startup path to fill.
     (sock_dir / ".migrated").touch()
     (sock_dir / ".bootstrapped").touch()
     (sock_dir / ".broker_initial_analyze").touch()
+    (sock_dir / ".thread_roots_backfilled").touch()
 
     server = build_server(sock_path)
     server.writer.start()

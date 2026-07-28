@@ -491,7 +491,7 @@ def _ingest_series_pair(tmp_path, inbox_name, v1_messages, v2_messages):
         return cover.patch_series_key
 
 
-def seed_thread_shape(tmp_path, inbox_name, edges, *, date_for=None):
+def seed_thread_shape(tmp_path, inbox_name, edges, *, date_for=None, epoch="0.git"):
     """Build an ARBITRARY thread shape in one bare repo and ingest it.
 
     `edges` is an ordered list of `(message_id, parent_message_id|None)`.
@@ -502,7 +502,9 @@ def seed_thread_shape(tmp_path, inbox_name, edges, *, date_for=None):
     thread `_seed_three_message_thread` builds.
 
     `date_for` optionally maps message_id -> RFC 5322 Date string, for
-    month/year-boundary shapes.
+    month/year-boundary shapes. `epoch` places the messages in a
+    specific epoch repo, for shapes that span epochs (what
+    `reindex --from-scratch` operates on).
 
     Returns `{message_id: (article_id, url)}`.
     """
@@ -514,7 +516,7 @@ def seed_thread_shape(tmp_path, inbox_name, edges, *, date_for=None):
     from mimir.ingest import ingest_epoch
     from mimir.models import Article, Inbox
 
-    repo_dir = tmp_path / "0.git"
+    repo_dir = tmp_path / epoch
     repo = Repo.init_bare(str(repo_dir), mkdir=True)
     prev = None
     for i, (mid, parent) in enumerate(edges):
@@ -550,7 +552,7 @@ def seed_thread_shape(tmp_path, inbox_name, edges, *, date_for=None):
         ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
         ix.mirror_path = str(tmp_path)
         s.commit()
-        ingest_epoch(s, ix, "0.git", repo_dir, workers=1)
+        ingest_epoch(s, ix, epoch, repo_dir, workers=1)
         out = {}
         for mid, _parent in edges:
             art = s.execute(

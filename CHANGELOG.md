@@ -28,13 +28,13 @@ changes, not internal refactors. Categories: **Added**,
   retries, and logs `backfill incomplete` for the post-deploy smoke to
   grep.
 - `mimir reindex --from-scratch` now rebuilds the inbox's thread roots
-  after the re-walk, and refuses to start unless it can. Dropping one
-  epoch's rows breaks the parent chain for replies living in other
-  epochs, which previously left them pointing at a root no longer
-  reachable: a permanent redirect from a reply's thread view to a
-  thread that no longer contained it. The rebuild also runs when the
-  re-walk fails, so an interrupted run cannot leave an inbox unrooted,
-  and the command exits non-zero if it could not finish.
+  after the re-walk. Dropping one epoch's rows breaks the parent chain
+  for replies living in other epochs, which previously left them
+  pointing at a root no longer reachable: a permanent redirect from a
+  reply's thread view to a thread that no longer contained it. The
+  rebuild also runs when the re-walk fails, so an interrupted run
+  cannot leave an inbox unrooted, and the command exits non-zero if it
+  could not finish.
 - Whole-thread view at `/<inbox>/<YYYY>/<MM>/<root-id>/t`: every message
   in one conversation rendered on a single page, with the reply tree's
   full text inline. Additive, the per-message reading model is
@@ -60,6 +60,14 @@ changes, not internal refactors. Categories: **Added**,
   fields are omitted when empty rather than emitted as zero / `[]`.
 
 ### Changed
+
+- The broker's healthcheck `start_period` rises from 60 s to 180 s.
+  A deploy that runs a schema migration now also runs the one-time
+  thread-root backfill before accepting RPCs, and the total
+  (migration, inbox bootstrap, two bounded ANALYZEs, backfill) is
+  around 90 s at production scale. At 60 s the broker would have been
+  marked unhealthy and compose would have aborted the deploy, since
+  both other containers gate on it.
 
 - Message pages in a multi-message thread now canonicalise to their
   thread view, and the per-inbox sitemap lists one thread URL per
@@ -88,6 +96,15 @@ changes, not internal refactors. Categories: **Added**,
   pages per inbox in competition with the thread pages they link to.
   `noindex` implies follow, so those outbound links remain a crawl
   path into real content.
+
+### Fixed
+
+- `mimir reindex` now fails immediately with an explanation instead of
+  partway through. It needs an active broker writer, which only the
+  broker's own serve loop establishes, so against a deployed instance
+  it could not complete either form of the command
+  ([#547](https://github.com/sgaduuw/mimir/issues/547)). Previously
+  `--from-scratch` deleted an epoch's links before hitting that wall.
 
 ## [3.6.3] - 2026-07-22
 

@@ -952,57 +952,6 @@ def test_fast_path_ignores_a_root_no_longer_linked_to_this_inbox(
     )
 
 
-def _seed_epoch(tmp_path, inbox_name, epoch, edges):
-    """Ingest `edges` as their own epoch repo under the inbox's mirror.
-
-    `seed_thread_shape` hardcodes `0.git`, so a thread spread across
-    epochs (which is what makes `reindex --from-scratch` interesting,
-    since it drops ONE epoch's link rows) cannot be expressed with it.
-    """
-    from dulwich.objects import Blob, Commit, Tree
-    from dulwich.repo import Repo
-
-    from mimir.ingest import ingest_epoch
-
-    repo_dir = tmp_path / epoch
-    repo = Repo.init_bare(str(repo_dir), mkdir=True)
-    prev = None
-    for i, (mid, parent) in enumerate(edges):
-        extra = b""
-        if parent is not None:
-            extra += b"In-Reply-To: <" + parent.encode() + b">\r\n"
-        raw = (
-            b"Message-ID: <" + mid.encode() + b">\r\n"
-            b"From: a@b.example\r\n"
-            b"Subject: shape msg\r\n"
-            b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n" + extra + b"\r\n"
-            b"body"
-        )
-        blob = Blob.from_string(raw)
-        repo.object_store.add_object(blob)
-        tree = Tree()
-        tree.add(b"m", 0o100644, blob.id)
-        repo.object_store.add_object(tree)
-        commit = Commit()
-        commit.tree = tree.id
-        commit.parents = [prev] if prev else []
-        commit.author = commit.committer = b"test <t@x>"
-        commit.commit_time = commit.author_time = 1704067200 + i
-        commit.commit_timezone = commit.author_timezone = 0
-        commit.encoding = b"UTF-8"
-        commit.message = b"add"
-        repo.object_store.add_object(commit)
-        prev = commit.id
-    repo.refs[b"HEAD"] = prev
-
-    with SessionLocal() as s:
-        ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
-        ix.mirror_path = str(tmp_path)
-        s.commit()
-        ingest_epoch(s, ix, epoch, repo_dir, workers=1)
-    return repo_dir
-
-
 @pytest.mark.parametrize("position", ["root", "middle", "leaf"])
 def test_reindex_from_scratch_never_leaves_a_root_the_walk_cannot_reach(
     client, tmp_path, position
@@ -1030,7 +979,7 @@ def test_reindex_from_scratch_never_leaves_a_root_the_walk_cannot_reach(
     # link row and leaves the rest of the chain in place.
     chain = [("rx1@x", None), ("rx2@x", "rx1@x"), ("rx3@x", "rx2@x")]
     for i, edge in enumerate(chain):
-        _seed_epoch(tmp_path, "alpha", f"{i}.git", [edge])
+        seed_thread_shape(tmp_path, "alpha", [edge], epoch=f"{i}.git")
     # A second thread in a second inbox, so the reset's `inbox_id`
     # scope has something to be wrong about.
     beta_mirror = tmp_path / "beta-mirror"
@@ -1047,7 +996,7 @@ def test_reindex_from_scratch_never_leaves_a_root_the_walk_cannot_reach(
     import shutil
 
     shutil.rmtree(tmp_path / f"{victim}.git")
-    _seed_epoch(tmp_path, "alpha", f"{victim}.git", [("rx9@x", None)])
+    seed_thread_shape(tmp_path, "alpha", [("rx9@x", None)], epoch=f"{victim}.git")
 
     result = CliRunner().invoke(
         reindex_command, ["alpha", f"{victim}.git", "--from-scratch"]
@@ -1075,7 +1024,7 @@ def test_reindex_from_scratch_never_leaves_a_root_the_walk_cannot_reach(
     )
 
 
-def test_broker_startup_backfills_thread_roots(client, tmp_path):
+def test_broker_startup_backfills_thread_roots(client, tmp_path, monkeypatch):
     """The backfill runs itself, rather than relying on an operator.
 
     W8's column is read by `find_thread_root` and the sitemap. Readers
@@ -1090,11 +1039,11 @@ def test_broker_startup_backfills_thread_roots(client, tmp_path):
     startup function against a corpus rewound to the post-migration
     state.
     """
-    from sqlalchemy import select, update
+    from sqlalchemy import update
 
     from mimir.broker.server import _backfill_thread_roots_if_needed
     from mimir.extensions import SessionLocal
-    from mimir.models import ArticleList, Inbox
+    from mimir.models import ArticleList
 
     seeded = seed_thread_shape(
         tmp_path,
@@ -1118,19 +1067,52 @@ def test_broker_startup_backfills_thread_roots(client, tmp_path):
     _assert_invariant_for("alpha", mids, "broker startup backfill")
     assert (sentinel_dir / ".thread_roots_backfilled").exists()
 
-    # Second call is a no-op: the sentinel keeps restarts cheap.
-    with SessionLocal() as s:
-        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        s.execute(
-            update(ArticleList)
-            .where(ArticleList.inbox_id == inbox.id)
-            .values(thread_root_id=None)
-        )
-        s.commit()
+    # Second call with nothing to do is a no-op: the sentinel keeps
+    # restarts cheap. Probe it by making the backfill explode, so a
+    # short-circuit is the only way through.
+    import mimir.thread_roots
+
+    def _explode(*_a, **_kw):
+        raise AssertionError("backfill ran despite the sentinel and a full column")
+
+    monkeypatch.setattr(mimir.thread_roots, "drive_passes", _explode)
     _backfill_thread_roots_if_needed(sentinel_dir / "broker.sock")
-    assert all(root is None for root, _a in _roots_by_inbox("alpha", mids).values()), (
-        "sentinel did not short-circuit the second run"
+    monkeypatch.undo()
+
+
+def test_startup_backfill_reruns_when_the_sentinel_lies(client, tmp_path):
+    """Sentinel present but rows NULL again: re-run, do not short-circuit.
+
+    Reachable by rolling back to a pre-column image, whose ORM omits
+    the column on INSERT, and then rolling forward. The sentinel would
+    otherwise short-circuit forever and nothing else would notice:
+    `verify_thread_roots` samples only non-NULL rows, so it is
+    structurally blind to this, and the sitemap's root test IS the
+    column, so those threads would silently vanish from it.
+    """
+    from sqlalchemy import update
+
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+    from mimir.models import ArticleList
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("sl1@x", None), ("sl2@x", "sl1@x")])
+    mids = set(seeded)
+
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    sentinel = sock / ".thread_roots_backfilled"
+    sentinel.touch()
+
+    with SessionLocal() as s:
+        s.execute(update(ArticleList).values(thread_root_id=None))
+        s.commit()
+
+    _backfill_thread_roots_if_needed(sock / "broker.sock")
+
+    assert _nulls_remaining("alpha") == 0, (
+        "a stale sentinel short-circuited a corpus that had gone unrooted"
     )
+    _assert_invariant_for("alpha", mids, "stale-sentinel rerun")
 
 
 def _null_all_roots():
@@ -1230,14 +1212,17 @@ def test_startup_backfill_commits_per_inbox_and_withholds_on_failure(
     with SessionLocal() as s:
         beta_id = s.execute(select(Inbox.id).where(Inbox.name == "beta")).scalar_one()
 
-    real = mimir.thread_roots.backfill_inbox
+    real = mimir.thread_roots.seed_roots
 
     def _fail_on_beta(session, inbox_id):
         if inbox_id == beta_id:
             raise RuntimeError("injected failure on the second inbox")
         return real(session, inbox_id)
 
-    monkeypatch.setattr(mimir.thread_roots, "backfill_inbox", _fail_on_beta)
+    # Patched at the pass level, because the startup path drives the
+    # passes itself (to commit between them) rather than calling
+    # `backfill_inbox`.
+    monkeypatch.setattr(mimir.thread_roots, "seed_roots", _fail_on_beta)
 
     sock = tmp_path / "sock"
     sock.mkdir()
@@ -1263,6 +1248,7 @@ def test_startup_verification_reports_a_mismatch(client, tmp_path, caplog):
     line does reach the container log for the post-deploy smoke to grep.
     """
     import logging
+    import threading
 
     from sqlalchemy import update
 
@@ -1291,6 +1277,11 @@ def test_startup_verification_reports_a_mismatch(client, tmp_path, caplog):
     sock.mkdir()
     with caplog.at_level(logging.ERROR, logger="mimir.broker.server"):
         _backfill_thread_roots_if_needed(sock / "broker.sock")
+        # Verification runs on a daemon thread so it cannot delay the
+        # healthcheck; join it here so the assertion is not racy.
+        for t in threading.enumerate():
+            if t.name == "thread-roots-verify":
+                t.join(timeout=30)
 
     assert any("verification found" in r.message for r in caplog.records), (
         f"verification did not report the corrupted root: {caplog.records}"
@@ -1317,8 +1308,8 @@ def test_reindex_from_scratch_refuses_when_it_cannot_rebuild(client, tmp_path):
     from mimir.broker import _context
     from mimir.cli.ingest import reindex_command
 
-    _seed_epoch(tmp_path, "alpha", "0.git", [("nb1@x", None)])
-    _seed_epoch(tmp_path, "alpha", "1.git", [("nb2@x", "nb1@x")])
+    seed_thread_shape(tmp_path, "alpha", [("nb1@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("nb2@x", "nb1@x")], epoch="1.git")
     mids = {"nb1@x", "nb2@x"}
     before = _roots_by_inbox("alpha", mids)
     assert all(r is not None for r, _a in before.values())
@@ -1355,9 +1346,9 @@ def test_reindex_from_scratch_rebuilds_even_when_the_rewalk_fails(
     import mimir.cli.ingest as cli_ingest
     from mimir.cli.ingest import reindex_command
 
-    _seed_epoch(tmp_path, "alpha", "0.git", [("rf1@x", None)])
-    _seed_epoch(tmp_path, "alpha", "1.git", [("rf2@x", "rf1@x")])
-    _seed_epoch(tmp_path, "alpha", "2.git", [("rf3@x", "rf2@x")])
+    seed_thread_shape(tmp_path, "alpha", [("rf1@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("rf2@x", "rf1@x")], epoch="1.git")
+    seed_thread_shape(tmp_path, "alpha", [("rf3@x", "rf2@x")], epoch="2.git")
 
     def _boom(*_a, **_kw):
         raise RuntimeError("simulated mid-walk failure")
@@ -1386,8 +1377,8 @@ def test_reindex_from_scratch_leaves_roots_alone_when_nothing_was_deleted(
 
     from mimir.cli.ingest import reindex_command
 
-    _seed_epoch(tmp_path, "alpha", "0.git", [("nd1@x", None)])
-    _seed_epoch(tmp_path, "alpha", "1.git", [("nd2@x", "nd1@x")])
+    seed_thread_shape(tmp_path, "alpha", [("nd1@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("nd2@x", "nd1@x")], epoch="1.git")
     mids = {"nd1@x", "nd2@x"}
     before = _roots_by_inbox("alpha", mids)
 
@@ -1414,9 +1405,9 @@ def test_reindex_from_scratch_fails_loudly_on_a_truncated_rebuild(
     import mimir.thread_roots
     from mimir.cli.ingest import reindex_command
 
-    _seed_epoch(tmp_path, "alpha", "0.git", [("tr1@x", None)])
-    _seed_epoch(tmp_path, "alpha", "1.git", [("tr2@x", "tr1@x")])
-    _seed_epoch(tmp_path, "alpha", "2.git", [("tr3@x", "tr2@x")])
+    seed_thread_shape(tmp_path, "alpha", [("tr1@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("tr2@x", "tr1@x")], epoch="1.git")
+    seed_thread_shape(tmp_path, "alpha", [("tr3@x", "tr2@x")], epoch="2.git")
     monkeypatch.setattr(mimir.thread_roots, "MAX_PASSES", 1)
 
     result = CliRunner().invoke(reindex_command, ["alpha", "1.git", "--from-scratch"])
