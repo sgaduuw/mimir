@@ -15,14 +15,13 @@ relying on body-content compare which they deprioritise.
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
-from mimir.maintainer_directory import all_maintainers
+from mimir.maintainer_directory import all_maintainers, maintainer_path
 from mimir.models import Article, ArticleList, Inbox
 
 SITEMAP_RECENT_PER_INBOX = 5000
@@ -639,7 +638,7 @@ def maintainers_sitemap_xml(
 
     def compute() -> SitemapPayload:
         entries: list[tuple[str, str | None]] = [
-            (f"{base}/maintainers/{quote(addr, safe='@')}", None)
+            (base + maintainer_path(addr), None)
             for addr, _name in all_maintainers(session)
         ]
         return SitemapPayload(body=_build_sitemap_xml(entries), last_modified=None)

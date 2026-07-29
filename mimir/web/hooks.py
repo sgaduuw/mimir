@@ -105,6 +105,10 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # surface family as the 3.6.0 CDN incident.
     "web.month_sitemap": "public, max-age=300",
     "web.maintainers_sitemap": "public, max-age=300",
+    # Maintainer profiles change only when MAINTAINERS is reparsed or
+    # a new review trailer lands, and they were the one reader-facing
+    # hub with no entry here at all (so no explicit Cache-Control).
+    "web.maintainer_view": "public, max-age=600",
     "web.message_id_lookup": "public, max-age=3600",
     "web.message_id_lookup_inbox": "public, max-age=3600",
     # web.message uses ETag-based conditional revalidation (set inside

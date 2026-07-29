@@ -921,3 +921,75 @@ def test_single_message_rule_agrees_between_message_page_and_thread_view(
     assert canonical.endswith(url), (
         f"a {count}-message thread view must not be the canonical target"
     )
+
+
+@pytest.mark.parametrize("listing", ["/alpha/", "/alpha/yesterday"])
+def test_listings_link_the_reply_count_to_the_thread_view(client, tmp_path, listing):
+    """The thread view needs inbound links, not just a canonical.
+
+    Every message in a multi-message thread canonicalises to `/t`, the
+    sitemap lists `/t`, and IndexNow announces `/t`. Yet before this the
+    whole template set contained exactly ONE link to it (a conditional
+    one on the message page), while ten templates linked message pages.
+    Internal links are how crawl authority actually flows, so a
+    canonical target reachable only through the pages that disclaim
+    themselves is a weak structure whatever the canonical tag says.
+
+    Parametrised over both listings that already carry a reply count.
+    Guarding only the inbox dashboard would have left the daily view
+    free to drop its link silently, which is what a first pass here
+    did: same held-fixed-axis mistake as the ETag guards.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("hub@x", None), ("hub2@x", "hub@x")]
+    )
+    root_id, _url = seeded["hub@x"]
+
+    # `seed_thread_shape` stamps a fixed 2024-01-01 commit time, and
+    # `articles.date` IS the commit time (CONTEXT.md), so the thread
+    # sits outside both the 7-day activity window and any day view.
+    # Noon YESTERDAY is unambiguously inside both whatever time the
+    # suite runs at, unlike `now - 1h`, which straddles midnight UTC.
+    when = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
+        hour=12, minute=0, second=0, microsecond=0
+    )
+    with SessionLocal() as s:
+        for mid in ("hub@x", "hub2@x"):
+            s.execute(
+                update(Article).where(Article.message_id == mid).values(date=when)
+            )
+        s.commit()
+    root_url = f"/alpha/{when.year}/{when.month:02d}/{root_id}"
+
+    html = client.get(listing).get_data(as_text=True)
+    # Assert on the ANCHOR, not on the URL appearing anywhere. The
+    # inbox page's JSON-LD ItemList already carries thread-view URLs,
+    # so a substring check passes with the link removed entirely: it
+    # would test the structured data, not the link graph.
+    assert f'<a href="{root_url}/t"' in html, f"{listing} does not LINK the thread view"
+
+
+def test_single_message_threads_are_not_linked_to_their_thread_view(client, tmp_path):
+    """The other direction, and the one that keeps the link honest.
+
+    `/t` on a single-message thread is the POORER page (it drops the
+    attachments, related surfaces and lifecycle prose the message page
+    carries), which is exactly why it is deliberately not that
+    message's canonical. Advertising it from a listing would push
+    crawlers at a page the site itself declines to nominate.
+    """
+    from tests.test_routes._helpers import _ingest_one_article
+
+    _aid, url = _ingest_one_article(tmp_path, "alpha", "lonely@example.com")
+
+    html = client.get("/alpha/").get_data(as_text=True)
+    assert url in html, "the message itself should still be listed"
+    assert f'<a href="{url}/t"' not in html, "linked /t for a thread with no replies"
