@@ -608,7 +608,19 @@ def _next_rules_cursor(stored: str | None, maintainers_sha: str) -> str:
     if _rules_cursor_content(stored) != maintainers_sha:
         return maintainers_sha
     _, _, gen = (stored or "").partition(".")
-    return f"{maintainers_sha}.{int(gen or 0) + 1}"
+    try:
+        current = int(gen)
+    except ValueError:
+        # Two ways in. `gen` is "" on the FIRST force, because the
+        # cursor is still a bare sha; that is the ordinary path. It is
+        # non-numeric only on a hand-edited or corrupt row, and raising
+        # there would leave `--force` permanently broken on that tree
+        # while ordinary ticks kept silently no-opping, i.e. the
+        # operator's documented recovery path dead for a reason they
+        # cannot see. Restarting the count is recoverable and enough:
+        # any new value moves the validator, which is the whole job.
+        current = 0
+    return f"{maintainers_sha}.{current + 1}"
 
 
 def _submit_maintainers_replace(
@@ -677,16 +689,15 @@ def _submit_maintainers_replace(
 
         # UPSERT the MAINTAINERS rules cursor. Distinct from the
         # Link-trailer walker cursor (`commits_walked_to_sha`); only
-        # `last_commit_sha` is touched here.
+        # `last_commit_sha` is touched here. Computed once into a local
+        # so the insert and the update branches cannot drift apart.
+        next_cursor = _next_rules_cursor(last_sha, maintainers_sha)
         conn.execute(
             sqlite_insert(MainlineState)
-            .values(
-                tree_name=tree_name,
-                last_commit_sha=_next_rules_cursor(last_sha, maintainers_sha),
-            )
+            .values(tree_name=tree_name, last_commit_sha=next_cursor)
             .on_conflict_do_update(
                 index_elements=["tree_name"],
-                set_={"last_commit_sha": _next_rules_cursor(last_sha, maintainers_sha)},
+                set_={"last_commit_sha": next_cursor},
             )
         )
         return (True, loaded)
