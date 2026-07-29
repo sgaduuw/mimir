@@ -100,7 +100,13 @@ def test_update_mainline_loads_subsystems_from_head_blob(
 ):
     """Happy path: bare repo with a MAINTAINERS blob → CLI reads it,
     parses, and inserts rows. Pins the wire shape: subsystems table
-    matches the parsed entries; MainlineState records the HEAD."""
+    matches the parsed entries; MainlineState records the MAINTAINERS
+    BLOB's object id.
+
+    It recorded the tree HEAD until 2026-07-29, which made the reparse
+    gate fire on every push to Linus's tree and rotated the
+    subsystem-rule version the web tier folds into every page ETag. See
+    `test_maintainers_reload_is_gated_on_the_blob_not_on_head`."""
     repo_path = tmp_path / "linux.git"
     head_sha = _build_mainline_repo(repo_path, _SAMPLE_MAINTAINERS)
     monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
@@ -132,7 +138,12 @@ def test_update_mainline_loads_subsystems_from_head_blob(
 
         state = s.get(MainlineState, "linus")
         assert state is not None
-        assert state.last_commit_sha == head_sha.decode("ascii")
+        from dulwich.repo import Repo as _Repo
+
+        with _Repo(str(repo_path)) as _repo:
+            _mode, blob_sha = _repo[_repo[head_sha].tree][b"MAINTAINERS"]
+        assert state.last_commit_sha == blob_sha.decode("ascii")
+        assert state.last_commit_sha != head_sha.decode("ascii")
 
 
 def test_update_mainline_is_noop_when_head_unchanged(

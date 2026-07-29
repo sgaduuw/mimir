@@ -555,7 +555,7 @@ def _submit_last_walked_at(
 
     UPSERT: works whether MainlineState has a row for this tree yet
     or not. tree_name is the PK; on conflict, ONLY `last_walked_at`
-    is updated. `last_commit_sha` (the MAINTAINERS HEAD cursor) and
+    is updated. `last_commit_sha` (the MAINTAINERS blob cursor) and
     `commits_walked_to_sha` (the Link-trailer walker cursor) have
     their own write paths and must not be clobbered here."""
 
@@ -578,7 +578,7 @@ def _submit_last_walked_at(
 def _submit_maintainers_replace(
     writer,
     tree_name: str,
-    head_sha: str,
+    maintainers_sha: str,
     force: bool,
     sub_rows: list[dict],
     path_rows_for: Callable[[list[int]], list[dict]],
@@ -610,7 +610,7 @@ def _submit_maintainers_replace(
             )
         ).first()
         last_sha = row[0] if row else None
-        if last_sha == head_sha and not force:
+        if last_sha == maintainers_sha and not force:
             # Sentinel: the replace did not run. The caller skips the
             # cache invalidations and returns (False, 0, head_sha).
             return (False, 0)
@@ -644,10 +644,10 @@ def _submit_maintainers_replace(
         # `last_commit_sha` is touched here.
         conn.execute(
             sqlite_insert(MainlineState)
-            .values(tree_name=tree_name, last_commit_sha=head_sha)
+            .values(tree_name=tree_name, last_commit_sha=maintainers_sha)
             .on_conflict_do_update(
                 index_elements=["tree_name"],
-                set_={"last_commit_sha": head_sha},
+                set_={"last_commit_sha": maintainers_sha},
             )
         )
         return (True, loaded)
@@ -666,8 +666,18 @@ def load_maintainers(
     """Read MAINTAINERS at HEAD and replace the
     `subsystems` / `subsystem_paths` / `subsystem_maintainers`
     triple in one transaction. Returns
-    `(ran, subsystems_loaded, head_sha)`; `ran=False` when HEAD
-    matches `last_commit_sha` and `force=False`.
+    `(ran, subsystems_loaded, head_sha)`; `ran=False` when the
+    MAINTAINERS blob's object id matches `last_commit_sha` and
+    `force=False`.
+
+    Gated on the BLOB, not on HEAD. Linus's tree is pushed to many
+    times a day and MAINTAINERS changes far more rarely, so gating on
+    HEAD meant re-parsing the file and rewriting the whole ~15k-row
+    subsystems triple to identical values on most ticks. It also
+    rotated the subsystem-rule version the web tier folds into every
+    message page's ETag (`web.routes._validators`), so the entire
+    archive's validators moved on every push. The return value stays
+    HEAD: that is what the operator-facing `mainline_head` reports.
 
     BEGIN IMMEDIATE: the reparse reads `MainlineState` then writes
     the whole subsystems triple in one transaction, the exact
@@ -688,6 +698,11 @@ def load_maintainers(
                 f"no MAINTAINERS file at HEAD of {tree_path}; wrong tree?"
             ) from exc
         blob_bytes = repo[blob_sha].data
+        # Git object ids are content-addressed, so this changes if and
+        # only if MAINTAINERS' bytes changed. That is the property the
+        # gate below wants; HEAD is merely correlated with it, and
+        # badly (see this function's docstring).
+        maintainers_sha = blob_sha.decode("ascii")
 
     # Phase 6a dual-dispatch: parse + build the row payloads BEFORE the
     # write so the writer-lock hold is short, then either submit one
@@ -734,7 +749,7 @@ def load_maintainers(
         ran, loaded_out = _submit_maintainers_replace(
             writer,
             tree_name,
-            head_sha,
+            maintainers_sha,
             force,
             sub_rows,
             _path_rows_for,
@@ -755,7 +770,7 @@ def load_maintainers(
             if state is None:
                 state = MainlineState(tree_name=tree_name)
                 session.add(state)
-            if state.last_commit_sha == head_sha and not force:
+            if state.last_commit_sha == maintainers_sha and not force:
                 return False, 0, head_sha
             # The cascade FK on `subsystems.id` clears `subsystem_paths`
             # + `subsystem_maintainers` via ON DELETE CASCADE; SQLite
@@ -777,7 +792,7 @@ def load_maintainers(
                 session.execute(insert(SubsystemPath), path_rows)
             if maintainer_rows:
                 session.execute(insert(SubsystemMaintainer), maintainer_rows)
-            state.last_commit_sha = head_sha
+            state.last_commit_sha = maintainers_sha
             session.commit()
 
     # Invalidate the two derived caches that key off MAINTAINERS:

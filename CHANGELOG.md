@@ -132,6 +132,13 @@ changes, not internal refactors. Categories: **Added**,
   trailer or a v2 posting left the page pinned at the CDN and in every
   crawler until an unrelated reply happened to land in its thread.
   Same class as the 3.6.1 sitemap incident.
+- `update-mainline` no longer re-parses MAINTAINERS on every push to
+  Linus's tree. It gated on the tree HEAD, so most ticks re-read an
+  unchanged file and rewrote the whole ~15,000-row subsystems triple to
+  identical values on the single-writer broker. It now gates on the
+  MAINTAINERS blob itself, so the work happens when that file actually
+  changes. No migration: the existing cursor column holds the blob id
+  instead, and a stale head sha mismatches once and self-corrects.
 - A `backfill-article-files --reprocess`, or a re-ingest after a parser
   fix, changes which subsystems claim a patch. Both the message page
   and the thread view now version that: the subsystem line is derived
