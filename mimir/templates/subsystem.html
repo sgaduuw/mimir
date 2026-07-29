@@ -12,9 +12,15 @@
   {% if subsystem.maintainers %}
   <h2><small>Maintainers</small></h2>
   <ul class="subsystem-paths-list">
+    {# Link the address to the maintainer's cross-inbox profile. Those
+       pages are in `/sitemap-maintainers.xml` but, until this, were
+       linked from nowhere at all: advertised to crawlers with no path
+       through the site to reach them. Gated on the allowlist like the
+       reviewer links, see the `maintainer_url` filter. #}
     {% for m in subsystem.maintainers %}
     <li><small><kbd>{{ m.role }}</kbd>
-      {{ m.name }}{% if m.name %} {% endif %}&lt;{{ m.address }}&gt;</small></li>
+      {{ m.name }}{% if m.name %} {% endif %}&lt;{% if m.address | is_allowlisted_address %}<a
+        href="{{ m.address | maintainer_url }}">{{ m.address }}</a>{% else %}{{ m.address }}{% endif %}&gt;</small></li>
     {% endfor %}
   </ul>
   {% endif %}

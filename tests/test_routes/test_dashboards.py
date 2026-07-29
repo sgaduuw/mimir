@@ -1042,3 +1042,27 @@ def test_reviewer_view_inbox_scoped(client, tmp_path):
     assert "beta-only patch" not in a
     assert "No attestations" in a
     assert "beta-only patch" in b
+
+
+def test_subsystem_page_links_its_maintainers_to_their_profiles(client, tmp_path):
+    """`/maintainers/<address>` pages are in `/sitemap-maintainers.xml`
+    but were linked from NOWHERE: advertised to crawlers with no path
+    through the site to reach them. The subsystem dashboard already
+    renders each maintainer's address as visible text, so linking it
+    exposes nothing new and gives those profiles their inbound link.
+
+    Asserted as an anchor with the exact canonical path, so a link that
+    merely resolves to the profile (a different encoding of the same
+    address) does not count: that would be a duplicate-URL signal
+    rather than a clean one.
+    """
+    from tests.test_routes.test_dashboards import _seed_subsystem as _seed
+
+    _seed(
+        "BCACHEFS",
+        "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[("M", "Kent Overstreet", "kent.overstreet@kernel.org")],
+    )
+    html = client.get("/alpha/subsystem/bcachefs/").get_data(as_text=True)
+    assert 'href="/maintainers/kent.overstreet@kernel.org"' in html
