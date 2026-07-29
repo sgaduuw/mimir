@@ -138,7 +138,12 @@ changes, not internal refactors. Categories: **Added**,
   identical values on the single-writer broker. It now gates on the
   MAINTAINERS blob itself, so the work happens when that file actually
   changes. No migration: the existing cursor column holds the blob id
-  instead, and a stale head sha mismatches once and self-corrects.
+  instead, and a stale head sha mismatches once and self-corrects. One
+  consequence for operators: a subsystems table emptied out-of-band is
+  no longer rebuilt by the next ordinary tick, since nothing about the
+  file changed. `mimir update-mainline --force` rebuilds it, and now
+  also moves the rule version so the rebuilt attribution reaches the
+  CDN and crawlers rather than sitting behind an unchanged validator.
 - A `backfill-article-files --reprocess`, or a re-ingest after a parser
   fix, changes which subsystems claim a patch. Both the message page
   and the thread view now version that: the subsystem line is derived

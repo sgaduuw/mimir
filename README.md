@@ -890,20 +890,28 @@ uv run mimir update-mainline
 # Re-parse the local HEAD without fetching:
 uv run mimir update-mainline --skip-fetch
 
-# Force re-parse even when HEAD hasn't moved (after a parser fix):
+# Force re-parse even when MAINTAINERS is unchanged (after a parser fix):
 uv run mimir update-mainline --force
 ```
 
-Steady-state ticks (HEAD unchanged) are cheap: fetch, compare,
-no-op. Operator can run this on a cron / systemd timer; the
-schema is replaced transactionally on every change so consumers
-never see a half-loaded subsystems table.
+Steady-state ticks are cheap: fetch, compare, no-op. The
+comparison is against the MAINTAINERS **blob**, not the tree
+HEAD, so the reparse (and the ~15,000-row schema replace it
+drives) happens only when that file's content actually changes,
+not on every push to Linus's tree. Operator can run this on a
+cron / systemd timer; the schema is replaced transactionally on
+every change so consumers never see a half-loaded subsystems
+table.
+
+One consequence worth knowing: because the gate is on content,
+a subsystems table that was emptied out-of-band will no longer
+be rebuilt by the next ordinary tick. Use `--force`.
 
 `update-mainline` runs two passes against the tree:
 
 1. **MAINTAINERS load**, replaces the `subsystems` schema as
-   above. Skipped when HEAD is unchanged. `--skip-maintainers`
-   disables this pass for the tick.
+   above. Skipped when MAINTAINERS is unchanged.
+   `--skip-maintainers` disables this pass for the tick.
 2. **`Link:`-trailer walk**, scans every new commit for
    `Link: https://lore.kernel.org/.../<msgid>` trailers and
    inserts `mainline_commits` rows. Resumable; the first run
