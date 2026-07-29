@@ -78,6 +78,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.daily_yesterday": "public, max-age=600",
     "web.threads_since_view": "public, max-age=600",
     "web.subsystem_dashboard": "public, max-age=600",
+    "web.subsystem_index": "public, max-age=600",
     "web.year_archive": "public, max-age=600",
     "web.month_archive": "public, max-age=600",
     "web.search": "public, max-age=300",

@@ -1167,3 +1167,67 @@ def test_month_sitemap_sends_cache_control(client, tmp_path):
     r = client.get("/alpha/2017/05/sitemap.xml")
     assert r.status_code == 200
     assert r.headers.get("Cache-Control") == "public, max-age=300", dict(r.headers)
+
+
+def test_inbox_sitemap_lists_the_subsystem_index_and_active_subsystems(
+    client, tmp_path
+):
+    """Subsystem dashboards are distinctive hub pages nothing else
+    mirrors, and were in no sitemap at all.
+
+    The ACTIVE set only. The full MAINTAINERS taxonomy is ~3,300
+    sections and the route is per-inbox, so advertising all of them
+    from all ~200 production inboxes would be ~660,000 URLs, nearly
+    all of them a page for a subsystem no patch in that inbox has
+    touched. Measured 2026-07-29, the active set is 3,394 pairs.
+    """
+    from sqlalchemy import select as sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.subsystems_dashboard import most_active_subsystems_in_inbox
+    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+
+    _seed_subsystem("BCACHEFS", "Maintained", files=["fs/bcachefs/"])
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "sm-patch@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    with SessionLocal() as s:
+        inbox = s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        most_active_subsystems_in_inbox(s, inbox, days=7)
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    assert "<loc>http://localhost/alpha/subsystem/</loc>" in xml
+    assert "<loc>http://localhost/alpha/subsystem/bcachefs/</loc>" in xml
+
+
+def test_inbox_sitemap_omits_subsystems_rather_than_computing_on_a_cold_cache(
+    client, tmp_path
+):
+    """The builder runs on the request path when the sitemap cache is
+    cold, and the subsystem aggregation is multi-second per inbox: the
+    2.8.0 regression family. It must degrade to omitting the entries,
+    never to a minutes-long render.
+
+    Warm ordering makes the miss rare rather than routine, since
+    `most_active_subsystems_in_inbox` is warmed immediately before
+    `sitemap:inbox:<name>` in the same slow-tier per-inbox list.
+    """
+    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+
+    _seed_subsystem("BCACHEFS", "Maintained", files=["fs/bcachefs/"])
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "cold-patch@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    # No warm step: the subsystem-activity cache is cold.
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    assert "<loc>http://localhost/alpha/subsystem/</loc>" in xml, (
+        "the index page is a static URL and should be listed regardless"
+    )
+    assert "/alpha/subsystem/bcachefs/" not in xml

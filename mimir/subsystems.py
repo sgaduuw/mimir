@@ -28,6 +28,7 @@ exist in MAINTAINERS, `X:` only acts on its own section.
 """
 
 import fnmatch
+from urllib.parse import quote
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -57,6 +58,18 @@ from mimir.models import (
 # builds the top-N most active subsystems per inbox at this TTL so
 # steady-state visitors hit warm cache.
 SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC = 3600  # 1 hour
+
+
+def subsystem_path(inbox_name: str, name: str) -> str:
+    """Site-relative URL for one subsystem's per-inbox dashboard.
+
+    The lowercased form is the URL convention (since 1.18.x); display
+    keeps MAINTAINERS' upstream casing. Shared because four templates
+    plus the sitemap builder construct this, and a sitemap entry that
+    does not match the link (or the page's own canonical) is a
+    duplicate-URL signal rather than a clean one. Spaces in compound
+    names like `BTRFS FILE SYSTEM` are why it is quoted at all."""
+    return f"/{inbox_name}/subsystem/{quote(name.lower())}/"
 
 
 # Snapshot cache for the full subsystems rule set. The pull is
