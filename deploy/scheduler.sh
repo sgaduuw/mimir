@@ -20,8 +20,9 @@
 # linux-next daily (it rebases). The scheduler's UPDATE_MAINLINE_EVERY
 # just bounds how often we check for due trees; the CLI handles the
 # per-tree gating internally via `mainline_state.last_walked_at`.
-# Skipped trees are cheap (one row read); HEAD-unchanged trees still
-# short-circuit MAINTAINERS reparse on Linus.
+# Skipped trees are cheap (one row read), and Linus's MAINTAINERS
+# reparse short-circuits unless that file's content changed, so a tick
+# that only sees new commits does not rewrite the subsystems triple.
 #
 # Timing is wall-clock, persisted across container restarts via
 # `/data/.last_<task>` sentinel files. Without persistence, a release

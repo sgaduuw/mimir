@@ -37,6 +37,7 @@ from mimir.subsystems import recent_patches_touching, subsystems_for_article
 from mimir.threading import dedupe_thread, find_thread_root, get_thread
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _thread_summary
+from mimir.web.routes._validators import render_state_tag
 from mimir.web.urls import (
     _abort_404_if_url_date_mismatches,
     _canonical_inbox_name,
@@ -97,6 +98,15 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         #   without waiting for the Cache-Control window to lapse.
         # - thread max date: invalidates when a new reply lands in the
         #   thread, so the tree-rendered view doesn't go stale.
+        # - render state tag: everything this page renders ABOUT the
+        #   article that neither its id nor the thread's shape covers,
+        #   i.e. the subsystem line, lifecycle badge, review roll-up
+        #   and revisions fold. All four move on their own schedules
+        #   (a landing, a MAINTAINERS reparse every 10 minutes, a new
+        #   trailer, a v2 posting) without adding a message to the
+        #   thread, so without this input the whole derived half of
+        #   the page is pinned at the edge and in every crawler until
+        #   an unrelated reply happens to land.
         # - HX-Request flag: the partial response (`_message_body.html`)
         #   is a strict subset of the full response, so the two variants
         #   need distinct ETags. Companion `Vary: HX-Request` header is
@@ -110,10 +120,11 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             (n.date for n in thread if n.date is not None),
             default=article.date,
         )
+        state_tag = render_state_tag(session, article.id, article.message_id)
         etag_input = (
             f"{article.id}|{mimir.__version__}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|"
-            f"{'hx' if hx_request else 'full'}"
+            f"{state_tag}|{'hx' if hx_request else 'full'}"
         )
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
         if etag in request.if_none_match:

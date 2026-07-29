@@ -383,14 +383,26 @@ class MainlineState(Base):
     linux-next) without a migration.
 
     Two independent cursors:
-    - `last_commit_sha`, HEAD at the last MAINTAINERS load. Lets
-      `update-mainline` skip the parse step when HEAD hasn't moved.
+    - `last_commit_sha`, the git object id of the MAINTAINERS BLOB at
+      the last load. Lets `update-mainline` skip the parse step, and
+      the ~15k-row replace it drives, unless that file's CONTENT
+      changed. It held the tree HEAD until 2026-07-29, which meant
+      every push to Linus's tree triggered a full reparse and rewrote
+      the subsystems triple to identical values. The name is kept
+      (avoiding a migration for a column whose shape is unchanged: a
+      40-hex sha either way, and a stale head sha simply mismatches
+      once and self-corrects on the next load).
     - `commits_walked_to_sha`, the most recent commit the
       `Link:`-trailer walker has processed. Independent of the
       MAINTAINERS cursor because MAINTAINERS only changes when
       that one file does, but the commit walker has new work on
       almost every tick. Walker is incremental: the next run
       starts after this SHA.
+
+    The distinction is load-bearing beyond the reparse cost: the web
+    tier reads `last_commit_sha` as the subsystem-rule version in its
+    page ETags (`web.routes._validators`), so a cursor that tracked
+    HEAD rotated every message page's validator on every push.
     """
 
     __tablename__ = "mainline_state"

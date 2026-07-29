@@ -563,3 +563,29 @@ def seed_thread_shape(tmp_path, inbox_name, edges, *, date_for=None, epoch="0.gi
                 f"/{inbox_name}/{art.date.year}/{art.date.month:02d}/{art.id}",
             )
         return out
+
+
+def count_repo_opens(monkeypatch) -> list[str]:
+    """Record every `Repo(...)` construction `mimir.store` performs.
+
+    The saving `store.read_messages` exists for is entirely in the
+    NUMBER of opens: dulwich re-reads and re-mmaps the epoch's pack
+    index on each one. A test that only asserted the right bodies came
+    back would pass just as well against the per-message shape it
+    replaced, so the open count is the assertion that carries the
+    contract. Returns the list of opened paths, which keeps growing as
+    the code under test runs.
+    """
+    from dulwich.repo import Repo as RealRepo
+
+    import mimir.store
+
+    opened: list[str] = []
+
+    class _CountingRepo(RealRepo):
+        def __init__(self, path, *args, **kwargs):
+            opened.append(str(path))
+            super().__init__(path, *args, **kwargs)
+
+    monkeypatch.setattr(mimir.store, "Repo", _CountingRepo)
+    return opened
