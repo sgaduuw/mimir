@@ -29,7 +29,7 @@ from mimir.models import (
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.patch_state import patch_state_for_article
 from mimir.seo import _json_ld_thread
-from mimir.store import MessageNotFound, read_message
+from mimir.store import read_messages
 from mimir.subsystems import subsystems_for_article
 from mimir.threading import dedupe_thread, find_thread_root, get_thread
 from mimir.web._blueprint import bp_web
@@ -150,21 +150,28 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
         rendered_nodes = nodes[:cap]
         overflow = nodes[cap:]
 
+        # One bulk read rather than one `read_message` per node: that
+        # reopened the epoch's dulwich Repo every time, 31-79% of this
+        # page's blob cost depending on inbox (see `store.read_messages`
+        # for the measurements). This is the page the sitemap aims
+        # crawlers directly at, on a two-worker web tier.
+        parsed_by_msgid = read_messages(
+            session, inbox, [n.message_id for n in rendered_nodes]
+        )
+
         # One message per entry: the parsed body for rendering, or None
         # when the blob is unreachable. A single missing blob (a mirror
         # gap, a re-packed epoch) must not 404 the whole conversation,
         # so the node keeps its header row and loses only its body.
         messages: list[tuple] = []
         for node in rendered_nodes:
-            try:
-                parsed = read_message(session, inbox, node.message_id)
-            except MessageNotFound:
+            parsed = parsed_by_msgid.get(node.message_id)
+            if parsed is None:
                 logger.warning(
                     "thread-view: blob unavailable for %s in %s",
                     node.message_id,
                     inbox.name,
                 )
-                parsed = None
             messages.append((node, parsed, _msg_url(node, inbox.name)))
 
         overflow_links = [(n, _msg_url(n, inbox.name)) for n in overflow]

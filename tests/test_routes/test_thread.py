@@ -559,6 +559,43 @@ def test_thread_view_never_renders_the_same_message_twice(client, tmp_path):
     assert "further message" not in html, "duplicate nodes leaked into overflow"
 
 
+def test_thread_view_opens_the_epoch_repo_once_for_the_whole_render(
+    client, tmp_path, monkeypatch
+):
+    """Pins the fix at the ROUTE, not just in `store.read_messages`.
+
+    The helper's own tests pass just as well against the per-message
+    shape this replaced, because they call the helper directly. Only a
+    render can show that the route actually uses it, and the saving is
+    entirely in the number of pack-index reopens.
+    """
+    from dulwich.repo import Repo as RealRepo
+
+    import mimir.store
+    from tests.test_routes._helpers import seed_thread_shape
+
+    ids = [f"open{i}@x" for i in range(5)]
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [(ids[0], None)] + [(m, ids[0]) for m in ids[1:]]
+    )
+    _root_id, root_url = seeded[ids[0]]
+
+    opened: list[str] = []
+
+    class _CountingRepo(RealRepo):
+        def __init__(self, path, *args, **kwargs):
+            opened.append(str(path))
+            super().__init__(path, *args, **kwargs)
+
+    monkeypatch.setattr(mimir.store, "Repo", _CountingRepo)
+
+    html = client.get(root_url + "/t").get_data(as_text=True)
+    assert html.count('class="thread-message"') == 5, "not all messages rendered"
+    assert len(opened) == 1, (
+        f"one repo open for a single-epoch thread, got {len(opened)}: {opened}"
+    )
+
+
 def _prepare_rules_version(seeded):
     from mimir.extensions import SessionLocal
     from mimir.models import MainlineState
