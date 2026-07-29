@@ -497,7 +497,8 @@ mimir/
                          urls (URL composition + site-base memo).
   templates/             Jinja2 (base, index, inbox, daily, since, year,
                          month, search, author, reviewer, maintainer,
-                         subsystem, message, attachment_preview, _recent_items)
+                         subsystem, subsystem_index, message,
+                         attachment_preview, _recent_items)
 alembic/                 migrations
 tests/                   pytest
 Inboxes/                 default mirror root (per-inbox subdirs; gitignored)
@@ -527,6 +528,24 @@ Routes:
   section is hidden when the inbox has no trackers configured); a
   "this day, 5 years ago" sample; the last 10 messages in the
   inbox; a 30-day daily-volume sparkline + archive stats footer.
+- `GET /<inbox>/subsystem/`, index of the subsystems with patch
+  activity on this list in the last 7 days, each linking to its own
+  dashboard. Linked from the inbox dashboard, and the only page that
+  links the long tail of per-subsystem dashboards (elsewhere they are
+  reachable only from a chip on a message that happened to match).
+  Deliberately the ACTIVE set rather than the full MAINTAINERS
+  taxonomy: the route below is per-inbox, so listing every section
+  from every inbox would advertise a page per (inbox, subsystem) pair
+  that mostly does not exist as content. Reads the same cached payload
+  as the dashboard widget and never computes on a request, so a cold
+  cache renders empty until the next warm cycle.
+- `GET /<inbox>/subsystem/<name>/`, per-subsystem dashboard: the
+  MAINTAINERS-derived header (status, `M:`/`R:` maintainers, `F:`/`X:`
+  paths), a 30-day sparkline, recent patches, active threads, active
+  reviewers, and triage queues, for articles whose diff-touched paths
+  match that section's globs. Maintainer addresses link to their
+  cross-inbox profile. URL is lowercase by convention; other casings
+  301 to it.
 - `GET /<inbox>/today` and `GET /<inbox>/yesterday`, daily views
   showing every thread with at least one message on that calendar
   day (UTC), plus the day's total message count.
@@ -628,8 +647,9 @@ Routes:
   is carried by the per-URL `<lastmod>` inside the XML; edges cache
   briefly via `Cache-Control: max-age=300`. Body cached for 1 h.
 - `GET /<inbox>/sitemap.xml`, per-inbox urlset: the dashboard, the
-  year and month archives that have messages, and the most recent
-  thread views (one URL per conversation, not one per message, since
+  subsystem index and the subsystem dashboards active in that inbox
+  (`<lastmod>` = that subsystem's last activity), the year and month
+  archives that have messages, and the most recent thread views (one URL per conversation, not one per message, since
   message pages canonicalise to their thread). Each thread's
   `<lastmod>` is the date of its NEWEST message, so a thread that
   gains a reply announces that it changed; the URL still carries the
@@ -651,7 +671,8 @@ Routes:
 - `GET /maintainers/<address>`, global (cross-inbox) profile page
   for one MAINTAINERS `M:` maintainer: the subsystems they maintain
   plus links to every inbox with indexed review-trailer activity
-  from them. 404 for a non-maintainer address. The address is
+  from them. Linked from every subsystem dashboard and from the
+  subsystem line on patch pages. 404 for a non-maintainer address. The address is
   lowercased to one canonical URL.
 - `GET /security.txt` and `GET /.well-known/security.txt`  
   RFC 9116 contact info. 404 unless `SECURITY_CONTACT` is set.
@@ -708,15 +729,17 @@ To eliminate user-facing cold-start latency, run:
 
 ```sh
 uv run mimir warm-cache               # all tiers (operator one-off)
-uv run mimir warm-cache --tier fast   # sitemaps + cheap helpers
-uv run mimir warm-cache --tier slow   # subsystem dashboards + rest
+uv run mimir warm-cache --tier fast   # cheap per-inbox helpers
+uv run mimir warm-cache --tier slow   # sitemaps, subsystem dashboards, rest
 ```
 
 from cron or a systemd timer. The work splits into a **fast tier**
-(sitemaps, archive_stats, latest pulls, latest stable releases,
-recent articles) on a per-minute cadence and a **slow tier**
-(subsystem dashboards, per-tracker queries, the rest) on a per-hour
-cadence. The container scheduler fires them on the
+(archive_stats, latest pulls, latest stable releases, recent
+articles) on a per-minute cadence and a **slow tier** (the sitemaps,
+subsystem dashboards, per-tracker queries, the rest) on a per-hour
+cadence. The sitemaps sit in the slow tier because their finest
+freshness signal is a date-grained `<lastmod>`, so a per-minute
+rebuild could not express anything a per-hour one does not. The container scheduler fires them on the
 `WARM_CACHE_EVERY` / `WARM_CACHE_SLOW_EVERY` cadences (see
 `deploy/README.md`); broker-side, the warm-worker queue is a
 priority queue so a fast-tier RPC queued behind a slow-tier RPC
