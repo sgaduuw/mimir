@@ -70,6 +70,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- The whole-thread view fetches its message bodies in one pass,
+  opening the mirror's git repo once per epoch instead of once per
+  message. Measured on the production mirror at the default 50-message
+  cap, the blob work drops by 31% to 79% depending on inbox. This is
+  the page the sitemap points crawlers at, and it is served
+  `no-cache`, so an arriving crawler always paid the full cost.
 - A thread's `<lastmod>` in the sitemap is now the date of its newest
   message rather than the root's own date, so a thread that gains a
   reply announces that it changed. Previously the date never moved
@@ -118,6 +124,19 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- The message page's ETag now covers the derived state it renders:
+  subsystem attribution, lifecycle badge, review roll-up and the
+  revisions fold. It previously covered only the article id, the
+  release version and the thread's newest date, so a patch landing in
+  mainline, a MAINTAINERS reparse (every 10 minutes), a new review
+  trailer or a v2 posting left the page pinned at the CDN and in every
+  crawler until an unrelated reply happened to land in its thread.
+  Same class as the 3.6.1 sitemap incident.
+- A `backfill-article-files --reprocess`, or a re-ingest after a parser
+  fix, changes which subsystems claim a patch. Both the message page
+  and the thread view now version that: the subsystem line is derived
+  from MAINTAINERS rules *and* the article's touched paths, and only
+  the rules half moved the validator before.
 - IndexNow now announces the thread view for a conversation with
   replies, rather than each new message's own URL. Since message pages
   in a multi-message thread canonicalise to their thread view, the old

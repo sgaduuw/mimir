@@ -414,6 +414,12 @@ in the given inbox, opens the dulwich repo, fetches the blob, runs
 `parse_message` to return a `ParsedArticle` with body, full headers,
 and attachment bytes.
 
+`read_messages(session, inbox, message_ids)` is its bulk sibling,
+used by the whole-thread view: one lookup and one repo open per
+*epoch* rather than per message, since reopening a repo re-reads the
+epoch's pack index. It returns only the messages it could read, so a
+mirror gap costs one body rather than the whole page.
+
 SQLite runs in WAL mode with `synchronous=NORMAL` and
 `foreign_keys=ON`, set on every connection from
 `mimir/extensions.py`.
@@ -449,7 +455,8 @@ mimir/
                          per-language Pygments overlay), linkify
                          (URL / Message-ID + DCO trailer redaction),
                          body (orchestrator + render_body entry).
-  store.py               read_message(): SQL lookup + dulwich fetch + parse
+  store.py               read_message()/read_messages(): SQL lookup +
+                         dulwich fetch + parse, singly or in bulk
   sync.py                public-inbox manifest discovery + git clone/fetch
   threading.py           recursive CTEs for thread reconstruction + active threads
   dashboard.py           landing-page aggregations (trackers, pulls, stats, sparkline)
