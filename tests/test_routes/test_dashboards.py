@@ -1151,3 +1151,73 @@ def test_subsystem_index_does_not_compute_on_a_cold_cache(client, tmp_path):
     html = client.get("/alpha/subsystem/").get_data(as_text=True)
     assert "bcachefs" not in html, "index computed the aggregation on a request"
     assert "No subsystem has seen patch activity" in html
+
+
+def test_subsystem_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
+    client, tmp_path
+):
+    """`/maintainers/<address>` is an M-only surface.
+
+    This list carries both `M:` and `R:` rows, and the allowlist gate
+    does NOT stand in for a role check: the allowlist is the UNION of
+    M: and R:, so every reviewer passes it. That gate answers "is this
+    address safe to display", not "does this profile exist". Linking
+    an `R:` address produced a 404, on pages this same change set put
+    into the sitemap, so crawlers would walk them systematically.
+    """
+    from tests.test_routes._helpers import _seed_subsystem
+
+    _seed_subsystem(
+        "BCACHEFS",
+        "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[
+            ("M", "Kent Overstreet", "kent.overstreet@kernel.org"),
+            ("R", "Reviewer Person", "reviewer.only@kernel.org"),
+        ],
+    )
+    html = client.get("/alpha/subsystem/bcachefs/").get_data(as_text=True)
+
+    assert 'href="/maintainers/kent.overstreet@kernel.org"' in html
+    assert "reviewer.only@kernel.org" in html, "the reviewer should still be shown"
+    assert 'href="/maintainers/reviewer.only@kernel.org"' not in html
+    # And the thing that actually matters: nothing linked from here 404s.
+    assert client.get("/maintainers/kent.overstreet@kernel.org").status_code == 200
+    assert client.get("/maintainers/reviewer.only@kernel.org").status_code == 404
+
+
+def test_message_page_keeps_a_maintainer_who_has_no_address(client, tmp_path):
+    """MAINTAINERS permits a bare `M:` line with no address (rare but
+    legal). Keying the header's dedupe on the address dropped those
+    people from the page entirely, where they used to render as plain
+    text. They stay, they just do not get a link."""
+    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+
+    _seed_subsystem(
+        "BCACHEFS",
+        "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[("M", "No Address Person", "")],
+    )
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "noaddr@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    html = client.get(url).get_data(as_text=True)
+    assert "No Address Person" in html
+    assert 'href="/maintainers/"' not in html
+
+
+def test_subsystem_index_carries_its_own_meta_description_and_title(client):
+    """A new indexable page must not ship the site-wide boilerplate.
+
+    `base.html` declares `meta_description`; a child block named
+    anything else is silently dropped by Jinja, which is what happened.
+    On a change set whose whole premise is index shaping, a duplicate
+    description is the wrong outcome.
+    """
+    html = client.get("/alpha/subsystem/").get_data(as_text=True)
+    assert "<title>Active subsystems | alpha | mimir</title>" in html
+    assert 'name="description" content="Kernel subsystems with recent' in html

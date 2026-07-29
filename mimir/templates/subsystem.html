@@ -15,11 +15,20 @@
     {# Link the address to the maintainer's cross-inbox profile. Those
        pages are in `/sitemap-maintainers.xml` but, until this, were
        linked from nowhere at all: advertised to crawlers with no path
-       through the site to reach them. Gated on the allowlist like the
-       reviewer links, see the `maintainer_url` filter. #}
+       through the site to reach them.
+
+       Linked for `M:` rows ONLY. This list carries both `M:` and `R:`
+       (the role is the kbd right there), and `/maintainers/<address>`
+       is an M-only surface: `maintainer_profile` filters on the role
+       and 404s otherwise. The allowlist gate does NOT stand in for
+       this, because the allowlist is the union of M: and R:, so every
+       reviewer passes it. That gate is about redaction, not about
+       whether the target exists. Getting this wrong linked a 404 for
+       every reviewer, on pages this same change set put in the
+       sitemap. #}
     {% for m in subsystem.maintainers %}
     <li><small><kbd>{{ m.role }}</kbd>
-      {{ m.name }}{% if m.name %} {% endif %}&lt;{% if m.address | is_allowlisted_address %}<a
+      {{ m.name }}{% if m.name %} {% endif %}&lt;{% if m.role == 'M' and m.address | is_allowlisted_address %}<a
         href="{{ m.address | maintainer_url }}">{{ m.address }}</a>{% else %}{{ m.address }}{% endif %}&gt;</small></li>
     {% endfor %}
   </ul>

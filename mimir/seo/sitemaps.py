@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session, aliased
 from mimir import cache
 from mimir.maintainer_directory import all_maintainers, maintainer_path
 from mimir.models import Article, ArticleList, Inbox
-from mimir.subsystems import subsystem_path
+from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.subsystems_dashboard import (
     MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     most_active_subsystems_in_inbox,
@@ -726,7 +726,7 @@ def inbox_sitemap_xml(
         # before `sitemap:inbox:<name>` in the same slow-tier per-inbox
         # target list. A miss omits these entries for one cycle; it
         # must never turn a sitemap render into a minutes-long compute.
-        entries.append((f"{base}/{inbox.name}/subsystem/", None))
+        seen_subsystem_locs: set[str] = set()
         for activity in most_active_subsystems_in_inbox(
             session,
             inbox,
@@ -734,13 +734,33 @@ def inbox_sitemap_xml(
             limit=MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
             compute_on_miss=False,
         ):
+            # Skip names the route would refuse to serve back. The
+            # emitter and the route are different modules and nothing
+            # else forces them to agree, so without this the sitemap
+            # hands crawlers URLs that 404 (production carried three
+            # such names on 2026-07-29).
+            if not is_addressable_subsystem_name(activity.name):
+                continue
+            # `inbox.name`, never `activity.inbox_name`. They are equal
+            # for THIS helper, but the cross-inbox variant sets
+            # `inbox_name` to whichever inbox the subsystem is busiest
+            # in, so using it would put another inbox's URL in this
+            # inbox's sitemap the moment anyone reuses this loop.
+            loc = base + subsystem_path(inbox.name, activity.name)
+            # `subsystems.name` has no unique constraint and the path is
+            # lowercased, so two sections differing only in case collapse
+            # to one URL. Emitting it twice is a duplicate <loc> in a
+            # single urlset.
+            if loc in seen_subsystem_locs:
+                continue
+            seen_subsystem_locs.add(loc)
             # Date-only string, like every other entry here: the list
             # is `(loc, lastmod-as-str)` and `_build_sitemap_xml` sets
             # the element text verbatim, so handing it a datetime is a
             # serialize-time TypeError, i.e. a 500 on the whole sitemap.
             entries.append(
                 (
-                    base + subsystem_path(inbox.name, activity.name),
+                    loc,
                     (
                         activity.last_activity.strftime("%Y-%m-%d")
                         if activity.last_activity
@@ -748,6 +768,15 @@ def inbox_sitemap_xml(
                     ),
                 )
             )
+        # The index page, listed only when it is not empty. It renders a
+        # bare "nothing active here" for the ~45-of-200 production
+        # inboxes whose recent traffic touches no MAINTAINERS-claimed
+        # path, and advertising those to crawlers is the same thin-page
+        # trade this change set refuses everywhere else. It stays linked
+        # from the inbox dashboard either way, so it is discoverable the
+        # moment it has something to show.
+        if seen_subsystem_locs:
+            entries.append((f"{base}/{inbox.name}/subsystem/", None))
 
         # Recent THREADS in the inbox, one URL per thread, pointing at
         # the whole-thread view. Individual message pages canonicalise

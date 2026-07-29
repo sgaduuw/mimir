@@ -28,6 +28,7 @@ exist in MAINTAINERS, `X:` only acts on its own section.
 """
 
 import fnmatch
+import re
 from urllib.parse import quote
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -58,6 +59,41 @@ from mimir.models import (
 # builds the top-N most active subsystems per inbox at this TTL so
 # steady-state visitors hit warm cache.
 SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC = 3600  # 1 hour
+
+
+# A subsystem name is only reachable as a URL if the dashboard route
+# will accept it back. The route rejects C0/C1 controls outright, so a
+# name carrying one has a path that always 404s. This is not
+# theoretical: MAINTAINERS treats a column-0 line as a tag only when
+# `line[1] == ":"`, so `HPET:<TAB>x86` parses as a SECTION TITLE with an
+# embedded tab, and production carried three such names on 2026-07-29
+# (two HPET, one AD5446), live in three inboxes' active sets.
+_ADDRESSABLE_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f]+\Z")
+
+
+def is_addressable_subsystem_name(name: str) -> bool:
+    """Whether `subsystem_path(_, name)` resolves back to this section.
+
+    Consulted by everything that EMITS a subsystem link (the sitemap,
+    the index page) so the emitters and the route cannot disagree.
+    Before this they did: the path builder percent-encodes anything at
+    all, while the route refuses control bytes, and nothing forced the
+    two to agree. A link that 404s is bad on a page and worse in a
+    sitemap, where it is handed to crawlers systematically.
+
+    Two ways a name fails:
+
+    - a C0/C1 control byte, which the route rejects (above);
+    - an uppercase NON-ASCII letter. The route matches with SQL
+      `lower()`, and SQLite's `lower()` is ASCII-only, while the path
+      is lowercased in Python, which is not. So `ÜBERSYSTEM` becomes
+      `%C3%BCbersystem` and then matches nothing. Production has no
+      such name today, but the parser does not prevent one.
+    """
+    if not _ADDRESSABLE_NAME_RE.match(name):
+        return False
+    ascii_lowered = "".join(c.lower() if c.isascii() else c for c in name)
+    return name.lower() == ascii_lowered
 
 
 def subsystem_path(inbox_name: str, name: str) -> str:

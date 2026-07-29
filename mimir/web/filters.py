@@ -30,6 +30,8 @@ from mimir.datetime_utils import aware_utc
 from mimir.models import Article
 from mimir.rendering import render_body
 from mimir.web._blueprint import bp_web
+from mimir.maintainer_directory import maintainer_path
+from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.web.urls import _msg_url, _thread_view_url
 
 
@@ -440,8 +442,6 @@ def _maintainer_url_filter(address: str | None) -> str:
     future narrowing of the allowlist cannot silently start emitting
     links to addresses the page redacts.
     """
-    from mimir.maintainer_directory import maintainer_path
-
     return maintainer_path(address or "")
 
 
@@ -449,6 +449,11 @@ def _maintainer_url_filter(address: str | None) -> str:
 def _subsystem_url_filter(name: str, inbox_name: str) -> str:
     """Site-relative URL for a subsystem dashboard. See
     `mimir.subsystems.subsystem_path` for why this is shared."""
-    from mimir.subsystems import subsystem_path
-
     return subsystem_path(inbox_name, name)
+
+
+@bp_web.app_template_filter("is_addressable_subsystem")
+def _is_addressable_subsystem_filter(name: str) -> bool:
+    """Whether a subsystem name has a URL the dashboard route accepts.
+    See `mimir.subsystems.is_addressable_subsystem_name`."""
+    return is_addressable_subsystem_name(name or "")
