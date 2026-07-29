@@ -559,76 +559,201 @@ def test_thread_view_never_renders_the_same_message_twice(client, tmp_path):
     assert "further message" not in html, "duplicate nodes leaked into overflow"
 
 
-def test_thread_etag_moves_when_the_root_lands_in_mainline(client, tmp_path):
-    """A stale validator must not pin the lifecycle claim.
+def _prepare_rules_version(seeded):
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineState
 
-    The page renders the root's landing state, but a patch landing adds
-    no message, so it moves neither the node count nor the thread's max
-    date. Without the lifecycle in the ETag, the edge and every crawler
-    holding the old validator keep being told the patch has NOT landed,
-    indefinitely, until a deploy bumps the version. That pins exactly
-    the "did $series land" prose this release made canonical. Same
-    class as the 3.6.1 sitemap incident.
-    """
+    with SessionLocal() as s:
+        s.add(MainlineState(tree_name="linus", last_commit_sha="a" * 40))
+        s.commit()
+
+
+def _mutate_rules_version(seeded):
+    """A MAINTAINERS reparse, which `update-mainline` performs every 10
+    minutes in prod. It rewrites which subsystems claim the article and
+    adds no message, so it moves neither node count nor thread max
+    date. Versioned through `MainlineState.last_commit_sha` (the HEAD
+    at the last load) so one scalar covers the whole rule snapshot
+    rather than re-deriving this article's matches before the 304."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineState
+
+    with SessionLocal() as s:
+        s.get(MainlineState, "linus").last_commit_sha = "b" * 40
+        s.commit()
+
+
+def _mutate_mainline_landing(seeded):
+    """The patch lands in Linus's tree. Flips the lifecycle badge to
+    LANDED and rewrites the "did $series land" prose, while adding no
+    message to the thread. Same class as the 3.6.1 sitemap incident: a
+    validator that cannot see the change pins the wrong answer at the
+    edge and in every crawler until a deploy bumps the version."""
     from datetime import datetime, timezone
 
-    from mimir import cache
     from mimir.extensions import SessionLocal
     from mimir.models import MainlineCommit
-    from tests.test_routes._helpers import seed_thread_shape
-
-    seeded = seed_thread_shape(tmp_path, "alpha", [("e1@x", None), ("e2@x", "e1@x")])
-    root_id, root_url = seeded["e1@x"]
-
-    before = client.get(root_url + "/t").headers["ETag"]
 
     with SessionLocal() as s:
         s.add(
             MainlineCommit(
                 commit_sha="a" * 40,
-                message_id="e1@x",
+                message_id="root@x",
                 tree_name="linus",
                 committed_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
             )
         )
         s.commit()
-    # Lifecycle is cached per ARTICLE (`lifecycle_status:<id>`), not
-    # per inbox, so an inbox-scoped purge would not clear it.
-    cache.delete(f"lifecycle_status:{root_id}")
-
-    after = client.get(root_url + "/t").headers["ETag"]
-    assert before != after, "ETag did not move when the root's lifecycle changed"
 
 
-def test_thread_etag_moves_when_maintainers_rules_change(client, tmp_path):
-    """The page renders the root's subsystem attribution, which changes
-    on any `update-mainline` MAINTAINERS reparse (every 10 minutes in
-    prod) without adding a message. Same consequence as the lifecycle
-    hole: the edge and crawlers keep the old body indefinitely.
-
-    Versioned through `MainlineState.last_commit_sha` (the HEAD at the
-    last MAINTAINERS load), so one scalar covers the whole rule
-    snapshot rather than re-deriving this article's matches before the
-    304 short-circuit."""
+def _mutate_review_trailer(seeded):
+    """A `Reviewed-by:` arrives on a REPLY and is attributed to the
+    root, moving the roll-up count in the lifecycle pill. Re-ingest of
+    the root (or a trailer-parser fix backfilled) does the same without
+    any new message."""
     from mimir.extensions import SessionLocal
-    from mimir.models import MainlineState
+    from mimir.models import ArticleTrailer
+
+    root_id, _url = seeded["root@x"]
+    with SessionLocal() as s:
+        s.add(
+            ArticleTrailer(
+                article_id=root_id,
+                role="Reviewed-by",
+                name="R Eviewer",
+                address="r@example.com",
+                address_normalized="r@example.com",
+            )
+        )
+        s.commit()
+
+
+def _prepare_article_file(seeded):
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleFile
+
+    root_id, _url = seeded["root@x"]
+    with SessionLocal() as s:
+        s.add(ArticleFile(article_id=root_id, path="drivers/net/before.c"))
+        s.commit()
+
+
+def _mutate_article_file(seeded):
+    """`backfill-article-files --reprocess`, or a re-ingest after a
+    parser fix, rewrites a touched path IN PLACE. The subsystem line is
+    rules x `article_files`, so this changes which subsystems claim the
+    article while the row COUNT stays put. A `count(*)` validator is
+    satisfied by construction on exactly this mutation, which is why
+    the tag digests the paths themselves."""
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleFile
+
+    root_id, _url = seeded["root@x"]
+    with SessionLocal() as s:
+        s.execute(delete(ArticleFile).where(ArticleFile.article_id == root_id))
+        s.add(ArticleFile(article_id=root_id, path="drivers/gpu/after.c"))
+        s.commit()
+
+
+def _prepare_series(seeded):
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    root_id, _url = seeded["root@x"]
+    with SessionLocal() as s:
+        root = s.get(Article, root_id)
+        root.patch_series_key = "serieskey"
+        root.patch_series_version = "v1"
+        root.patch_series_position = 0
+        s.commit()
+
+
+def _mutate_series(seeded):
+    """A v2 is posted. It supersedes this article's badge and rewrites
+    its synthesis prose to "revision 1 of 2", but the newer revision is
+    a DIFFERENT article in a different thread, so it moves neither the
+    node count, the thread's max date, the landing state, the trailer
+    count, nor the MAINTAINERS cursor. Posting a v2 is the most routine
+    patch workflow on the list."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    reply_id, _url = seeded["reply@x"]
+    with SessionLocal() as s:
+        other = s.get(Article, reply_id)
+        other.patch_series_key = "serieskey"
+        other.patch_series_version = "v2"
+        other.patch_series_position = 0
+        s.commit()
+
+
+# Each case is (label, prepare | None, mutate). Every mutation changes
+# something both surfaces RENDER while touching nothing else either
+# ETag covers.
+_RENDER_STATE_CASES = [
+    ("mainline_landing", None, _mutate_mainline_landing),
+    ("maintainers_reparse", _prepare_rules_version, _mutate_rules_version),
+    ("review_trailer", None, _mutate_review_trailer),
+    ("article_files_rewrite", _prepare_article_file, _mutate_article_file),
+    ("newer_revision", _prepare_series, _mutate_series),
+]
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize(
+    "case", _RENDER_STATE_CASES, ids=[c[0] for c in _RENDER_STATE_CASES]
+)
+def test_render_state_moves_the_etag_on_both_surfaces(client, tmp_path, surface, case):
+    """Derived state must move the validator on EVERY surface showing it.
+
+    Both routes are served `public, no-cache`, so the ETag is the only
+    thing standing between a source-data change and an edge (plus every
+    crawler) serving a body the data has already contradicted. Both
+    render the same four derived surfaces: subsystem attribution,
+    lifecycle badge, review roll-up, revisions fold. None of them moves
+    an article id, a node count or a thread's max date.
+
+    Parametrised over BOTH surfaces deliberately. The thread view had
+    per-input guards and the message page had no state input at all,
+    which is precisely the shape a single-surface guard cannot see: it
+    confirms the implementation it was written against rather than the
+    invariant. See each mutation's own docstring for why that input is
+    load-bearing.
+    """
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
     from tests.test_routes._helpers import seed_thread_shape
 
-    seeded = seed_thread_shape(tmp_path, "alpha", [("r1@x", None), ("r2@x", "r1@x")])
-    _root_id, root_url = seeded["r1@x"]
+    _label, prepare, mutate = case
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    _root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
 
+    if prepare is not None:
+        prepare(seeded)
+    before = client.get(url)
+    assert before.status_code == 200, f"{surface} did not render"
+
+    mutate(seeded)
+    # Both pages read cached derived state (lifecycle is keyed per
+    # ARTICLE, so an inbox-scoped purge would miss it). Production
+    # invalidates explicitly on each of these writes; the ETag itself
+    # is computed from direct reads either way.
     with SessionLocal() as s:
-        s.add(MainlineState(tree_name="linus", last_commit_sha="a" * 40))
+        s.execute(delete(CacheEntry))
         s.commit()
-    before = client.get(root_url + "/t").headers["ETag"]
 
-    with SessionLocal() as s:
-        row = s.get(MainlineState, "linus")
-        row.last_commit_sha = "b" * 40
-        s.commit()
-    after = client.get(root_url + "/t").headers["ETag"]
-
-    assert before != after, "ETag did not move on a MAINTAINERS reparse"
+    after = client.get(url)
+    assert after.status_code == 200
+    assert before.headers["ETag"] != after.headers["ETag"], (
+        f"{surface} page ETag did not move on {_label}"
+    )
 
 
 def test_single_message_rule_agrees_between_message_page_and_thread_view(
@@ -659,47 +784,3 @@ def test_single_message_rule_agrees_between_message_page_and_thread_view(
     assert canonical.endswith(url), (
         f"a {count}-message thread view must not be the canonical target"
     )
-
-
-def test_thread_etag_moves_when_a_newer_revision_is_posted(client, tmp_path):
-    """Posting a v2 supersedes the v1 thread without touching it.
-
-    It flips v1's badge to SUPERSEDED and rewrites its synthesis prose
-    to "revision 1 of 2", but the newer revision is a different article
-    in a different thread, so it moves neither the node count, the
-    thread's max date, the landing state, the trailer count, nor the
-    MAINTAINERS cursor. Posting a v2 is the most routine patch workflow
-    on the list, and "is this the current revision" is squarely in the
-    query family this surface exists to answer, so a stale validator
-    here pins exactly the wrong answer.
-    """
-    from sqlalchemy import select as sa_select
-
-    from mimir.extensions import SessionLocal
-    from mimir.models import Article
-    from tests.test_routes._helpers import seed_thread_shape
-
-    seeded = seed_thread_shape(tmp_path, "alpha", [("v1a@x", None), ("v1b@x", "v1a@x")])
-    root_id, root_url = seeded["v1a@x"]
-
-    with SessionLocal() as s:
-        root = s.get(Article, root_id)
-        root.patch_series_key = "serieskey"
-        root.patch_series_version = "v1"
-        root.patch_series_position = 0
-        s.commit()
-
-    before = client.get(root_url + "/t").headers["ETag"]
-
-    # The v2 cover letter: same series key and position, newer version.
-    with SessionLocal() as s:
-        other = s.execute(
-            sa_select(Article).where(Article.message_id == "v1b@x")
-        ).scalar_one()
-        other.patch_series_key = "serieskey"
-        other.patch_series_version = "v2"
-        other.patch_series_position = 0
-        s.commit()
-
-    after = client.get(root_url + "/t").headers["ETag"]
-    assert before != after, "ETag did not move when a newer revision appeared"
