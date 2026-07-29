@@ -443,3 +443,12 @@ def _maintainer_url_filter(address: str | None) -> str:
     from mimir.maintainer_directory import maintainer_path
 
     return maintainer_path(address or "")
+
+
+@bp_web.app_template_filter("subsystem_url")
+def _subsystem_url_filter(name: str, inbox_name: str) -> str:
+    """Site-relative URL for a subsystem dashboard. See
+    `mimir.subsystems.subsystem_path` for why this is shared."""
+    from mimir.subsystems import subsystem_path
+
+    return subsystem_path(inbox_name, name)

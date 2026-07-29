@@ -42,7 +42,7 @@
          convention since 1.18.x); display keeps the upstream
          MAINTAINERS casing. urlencode handles spaces in compound
          names (`BTRFS FILE SYSTEM`). #}
-      {% for hit in subsystem_hits %}<a href="/{{ current_inbox }}/subsystem/{{ hit.name|lower|urlencode }}/">{{ hit.name|lower }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+      {% for hit in subsystem_hits %}<a href="{{ hit.name | subsystem_url(current_inbox) }}">{{ hit.name|lower }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
       {% if _maints %}
         &middot; <strong>Maintainer{{ '' if _maints|length == 1 else 's' }}:</strong>
         {% for _name, _addr in _maints %}{% if _addr | is_allowlisted_address %}<a

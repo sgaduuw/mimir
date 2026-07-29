@@ -1056,7 +1056,7 @@ def test_subsystem_page_links_its_maintainers_to_their_profiles(client, tmp_path
     address) does not count: that would be a duplicate-URL signal
     rather than a clean one.
     """
-    from tests.test_routes.test_dashboards import _seed_subsystem as _seed
+    from tests.test_routes._helpers import _seed_subsystem as _seed
 
     _seed(
         "BCACHEFS",
@@ -1066,3 +1066,88 @@ def test_subsystem_page_links_its_maintainers_to_their_profiles(client, tmp_path
     )
     html = client.get("/alpha/subsystem/bcachefs/").get_data(as_text=True)
     assert 'href="/maintainers/kent.overstreet@kernel.org"' in html
+
+
+def test_subsystem_index_lists_active_subsystems_and_links_them(client, tmp_path):
+    """The crawl hub. Per-subsystem dashboards were reachable only from
+    chips on individual message and thread pages, so a crawler had to
+    find a matching patch before it could discover one at all.
+
+    The list is warm-cache-backed, so this test warms it the way the
+    slow tier does rather than relying on a request-path compute the
+    route deliberately refuses to perform.
+    """
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.subsystems_dashboard import most_active_subsystems_in_inbox
+    from sqlalchemy import select as sa_select
+
+    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+
+    _seed_subsystem(
+        "BCACHEFS",
+        "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[("M", "Kent Overstreet", "kent.overstreet@kernel.org")],
+    )
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "idx-patch@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    with SessionLocal() as s:
+        inbox = s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        most_active_subsystems_in_inbox(s, inbox, days=7)
+
+    html = client.get("/alpha/subsystem/").get_data(as_text=True)
+    assert 'href="/alpha/subsystem/bcachefs/"' in html
+    assert "bcachefs" in html
+
+
+def test_subsystem_index_renders_when_the_cache_is_cold(client):
+    """Empty is a real state, not a 500.
+
+    The route refuses to compute on a request (the aggregation is
+    multi-second per inbox and is the 2.8.0 regression family), so a
+    cold cache must render an empty list rather than blocking or
+    erroring. 45 of ~200 production inboxes are also genuinely empty
+    here.
+    """
+    r = client.get("/alpha/subsystem/")
+    assert r.status_code == 200
+    assert "No subsystem has seen patch activity" in r.get_data(as_text=True)
+
+
+def test_inbox_dashboard_links_the_subsystem_index(client):
+    """The index is only worth building if something links to it, and
+    the dashboard is the sitemapped hub that should."""
+    html = client.get("/alpha/").get_data(as_text=True)
+    assert 'href="/alpha/subsystem/"' in html
+
+
+def test_subsystem_index_does_not_compute_on_a_cold_cache(client, tmp_path):
+    """Empty-on-cold has to be proved with data that WOULD have been
+    returned, otherwise it proves nothing.
+
+    The existing cold-cache test seeds nothing, so a route that ignored
+    `compute_on_miss=False` would compute, find nothing, and render the
+    same empty page: the assertion passes either way. Here a matching
+    patch exists and the cache is deliberately not warmed, so rendering
+    it would mean the route computed on the request path. That
+    aggregation is multi-second per inbox on production and is the
+    2.8.0 regression family; it must never run on a request.
+    """
+    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+
+    _seed_subsystem("BCACHEFS", "Maintained", files=["fs/bcachefs/"])
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "nocompute@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+
+    html = client.get("/alpha/subsystem/").get_data(as_text=True)
+    assert "bcachefs" not in html, "index computed the aggregation on a request"
+    assert "No subsystem has seen patch activity" in html

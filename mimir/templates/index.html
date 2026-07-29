@@ -83,7 +83,7 @@
 <div class="subsystem-grid" role="list">
   {% for s in active_subsystems %}
   <a class="subsystem-card" role="listitem"
-     href="/{{ s.inbox_name }}/subsystem/{{ s.name|lower|urlencode }}/"
+     href="{{ s.name | subsystem_url(s.inbox_name) }}"
      aria-label="Open {{ s.name|lower }} subsystem dashboard">
     <div class="subsystem-card-header">
       <strong class="subsystem-card-name">{{ s.name|lower }}</strong>

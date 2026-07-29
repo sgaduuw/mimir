@@ -23,6 +23,11 @@ from sqlalchemy.orm import Session, aliased
 from mimir import cache
 from mimir.maintainer_directory import all_maintainers, maintainer_path
 from mimir.models import Article, ArticleList, Inbox
+from mimir.subsystems import subsystem_path
+from mimir.subsystems_dashboard import (
+    MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
+    most_active_subsystems_in_inbox,
+)
 
 SITEMAP_RECENT_PER_INBOX = 5000
 
@@ -698,6 +703,51 @@ def inbox_sitemap_xml(
             entries.append((f"{base}/{inbox.name}/{y}/", None))
         for y, m in sorted(year_month_rows, reverse=True):
             entries.append((f"{base}/{inbox.name}/{y}/{m}/", None))
+
+        # The subsystem index plus the dashboards it links. These are
+        # distinctive hub pages nothing else mirrors (per-subsystem
+        # recent patches, threads and reviewers, derived from
+        # MAINTAINERS), and until now they were in no sitemap at all.
+        #
+        # The ACTIVE set only, which is the same cached payload the
+        # dashboard widget and the index page read: `most_active_...`
+        # is capped at `MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP` (100) per
+        # inbox, measuring 3,394 (inbox, subsystem) pairs in total on
+        # the production corpus 2026-07-29. The full MAINTAINERS
+        # taxonomy would instead be ~3,300 sections x ~200 inboxes,
+        # i.e. ~660,000 URLs, almost all of them a page for a
+        # subsystem no patch in that inbox has ever touched.
+        #
+        # `compute_on_miss=False` matters: this builder runs on the
+        # request path on a cold sitemap cache, and that aggregation is
+        # multi-second per inbox (the 2.8.0 regression family). Warm
+        # ordering makes the miss rare rather than routine, since
+        # `most_active_subsystems_in_inbox` is warmed immediately
+        # before `sitemap:inbox:<name>` in the same slow-tier per-inbox
+        # target list. A miss omits these entries for one cycle; it
+        # must never turn a sitemap render into a minutes-long compute.
+        entries.append((f"{base}/{inbox.name}/subsystem/", None))
+        for activity in most_active_subsystems_in_inbox(
+            session,
+            inbox,
+            days=7,
+            limit=MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
+            compute_on_miss=False,
+        ):
+            # Date-only string, like every other entry here: the list
+            # is `(loc, lastmod-as-str)` and `_build_sitemap_xml` sets
+            # the element text verbatim, so handing it a datetime is a
+            # serialize-time TypeError, i.e. a 500 on the whole sitemap.
+            entries.append(
+                (
+                    base + subsystem_path(inbox.name, activity.name),
+                    (
+                        activity.last_activity.strftime("%Y-%m-%d")
+                        if activity.last_activity
+                        else None
+                    ),
+                )
+            )
 
         # Recent THREADS in the inbox, one URL per thread, pointing at
         # the whole-thread view. Individual message pages canonicalise

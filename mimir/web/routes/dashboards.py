@@ -30,6 +30,7 @@ from mimir.subsystems_dashboard import (
     active_threads_in_subsystem,
     daily_volume_in_subsystem,
     most_active_subsystems_global,
+    MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     most_active_subsystems_in_inbox,
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
@@ -241,6 +242,49 @@ def inbox_dashboard(inbox_name: str):
         page_json_ld=_json_ld_inbox(base, inbox, active),
         lifecycle_status_by_id=lifecycle_status_by_id,
     )
+
+
+@bp_web.route("/<inbox_name>/subsystem/")
+def subsystem_index(inbox_name: str):
+    """Browsable list of the subsystems active in this inbox.
+
+    A crawl hub. Per-subsystem dashboards were reachable only from
+    scattered chips on individual message and thread pages, so a
+    crawler had to find a matching patch first to discover one at all.
+
+    Deliberately the ACTIVE set, not the full MAINTAINERS taxonomy.
+    Listing all ~3,300 sections from all ~200 inboxes would advertise
+    ~660,000 URLs, the overwhelming majority of which are empty for
+    that inbox: the subsystem exists globally but no patch in this
+    list touches its paths. Today those URLs stay unlinked unless a
+    real patch matched, which is what keeps them worth indexing at
+    all; a complete index would trade that for a thin-page factory.
+    The heading says "active" so the page is not claiming to be a
+    complete directory.
+
+    Reads the same cached top-N payload as the dashboard widget, with
+    `compute_on_miss=False` for the same reason that one does: the
+    underlying aggregation is multi-second per inbox and must never
+    run on a request. Cold cache renders an empty list for at most one
+    warm cycle.
+    """
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        subsystems = most_active_subsystems_in_inbox(
+            session,
+            inbox,
+            days=7,
+            limit=MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
+            compute_on_miss=False,
+        )
+        base = _site_base()
+        return render_template(
+            "subsystem_index.html",
+            inbox_name=inbox.name,
+            current_inbox=inbox.name,
+            subsystems=subsystems,
+            canonical_url=f"{base}/{inbox.name}/subsystem/",
+        )
 
 
 @bp_web.route("/<inbox_name>/subsystem/<path:name>/")
