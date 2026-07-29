@@ -11,6 +11,7 @@ import pytest
 
 from mimir.models import Inbox
 from mimir.store import MessageNotFound, read_message
+from tests.test_routes._helpers import count_repo_opens
 from mimir.web import (
     _canonical_inbox_names_for,
     _content_disposition,
@@ -89,29 +90,6 @@ def test_read_message_stale_commit_sha_raises(seeded_db, tmp_path):
 # store.read_messages, the bulk sibling
 
 
-def _count_repo_opens(monkeypatch) -> list:
-    """Record every `Repo(...)` construction `mimir.store` performs.
-
-    The saving this helper exists to pin is entirely in the NUMBER of
-    opens: dulwich re-reads and re-mmaps the epoch's pack index on
-    each one. A test that only asserted the right bodies came back
-    would pass against the per-message shape it replaced.
-    """
-    from dulwich.repo import Repo as RealRepo
-
-    import mimir.store
-
-    opened: list[str] = []
-
-    class _CountingRepo(RealRepo):
-        def __init__(self, path, *args, **kwargs):
-            opened.append(str(path))
-            super().__init__(path, *args, **kwargs)
-
-    monkeypatch.setattr(mimir.store, "Repo", _CountingRepo)
-    return opened
-
-
 def _alpha_live():
     from mimir.extensions import SessionLocal
 
@@ -132,7 +110,7 @@ def test_read_messages_opens_one_repo_for_a_single_epoch_thread(tmp_path, monkey
     )
     alpha = _alpha_live()
 
-    opened = _count_repo_opens(monkeypatch)
+    opened = count_repo_opens(monkeypatch)
     with SessionLocal() as s:
         got = read_messages(s, alpha, ids)
 
@@ -156,7 +134,7 @@ def test_read_messages_reads_a_thread_that_straddles_an_epoch_boundary(
     seed_thread_shape(tmp_path, "alpha", [("span1@x", "span0@x")], epoch="1.git")
     alpha = _alpha_live()
 
-    opened = _count_repo_opens(monkeypatch)
+    opened = count_repo_opens(monkeypatch)
     with SessionLocal() as s:
         got = read_messages(s, alpha, ["span0@x", "span1@x"])
 
@@ -238,7 +216,7 @@ def test_read_messages_reads_this_inboxs_pointer_for_a_cross_post(
         s.commit()
 
     alpha = _alpha_live()
-    opened = _count_repo_opens(monkeypatch)
+    opened = count_repo_opens(monkeypatch)
     with SessionLocal() as s:
         got = read_messages(s, alpha, ["xpost@x"])
 
@@ -267,7 +245,7 @@ def test_read_messages_on_an_empty_list_touches_neither_db_nor_disk(monkeypatch)
     from mimir.extensions import SessionLocal
     from mimir.store import read_messages
 
-    opened = _count_repo_opens(monkeypatch)
+    opened = count_repo_opens(monkeypatch)
     with SessionLocal() as s:
         assert read_messages(s, _alpha_live(), []) == {}
     assert opened == []

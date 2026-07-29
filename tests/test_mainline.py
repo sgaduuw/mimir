@@ -875,6 +875,97 @@ def test_load_maintainers_closes_repo_at_function_exit(
     assert exit_calls, "Repo.__exit__ was not called during load_maintainers"
 
 
+def _commit_maintainers(repo, maintainers_bytes, *, parent=None, other=None, ts):
+    """Add a commit whose tree holds `maintainers_bytes` as MAINTAINERS
+    and, optionally, `other` bytes as an unrelated file. Returns the
+    commit id."""
+    from dulwich.objects import Blob
+
+    tree = Tree()
+    blob = Blob.from_string(maintainers_bytes)
+    repo.object_store.add_object(blob)
+    tree.add(b"MAINTAINERS", 0o100644, blob.id)
+    if other is not None:
+        other_blob = Blob.from_string(other)
+        repo.object_store.add_object(other_blob)
+        tree.add(b"Makefile", 0o100644, other_blob.id)
+    repo.object_store.add_object(tree)
+    commit = Commit()
+    commit.tree = tree.id
+    commit.parents = [parent] if parent else []
+    commit.author = commit.committer = b"Test <test@example.org>"
+    commit.author_time = commit.commit_time = ts
+    commit.author_timezone = commit.commit_timezone = 0
+    commit.message = b"c"
+    repo.object_store.add_object(commit)
+    repo.refs[b"HEAD"] = commit.id
+    return commit.id
+
+
+def test_maintainers_reload_is_gated_on_the_blob_not_on_head(seeded_db, tmp_path):
+    """A push that does not touch MAINTAINERS must not reparse.
+
+    Linus's tree is pushed to many times a day; MAINTAINERS changes far
+    more rarely. Gating on HEAD meant re-reading the file and rewriting
+    the whole ~15k-row subsystems triple to identical values on most
+    ticks, on the single-writer broker. It also rotated
+    `last_commit_sha`, which the web tier folds into every page's ETag
+    as the subsystem-rule version, so the entire archive's validators
+    moved on every push while the rendered output was unchanged.
+
+    The cursor must therefore track the MAINTAINERS BLOB. Asserted in
+    both directions: unchanged content does not reparse even though
+    HEAD moved, and changed content does.
+    """
+    from mimir.extensions import SessionLocal
+    from mimir.mainline import load_maintainers
+    from mimir.models import MainlineState
+
+    def cursor():
+        with SessionLocal() as s:
+            return s.scalar(
+                select(MainlineState.last_commit_sha).where(
+                    MainlineState.tree_name == "linus"
+                )
+            )
+
+    original = b"BCACHEFS\nM:\tKent Overstreet <kent@example.org>\nF:\tfs/bcachefs/\n"
+    path = tmp_path / "tree.git"
+    repo = _bare_repo(path)
+    c1 = _commit_maintainers(repo, original, ts=1700000000)
+    repo.close()
+
+    ran, _loaded, head1 = load_maintainers(path, tree_name="linus")
+    assert ran, "first load must parse"
+    after_first = cursor()
+
+    # A push that leaves MAINTAINERS byte-identical. HEAD moves.
+    repo = Repo(str(path))
+    c2 = _commit_maintainers(
+        repo, original, parent=c1, other=b"# unrelated", ts=1700000100
+    )
+    repo.close()
+    assert c2 != c1
+
+    ran, _loaded, head2 = load_maintainers(path, tree_name="linus")
+    assert head2 != head1, "HEAD did move, so this is the case that matters"
+    assert not ran, "reparsed despite MAINTAINERS being byte-identical"
+    assert cursor() == after_first, (
+        "cursor moved on an unrelated push, which rotates every page ETag"
+    )
+
+    # Now actually edit MAINTAINERS.
+    repo = Repo(str(path))
+    _commit_maintainers(
+        repo, original + b"\nSOMETHING\nF:\tdrivers/x/\n", parent=c2, ts=1700000200
+    )
+    repo.close()
+
+    ran, _loaded, _head3 = load_maintainers(path, tree_name="linus")
+    assert ran, "a real MAINTAINERS edit must reparse"
+    assert cursor() != after_first, "cursor must move when the content changed"
+
+
 def test_read_linus_head_closes_repo_at_function_exit(tmp_path, monkeypatch):
     """The linus-head probe was inline in update_mainline. Extracted
     into a `_read_linus_head` helper for testability + deterministic

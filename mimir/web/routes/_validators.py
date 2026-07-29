@@ -38,8 +38,16 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     single-writer broker, on exactly the URLs the sitemap aims crawlers
     at. And it only covers lifecycle, while these pages also render the
     subsystem line, which moves on any `update-mainline` MAINTAINERS
-    reparse (every 10 minutes in prod) without touching a node count or
-    a thread's max date.
+    reparse without touching a node count or a thread's max date.
+
+    Cost, measured 2026-07-29 against the production corpus (17,334,085
+    articles), sampling 200 patch-shaped articles (the expensive shape:
+    they carry `article_files` rows and trigger the sixth, series,
+    query): **0.752 ms per call**. Every read is an index seek, so this
+    is B-tree-depth-bound rather than corpus-size-bound, but re-measure
+    rather than trusting the figure; the archive only grows. It is paid
+    on every request to both surfaces, including the 304s, which is the
+    crawler path.
     """
     landings = session.execute(
         select(
@@ -52,9 +60,14 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
             ArticleTrailer.article_id == article_id
         )
     )
-    # `MainlineState.last_commit_sha` is the HEAD at the last MAINTAINERS
-    # load, so it versions the whole subsystem-RULE snapshot in one
-    # scalar instead of re-deriving this article's matches.
+    # `MainlineState.last_commit_sha` is the object id of the
+    # MAINTAINERS BLOB at the last load, so it versions the whole
+    # subsystem-RULE snapshot in one scalar instead of re-deriving this
+    # article's matches. Load-bearing that it is the blob and not the
+    # tree HEAD: HEAD moves on every push to Linus's tree, which would
+    # rotate the validator of every page in the archive several times a
+    # day for a rendered output that is almost always identical. See
+    # `MainlineState` and `mainline.load_maintainers`.
     rules_version = session.scalar(
         select(MainlineState.last_commit_sha).where(MainlineState.tree_name == "linus")
     )

@@ -559,6 +559,40 @@ def test_thread_view_never_renders_the_same_message_twice(client, tmp_path):
     assert "further message" not in html, "duplicate nodes leaked into overflow"
 
 
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_etag_is_stable_across_identical_requests_and_304s(client, tmp_path, surface):
+    """The other direction, and the one every other guard here is blind
+    to: an unchanged page must keep its validator.
+
+    Both routes are `public, no-cache`, so a validator that differs per
+    request defeats conditional GET completely: the CDN and every
+    crawler re-fetch a full body on every revalidation, on the surface
+    the sitemap points them at. Every other ETag test asserts only that
+    the tag MOVED, which a per-request-random tag satisfies by
+    construction, so nothing would notice.
+
+    Asserts the round trip too, not just tag equality: an
+    `If-None-Match` carrying the tag must actually produce a 304.
+    """
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("stab@x", None), ("stab2@x", "stab@x")]
+    )
+    _root_id, root_url = seeded["stab@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+
+    tags = {client.get(url).headers["ETag"] for _ in range(4)}
+    assert len(tags) == 1, f"{surface} ETag is not stable across requests: {tags}"
+
+    etag = tags.pop()
+    conditional = client.get(url, headers={"If-None-Match": etag})
+    assert conditional.status_code == 304, (
+        f"{surface} did not honour its own ETag on revalidation"
+    )
+    assert conditional.get_data() == b""
+
+
 def test_thread_view_opens_the_epoch_repo_once_for_the_whole_render(
     client, tmp_path, monkeypatch
 ):
@@ -569,10 +603,7 @@ def test_thread_view_opens_the_epoch_repo_once_for_the_whole_render(
     render can show that the route actually uses it, and the saving is
     entirely in the number of pack-index reopens.
     """
-    from dulwich.repo import Repo as RealRepo
-
-    import mimir.store
-    from tests.test_routes._helpers import seed_thread_shape
+    from tests.test_routes._helpers import count_repo_opens, seed_thread_shape
 
     ids = [f"open{i}@x" for i in range(5)]
     seeded = seed_thread_shape(
@@ -580,14 +611,7 @@ def test_thread_view_opens_the_epoch_repo_once_for_the_whole_render(
     )
     _root_id, root_url = seeded[ids[0]]
 
-    opened: list[str] = []
-
-    class _CountingRepo(RealRepo):
-        def __init__(self, path, *args, **kwargs):
-            opened.append(str(path))
-            super().__init__(path, *args, **kwargs)
-
-    monkeypatch.setattr(mimir.store, "Repo", _CountingRepo)
+    opened = count_repo_opens(monkeypatch)
 
     html = client.get(root_url + "/t").get_data(as_text=True)
     assert html.count('class="thread-message"') == 5, "not all messages rendered"
@@ -638,6 +662,76 @@ def _mutate_mainline_landing(seeded):
                 message_id="root@x",
                 tree_name="linus",
                 committed_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            )
+        )
+        s.commit()
+
+
+def _prepare_first_landing(seeded):
+    from datetime import datetime, timezone
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+
+    with SessionLocal() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha="c" * 40,
+                message_id="root@x",
+                tree_name="linux-next",
+                committed_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            )
+        )
+        s.commit()
+
+
+def _mutate_second_landing(seeded):
+    """The patch reaches a SECOND tree (aggregated into linux-next,
+    then landed in Linus). Moves the landing COUNT while the existing
+    row, and so the max date, could stay put.
+
+    Split from `_mutate_mainline_landing` because that one inserts into
+    an empty table, moving count 0->1 and max None->date at once: each
+    half covers for the other, and dropping either from the tag leaves
+    the guard green."""
+    from datetime import datetime, timezone
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+
+    with SessionLocal() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha="d" * 40,
+                message_id="root@x",
+                tree_name="linus",
+                # Deliberately NOT newer, so only the count moves.
+                committed_at=datetime(2024, 5, 1, tzinfo=timezone.utc),
+            )
+        )
+        s.commit()
+
+
+def _mutate_relanded_in_rebasing_tree(seeded):
+    """A rebasing tree (`linux-next`, `rebases=True`) DELETEs its rows
+    and re-walks daily, so the same message reappears under a new
+    commit sha with a new committer date at UNCHANGED count. This is
+    the case that moves only the max, and the only one that pins it."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+
+    with SessionLocal() as s:
+        s.execute(delete(MainlineCommit).where(MainlineCommit.message_id == "root@x"))
+        s.add(
+            MainlineCommit(
+                commit_sha="e" * 40,
+                message_id="root@x",
+                tree_name="linux-next",
+                committed_at=datetime(2024, 9, 9, tzinfo=timezone.utc),
             )
         )
         s.commit()
@@ -731,6 +825,12 @@ def _mutate_series(seeded):
 # ETag covers.
 _RENDER_STATE_CASES = [
     ("mainline_landing", None, _mutate_mainline_landing),
+    ("second_landing", _prepare_first_landing, _mutate_second_landing),
+    (
+        "relanded_rebasing_tree",
+        _prepare_first_landing,
+        _mutate_relanded_in_rebasing_tree,
+    ),
     ("maintainers_reparse", _prepare_rules_version, _mutate_rules_version),
     ("review_trailer", None, _mutate_review_trailer),
     ("article_files_rewrite", _prepare_article_file, _mutate_article_file),
