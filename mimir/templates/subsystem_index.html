@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}Active subsystems | {{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block meta_description %}Kernel subsystems with recent patch activity on {{ inbox_name }}, each linking to its own dashboard of recent patches, threads and reviewers.{% endblock %}
+
+{% block content %}
+<h1>Active subsystems <small>in {{ inbox_name }}</small></h1>
+
+{% if subsystems %}
+<p><small>{{ subsystems|length }} subsystem{{ '' if subsystems|length == 1 else 's' }}
+  with patch activity in the last 7 days, busiest first. Each links to
+  its own dashboard: recent patches, active threads and reviewers for
+  the paths that subsystem claims in MAINTAINERS.</small></p>
+
+<ul>
+  {# Skip names the dashboard route would refuse to serve back, so the
+     index never links a 404. Same predicate the sitemap uses. #}
+  {% for s in subsystems if s.name | is_addressable_subsystem %}
+  <li>
+    <a href="{{ s.name | subsystem_url(inbox_name) }}">{{ s.name|lower }}</a>
+    {% if s.status and s.status != 'Maintained' %}<kbd>{{ s.status }}</kbd>{% endif %}
+    <br><small>{{ s.message_count }} message{{ '' if s.message_count == 1 else 's' }} in 7d
+      {%- if s.last_activity %} &middot; last {{ s.last_activity.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+      {%- if s.maintainer_name %} &middot; {{ s.maintainer_name }}{{ ' et al.' if s.multiple_maintainers }}{% endif %}</small>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+{# Empty is a real state, not an error: the underlying aggregation is
+   too expensive to run on a request, so a cold cache renders nothing
+   until the next warm cycle. It is also genuinely empty for an inbox
+   whose recent traffic touched no MAINTAINERS-claimed paths, which is
+   45 of ~200 inboxes on the production corpus. #}
+<p>No subsystem has seen patch activity on this list in the last 7 days.</p>
+{% endif %}
+{% endblock %}

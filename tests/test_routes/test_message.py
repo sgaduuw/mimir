@@ -5,6 +5,8 @@ revalidation, body redactions, off-list-parent hints, the
 subject-normalized fallback grouping, and the 4-tuple URL
 identity contract)."""
 
+import re
+
 from tests.test_routes._helpers import (
     _data_attr_values,
     _ingest_one_article,
@@ -645,8 +647,17 @@ def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
     assert "bcachefs" in body
     assert "Kent Overstreet" in body
     assert "Maintainer" in body
-    assert "kent.overstreet@kernel.org" not in body
     assert "<kbd>M</kbd>" not in body
+    # The address is not VISIBLE text here: the compact identity card
+    # shows the name, and the address-and-role detail lives on the
+    # subsystem dashboard (issue #72). It does appear once, as the
+    # href of the link to that maintainer's profile page, which is how
+    # those profiles get an inbound link at all. Asserting on visible
+    # text rather than on the raw body keeps the layout decision pinned
+    # without also forbidding the link.
+    assert 'href="/maintainers/kent.overstreet@kernel.org"' in body
+    visible = re.sub(r"<[^>]+>", "", body)
+    assert "kent.overstreet@kernel.org" not in visible
 
 
 def test_message_page_no_subsystem_block_when_no_match(client, tmp_path):

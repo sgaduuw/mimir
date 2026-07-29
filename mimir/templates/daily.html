@@ -20,7 +20,9 @@
         {% include "_lifecycle_badges.html" %}
         <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject|clean_subject or '(no subject)' }}</a>
         <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
-          &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} {{ heading|lower }}
+          {# Same as the inbox dashboard: the reply count is the link
+             into the consolidated thread view, only when replies exist. #}
+          &middot; {% if t.reply_count %}<a href="{{ t|thread_url(inbox_name) }}">{{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} {{ heading|lower }}</a>{% else %}{{ t.reply_count }} replies {{ heading|lower }}{% endif %}
           &middot; {{ t.author|safe_from }}</small>
       </li>
       {% endfor %}

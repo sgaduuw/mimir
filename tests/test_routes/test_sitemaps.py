@@ -1167,3 +1167,271 @@ def test_month_sitemap_sends_cache_control(client, tmp_path):
     r = client.get("/alpha/2017/05/sitemap.xml")
     assert r.status_code == 200
     assert r.headers.get("Cache-Control") == "public, max-age=300", dict(r.headers)
+
+
+def test_inbox_sitemap_lists_the_subsystem_index_and_active_subsystems(
+    client, tmp_path
+):
+    """Subsystem dashboards are distinctive hub pages nothing else
+    mirrors, and were in no sitemap at all.
+
+    The ACTIVE set only. The full MAINTAINERS taxonomy is ~3,300
+    sections and the route is per-inbox, so advertising all of them
+    from all ~200 production inboxes would be ~660,000 URLs, nearly
+    all of them a page for a subsystem no patch in that inbox has
+    touched. Measured 2026-07-29, the active set is 3,394 pairs.
+    """
+    from sqlalchemy import select as sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.subsystems_dashboard import most_active_subsystems_in_inbox
+    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+
+    _seed_subsystem("BCACHEFS", "Maintained", files=["fs/bcachefs/"])
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "sm-patch@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    with SessionLocal() as s:
+        inbox = s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        most_active_subsystems_in_inbox(s, inbox, days=7)
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    assert "<loc>http://localhost/alpha/subsystem/</loc>" in xml
+    assert "<loc>http://localhost/alpha/subsystem/bcachefs/</loc>" in xml
+
+
+def test_inbox_sitemap_omits_subsystems_rather_than_computing_on_a_cold_cache(
+    client, tmp_path
+):
+    """The builder runs on the request path when the sitemap cache is
+    cold, and the subsystem aggregation is multi-second per inbox: the
+    2.8.0 regression family. It must degrade to omitting the entries,
+    never to a minutes-long render.
+
+    Warm ordering makes the miss rare rather than routine, since
+    `most_active_subsystems_in_inbox` is warmed immediately before
+    `sitemap:inbox:<name>` in the same slow-tier per-inbox list.
+    """
+    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+
+    _seed_subsystem("BCACHEFS", "Maintained", files=["fs/bcachefs/"])
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "cold-patch@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    # No warm step: the subsystem-activity cache is cold.
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    assert "/alpha/subsystem/bcachefs/" not in xml
+    # The index goes too. With nothing to list it renders a bare
+    # "nothing active here", and advertising that to crawlers is the
+    # thin-page trade this change set refuses elsewhere. It stays
+    # linked from the dashboard, so it is still discoverable.
+    assert "<loc>http://localhost/alpha/subsystem/</loc>" not in xml
+
+
+# Real MAINTAINERS section titles, including the shapes that broke.
+# Every earlier test here used `BCACHEFS`, which needs no encoding, has
+# no slash, no space and no case subtlety, so the whole name-shape axis
+# was held fixed and six mutations of the emitter survived.
+_SUBSYSTEM_NAME_CASES = [
+    ("BCACHEFS", "bcachefs"),
+    ("ARM/AT91 SOC SUPPORT", "arm/at91%20soc%20support"),
+    ("NETWORKING [GENERAL]", "networking%20%5Bgeneral%5D"),
+    ("FOO & BAR", "foo%20%26%20bar"),
+    ("LINUX FOR POWERPC (32-BIT)", "linux%20for%20powerpc%20%2832-bit%29"),
+]
+
+
+@pytest.mark.parametrize(
+    "name,slug", _SUBSYSTEM_NAME_CASES, ids=[c[0] for c in _SUBSYSTEM_NAME_CASES]
+)
+def test_sitemap_subsystem_url_matches_what_the_route_serves(
+    client, tmp_path, name, slug
+):
+    """A sitemap `<loc>` that 301s or 404s is worse than no entry.
+
+    Asserts the whole chain agrees for one name: the emitted `<loc>`,
+    the URL actually served (200, no redirect), and that page's own
+    `<link rel="canonical">`. The canonical is the one that broke: the
+    route relied on the `default_canonical_url` fallback, which is
+    built from Werkzeug's URL-DECODED `request.path`, so any name with
+    a space advertised one string and self-nominated another.
+    """
+    from tests.test_routes._helpers import (
+        _ingest_one_article,
+        _seed_subsystem,
+        warm_subsystem_activity,
+    )
+
+    _seed_subsystem(name, "Maintained", files=["fs/bcachefs/"])
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        f"nm-{slug[:8]}@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    warm_subsystem_activity("alpha")
+
+    expected = f"/alpha/subsystem/{slug}/"
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    assert f"<loc>http://localhost{expected}</loc>" in xml
+
+    page = client.get(expected)
+    assert page.status_code == 200, f"sitemap advertises a URL that {page.status_code}s"
+    html = page.get_data(as_text=True)
+    assert f'<link rel="canonical" href="http://localhost{expected}"' in html, (
+        "page's own canonical does not match the URL the sitemap advertises"
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["HPET:\tx86", "AD5446\tANALOG DEVICES", "\x7fDEL", "ÜBERSYSTEM"],
+    ids=["tab", "tab2", "del", "non-ascii-upper"],
+)
+def test_unservable_subsystem_names_are_never_advertised(client, tmp_path, name):
+    """Names the dashboard route refuses must not reach a sitemap.
+
+    Tabs are not hypothetical: MAINTAINERS treats a column-0 line as a
+    tag only when `line[1] == ":"`, so `HPET:<TAB>x86` parses as a
+    SECTION TITLE carrying a tab, and production held three such names
+    on 2026-07-29, live in three inboxes' active sets. The route
+    rejects C0 controls, so every one of those is a 404 handed
+    systematically to crawlers.
+
+    Non-ASCII uppercase fails for a different reason and is included so
+    the predicate covers both: the path lowercases in Python, which is
+    Unicode-aware, while the route matches with SQLite's `lower()`,
+    which is ASCII-only, so the two never meet.
+    """
+    from tests.test_routes._helpers import (
+        _ingest_one_article,
+        _seed_subsystem,
+        warm_subsystem_activity,
+    )
+
+    _seed_subsystem(name, "Maintained", files=["fs/bcachefs/"])
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "unservable@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    warm_subsystem_activity("alpha")
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    assert "/alpha/subsystem/" not in xml.replace(
+        "<loc>http://localhost/alpha/subsystem/</loc>", ""
+    ), "sitemap advertised a subsystem URL the route cannot serve"
+    html = client.get("/alpha/subsystem/").get_data(as_text=True)
+    assert 'href="/alpha/subsystem/' not in html, "index page linked an unservable name"
+
+
+def test_sitemap_subsystem_lastmod_is_that_subsystems_last_activity(client, tmp_path):
+    """The `<lastmod>` value itself, not merely its presence.
+
+    Six emitter mutations survived the previous guards, including a
+    hardcoded wrong date and no date at all, because nothing here ever
+    read the value.
+    """
+    import re
+
+    from tests.test_routes._helpers import (
+        _ingest_one_article,
+        _seed_subsystem,
+        warm_subsystem_activity,
+    )
+
+    _seed_subsystem("BCACHEFS", "Maintained", files=["fs/bcachefs/"])
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "lm@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    warm_subsystem_activity("alpha")
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    block = re.search(
+        r"<url><loc>http://localhost/alpha/subsystem/bcachefs/</loc>"
+        r"<lastmod>(\d{4}-\d{2}-\d{2})</lastmod></url>",
+        xml,
+    )
+    assert block, f"no dated subsystem entry in:\n{xml[:400]}"
+
+    from sqlalchemy import select as sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as s:
+        article_date = s.scalar(
+            sa_select(Article.date).where(Article.message_id == "lm@example.com")
+        )
+    assert block.group(1) == article_date.strftime("%Y-%m-%d")
+
+
+def test_sitemap_does_not_duplicate_a_loc_for_case_variant_names(client, tmp_path):
+    """`subsystems.name` has no unique constraint and the path is
+    lowercased, so two sections differing only in case collapse to one
+    URL. Emitting it twice is a duplicate `<loc>` in one urlset."""
+    from tests.test_routes._helpers import (
+        _ingest_one_article,
+        _seed_subsystem,
+        warm_subsystem_activity,
+    )
+
+    _seed_subsystem("BCACHEFS", "Maintained", files=["fs/bcachefs/"])
+    _seed_subsystem("BcacheFS", "Maintained", files=["fs/bcachefs/"])
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "dup@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    warm_subsystem_activity("alpha")
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    assert xml.count("<loc>http://localhost/alpha/subsystem/bcachefs/</loc>") == 1
+
+
+def test_sitemap_uses_the_loops_own_inbox_not_the_activity_rows(
+    client, tmp_path, monkeypatch
+):
+    """`SubsystemActivity.inbox_name` is not this loop's inbox.
+
+    For the per-inbox helper the two are equal by construction, so no
+    ordinary fixture can tell them apart and swapping them survives
+    every other test here. But the CROSS-inbox variant sets
+    `inbox_name` to whichever inbox that subsystem is busiest in, so
+    reading it would put another inbox's URL into this inbox's sitemap
+    the moment anyone reuses this loop or swaps the helper.
+
+    Pinned structurally: hand the builder a row whose `inbox_name`
+    disagrees and assert the emitted URL follows the inbox being built.
+    """
+    from datetime import datetime, timezone
+
+    from mimir.seo import sitemaps as sitemaps_mod
+    from mimir.subsystems_dashboard import SubsystemActivity
+
+    fake = SubsystemActivity(
+        id=1,
+        name="BCACHEFS",
+        inbox_name="beta",
+        message_count=3,
+        last_activity=datetime(2026, 7, 28, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        sitemaps_mod, "most_active_subsystems_in_inbox", lambda *a, **k: [fake]
+    )
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    assert "<loc>http://localhost/alpha/subsystem/bcachefs/</loc>" in xml
+    assert "/beta/subsystem/" not in xml, "emitted another inbox's URL"

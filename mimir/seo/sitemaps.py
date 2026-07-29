@@ -15,15 +15,19 @@ relying on body-content compare which they deprioritise.
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
-from mimir.maintainer_directory import all_maintainers
+from mimir.maintainer_directory import all_maintainers, maintainer_path
 from mimir.models import Article, ArticleList, Inbox
+from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
+from mimir.subsystems_dashboard import (
+    MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
+    most_active_subsystems_in_inbox,
+)
 
 SITEMAP_RECENT_PER_INBOX = 5000
 
@@ -639,7 +643,7 @@ def maintainers_sitemap_xml(
 
     def compute() -> SitemapPayload:
         entries: list[tuple[str, str | None]] = [
-            (f"{base}/maintainers/{quote(addr, safe='@')}", None)
+            (base + maintainer_path(addr), None)
             for addr, _name in all_maintainers(session)
         ]
         return SitemapPayload(body=_build_sitemap_xml(entries), last_modified=None)
@@ -699,6 +703,80 @@ def inbox_sitemap_xml(
             entries.append((f"{base}/{inbox.name}/{y}/", None))
         for y, m in sorted(year_month_rows, reverse=True):
             entries.append((f"{base}/{inbox.name}/{y}/{m}/", None))
+
+        # The subsystem index plus the dashboards it links. These are
+        # distinctive hub pages nothing else mirrors (per-subsystem
+        # recent patches, threads and reviewers, derived from
+        # MAINTAINERS), and until now they were in no sitemap at all.
+        #
+        # The ACTIVE set only, which is the same cached payload the
+        # dashboard widget and the index page read: `most_active_...`
+        # is capped at `MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP` (100) per
+        # inbox, measuring 3,394 (inbox, subsystem) pairs in total on
+        # the production corpus 2026-07-29. The full MAINTAINERS
+        # taxonomy would instead be ~3,300 sections x ~200 inboxes,
+        # i.e. ~660,000 URLs, almost all of them a page for a
+        # subsystem no patch in that inbox has ever touched.
+        #
+        # `compute_on_miss=False` matters: this builder runs on the
+        # request path on a cold sitemap cache, and that aggregation is
+        # multi-second per inbox (the 2.8.0 regression family). Warm
+        # ordering makes the miss rare rather than routine, since
+        # `most_active_subsystems_in_inbox` is warmed immediately
+        # before `sitemap:inbox:<name>` in the same slow-tier per-inbox
+        # target list. A miss omits these entries for one cycle; it
+        # must never turn a sitemap render into a minutes-long compute.
+        seen_subsystem_locs: set[str] = set()
+        for activity in most_active_subsystems_in_inbox(
+            session,
+            inbox,
+            days=7,
+            limit=MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
+            compute_on_miss=False,
+        ):
+            # Skip names the route would refuse to serve back. The
+            # emitter and the route are different modules and nothing
+            # else forces them to agree, so without this the sitemap
+            # hands crawlers URLs that 404 (production carried three
+            # such names on 2026-07-29).
+            if not is_addressable_subsystem_name(activity.name):
+                continue
+            # `inbox.name`, never `activity.inbox_name`. They are equal
+            # for THIS helper, but the cross-inbox variant sets
+            # `inbox_name` to whichever inbox the subsystem is busiest
+            # in, so using it would put another inbox's URL in this
+            # inbox's sitemap the moment anyone reuses this loop.
+            loc = base + subsystem_path(inbox.name, activity.name)
+            # `subsystems.name` has no unique constraint and the path is
+            # lowercased, so two sections differing only in case collapse
+            # to one URL. Emitting it twice is a duplicate <loc> in a
+            # single urlset.
+            if loc in seen_subsystem_locs:
+                continue
+            seen_subsystem_locs.add(loc)
+            # Date-only string, like every other entry here: the list
+            # is `(loc, lastmod-as-str)` and `_build_sitemap_xml` sets
+            # the element text verbatim, so handing it a datetime is a
+            # serialize-time TypeError, i.e. a 500 on the whole sitemap.
+            entries.append(
+                (
+                    loc,
+                    (
+                        activity.last_activity.strftime("%Y-%m-%d")
+                        if activity.last_activity
+                        else None
+                    ),
+                )
+            )
+        # The index page, listed only when it is not empty. It renders a
+        # bare "nothing active here" for the ~45-of-200 production
+        # inboxes whose recent traffic touches no MAINTAINERS-claimed
+        # path, and advertising those to crawlers is the same thin-page
+        # trade this change set refuses everywhere else. It stays linked
+        # from the inbox dashboard either way, so it is discoverable the
+        # moment it has something to show.
+        if seen_subsystem_locs:
+            entries.append((f"{base}/{inbox.name}/subsystem/", None))
 
         # Recent THREADS in the inbox, one URL per thread, pointing at
         # the whole-thread view. Individual message pages canonicalise
