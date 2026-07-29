@@ -29,8 +29,14 @@
       {% set _maint_seen = [] %}
       {% for hit in subsystem_hits %}
         {% for _role, _name, _addr in hit.maintainers %}
-          {% if _role == 'M' and _name and _addr and _addr|lower not in _maint_seen %}
-            {% set _ = _maint_seen.append(_addr|lower) %}
+          {# Keyed on the address when there is one, else on the name.
+             MAINTAINERS permits a bare `M:` line with no address (rare
+             but legal), and requiring one here dropped those people
+             from the header entirely, where they used to render as
+             plain text. They simply do not get a link. #}
+          {% set _key = (_addr|lower) if _addr else ('name:' ~ _name) %}
+          {% if _role == 'M' and _name and _key not in _maint_seen %}
+            {% set _ = _maint_seen.append(_key) %}
             {% set _ = _maints.append((_name, _addr)) %}
           {% endif %}
         {% endfor %}
@@ -45,7 +51,7 @@
       {% for hit in subsystem_hits %}<a href="{{ hit.name | subsystem_url(current_inbox) }}">{{ hit.name|lower }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
       {% if _maints %}
         &middot; <strong>Maintainer{{ '' if _maints|length == 1 else 's' }}:</strong>
-        {% for _name, _addr in _maints %}{% if _addr | is_allowlisted_address %}<a
+        {% for _name, _addr in _maints %}{% if _addr and _addr | is_allowlisted_address %}<a
           href="{{ _addr | maintainer_url }}">{{ _name }}</a>{% else %}{{ _name }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
       {% endif %}
       {% endif %}

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
-{% block title %}Active subsystems | {{ inbox_name }}{% endblock %}
-{% block description %}Kernel subsystems with recent patch activity on {{ inbox_name }}, each linking to its own dashboard of recent patches, threads and reviewers.{% endblock %}
+{% block title %}Active subsystems | {{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block meta_description %}Kernel subsystems with recent patch activity on {{ inbox_name }}, each linking to its own dashboard of recent patches, threads and reviewers.{% endblock %}
 
 {% block content %}
 <h1>Active subsystems <small>in {{ inbox_name }}</small></h1>
@@ -13,7 +13,9 @@
   the paths that subsystem claims in MAINTAINERS.</small></p>
 
 <ul>
-  {% for s in subsystems %}
+  {# Skip names the dashboard route would refuse to serve back, so the
+     index never links a 404. Same predicate the sitemap uses. #}
+  {% for s in subsystems if s.name | is_addressable_subsystem %}
   <li>
     <a href="{{ s.name | subsystem_url(inbox_name) }}">{{ s.name|lower }}</a>
     {% if s.status and s.status != 'Maintained' %}<kbd>{{ s.status }}</kbd>{% endif %}

@@ -25,6 +25,7 @@ from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Article, ArticleList, Inbox, Subsystem
 from mimir.config import settings
 from mimir.seo import _json_ld_index, _json_ld_inbox
+from mimir.subsystems import subsystem_path
 from mimir.subsystems_dashboard import (
     active_reviewers_in_subsystem,
     active_threads_in_subsystem,
@@ -391,6 +392,18 @@ def subsystem_dashboard(inbox_name: str, name: str):
         "subsystem.html",
         inbox_name=inbox.name,
         current_inbox=inbox.name,
+        # Explicit, not the `default_canonical_url` fallback. That
+        # fallback is `_site_base() + request.path`, and Werkzeug's
+        # `request.path` is URL-DECODED, so a section named
+        # `ARM/AT91 SOC SUPPORT` produced a canonical containing raw
+        # spaces: not byte-identical to the link and the sitemap entry
+        # (which percent-encode), and not a well-formed URI either.
+        # Nearly every MAINTAINERS title has a space, so this was
+        # almost every page. Inert until this change set started
+        # advertising these URLs in the per-inbox sitemap; a sitemap
+        # <loc> whose page names a different canonical is exactly the
+        # duplicate-URL signal `subsystem_path` exists to prevent.
+        canonical_url=_site_base() + subsystem_path(inbox.name, name_lower),
         subsystem=subsystem,
         recent=recent,
         recent_limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
