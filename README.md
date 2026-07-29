@@ -414,6 +414,12 @@ in the given inbox, opens the dulwich repo, fetches the blob, runs
 `parse_message` to return a `ParsedArticle` with body, full headers,
 and attachment bytes.
 
+`read_messages(session, inbox, message_ids)` is its bulk sibling,
+used by the whole-thread view: one lookup and one repo open per
+*epoch* rather than per message, since reopening a repo re-reads the
+epoch's pack index. It returns only the messages it could read, so a
+mirror gap costs one body rather than the whole page.
+
 SQLite runs in WAL mode with `synchronous=NORMAL` and
 `foreign_keys=ON`, set on every connection from
 `mimir/extensions.py`.
@@ -449,7 +455,8 @@ mimir/
                          per-language Pygments overlay), linkify
                          (URL / Message-ID + DCO trailer redaction),
                          body (orchestrator + render_body entry).
-  store.py               read_message(): SQL lookup + dulwich fetch + parse
+  store.py               read_message()/read_messages(): SQL lookup +
+                         dulwich fetch + parse, singly or in bulk
   sync.py                public-inbox manifest discovery + git clone/fetch
   threading.py           recursive CTEs for thread reconstruction + active threads
   dashboard.py           landing-page aggregations (trackers, pulls, stats, sparkline)
@@ -883,20 +890,28 @@ uv run mimir update-mainline
 # Re-parse the local HEAD without fetching:
 uv run mimir update-mainline --skip-fetch
 
-# Force re-parse even when HEAD hasn't moved (after a parser fix):
+# Force re-parse even when MAINTAINERS is unchanged (after a parser fix):
 uv run mimir update-mainline --force
 ```
 
-Steady-state ticks (HEAD unchanged) are cheap: fetch, compare,
-no-op. Operator can run this on a cron / systemd timer; the
-schema is replaced transactionally on every change so consumers
-never see a half-loaded subsystems table.
+Steady-state ticks are cheap: fetch, compare, no-op. The
+comparison is against the MAINTAINERS **blob**, not the tree
+HEAD, so the reparse (and the ~15,000-row schema replace it
+drives) happens only when that file's content actually changes,
+not on every push to Linus's tree. Operator can run this on a
+cron / systemd timer; the schema is replaced transactionally on
+every change so consumers never see a half-loaded subsystems
+table.
+
+One consequence worth knowing: because the gate is on content,
+a subsystems table that was emptied out-of-band will no longer
+be rebuilt by the next ordinary tick. Use `--force`.
 
 `update-mainline` runs two passes against the tree:
 
 1. **MAINTAINERS load**, replaces the `subsystems` schema as
-   above. Skipped when HEAD is unchanged. `--skip-maintainers`
-   disables this pass for the tick.
+   above. Skipped when MAINTAINERS is unchanged.
+   `--skip-maintainers` disables this pass for the tick.
 2. **`Link:`-trailer walk**, scans every new commit for
    `Link: https://lore.kernel.org/.../<msgid>` trailers and
    inserts `mainline_commits` rows. Resumable; the first run
