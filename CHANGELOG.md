@@ -13,6 +13,31 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- A subsystem index at `/<inbox>/subsystem/`, listing the subsystems
+  with patch activity on that list in the last 7 days and linking each
+  to its own dashboard. Those dashboards are the most distinctive pages
+  mimir has, and until now they were reachable only from a chip on a
+  message that happened to match, so finding one meant finding a patch
+  first. The index is linked from the inbox dashboard, and it plus the
+  active subsystem dashboards now appear in the per-inbox sitemap with
+  a real `<lastmod>`.
+
+  It lists the active set rather than every MAINTAINERS section on
+  purpose. The dashboards are per-inbox, so advertising all ~3,300
+  sections from all ~200 inboxes would mean roughly 660,000 URLs,
+  almost every one a page for a subsystem no patch in that inbox has
+  touched.
+- Maintainer names and addresses now link to their profile pages, on
+  both the subsystem dashboards and the subsystem line of a patch page.
+  Those profiles were listed in `/sitemap-maintainers.xml` but linked
+  from nowhere at all, so the sitemap was their only route in.
+- Thread views now have inbound links. The reply count on the inbox
+  dashboard and the daily views links to the whole-thread view, which
+  is what every message in a multi-message thread already names as its
+  canonical, what the sitemaps list, and what IndexNow announces. Until
+  now a single conditional link on the message page was the only one
+  pointing there, so the consolidated page was reachable mainly through
+  the pages that disclaim themselves.
 - Per-month sitemaps at `/<inbox>/<YYYY>/<MM>/sitemap.xml` put the
   historical archive into a sitemap for the first time. The per-inbox
   sitemap caps at the 5,000 most recent threads, so on the production
