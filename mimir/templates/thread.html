@@ -17,7 +17,7 @@ Full thread ({{ _n }} message{{ '' if _n == 1 else 's' }}) in {{ inbox_name }}: 
    that make this archive distinctive in search. #}
 {% if subsystem_hits %}
 <p><small><strong>Subsystems:</strong>
-  {% for hit in subsystem_hits %}<a href="/{{ current_inbox }}/subsystem/{{ hit.name|lower|urlencode }}/">{{ hit.name|lower }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+  {% for hit in subsystem_hits %}<a href="{{ hit.name | subsystem_url(current_inbox) }}">{{ hit.name|lower }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
 </small></p>
 {% endif %}
 {% if patch_state and patch_state.is_patch and lifecycle_status %}

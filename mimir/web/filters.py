@@ -30,7 +30,9 @@ from mimir.datetime_utils import aware_utc
 from mimir.models import Article
 from mimir.rendering import render_body
 from mimir.web._blueprint import bp_web
-from mimir.web.urls import _msg_url
+from mimir.maintainer_directory import maintainer_path
+from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
+from mimir.web.urls import _msg_url, _thread_view_url
 
 
 def _relative_time(then: datetime, now: datetime | None = None) -> str:
@@ -199,6 +201,27 @@ def _redact_trailer_address(email: str) -> str:
 @bp_web.app_template_filter("msg_url")
 def _msg_url_filter(article: Article, inbox_name: str) -> str:
     return _msg_url(article, inbox_name)
+
+
+@bp_web.app_template_filter("thread_url")
+def _thread_url_filter(article: Article, inbox_name: str) -> str:
+    """URL of the whole-thread view rooted at `article`.
+
+    Listings link the subject to the message page and the reply count
+    to here, so the thread view gains inbound links from the pages that
+    actually get crawled. It is the canonical target for every message
+    in a multi-message thread and the URL the sitemap lists, yet before
+    this the entire template set contained exactly ONE link to it
+    (`message.html`, conditional), while ten templates linked message
+    pages. A canonical target reachable only through the pages that
+    disclaim themselves is a weak structure, whatever the canonical
+    tag says.
+
+    Callers must gate on the thread actually having replies; `/t` on a
+    single-message thread is a poorer page than the message itself and
+    deliberately not its canonical.
+    """
+    return _thread_view_url(article, inbox_name)
 
 
 @bp_web.app_template_filter("render_body")
@@ -401,3 +424,36 @@ def _is_allowlisted_address_filter(address: str | None) -> bool:
     if not address:
         return False
     return _is_allowlisted(address)
+
+
+@bp_web.app_template_filter("maintainer_url")
+def _maintainer_url_filter(address: str | None) -> str:
+    """Site-relative URL for a maintainer's profile page.
+
+    Delegates to `maintainer_directory.maintainer_path` so a link
+    rendered in a template is byte-identical to the profile page's own
+    canonical and to its sitemap entry, rather than a near-miss that
+    resolves to them.
+
+    Callers gate on `is_allowlisted_address` first, same posture as the
+    reviewer links above. MAINTAINERS `M:`/`R:` addresses are what the
+    allowlist is built FROM, so the gate passes by construction; it is
+    there so the invariant is enforced rather than assumed, and so a
+    future narrowing of the allowlist cannot silently start emitting
+    links to addresses the page redacts.
+    """
+    return maintainer_path(address or "")
+
+
+@bp_web.app_template_filter("subsystem_url")
+def _subsystem_url_filter(name: str, inbox_name: str) -> str:
+    """Site-relative URL for a subsystem dashboard. See
+    `mimir.subsystems.subsystem_path` for why this is shared."""
+    return subsystem_path(inbox_name, name)
+
+
+@bp_web.app_template_filter("is_addressable_subsystem")
+def _is_addressable_subsystem_filter(name: str) -> bool:
+    """Whether a subsystem name has a URL the dashboard route accepts.
+    See `mimir.subsystems.is_addressable_subsystem_name`."""
+    return is_addressable_subsystem_name(name or "")

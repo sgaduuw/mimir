@@ -589,3 +589,22 @@ def count_repo_opens(monkeypatch) -> list[str]:
 
     monkeypatch.setattr(mimir.store, "Repo", _CountingRepo)
     return opened
+
+
+def warm_subsystem_activity(inbox_name: str):
+    """Populate the cached most-active-subsystems row for one inbox.
+
+    Both the index route and the sitemap read this with
+    `compute_on_miss=False`, so a test that wants the entries present
+    has to warm it the way the slow tier does rather than relying on a
+    request-path compute they deliberately refuse to perform.
+    """
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.subsystems_dashboard import most_active_subsystems_in_inbox
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        return most_active_subsystems_in_inbox(s, inbox, days=7)
