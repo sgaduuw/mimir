@@ -69,10 +69,7 @@ WARM_CACHE_REFRESH_WITHIN_SEC = 450
 WARM_TOP_SUBSYSTEMS_PER_INBOX = 20
 
 
-def _build_fast_inbox_targets(
-    inbox: Inbox,
-    sitemap_base: str = "",
-) -> list[tuple[str, object]]:
+def _build_fast_inbox_targets(inbox: Inbox) -> list[tuple[str, object]]:
     """Fast tier per-inbox warm targets: the cheap, freshness-
     sensitive helpers that the front page and crawlers read
     constantly. Sub-100 ms each; the whole list is ~300-500 ms
@@ -82,10 +79,13 @@ def _build_fast_inbox_targets(
 
     Includes: archive_stats, latest_pull_requests,
     latest_stable_releases, recent_articles (FEED_ENTRY_LIMIT),
-    and the per-inbox sitemap (only when sitemap_base is non-empty;
-    the helper caches a body keyed implicitly on the base URL, so
-    warming with an empty base would poison the cache vs what the
-    live route emits)."""
+    and recent_articles (FEED_ENTRY_LIMIT).
+
+    Sitemaps are deliberately NOT here; they moved to the slow tier.
+    A sitemap's finest freshness signal is `<lastmod>`, which is a
+    DATE, and edges cache the response for 300 s, so warming one on a
+    per-minute tick cannot make the output any fresher than warming it
+    hourly. It only decided which minute paid the rebuild."""
     targets: list[tuple[str, object]] = [
         (f"{inbox.name} archive_stats", lambda s, ib=inbox: archive_stats(s, ib)),
         (
@@ -105,13 +105,6 @@ def _build_fast_inbox_targets(
             lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT),
         ),
     ]
-    if sitemap_base:
-        targets.append(
-            (
-                f"sitemap:inbox:{inbox.name}",
-                lambda s, ib=inbox, base=sitemap_base: inbox_sitemap_xml(s, ib, base),
-            )
-        )
     return targets
 
 
@@ -119,6 +112,7 @@ def _build_slow_inbox_targets(
     inbox: Inbox,
     today: date,
     yesterday: date,
+    sitemap_base: str = "",
 ) -> list[tuple[str, object]]:
     """Slow tier per-inbox warm targets: the heavy queries
     dominated by subsystem-dashboard cost (50-100 s per inbox on
@@ -199,6 +193,16 @@ def _build_slow_inbox_targets(
                 ),
             )
         )
+    if sitemap_base:
+        # Moved here from the fast tier. The body is keyed implicitly on
+        # the base URL, so warming with an empty base would poison the
+        # cache against what the live route emits, hence the guard.
+        targets.append(
+            (
+                f"sitemap:inbox:{inbox.name}",
+                lambda s, ib=inbox, base=sitemap_base: inbox_sitemap_xml(s, ib, base),
+            )
+        )
     return targets
 
 
@@ -218,58 +222,62 @@ def _build_inbox_targets(
     first now), but no existing test pins ordering of this list,
     only set-membership.
     """
-    return _build_fast_inbox_targets(inbox, sitemap_base) + _build_slow_inbox_targets(
-        inbox, today, yesterday
+    return _build_fast_inbox_targets(inbox) + _build_slow_inbox_targets(
+        inbox, today, yesterday, sitemap_base
     )
 
 
-def _build_fast_global_targets(
-    sitemap_base: str = "",
-) -> list[tuple[str, object]]:
-    """Fast tier global warm targets: sitemap:index + sitemap:meta +
-    sitemap:maintainers, and only when sitemap_base is non-empty.
-    Sub-100 ms each; designed to fire on the per-minute scheduler
-    tick alongside the fast per-inbox targets so crawler-facing
-    surfaces stay within a minute of fresh.
+def _build_fast_global_targets() -> list[tuple[str, object]]:
+    """Fast tier global warm targets: none today.
 
-    Empty list when sitemap_base is unset: no other fast-tier global
-    surfaces exist today, so an unconfigured site_base_url means the
-    fast-tier global pass has nothing to do."""
+    This used to hold sitemap:index, sitemap:meta and
+    sitemap:maintainers on the stated basis that they are "sub-100 ms
+    each" and keep crawler-facing surfaces "within a minute of fresh".
+    Neither half survived contact with the real corpus. `sitemap:index`
+    now enumerates every (inbox, month) bucket and measures ~36 s
+    across 203 inboxes, and a sitemap cannot BE fresher than its
+    `<lastmod>`, which is a date, behind an edge cache of 300 s. The
+    minute cadence bought nothing and only decided which tick paid a
+    half-minute rebuild, next to targets budgeted at 100 ms.
+
+    Takes no `sitemap_base`: it would be a parameter nothing reads,
+    which is how a dead knob survives a refactor."""
     targets: list[tuple[str, object]] = []
-    if sitemap_base:
-        targets.append(
-            (
-                "sitemap:index",
-                lambda s, base=sitemap_base: sitemap_index_xml(s, base),
-            )
-        )
-        targets.append(
-            (
-                "sitemap:meta",
-                lambda s, base=sitemap_base: meta_sitemap_xml(s, base),
-            )
-        )
-        targets.append(
-            (
-                "sitemap:maintainers",
-                lambda s, base=sitemap_base: maintainers_sitemap_xml(s, base),
-            )
-        )
     return targets
 
 
-def _build_slow_global_targets() -> list[tuple[str, object]]:
-    """Slow tier global warm targets: just
-    `most_active_subsystems_global (7d)`. The aggregator reads per-
-    inbox cache rows, so it MUST run after the per-inbox slow tier
-    has populated those rows (the broker shape: a separate
-    `warm_global` RPC fired after the per-inbox fan-out drains)."""
-    return [
+def _build_slow_global_targets(
+    sitemap_base: str = "",
+) -> list[tuple[str, object]]:
+    """Slow tier global warm targets: the sitemap surfaces plus
+    `most_active_subsystems_global (7d)`.
+
+    The aggregator reads per-inbox cache rows, so it MUST run after
+    the per-inbox slow tier has populated those rows (the broker
+    shape: a separate `warm_global` RPC fired after the per-inbox
+    fan-out drains). The sitemaps have no such ordering requirement;
+    they are here because an hourly cadence is all their date-grained
+    `<lastmod>` can express, and because `sitemap:index` is the single
+    most expensive warm target there is."""
+    targets: list[tuple[str, object]] = []
+    if sitemap_base:
+        targets.extend(
+            [
+                ("sitemap:index", lambda s, b=sitemap_base: sitemap_index_xml(s, b)),
+                ("sitemap:meta", lambda s, b=sitemap_base: meta_sitemap_xml(s, b)),
+                (
+                    "sitemap:maintainers",
+                    lambda s, b=sitemap_base: maintainers_sitemap_xml(s, b),
+                ),
+            ]
+        )
+    targets.append(
         (
             "most_active_subsystems_global (7d)",
             lambda s: most_active_subsystems_global(s, days=7),
         )
-    ]
+    )
+    return targets
 
 
 def _build_global_targets(
@@ -285,7 +293,7 @@ def _build_global_targets(
     most_active_subsystems_global when sitemap_base is set, matching
     the pre-split shape (which inserted the sitemap targets at the
     front)."""
-    return _build_fast_global_targets(sitemap_base) + _build_slow_global_targets()
+    return _build_fast_global_targets() + _build_slow_global_targets(sitemap_base)
 
 
 def _per_subsystem_warm_call(
@@ -413,15 +421,10 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
     if tier == "fast":
 
         def per_inbox_targets(inbox):
-            return [
-                label
-                for label, _ in _build_fast_inbox_targets(
-                    inbox, sitemap_base=sitemap_base
-                )
-            ]
+            return [label for label, _ in _build_fast_inbox_targets(inbox)]
 
         global_targets: list[str] | None = [
-            label for label, _ in _build_fast_global_targets(sitemap_base=sitemap_base)
+            label for label, _ in _build_fast_global_targets()
         ]
     elif tier == "slow":
         # threads_for_day's cache key includes the date; compute
@@ -432,10 +435,15 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
 
         def per_inbox_targets(inbox):
             return [
-                label for label, _ in _build_slow_inbox_targets(inbox, today, yesterday)
+                label
+                for label, _ in _build_slow_inbox_targets(
+                    inbox, today, yesterday, sitemap_base
+                )
             ]
 
-        global_targets = [label for label, _ in _build_slow_global_targets()]
+        global_targets = [
+            label for label, _ in _build_slow_global_targets(sitemap_base)
+        ]
     else:  # "all"
 
         def per_inbox_targets(inbox):

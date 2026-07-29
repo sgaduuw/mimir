@@ -788,11 +788,12 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     invisible to it.)
 
     Cost is one-time and proportional to corpus size; see
-    `mimir.thread_roots` for the measurements. Treat the extrapolation
-    to production scale as a FLOOR, not an estimate: pass count grows
-    with thread depth and 6M rows is well outside the measured range.
-    `compose.yaml`'s `start_period` has to cover this plus the
-    migration, bootstrap and both ANALYZEs.
+    `mimir.thread_roots` for both the measured per-row cost and the
+    last real measurement of how many rows production actually has.
+    Treat any extrapolation as a FLOOR: pass count grows with thread
+    depth, and the corpus only grows. `compose.yaml`'s `start_period`
+    has to cover this plus the migration, bootstrap and both ANALYZEs,
+    and has already been wrong twice from an underestimated corpus.
 
     Committed per PASS, not per inbox and not once at the end, using
     the same `drive_passes` seam the broker's RPC handler uses. Per-
