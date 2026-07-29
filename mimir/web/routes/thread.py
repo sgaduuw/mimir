@@ -17,7 +17,7 @@ import hashlib
 import logging
 
 from flask import Response, abort, make_response, redirect, render_template, request
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 import mimir
 from mimir.config import settings
@@ -25,9 +25,6 @@ from mimir.extensions import SessionLocal
 from mimir.models import (
     Article,
     ArticleList,
-    ArticleTrailer,
-    MainlineCommit,
-    MainlineState,
 )
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.patch_state import patch_state_for_article
@@ -37,6 +34,7 @@ from mimir.subsystems import subsystems_for_article
 from mimir.threading import dedupe_thread, find_thread_root, get_thread
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _thread_summary
+from mimir.web.routes._validators import render_state_tag
 from mimir.web.urls import (
     _abort_404_if_url_date_mismatches,
     _get_inbox_or_404,
@@ -46,71 +44,6 @@ from mimir.web.urls import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _render_state_tag(session, root_id: int, root_msgid: str) -> str:
-    """Validator input covering everything the page renders ABOUT the
-    root that no message carries: its landing state, its review
-    roll-up, and its subsystem attribution.
-
-    Three indexed reads rather than a `lifecycle_status_for_articles`
-    probe, for two reasons. It has to run BEFORE the 304
-    short-circuit (it feeds the validator), and that helper computes a
-    recursive CTE and then WRITES a cache row, which in the web tier is
-    a broker RPC: the cheap path would have acquired a query, a CTE and
-    a write on the single-writer broker, on exactly the URLs the
-    sitemap aims crawlers at. And it only covers lifecycle, while the
-    page also renders the subsystem line, which moves on any
-    `update-mainline` MAINTAINERS reparse (every 10 minutes in prod)
-    without touching the node count or the thread's max date.
-
-    `MainlineState.last_commit_sha` is the HEAD at the last MAINTAINERS
-    load, so it versions the whole subsystem-rule snapshot in one
-    scalar instead of re-deriving this article's matches.
-    """
-    landings = session.execute(
-        select(
-            func.count(MainlineCommit.commit_sha),
-            func.max(MainlineCommit.committed_at),
-        ).where(MainlineCommit.message_id == root_msgid)
-    ).one()
-    trailers = session.scalar(
-        select(func.count(ArticleTrailer.id)).where(
-            ArticleTrailer.article_id == root_id
-        )
-    )
-    rules_version = session.scalar(
-        select(MainlineState.last_commit_sha).where(MainlineState.tree_name == "linus")
-    )
-    # Supersedance and the revision count come from SIBLING articles
-    # sharing this patch's series key, so they live in neither the
-    # landing, trailer, nor rules reads above. Posting a v2 flips this
-    # thread's badge to SUPERSEDED and rewrites its synthesis prose to
-    # "revision 1 of 2", without adding a message to it. Posting a v2
-    # is the most routine patch workflow on the list, and "is this the
-    # current revision" is squarely in the query family this surface
-    # exists to answer.
-    series = session.execute(
-        select(Article.patch_series_key, Article.patch_series_position).where(
-            Article.id == root_id
-        )
-    ).one_or_none()
-    series_tag = ""
-    if series is not None and series[0]:
-        count, newest = session.execute(
-            select(
-                func.count(Article.id),
-                func.max(Article.patch_series_version),
-            ).where(
-                Article.patch_series_key == series[0],
-                func.coalesce(Article.patch_series_position, 0) == (series[1] or 0),
-            )
-        ).one()
-        series_tag = f"{count}|{newest or ''}"
-    return (
-        f"{landings[0]}|{landings[1] or ''}|{trailers or 0}|"
-        f"{rules_version or ''}|{series_tag}"
-    )
 
 
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>/t")
@@ -203,7 +136,7 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
         # MAINTAINERS reparse, every 10 minutes in prod) leaves the
         # edge and every crawler holding a validator that pins the
         # exact "did $series land" text this release made canonical.
-        state_tag = _render_state_tag(session, root_id_for_etag, root_msgid)
+        state_tag = render_state_tag(session, root_id_for_etag, root_msgid)
         etag_input = (
             f"thread|{article.id}|{mimir.__version__}|{cap}|{len(nodes)}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|{state_tag}"
