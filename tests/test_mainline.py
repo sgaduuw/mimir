@@ -966,6 +966,112 @@ def test_maintainers_reload_is_gated_on_the_blob_not_on_head(seeded_db, tmp_path
     assert cursor() != after_first, "cursor must move when the content changed"
 
 
+def test_maintainers_gate_holds_on_the_non_broker_fallback_path(seeded_db, tmp_path):
+    """The same contract on the `SessionLocal` path, which the suite is
+    otherwise blind to.
+
+    `conftest._session_broker` installs an active writer for the whole
+    session, so every other test takes the WriterThread branch and the
+    fallback's copy of the compare-and-store is unexercised: reverting
+    only those two lines to the head sha leaves all 1876 tests green.
+    That path is not dead code, it runs at pre-serve startup and for
+    non-broker callers. Clearing the context is what gives it the
+    production shape (mimir MEMORY.md 2026-07-28).
+    """
+    from mimir.broker import _context
+    from mimir.extensions import SessionLocal
+    from mimir.mainline import load_maintainers
+    from mimir.models import MainlineState
+
+    original = b"A\nM:\tx <x@example.org>\nF:\tfs/a/\n"
+    path = tmp_path / "tree.git"
+    repo = _bare_repo(path)
+    c1 = _commit_maintainers(repo, original, ts=1700000000)
+    repo.close()
+
+    pool, writer = _context.get_active_pool(), _context.get_active_writer()
+    _context.clear_active()
+    try:
+        ran, _loaded, _head = load_maintainers(path, tree_name="linus")
+        assert ran
+        with SessionLocal() as s:
+            stored = s.scalar(
+                select(MainlineState.last_commit_sha).where(
+                    MainlineState.tree_name == "linus"
+                )
+            )
+
+        repo = Repo(str(path))
+        _commit_maintainers(
+            repo, original, parent=c1, other=b"# unrelated", ts=1700000100
+        )
+        repo.close()
+
+        ran, _loaded, _head = load_maintainers(path, tree_name="linus")
+        assert not ran, "fallback path reparsed on an unrelated push"
+        with SessionLocal() as s:
+            after = s.scalar(
+                select(MainlineState.last_commit_sha).where(
+                    MainlineState.tree_name == "linus"
+                )
+            )
+        assert after == stored, "fallback path stored a head sha, not the blob"
+    finally:
+        _context.set_active(pool, writer)
+
+
+def test_forced_reparse_moves_the_rules_cursor_even_when_the_blob_is_unchanged(
+    seeded_db, tmp_path
+):
+    """`--force` must not rebuild the rules while freezing the ETag.
+
+    The web tier reads this cursor as the subsystem-rule version. A
+    forced reparse is the operator asserting the rules may differ from
+    what the bytes imply (a parser fix, a hand-repaired triple), and it
+    does rebuild the triple and drop the rules snapshot, so the origin
+    starts rendering the new subsystem lines. If the cursor were
+    re-stored unchanged, the CDN and every crawler would hold a
+    validator that still matches and keep serving the contradicted body
+    off a 304, with no expiry able to break it.
+
+    Gating on the content half means this costs no extra reparse: the
+    next natural tick still no-ops.
+    """
+    from mimir.extensions import SessionLocal
+    from mimir.mainline import load_maintainers
+    from mimir.models import MainlineState
+
+    def cursor():
+        with SessionLocal() as s:
+            return s.scalar(
+                select(MainlineState.last_commit_sha).where(
+                    MainlineState.tree_name == "linus"
+                )
+            )
+
+    path = tmp_path / "tree.git"
+    repo = _bare_repo(path)
+    _commit_maintainers(repo, b"A\nM:\tx <x@example.org>\nF:\tfs/a/\n", ts=1700000000)
+    repo.close()
+
+    load_maintainers(path, tree_name="linus")
+    before = cursor()
+
+    ran, _loaded, _head = load_maintainers(path, tree_name="linus", force=True)
+    assert ran, "--force must reparse"
+    forced = cursor()
+    assert forced != before, (
+        "forced rebuild left the rule version unchanged, which freezes every "
+        "page ETag while the rendered rules change"
+    )
+
+    # ...and the gate still recognises the content, so the next
+    # ordinary tick does not pay for another rebuild.
+    ran, _loaded, _head = load_maintainers(path, tree_name="linus")
+    assert not ran, "generation suffix leaked into the reparse gate"
+    assert cursor() == forced, "an ordinary no-op tick must not move the cursor"
+
+
 def test_read_linus_head_closes_repo_at_function_exit(tmp_path, monkeypatch):
     """The linus-head probe was inline in update_mainline. Extracted
     into a `_read_linus_head` helper for testability + deterministic

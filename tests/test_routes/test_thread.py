@@ -630,12 +630,12 @@ def _prepare_rules_version(seeded):
 
 
 def _mutate_rules_version(seeded):
-    """A MAINTAINERS reparse, which `update-mainline` performs every 10
-    minutes in prod. It rewrites which subsystems claim the article and
-    adds no message, so it moves neither node count nor thread max
-    date. Versioned through `MainlineState.last_commit_sha` (the HEAD
-    at the last load) so one scalar covers the whole rule snapshot
-    rather than re-deriving this article's matches before the 304."""
+    """A MAINTAINERS reparse. It rewrites which subsystems claim the
+    article and adds no message, so it moves neither node count nor
+    thread max date. Versioned through `MainlineState.last_commit_sha`
+    (the MAINTAINERS blob id at the last load) so one scalar covers the
+    whole rule snapshot rather than re-deriving this article's matches
+    before the 304."""
     from mimir.extensions import SessionLocal
     from mimir.models import MainlineState
 
