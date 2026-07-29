@@ -86,6 +86,193 @@ def test_read_message_stale_commit_sha_raises(seeded_db, tmp_path):
         read_message(s, alpha, "art1@example.com")
 
 
+# store.read_messages, the bulk sibling
+
+
+def _count_repo_opens(monkeypatch) -> list:
+    """Record every `Repo(...)` construction `mimir.store` performs.
+
+    The saving this helper exists to pin is entirely in the NUMBER of
+    opens: dulwich re-reads and re-mmaps the epoch's pack index on
+    each one. A test that only asserted the right bodies came back
+    would pass against the per-message shape it replaced.
+    """
+    from dulwich.repo import Repo as RealRepo
+
+    import mimir.store
+
+    opened: list[str] = []
+
+    class _CountingRepo(RealRepo):
+        def __init__(self, path, *args, **kwargs):
+            opened.append(str(path))
+            super().__init__(path, *args, **kwargs)
+
+    monkeypatch.setattr(mimir.store, "Repo", _CountingRepo)
+    return opened
+
+
+def _alpha_live():
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        return s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+
+def test_read_messages_opens_one_repo_for_a_single_epoch_thread(tmp_path, monkeypatch):
+    """The whole point of the bulk read. Six messages in one epoch is
+    six pack-index reopens on the per-message shape and one here."""
+    from mimir.extensions import SessionLocal
+    from mimir.store import read_messages
+    from tests.test_routes._helpers import seed_thread_shape
+
+    ids = [f"bulk{i}@x" for i in range(6)]
+    seed_thread_shape(
+        tmp_path, "alpha", [(ids[0], None)] + [(m, ids[0]) for m in ids[1:]]
+    )
+    alpha = _alpha_live()
+
+    opened = _count_repo_opens(monkeypatch)
+    with SessionLocal() as s:
+        got = read_messages(s, alpha, ids)
+
+    assert set(got) == set(ids)
+    assert len(opened) == 1, f"expected one repo open, got {len(opened)}: {opened}"
+
+
+def test_read_messages_reads_a_thread_that_straddles_an_epoch_boundary(
+    tmp_path, monkeypatch
+):
+    """public-inbox chunks epochs by SIZE, not by conversation, so a
+    thread can span two of them. This is why the grouping is per-epoch
+    rather than one shared handle for the whole call: the simpler
+    single-handle shape silently drops every message on the far side of
+    the boundary."""
+    from mimir.extensions import SessionLocal
+    from mimir.store import read_messages
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seed_thread_shape(tmp_path, "alpha", [("span0@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("span1@x", "span0@x")], epoch="1.git")
+    alpha = _alpha_live()
+
+    opened = _count_repo_opens(monkeypatch)
+    with SessionLocal() as s:
+        got = read_messages(s, alpha, ["span0@x", "span1@x"])
+
+    assert set(got) == {"span0@x", "span1@x"}, "a message on one side was dropped"
+    assert len(opened) == 2, "one open per epoch, and both epochs are needed"
+
+
+def test_read_messages_skips_a_missing_epoch_without_losing_the_rest(tmp_path):
+    """A mirror gap must degrade to "that message has no body", never
+    take out the whole conversation. The route renders each absent key
+    as a header row with no body, same as the per-message path's
+    `MessageNotFound` branch did."""
+    import shutil
+
+    from mimir.extensions import SessionLocal
+    from mimir.store import read_messages
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seed_thread_shape(tmp_path, "alpha", [("gap0@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("gap1@x", "gap0@x")], epoch="1.git")
+    shutil.rmtree(tmp_path / "1.git")
+    alpha = _alpha_live()
+
+    with SessionLocal() as s:
+        got = read_messages(s, alpha, ["gap0@x", "gap1@x"])
+
+    assert set(got) == {"gap0@x"}
+
+
+def test_read_messages_reads_this_inboxs_pointer_for_a_cross_post(
+    tmp_path, monkeypatch
+):
+    """Inbox scoping is load-bearing, not incidental. A cross-posted
+    message has ONE article row and one `article_lists` row per inbox,
+    each carrying its own `(epoch, commit_sha)`, because the same
+    message is a different commit in each mirror. A join that lost the
+    inbox filter reads some other inbox's pointer against THIS inbox's
+    mirror.
+
+    Pinned by counting repo opens rather than by comparing bodies: with
+    two candidate rows the surviving dict entry depends on iteration
+    order, so a body assertion would only fail some of the time.
+    Touching a second epoch at all is the defect, and that is
+    deterministic.
+    """
+    from sqlalchemy import select as sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+    from mimir.store import read_messages
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seed_thread_shape(tmp_path, "alpha", [("xpost@x", None)], epoch="0.git")
+    # A second epoch under the SAME mirror, so a wrong-pointer read
+    # actually resolves rather than being saved by the
+    # missing-directory guard.
+    seed_thread_shape(tmp_path, "alpha", [("elsewhere@x", None)], epoch="1.git")
+
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        xpost_id = s.execute(
+            sa_select(Article.id).where(Article.message_id == "xpost@x")
+        ).scalar_one()
+        other_sha = s.execute(
+            sa_select(ArticleList.commit_sha)
+            .join(Article, Article.id == ArticleList.article_id)
+            .where(Article.message_id == "elsewhere@x")
+        ).scalar_one()
+        # beta's pointer for the same message: different epoch,
+        # different commit, exactly as a real cross-post is.
+        s.add(
+            ArticleList(
+                article_id=xpost_id,
+                inbox_id=beta.id,
+                epoch="1.git",
+                commit_sha=other_sha,
+            )
+        )
+        s.commit()
+
+    alpha = _alpha_live()
+    opened = _count_repo_opens(monkeypatch)
+    with SessionLocal() as s:
+        got = read_messages(s, alpha, ["xpost@x"])
+
+    assert len(opened) == 1, f"read another inbox's epoch too: {opened}"
+    assert set(got) == {"xpost@x"}
+    assert got["xpost@x"].message_id == "xpost@x", "resolved the wrong blob"
+
+
+def test_read_messages_ignores_a_message_absent_from_this_inbox(tmp_path):
+    """art2 is beta-only in the seed, so asking alpha for it yields no
+    key: the bulk analogue of `read_message`'s MessageNotFound."""
+    from mimir.extensions import SessionLocal
+    from mimir.store import read_messages
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seed_thread_shape(tmp_path, "alpha", [("mine@x", None)])
+    alpha = _alpha_live()
+
+    with SessionLocal() as s:
+        got = read_messages(s, alpha, ["mine@x", "art2@example.com"])
+
+    assert set(got) == {"mine@x"}
+
+
+def test_read_messages_on_an_empty_list_touches_neither_db_nor_disk(monkeypatch):
+    from mimir.extensions import SessionLocal
+    from mimir.store import read_messages
+
+    opened = _count_repo_opens(monkeypatch)
+    with SessionLocal() as s:
+        assert read_messages(s, _alpha_live(), []) == {}
+    assert opened == []
+
+
 # web._safe_from_filter, privacy redaction
 
 
