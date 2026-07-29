@@ -1016,6 +1016,21 @@ def test_maintainers_gate_holds_on_the_non_broker_fallback_path(seeded_db, tmp_p
                 )
             )
         assert after == stored, "fallback path stored a head sha, not the blob"
+
+        # ...and the forced-rebuild half, which is the seam the two
+        # halves of this contract fall through: the gate is exercised
+        # above, the generation bump only on the writer path elsewhere.
+        ran, _loaded, _head = load_maintainers(path, tree_name="linus", force=True)
+        assert ran
+        with SessionLocal() as s:
+            forced = s.scalar(
+                select(MainlineState.last_commit_sha).where(
+                    MainlineState.tree_name == "linus"
+                )
+            )
+        assert forced != after, (
+            "fallback path rebuilt the rules without moving the rule version"
+        )
     finally:
         _context.set_active(pool, writer)
 
@@ -1065,11 +1080,21 @@ def test_forced_reparse_moves_the_rules_cursor_even_when_the_blob_is_unchanged(
         "page ETag while the rendered rules change"
     )
 
+    # Forcing again must move it AGAIN. `--force` is by construction
+    # the thing an operator repeats (fix the parser, force, inspect,
+    # force again), and a generation that is merely present rather than
+    # advancing re-freezes the validator on the second run: the same
+    # bug, one iteration later.
+    ran, _loaded, _head = load_maintainers(path, tree_name="linus", force=True)
+    assert ran
+    twice = cursor()
+    assert twice != forced, "a repeated --force re-froze the rule version"
+
     # ...and the gate still recognises the content, so the next
     # ordinary tick does not pay for another rebuild.
     ran, _loaded, _head = load_maintainers(path, tree_name="linus")
     assert not ran, "generation suffix leaked into the reparse gate"
-    assert cursor() == forced, "an ordinary no-op tick must not move the cursor"
+    assert cursor() == twice, "an ordinary no-op tick must not move the cursor"
 
 
 def test_read_linus_head_closes_repo_at_function_exit(tmp_path, monkeypatch):
