@@ -13,6 +13,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- Per-month sitemaps at `/<inbox>/<YYYY>/<MM>/sitemap.xml` put the
+  historical archive into a sitemap for the first time. The per-inbox
+  sitemap caps at the 5,000 most recent threads, so on the production
+  corpus everything older was undiscoverable by sitemap-driven
+  crawling. A month that exceeds 45,000 URLs pages into
+  `sitemap-2.xml` and so on, staying under the protocol's 50,000
+  per-urlset limit; the index enumerates every page. The flat
+  `/<inbox>/sitemap.xml` stays as the recent-activity view, so no URL
+  crawlers already hold stops resolving.
 - Each message now records its thread's root per inbox
   (`article_lists.thread_root_id`), so the sitemap can list one entry
   per conversation with a truthful `<lastmod>` instead of re-deriving
@@ -67,13 +76,17 @@ changes, not internal refactors. Categories: **Added**,
   after the thread started, which meant the consolidated page had no
   freshness signal on the one channel Google reads: it does not
   consume IndexNow, so the sitemap is all it has.
-- The broker's healthcheck `start_period` rises from 60 s to 180 s.
-  A deploy that runs a schema migration now also runs the one-time
-  thread-root backfill before accepting RPCs, and the total
-  (migration, inbox bootstrap, two bounded ANALYZEs, backfill) is
-  around 90 s at production scale. At 60 s the broker would have been
-  marked unhealthy and compose would have aborted the deploy, since
-  both other containers gate on it.
+- The broker's healthcheck `start_period` rises from 60 s to 1200 s.
+  A deploy that runs a schema migration also runs the one-time
+  thread-root backfill before accepting RPCs, and on the real corpus
+  (28.8M `article_lists` rows, measured 2026-07-28) that alone
+  extrapolates to about 4.6 minutes. Both other containers gate on
+  this healthcheck and compose aborts the whole `up` when a
+  `depends_on` dependency goes unhealthy, so an under-budgeted window
+  fails the deploy outright. An intermediate 180 s value never
+  shipped; it was derived, like the original 60 s, from a corpus
+  figure that turned out to be the largest single inbox rather than
+  the whole archive.
 
 - Message pages in a multi-message thread now canonicalise to their
   thread view, and the per-inbox sitemap lists one thread URL per

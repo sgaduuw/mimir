@@ -27,12 +27,13 @@ and the per-endpoint `Cache-Control: max-age=300` (set in hooks.py)
 still lets edges cache briefly and re-fetch fresh.
 """
 
-from flask import Response
+from flask import Response, abort
 
 from mimir.extensions import SessionLocal
 from mimir.seo import (
     inbox_sitemap_xml,
     maintainers_sitemap_xml,
+    month_sitemap_xml,
     meta_sitemap_xml,
     sitemap_index_xml,
 )
@@ -97,4 +98,33 @@ def inbox_sitemap(inbox_name: str) -> Response:
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         payload = inbox_sitemap_xml(session, inbox, _site_base())
+    return _sitemap_response(payload)
+
+
+@bp_web.route("/<inbox_name>/<int:year>/<int:month>/sitemap.xml")
+@bp_web.route("/<inbox_name>/<int:year>/<int:month>/sitemap-<int:page>.xml")
+def month_sitemap(inbox_name: str, year: int, month: int, page: int = 1) -> Response:
+    """One month's thread URLs for one inbox, paged.
+
+    This is what reaches the deep archive: the flat per-inbox sitemap
+    caps at `SITEMAP_RECENT_PER_INBOX`, so everything older than the
+    most recent few thousand threads was in no sitemap at all.
+
+    Validated before it reaches SQL, because both segments arrive from
+    the URL. An out-of-range month would otherwise build a nonsense
+    date range, and a page beyond the end 404s rather than serving an
+    empty urlset a crawler would keep re-fetching.
+    """
+    # Every segment is attacker-supplied. Beyond the obvious month
+    # range: year 0 and year 9999 both raise from `datetime` (the
+    # latter because the month range needs `year + 1`), and an
+    # astronomically large page number used to overflow when it reached
+    # SQLite. All of those were 500s on a public URL.
+    if not 1 <= month <= 12 or not 1 <= year <= 9998 or not 1 <= page <= 10_000:
+        abort(404)
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        payload = month_sitemap_xml(session, inbox, year, month, page, _site_base())
+    if payload is None:
+        abort(404)
     return _sitemap_response(payload)

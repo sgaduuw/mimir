@@ -14,7 +14,7 @@ relying on body-content compare which they deprioritise.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
@@ -26,6 +26,28 @@ from mimir.maintainer_directory import all_maintainers
 from mimir.models import Article, ArticleList, Inbox
 
 SITEMAP_RECENT_PER_INBOX = 5000
+
+# URLs per month sitemap page, comfortably under the sitemaps.org hard
+# cap of 50,000 per urlset. The margin is plain conservatism, not a
+# race: the page is a fixed-width slice of a snapshot, so it cannot
+# exceed this number however fast the month grows. An earlier comment
+# claimed the margin absorbed growth between the index and the page
+# being fetched, which was never true.
+#
+# NOT in the cache key. Changing it re-slices every page, so a deploy
+# that changes it must bump `cache.NAMESPACE_VERSION` too, or pages
+# cut under the old width serve for up to a TTL against an index
+# counted under the new one.
+#
+# Paging is NOT speculative. Measured on production 2026-07-28: of
+# 32,093 (inbox, month) buckets, 32,092 hold under 10k roots and ONE
+# holds 40,429 (a floor; the true count is higher). That bucket is
+# `git` 2016-06, which carries 288,315 messages against a next-busiest
+# month of 8,035, because `articles.date` is the public-inbox COMMIT
+# time and a wholesale archive import clusters into whatever month it
+# was seeded. Every future `admin inbox add` can produce another, so
+# this is recurrent by construction rather than one bad row.
+SITEMAP_URLS_PER_PAGE = 45000
 SITEMAP_TTL_SEC = 3600
 
 
@@ -91,6 +113,160 @@ def _per_inbox_latest_date(session) -> dict[str, str | None]:
         .group_by(Inbox.id)
     ).all()
     return {name: (dt.strftime("%Y-%m-%d") if dt else None) for name, dt in rows}
+
+
+def _sitemap_entries_for_roots(
+    roots: list[tuple[int, datetime]],
+    singleton_ids: set[int],
+    last_activity: dict[int, datetime],
+    inbox_name: str,
+    base: str,
+) -> tuple[list[tuple[str, str | None]], str | None]:
+    """`(loc, lastmod)` entries for thread roots, plus the newest lastmod.
+
+    Shared by the flat per-inbox sitemap and the per-month ones, which
+    differ only in how the root list was selected. Two copies of the
+    `/t`-versus-message decision and the lastmod pick would be two
+    places to drift, on a surface where drift is silent: the sitemap
+    would list a URL whose own page names a different canonical.
+
+    A singleton's lastmod is its own date by definition, said
+    explicitly rather than left to the aggregate, which keeps this
+    coherent with `_singleton_root_ids` BY CONSTRUCTION. That function
+    reads `thread_parent` while the aggregate reads the materialised
+    column, so a wrong column value could otherwise make a
+    single-message page, which can never change, advertise another
+    thread's date. For correct data the branch is a no-op.
+    """
+    entries: list[tuple[str, str | None]] = []
+    newest: str | None = None
+    for art_id, date in roots:
+        loc = f"{base}/{inbox_name}/{date.year}/{date.month:02d}/{art_id}"
+        if art_id not in singleton_ids:
+            loc += "/t"
+        lastmod = (
+            date if art_id in singleton_ids else (last_activity.get(art_id) or date)
+        )
+        stamp = lastmod.strftime("%Y-%m-%d")
+        entries.append((loc, stamp))
+        if newest is None or stamp > newest:
+            newest = stamp
+    return entries, newest
+
+
+def _month_bounds(year: int, month: int) -> tuple[datetime, datetime]:
+    """Half-open `[start, end)` for one month, in UTC.
+
+    A range predicate rather than `strftime(...) = '2024-06'` so the
+    date index stays usable: wrapping the column in a function makes it
+    unsargable, which is the same trap CONTEXT.md records for
+    `LIKE 'prefix%' ESCAPE` on `article_files.path`.
+    """
+    start = datetime(year, month, 1, tzinfo=timezone.utc)
+    end = (
+        datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        if month == 12
+        else datetime(year, month + 1, 1, tzinfo=timezone.utc)
+    )
+    return start, end
+
+
+def _month_roots_query(inbox: Inbox, year: int, month: int):
+    """Thread roots in this inbox whose ROOT is dated in this month.
+
+    Ordered deterministically, because pages are `LIMIT`/`OFFSET`
+    slices of it and an unstable order would drop and duplicate URLs
+    across page boundaries.
+    """
+    start, end = _month_bounds(year, month)
+    return (
+        select(Article.id, Article.date)
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            ArticleList.thread_root_id == Article.id,
+            Article.date >= start,
+            Article.date < end,
+        )
+        .order_by(Article.date.desc(), Article.id.desc())
+    )
+
+
+def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
+    """`(year, month, root_count)` per month that has roots, oldest first.
+
+    Drives the index: each bucket contributes
+    `ceil(count / SITEMAP_URLS_PER_PAGE)` entries, so the index has to
+    know the count before it can name the pages. sitemaps.org forbids
+    an index referencing another index, so the pages cannot be hidden
+    behind a nested index and must be enumerated here.
+
+    Cost, measured on a full-size corpus (17.3M articles / 28.4M
+    `article_lists` rows matching the production distribution):
+    **7.7 s for the largest inbox, 35.7 s for the whole 203-inbox
+    sweep**, min-of-3 and treat it as a floor, since the DB exceeds
+    page cache.
+
+    An earlier version of this docstring claimed 13.5 ms and ~3.4 s.
+    Both were measured on a 10x-scaled-down corpus and then reported as
+    production figures, and the pair was internally impossible before
+    anyone re-measured: 13.5 ms for the largest inbox cannot coexist
+    with 3.4 s for all 203, since the largest is a sixth of the rows.
+    Arithmetic alone falsified it.
+
+    Where the cost actually sits, which is the part worth knowing:
+
+        >= 1M rows      5 inboxes    16.2 s
+        100k-1M        55 inboxes    14.5 s
+        10k-100k      102 inboxes     4.9 s
+        < 10k          41 inboxes     0.2 s
+        ------------------------------------
+        non-huge      198 inboxes    19.6 s
+
+    The 198 non-huge inboxes cost MORE in aggregate than the 5 huge
+    ones, and the 55-inbox middle band alone carries 41% of the total.
+    Quoting only the largest and smallest, as the earlier version did,
+    skips the band that dominates. This is the standing "benchmark the
+    worst-shaped instance, not the biggest" rule, and it caught this
+    file twice before.
+
+    The 1 h TTL means this is a once-hourly rebuild rather than
+    per-request, but note the rebuild lands in a `warm-cache --tier
+    fast` tick whose own docstring budgets "sub-100 ms each". A ~36 s
+    tick once an hour is tolerable and worth knowing about; splitting
+    the index into per-inbox pieces would fix both that and the entry
+    ceiling below.
+
+    Both this and `_recent_thread_roots_query` lead on `inbox_id`; do
+    not assert WHICH index the planner picks, because it is
+    corpus-dependent (a small corpus chooses
+    `ix_article_lists_thread_root`, a production-sized one
+    `ix_article_lists_inbox_id`) and the sibling docstring already says
+    a two-column equality between columns of one row is not sargable.
+    Cost is the same either way.
+
+    The index runs to ~32k entries (~2.6 MiB), measured against prod:
+    32,093 (inbox, month) buckets on 2026-07-28. That is inside the
+    protocol's 50k-per-index and 50 MB limits, but 203 inboxes x 258
+    months is already 52,374 POSSIBLE buckets, so the ceiling is nearer
+    than a growth rate alone suggests: ~2,400 new entries a year, ~7
+    years of headroom, and nothing in code enforces the cap. Recorded
+    rather than solved; the fix is per-inbox sub-indexes.
+    """
+    y = func.strftime("%Y", Article.date).label("y")
+    m = func.strftime("%m", Article.date).label("m")
+    rows = session.execute(
+        select(y, m, func.count())
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            ArticleList.thread_root_id == Article.id,
+            Article.date.is_not(None),
+        )
+        .group_by(y, m)
+        .order_by(y, m)
+    ).all()
+    return [(int(yy), int(mm), n) for yy, mm, n in rows]
 
 
 def _recent_thread_roots_query(inbox: Inbox):
@@ -238,6 +414,112 @@ def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
     return set(root_ids) - with_replies
 
 
+def _month_root_ids(
+    session: Session, inbox: Inbox, year: int, month: int, *, force: bool = False
+) -> list[int]:
+    """Ordered article ids of this month's thread roots, as ONE snapshot.
+
+    Every page slices this single list, which is what makes paging
+    disjoint and complete. Slicing the DATABASE per page instead
+    (`LIMIT`/`OFFSET` per request) is what an earlier version did, and
+    it silently loses URLs: pages are separate cache entries filled at
+    different times, and `ORDER BY date DESC` means one newly-arrived
+    root shifts the whole window, so page 2 re-emits a row page 1
+    already had and the row that fell off the end is in no page at all.
+    Confirmed in review, not hypothetical, and it converges on exactly
+    the bucket paging exists for, since a bulk import clusters into the
+    CURRENT month and that month is then both oversized and growing.
+
+    Snapshotting also removes a subtler one. Pages computed under
+    different query plans (ANALYZE runs daily and after ingest, and
+    per-connection plan caches go stale across it) can order ties
+    differently, which review demonstrated dropping 25% of a month's
+    URLs. One query, one plan, one order.
+
+    An empty result is NOT cached, and that is a availability
+    property rather than tidiness. `year`, `month` and `page` all come
+    straight off the URL, so the key space is effectively unbounded and
+    unauthenticated; caching misses would let a crawler or a scanner
+    turn free 404s into an unbounded stream of writes through the
+    broker, which is the single SQLite writer for the whole system and
+    is already the contended resource.
+    """
+    key = f"sitemap:monthids:{inbox.name}:{year:04d}-{month:02d}"
+    if not force:
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+    ids = list(session.execute(_month_roots_query(inbox, year, month)).scalars().all())
+    if ids:
+        cache.set(key, ids, SITEMAP_TTL_SEC)
+    return ids
+
+
+def month_sitemap_xml(
+    session: Session,
+    inbox: Inbox,
+    year: int,
+    month: int,
+    page: int,
+    base: str,
+    *,
+    force: bool = False,
+) -> SitemapPayload | None:
+    """One page of one month's thread URLs, or None when there is no
+    such page.
+
+    This is W2: the flat per-inbox sitemap caps at
+    `SITEMAP_RECENT_PER_INBOX`, so on a corpus this size the entire
+    historical tail sat in NO sitemap and was unreachable by
+    sitemap-driven discovery. Segmenting by month removes the cap
+    without breaching the 50k-per-urlset protocol limit.
+
+    None becomes a 404 at the route. A page beyond the end is honestly
+    absent rather than a valid-looking empty document a crawler would
+    keep re-fetching, and nothing is cached for it.
+
+    The index's page count and this bounds check are derived from
+    separate cache entries with independent TTLs, so for at most one
+    TTL after a month's root count changes the index can name a page
+    that 404s, or omit one that exists. Bounded and self-correcting;
+    the alternative is a shared cache generation, which is a lot of
+    machinery for a transient soft error on a sitemap.
+    """
+    ids = _month_root_ids(session, inbox, year, month, force=force)
+    if not ids:
+        return None
+    offset = (page - 1) * SITEMAP_URLS_PER_PAGE
+    if offset >= len(ids):
+        return None
+    page_ids = ids[offset : offset + SITEMAP_URLS_PER_PAGE]
+
+    def compute() -> SitemapPayload:
+        rows = {
+            art_id: date
+            for art_id, date in session.execute(
+                select(Article.id, Article.date).where(Article.id.in_(page_ids))
+            ).all()
+        }
+        # Snapshot order, not query order: the slice is the contract.
+        roots = [(i, rows[i]) for i in page_ids if rows.get(i) is not None]
+        entries, newest = _sitemap_entries_for_roots(
+            roots,
+            _singleton_root_ids(session, inbox, page_ids),
+            _thread_last_activity(session, inbox, page_ids),
+            inbox.name,
+            base,
+        )
+        return SitemapPayload(body=_build_sitemap_xml(entries), last_modified=newest)
+
+    return cache.get_or_compute(
+        session,
+        f"sitemap:month:{inbox.name}:{year:04d}-{month:02d}:{page}",
+        SITEMAP_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
 def sitemap_index_xml(
     session: Session, base: str, *, force: bool = False
 ) -> SitemapPayload:
@@ -258,12 +540,44 @@ def sitemap_index_xml(
         ]
         inboxes = session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
         for inbox in inboxes:
+            # The flat per-inbox sitemap stays, as the recent-activity
+            # view. It is capped, so it is no longer the whole picture,
+            # but crawlers already hold this URL and retiring it would
+            # 404 something already indexed for no gain.
             entries.append(
                 (
                     f"{base}/{inbox.name}/sitemap.xml",
                     per_inbox_latest.get(inbox.name),
                 )
             )
+            # Then every month, which is what actually reaches the
+            # historical tail. Enumerated per page because sitemaps.org
+            # forbids an index referencing another index, so a bucket
+            # over the urlset cap cannot hide its pages behind a nested
+            # index.
+            for year, month, count in _month_root_counts(session, inbox):
+                pages = max(1, -(-count // SITEMAP_URLS_PER_PAGE))
+                for page in range(1, pages + 1):
+                    suffix = "sitemap.xml" if page == 1 else f"sitemap-{page}.xml"
+                    # No `<lastmod>` on month entries, deliberately.
+                    # The honest value is the newest last-activity among
+                    # the month's threads, which needs a per-thread
+                    # aggregate over every root in the inbox on every
+                    # index build. The cheap substitutes are all
+                    # WRONG rather than merely coarse: the month's
+                    # newest ROOT date never moves once the month is
+                    # past, so it would tell a crawler "unchanged"
+                    # precisely when an old thread gains a reply. An
+                    # absent lastmod leaves the crawler on its own
+                    # schedule; a false one actively suppresses the
+                    # re-fetch. Same reasoning as the maintainers
+                    # urlset above.
+                    entries.append(
+                        (
+                            f"{base}/{inbox.name}/{year:04d}/{month:02d}/{suffix}",
+                            None,
+                        )
+                    )
         # Reuse global_latest as the maintainers urlset's lastmod: it's
         # free (already computed above) and a reasonable proxy for
         # "maintainer-relevant activity changed" without an extra
@@ -426,31 +740,10 @@ def inbox_sitemap_xml(
         last_activity = _thread_last_activity(
             session, inbox, [art_id for art_id, _ in recent_roots]
         )
-        for art_id, date in recent_roots:
-            # The URL keeps the ROOT's date, because that is the
-            # thread's identity and the page lives there. `<lastmod>`
-            # is the thread's LATEST activity, which is a different
-            # date and the one crawlers act on.
-            loc = f"{base}/{inbox.name}/{date.year}/{date.month:02d}/{art_id}"
-            if art_id not in singleton_ids:
-                loc += "/t"
-            # A singleton's thread is just itself, so its lastmod is its
-            # own date by definition. Saying so explicitly rather than
-            # letting the aggregate answer keeps this coherent with
-            # `_singleton_root_ids` BY CONSTRUCTION: that function reads
-            # `thread_parent` while the aggregate reads the materialised
-            # column, and a wrong column value could otherwise make a
-            # single-message page (which by definition never changes)
-            # advertise a `<lastmod>` from some other thread. For correct
-            # data this branch is a no-op.
-            #
-            # `or date` is belt-and-braces, not a real case: every root
-            # `_recent_thread_roots_query` yields has a non-NULL dated row
-            # that the aggregate counts, in the same session snapshot.
-            lastmod = (
-                date if art_id in singleton_ids else (last_activity.get(art_id) or date)
-            )
-            entries.append((loc, lastmod.strftime("%Y-%m-%d")))
+        root_entries, _newest = _sitemap_entries_for_roots(
+            recent_roots, singleton_ids, last_activity, inbox.name, base
+        )
+        entries.extend(root_entries)
         return SitemapPayload(
             body=_build_sitemap_xml(entries),
             last_modified=inbox_latest,

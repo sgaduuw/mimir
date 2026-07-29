@@ -630,6 +630,14 @@ Routes:
   materialised thread root landed this was the root's date, because
   deriving last activity needed a recursive walk-up per thread.)
   Cached for 1 h.
+- `GET /<inbox>/<YYYY>/<MM>/sitemap.xml`, one month of that inbox's
+  thread URLs, paged as `sitemap-2.xml` and so on when a month exceeds
+  45,000 URLs (the protocol caps a urlset at 50,000). This is what
+  covers the deep archive: the flat per-inbox sitemap above lists only
+  the most recent few thousand threads, so on a corpus of this size
+  everything older was in no sitemap at all. The index enumerates every
+  page, because sitemaps.org forbids an index referencing another
+  index. Cached for 1 h.
 - `GET /sitemap-maintainers.xml`, one urlset listing every
   `/maintainers/<address>` profile page (one URL per MAINTAINERS
   `M:` maintainer). No per-URL `<lastmod>`. Cached for 1 h.
