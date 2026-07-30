@@ -244,6 +244,83 @@ def backfill_inbox(session: Session, inbox_id: int) -> dict[str, int]:
     return counts
 
 
+def find_incoherent_roots(session: Session, inbox, limit: int = 20) -> list[dict]:
+    """Rows whose in-inbox parent carries a DIFFERENT root.
+
+    A structural invariant, checked over EVERY row rather than a sample:
+    within one inbox, a message and its parent belong to the same
+    conversation, so they must name the same root. A violation means the
+    thread is materialised in two pieces.
+
+    This complements `verify_thread_roots` rather than replacing it, and
+    the two catch disjoint failures:
+
+      * Coherence (here) is COMPLETE but only sees a SPLIT. It cannot
+        notice a thread that agrees internally and is rooted at the
+        wrong article.
+      * `verify_thread_roots` recomputes against an independent oracle,
+        so it catches a coherent-but-wrong root, but it samples (200
+        rows per inbox, which on this corpus is ~0.0007%), so it will
+        usually miss a split confined to a handful of threads.
+
+    Splits are the failure that maintenance bugs actually produce (a
+    repair pass skipping a non-NULL row, a recovered parent not adopting
+    its waiting subtree), which is why the complete check is the cheap
+    one and is worth having.
+
+    NULL rows are excluded on both sides: NULL means "not yet computed",
+    readers fall back to the recursive walk, and a partially-filled
+    corpus is correct rather than broken.
+
+    Cycles do not produce false positives. `break_cycle` self-roots one
+    member and propagation then carries that root around the loop, so a
+    converged cycle is coherent even though it disagrees with
+    `find_thread_root` (which is why the sampling verifier has to treat
+    cycles specially and this one does not).
+
+    Nor do self-parents, of which production had 1,360 when last
+    measured. `p.id != a.id` is belt-and-braces there rather than
+    load-bearing: a self-referential `In-Reply-To` resolves `p` to `a`
+    and therefore `pal` to `al`, so the comparison is a row against
+    itself and is false whatever the root is. The guard is kept for
+    symmetry with `seed_roots` and `_set_subtree_root`, where the same
+    condition IS load-bearing. Removing it is a deliberately equivalent
+    mutation; do not go looking for the test that catches it.
+    """
+    rows = session.execute(
+        text(
+            """
+            SELECT al.article_id, a.message_id,
+                   al.thread_root_id AS own_root,
+                   pal.thread_root_id AS parent_root
+              FROM article_lists al
+              JOIN articles a ON a.id = al.article_id
+              JOIN articles p ON p.message_id = a.thread_parent
+              JOIN article_lists pal
+                     ON pal.article_id = p.id
+                    AND pal.inbox_id = al.inbox_id
+             WHERE al.inbox_id = :ix
+               AND p.id != a.id
+               AND al.thread_root_id IS NOT NULL
+               AND pal.thread_root_id IS NOT NULL
+               AND al.thread_root_id != pal.thread_root_id
+             LIMIT :lim
+            """
+        ),
+        {"ix": inbox.id, "lim": limit},
+    ).all()
+    return [
+        {
+            "article_id": article_id,
+            "message_id": message_id,
+            "stored_root": own_root,
+            "expected_root": parent_root,
+            "note": "disagrees with its parent's root; thread is split",
+        }
+        for article_id, message_id, own_root, parent_root in rows
+    ]
+
+
 def verify_thread_roots(session: Session, inbox, limit: int = 200) -> list[dict]:
     """Recompute roots for a sample and report disagreements.
 

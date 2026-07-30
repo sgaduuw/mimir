@@ -917,8 +917,6 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         totals["cycles_broken"],
     )
 
-    _verify_thread_roots_async()
-
 
 def _has_unrooted_rows() -> bool:
     """Is any `article_lists` row still NULL? One indexed EXISTS."""
@@ -966,11 +964,25 @@ def _verify_thread_roots_async() -> threading.Thread:
 
         from mimir.extensions import SessionLocal
         from mimir.models import Inbox
-        from mimir.thread_roots import verify_thread_roots
+        from mimir.thread_roots import find_incoherent_roots, verify_thread_roots
 
         try:
             with SessionLocal() as session:
                 for inbox in session.execute(select(Inbox)).scalars():
+                    # Complete structural check first: it is the one that
+                    # actually catches a split thread, because it looks at
+                    # every row instead of a 200-row sample.
+                    split = find_incoherent_roots(session, inbox)
+                    if split:
+                        logger.error(
+                            "broker: thread-roots verification found %d "
+                            "row(s) in inbox %s whose parent carries a "
+                            "different root, e.g. %s; the thread is "
+                            "materialised in two pieces",
+                            len(split),
+                            inbox.name,
+                            split[0],
+                        )
                     bad = verify_thread_roots(session, inbox)
                     if bad:
                         logger.error(
@@ -1065,6 +1077,17 @@ def build_server(socket_path: Path) -> _BrokerServer:
     _bootstrap_inboxes_if_needed(sp)
     _post_migrate_analyze_if_needed(sp)
     _backfill_thread_roots_if_needed(sp)
+    # Verification runs on EVERY start, deliberately not inside the
+    # backfill above. It used to be the backfill's last statement, which
+    # meant it only ever ran on the one deploy that introduced the
+    # column: the sentinel early-return skips the whole function on every
+    # subsequent restart, and both of its failure paths `return` before
+    # reaching the end. So the only detector for an invisible failure
+    # fired exactly once, at the one moment the corpus was correct by
+    # construction, while every path that can corrupt the column fires
+    # strictly later. Off the startup path on a daemon thread, so this
+    # costs the healthcheck nothing.
+    _verify_thread_roots_async()
     # Config-drift guard (Layer 1): the broker can serve every non-
     # sitemap surface with SITE_BASE_URL unset, but the sitemap warm
     # targets (sitemap:index, sitemap:meta, sitemap:inbox:*) silently
