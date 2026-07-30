@@ -186,6 +186,16 @@ changes, not internal refactors. Categories: **Added**,
   15-message thread read into 400 seconds. The post-backfill re-sample
   also no longer sits behind a success branch that one erroring inbox
   could skip.
+- The broker no longer logs a corruption-shaped warning, re-drives every
+  inbox and runs an extra ANALYZE on every start once any message is
+  permanently unrooted. Some rows are unrooted by design (a reply chain
+  with no resolvable root, a deleted article that was some thread's
+  root), so "any NULL at all" is a normal steady state rather than a
+  fault, and treating it as one made the single message meaning "this
+  column is in a state nobody expected" a fixture of every boot log. The
+  check now compares against the residual the last completed backfill
+  recorded, so it reports a change rather than a constant. A count that
+  grows still re-runs the backfill.
 - Recovering an interrupted schema migration by hand no longer costs an
   index. The migration named only the index it was adding and left the
   pre-existing `ix_article_lists_inbox_id` to alembic's batch mode,

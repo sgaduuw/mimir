@@ -23,6 +23,34 @@ from mimir.models import (
 from tests.test_ingest._helpers import _alpha, _build_pubinbox_repo, _rfc5322
 
 
+def _ids_and_roots(
+    seeded_db, inbox_id: int, message_ids: tuple[str, ...]
+) -> tuple[dict[str, int], dict[str, int | None]]:
+    """`(message_id -> article id, message_id -> thread_root_id)`, one inbox.
+
+    The subtree-adoption tests each assert the same relation over a
+    different thread shape, and the shape plus the assertions are the
+    part worth reading. Roots are per-inbox because threading is.
+    """
+    with seeded_db() as s:
+        ids = {
+            mid: s.execute(
+                select(Article.id).where(Article.message_id == mid)
+            ).scalar_one()
+            for mid in message_ids
+        }
+        roots = {
+            mid: s.execute(
+                select(ArticleList.thread_root_id).where(
+                    ArticleList.article_id == aid,
+                    ArticleList.inbox_id == inbox_id,
+                )
+            ).scalar_one()
+            for mid, aid in ids.items()
+        }
+    return ids, roots
+
+
 def test_replay_failures_recovers_on_parser_fix(
     seeded_db, tmp_path, monkeypatch, broker_active
 ):
@@ -547,26 +575,15 @@ def test_replay_adopts_descendants_that_self_rooted_while_the_parent_failed(
     result = replay_failures(ix)
     assert result.recovered == 1, result
 
-    with seeded_db() as s:
-        ids = {
-            mid: s.execute(
-                select(Article.id).where(Article.message_id == mid)
-            ).scalar_one()
-            for mid in (
-                "parent@example.com",
-                "child@example.com",
-                "grandchild@example.com",
-            )
-        }
-        roots = {
-            mid: s.execute(
-                select(ArticleList.thread_root_id).where(
-                    ArticleList.article_id == aid,
-                    ArticleList.inbox_id == alpha.id,
-                )
-            ).scalar_one()
-            for mid, aid in ids.items()
-        }
+    ids, roots = _ids_and_roots(
+        seeded_db,
+        alpha.id,
+        (
+            "parent@example.com",
+            "child@example.com",
+            "grandchild@example.com",
+        ),
+    )
 
     parent_id = ids["parent@example.com"]
     assert roots["parent@example.com"] == parent_id
@@ -661,26 +678,15 @@ def test_replay_adopts_descendants_on_the_non_broker_path_too(
         _context.set_active(saved_pool, saved_writer)
     assert result.recovered == 1, result
 
-    with seeded_db() as s:
-        ids = {
-            mid: s.execute(
-                select(Article.id).where(Article.message_id == mid)
-            ).scalar_one()
-            for mid in (
-                "sp-parent@example.com",
-                "sp-child@example.com",
-                "sp-grandchild@example.com",
-            )
-        }
-        roots = {
-            mid: s.execute(
-                select(ArticleList.thread_root_id).where(
-                    ArticleList.article_id == aid,
-                    ArticleList.inbox_id == alpha.id,
-                )
-            ).scalar_one()
-            for mid, aid in ids.items()
-        }
+    ids, roots = _ids_and_roots(
+        seeded_db,
+        alpha.id,
+        (
+            "sp-parent@example.com",
+            "sp-child@example.com",
+            "sp-grandchild@example.com",
+        ),
+    )
 
     parent_id = ids["sp-parent@example.com"]
     assert roots["sp-parent@example.com"] == parent_id
@@ -712,7 +718,6 @@ def test_replay_adopts_descendants_onto_the_real_root_not_the_recovered_row(
     rather than to NULL passes the sibling test and fails this one.
     """
     import mimir.parser
-    from mimir.models import Article, ArticleList
 
     alpha = _alpha(seeded_db)
     mirror_root = tmp_path / "midthread-mirror"
@@ -741,22 +746,9 @@ def test_replay_adopts_descendants_onto_the_real_root_not_the_recovered_row(
     result = replay_failures(ix)
     assert result.recovered == 1, result
 
-    with seeded_db() as s:
-        ids = {
-            mid: s.execute(
-                select(Article.id).where(Article.message_id == mid)
-            ).scalar_one()
-            for mid in ("gp@example.com", "mid@example.com", "leaf@example.com")
-        }
-        roots = {
-            mid: s.execute(
-                select(ArticleList.thread_root_id).where(
-                    ArticleList.article_id == aid,
-                    ArticleList.inbox_id == alpha.id,
-                )
-            ).scalar_one()
-            for mid, aid in ids.items()
-        }
+    ids, roots = _ids_and_roots(
+        seeded_db, alpha.id, ("gp@example.com", "mid@example.com", "leaf@example.com")
+    )
 
     gp_id = ids["gp@example.com"]
     assert roots["gp@example.com"] == gp_id
