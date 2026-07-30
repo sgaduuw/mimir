@@ -1118,3 +1118,7 @@ def test_post_backfill_analyze_runs_even_when_the_backfill_blows_up(
         "the backfill failed at session level and skipped the ANALYZE; a "
         "partial fill is the state most in need of fresh planner stats"
     )
+    assert not (sock_dir / ".thread_roots_backfilled").exists(), (
+        "sentinel written despite a failed run; no restart would retry, and "
+        "the sentinel is the only thing that makes this retry at all"
+    )

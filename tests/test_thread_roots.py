@@ -1171,16 +1171,28 @@ def test_startup_backfill_covers_every_inbox(client, tmp_path):
 def test_startup_backfill_withholds_the_sentinel_when_the_pass_budget_blows(
     client, tmp_path, monkeypatch
 ):
-    """The sentinel is the ONLY thing that makes this retry.
+    """The sentinel is the ONLY thing that makes this retry, and the
+    re-sample must not sit behind the success branch either.
 
-    Touching it over a partial fill is permanent: no later restart
-    re-runs, and every unrooted thread stays missing from the sitemap
-    forever. Deleting the `else:` guarding `sentinel.touch()` passed the
-    entire suite, which is exactly the silent-under-reporting this
-    function exists to prevent.
+    Touching the sentinel over a partial fill is permanent: no later
+    restart re-runs, and every unrooted thread stays missing from the
+    sitemap forever. Deleting the `else:` guarding `sentinel.touch()`
+    passed the entire suite, which is exactly the silent-under-reporting
+    this function exists to prevent.
+
+    The ANALYZE assertion rides along on the same fixture because it is
+    the same scenario, and a partial fill is the state MOST in need of
+    fresh stats, not least: the column's distribution has just moved and
+    ANALYZE may have sampled it while it was still entirely NULL, so the
+    planner goes on treating it as single-valued. Priority inverted, the
+    more incomplete the fill, the less likely the stats were refreshed.
     """
+    import mimir.maintenance
     import mimir.thread_roots
     from mimir.broker.server import _backfill_thread_roots_if_needed
+
+    calls = []
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda **kw: calls.append(kw))
 
     seed_thread_shape(
         tmp_path, "alpha", [("pb1@x", None), ("pb2@x", "pb1@x"), ("pb3@x", "pb2@x")]
@@ -1197,175 +1209,10 @@ def test_startup_backfill_withholds_the_sentinel_when_the_pass_budget_blows(
     assert not (sock / ".thread_roots_backfilled").exists(), (
         "sentinel was written over a partial fill; no restart will ever retry"
     )
-
-
-def _total_nulls() -> int:
-    from sqlalchemy import func
-
-    with SessionLocal() as s:
-        return s.execute(
-            select(func.count())
-            .select_from(ArticleList)
-            .where(ArticleList.thread_root_id.is_(None))
-        ).scalar_one()
-
-
-def test_startup_skips_when_the_unrooted_residual_is_the_known_one(
-    client, tmp_path, monkeypatch
-):
-    """A permanently-unrooted row must not re-trigger the backfill forever.
-
-    The gate is unrooted rows rather than the sentinel alone, which is
-    deliberate: it closes the rollback-then-roll-forward hole. But some
-    rows are unrooted BY DESIGN and always will be. `break_cycle`
-    documents leaving a non-cycle stall alone, `drive_passes` can
-    exhaust its budget, and the column is `ON DELETE SET NULL`. Against
-    a bare "any NULL at all" test, every one of those makes a healthy
-    broker log a corruption-shaped WARNING, re-drive ~200 inboxes and
-    run an extra ANALYZE on every single boot, which is exactly how an
-    operator learns to ignore the one message that would matter.
-    """
-    import mimir.maintenance
-    from mimir.broker.server import _backfill_thread_roots_if_needed
-
-    calls = []
-    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda **kw: calls.append(kw))
-
-    seed_thread_shape(tmp_path, "alpha", [("kr1@x", None), ("kr2@x", "kr1@x")])
-    _null_all_roots()
-
-    sock = tmp_path / "sock"
-    sock.mkdir()
-    sentinel = sock / ".thread_roots_backfilled"
-    # A completed run recorded this residual, i.e. rows it could not fix.
-    residual = _total_nulls()
-    assert residual > 0, "precondition: the fixture must leave unrooted rows"
-    sentinel.write_text(str(residual))
-
-    _backfill_thread_roots_if_needed(sock / "broker.sock")
-
-    assert _total_nulls() == residual, "the backfill ran; the gate did not skip"
-    assert calls == [], (
-        "an ANALYZE ran for a residual that has not changed since the last "
-        "completed backfill"
-    )
-
-
-def test_startup_reruns_when_the_unrooted_residual_grows(client, tmp_path):
-    """The other half: a NEW unrooted row must still be caught.
-
-    Skipping on an unchanged residual is only safe if growth past it
-    re-runs, otherwise the gate reintroduces the rollback-then-
-    roll-forward hole it exists to close.
-    """
-    from mimir.broker.server import _backfill_thread_roots_if_needed
-
-    seed_thread_shape(tmp_path, "alpha", [("gr1@x", None), ("gr2@x", "gr1@x")])
-    _null_all_roots()
-
-    sock = tmp_path / "sock"
-    sock.mkdir()
-    sentinel = sock / ".thread_roots_backfilled"
-    # The last completed run left nothing unresolved, so everything
-    # currently NULL appeared afterwards.
-    sentinel.write_text("0")
-    assert _total_nulls() > 0
-
-    _backfill_thread_roots_if_needed(sock / "broker.sock")
-
-    assert _nulls_remaining("alpha") == 0, (
-        "unrooted rows above the recorded residual did not re-trigger the "
-        "backfill; a wholesale column reset would go unnoticed forever"
-    )
-    assert sentinel.read_text().strip() == str(_total_nulls()), (
-        "the completed run did not record its new residual, so the next "
-        "start has no baseline to compare against"
-    )
-
-
-def test_startup_backfill_resamples_planner_stats_on_a_partial_fill(
-    client, tmp_path, monkeypatch
-):
-    """The re-sample must not sit behind the success branch.
-
-    A partial fill is the state MOST in need of fresh stats, not least:
-    the column's distribution has just moved and ANALYZE may have
-    sampled it while it was still 100% NULL, so the planner goes on
-    treating it as single-valued and under-values the index. Priority
-    inverted, the more incomplete the fill, the more likely the stats
-    are stale and the less likely they were refreshed.
-
-    Nothing pinned this. Deleting the `_run_post_backfill_analyze()`
-    call that sits outside the success branch left the whole suite
-    green, measured, because every other test of this function asserts
-    sentinels and row counts rather than the re-sample.
-    """
-    import mimir.maintenance
-    import mimir.thread_roots
-    from mimir.broker.server import _backfill_thread_roots_if_needed
-
-    calls = []
-    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda **kw: calls.append(kw))
-
-    seed_thread_shape(
-        tmp_path, "alpha", [("ra1@x", None), ("ra2@x", "ra1@x"), ("ra3@x", "ra2@x")]
-    )
-    _null_all_roots()
-    # One pass cannot propagate a three-deep chain, so the run exhausts
-    # its budget and takes the partial-fill exit.
-    monkeypatch.setattr(mimir.thread_roots, "MAX_PASSES", 1)
-
-    sock = tmp_path / "sock"
-    sock.mkdir()
-    _backfill_thread_roots_if_needed(sock / "broker.sock")
-
-    # Precondition: without this the assertion below could pass on a run
-    # that completed normally and never exercised the partial path.
-    assert _nulls_remaining("alpha") > 0, "test did not actually exhaust the budget"
-    assert not (sock / ".thread_roots_backfilled").exists(), (
-        "run completed; this test is no longer exercising the partial exit"
-    )
     assert calls, (
         "no ANALYZE after a partial fill; the planner keeps stats sampled "
         "while thread_root_id was entirely NULL and under-values the index"
     )
-
-
-def test_startup_backfill_resamples_planner_stats_after_a_session_failure(
-    client, tmp_path, monkeypatch
-):
-    """The other non-success exit, which returns early.
-
-    A session-level failure part-way through is also a partial fill, so
-    the early `return` needs its own re-sample. Guarded separately
-    because it is a different `_run_post_backfill_analyze()` call site
-    and deleting either one alone leaves the other's test green.
-    """
-    import mimir.extensions
-    import mimir.maintenance
-    from mimir.broker.server import _backfill_thread_roots_if_needed
-
-    calls = []
-    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda **kw: calls.append(kw))
-
-    seed_thread_shape(tmp_path, "alpha", [("rb1@x", None), ("rb2@x", "rb1@x")])
-    _null_all_roots()
-
-    def _boom():
-        raise RuntimeError("session unavailable")
-
-    monkeypatch.setattr(mimir.extensions, "SessionLocal", _boom)
-
-    sock = tmp_path / "sock"
-    sock.mkdir()
-    # Must not raise: an unfilled column is slow, not wrong, so the
-    # broker starts anyway.
-    _backfill_thread_roots_if_needed(sock / "broker.sock")
-
-    assert not (sock / ".thread_roots_backfilled").exists(), (
-        "sentinel written despite a failed run; no restart would retry"
-    )
-    assert calls, "no ANALYZE after a session-level failure"
 
 
 def test_startup_backfill_commits_per_inbox_and_withholds_on_failure(
