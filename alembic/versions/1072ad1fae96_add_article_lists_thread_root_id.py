@@ -103,27 +103,42 @@ def _drop_batch_scratch_table() -> None:
         DROP TABLE article_lists          <-- (b) begins here
         ALTER TABLE _alembic_tmp_article_lists RENAME TO article_lists
 
-    so there are two distinct interrupted states, and they need opposite
-    handling:
+    which suggests two interrupted states needing opposite handling:
 
-      (a) killed during the copy. Both tables exist, the scratch one is
-          a partial duplicate, dropping it is right.
-      (b) killed between the DROP and the RENAME. The scratch table is
-          the ONLY copy of the data. Dropping it destroys the table
-          outright; reproduced on 2026-07-30, 0 surviving rows and the
-          migration then failing with `NoSuchTableError: article_lists`.
+      (a) interrupted during the copy. Both tables exist, the scratch one
+          holds no committed rows, dropping it is right.
+      (b) interrupted between the DROP and the RENAME. The scratch table
+          would be the ONLY copy of the data, so dropping it destroys the
+          table outright: 0 surviving rows, and the migration then fails
+          with `NoSuchTableError: article_lists`.
 
-    Window (a) is ~55 s of the ~130 s rebuild and (b) is a metadata
-    rename, so (a) is overwhelmingly the likely kill point, which is
-    exactly why (b) is easy to reason past. Both are reachable, and only
-    one of them is survivable if this guesses wrong.
+    **State (b) is not reachable by a crash**, and the reason is worth
+    recording because the sequence above says otherwise and alembic's own
+    log ("Will assume non-transactional DDL") reinforces it. Under
+    pysqlite's legacy isolation a transaction is opened before DML but
+    not before DDL, so the `CREATE TABLE` autocommits while everything
+    from the `INSERT` onward, including the `DROP`, is one transaction.
+    Measured 2026-07-30 by killing a real migration with `os._exit(1)`
+    from an `after_cursor_execute` hook the instant the `DROP` returned
+    (no rollback, no atexit, the closest in-process equivalent of
+    SIGKILL): `in_transaction` was True at that point, and the recovered
+    database had `article_lists` intact with every row and an EMPTY
+    scratch table. So a kill anywhere in the rebuild lands in (a).
 
-    State (b) therefore raises rather than auto-repairing. Completing the
-    rename here would also have to recreate the indexes the rebuild had
-    not reached yet and then reconcile `alembic_version`, and a migration
-    that silently reshapes a 28.8M-row table on an assumption about how
-    it died is not a trade worth making. The error carries the exact
-    recovery, which is deterministic.
+    The guard stays anyway. It costs one `inspect()` call on a code path
+    that already reflects the schema, and (b) remains reachable by
+    operator action or a restored backup, where the cost of guessing
+    wrong is the whole table. A cheap check against total data loss in a
+    state that "should not happen" is the right trade; the previous
+    version of this docstring simply asserted the wrong reason for
+    keeping it.
+
+    State (b) raises rather than auto-repairing, because a migration that
+    reshapes a 28.8M-row table on an assumption about how it reached an
+    unreachable state is not a trade worth making. The recovery is a
+    single statement, and everything after it is this migration's own job
+    on the next run: the index creations are `if_not_exists`, so a re-run
+    against the renamed table completes normally.
     """
     bind = op.get_bind()
     tables = set(sa.inspect(bind).get_table_names())
@@ -132,17 +147,15 @@ def _drop_batch_scratch_table() -> None:
     if "article_lists" not in tables:
         raise RuntimeError(
             "_alembic_tmp_article_lists exists but article_lists does not. "
-            "A previous run was interrupted between alembic's DROP and its "
-            "RENAME, so the scratch table is the ONLY copy of the data and "
-            "must not be dropped. Recover by hand, then restart:\n"
+            "The scratch table is the ONLY copy of the data and must not be "
+            "dropped. This state cannot arise from a crash (the rebuild is "
+            "one transaction from the INSERT onward), so check for a "
+            "restored backup or an interrupted manual repair before "
+            "continuing. Recover with one statement:\n"
             "  ALTER TABLE _alembic_tmp_article_lists RENAME TO article_lists;\n"
-            "  CREATE INDEX ix_article_lists_inbox_id\n"
-            "    ON article_lists (inbox_id);\n"
-            "  CREATE INDEX ix_article_lists_thread_root\n"
-            "    ON article_lists (inbox_id, thread_root_id);\n"
-            "Then mark this revision applied: alembic stamp 1072ad1fae96\n"
-            "(the renamed table already carries thread_root_id and its FK, "
-            "so re-running the migration would fail on a duplicate column)."
+            "Then restart. Do NOT create the indexes or run `alembic stamp` "
+            "by hand: this migration recreates both indexes if_not_exists "
+            "and stamps itself on the next run."
         )
     op.execute("DROP TABLE _alembic_tmp_article_lists")
 
@@ -167,14 +180,41 @@ def upgrade() -> None:
             ["id"],
             ondelete="SET NULL",
         )
+    # BOTH indexes are named here, and both are `if_not_exists`, so that
+    # the set of indexes this table must end up with is a post-condition
+    # of the migration rather than a side effect of what reflection
+    # happened to find.
+    #
+    # Batch mode rebuilds the pre-existing indexes by REFLECTING the
+    # table it is about to replace, so it restores
+    # `ix_article_lists_inbox_id` only when the reflected table still
+    # carried it. A hand-recovered rename leaves a table with no indexes
+    # at all (alembic creates the scratch table bare and adds the indexes
+    # after the rename), and re-running against that state silently drops
+    # the inbox index for good: measured 2026-07-30, alembic exits 0 and
+    # stamps the revision, leaving a 28.8M-row table with no index on
+    # `inbox_id`, which every inbox-scoped query in the codebase needs.
+    #
+    # `if_not_exists` is what makes the re-run safe in the other
+    # direction too: an operator who recreated the indexes by hand before
+    # restarting would otherwise hit `index ... already exists` and get a
+    # crash-looping broker with `Restart=always` behind it.
+    #
     # Composite and inbox-first because every consumer asks an
     # inbox-scoped question: "the roots in this inbox" (sitemap), "is
     # this article a root here", "how many articles share this root
     # here" (the single-message rule).
     op.create_index(
+        "ix_article_lists_inbox_id",
+        "article_lists",
+        ["inbox_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
         "ix_article_lists_thread_root",
         "article_lists",
         ["inbox_id", "thread_root_id"],
+        if_not_exists=True,
     )
 
 
