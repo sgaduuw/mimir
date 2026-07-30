@@ -209,7 +209,12 @@ The default form is non-destructive: existing rows are left alone
 and only previously-failed (or genuinely new) messages get inserted.
 `--from-scratch` deletes the per-inbox `article_lists` rows
 pointing at this epoch first; the `articles` themselves stay (a
-cross-post may still be linked from another inbox).
+cross-post may still be linked from another inbox). It then rebuilds
+the inbox's thread roots, because dropping one epoch's rows breaks
+the parent chain for replies living in other epochs. That rebuild
+runs even when the re-walk fails, so an interrupted run cannot leave
+an inbox unrooted, and the command exits non-zero if it could not
+finish.
 
 ### Ingest contract
 
@@ -389,6 +394,10 @@ article_lists                         -- per-inbox presence; cross-posts get N r
   article_id (FK → articles.id, ON DELETE CASCADE),
   inbox_id   (FK → inboxes.id,  ON DELETE CASCADE),
   epoch, commit_sha,                  -- pointer back to the public-inbox blob in *this* inbox's mirror
+  thread_root_id (FK → articles.id, ON DELETE SET NULL),
+                                      -- materialised thread root, per inbox (threading is inbox-scoped).
+                                      -- A root points at itself; NULL means "not yet computed", never
+                                      -- "is a root", so readers fall back to the recursive CTE.
   PRIMARY KEY (article_id, inbox_id)
 
 ingest_state
@@ -459,6 +468,9 @@ mimir/
                          dulwich fetch + parse, singly or in bulk
   sync.py                public-inbox manifest discovery + git clone/fetch
   threading.py           recursive CTEs for thread reconstruction + active threads
+  thread_roots.py        maintains article_lists.thread_root_id: startup
+                         backfill, verification against the CTE oracle,
+                         and the mimir backfill-thread-roots command
   dashboard.py           landing-page aggregations (trackers, pulls, stats, sparkline)
   cache.py               DB-backed cache with JSON encode/decode + a type registry
   canonical.py           canonical-inbox resolution from To/Cc headers
@@ -990,6 +1002,30 @@ Output buckets: `indexed` (covers), `in_series_indexed`
 (in-series patches linked to a cover), `in_series_orphan`
 (in-series patch with position set but cover not yet known,
 re-attempted on the next run), `not_cover`, `skipped`.
+
+### Backfilling thread roots
+
+Each message records its thread's root per inbox in
+`article_lists.thread_root_id`, so a sitemap can list one entry per
+conversation without re-deriving the root on every read. Ingest,
+`reindex` and `admin failures replay` all maintain it.
+
+**Operators do not normally need to run this.** The broker fills the
+column itself at startup, before it opens its socket and therefore
+before the web tier is allowed to serve, gated on a
+`/data/.thread_roots_backfilled` sentinel. A run that cannot complete
+withholds that sentinel so the next restart retries, and logs
+`backfill incomplete`, which is the line to grep for after a deploy.
+
+```sh
+uv run mimir backfill-thread-roots            # fill rows that predate the column
+uv run mimir backfill-thread-roots --verify   # also re-check a sample against the CTE
+```
+
+Idempotent: it only touches rows where the column is NULL, which is
+what "not yet computed" means. `--verify` recomputes a random sample
+with an independent recursive CTE rather than reading the column, so
+the check cannot agree with a corrupt value by construction.
 
 ## IndexNow (Bing / Yandex push notifications)
 

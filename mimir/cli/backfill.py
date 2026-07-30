@@ -178,8 +178,11 @@ def backfill_patch_series_command(
 @click.option(
     "--verify",
     is_flag=True,
-    help="After filling, recompute a sample of roots and report any "
-    "that disagree with `find_thread_root`.",
+    # Names the CTE deliberately: the oracle must NOT be
+    # `find_thread_root`, which reads the column and would agree with
+    # any corruption by construction.
+    help="After filling, recompute a sample of roots against the "
+    "recursive CTE and report any that disagree.",
 )
 @click.option(
     "--sample",
