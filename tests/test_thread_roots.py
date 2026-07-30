@@ -557,6 +557,12 @@ def test_replay_resolves_roots_on_the_session_path(client, tmp_path):
     `SessionLocal` is autoflush=False and the passes are raw text()
     UPDATEs, so without an explicit flush they ran against a database
     that had not seen replay's ORM inserts and did nothing at all.
+
+    Note this drives the helper DIRECTLY and simulates replay's inserts
+    by hand, so it holds the mechanism axis fixed and cannot see
+    anything about how `replay_failures` actually calls it. The
+    subtree-adoption case is guarded through the real entry point in
+    `tests/test_ingest/test_replay.py` instead.
     """
     from sqlalchemy import select
 
@@ -588,7 +594,7 @@ def test_replay_resolves_roots_on_the_session_path(client, tmp_path):
         from mimir.ingest.replay import _resolve_roots_after_replay
 
         s.flush()
-        _resolve_roots_after_replay(s, beta.id)
+        _resolve_roots_after_replay(s, beta.id, ["rp-root@x", "rp-kid@x"])
         s.commit()
 
     got = _roots_by_inbox("beta", {"rp-root@x", "rp-kid@x"})

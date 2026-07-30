@@ -21,10 +21,18 @@ from mimir.models import (
 
 
 def _rfc5322(
-    msgid: str, body: bytes = b"hello", to: str | None = None, cc: str | None = None
+    msgid: str,
+    body: bytes = b"hello",
+    to: str | None = None,
+    cc: str | None = None,
+    in_reply_to: str | None = None,
 ) -> bytes:
     """Minimal valid RFC 5322 message. Optional To/Cc let canonical-
-    inbox tests inject list addresses."""
+    inbox tests inject list addresses; `in_reply_to` builds a real
+    multi-message thread, which is what any test about thread roots
+    needs (a single-message thread roots at itself no matter what the
+    code under test does, so it cannot distinguish a working
+    implementation from a broken one)."""
     parts = [
         b"Message-ID: <" + msgid.encode() + b">\r\n",
         b"From: a@b.example\r\n",
@@ -33,6 +41,8 @@ def _rfc5322(
         parts.append(b"To: " + to.encode() + b"\r\n")
     if cc is not None:
         parts.append(b"Cc: " + cc.encode() + b"\r\n")
+    if in_reply_to is not None:
+        parts.append(b"In-Reply-To: <" + in_reply_to.encode() + b">\r\n")
     parts.extend(
         [
             b"Subject: t\r\n",
