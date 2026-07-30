@@ -67,9 +67,18 @@ SITEMAP_RECENT_PER_INBOX = 5000
 # The 45,000 -> 20,000 change did NOT need that bump, and the reason is
 # worth stating so nobody reads it as an oversight: month sitemaps have
 # never been deployed, so no cache row anywhere was cut under the old
-# width. The rule above still stands for every later change. Bumping
-# regardless would have cold-started the whole namespace (dashboards,
-# stats, every other sitemap) to fix nothing.
+# width. There is no stale row for a bump to invalidate.
+#
+# Note the namespace itself is NOT unreleased: `NAMESPACE_VERSION` has
+# been 3 since before v3.6.3, and production was holding ~15,000 warm
+# rows under `v3:` when measured on 2026-07-30 (3,413
+# `articles_reviewed_by`, 1,856 `active_threads_in_subsystem`, and so on
+# down every subsystem-dashboard and lifecycle family). So bumping would
+# not have been a harmless no-op, it would have cold-started all of that
+# to fix nothing. Do not read "no bump here" as "this branch may change
+# cached payload shapes freely"; the rule above still binds for every
+# later change, including any further move of this width once month
+# sitemaps have actually shipped.
 #
 # Paging is NOT speculative. Measured on production 2026-07-28: of
 # 32,093 (inbox, month) buckets, 32,092 hold under 10k roots and ONE
