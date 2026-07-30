@@ -1199,6 +1199,90 @@ def test_startup_backfill_withholds_the_sentinel_when_the_pass_budget_blows(
     )
 
 
+def _total_nulls() -> int:
+    from sqlalchemy import func
+
+    with SessionLocal() as s:
+        return s.execute(
+            select(func.count())
+            .select_from(ArticleList)
+            .where(ArticleList.thread_root_id.is_(None))
+        ).scalar_one()
+
+
+def test_startup_skips_when_the_unrooted_residual_is_the_known_one(
+    client, tmp_path, monkeypatch
+):
+    """A permanently-unrooted row must not re-trigger the backfill forever.
+
+    The gate is unrooted rows rather than the sentinel alone, which is
+    deliberate: it closes the rollback-then-roll-forward hole. But some
+    rows are unrooted BY DESIGN and always will be. `break_cycle`
+    documents leaving a non-cycle stall alone, `drive_passes` can
+    exhaust its budget, and the column is `ON DELETE SET NULL`. Against
+    a bare "any NULL at all" test, every one of those makes a healthy
+    broker log a corruption-shaped WARNING, re-drive ~200 inboxes and
+    run an extra ANALYZE on every single boot, which is exactly how an
+    operator learns to ignore the one message that would matter.
+    """
+    import mimir.maintenance
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+
+    calls = []
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda **kw: calls.append(kw))
+
+    seed_thread_shape(tmp_path, "alpha", [("kr1@x", None), ("kr2@x", "kr1@x")])
+    _null_all_roots()
+
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    sentinel = sock / ".thread_roots_backfilled"
+    # A completed run recorded this residual, i.e. rows it could not fix.
+    residual = _total_nulls()
+    assert residual > 0, "precondition: the fixture must leave unrooted rows"
+    sentinel.write_text(str(residual))
+
+    _backfill_thread_roots_if_needed(sock / "broker.sock")
+
+    assert _total_nulls() == residual, "the backfill ran; the gate did not skip"
+    assert calls == [], (
+        "an ANALYZE ran for a residual that has not changed since the last "
+        "completed backfill"
+    )
+
+
+def test_startup_reruns_when_the_unrooted_residual_grows(client, tmp_path):
+    """The other half: a NEW unrooted row must still be caught.
+
+    Skipping on an unchanged residual is only safe if growth past it
+    re-runs, otherwise the gate reintroduces the rollback-then-
+    roll-forward hole it exists to close.
+    """
+    from mimir.broker.server import _backfill_thread_roots_if_needed
+
+    seed_thread_shape(tmp_path, "alpha", [("gr1@x", None), ("gr2@x", "gr1@x")])
+    _null_all_roots()
+
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    sentinel = sock / ".thread_roots_backfilled"
+    # The last completed run left nothing unresolved, so everything
+    # currently NULL appeared afterwards.
+    sentinel.write_text("0")
+    assert _total_nulls() > 0
+
+    _backfill_thread_roots_if_needed(sock / "broker.sock")
+
+    assert _nulls_remaining("alpha") == 0, (
+        "unrooted rows above the recorded residual did not re-trigger the "
+        "backfill; a wholesale column reset would go unnoticed forever"
+    )
+    assert sentinel.read_text().strip() == str(_total_nulls()), (
+        "the completed run did not record its new residual, so the next "
+        "start has no baseline to compare against"
+    )
+
+
 def test_startup_backfill_resamples_planner_stats_on_a_partial_fill(
     client, tmp_path, monkeypatch
 ):
