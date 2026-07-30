@@ -2,6 +2,7 @@
 per-inbox sitemap, maintainers sitemap, `<lastmod>` correctness,
 cache invalidation after canonical-inbox flips."""
 
+import re
 import pytest
 
 from tests.test_routes._helpers import _clear_sitemap_cache, _seed_subsystem
@@ -1313,24 +1314,64 @@ def test_unservable_subsystem_names_are_never_advertised(client, tmp_path, name)
     from tests.test_routes._helpers import (
         _ingest_one_article,
         _seed_subsystem,
+        warm_global_subsystem_activity,
         warm_subsystem_activity,
     )
 
     _seed_subsystem(name, "Maintained", files=["fs/bcachefs/"])
-    _ingest_one_article(
+    _art_id, msg_url = _ingest_one_article(
         tmp_path,
         "alpha",
         "unservable@example.com",
         body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
     )
     warm_subsystem_activity("alpha")
+    # The front page reads a DIFFERENT, cross-inbox cache row, also with
+    # `compute_on_miss=False`. Without this warm its widget renders empty
+    # and the card-grid assertion below is vacuously true: measured, a
+    # mutation removing the grid's gate survived until this line existed.
+    assert warm_global_subsystem_activity(), (
+        "precondition: the front page's subsystem widget must be populated, "
+        "or its assertion proves nothing"
+    )
 
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
     assert "/alpha/subsystem/" not in xml.replace(
         "<loc>http://localhost/alpha/subsystem/</loc>", ""
     ), "sitemap advertised a subsystem URL the route cannot serve"
-    html = client.get("/alpha/subsystem/").get_data(as_text=True)
-    assert 'href="/alpha/subsystem/' not in html, "index page linked an unservable name"
+
+    # EVERY surface that renders a subsystem name, not just the two the
+    # original fix gated. The predicate had been applied at the sitemap
+    # emitter and the subsystem index while four other emitters kept
+    # linking, which is how a guaranteed 404 stayed reachable from a page
+    # that is itself a sitemap `<loc>`. Confirmed live on production
+    # 2026-07-30 before this was fixed:
+    #   /linux-hyperv/subsystem/hpet%3A%09x86/ -> 404
+    surfaces = {
+        "subsystem index": "/alpha/subsystem/",
+        "inbox dashboard": "/alpha/",
+        "front page": "/",
+        "message page": msg_url,
+        "thread view": msg_url.rstrip("/") + "/t",
+    }
+    # Matches a link to a specific subsystem, NOT the bare
+    # `/alpha/subsystem/` index, which every inbox dashboard links on
+    # purpose and which is perfectly servable.
+    named_link = re.compile(r'href="/alpha/subsystem/[^"]+')
+    for label, url in surfaces.items():
+        resp = client.get(url)
+        assert resp.status_code in (200, 301, 302), (
+            f"{label} ({url}) returned {resp.status_code}"
+        )
+        if resp.status_code != 200:
+            resp = client.get(resp.headers["Location"])
+        html = resp.get_data(as_text=True)
+        assert not named_link.search(html), (
+            f"{label} linked a subsystem URL the route cannot serve "
+            f"({named_link.search(html).group()!r}); the addressability "
+            "predicate has to gate every emitter, not the one that happened "
+            "to be in the reviewer's slice"
+        )
 
 
 def test_sitemap_subsystem_lastmod_is_that_subsystems_last_activity(client, tmp_path):
@@ -1435,3 +1476,45 @@ def test_sitemap_uses_the_loops_own_inbox_not_the_activity_rows(
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
     assert "<loc>http://localhost/alpha/subsystem/bcachefs/</loc>" in xml
     assert "/beta/subsystem/" not in xml, "emitted another inbox's URL"
+
+
+def test_sitemap_page_width_stays_under_the_sqlite_bind_limit():
+    """The page width is a bound-parameter count, not just a URL count.
+
+    A month-sitemap page slice is handed whole to three separate queries
+    as an expanding `IN` list, so its width is charged against SQLite's
+    `SQLITE_LIMIT_VARIABLE_NUMBER`, not only against sitemaps.org's
+    50,000-URLs-per-urlset rule. The shipped value was 45,000: legal by
+    the protocol, over the limit that actually binds. `git` 2016-06
+    holds 40,429 roots, so that page raised `too many SQL variables` and
+    500ed on every request while `/sitemap.xml` advertised it.
+
+    Every other paging test monkeypatches the width down to 2 to keep
+    fixtures small, which means none of them can observe the shipped
+    constant. This one deliberately reads it as-is, and compares against
+    the limit the RUNTIME reports rather than a second copy of the
+    number, so a SQLite build with a different limit is also covered.
+    """
+    import sqlite3
+
+    from mimir.seo.sitemaps import SITEMAP_RECENT_PER_INBOX, SITEMAP_URLS_PER_PAGE
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        limit = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    finally:
+        conn.close()
+
+    # Headroom for the handful of non-list parameters bound alongside
+    # the slice (inbox id, and whatever a future predicate adds).
+    headroom = 64
+    for name, width in (
+        ("SITEMAP_URLS_PER_PAGE", SITEMAP_URLS_PER_PAGE),
+        ("SITEMAP_RECENT_PER_INBOX", SITEMAP_RECENT_PER_INBOX),
+    ):
+        assert width + headroom < limit, (
+            f"{name}={width} is within {headroom} of this build's "
+            f"SQLITE_LIMIT_VARIABLE_NUMBER ({limit}); a full-width slice is "
+            "passed as an expanding IN list and would raise 'too many SQL "
+            "variables', returning 500 on a URL the sitemap index advertises"
+        )

@@ -106,12 +106,25 @@ services:
       #
       # Thread-root VERIFICATION is deliberately not in that budget: it
       # runs on a daemon thread after startup, because it is not allowed
-      # to gate anything and cost ~23 s on a 200-inbox corpus.
+      # to gate anything and costs ~218 s on a prod-shape corpus
+      # (re-measured 2026-07-30, and a floor). It also runs on EVERY
+      # start now rather than once ever, so that cost recurs per deploy.
+      # Both facts are why it must stay off this budget rather than be
+      # folded into it.
       #
       # Subsequent restarts skip each step via its own sentinel. If the
       # backfill exhausts its pass budget it withholds its sentinel on
       # purpose, so every restart re-pays it: watch the broker log for
       # "backfill incomplete" rather than raising this number.
+      #
+      # THIS FILE IS NOT THE PRODUCTION DEPLOY. Production runs podman
+      # quadlets managed from `ansible-eelco`, where the equivalent
+      # budget is the unit's `TimeoutStartSec` (the container is
+      # `Type=notify` with `Notify=healthy`, so systemd waits on this
+      # same healthcheck but bounds it with its own timeout). Raising
+      # the number here does nothing for production; the binding value
+      # lives in the role. Keep the two in the same ballpark, and treat
+      # this comment's reasoning as the shared rationale for both.
       start_period: 1200s
 
   mimir:

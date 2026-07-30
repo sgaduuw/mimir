@@ -886,7 +886,7 @@ def test_startup_writers_run_without_active_writer(seeded_db, monkeypatch):
 
     real_analyze = server._post_migrate_analyze_if_needed
 
-    def _spy(sp):
+    def _spy(sp, schema_changed=False):
         # Record whether a writer is active at the moment build_server
         # calls the startup writers.
         try:
@@ -894,7 +894,7 @@ def test_startup_writers_run_without_active_writer(seeded_db, monkeypatch):
             observed["writer_active"] = True
         except RuntimeError:
             observed["writer_active"] = False
-        return real_analyze(sp)
+        return real_analyze(sp, schema_changed)
 
     monkeypatch.setattr(server, "_post_migrate_analyze_if_needed", _spy)
 
@@ -918,3 +918,207 @@ def test_startup_writers_run_without_active_writer(seeded_db, monkeypatch):
         # Drop any context that might have been set (there should be
         # none, but be defensive in case a future change adds one).
         _context.clear_active()
+
+
+def test_post_migrate_analyze_reruns_when_the_schema_revision_moves(
+    seeded_db, monkeypatch, tmp_path
+):
+    """A once-EVER sentinel is the wrong gate for a per-migration step.
+
+    SQLite migrations rebuild tables: `batch_alter_table` with an added
+    foreign key cannot use native `ALTER TABLE`, so alembic does
+    move-and-copy, and the `DROP TABLE` in the middle deletes every
+    `sqlite_stat1` row for that table. Production carries real stats for
+    `article_lists` and would have lost them on the next deploy with
+    nothing to put them back, because `.broker_initial_analyze` has
+    existed there since 2026-05-22 and used to short-circuit this
+    unconditionally.
+
+    Deleting the ANALYZE call entirely previously passed every targeted
+    test, so this pins that it runs on a schema move and skips on a plain
+    restart.
+    """
+    import mimir.maintenance
+    from mimir.broker import server
+
+    calls: list[str] = []
+
+    class _Result:
+        elapsed_ms = 0
+
+    def _fake_analyze(full=False):
+        calls.append("ran")
+        return _Result()
+
+    # `_post_migrate_analyze_if_needed` imports `run_analyze` from
+    # `mimir.maintenance` inside the function body, so the module
+    # attribute is the live lookup.
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", _fake_analyze)
+
+    sock_dir = tmp_path / "analyze-gate"
+    sock_dir.mkdir()
+    sentinel = sock_dir / ".broker_initial_analyze"
+    sentinel.touch()
+
+    # Ordinary restart: sentinel present, schema unchanged. Must skip.
+    server._post_migrate_analyze_if_needed(sock_dir / "broker.sock", False)
+    assert calls == [], "ANALYZE ran on a plain restart with nothing to re-sample"
+
+    # A migration moved the revision. Must run, sentinel notwithstanding.
+    server._post_migrate_analyze_if_needed(sock_dir / "broker.sock", True)
+    assert calls == ["ran"], (
+        "ANALYZE was skipped after a schema migration; a table rebuild drops "
+        "that table's sqlite_stat1 rows and nothing else puts them back"
+    )
+
+
+def test_migrate_reports_whether_the_revision_actually_moved(tmp_path, monkeypatch):
+    """The DETECTOR, not just its consumer.
+
+    `test_post_migrate_analyze_reruns_when_the_schema_revision_moves`
+    hands `schema_changed` in by hand, so it pins what the ANALYZE gate
+    does with the flag and says nothing about whether the flag is ever
+    True. Hard-coding `schema_changed = False` in `_migrate_if_needed`
+    left the whole suite green, which means the mechanism the fix rests
+    on was entirely unguarded.
+
+    Runs against a throwaway database via `DATABASE_URL`, never the
+    ambient one: alembic here would otherwise target the developer's own
+    database.
+    """
+    import mimir.extensions
+    from sqlalchemy import create_engine
+
+    from mimir.broker import server
+    from mimir.config import settings
+
+    db = tmp_path / "revmove.db"
+    # Both have to move together. `alembic/env.py` migrates through
+    # `mimir.extensions.engine` while `_schema_revision` reads through
+    # the same object, so redirecting only `settings.database_url` would
+    # migrate the ambient database and inspect the throwaway one. An
+    # earlier version of this test did exactly that and reported a
+    # revision that never moved, which is the real failure mode this
+    # coupling exists to prevent.
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{db}")
+    monkeypatch.setattr(settings, "mimir_is_broker", True)
+    monkeypatch.setattr(mimir.extensions, "engine", create_engine(f"sqlite:///{db}"))
+
+    sock_dir = tmp_path / "sock"
+    sock_dir.mkdir()
+
+    # Fresh database: no `alembic_version` at all, so the revision moves
+    # from None to head.
+    assert server._schema_revision() is None
+    assert server._migrate_if_needed(sock_dir / "broker.sock") is True, (
+        "a first migration onto an empty database must report the revision "
+        "as having moved, or the post-migrate ANALYZE never runs"
+    )
+    assert server._schema_revision() is not None
+
+    # Idempotent re-check on an already-current database: nothing moved.
+    assert server._migrate_if_needed(sock_dir / "broker.sock") is False, (
+        "an ordinary restart reported a schema change, which would re-run "
+        "ANALYZE on every boot"
+    )
+
+
+def test_schema_revision_reads_the_engine_alembic_migrates_not_the_url(
+    tmp_path, monkeypatch
+):
+    """Which SOURCE `_schema_revision` reads, not merely what it returns.
+
+    `test_migrate_reports_whether_the_revision_actually_moved` points
+    `settings.database_url` and `mimir.extensions.engine` at the same
+    file, because it has to for alembic to migrate the database it then
+    inspects. That makes the two sources agree BY CONSTRUCTION, so it
+    cannot see them diverge: reverting `_schema_revision` to parse the
+    URL and open its own connection leaves it green, measured.
+
+    Here the two deliberately point at different databases. Reading the
+    engine is the whole fix (the engine is what `alembic/env.py`
+    migrates), and hand-parsing a SQLAlchemy URL into a filesystem path
+    is exactly where the two drift in production: relative versus
+    absolute paths, query parameters, a `sqlite+pysqlite://` driver
+    prefix. If "which database has the revision" and "which database got
+    migrated" are ever two answers, the before/after comparison reads
+    unchanged, the caller concludes no migration ran, and the
+    post-migrate ANALYZE is silently skipped on the one deploy that
+    needed it.
+    """
+    import sqlite3
+
+    import mimir.extensions
+    from sqlalchemy import create_engine
+
+    from mimir.broker import server
+    from mimir.config import settings
+
+    migrated = tmp_path / "migrated.db"
+    other = tmp_path / "other.db"
+    for db, revision in ((migrated, "rev-on-the-engine"), (other, "rev-on-the-url")):
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE alembic_version (version_num VARCHAR(32))")
+        conn.execute("INSERT INTO alembic_version VALUES (?)", (revision,))
+        conn.commit()
+        conn.close()
+
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{other}")
+    monkeypatch.setattr(settings, "mimir_is_broker", True)
+    monkeypatch.setattr(
+        mimir.extensions, "engine", create_engine(f"sqlite:///{migrated}")
+    )
+
+    assert server._schema_revision() == "rev-on-the-engine", (
+        "_schema_revision read the database named by settings.database_url "
+        "rather than the one mimir.extensions.engine (and therefore alembic) "
+        "is bound to"
+    )
+
+
+def test_post_backfill_analyze_runs_even_when_the_backfill_blows_up(
+    seeded_db, monkeypatch, tmp_path
+):
+    """All three exits from the backfill re-sample, including the worst.
+
+    The re-sample originally sat in the success branch only, so any
+    inbox erroring skipped it. Moving it out fixed the common case but
+    left the outer `except` returning early, which is the same bug one
+    level further out and the strictly worse instance: a session-level
+    failure part-way through leaves the most incomplete fill of all,
+    which is exactly when the column's distribution has moved and the
+    planner's stats are most stale.
+    """
+    import mimir.maintenance
+    from mimir.broker import server
+
+    calls: list[str] = []
+
+    class _Result:
+        elapsed_ms = 0
+
+    def _fake_analyze(full=False):
+        calls.append("ran")
+        return _Result()
+
+    def _explode(*_a, **_kw):
+        raise RuntimeError("simulated session-level failure mid-backfill")
+
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", _fake_analyze)
+    monkeypatch.setattr(server, "SessionLocal", _explode, raising=False)
+    monkeypatch.setattr("mimir.extensions.SessionLocal", _explode)
+
+    sock_dir = tmp_path / "boom"
+    sock_dir.mkdir()
+    # No sentinel, so the backfill actually runs rather than short-
+    # circuiting, and then dies inside the session.
+    server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
+
+    assert calls == ["ran"], (
+        "the backfill failed at session level and skipped the ANALYZE; a "
+        "partial fill is the state most in need of fresh planner stats"
+    )
+    assert not (sock_dir / ".thread_roots_backfilled").exists(), (
+        "sentinel written despite a failed run; no restart would retry, and "
+        "the sentinel is the only thing that makes this retry at all"
+    )
