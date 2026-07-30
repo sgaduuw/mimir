@@ -74,10 +74,75 @@ def _coerce_dt(value) -> datetime | None:
         return None
 
 
+def dedupe_thread(nodes: list) -> list:
+    """Drop repeated articles from a `get_thread` walk, preserving order.
+
+    A cyclic `thread_parent` (sender-controlled `In-Reply-To`, no cycle
+    guard at ingest) makes the recursive CTE re-emit the same article
+    once per level up to MAX_DEPTH. Both the thread view and the
+    message page's consolidation gate must count the SAME thread: the
+    view renders the deduped list, so a gate counting the raw one sees
+    1001 messages where the page shows 1, and consolidates onto a
+    single-message thread view, which is exactly what the
+    single-message rule exists to prevent.
+    """
+    seen: set[int] = set()
+    out = []
+    for node in nodes:
+        if node.id not in seen:
+            seen.add(node.id)
+            out.append(node)
+    return out
+
+
 def find_thread_root(session: Session, inbox: Inbox, message_id: str) -> str | None:
     """Return the message_id of the topmost ancestor present in this inbox.
-    Walks only within the inbox (via the article_lists join) so threads
-    don't span inboxes.
+
+    Reads the materialised `article_lists.thread_root_id` when it is
+    populated, and falls back to the recursive walk while it is NULL.
+    That fallback is what lets the column ship without a blocking
+    backfill: a partially-filled corpus is correct, just not yet fast.
+
+    The root's own membership is re-checked, so this keeps the
+    contract in the first line: the topmost ancestor PRESENT IN THIS
+    INBOX. A stored root can stop being a member without the FK's
+    `SET NULL` firing, because `reindex --from-scratch` drops
+    `article_lists` rows while the article survives. Without the
+    re-check the fast path would answer with a root the walk would
+    never return, and the caller would render an empty thread.
+
+    NOT used by `thread_roots.verify_thread_roots`, which deliberately
+    calls `_find_thread_root_cte` instead. Verification exists to catch
+    a wrong column value, and a verifier that reads the column it is
+    checking would agree with any corruption by construction.
+    """
+    row = session.execute(
+        text(
+            """
+            SELECT root.message_id
+              FROM article_lists al
+              JOIN articles a ON a.id = al.article_id
+              JOIN articles root ON root.id = al.thread_root_id
+              JOIN article_lists rl
+                ON rl.article_id = root.id AND rl.inbox_id = al.inbox_id
+             WHERE al.inbox_id = :inbox_id AND a.message_id = :mid
+            """
+        ),
+        {"inbox_id": inbox.id, "mid": message_id},
+    ).scalar()
+    if row is not None:
+        return row
+    return _find_thread_root_cte(session, inbox, message_id)
+
+
+def _find_thread_root_cte(
+    session: Session, inbox: Inbox, message_id: str
+) -> str | None:
+    """The recursive walk-up, ignoring the materialised column.
+
+    Kept as the independent source of truth: it is both the fallback
+    for unfilled rows and the oracle `verify_thread_roots` recomputes
+    against.
     """
     sql = text(
         """

@@ -184,6 +184,14 @@ uv run mimir reindex lkml 0.git                    # rewind state, re-walk; dedu
 uv run mimir reindex lkml 0.git --from-scratch     # also DELETE this inbox's links to that epoch first
 ```
 
+> **Local development only, currently.** `reindex` needs an active
+> broker writer, which only the broker's own `serve()` establishes, and
+> there is no `reindex` RPC to route it through. Against a deployed
+> instance it exits with an error naming
+> [#547](https://github.com/sgaduuw/mimir/issues/547) rather than
+> running partway. Use `mimir admin failures replay` to retry recorded
+> parse failures in the meantime.
+
 Output is one line per epoch, e.g.:
 
 ```
@@ -201,7 +209,12 @@ The default form is non-destructive: existing rows are left alone
 and only previously-failed (or genuinely new) messages get inserted.
 `--from-scratch` deletes the per-inbox `article_lists` rows
 pointing at this epoch first; the `articles` themselves stay (a
-cross-post may still be linked from another inbox).
+cross-post may still be linked from another inbox). It then rebuilds
+the inbox's thread roots, because dropping one epoch's rows breaks
+the parent chain for replies living in other epochs. That rebuild
+runs even when the re-walk fails, so an interrupted run cannot leave
+an inbox unrooted, and the command exits non-zero if it could not
+finish.
 
 ### Ingest contract
 
@@ -297,13 +310,24 @@ defunct inbox.
 ## Managing robots.txt
 
 `/robots.txt` is rendered from the `robots_rules` table on every
-request. The migration seeds a `*` stanza with the previous
-hardcoded values plus Cloudflare-style Content-Signal defaults
-(`Crawl-delay: 5`, `Disallow: /*/attachment/`,
-`Content-Signal: search=yes, ai-input=no, ai-train=no`), so a
-fresh deploy serves the structurally-same body it always did
-with an additional Content-Signal line. Operator mutates the
-table via:
+request. Migrations seed a `*` stanza with Cloudflare-style
+Content-Signal defaults plus the crawl-budget disallows:
+
+```
+Crawl-delay: 5
+Content-Signal: search=yes, ai-input=no, ai-train=no
+Disallow: /*/attachment/
+Disallow: /api/
+Disallow: /*/search
+```
+
+`/api/` is the htmx load-more endpoint (HTML partials, one URL per
+offset) and `/*/search` is internal search results (one URL per
+query); neither can be a useful search result, so keeping crawlers
+out of both leaves more crawl budget for archive content. Both are
+appended to existing deploys by migration `e3aa78c72a8d`, which only
+adds what's missing so a curated disallow list survives. Operator
+mutates the table via:
 
 ```sh
 mimir admin robots list
@@ -370,6 +394,10 @@ article_lists                         -- per-inbox presence; cross-posts get N r
   article_id (FK → articles.id, ON DELETE CASCADE),
   inbox_id   (FK → inboxes.id,  ON DELETE CASCADE),
   epoch, commit_sha,                  -- pointer back to the public-inbox blob in *this* inbox's mirror
+  thread_root_id (FK → articles.id, ON DELETE SET NULL),
+                                      -- materialised thread root, per inbox (threading is inbox-scoped).
+                                      -- A root points at itself; NULL means "not yet computed", never
+                                      -- "is a root", so readers fall back to the recursive CTE.
   PRIMARY KEY (article_id, inbox_id)
 
 ingest_state
@@ -394,6 +422,12 @@ canonical read path: looks up `(epoch, commit_sha)` for the message
 in the given inbox, opens the dulwich repo, fetches the blob, runs
 `parse_message` to return a `ParsedArticle` with body, full headers,
 and attachment bytes.
+
+`read_messages(session, inbox, message_ids)` is its bulk sibling,
+used by the whole-thread view: one lookup and one repo open per
+*epoch* rather than per message, since reopening a repo re-reads the
+epoch's pack index. It returns only the messages it could read, so a
+mirror gap costs one body rather than the whole page.
 
 SQLite runs in WAL mode with `synchronous=NORMAL` and
 `foreign_keys=ON`, set on every connection from
@@ -430,9 +464,13 @@ mimir/
                          per-language Pygments overlay), linkify
                          (URL / Message-ID + DCO trailer redaction),
                          body (orchestrator + render_body entry).
-  store.py               read_message(): SQL lookup + dulwich fetch + parse
+  store.py               read_message()/read_messages(): SQL lookup +
+                         dulwich fetch + parse, singly or in bulk
   sync.py                public-inbox manifest discovery + git clone/fetch
   threading.py           recursive CTEs for thread reconstruction + active threads
+  thread_roots.py        maintains article_lists.thread_root_id: startup
+                         backfill, verification against the CTE oracle,
+                         and the mimir backfill-thread-roots command
   dashboard.py           landing-page aggregations (trackers, pulls, stats, sparkline)
   cache.py               DB-backed cache with JSON encode/decode + a type registry
   canonical.py           canonical-inbox resolution from To/Cc headers
@@ -471,7 +509,8 @@ mimir/
                          urls (URL composition + site-base memo).
   templates/             Jinja2 (base, index, inbox, daily, since, year,
                          month, search, author, reviewer, maintainer,
-                         subsystem, message, attachment_preview, _recent_items)
+                         subsystem, subsystem_index, message,
+                         attachment_preview, _recent_items)
 alembic/                 migrations
 tests/                   pytest
 Inboxes/                 default mirror root (per-inbox subdirs; gitignored)
@@ -501,6 +540,24 @@ Routes:
   section is hidden when the inbox has no trackers configured); a
   "this day, 5 years ago" sample; the last 10 messages in the
   inbox; a 30-day daily-volume sparkline + archive stats footer.
+- `GET /<inbox>/subsystem/`, index of the subsystems with patch
+  activity on this list in the last 7 days, each linking to its own
+  dashboard. Linked from the inbox dashboard, and the only page that
+  links the long tail of per-subsystem dashboards (elsewhere they are
+  reachable only from a chip on a message that happened to match).
+  Deliberately the ACTIVE set rather than the full MAINTAINERS
+  taxonomy: the route below is per-inbox, so listing every section
+  from every inbox would advertise a page per (inbox, subsystem) pair
+  that mostly does not exist as content. Reads the same cached payload
+  as the dashboard widget and never computes on a request, so a cold
+  cache renders empty until the next warm cycle.
+- `GET /<inbox>/subsystem/<name>/`, per-subsystem dashboard: the
+  MAINTAINERS-derived header (status, `M:`/`R:` maintainers, `F:`/`X:`
+  paths), a 30-day sparkline, recent patches, active threads, active
+  reviewers, and triage queues, for articles whose diff-touched paths
+  match that section's globs. Maintainer addresses link to their
+  cross-inbox profile. URL is lowercase by convention; other casings
+  301 to it.
 - `GET /<inbox>/today` and `GET /<inbox>/yesterday`, daily views
   showing every thread with at least one message on that calendar
   day (UTC), plus the day's total message count.
@@ -558,6 +615,25 @@ Routes:
   patch hunks. 24h cached, source emails are immutable in the
   mirror. Linked from each non-current entry in the patch page's
   Revisions fold (the `[diff vs current]` chip).
+- `GET /<inbox>/<YYYY>/<MM>/<root-id>/t`, whole-thread view: every
+  message in the conversation rendered inline on one page, newest
+  reply last, each linking to its own message page. Rendering is
+  capped at `THREAD_VIEW_RENDER_CAP` messages (default 50); past
+  that the remainder is listed as links rather than inlined.
+  Requesting `/t` on a reply 301s to its thread root, so a
+  conversation has exactly one URL per inbox. Message pages in a
+  multi-message thread carry a `<link rel="canonical">` pointing here;
+  messages past the cap and single-message threads keep their own
+  (this page would not contain them, or would be the poorer page). The
+  view repeats the root's subsystem attribution, lifecycle badges and
+  lifecycle prose so the canonical target is not thinner than the
+  pages consolidating onto it. Thread views are self-canonical per
+  inbox: threading is inbox-scoped, so each inbox's copy of a
+  conversation can have different membership and pointing one at
+  another would hand authority to a page missing content. The
+  per-inbox sitemap lists these thread URLs rather than one URL per
+  message. Emits `DiscussionForumPosting` JSON-LD with each reply as
+  a `comment`. Same ETag revalidation as the message page.
 - `GET /<inbox>/<YYYY>/<MM>/<article-id>/attachment/<n>`, binary
   download of the n-th attachment, served from the dulwich-fetched
   blob.
@@ -572,8 +648,9 @@ Routes:
 - `GET /healthz` and `GET /readyz`, cheap probes for orchestrators.
   `/healthz` does no DB work; `/readyz` runs a `SELECT 1`. Both
   bypass the route cache via `Cache-Control: no-store`.
-- `GET /robots.txt`, disallows `/*/attachment/*` and points at the
-  sitemap.
+- `GET /robots.txt`, disallows `/*/attachment/`, `/api/`, and
+  `/*/search`, and points at the sitemap. Rendered from the
+  `robots_rules` table, see "Managing robots.txt".
 - `GET /sitemap.xml`, sitemap index pointing at `/meta-sitemap.xml`,
   one `/<inbox>/sitemap.xml` per configured inbox, and
   `/sitemap-maintainers.xml`. Responses are unconditional (no
@@ -581,13 +658,36 @@ Routes:
   pinned stale structural versions in downstream caches. Freshness
   is carried by the per-URL `<lastmod>` inside the XML; edges cache
   briefly via `Cache-Control: max-age=300`. Body cached for 1 h.
+- `GET /<inbox>/sitemap.xml`, per-inbox urlset: the dashboard, the
+  subsystem index and the subsystem dashboards active in that inbox
+  (`<lastmod>` = that subsystem's last activity), the year and month
+  archives that have messages, and the most recent thread views (one URL per conversation, not one per message, since
+  message pages canonicalise to their thread). Each thread's
+  `<lastmod>` is the date of its NEWEST message, so a thread that
+  gains a reply announces that it changed; the URL still carries the
+  root's date, since that is the thread's identity. (Until the
+  materialised thread root landed this was the root's date, because
+  deriving last activity needed a recursive walk-up per thread.)
+  Cached for 1 h.
+- `GET /<inbox>/<YYYY>/<MM>/sitemap.xml`, one month of that inbox's
+  thread URLs, paged as `sitemap-2.xml` and so on when a month exceeds
+  20,000 URLs. Two ceilings apply and the protocol's is not the tighter
+  one: sitemaps.org caps a urlset at 50,000, but a page slice is passed
+  whole to three queries as an expanding `IN` list, and SQLite's
+  bind-parameter limit is 32,766. This is what
+  covers the deep archive: the flat per-inbox sitemap above lists only
+  the most recent few thousand threads, so on a corpus of this size
+  everything older was in no sitemap at all. The index enumerates every
+  page, because sitemaps.org forbids an index referencing another
+  index. Cached for 1 h.
 - `GET /sitemap-maintainers.xml`, one urlset listing every
   `/maintainers/<address>` profile page (one URL per MAINTAINERS
   `M:` maintainer). No per-URL `<lastmod>`. Cached for 1 h.
 - `GET /maintainers/<address>`, global (cross-inbox) profile page
   for one MAINTAINERS `M:` maintainer: the subsystems they maintain
   plus links to every inbox with indexed review-trailer activity
-  from them. 404 for a non-maintainer address. The address is
+  from them. Linked from every subsystem dashboard and from the
+  subsystem line on patch pages. 404 for a non-maintainer address. The address is
   lowercased to one canonical URL.
 - `GET /security.txt` and `GET /.well-known/security.txt`  
   RFC 9116 contact info. 404 unless `SECURITY_CONTACT` is set.
@@ -644,15 +744,17 @@ To eliminate user-facing cold-start latency, run:
 
 ```sh
 uv run mimir warm-cache               # all tiers (operator one-off)
-uv run mimir warm-cache --tier fast   # sitemaps + cheap helpers
-uv run mimir warm-cache --tier slow   # subsystem dashboards + rest
+uv run mimir warm-cache --tier fast   # cheap per-inbox helpers
+uv run mimir warm-cache --tier slow   # sitemaps, subsystem dashboards, rest
 ```
 
 from cron or a systemd timer. The work splits into a **fast tier**
-(sitemaps, archive_stats, latest pulls, latest stable releases,
-recent articles) on a per-minute cadence and a **slow tier**
-(subsystem dashboards, per-tracker queries, the rest) on a per-hour
-cadence. The container scheduler fires them on the
+(archive_stats, latest pulls, latest stable releases, recent
+articles) on a per-minute cadence and a **slow tier** (the sitemaps,
+subsystem dashboards, per-tracker queries, the rest) on a per-hour
+cadence. The sitemaps sit in the slow tier because their finest
+freshness signal is a date-grained `<lastmod>`, so a per-minute
+rebuild could not express anything a per-hour one does not. The container scheduler fires them on the
 `WARM_CACHE_EVERY` / `WARM_CACHE_SLOW_EVERY` cadences (see
 `deploy/README.md`); broker-side, the warm-worker queue is a
 priority queue so a fast-tier RPC queued behind a slow-tier RPC
@@ -770,9 +872,16 @@ mimir runs three containers (since 2.0.0; see `compose.yaml`):
   Serves cache + admin RPCs over a UNIX socket at
   `/data/.broker.sock`. Self-bootstraps on startup (`alembic
   upgrade head` → `bootstrap_inboxes` → bounded post-migrate
+  `ANALYZE` → one-time thread-root backfill → a second bounded
   `ANALYZE`), each gated by a sentinel file so subsequent
-  restarts skip. Internal periodic purge thread drops expired
-  cache rows.
+  restarts skip. All of it runs before the broker accepts RPCs,
+  so a deploy carrying a schema change has to fit the start
+  budget: `start_period` in `compose.yaml`, `TimeoutStartSec` on
+  the production quadlet. Both other containers gate on the
+  broker's healthcheck, so overrunning it fails the deploy rather
+  than degrading it. Thread-root verification deliberately sits
+  outside that budget, on a daemon thread after startup.
+  Internal periodic purge thread drops expired cache rows.
 - **`mimir`** is the web tier. Opens every SQLite connection with
   `PRAGMA query_only=1`; cache writes route through the broker
   socket. Depends on the broker's healthcheck so cold requests
@@ -826,20 +935,28 @@ uv run mimir update-mainline
 # Re-parse the local HEAD without fetching:
 uv run mimir update-mainline --skip-fetch
 
-# Force re-parse even when HEAD hasn't moved (after a parser fix):
+# Force re-parse even when MAINTAINERS is unchanged (after a parser fix):
 uv run mimir update-mainline --force
 ```
 
-Steady-state ticks (HEAD unchanged) are cheap: fetch, compare,
-no-op. Operator can run this on a cron / systemd timer; the
-schema is replaced transactionally on every change so consumers
-never see a half-loaded subsystems table.
+Steady-state ticks are cheap: fetch, compare, no-op. The
+comparison is against the MAINTAINERS **blob**, not the tree
+HEAD, so the reparse (and the ~15,000-row schema replace it
+drives) happens only when that file's content actually changes,
+not on every push to Linus's tree. Operator can run this on a
+cron / systemd timer; the schema is replaced transactionally on
+every change so consumers never see a half-loaded subsystems
+table.
+
+One consequence worth knowing: because the gate is on content,
+a subsystems table that was emptied out-of-band will no longer
+be rebuilt by the next ordinary tick. Use `--force`.
 
 `update-mainline` runs two passes against the tree:
 
 1. **MAINTAINERS load**, replaces the `subsystems` schema as
-   above. Skipped when HEAD is unchanged. `--skip-maintainers`
-   disables this pass for the tick.
+   above. Skipped when MAINTAINERS is unchanged.
+   `--skip-maintainers` disables this pass for the tick.
 2. **`Link:`-trailer walk**, scans every new commit for
    `Link: https://lore.kernel.org/.../<msgid>` trailers and
    inserts `mainline_commits` rows. Resumable; the first run
@@ -885,6 +1002,30 @@ Output buckets: `indexed` (covers), `in_series_indexed`
 (in-series patches linked to a cover), `in_series_orphan`
 (in-series patch with position set but cover not yet known,
 re-attempted on the next run), `not_cover`, `skipped`.
+
+### Backfilling thread roots
+
+Each message records its thread's root per inbox in
+`article_lists.thread_root_id`, so a sitemap can list one entry per
+conversation without re-deriving the root on every read. Ingest,
+`reindex` and `admin failures replay` all maintain it.
+
+**Operators do not normally need to run this.** The broker fills the
+column itself at startup, before it opens its socket and therefore
+before the web tier is allowed to serve, gated on a
+`/data/.thread_roots_backfilled` sentinel. A run that cannot complete
+withholds that sentinel so the next restart retries, and logs
+`backfill incomplete`, which is the line to grep for after a deploy.
+
+```sh
+uv run mimir backfill-thread-roots            # fill rows that predate the column
+uv run mimir backfill-thread-roots --verify   # also re-check a sample against the CTE
+```
+
+Idempotent: it only touches rows where the column is NULL, which is
+what "not yet computed" means. `--verify` recomputes a random sample
+with an independent recursive CTE rather than reading the column, so
+the check cannot agree with a corrupt value by construction.
 
 ## IndexNow (Bing / Yandex push notifications)
 

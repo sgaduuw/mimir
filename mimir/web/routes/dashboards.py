@@ -25,11 +25,13 @@ from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Article, ArticleList, Inbox, Subsystem
 from mimir.config import settings
 from mimir.seo import _json_ld_index, _json_ld_inbox
+from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.subsystems_dashboard import (
     active_reviewers_in_subsystem,
     active_threads_in_subsystem,
     daily_volume_in_subsystem,
     most_active_subsystems_global,
+    MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     most_active_subsystems_in_inbox,
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
@@ -154,6 +156,17 @@ def index():
             limit=12,
             compute_on_miss=False,
         )
+        # Drop names the dashboard route cannot serve before the template
+        # ever sees them. The card grid makes the WHOLE card an anchor,
+        # so unlike the inline chips there is no useful unlinked form to
+        # fall back to. Filtering here rather than in the template also
+        # means the section's `{% if %}` and its loop agree by
+        # construction: gating on the unfiltered list would render a
+        # heading over an empty grid whenever every active name happens
+        # to be unaddressable.
+        active_subsystems = [
+            s for s in active_subsystems if is_addressable_subsystem_name(s.name)
+        ]
     base = _site_base()
     return render_template(
         "index.html",
@@ -241,6 +254,49 @@ def inbox_dashboard(inbox_name: str):
         page_json_ld=_json_ld_inbox(base, inbox, active),
         lifecycle_status_by_id=lifecycle_status_by_id,
     )
+
+
+@bp_web.route("/<inbox_name>/subsystem/")
+def subsystem_index(inbox_name: str):
+    """Browsable list of the subsystems active in this inbox.
+
+    A crawl hub. Per-subsystem dashboards were reachable only from
+    scattered chips on individual message and thread pages, so a
+    crawler had to find a matching patch first to discover one at all.
+
+    Deliberately the ACTIVE set, not the full MAINTAINERS taxonomy.
+    Listing all ~3,300 sections from all ~200 inboxes would advertise
+    ~660,000 URLs, the overwhelming majority of which are empty for
+    that inbox: the subsystem exists globally but no patch in this
+    list touches its paths. Today those URLs stay unlinked unless a
+    real patch matched, which is what keeps them worth indexing at
+    all; a complete index would trade that for a thin-page factory.
+    The heading says "active" so the page is not claiming to be a
+    complete directory.
+
+    Reads the same cached top-N payload as the dashboard widget, with
+    `compute_on_miss=False` for the same reason that one does: the
+    underlying aggregation is multi-second per inbox and must never
+    run on a request. Cold cache renders an empty list for at most one
+    warm cycle.
+    """
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        subsystems = most_active_subsystems_in_inbox(
+            session,
+            inbox,
+            days=7,
+            limit=MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
+            compute_on_miss=False,
+        )
+        base = _site_base()
+        return render_template(
+            "subsystem_index.html",
+            inbox_name=inbox.name,
+            current_inbox=inbox.name,
+            subsystems=subsystems,
+            canonical_url=f"{base}/{inbox.name}/subsystem/",
+        )
 
 
 @bp_web.route("/<inbox_name>/subsystem/<path:name>/")
@@ -347,6 +403,18 @@ def subsystem_dashboard(inbox_name: str, name: str):
         "subsystem.html",
         inbox_name=inbox.name,
         current_inbox=inbox.name,
+        # Explicit, not the `default_canonical_url` fallback. That
+        # fallback is `_site_base() + request.path`, and Werkzeug's
+        # `request.path` is URL-DECODED, so a section named
+        # `ARM/AT91 SOC SUPPORT` produced a canonical containing raw
+        # spaces: not byte-identical to the link and the sitemap entry
+        # (which percent-encode), and not a well-formed URI either.
+        # Nearly every MAINTAINERS title has a space, so this was
+        # almost every page. Inert until this change set started
+        # advertising these URLs in the per-inbox sitemap; a sitemap
+        # <loc> whose page names a different canonical is exactly the
+        # duplicate-URL signal `subsystem_path` exists to prevent.
+        canonical_url=_site_base() + subsystem_path(inbox.name, name_lower),
         subsystem=subsystem,
         recent=recent,
         recent_limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,

@@ -731,7 +731,10 @@ def test_robots_reset_via_broker_reseeds_defaults(seeded_db):
         rules = svc.list_rules(s)
     assert [r.user_agent for r in rules] == ["*"]
     assert rules[0].crawl_delay == 5
-    assert rules[0].disallow_paths == ["/*/attachment/"]
+    # Reseeds from `_DEFAULT_STAR_DISALLOW`; reference the constant so
+    # this pins "reset restores the defaults" rather than a snapshot of
+    # what the defaults happened to be.
+    assert rules[0].disallow_paths == list(svc._DEFAULT_STAR_DISALLOW)
 
 
 def test_cli_admin_robots_add_dispatches_via_broker(seeded_db, monkeypatch):

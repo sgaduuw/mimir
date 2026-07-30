@@ -9,12 +9,15 @@ as falsy (no inbox nav links rendered, no atom-feed `<link>`).
 """
 
 import re
-from urllib.parse import quote
 
 from flask import abort, render_template
 
 from mimir.extensions import SessionLocal
-from mimir.maintainer_directory import MaintainerProfile, maintainer_profile
+from mimir.maintainer_directory import (
+    MaintainerProfile,
+    maintainer_path,
+    maintainer_profile,
+)
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _site_base
 
@@ -66,7 +69,7 @@ def maintainer_view(address: str):
             abort(404)
 
     base = _site_base()
-    canonical_url = f"{base}/maintainers/{quote(address_normalized, safe='@')}"
+    canonical_url = base + maintainer_path(address_normalized)
     return render_template(
         "maintainer.html",
         profile=profile,

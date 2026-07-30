@@ -81,6 +81,10 @@ def _replay_loop(
     # when on the conn path. On the session path we mutate ORM objects in
     # the loop and let the single commit flush them.
     still_failed_updates: list[dict] = []
+    # Message ids recovered by this run. Needed by name rather than by
+    # article id because the Session path `add()`s the Article and its
+    # id is only assigned at flush, which happens after the loop.
+    recovered_msgids: list[str] = []
     for row in rows:
         if is_conn:
             row_epoch = row["epoch"]
@@ -273,6 +277,31 @@ def _replay_loop(
                     )
             conn_or_session.delete(row)
         out.recovered += 1
+        recovered_msgids.append(parsed.message_id)
+
+    # Replay inserts `article_lists` rows directly, so their
+    # materialised thread root is unset. Left alone those rows stay
+    # NULL permanently, even on a corpus where the backfill has already
+    # run and the operator has no reason to run it again, and every
+    # later reply to one of them stays NULL too. Resolving here keeps
+    # the column self-maintaining rather than leaving a hole that only
+    # a remembered follow-up command would close.
+    #
+    # Idempotent and cheap: the passes only touch rows that are still
+    # NULL, so on a fully-backfilled corpus with nothing recovered this
+    # is a couple of no-op statements.
+    if out.recovered:
+        # Flush first on the Session path. `SessionLocal` is
+        # `autoflush=False`, and the passes below are raw `text()`
+        # UPDATEs, so without this they would run against a database
+        # that has not yet seen the ORM rows this loop just `add()`ed
+        # and the whole call would be a silent no-op, re-creating
+        # exactly the permanent-NULL hole it exists to close. Portfolio
+        # MEMORY 2026-06-13: bulk raw SQL after ORM adds needs an
+        # explicit flush under autoflush=False.
+        if not is_conn:
+            conn_or_session.flush()
+        _resolve_roots_after_replay(conn_or_session, inbox_id, recovered_msgids)
 
     # Flush still-failed updates: one UPDATE per row so each carries
     # its specific error_class / error_message.
@@ -296,6 +325,61 @@ def _replay_loop(
         conn_or_session.commit()
 
     return out
+
+
+def _resolve_roots_after_replay(
+    conn_or_session, inbox_id: int, recovered_msgids: list[str]
+) -> None:
+    """Run the thread-root passes for one inbox after a replay.
+
+    `replay_failures` holds either a writer Connection (broker path) or
+    a Session (legacy path). The passes only `execute(text(...))` and
+    read `.rowcount`, which both support identically, so neither needs
+    wrapping.
+
+    Two halves, and the passes are only the second one.
+
+    **Invalidate what the recovered article now owns.** A reply that
+    arrived while its parent sat in `parse_failures` found no parent in
+    this inbox and correctly self-rooted, which makes its row NON-NULL.
+    All three passes gate on `thread_root_id IS NULL`, so they skip that
+    row forever: the recovered parent takes one root and its waiting
+    subtree keeps another, permanently, with both halves rendering fine
+    and nothing erroring. No shipped command repairs it either, because
+    every repair path keys on NULL too.
+
+    So each recovered article's descendants are set back to NULL first,
+    which is the state that means "not yet computed" (readers fall back
+    to the recursive CTE) and the only state the passes below can act
+    on. This mirrors what ingest does for the same arrival order via
+    `_resolve_thread_root`; replay previously reused only the
+    convergence half.
+
+    **Then converge.** The same idempotent passes the backfill uses,
+    which now see the invalidated rows and recompute the whole subtree
+    onto the recovered parent's root.
+    """
+    from mimir.ingest._pending import _set_subtree_root
+    from mimir.thread_roots import drive_passes
+
+    for msgid in recovered_msgids:
+        article_id = conn_or_session.execute(
+            select(Article.id).where(Article.message_id == msgid)
+        ).scalar_one_or_none()
+        if article_id is None:
+            # Recovered as a cross-post link to an article that has
+            # since gone (an inbox delete racing a replay). Nothing to
+            # re-root.
+            continue
+        _set_subtree_root(conn_or_session, inbox_id, article_id, None)
+
+    counts = drive_passes(lambda fn: fn(conn_or_session, inbox_id))
+    if counts["exhausted"]:
+        logger.warning(
+            "thread-roots: inbox %s hit the pass budget during replay; "
+            "rows remain unrooted, run backfill-thread-roots",
+            inbox_id,
+        )
 
 
 def replay_failures(

@@ -513,7 +513,7 @@ def _submit_mainline_cursor_update(
     UPSERT: works whether MainlineState has a row for this tree
     yet or not. tree_name is the PK; on conflict, only
     commits_walked_to_sha is updated. last_commit_sha (the
-    MAINTAINERS HEAD cursor) and last_walked_at are not touched
+    MAINTAINERS blob cursor) and last_walked_at are not touched
     here; they have their own write paths."""
 
     def _fn(conn):
@@ -555,7 +555,7 @@ def _submit_last_walked_at(
 
     UPSERT: works whether MainlineState has a row for this tree yet
     or not. tree_name is the PK; on conflict, ONLY `last_walked_at`
-    is updated. `last_commit_sha` (the MAINTAINERS HEAD cursor) and
+    is updated. `last_commit_sha` (the MAINTAINERS blob cursor) and
     `commits_walked_to_sha` (the Link-trailer walker cursor) have
     their own write paths and must not be clobbered here."""
 
@@ -575,10 +575,58 @@ def _submit_last_walked_at(
     )
 
 
+def _rules_cursor_content(stored: str | None) -> str | None:
+    """The MAINTAINERS-blob half of a stored rules cursor.
+
+    The cursor is `<blob-sha>` normally and `<blob-sha>.<generation>`
+    after a forced rebuild (see `_next_rules_cursor`). The reparse gate
+    compares only this half, so a forced rebuild does not cost an extra
+    reparse on the next natural tick."""
+    if stored is None:
+        return None
+    return stored.split(".", 1)[0]
+
+
+def _next_rules_cursor(stored: str | None, maintainers_sha: str) -> str:
+    """The cursor value to store for a rebuild that just happened.
+
+    When the blob changed, the content itself is a new version, so the
+    bare sha is enough. When it did NOT change, this rebuild can only be
+    a `--force`, and re-storing the same value would be a lie to the one
+    consumer that reads this as a version rather than as a gate: the web
+    tier folds it into every message page and thread view's ETag as the
+    subsystem-rule version. Freezing it there means `--force` rebuilds
+    the rules, the origin renders the new subsystem lines, and the CDN
+    plus every crawler keep serving the contradicted body off a 304
+    forever, with no expiry able to break it. That is the 3.6.1 sitemap
+    incident from the other side, reached through the recovery step the
+    README documents for exactly this situation.
+
+    A forced rebuild IS the operator asserting the rules may differ from
+    what the bytes imply (a parser fix, a hand-repaired triple), so it
+    gets a new generation."""
+    if _rules_cursor_content(stored) != maintainers_sha:
+        return maintainers_sha
+    _, _, gen = (stored or "").partition(".")
+    try:
+        current = int(gen)
+    except ValueError:
+        # Two ways in. `gen` is "" on the FIRST force, because the
+        # cursor is still a bare sha; that is the ordinary path. It is
+        # non-numeric only on a hand-edited or corrupt row, and raising
+        # there would leave `--force` permanently broken on that tree
+        # while ordinary ticks kept silently no-opping, i.e. the
+        # operator's documented recovery path dead for a reason they
+        # cannot see. Restarting the count is recoverable and enough:
+        # any new value moves the validator, which is the whole job.
+        current = 0
+    return f"{maintainers_sha}.{current + 1}"
+
+
 def _submit_maintainers_replace(
     writer,
     tree_name: str,
-    head_sha: str,
+    maintainers_sha: str,
     force: bool,
     sub_rows: list[dict],
     path_rows_for: Callable[[list[int]], list[dict]],
@@ -610,7 +658,7 @@ def _submit_maintainers_replace(
             )
         ).first()
         last_sha = row[0] if row else None
-        if last_sha == head_sha and not force:
+        if _rules_cursor_content(last_sha) == maintainers_sha and not force:
             # Sentinel: the replace did not run. The caller skips the
             # cache invalidations and returns (False, 0, head_sha).
             return (False, 0)
@@ -639,15 +687,17 @@ def _submit_maintainers_replace(
         if maintainer_rows:
             conn.execute(insert(SubsystemMaintainer), maintainer_rows)
 
-        # UPSERT the MAINTAINERS HEAD cursor. Distinct from the
+        # UPSERT the MAINTAINERS rules cursor. Distinct from the
         # Link-trailer walker cursor (`commits_walked_to_sha`); only
-        # `last_commit_sha` is touched here.
+        # `last_commit_sha` is touched here. Computed once into a local
+        # so the insert and the update branches cannot drift apart.
+        next_cursor = _next_rules_cursor(last_sha, maintainers_sha)
         conn.execute(
             sqlite_insert(MainlineState)
-            .values(tree_name=tree_name, last_commit_sha=head_sha)
+            .values(tree_name=tree_name, last_commit_sha=next_cursor)
             .on_conflict_do_update(
                 index_elements=["tree_name"],
-                set_={"last_commit_sha": head_sha},
+                set_={"last_commit_sha": next_cursor},
             )
         )
         return (True, loaded)
@@ -666,8 +716,18 @@ def load_maintainers(
     """Read MAINTAINERS at HEAD and replace the
     `subsystems` / `subsystem_paths` / `subsystem_maintainers`
     triple in one transaction. Returns
-    `(ran, subsystems_loaded, head_sha)`; `ran=False` when HEAD
-    matches `last_commit_sha` and `force=False`.
+    `(ran, subsystems_loaded, head_sha)`; `ran=False` when the
+    MAINTAINERS blob's object id matches `last_commit_sha` and
+    `force=False`.
+
+    Gated on the BLOB, not on HEAD. Linus's tree is pushed to many
+    times a day and MAINTAINERS changes far more rarely, so gating on
+    HEAD meant re-parsing the file and rewriting the whole ~15k-row
+    subsystems triple to identical values on most ticks. It also
+    rotated the subsystem-rule version the web tier folds into every
+    message page's ETag (`web.routes._validators`), so the entire
+    archive's validators moved on every push. The return value stays
+    HEAD: that is what the operator-facing `mainline_head` reports.
 
     BEGIN IMMEDIATE: the reparse reads `MainlineState` then writes
     the whole subsystems triple in one transaction, the exact
@@ -688,6 +748,11 @@ def load_maintainers(
                 f"no MAINTAINERS file at HEAD of {tree_path}; wrong tree?"
             ) from exc
         blob_bytes = repo[blob_sha].data
+        # Git object ids are content-addressed, so this changes if and
+        # only if MAINTAINERS' bytes changed. That is the property the
+        # gate below wants; HEAD is merely correlated with it, and
+        # badly (see this function's docstring).
+        maintainers_sha = blob_sha.decode("ascii")
 
     # Phase 6a dual-dispatch: parse + build the row payloads BEFORE the
     # write so the writer-lock hold is short, then either submit one
@@ -734,7 +799,7 @@ def load_maintainers(
         ran, loaded_out = _submit_maintainers_replace(
             writer,
             tree_name,
-            head_sha,
+            maintainers_sha,
             force,
             sub_rows,
             _path_rows_for,
@@ -755,7 +820,10 @@ def load_maintainers(
             if state is None:
                 state = MainlineState(tree_name=tree_name)
                 session.add(state)
-            if state.last_commit_sha == head_sha and not force:
+            if (
+                _rules_cursor_content(state.last_commit_sha) == maintainers_sha
+                and not force
+            ):
                 return False, 0, head_sha
             # The cascade FK on `subsystems.id` clears `subsystem_paths`
             # + `subsystem_maintainers` via ON DELETE CASCADE; SQLite
@@ -777,7 +845,9 @@ def load_maintainers(
                 session.execute(insert(SubsystemPath), path_rows)
             if maintainer_rows:
                 session.execute(insert(SubsystemMaintainer), maintainer_rows)
-            state.last_commit_sha = head_sha
+            state.last_commit_sha = _next_rules_cursor(
+                state.last_commit_sha, maintainers_sha
+            )
             session.commit()
 
     # Invalidate the two derived caches that key off MAINTAINERS:

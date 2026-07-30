@@ -21,6 +21,7 @@ need a dependency on that package for one shared constant.
 """
 
 from dataclasses import dataclass
+from urllib.parse import quote
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -38,6 +39,23 @@ from mimir.models import (
 # kept as a local constant so this module has no import-time
 # dependency on the subsystems_dashboard package.
 MAINTAINER_DIRECTORY_CACHE_TTL_SEC = 3600
+
+
+def maintainer_path(address: str) -> str:
+    """The site-relative URL for one maintainer's profile page.
+
+    Shared so the profile route's own `<link rel="canonical">`, the
+    maintainers sitemap, and the in-page links that point at it cannot
+    disagree. `@` stays literal (it is legal in a path segment and the
+    canonical form has always kept it), so a link built here matches the
+    canonical byte for byte rather than resolving to it via a redirect
+    or a duplicate-URL signal.
+
+    The address is lowercased: MAINTAINERS is not consistently cased for
+    the same person across sections, and the route keys on the
+    lowercased form.
+    """
+    return f"/maintainers/{quote(address.lower(), safe='@')}"
 
 
 @dataclass

@@ -32,7 +32,7 @@ from mimir.cli._common import _configure_logging
 @click.option(
     "--force",
     is_flag=True,
-    help="Re-parse MAINTAINERS and replace subsystems even if HEAD hasn't moved.",
+    help="Re-parse MAINTAINERS and replace subsystems even if the file is unchanged.",
 )
 @click.option(
     "-v",
@@ -56,9 +56,10 @@ def update_mainline_command(
 
     1. MAINTAINERS: read the file at HEAD, replace the
        `subsystems` / `subsystem_paths` / `subsystem_maintainers`
-       tables transactionally. Skipped when HEAD hasn't moved
-       since the last load (`--force` overrides; for re-runs
-       after a parser fix). `--skip-maintainers` disables this
+       tables transactionally. Skipped when the MAINTAINERS file
+       itself hasn't changed since the last load, which is most
+       ticks (`--force` overrides; for re-runs after a parser fix,
+       or to rebuild a triple that was emptied out-of-band). `--skip-maintainers` disables this
        pass entirely for the tick.
 
     2. Commit Link-trailer walk: scan every commit since the last

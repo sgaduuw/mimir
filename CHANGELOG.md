@@ -9,7 +9,253 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
-## [Unreleased]
+## [3.7.0] - 2026-07-31
+
+### Added
+
+- A subsystem index at `/<inbox>/subsystem/`, listing the subsystems
+  with patch activity on that list in the last 7 days and linking each
+  to its own dashboard. Those dashboards are the most distinctive pages
+  mimir has, and until now they were reachable only from a chip on a
+  message that happened to match, so finding one meant finding a patch
+  first. The index is linked from the inbox dashboard, and it plus the
+  active subsystem dashboards now appear in the per-inbox sitemap with
+  a real `<lastmod>`.
+
+  It lists the active set rather than every MAINTAINERS section on
+  purpose. The dashboards are per-inbox, so advertising all ~3,300
+  sections from all ~200 inboxes would mean roughly 660,000 URLs,
+  almost every one a page for a subsystem no patch in that inbox has
+  touched.
+- Maintainer names and addresses now link to their profile pages, on
+  both the subsystem dashboards and the subsystem line of a patch page.
+  Those profiles were listed in `/sitemap-maintainers.xml` but linked
+  from nowhere at all, so the sitemap was their only route in.
+- Thread views now have inbound links. The reply count on the inbox
+  dashboard and the daily views links to the whole-thread view, which
+  is what every message in a multi-message thread already names as its
+  canonical, what the sitemaps list, and what IndexNow announces. Until
+  now a single conditional link on the message page was the only one
+  pointing there, so the consolidated page was reachable mainly through
+  the pages that disclaim themselves.
+- Per-month sitemaps at `/<inbox>/<YYYY>/<MM>/sitemap.xml` put the
+  historical archive into a sitemap for the first time. The per-inbox
+  sitemap caps at the 5,000 most recent threads, so on the production
+  corpus everything older was undiscoverable by sitemap-driven
+  crawling. A month that exceeds 20,000 URLs pages into
+  `sitemap-2.xml` and so on; the index enumerates every page. Two
+  ceilings apply and the protocol's is not the tighter one: sitemaps.org
+  caps a urlset at 50,000, but a page slice is passed whole to three
+  queries as an expanding `IN` list and SQLite's bind-parameter limit is
+  32,766. On this corpus one bucket (`git` 2016-06, 40,429 thread roots)
+  exceeds the width and pages. The flat
+  `/<inbox>/sitemap.xml` stays as the recent-activity view, so no URL
+  crawlers already hold stops resolving.
+- Each message now records its thread's root per inbox
+  (`article_lists.thread_root_id`), so the sitemap can list one entry
+  per conversation with a truthful `<lastmod>` instead of re-deriving
+  the root on every read. Threading is inbox-scoped, so the column is
+  too: a cross-posted message legitimately has different roots in
+  different inboxes. Ingest, `reindex` and `admin failures replay` all
+  maintain it, including the case where a reply arrives before the
+  parent it belongs to and has to be re-rooted once that parent lands.
+- `mimir backfill-thread-roots [--verify]` fills the column for messages
+  that predate it, and re-verifies a random sample against an
+  independent recomputation. Operators do not normally need to run it:
+  the broker fills the column itself at startup, before it opens its
+  socket and therefore before the web tier is allowed to serve. A run
+  that cannot complete withholds its sentinel so the next restart
+  retries, and logs `backfill incomplete` for the post-deploy smoke to
+  grep.
+
+  The broker also verifies the column on every start, not only on the
+  deploy that first fills it, and logs any disagreement at ERROR. Two
+  checks run: a sampled recomputation against an independent oracle,
+  which catches a thread rooted at the wrong article, and a complete
+  structural check that every message and its in-inbox parent name the
+  same root, which is what actually catches a thread materialised in two
+  pieces. Neither subsumes the other, and the sample alone is 200 rows
+  per inbox against 28.8M.
+- The schema migration adding the column is safe to retry. Adding a
+  foreign key forces SQLite into a table rebuild via a scratch table,
+  and while the copy itself is transactional, the scratch table's
+  creation is not: an interrupted attempt leaves it behind, and every
+  later attempt then failed outright on `table
+  _alembic_tmp_article_lists already exists`. Under `Restart=always`
+  that is a crash-loop, not a failed command. Retrying now clears the
+  debris, except in the one state where the scratch table is the only
+  copy of the data, which it refuses to touch and explains instead.
+  Measured against a snapshot of the production database (28.8M
+  `article_lists` rows, 2026-07-30), the rebuild takes 79 s and runs
+  before the broker accepts connections, so budget the deploy window
+  accordingly. Treat that as a floor: the corpus only grows.
+- `mimir reindex --from-scratch` now rebuilds the inbox's thread roots
+  after the re-walk. Dropping one epoch's rows breaks the parent chain
+  for replies living in other epochs, which previously left them
+  pointing at a root no longer reachable: a permanent redirect from a
+  reply's thread view to a thread that no longer contained it. The
+  rebuild also runs when the re-walk fails, so an interrupted run
+  cannot leave an inbox unrooted, and the command exits non-zero if it
+  could not finish.
+- Whole-thread view at `/<inbox>/<YYYY>/<MM>/<root-id>/t`: every message
+  in one conversation rendered on a single page, with the reply tree's
+  full text inline. Additive, the per-message reading model is
+  unchanged. Rendering is capped at `THREAD_VIEW_RENDER_CAP` messages
+  (default 50) and the remainder is linked rather than inlined. `/t`
+  on a reply 301s to its thread's root, so a conversation has exactly
+  one URL. Carries `DiscussionForumPosting` JSON-LD with every reply as
+  a `comment`, the forum-thread shape a single message page cannot
+  express.
+- Patch pages carry a one-line plain-text summary of the patch's
+  lifecycle under the status badges ("Revision v3 of 3 in this series;
+  4 review trailers (2 from subsystem maintainers); landed in net-next
+  as deadbeefcafe on 2026-06-01"). The badges already encoded this as
+  pills, which read well for a human but are opaque to a search engine;
+  the prose restatement is indexable text for the long-tail queries
+  ("did $series land", "who reviewed $patch") no other LKML mirror
+  answers.
+- Message-page `DiscussionForumPosting` JSON-LD gains
+  `interactionStatistic` (replies to that message), plus `about` and
+  `keywords` carrying the matched subsystem names, so the structured
+  data reflects the same mimir-derived signals the rendered page shows.
+  Reply counts are per-message rather than per-thread, and all three
+  fields are omitted when empty rather than emitted as zero / `[]`.
+
+### Changed
+
+- The whole-thread view fetches its message bodies in one pass,
+  opening the mirror's git repo once per epoch instead of once per
+  message. Measured on the production mirror at the default 50-message
+  cap, the blob work drops by 31% to 79% depending on inbox. This is
+  the page the sitemap points crawlers at, and it is served
+  `no-cache`, so an arriving crawler always paid the full cost.
+- A thread's `<lastmod>` in the sitemap is now the date of its newest
+  message rather than the root's own date, so a thread that gains a
+  reply announces that it changed. Previously the date never moved
+  after the thread started, which meant the consolidated page had no
+  freshness signal on the one channel Google reads: it does not
+  consume IndexNow, so the sitemap is all it has.
+- The broker's healthcheck `start_period` rises from 60 s to 1200 s.
+  A deploy that runs a schema migration also runs the one-time
+  thread-root backfill before accepting RPCs, and on the real corpus
+  (28.8M `article_lists` rows, measured 2026-07-28) that alone
+  extrapolates to about 4.6 minutes. Both other containers gate on
+  this healthcheck and compose aborts the whole `up` when a
+  `depends_on` dependency goes unhealthy, so an under-budgeted window
+  fails the deploy outright. An intermediate 180 s value never
+  shipped; it was derived, like the original 60 s, from a corpus
+  figure that turned out to be the largest single inbox rather than
+  the whole archive.
+
+- Message pages in a multi-message thread now canonicalise to their
+  thread view, and the per-inbox sitemap lists one thread URL per
+  conversation instead of one URL per message. Most replies are a line
+  or two, so a 60-message thread presented as 60 thin near-duplicate
+  URLs competing with each other; consolidating gives search engines
+  one substantial document per thread. Three cases deliberately keep
+  their own canonical, because the thread view would not contain them
+  or would be the poorer page: messages past the render cap,
+  single-message threads (the message page already IS the whole
+  conversation, and carries the patch surfaces), and thread views
+  themselves, which stay self-canonical per inbox since threading is
+  inbox-scoped and each inbox's copy of a conversation can have
+  different membership.
+- `robots.txt` now disallows `/api/` and `/*/search` in the default
+  `*` stanza. `/api/` serves htmx load-more partials (one URL per
+  offset, never a page) and `/*/search` is internal search results
+  (one URL per query, a thin duplicate slice of content already
+  indexed at its own URL); crawling either spends budget that should
+  reach archive content. Existing deploys are updated by migration
+  `e3aa78c72a8d`, which appends only the missing entries so an
+  operator's curated disallow list is preserved.
+- The `/<inbox>/since/<date>` catch-up view is now `noindex`. Every
+  date inside the 90-day cap is a distinct URL over heavily
+  overlapping thread sets, so indexing them put ~90 near-duplicate
+  pages per inbox in competition with the thread pages they link to.
+  `noindex` implies follow, so those outbound links remain a crawl
+  path into real content.
+
+### Fixed
+
+- A schema migration that rebuilds a table no longer leaves the query
+  planner blind. SQLite has no `ADD CONSTRAINT`, so adding a foreign key
+  makes alembic copy the table and `DROP` the original, which deletes
+  that table's `sqlite_stat1` rows. The compensating `ANALYZE` was gated
+  on a once-ever sentinel that has existed on production since
+  2026-05-22, so it could not run; it now also runs whenever the applied
+  revision moves. Bad stats on this table previously turned a
+  15-message thread read into 400 seconds. The post-backfill re-sample
+  also no longer sits behind a success branch that one erroring inbox
+  could skip.
+- Recovering an interrupted schema migration by hand no longer costs an
+  index. The migration named only the index it was adding and left the
+  pre-existing `ix_article_lists_inbox_id` to alembic's batch mode,
+  which rebuilds indexes by reflecting the table it replaces. A
+  hand-renamed scratch table carries no indexes, so re-running against
+  one dropped that index permanently while alembic exited 0 and stamped
+  the revision, leaving a 28.8M-row table with no index on the column
+  every query filters by. Both indexes are now created explicitly and
+  idempotently, which also unsticks the opposite case: an operator who
+  recreated them by hand before restarting used to hit `index ... already
+  exists`. The documented recovery is correspondingly now a single
+  `ALTER TABLE ... RENAME`, with no index or `alembic stamp` step.
+- Subsystem links are no longer emitted for names the dashboard route
+  refuses. MAINTAINERS section titles are free text and three on
+  production contain a literal tab, so the inbox dashboard, front page,
+  message page and thread view were each linking a guaranteed 404, from
+  pages that are themselves sitemap entries. The addressability check
+  had been added in the previous change but applied at only two of the
+  six places that emit these links.
+- The message page's ETag now covers the derived state it renders:
+  subsystem attribution, lifecycle badge, review roll-up and the
+  revisions fold. It previously covered only the article id, the
+  release version and the thread's newest date, so a patch landing in
+  mainline, a MAINTAINERS reparse (every 10 minutes), a new review
+  trailer or a v2 posting left the page pinned at the CDN and in every
+  crawler until an unrelated reply happened to land in its thread.
+  Same class as the 3.6.1 sitemap incident.
+- `update-mainline` no longer re-parses MAINTAINERS on every push to
+  Linus's tree. It gated on the tree HEAD, so most ticks re-read an
+  unchanged file and rewrote the whole ~15,000-row subsystems triple to
+  identical values on the single-writer broker. It now gates on the
+  MAINTAINERS blob itself, so the work happens when that file actually
+  changes. No migration: the existing cursor column holds the blob id
+  instead, and a stale head sha mismatches once and self-corrects. One
+  consequence for operators: a subsystems table emptied out-of-band is
+  no longer rebuilt by the next ordinary tick, since nothing about the
+  file changed. `mimir update-mainline --force` rebuilds it, and now
+  also moves the rule version so the rebuilt attribution reaches the
+  CDN and crawlers rather than sitting behind an unchanged validator.
+- A `backfill-article-files --reprocess`, or a re-ingest after a parser
+  fix, changes which subsystems claim a patch. Both the message page
+  and the thread view now version that: the subsystem line is derived
+  from MAINTAINERS rules *and* the article's touched paths, and only
+  the rules half moved the validator before.
+- IndexNow now announces the thread view for a conversation with
+  replies, rather than each new message's own URL. Since message pages
+  in a multi-message thread canonicalise to their thread view, the old
+  push told search engines about a page that disclaims itself, and the
+  consolidated page that actually grew was never announced at all. A
+  batch of replies to one thread now pushes one URL instead of one per
+  reply.
+- Cross-posted articles could resolve to a canonical inbox they are
+  not actually archived in, because the batch resolver used
+  `canonical_inbox_id` without checking the article is linked there,
+  diverging from the shared rule every other caller uses.
+  `canonical_inbox_id` is assigned from To:/Cc: list addresses at
+  ingest and does not imply a copy exists in that inbox, so atom feed
+  entry links could point at a URL that 404s. Now delegates to
+  `fallback_canonical_name` like the rest.
+- The "most active threads" structured data on `/<inbox>/` links each
+  discussion to its thread view rather than to its root message, so
+  the `ItemList` handed to search engines agrees with the canonical of
+  the page it names.
+- `mimir reindex` now fails immediately with an explanation instead of
+  partway through. It needs an active broker writer, which only the
+  broker's own serve loop establishes, so against a deployed instance
+  it could not complete either form of the command
+  ([#547](https://github.com/sgaduuw/mimir/issues/547)). Previously
+  `--from-scratch` deleted an epoch's links before hitting that wall.
 
 ## [3.6.3] - 2026-07-22
 

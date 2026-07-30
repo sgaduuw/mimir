@@ -584,6 +584,23 @@ class Settings(BaseSettings):
     # Override via SUBSYSTEM_TRIAGE_MAX_AGE_DAYS.
     subsystem_triage_max_age_days: int = 180
 
+    # Hard upper bound on messages rendered inline by the whole-thread
+    # view (`/<inbox>/<YYYY>/<MM>/<root_id>/t`). Each rendered message
+    # is a git blob fetch plus a parse (~2 ms warm per CONTEXT.md) and
+    # the page is not server-cached, so the cap directly sets the
+    # worst-case cost of a request. At 200 that is ~400 ms against a
+    # 2-worker sync gunicorn tier, and the sitemap now points crawlers
+    # straight at these URLs (MEMORY.md 2026-05-29 records one crawler
+    # sustaining 195 req/min while ignoring Crawl-delay), so two
+    # concurrent worst-case renders occupy the whole tier. 50 keeps
+    # that under ~100 ms while still inlining the overwhelming
+    # majority of real threads; longer ones list their tail as links,
+    # and those messages keep their own canonical since the page does
+    # not contain them. Raise once the render is cached or the
+    # per-message Repo open is hoisted (see the tracking issue).
+    # Override via THREAD_VIEW_RENDER_CAP.
+    thread_view_render_cap: int = 50
+
     # Hard upper bound on age of "related patches" surfaced on a
     # message page (1.36.3). The `recent_patches_touching` helper
     # joins `article_files` by `path IN (...)` and asks for the
