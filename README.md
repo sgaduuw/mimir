@@ -659,7 +659,10 @@ Routes:
   Cached for 1 h.
 - `GET /<inbox>/<YYYY>/<MM>/sitemap.xml`, one month of that inbox's
   thread URLs, paged as `sitemap-2.xml` and so on when a month exceeds
-  45,000 URLs (the protocol caps a urlset at 50,000). This is what
+  20,000 URLs. Two ceilings apply and the protocol's is not the tighter
+  one: sitemaps.org caps a urlset at 50,000, but a page slice is passed
+  whole to three queries as an expanding `IN` list, and SQLite's
+  bind-parameter limit is 32,766. This is what
   covers the deep archive: the flat per-inbox sitemap above lists only
   the most recent few thousand threads, so on a corpus of this size
   everything older was in no sitemap at all. The index enumerates every
