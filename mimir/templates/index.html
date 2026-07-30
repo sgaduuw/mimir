@@ -81,7 +81,11 @@
    browse surface; the URL canonical form is already lowercase. #}
 <h2 id="subsystems" class="active-subsystems-heading">Active subsystems <small><em>(last 7 days)</em></small></h2>
 <div class="subsystem-grid" role="list">
-  {% for s in active_subsystems %}
+  {# Filtered, not rendered-as-text like the inline chips: the whole
+     card IS the anchor, so a card for a name the route cannot serve
+     would be a dead tile with nothing else to offer. Same predicate as
+     the macro, different presentation. See `_subsystem_link.html`. #}
+  {% for s in active_subsystems if s.name | is_addressable_subsystem %}
   <a class="subsystem-card" role="listitem"
      href="{{ s.name | subsystem_url(s.inbox_name) }}"
      aria-label="Open {{ s.name|lower }} subsystem dashboard">

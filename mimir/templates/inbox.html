@@ -48,9 +48,10 @@
 <section>
   <h2>Most active subsystems <small><em>(last 7 days)</em></small></h2>
   <ul>
+    {% from "_subsystem_link.html" import subsystem_link %}
     {% for s in active_subsystems %}
     <li>
-      <a href="{{ s.name | subsystem_url(s.inbox_name) }}">{{ s.name|lower }}</a>
+      {{ subsystem_link(s.name, s.inbox_name) }}
       <br><small>{{ s.message_count }} message{{ '' if s.message_count == 1 else 's' }} in 7d</small>
     </li>
     {% endfor %}

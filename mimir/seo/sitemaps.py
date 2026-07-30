@@ -31,17 +31,45 @@ from mimir.subsystems_dashboard import (
 
 SITEMAP_RECENT_PER_INBOX = 5000
 
-# URLs per month sitemap page, comfortably under the sitemaps.org hard
-# cap of 50,000 per urlset. The margin is plain conservatism, not a
-# race: the page is a fixed-width slice of a snapshot, so it cannot
-# exceed this number however fast the month grows. An earlier comment
-# claimed the margin absorbed growth between the index and the page
-# being fetched, which was never true.
+# URLs per month sitemap page.
+#
+# TWO ceilings apply and the smaller one is not the obvious one:
+#
+#   1. sitemaps.org allows 50,000 URLs per urlset. This is the ceiling
+#      everyone reaches for, and it is not the binding one.
+#   2. SQLite's SQLITE_LIMIT_VARIABLE_NUMBER is 32,766 on this build
+#      (measured 2026-07-30, sqlite 3.50.4). A page slice is passed
+#      whole to three separate queries as an expanding `IN` list, so
+#      the slice width IS a bound-parameter count.
+#
+# This was 45,000, which satisfies (1) and breaches (2). `git` 2016-06
+# holds 40,429 roots, so that month's sitemap raised `too many SQL
+# variables` and returned 500 on every request, while `/sitemap.xml`
+# advertised it and nothing warmed it, leaving a crawler to find out.
+#
+# 20,000 sits under both with room to spare, and costs only that the
+# one oversized bucket pages three times instead of once. Correctness
+# per page is unchanged: a page is still a fixed-width slice of a
+# snapshot, so it cannot exceed this number however fast the month
+# grows. (An earlier comment claimed the margin absorbed growth between
+# the index and the page being fetched, which was never true.)
+#
+# `test_sitemap_page_width_stays_under_the_sqlite_bind_limit` pins this
+# against the runtime's ACTUAL limit rather than a copy of the number,
+# because every paging test monkeypatches the width down to 2 and so
+# cannot see the shipped value at all.
 #
 # NOT in the cache key. Changing it re-slices every page, so a deploy
 # that changes it must bump `cache.NAMESPACE_VERSION` too, or pages
 # cut under the old width serve for up to a TTL against an index
 # counted under the new one.
+#
+# The 45,000 -> 20,000 change did NOT need that bump, and the reason is
+# worth stating so nobody reads it as an oversight: month sitemaps have
+# never been deployed, so no cache row anywhere was cut under the old
+# width. The rule above still stands for every later change. Bumping
+# regardless would have cold-started the whole namespace (dashboards,
+# stats, every other sitemap) to fix nothing.
 #
 # Paging is NOT speculative. Measured on production 2026-07-28: of
 # 32,093 (inbox, month) buckets, 32,092 hold under 10k roots and ONE
@@ -51,7 +79,7 @@ SITEMAP_RECENT_PER_INBOX = 5000
 # time and a wholesale archive import clusters into whatever month it
 # was seeded. Every future `admin inbox add` can produce another, so
 # this is recurrent by construction rather than one bad row.
-SITEMAP_URLS_PER_PAGE = 45000
+SITEMAP_URLS_PER_PAGE = 20000
 SITEMAP_TTL_SEC = 3600
 
 
