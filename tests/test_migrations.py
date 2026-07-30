@@ -11,6 +11,7 @@ These tests build those states directly and run the real migration
 against them, rather than reasoning about what alembic would do.
 """
 
+import os
 import sqlite3
 import subprocess
 import sys
@@ -30,6 +31,15 @@ def _alembic(db_path: Path, target: str) -> subprocess.CompletedProcess:
     session: `alembic downgrade`/`upgrade` against the default URL would
     target the developer's own database, and a downgrade there is
     destructive and irreversible.
+
+    The environment is inherited rather than enumerated. An enumerated
+    env has to list every variable `Settings` requires, so it breaks the
+    moment one is added, and it broke immediately: it omitted
+    `SECRET_KEY`, which is required with no default. Locally that was
+    invisible because the subprocess reads `.env` from `cwd`; CI has no
+    `.env` and passes the value as a job-level env var, so both tests
+    errored there and nowhere else. `SECRET_KEY` is still pinned below
+    so the test does not depend on either source existing.
     """
     return subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", target],
@@ -37,13 +47,12 @@ def _alembic(db_path: Path, target: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         env={
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "HOME": str(REPO),
+            **os.environ,
+            "SECRET_KEY": "migration-test-key-not-for-real-use",
             "DATABASE_URL": f"sqlite:///{db_path}",
             # Migrations write, and every non-broker connection is
             # opened `query_only=1`.
             "MIMIR_IS_BROKER": "true",
-            "VIRTUAL_ENV": str(REPO / ".venv"),
         },
     )
 
@@ -75,8 +84,28 @@ def _make_scratch(conn: sqlite3.Connection) -> None:
         """CREATE TABLE _alembic_tmp_article_lists (
                article_id INTEGER NOT NULL, inbox_id INTEGER NOT NULL,
                epoch VARCHAR NOT NULL, commit_sha VARCHAR NOT NULL,
-               thread_root_id INTEGER)"""
+               thread_root_id INTEGER,
+               PRIMARY KEY (article_id, inbox_id))"""
     )
+
+
+def _indexes(conn: sqlite3.Connection) -> set[str]:
+    """The non-implicit indexes on `article_lists`.
+
+    Asserted explicitly because batch mode rebuilds indexes from
+    REFLECTION: it restores only what the table it replaced happened to
+    carry, so an index can vanish while the migration reports success.
+    """
+    return {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND tbl_name='article_lists' AND name NOT LIKE 'sqlite_%'"
+        )
+    }
+
+
+EXPECTED_INDEXES = {"ix_article_lists_inbox_id", "ix_article_lists_thread_root"}
 
 
 @pytest.fixture
@@ -118,6 +147,7 @@ def test_interrupted_copy_is_cleaned_up_and_the_migration_completes(staged_db):
         assert conn.execute("SELECT COUNT(*) FROM article_lists").fetchone()[0] == 200
         cols = [r[1] for r in conn.execute("PRAGMA table_info(article_lists)")]
         assert "thread_root_id" in cols
+        assert _indexes(conn) == EXPECTED_INDEXES
         leftovers = [
             r[0]
             for r in conn.execute(
@@ -171,7 +201,48 @@ def test_migration_refuses_to_drop_the_scratch_table_when_it_is_the_only_copy(
         assert surviving == 200, (
             f"the only copy of the data was destroyed: {surviving} rows survive"
         )
-        # And the recovery the message prescribes actually works.
+        # Apply the one statement the message prescribes, and nothing
+        # else: no indexes, no `alembic stamp`.
+        conn.execute("ALTER TABLE _alembic_tmp_article_lists RENAME TO article_lists")
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Restarting must now complete the migration by itself. This is the
+    # half-applied state that used to exit 0 while silently dropping
+    # `ix_article_lists_inbox_id` for good: batch mode rebuilds indexes
+    # from reflection, and the renamed scratch table carries none.
+    result = _alembic(staged_db, THREAD_ROOT_REVISION)
+    assert result.returncode == 0, result.stderr[-2000:]
+
+    conn = sqlite3.connect(staged_db)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM article_lists").fetchone()[0] == 200
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(article_lists)")]
+        assert "thread_root_id" in cols
+        assert _indexes(conn) == EXPECTED_INDEXES
+    finally:
+        conn.close()
+
+
+def test_migration_completes_when_indexes_were_recreated_by_hand(staged_db):
+    """An operator who ran the pre-3.7.0 recovery recipe must not be stuck.
+
+    That recipe told them to create both indexes and then `alembic
+    stamp`. Someone who does the first half and restarts before the
+    stamp re-runs this migration against a table that already has both
+    indexes, which used to die on `index ... already exists`. Under
+    `Restart=always` with the web tier held behind `Requires=`, that is a
+    crash-loop, not a failed command.
+    """
+    conn = sqlite3.connect(staged_db)
+    try:
+        _make_scratch(conn)
+        conn.execute(
+            "INSERT INTO _alembic_tmp_article_lists "
+            "SELECT article_id,inbox_id,epoch,commit_sha,NULL FROM article_lists"
+        )
+        conn.execute("DROP TABLE article_lists")
         conn.execute("ALTER TABLE _alembic_tmp_article_lists RENAME TO article_lists")
         conn.execute(
             "CREATE INDEX ix_article_lists_inbox_id ON article_lists (inbox_id)"
@@ -181,8 +252,15 @@ def test_migration_refuses_to_drop_the_scratch_table_when_it_is_the_only_copy(
             "ON article_lists (inbox_id, thread_root_id)"
         )
         conn.commit()
+    finally:
+        conn.close()
+
+    result = _alembic(staged_db, THREAD_ROOT_REVISION)
+    assert result.returncode == 0, result.stderr[-2000:]
+
+    conn = sqlite3.connect(staged_db)
+    try:
         assert conn.execute("SELECT COUNT(*) FROM article_lists").fetchone()[0] == 200
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(article_lists)")]
-        assert "thread_root_id" in cols
+        assert _indexes(conn) == EXPECTED_INDEXES
     finally:
         conn.close()
