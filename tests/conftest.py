@@ -124,14 +124,20 @@ def _session_broker(_migrate_db):
     # _migrate_if_needed / _bootstrap_inboxes_if_needed /
     # _post_migrate_analyze_if_needed / _backfill_thread_roots_if_needed
     # all short-circuit. The last one is the newest and is easy to
-    # forget: without it every test session pays a real backfill and
-    # spawns the verification daemon thread, which then races whatever
-    # the tests are asserting about roots.
+    # forget: without it every test session pays a real backfill.
+    #
+    # It does NOT suppress the verification thread. That used to hang
+    # off the backfill; it now runs unconditionally from `build_server`,
+    # which is the point of the change (verification has to happen on
+    # every start, not only on the deploy that first fills the column).
+    # So every test session spawns it. Harmless here: it is a read-only
+    # daemon thread over a tiny corpus.
     #
     # Note the thread-roots sentinel is necessary but not sufficient:
-    # that step re-runs anyway if any row is still NULL (a stale
-    # sentinel is a real production hazard, see the rollback case), so
-    # the fixtures below seed `thread_root_id` rather than leaving it
+    # that step re-runs anyway if more rows are NULL than the sentinel
+    # records (a stale sentinel is a real production hazard, see the
+    # rollback case), and an empty sentinel records no baseline at all,
+    # so the fixtures below seed `thread_root_id` rather than leaving it
     # for the startup path to fill.
     (sock_dir / ".migrated").touch()
     (sock_dir / ".bootstrapped").touch()

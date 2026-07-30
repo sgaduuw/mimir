@@ -880,20 +880,39 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     for the breakdown.
     """
     sentinel = socket_path.parent / ".thread_roots_backfilled"
-    if sentinel.exists() and not _has_unrooted_rows():
-        logger.debug("broker: thread-roots sentinel %s present, skipping", sentinel)
-        return
     if sentinel.exists():
-        # Sentinel set but rows are NULL again. Reachable by rolling
-        # back to a pre-column image (whose ORM omits the column on
-        # INSERT) and then rolling forward: the sentinel would
-        # short-circuit forever, and nothing else would notice, since
-        # `verify_thread_roots` samples only non-NULL rows and the
-        # sitemap's root test IS the column. Re-running is cheap when
-        # there is nothing to do.
+        # The sentinel alone is not the gate: unrooted rows are. That
+        # closes the rollback-then-roll-forward hole (roll back to a
+        # pre-column image whose ORM omits the column on INSERT, roll
+        # forward, and the sentinel would short-circuit forever while
+        # nothing else noticed, since `verify_thread_roots` samples only
+        # non-NULL rows and the sitemap's root test IS the column).
+        #
+        # But "some row is NULL" is ALSO a designed-permanent state, so
+        # the gate compares against the residual the last completed run
+        # recorded rather than against zero. Without that the one
+        # warning meaning "this column is in a state nobody expected"
+        # fires on every single boot of a perfectly healthy broker,
+        # along with a pointless re-drive of all ~200 inboxes and an
+        # extra ANALYZE, which is how an operator learns to ignore it.
+        residual = _count_unrooted_rows()
+        if residual == 0 or residual is None:
+            logger.debug("broker: thread-roots sentinel %s present, skipping", sentinel)
+            return
+        known = _recorded_residual(sentinel)
+        if known is not None and residual <= known:
+            logger.info(
+                "broker: %d unrooted thread-root row(s) remain, not above the "
+                "%d the last completed backfill left; no pass can resolve "
+                "these and readers fall back to the recursive walk. Skipping.",
+                residual,
+                known,
+            )
+            return
         logger.warning(
-            "broker: thread-roots sentinel present but unrooted rows exist; "
-            "re-running the backfill"
+            "broker: %d unrooted thread-root rows, %s; re-running the backfill",
+            residual,
+            "no baseline recorded" if known is None else f"up from {known}",
         )
 
     from sqlalchemy import select
@@ -967,7 +986,14 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
             failed,
         )
     else:
-        sentinel.touch()
+        # Record what this completed run could NOT resolve, so the next
+        # start can tell that residual apart from a genuinely new
+        # unrooted row. Rows left here are the ones no pass can fix (a
+        # non-cycle stall, per `break_cycle`), which is a steady state,
+        # not a fault. Falls back to an empty sentinel if the count
+        # fails: no baseline just costs one extra re-run.
+        residual = _count_unrooted_rows()
+        sentinel.write_text("" if residual is None else str(residual))
 
     # Re-sample OUTSIDE the success branch, deliberately. The fill
     # rewrote rows of a column ANALYZE may have sampled while it was 100%
@@ -1011,26 +1037,60 @@ def _run_post_backfill_analyze() -> None:
         )
 
 
-def _has_unrooted_rows() -> bool:
-    """Is any `article_lists` row still NULL? One indexed EXISTS."""
-    from sqlalchemy import exists, select
+def _count_unrooted_rows() -> int | None:
+    """How many `article_lists` rows are still NULL, or None if unknown.
+
+    A count rather than an EXISTS because the caller needs to tell a NEW
+    unrooted row from the ones that are unrooted by design and always
+    will be. `break_cycle` documents leaving a non-cycle stall alone,
+    `drive_passes` can exhaust its budget, and `thread_root_id` is
+    `ON DELETE SET NULL`, so "some row is NULL" is a permanent steady
+    state on a healthy database, not a symptom.
+
+    Cost tracks the number of NULLs, which is the thing being counted:
+    the index is `(inbox_id, thread_root_id)` so NULLs are contiguous
+    within each inbox and the scan touches only them. On a healthy
+    corpus that is the small permanent residual. The one case where it
+    is large is a database whose column was wholesale reset, and there
+    the caller is about to run a full backfill that costs minutes
+    anyway.
+
+    None means the query failed, which the caller treats as "nothing to
+    do": its next step is a backfill, and a database that cannot answer
+    this is in no state to run one.
+    """
+    from sqlalchemy import func, select
 
     from mimir.extensions import SessionLocal
     from mimir.models import ArticleList
 
     try:
         with SessionLocal() as session:
-            return bool(
+            return int(
                 session.scalar(
-                    select(exists().where(ArticleList.thread_root_id.is_(None)))
+                    select(func.count())
+                    .select_from(ArticleList)
+                    .where(ArticleList.thread_root_id.is_(None))
                 )
+                or 0
             )
     except Exception:
-        # Treat "cannot tell" as "nothing to do": the caller's next
-        # step is a backfill, and failing that query means the DB is
-        # in no state to run one.
         logger.exception("broker: could not check for unrooted rows")
-        return False
+        return None
+
+
+def _recorded_residual(sentinel: Path) -> int | None:
+    """The unrooted-row count the last completed backfill left behind.
+
+    None when the sentinel predates this bookkeeping (it used to be an
+    empty `touch()`) or is unreadable. The caller treats None as "no
+    baseline", which costs one extra re-run on the first start after
+    upgrading and then records one.
+    """
+    try:
+        return int(sentinel.read_text().strip())
+    except OSError, ValueError:
+        return None
 
 
 def _verify_thread_roots_async() -> threading.Thread:
