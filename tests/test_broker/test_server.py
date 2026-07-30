@@ -886,7 +886,7 @@ def test_startup_writers_run_without_active_writer(seeded_db, monkeypatch):
 
     real_analyze = server._post_migrate_analyze_if_needed
 
-    def _spy(sp):
+    def _spy(sp, schema_changed=False):
         # Record whether a writer is active at the moment build_server
         # calls the startup writers.
         try:
@@ -894,7 +894,7 @@ def test_startup_writers_run_without_active_writer(seeded_db, monkeypatch):
             observed["writer_active"] = True
         except RuntimeError:
             observed["writer_active"] = False
-        return real_analyze(sp)
+        return real_analyze(sp, schema_changed)
 
     monkeypatch.setattr(server, "_post_migrate_analyze_if_needed", _spy)
 
@@ -918,3 +918,55 @@ def test_startup_writers_run_without_active_writer(seeded_db, monkeypatch):
         # Drop any context that might have been set (there should be
         # none, but be defensive in case a future change adds one).
         _context.clear_active()
+
+
+def test_post_migrate_analyze_reruns_when_the_schema_revision_moves(
+    seeded_db, monkeypatch, tmp_path
+):
+    """A once-EVER sentinel is the wrong gate for a per-migration step.
+
+    SQLite migrations rebuild tables: `batch_alter_table` with an added
+    foreign key cannot use native `ALTER TABLE`, so alembic does
+    move-and-copy, and the `DROP TABLE` in the middle deletes every
+    `sqlite_stat1` row for that table. Production carries real stats for
+    `article_lists` and would have lost them on the next deploy with
+    nothing to put them back, because `.broker_initial_analyze` has
+    existed there since 2026-05-22 and used to short-circuit this
+    unconditionally.
+
+    Deleting the ANALYZE call entirely previously passed every targeted
+    test, so this pins that it runs on a schema move and skips on a plain
+    restart.
+    """
+    import mimir.maintenance
+    from mimir.broker import server
+
+    calls: list[str] = []
+
+    class _Result:
+        elapsed_ms = 0
+
+    def _fake_analyze(full=False):
+        calls.append("ran")
+        return _Result()
+
+    # `_post_migrate_analyze_if_needed` imports `run_analyze` from
+    # `mimir.maintenance` inside the function body, so the module
+    # attribute is the live lookup.
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", _fake_analyze)
+
+    sock_dir = tmp_path / "analyze-gate"
+    sock_dir.mkdir()
+    sentinel = sock_dir / ".broker_initial_analyze"
+    sentinel.touch()
+
+    # Ordinary restart: sentinel present, schema unchanged. Must skip.
+    server._post_migrate_analyze_if_needed(sock_dir / "broker.sock", False)
+    assert calls == [], "ANALYZE ran on a plain restart with nothing to re-sample"
+
+    # A migration moved the revision. Must run, sentinel notwithstanding.
+    server._post_migrate_analyze_if_needed(sock_dir / "broker.sock", True)
+    assert calls == ["ran"], (
+        "ANALYZE was skipped after a schema migration; a table rebuild drops "
+        "that table's sqlite_stat1 rows and nothing else puts them back"
+    )

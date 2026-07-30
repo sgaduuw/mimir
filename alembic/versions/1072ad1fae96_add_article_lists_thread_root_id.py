@@ -33,11 +33,30 @@ single-writer broker, during container startup and before the
 healthcheck sentinel is touched.
 
 The FK does force SQLite into a batch-mode table rebuild, so this is
-not a free `ADD COLUMN`: measured at ~8 s wall on a seeded 6M-row
-corpus (rebuild plus the index). Production `article_lists` was 28.8M
-rows when last measured (2026-07-28, see
-`mimir.thread_roots.PROD_ARTICLE_LIST_ROWS_AT_2026_07_28`), i.e. ~5x
-the bench, so budget accordingly and treat the scaling as a floor.
+not a free `ADD COLUMN`. SQLite has no `ADD CONSTRAINT`, so alembic's
+batch mode cannot take the native `ALTER TABLE` path and must move-and-
+copy: `CREATE TABLE _alembic_tmp_article_lists`, `INSERT ... SELECT`,
+`DROP TABLE article_lists`, rename, then rebuild the indexes.
+
+Cost, measured 2026-07-30 against a synthetic corpus matching
+production's shape (34.09M `article_lists` rows, 203 inboxes, UNIQUE
+`message_id` on 17.34M articles), with the same pragmas including
+`foreign_keys=ON`:
+
+    FK-enforced INSERT ... SELECT   55.4 s
+    DROP TABLE                      10.1 s
+    two index builds                34.4 s
+    COMMIT / WAL checkpoint         28.3 s
+    -------------------------------------
+    total                          130   s   (~110 s scaled to prod)
+
+An earlier version of this docstring said "~8 s on a seeded 6M-row
+corpus, so budget ~5x". That was wrong twice, and both are the standard
+traps. It counted two statements where there are five, and it assumed
+linear scaling: 5.7x the rows cost 12.5x the time, because the index
+builds sort and the WAL checkpoint is superlinear in dirty pages. Any
+budget derived from a row count needs measuring at that row count.
+
 That is writer hold at broker startup before the sentinel flips, which
 is the right place to pay it, but it is not instant and should not be
 described as such.
@@ -56,7 +75,37 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _drop_batch_scratch_table() -> None:
+    """Clear debris from a previous interrupted attempt.
+
+    Alembic runs SQLite DDL NON-transactionally (it says so in its own
+    log: "Will assume non-transactional DDL"), so there is no rollback
+    to undo a half-finished move-and-copy. If the `INSERT ... SELECT`
+    raises, or the process is killed mid-rebuild, `_alembic_tmp_
+    article_lists` survives, and every subsequent attempt dies
+    immediately with `table _alembic_tmp_article_lists already exists`.
+
+    That turns a transient failure into a permanent one, and the
+    deployment shape makes it worse: the broker runs this at startup
+    under systemd with `Restart=always` and `RestartUSec=100ms`, so a
+    single SIGTERM landing inside the rebuild leaves the container
+    crash-looping on debris it cannot clear itself, with `Requires=`
+    holding the web tier down behind it. Recovering needs an operator
+    with a sqlite3 prompt.
+
+    Reproduced locally on 2026-07-30: one failed attempt, then every
+    retry failing on the leftover table.
+
+    Dropping it unconditionally is safe. The name is alembic's own
+    scratch namespace, so its presence means exactly one thing: an
+    earlier attempt did not finish. It holds no data the live table does
+    not, because it is populated by copying FROM that table.
+    """
+    op.execute("DROP TABLE IF EXISTS _alembic_tmp_article_lists")
+
+
 def upgrade() -> None:
+    _drop_batch_scratch_table()
     # The FK is declared, not just the column. Without it
     # `ondelete="SET NULL"` on the model is inert (SQLite enforces
     # only what the schema actually carries, and every connection sets
@@ -87,6 +136,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    _drop_batch_scratch_table()
     op.drop_index("ix_article_lists_thread_root", table_name="article_lists")
     with op.batch_alter_table("article_lists") as batch:
         batch.drop_column("thread_root_id")
