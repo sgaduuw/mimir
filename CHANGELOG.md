@@ -76,10 +76,15 @@ changes, not internal refactors. Categories: **Added**,
   same root, which is what actually catches a thread materialised in two
   pieces. Neither subsumes the other, and the sample alone is 200 rows
   per inbox against 28.8M.
-- The schema migration adding the column is safe to retry. Alembic runs
-  SQLite DDL non-transactionally, and adding a foreign key forces a
-  table rebuild, so an interrupted attempt would otherwise leave a
-  scratch table behind that made every later attempt fail outright.
+- The schema migration adding the column is safe to retry. Adding a
+  foreign key forces SQLite into a table rebuild via a scratch table,
+  and while the copy itself is transactional, the scratch table's
+  creation is not: an interrupted attempt leaves it behind, and every
+  later attempt then failed outright on `table
+  _alembic_tmp_article_lists already exists`. Under `Restart=always`
+  that is a crash-loop, not a failed command. Retrying now clears the
+  debris, except in the one state where the scratch table is the only
+  copy of the data, which it refuses to touch and explains instead.
   Measured at production shape, the rebuild takes about 110 s and runs
   before the broker accepts connections, so budget the deploy window
   accordingly.
@@ -181,6 +186,18 @@ changes, not internal refactors. Categories: **Added**,
   15-message thread read into 400 seconds. The post-backfill re-sample
   also no longer sits behind a success branch that one erroring inbox
   could skip.
+- Recovering an interrupted schema migration by hand no longer costs an
+  index. The migration named only the index it was adding and left the
+  pre-existing `ix_article_lists_inbox_id` to alembic's batch mode,
+  which rebuilds indexes by reflecting the table it replaces. A
+  hand-renamed scratch table carries no indexes, so re-running against
+  one dropped that index permanently while alembic exited 0 and stamped
+  the revision, leaving a 28.8M-row table with no index on the column
+  every query filters by. Both indexes are now created explicitly and
+  idempotently, which also unsticks the opposite case: an operator who
+  recreated them by hand before restarting used to hit `index ... already
+  exists`. The documented recovery is correspondingly now a single
+  `ALTER TABLE ... RENAME`, with no index or `alembic stamp` step.
 - Subsystem links are no longer emitted for names the dashboard route
   refuses. MAINTAINERS section titles are free text and three on
   production contain a literal tab, so the inbox dashboard, front page,
