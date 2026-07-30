@@ -581,6 +581,119 @@ def test_replay_adopts_descendants_that_self_rooted_while_the_parent_failed(
     )
 
 
+def test_replay_adopts_descendants_on_the_non_broker_path_too(
+    seeded_db, tmp_path, monkeypatch
+):
+    """The subtree adoption, on the Session branch.
+
+    Two axes, and the suite previously varied only one at a time. Every
+    adoption test takes `broker_active`, so it exercises the subtree
+    shape on a Connection; the one Session-path test uses a
+    single-message thread, and its own docstring says the defect lives
+    entirely in having a descendant. So applying the invalidation on the
+    Connection path alone left the whole suite green, measured, and the
+    Session branch's half of the fix was unguarded.
+
+    The branch matters because the two are not interchangeable here:
+    `SessionLocal` is autoflush=False while the invalidation and the
+    passes are raw `text()` statements, so on this path the ORM inserts
+    have to be flushed before any of it can see them. That is a distinct
+    failure mode from anything the Connection path can exhibit.
+    """
+    import mimir.parser
+    from mimir.broker import _context
+    from mimir.models import Article, ArticleList
+
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "adopt-session-mirror"
+    mirror_root.mkdir()
+    _build_pubinbox_repo(
+        mirror_root / "0.git",
+        [
+            _rfc5322("sp-parent@example.com", body=b"x" * 500),
+            _rfc5322("sp-child@example.com", in_reply_to="sp-parent@example.com"),
+            _rfc5322("sp-grandchild@example.com", in_reply_to="sp-child@example.com"),
+        ],
+    )
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        s.commit()
+
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 200)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", mirror_root / "0.git", workers=1)
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 1_000_000)
+
+    with seeded_db() as s:
+        assert (
+            s.execute(
+                select(func.count())
+                .select_from(ParseFailure)
+                .where(ParseFailure.inbox_id == alpha.id)
+            ).scalar_one()
+            == 1
+        )
+        child = s.execute(
+            select(Article).where(Article.message_id == "sp-child@example.com")
+        ).scalar_one()
+        child_link = s.execute(
+            select(ArticleList).where(
+                ArticleList.article_id == child.id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one()
+        assert child_link.thread_root_id == child.id, (
+            "precondition: the child should self-root while its parent is absent"
+        )
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+
+    # conftest holds an active broker context for the whole session, so
+    # dropping the fixture is not enough to reach the Session branch.
+    saved_pool, saved_writer = _context._active_pool, _context._active_writer
+    _context.clear_active()
+    try:
+        result = replay_failures(ix)
+    finally:
+        _context.set_active(saved_pool, saved_writer)
+    assert result.recovered == 1, result
+
+    with seeded_db() as s:
+        ids = {
+            mid: s.execute(
+                select(Article.id).where(Article.message_id == mid)
+            ).scalar_one()
+            for mid in (
+                "sp-parent@example.com",
+                "sp-child@example.com",
+                "sp-grandchild@example.com",
+            )
+        }
+        roots = {
+            mid: s.execute(
+                select(ArticleList.thread_root_id).where(
+                    ArticleList.article_id == aid,
+                    ArticleList.inbox_id == alpha.id,
+                )
+            ).scalar_one()
+            for mid, aid in ids.items()
+        }
+
+    parent_id = ids["sp-parent@example.com"]
+    assert roots["sp-parent@example.com"] == parent_id
+    assert roots["sp-child@example.com"] == parent_id, (
+        "the Session path left the child rooted at itself; the recovered "
+        "parent did not adopt the subtree, and no repair path reaches a "
+        "non-NULL row"
+    )
+    assert roots["sp-grandchild@example.com"] == parent_id, (
+        "the Session path re-rooted the child but not the grandchild"
+    )
+
+
 def test_replay_adopts_descendants_onto_the_real_root_not_the_recovered_row(
     seeded_db, tmp_path, monkeypatch, broker_active
 ):

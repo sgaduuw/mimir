@@ -1023,6 +1023,59 @@ def test_migrate_reports_whether_the_revision_actually_moved(tmp_path, monkeypat
     )
 
 
+def test_schema_revision_reads_the_engine_alembic_migrates_not_the_url(
+    tmp_path, monkeypatch
+):
+    """Which SOURCE `_schema_revision` reads, not merely what it returns.
+
+    `test_migrate_reports_whether_the_revision_actually_moved` points
+    `settings.database_url` and `mimir.extensions.engine` at the same
+    file, because it has to for alembic to migrate the database it then
+    inspects. That makes the two sources agree BY CONSTRUCTION, so it
+    cannot see them diverge: reverting `_schema_revision` to parse the
+    URL and open its own connection leaves it green, measured.
+
+    Here the two deliberately point at different databases. Reading the
+    engine is the whole fix (the engine is what `alembic/env.py`
+    migrates), and hand-parsing a SQLAlchemy URL into a filesystem path
+    is exactly where the two drift in production: relative versus
+    absolute paths, query parameters, a `sqlite+pysqlite://` driver
+    prefix. If "which database has the revision" and "which database got
+    migrated" are ever two answers, the before/after comparison reads
+    unchanged, the caller concludes no migration ran, and the
+    post-migrate ANALYZE is silently skipped on the one deploy that
+    needed it.
+    """
+    import sqlite3
+
+    import mimir.extensions
+    from sqlalchemy import create_engine
+
+    from mimir.broker import server
+    from mimir.config import settings
+
+    migrated = tmp_path / "migrated.db"
+    other = tmp_path / "other.db"
+    for db, revision in ((migrated, "rev-on-the-engine"), (other, "rev-on-the-url")):
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE alembic_version (version_num VARCHAR(32))")
+        conn.execute("INSERT INTO alembic_version VALUES (?)", (revision,))
+        conn.commit()
+        conn.close()
+
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{other}")
+    monkeypatch.setattr(settings, "mimir_is_broker", True)
+    monkeypatch.setattr(
+        mimir.extensions, "engine", create_engine(f"sqlite:///{migrated}")
+    )
+
+    assert server._schema_revision() == "rev-on-the-engine", (
+        "_schema_revision read the database named by settings.database_url "
+        "rather than the one mimir.extensions.engine (and therefore alembic) "
+        "is bound to"
+    )
+
+
 def test_post_backfill_analyze_runs_even_when_the_backfill_blows_up(
     seeded_db, monkeypatch, tmp_path
 ):
