@@ -627,9 +627,43 @@ def _check_peer_uid(sock: socket.socket) -> bool:
     return True
 
 
-def _migrate_if_needed(socket_path: Path) -> None:
+def _schema_revision() -> str | None:
+    """The applied alembic revision, or None if there is no schema yet.
+
+    Read with a bare sqlite3 connection rather than through the ORM
+    engine: this runs before `alembic upgrade`, so on a fresh volume
+    there is no `alembic_version` table and possibly no database file,
+    and the point is to answer "nothing applied yet" rather than to
+    raise.
+    """
+    import sqlite3
+
+    url = settings.database_url
+    prefix = "sqlite:///"
+    if not url.startswith(prefix):
+        # Non-SQLite deploys are not a thing here, and guessing at
+        # another dialect's introspection is worse than declining to
+        # answer: the caller treats None as "cannot tell".
+        return None
+    try:
+        conn = sqlite3.connect(url[len(prefix) :])
+        try:
+            row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
+
+
+def _migrate_if_needed(socket_path: Path) -> bool:
     """Run `alembic upgrade head` on broker startup so the broker
     can serve against a schema known to be current.
+
+    Returns whether the applied revision actually MOVED, which
+    `_post_migrate_analyze_if_needed` needs: a migration that rebuilds a
+    table destroys that table's `sqlite_stat1` rows, and the planner then
+    runs blind until something re-samples them.
 
     `alembic upgrade head` is idempotent and cheap when no
     migrations are pending (one SELECT against `alembic_version`),
@@ -650,6 +684,7 @@ def _migrate_if_needed(socket_path: Path) -> None:
     here matches the single-writer invariant without exception."""
     sentinel = socket_path.parent / ".migrated"
     first_run = not sentinel.exists()
+    revision_before = _schema_revision()
     logger.info(
         "broker: running alembic upgrade head (%s)",
         "first run" if first_run else "idempotent re-check",
@@ -679,11 +714,17 @@ def _migrate_if_needed(socket_path: Path) -> None:
         raise
     elapsed = time.monotonic() - t0
     sentinel.touch()
+    revision_after = _schema_revision()
+    schema_changed = revision_before != revision_after
     logger.info(
-        "broker: alembic upgrade head complete in %.1fs; sentinel %s touched",
+        "broker: alembic upgrade head complete in %.1fs; sentinel %s touched "
+        "(revision %s -> %s)",
         elapsed,
         sentinel,
+        revision_before,
+        revision_after,
     )
+    return schema_changed
 
 
 def _bootstrap_inboxes_if_needed(socket_path: Path) -> None:
@@ -723,25 +764,47 @@ def _bootstrap_inboxes_if_needed(socket_path: Path) -> None:
     )
 
 
-def _post_migrate_analyze_if_needed(socket_path: Path) -> None:
-    """Run `ANALYZE` once after a fresh schema migration so the
-    planner has stats for any newly-created index. Bounded by the
-    per-connection `analysis_limit=4000` pragma (~1-3 s on the
-    production 11M-row corpus); the weekly full `ANALYZE` catches
-    whatever drifts in the long tail.
+def _post_migrate_analyze_if_needed(
+    socket_path: Path, schema_changed: bool = False
+) -> None:
+    """Run `ANALYZE` after a schema migration so the planner has stats
+    for any newly-created index, and for any table a migration rebuilt.
+    Bounded by the per-connection `analysis_limit` pragma; the weekly
+    full `ANALYZE` catches whatever drifts in the long tail.
 
-    Gated on a sentinel file next to the broker socket. Once the
-    first deploy has run the pass, subsequent broker restarts skip
-    it. To force a re-run (e.g. after a manual schema change),
-    delete the sentinel."""
+    Runs when EITHER the first-run sentinel is absent OR the applied
+    alembic revision just moved. The second condition is the important
+    one and used to be missing: the sentinel is once-EVER, not
+    once-per-migration, so on any long-lived deploy this step was
+    permanently skipped while the docstring claimed it ran "once after a
+    fresh schema migration".
+
+    That is not cosmetic, because SQLite migrations rebuild tables. A
+    `batch_alter_table` that adds a foreign key cannot use native `ALTER
+    TABLE`, so alembic does move-and-copy, and the `DROP TABLE` in the
+    middle deletes every `sqlite_stat1` row for that table. Production
+    carries real stats for `article_lists` (`ix_article_lists_inbox_id`
+    at `28765436 141702`, read 2026-07-30) and would have lost them on
+    the next deploy with nothing to put them back, leaving the planner
+    blind on a 28.8M-row table. CONTEXT.md records what bad stats on
+    this exact table cost last time: a 15-message `get_thread` taking
+    400 seconds, across four hotfix releases.
+
+    The sentinel stays, as a first-vs-subsequent-run marker for operator
+    log reading and so a manual `rm` still forces a pass.
+    """
     sentinel = socket_path.parent / ".broker_initial_analyze"
-    if sentinel.exists():
+    if sentinel.exists() and not schema_changed:
         logger.debug(
-            "broker: post-migrate ANALYZE sentinel %s present, skipping",
+            "broker: post-migrate ANALYZE sentinel %s present and schema "
+            "unchanged, skipping",
             sentinel,
         )
         return
-    logger.info("broker: running post-migrate ANALYZE (bounded)")
+    logger.info(
+        "broker: running post-migrate ANALYZE (bounded; reason=%s)",
+        "schema revision moved" if schema_changed else "first run",
+    )
     t0 = time.monotonic()
     try:
         from mimir.maintenance import run_analyze
@@ -893,21 +956,24 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         )
     else:
         sentinel.touch()
-        # The fill rewrote every row of a column ANALYZE may have
-        # sampled while it was 100% NULL (the post-migrate pass runs
-        # before this one, and its own sentinel means reordering would
-        # not help on a corpus that already has it). Re-sample so the
-        # planner sees the real distribution rather than a column that
-        # looks single-valued.
-        try:
-            from mimir.maintenance import run_analyze
 
-            run_analyze(full=False)
-        except Exception:
-            logger.exception(
-                "broker: post-backfill ANALYZE failed; planner stats for "
-                "thread_root_id may under-value the index until the next pass"
-            )
+    # Re-sample OUTSIDE the success branch, deliberately. The fill
+    # rewrote rows of a column ANALYZE may have sampled while it was 100%
+    # NULL, so the planner otherwise keeps treating it as single-valued.
+    # This used to sit under `else:`, which meant one inbox hitting the
+    # pass budget or erroring skipped the re-sample for the whole corpus
+    # while the broker went on to serve: a partial fill is exactly the
+    # case where the column's distribution changed AND the stats are
+    # stale, so it is the last case that should skip this.
+    try:
+        from mimir.maintenance import run_analyze
+
+        run_analyze(full=False)
+    except Exception:
+        logger.exception(
+            "broker: post-backfill ANALYZE failed; planner stats for "
+            "thread_root_id may under-value the index until the next pass"
+        )
     logger.info(
         "broker: thread-roots backfill complete in %.1fs "
         "(seeded=%d propagated=%d cycles=%d)",
@@ -1073,9 +1139,9 @@ def build_server(socket_path: Path) -> _BrokerServer:
     # healthcheck so cold requests after deploy never hit any of
     # these in-progress. Lives in `build_server` (not `serve`) so
     # the test helper exercises the same path.
-    _migrate_if_needed(sp)
+    schema_changed = _migrate_if_needed(sp)
     _bootstrap_inboxes_if_needed(sp)
-    _post_migrate_analyze_if_needed(sp)
+    _post_migrate_analyze_if_needed(sp, schema_changed)
     _backfill_thread_roots_if_needed(sp)
     # Verification runs on EVERY start, deliberately not inside the
     # backfill above. It used to be the backfill's last statement, which
