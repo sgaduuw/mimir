@@ -970,3 +970,98 @@ def test_post_migrate_analyze_reruns_when_the_schema_revision_moves(
         "ANALYZE was skipped after a schema migration; a table rebuild drops "
         "that table's sqlite_stat1 rows and nothing else puts them back"
     )
+
+
+def test_migrate_reports_whether_the_revision_actually_moved(tmp_path, monkeypatch):
+    """The DETECTOR, not just its consumer.
+
+    `test_post_migrate_analyze_reruns_when_the_schema_revision_moves`
+    hands `schema_changed` in by hand, so it pins what the ANALYZE gate
+    does with the flag and says nothing about whether the flag is ever
+    True. Hard-coding `schema_changed = False` in `_migrate_if_needed`
+    left the whole suite green, which means the mechanism the fix rests
+    on was entirely unguarded.
+
+    Runs against a throwaway database via `DATABASE_URL`, never the
+    ambient one: alembic here would otherwise target the developer's own
+    database.
+    """
+    import mimir.extensions
+    from sqlalchemy import create_engine
+
+    from mimir.broker import server
+    from mimir.config import settings
+
+    db = tmp_path / "revmove.db"
+    # Both have to move together. `alembic/env.py` migrates through
+    # `mimir.extensions.engine` while `_schema_revision` reads through
+    # the same object, so redirecting only `settings.database_url` would
+    # migrate the ambient database and inspect the throwaway one. An
+    # earlier version of this test did exactly that and reported a
+    # revision that never moved, which is the real failure mode this
+    # coupling exists to prevent.
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{db}")
+    monkeypatch.setattr(settings, "mimir_is_broker", True)
+    monkeypatch.setattr(mimir.extensions, "engine", create_engine(f"sqlite:///{db}"))
+
+    sock_dir = tmp_path / "sock"
+    sock_dir.mkdir()
+
+    # Fresh database: no `alembic_version` at all, so the revision moves
+    # from None to head.
+    assert server._schema_revision() is None
+    assert server._migrate_if_needed(sock_dir / "broker.sock") is True, (
+        "a first migration onto an empty database must report the revision "
+        "as having moved, or the post-migrate ANALYZE never runs"
+    )
+    assert server._schema_revision() is not None
+
+    # Idempotent re-check on an already-current database: nothing moved.
+    assert server._migrate_if_needed(sock_dir / "broker.sock") is False, (
+        "an ordinary restart reported a schema change, which would re-run "
+        "ANALYZE on every boot"
+    )
+
+
+def test_post_backfill_analyze_runs_even_when_the_backfill_blows_up(
+    seeded_db, monkeypatch, tmp_path
+):
+    """All three exits from the backfill re-sample, including the worst.
+
+    The re-sample originally sat in the success branch only, so any
+    inbox erroring skipped it. Moving it out fixed the common case but
+    left the outer `except` returning early, which is the same bug one
+    level further out and the strictly worse instance: a session-level
+    failure part-way through leaves the most incomplete fill of all,
+    which is exactly when the column's distribution has moved and the
+    planner's stats are most stale.
+    """
+    import mimir.maintenance
+    from mimir.broker import server
+
+    calls: list[str] = []
+
+    class _Result:
+        elapsed_ms = 0
+
+    def _fake_analyze(full=False):
+        calls.append("ran")
+        return _Result()
+
+    def _explode(*_a, **_kw):
+        raise RuntimeError("simulated session-level failure mid-backfill")
+
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", _fake_analyze)
+    monkeypatch.setattr(server, "SessionLocal", _explode, raising=False)
+    monkeypatch.setattr("mimir.extensions.SessionLocal", _explode)
+
+    sock_dir = tmp_path / "boom"
+    sock_dir.mkdir()
+    # No sentinel, so the backfill actually runs rather than short-
+    # circuiting, and then dies inside the session.
+    server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
+
+    assert calls == ["ran"], (
+        "the backfill failed at session level and skipped the ANALYZE; a "
+        "partial fill is the state most in need of fresh planner stats"
+    )

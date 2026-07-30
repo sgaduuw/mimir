@@ -630,28 +630,29 @@ def _check_peer_uid(sock: socket.socket) -> bool:
 def _schema_revision() -> str | None:
     """The applied alembic revision, or None if there is no schema yet.
 
-    Read with a bare sqlite3 connection rather than through the ORM
-    engine: this runs before `alembic upgrade`, so on a fresh volume
-    there is no `alembic_version` table and possibly no database file,
-    and the point is to answer "nothing applied yet" rather than to
-    raise.
-    """
-    import sqlite3
+    Reads through `mimir.extensions.engine`, which is the SAME engine
+    `alembic/env.py` runs migrations on. That is the point, not an
+    incidental convenience: an earlier version parsed
+    `settings.database_url` and opened its own sqlite3 connection, so
+    "which database has the revision" and "which database gets migrated"
+    were two independent answers that could disagree. When they do, the
+    before/after comparison reads unchanged and the caller concludes no
+    migration ran, silently disabling the post-migrate ANALYZE. Sharing
+    the engine makes them agree by construction.
 
-    url = settings.database_url
-    prefix = "sqlite:///"
-    if not url.startswith(prefix):
-        # Non-SQLite deploys are not a thing here, and guessing at
-        # another dialect's introspection is worse than declining to
-        # answer: the caller treats None as "cannot tell".
-        return None
+    Returns None when the schema does not exist yet (fresh volume, no
+    `alembic_version` table), which is a real answer, not an error: the
+    caller compares it against the revision after the upgrade.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from mimir.extensions import engine
+
     try:
-        conn = sqlite3.connect(url[len(prefix) :])
-        try:
-            row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error:
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT version_num FROM alembic_version")).first()
+    except SQLAlchemyError:
         return None
     return row[0] if row else None
 
@@ -867,11 +868,16 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     the granularity the docstring on `backfill_inbox` claims, because
     every pass only touches NULL rows.
 
-    Verification does NOT run here. It is explicitly not allowed to
-    gate startup, and it costs ~23 s on a 200-inbox corpus (its per-
-    inbox cost is near-constant, so the ~199 small inboxes dominate),
-    which is pure added latency in front of the healthcheck. It runs
-    on a daemon thread instead, see `_verify_thread_roots_async`.
+    Verification does NOT run here, and is no longer called from this
+    function at all: being its last statement meant it only ever ran on
+    the deploy that first filled the column, because this function
+    returns early on the sentinel. `build_server` calls it directly now.
+
+    It stays off the startup path regardless. It is explicitly not
+    allowed to gate startup, and it costs ~218 s on a prod-shape corpus
+    (re-measured 2026-07-30, and a floor), which would be pure added
+    latency in front of the healthcheck. See `_verify_thread_roots_async`
+    for the breakdown.
     """
     sentinel = socket_path.parent / ".thread_roots_backfilled"
     if sentinel.exists() and not _has_unrooted_rows():
@@ -940,6 +946,12 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         logger.exception(
             "broker: thread-roots backfill failed, continuing without sentinel"
         )
+        # Still re-sample. A session-level failure part-way through is a
+        # PARTIAL fill, which is precisely the state where the column's
+        # distribution has moved and the planner's stats are stale, so
+        # returning here would reintroduce the skip this function was
+        # just fixed to avoid, one level further out.
+        _run_post_backfill_analyze()
         return
 
     elapsed = time.monotonic() - t0
@@ -965,6 +977,29 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     # while the broker went on to serve: a partial fill is exactly the
     # case where the column's distribution changed AND the stats are
     # stale, so it is the last case that should skip this.
+    _run_post_backfill_analyze()
+    logger.info(
+        "broker: thread-roots backfill complete in %.1fs "
+        "(seeded=%d propagated=%d cycles=%d)",
+        elapsed,
+        totals["seeded"],
+        totals["propagated"],
+        totals["cycles_broken"],
+    )
+
+
+def _run_post_backfill_analyze() -> None:
+    """Re-sample planner stats after the column has been written.
+
+    One function because all three exits from the backfill need it: full
+    success, partial success (an inbox hit the pass budget or errored),
+    and a session-level failure. Only the first used to get it, which
+    inverted the priority: the more incomplete the fill, the more likely
+    the stats are stale and the less likely they were refreshed.
+
+    Never raises. Stale stats make queries slow, not wrong, and refusing
+    to start over them would turn a performance problem into an outage.
+    """
     try:
         from mimir.maintenance import run_analyze
 
@@ -974,14 +1009,6 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
             "broker: post-backfill ANALYZE failed; planner stats for "
             "thread_root_id may under-value the index until the next pass"
         )
-    logger.info(
-        "broker: thread-roots backfill complete in %.1fs "
-        "(seeded=%d propagated=%d cycles=%d)",
-        elapsed,
-        totals["seeded"],
-        totals["propagated"],
-        totals["cycles_broken"],
-    )
 
 
 def _has_unrooted_rows() -> bool:
@@ -1015,14 +1042,32 @@ def _verify_thread_roots_async() -> threading.Thread:
     into an outage, and the failure it detects is not made worse by the
     site being up. It used to run inline anyway, which meant it could
     not fail the healthcheck but could still DELAY it past
-    `start_period`, measured at ~23 s on a 200-inbox corpus. Its
-    per-inbox cost is near-constant (a bounded walk-up plus a recursive
-    CTE per sampled row), so the ~199 small inboxes dominate the bill
-    regardless of how small they are.
+    `start_period`.
 
-    A daemon thread keeps the value without the latency. The work is
-    read-only, so running it alongside live traffic is safe, and the
-    thread dies with the process.
+    Cost, re-measured 2026-07-30 on a prod-shape corpus after the
+    coherence check was added, because the previous figure (~23 s) is now
+    wrong by an order of magnitude:
+
+        find_incoherent_roots   134.8 s   (complete, one scan per inbox)
+        verify_thread_roots      83.5 s   (sampled, 200 rows per inbox)
+        -----------------------------
+        total                   218   s
+
+    Treat that as a FLOOR: the bench corpus's `thread_parent` resolves
+    for none of its rows, so it never pays the parent-row seek that a
+    real corpus does. The old docstring's claim that per-inbox cost is
+    "near-constant" no longer holds either, since the coherence check
+    scales with each inbox's row count rather than with a fixed sample.
+
+    Two changes make this affordable rather than alarming. It runs on a
+    daemon thread, so none of it is in front of the healthcheck. And it
+    is read-only, so it cannot block the single writer; pysqlite's legacy
+    isolation means a SELECT does not even open a transaction, so it
+    holds nothing against WAL.
+
+    It now runs on EVERY start rather than once ever, which is the point
+    (see `build_server`), and restarts are deploy-frequency events, so
+    ~3.5 minutes of background reads after a deploy is the whole bill.
     """
 
     def _run() -> None:
@@ -1040,9 +1085,13 @@ def _verify_thread_roots_async() -> threading.Thread:
                     # every row instead of a 200-row sample.
                     split = find_incoherent_roots(session, inbox)
                     if split:
+                        # "at least", because the query is LIMITed: the
+                        # count is a sample size, not a total, and
+                        # reporting it as a total would understate a
+                        # corpus-wide problem as a handful of rows.
                         logger.error(
-                            "broker: thread-roots verification found %d "
-                            "row(s) in inbox %s whose parent carries a "
+                            "broker: thread-roots verification found at least "
+                            "%d row(s) in inbox %s whose parent carries a "
                             "different root, e.g. %s; the thread is "
                             "materialised in two pieces",
                             len(split),
