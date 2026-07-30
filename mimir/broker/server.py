@@ -627,9 +627,44 @@ def _check_peer_uid(sock: socket.socket) -> bool:
     return True
 
 
-def _migrate_if_needed(socket_path: Path) -> None:
+def _schema_revision() -> str | None:
+    """The applied alembic revision, or None if there is no schema yet.
+
+    Reads through `mimir.extensions.engine`, which is the SAME engine
+    `alembic/env.py` runs migrations on. That is the point, not an
+    incidental convenience: an earlier version parsed
+    `settings.database_url` and opened its own sqlite3 connection, so
+    "which database has the revision" and "which database gets migrated"
+    were two independent answers that could disagree. When they do, the
+    before/after comparison reads unchanged and the caller concludes no
+    migration ran, silently disabling the post-migrate ANALYZE. Sharing
+    the engine makes them agree by construction.
+
+    Returns None when the schema does not exist yet (fresh volume, no
+    `alembic_version` table), which is a real answer, not an error: the
+    caller compares it against the revision after the upgrade.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from mimir.extensions import engine
+
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT version_num FROM alembic_version")).first()
+    except SQLAlchemyError:
+        return None
+    return row[0] if row else None
+
+
+def _migrate_if_needed(socket_path: Path) -> bool:
     """Run `alembic upgrade head` on broker startup so the broker
     can serve against a schema known to be current.
+
+    Returns whether the applied revision actually MOVED, which
+    `_post_migrate_analyze_if_needed` needs: a migration that rebuilds a
+    table destroys that table's `sqlite_stat1` rows, and the planner then
+    runs blind until something re-samples them.
 
     `alembic upgrade head` is idempotent and cheap when no
     migrations are pending (one SELECT against `alembic_version`),
@@ -650,6 +685,7 @@ def _migrate_if_needed(socket_path: Path) -> None:
     here matches the single-writer invariant without exception."""
     sentinel = socket_path.parent / ".migrated"
     first_run = not sentinel.exists()
+    revision_before = _schema_revision()
     logger.info(
         "broker: running alembic upgrade head (%s)",
         "first run" if first_run else "idempotent re-check",
@@ -679,11 +715,17 @@ def _migrate_if_needed(socket_path: Path) -> None:
         raise
     elapsed = time.monotonic() - t0
     sentinel.touch()
+    revision_after = _schema_revision()
+    schema_changed = revision_before != revision_after
     logger.info(
-        "broker: alembic upgrade head complete in %.1fs; sentinel %s touched",
+        "broker: alembic upgrade head complete in %.1fs; sentinel %s touched "
+        "(revision %s -> %s)",
         elapsed,
         sentinel,
+        revision_before,
+        revision_after,
     )
+    return schema_changed
 
 
 def _bootstrap_inboxes_if_needed(socket_path: Path) -> None:
@@ -723,25 +765,47 @@ def _bootstrap_inboxes_if_needed(socket_path: Path) -> None:
     )
 
 
-def _post_migrate_analyze_if_needed(socket_path: Path) -> None:
-    """Run `ANALYZE` once after a fresh schema migration so the
-    planner has stats for any newly-created index. Bounded by the
-    per-connection `analysis_limit=4000` pragma (~1-3 s on the
-    production 11M-row corpus); the weekly full `ANALYZE` catches
-    whatever drifts in the long tail.
+def _post_migrate_analyze_if_needed(
+    socket_path: Path, schema_changed: bool = False
+) -> None:
+    """Run `ANALYZE` after a schema migration so the planner has stats
+    for any newly-created index, and for any table a migration rebuilt.
+    Bounded by the per-connection `analysis_limit` pragma; the weekly
+    full `ANALYZE` catches whatever drifts in the long tail.
 
-    Gated on a sentinel file next to the broker socket. Once the
-    first deploy has run the pass, subsequent broker restarts skip
-    it. To force a re-run (e.g. after a manual schema change),
-    delete the sentinel."""
+    Runs when EITHER the first-run sentinel is absent OR the applied
+    alembic revision just moved. The second condition is the important
+    one and used to be missing: the sentinel is once-EVER, not
+    once-per-migration, so on any long-lived deploy this step was
+    permanently skipped while the docstring claimed it ran "once after a
+    fresh schema migration".
+
+    That is not cosmetic, because SQLite migrations rebuild tables. A
+    `batch_alter_table` that adds a foreign key cannot use native `ALTER
+    TABLE`, so alembic does move-and-copy, and the `DROP TABLE` in the
+    middle deletes every `sqlite_stat1` row for that table. Production
+    carries real stats for `article_lists` (`ix_article_lists_inbox_id`
+    at `28765436 141702`, read 2026-07-30) and would have lost them on
+    the next deploy with nothing to put them back, leaving the planner
+    blind on a 28.8M-row table. CONTEXT.md records what bad stats on
+    this exact table cost last time: a 15-message `get_thread` taking
+    400 seconds, across four hotfix releases.
+
+    The sentinel stays, as a first-vs-subsequent-run marker for operator
+    log reading and so a manual `rm` still forces a pass.
+    """
     sentinel = socket_path.parent / ".broker_initial_analyze"
-    if sentinel.exists():
+    if sentinel.exists() and not schema_changed:
         logger.debug(
-            "broker: post-migrate ANALYZE sentinel %s present, skipping",
+            "broker: post-migrate ANALYZE sentinel %s present and schema "
+            "unchanged, skipping",
             sentinel,
         )
         return
-    logger.info("broker: running post-migrate ANALYZE (bounded)")
+    logger.info(
+        "broker: running post-migrate ANALYZE (bounded; reason=%s)",
+        "schema revision moved" if schema_changed else "first run",
+    )
     t0 = time.monotonic()
     try:
         from mimir.maintenance import run_analyze
@@ -804,11 +868,16 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     the granularity the docstring on `backfill_inbox` claims, because
     every pass only touches NULL rows.
 
-    Verification does NOT run here. It is explicitly not allowed to
-    gate startup, and it costs ~23 s on a 200-inbox corpus (its per-
-    inbox cost is near-constant, so the ~199 small inboxes dominate),
-    which is pure added latency in front of the healthcheck. It runs
-    on a daemon thread instead, see `_verify_thread_roots_async`.
+    Verification does NOT run here, and is no longer called from this
+    function at all: being its last statement meant it only ever ran on
+    the deploy that first filled the column, because this function
+    returns early on the sentinel. `build_server` calls it directly now.
+
+    It stays off the startup path regardless. It is explicitly not
+    allowed to gate startup, and it costs ~218 s on a prod-shape corpus
+    (re-measured 2026-07-30, and a floor), which would be pure added
+    latency in front of the healthcheck. See `_verify_thread_roots_async`
+    for the breakdown.
     """
     sentinel = socket_path.parent / ".thread_roots_backfilled"
     if sentinel.exists() and not _has_unrooted_rows():
@@ -822,6 +891,18 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         # `verify_thread_roots` samples only non-NULL rows and the
         # sitemap's root test IS the column. Re-running is cheap when
         # there is nothing to do.
+        #
+        # This deliberately re-runs on ANY unrooted row rather than only
+        # on more than some remembered count. A remembered count was
+        # tried and reverted: it compares cardinality where the question
+        # is identity, so two rows going NULL after two others were
+        # repaired reads as "not above the floor" and those rows are
+        # then never repaired, silently and permanently. The failure
+        # modes are not symmetric. Re-running when it was unnecessary
+        # costs a log line and a pass over ~200 inboxes that moves
+        # nothing; not re-running when it was necessary leaves a thread
+        # materialised in two pieces with no repair path, because every
+        # repair path keys on NULL. Prefer the noisy, self-healing side.
         logger.warning(
             "broker: thread-roots sentinel present but unrooted rows exist; "
             "re-running the backfill"
@@ -877,6 +958,12 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         logger.exception(
             "broker: thread-roots backfill failed, continuing without sentinel"
         )
+        # Still re-sample. A session-level failure part-way through is a
+        # PARTIAL fill, which is precisely the state where the column's
+        # distribution has moved and the planner's stats are stale, so
+        # returning here would reintroduce the skip this function was
+        # just fixed to avoid, one level further out.
+        _run_post_backfill_analyze()
         return
 
     elapsed = time.monotonic() - t0
@@ -893,21 +980,16 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         )
     else:
         sentinel.touch()
-        # The fill rewrote every row of a column ANALYZE may have
-        # sampled while it was 100% NULL (the post-migrate pass runs
-        # before this one, and its own sentinel means reordering would
-        # not help on a corpus that already has it). Re-sample so the
-        # planner sees the real distribution rather than a column that
-        # looks single-valued.
-        try:
-            from mimir.maintenance import run_analyze
 
-            run_analyze(full=False)
-        except Exception:
-            logger.exception(
-                "broker: post-backfill ANALYZE failed; planner stats for "
-                "thread_root_id may under-value the index until the next pass"
-            )
+    # Re-sample OUTSIDE the success branch, deliberately. The fill
+    # rewrote rows of a column ANALYZE may have sampled while it was 100%
+    # NULL, so the planner otherwise keeps treating it as single-valued.
+    # This used to sit under `else:`, which meant one inbox hitting the
+    # pass budget or erroring skipped the re-sample for the whole corpus
+    # while the broker went on to serve: a partial fill is exactly the
+    # case where the column's distribution changed AND the stats are
+    # stale, so it is the last case that should skip this.
+    _run_post_backfill_analyze()
     logger.info(
         "broker: thread-roots backfill complete in %.1fs "
         "(seeded=%d propagated=%d cycles=%d)",
@@ -917,7 +999,28 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         totals["cycles_broken"],
     )
 
-    _verify_thread_roots_async()
+
+def _run_post_backfill_analyze() -> None:
+    """Re-sample planner stats after the column has been written.
+
+    One function because all three exits from the backfill need it: full
+    success, partial success (an inbox hit the pass budget or errored),
+    and a session-level failure. Only the first used to get it, which
+    inverted the priority: the more incomplete the fill, the more likely
+    the stats are stale and the less likely they were refreshed.
+
+    Never raises. Stale stats make queries slow, not wrong, and refusing
+    to start over them would turn a performance problem into an outage.
+    """
+    try:
+        from mimir.maintenance import run_analyze
+
+        run_analyze(full=False)
+    except Exception:
+        logger.exception(
+            "broker: post-backfill ANALYZE failed; planner stats for "
+            "thread_root_id may under-value the index until the next pass"
+        )
 
 
 def _has_unrooted_rows() -> bool:
@@ -951,14 +1054,32 @@ def _verify_thread_roots_async() -> threading.Thread:
     into an outage, and the failure it detects is not made worse by the
     site being up. It used to run inline anyway, which meant it could
     not fail the healthcheck but could still DELAY it past
-    `start_period`, measured at ~23 s on a 200-inbox corpus. Its
-    per-inbox cost is near-constant (a bounded walk-up plus a recursive
-    CTE per sampled row), so the ~199 small inboxes dominate the bill
-    regardless of how small they are.
+    `start_period`.
 
-    A daemon thread keeps the value without the latency. The work is
-    read-only, so running it alongside live traffic is safe, and the
-    thread dies with the process.
+    Cost, re-measured 2026-07-30 on a prod-shape corpus after the
+    coherence check was added, because the previous figure (~23 s) is now
+    wrong by an order of magnitude:
+
+        find_incoherent_roots   134.8 s   (complete, one scan per inbox)
+        verify_thread_roots      83.5 s   (sampled, 200 rows per inbox)
+        -----------------------------
+        total                   218   s
+
+    Treat that as a FLOOR: the bench corpus's `thread_parent` resolves
+    for none of its rows, so it never pays the parent-row seek that a
+    real corpus does. The old docstring's claim that per-inbox cost is
+    "near-constant" no longer holds either, since the coherence check
+    scales with each inbox's row count rather than with a fixed sample.
+
+    Two changes make this affordable rather than alarming. It runs on a
+    daemon thread, so none of it is in front of the healthcheck. And it
+    is read-only, so it cannot block the single writer; pysqlite's legacy
+    isolation means a SELECT does not even open a transaction, so it
+    holds nothing against WAL.
+
+    It now runs on EVERY start rather than once ever, which is the point
+    (see `build_server`), and restarts are deploy-frequency events, so
+    ~3.5 minutes of background reads after a deploy is the whole bill.
     """
 
     def _run() -> None:
@@ -966,11 +1087,29 @@ def _verify_thread_roots_async() -> threading.Thread:
 
         from mimir.extensions import SessionLocal
         from mimir.models import Inbox
-        from mimir.thread_roots import verify_thread_roots
+        from mimir.thread_roots import find_incoherent_roots, verify_thread_roots
 
         try:
             with SessionLocal() as session:
                 for inbox in session.execute(select(Inbox)).scalars():
+                    # Complete structural check first: it is the one that
+                    # actually catches a split thread, because it looks at
+                    # every row instead of a 200-row sample.
+                    split = find_incoherent_roots(session, inbox)
+                    if split:
+                        # "at least", because the query is LIMITed: the
+                        # count is a sample size, not a total, and
+                        # reporting it as a total would understate a
+                        # corpus-wide problem as a handful of rows.
+                        logger.error(
+                            "broker: thread-roots verification found at least "
+                            "%d row(s) in inbox %s whose parent carries a "
+                            "different root, e.g. %s; the thread is "
+                            "materialised in two pieces",
+                            len(split),
+                            inbox.name,
+                            split[0],
+                        )
                     bad = verify_thread_roots(session, inbox)
                     if bad:
                         logger.error(
@@ -1061,10 +1200,21 @@ def build_server(socket_path: Path) -> _BrokerServer:
     # healthcheck so cold requests after deploy never hit any of
     # these in-progress. Lives in `build_server` (not `serve`) so
     # the test helper exercises the same path.
-    _migrate_if_needed(sp)
+    schema_changed = _migrate_if_needed(sp)
     _bootstrap_inboxes_if_needed(sp)
-    _post_migrate_analyze_if_needed(sp)
+    _post_migrate_analyze_if_needed(sp, schema_changed)
     _backfill_thread_roots_if_needed(sp)
+    # Verification runs on EVERY start, deliberately not inside the
+    # backfill above. It used to be the backfill's last statement, which
+    # meant it only ever ran on the one deploy that introduced the
+    # column: the sentinel early-return skips the whole function on every
+    # subsequent restart, and both of its failure paths `return` before
+    # reaching the end. So the only detector for an invisible failure
+    # fired exactly once, at the one moment the corpus was correct by
+    # construction, while every path that can corrupt the column fires
+    # strictly later. Off the startup path on a daemon thread, so this
+    # costs the healthcheck nothing.
+    _verify_thread_roots_async()
     # Config-drift guard (Layer 1): the broker can serve every non-
     # sitemap surface with SITE_BASE_URL unset, but the sitemap warm
     # targets (sitemap:index, sitemap:meta, sitemap:inbox:*) silently

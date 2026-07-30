@@ -557,6 +557,12 @@ def test_replay_resolves_roots_on_the_session_path(client, tmp_path):
     `SessionLocal` is autoflush=False and the passes are raw text()
     UPDATEs, so without an explicit flush they ran against a database
     that had not seen replay's ORM inserts and did nothing at all.
+
+    Note this drives the helper DIRECTLY and simulates replay's inserts
+    by hand, so it holds the mechanism axis fixed and cannot see
+    anything about how `replay_failures` actually calls it. The
+    subtree-adoption case is guarded through the real entry point in
+    `tests/test_ingest/test_replay.py` instead.
     """
     from sqlalchemy import select
 
@@ -588,7 +594,7 @@ def test_replay_resolves_roots_on_the_session_path(client, tmp_path):
         from mimir.ingest.replay import _resolve_roots_after_replay
 
         s.flush()
-        _resolve_roots_after_replay(s, beta.id)
+        _resolve_roots_after_replay(s, beta.id, ["rp-root@x", "rp-kid@x"])
         s.commit()
 
     got = _roots_by_inbox("beta", {"rp-root@x", "rp-kid@x"})
@@ -1165,16 +1171,28 @@ def test_startup_backfill_covers_every_inbox(client, tmp_path):
 def test_startup_backfill_withholds_the_sentinel_when_the_pass_budget_blows(
     client, tmp_path, monkeypatch
 ):
-    """The sentinel is the ONLY thing that makes this retry.
+    """The sentinel is the ONLY thing that makes this retry, and the
+    re-sample must not sit behind the success branch either.
 
-    Touching it over a partial fill is permanent: no later restart
-    re-runs, and every unrooted thread stays missing from the sitemap
-    forever. Deleting the `else:` guarding `sentinel.touch()` passed the
-    entire suite, which is exactly the silent-under-reporting this
-    function exists to prevent.
+    Touching the sentinel over a partial fill is permanent: no later
+    restart re-runs, and every unrooted thread stays missing from the
+    sitemap forever. Deleting the `else:` guarding `sentinel.touch()`
+    passed the entire suite, which is exactly the silent-under-reporting
+    this function exists to prevent.
+
+    The ANALYZE assertion rides along on the same fixture because it is
+    the same scenario, and a partial fill is the state MOST in need of
+    fresh stats, not least: the column's distribution has just moved and
+    ANALYZE may have sampled it while it was still entirely NULL, so the
+    planner goes on treating it as single-valued. Priority inverted, the
+    more incomplete the fill, the less likely the stats were refreshed.
     """
+    import mimir.maintenance
     import mimir.thread_roots
     from mimir.broker.server import _backfill_thread_roots_if_needed
+
+    calls = []
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda **kw: calls.append(kw))
 
     seed_thread_shape(
         tmp_path, "alpha", [("pb1@x", None), ("pb2@x", "pb1@x"), ("pb3@x", "pb2@x")]
@@ -1190,6 +1208,10 @@ def test_startup_backfill_withholds_the_sentinel_when_the_pass_budget_blows(
     assert _nulls_remaining("alpha") > 0, "test did not actually exhaust the budget"
     assert not (sock / ".thread_roots_backfilled").exists(), (
         "sentinel was written over a partial fill; no restart will ever retry"
+    )
+    assert calls, (
+        "no ANALYZE after a partial fill; the planner keeps stats sampled "
+        "while thread_root_id was entirely NULL and under-values the index"
     )
 
 
@@ -1252,7 +1274,7 @@ def test_startup_verification_reports_a_mismatch(client, tmp_path, caplog):
 
     from sqlalchemy import update
 
-    from mimir.broker.server import _backfill_thread_roots_if_needed
+    from mimir.broker.server import _verify_thread_roots_async
 
     seeded = seed_thread_shape(
         tmp_path, "alpha", [("vm1@x", None), ("vm2@x", "vm1@x"), ("vm3@x", "vm2@x")]
@@ -1273,12 +1295,16 @@ def test_startup_verification_reports_a_mismatch(client, tmp_path, caplog):
         )
         s.commit()
 
-    sock = tmp_path / "sock"
-    sock.mkdir()
+    # Driven directly rather than through the backfill. Verification is
+    # no longer the backfill's last statement, because being there meant
+    # it only ever ran on the deploy that introduced the column: the
+    # sentinel early-return skips the whole function on every later
+    # restart. `build_server` calls it unconditionally instead, which
+    # `test_startup_verification_runs_even_when_the_backfill_is_skipped`
+    # pins.
     with caplog.at_level(logging.ERROR, logger="mimir.broker.server"):
-        _backfill_thread_roots_if_needed(sock / "broker.sock")
-        # Verification runs on a daemon thread so it cannot delay the
-        # healthcheck; join it here so the assertion is not racy.
+        _verify_thread_roots_async().join(timeout=30)
+        # Belt and braces if the thread was already replaced.
         for t in threading.enumerate():
             if t.name == "thread-roots-verify":
                 t.join(timeout=30)
@@ -1286,6 +1312,167 @@ def test_startup_verification_reports_a_mismatch(client, tmp_path, caplog):
     assert any("verification found" in r.message for r in caplog.records), (
         f"verification did not report the corrupted root: {caplog.records}"
     )
+
+
+def test_startup_verification_runs_even_when_the_backfill_is_skipped(
+    client, tmp_path, monkeypatch
+):
+    """The detector must fire on EVERY start, not just the first one.
+
+    Verification used to be the last statement of
+    `_backfill_thread_roots_if_needed`, which meant it ran exactly once
+    ever: that function returns early whenever its sentinel exists and no
+    row is NULL, which is the state of every ordinary restart, and both
+    of its failure paths `return` before reaching the end too. So the
+    only detector for a failure the code itself calls invisible fired
+    once, on the deploy that introduced the column, at the one moment the
+    corpus was correct by construction. Every path that can corrupt the
+    column fires strictly later.
+    """
+    from mimir.broker import server as broker_server
+    from tests.test_broker.test_server import short_socket_path
+
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        broker_server, "_verify_thread_roots_async", lambda: calls.append(True)
+    )
+
+    sp = short_socket_path("verify-always")
+    # Every sentinel present, so all four bootstrap steps short-circuit:
+    # exactly the ordinary-restart state in which verification used to be
+    # unreachable.
+    for name in (
+        ".migrated",
+        ".bootstrapped",
+        ".broker_initial_analyze",
+        ".thread_roots_backfilled",
+    ):
+        (sp.parent / name).touch()
+
+    server = broker_server.build_server(sp)
+    try:
+        assert calls, (
+            "build_server skipped thread-root verification on a restart where "
+            "every bootstrap sentinel was already present"
+        )
+    finally:
+        server.server_close()
+        if sp.exists():
+            sp.unlink()
+
+
+def test_find_incoherent_roots_catches_a_split_thread(client, tmp_path):
+    """The complete structural check, which the sampling verifier cannot
+    be relied on for.
+
+    `verify_thread_roots` samples 200 rows per inbox, which on the
+    production corpus is ~0.0007%, so a split confined to a few threads
+    is overwhelmingly likely to go unsampled. Coherence is checked over
+    every row instead: within one inbox a message and its parent belong
+    to the same conversation, so they must name the same root.
+    """
+    from sqlalchemy import update
+
+    from mimir.thread_roots import find_incoherent_roots
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("ic1@x", None), ("ic2@x", "ic1@x"), ("ic3@x", "ic2@x")]
+    )
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        assert find_incoherent_roots(s, inbox) == [], (
+            "a healthy thread must be coherent; a false positive here would "
+            "make the check useless noise"
+        )
+
+        # Split the thread: ic2 keeps its own id as root while its parent
+        # ic1 still roots the conversation. This is exactly the shape a
+        # repair pass skipping a non-NULL row leaves behind.
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.article_id == seeded["ic2@x"][0],
+            )
+            .values(thread_root_id=seeded["ic2@x"][0])
+        )
+        s.commit()
+
+        found = find_incoherent_roots(s, inbox)
+
+    assert found, "a split thread went undetected by the coherence check"
+    assert {f["article_id"] for f in found} == {
+        seeded["ic2@x"][0],
+        seeded["ic3@x"][0],
+    }, (
+        "expected both the split row and the child that now disagrees with "
+        f"it, got {found}"
+    )
+
+
+def test_find_incoherent_roots_does_not_report_another_inbox(client, tmp_path):
+    """Scoped to the inbox asked about.
+
+    Threading is inbox-scoped, so the answer must be too. Losing the
+    `al.inbox_id` filter still returns only within-inbox parent/child
+    pairs (the join enforces that), which is why it is easy to miss:
+    every row it reports is a genuine split, just not one belonging to
+    the inbox being asked about. Two consequences, and the second is the
+    expensive one. The log misattributes inbox B's damage to inbox A and
+    repeats it once per inbox, and the query degrades from a scan of one
+    inbox's rows to a full scan of `article_lists` performed once per
+    inbox: ~200 passes over 28.8M rows on the production corpus instead
+    of ~200 partial ones.
+    """
+    from sqlalchemy import update
+
+    from mimir.thread_roots import find_incoherent_roots
+
+    seeded = seed_thread_shape(tmp_path, "beta", [("xi1@x", None), ("xi2@x", "xi1@x")])
+
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.inbox_id == beta.id,
+                ArticleList.article_id == seeded["xi2@x"][0],
+            )
+            .values(thread_root_id=seeded["xi2@x"][0])
+        )
+        s.commit()
+
+        assert find_incoherent_roots(s, beta), (
+            "precondition: beta's thread really is split"
+        )
+        assert find_incoherent_roots(s, alpha) == [], (
+            "beta's split was reported against alpha; the check is not inbox-scoped"
+        )
+
+
+def test_find_incoherent_roots_ignores_self_parents(client, tmp_path):
+    """A self-referential In-Reply-To must not read as a split.
+
+    Production had 1,360 of these when last measured, so a false positive
+    on this shape would bury the real signal under noise on every start.
+
+    Note this deliberately does NOT kill the `p.id != a.id` guard in the
+    query: a self-parent resolves the parent row to the child row, so the
+    root comparison is a row against itself and is false with or without
+    the guard. The property is worth pinning even though the guard it
+    looks like it protects is redundant here.
+    """
+    from mimir.thread_roots import find_incoherent_roots
+
+    seed_thread_shape(tmp_path, "alpha", [("sp1@x", "sp1@x")])
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        assert find_incoherent_roots(s, alpha) == [], (
+            "a self-parent was reported as an incoherent root"
+        )
 
 
 def test_reindex_from_scratch_refuses_when_it_cannot_rebuild(client, tmp_path):

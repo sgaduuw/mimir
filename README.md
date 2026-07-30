@@ -659,7 +659,10 @@ Routes:
   Cached for 1 h.
 - `GET /<inbox>/<YYYY>/<MM>/sitemap.xml`, one month of that inbox's
   thread URLs, paged as `sitemap-2.xml` and so on when a month exceeds
-  45,000 URLs (the protocol caps a urlset at 50,000). This is what
+  20,000 URLs. Two ceilings apply and the protocol's is not the tighter
+  one: sitemaps.org caps a urlset at 50,000, but a page slice is passed
+  whole to three queries as an expanding `IN` list, and SQLite's
+  bind-parameter limit is 32,766. This is what
   covers the deep archive: the flat per-inbox sitemap above lists only
   the most recent few thousand threads, so on a corpus of this size
   everything older was in no sitemap at all. The index enumerates every
@@ -857,9 +860,16 @@ mimir runs three containers (since 2.0.0; see `compose.yaml`):
   Serves cache + admin RPCs over a UNIX socket at
   `/data/.broker.sock`. Self-bootstraps on startup (`alembic
   upgrade head` → `bootstrap_inboxes` → bounded post-migrate
+  `ANALYZE` → one-time thread-root backfill → a second bounded
   `ANALYZE`), each gated by a sentinel file so subsequent
-  restarts skip. Internal periodic purge thread drops expired
-  cache rows.
+  restarts skip. All of it runs before the broker accepts RPCs,
+  so a deploy carrying a schema change has to fit the start
+  budget: `start_period` in `compose.yaml`, `TimeoutStartSec` on
+  the production quadlet. Both other containers gate on the
+  broker's healthcheck, so overrunning it fails the deploy rather
+  than degrading it. Thread-root verification deliberately sits
+  outside that budget, on a daemon thread after startup.
+  Internal periodic purge thread drops expired cache rows.
 - **`mimir`** is the web tier. Opens every SQLite connection with
   `PRAGMA query_only=1`; cache writes route through the broker
   socket. Depends on the broker's healthcheck so cold requests

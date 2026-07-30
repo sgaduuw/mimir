@@ -608,3 +608,25 @@ def warm_subsystem_activity(inbox_name: str):
     with SessionLocal() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
         return most_active_subsystems_in_inbox(s, inbox, days=7)
+
+
+def warm_global_subsystem_activity():
+    """Populate the cross-inbox most-active-subsystems row the front
+    page reads.
+
+    Distinct from `warm_subsystem_activity`, which only fills the
+    PER-INBOX row. The front page calls `most_active_subsystems_global`,
+    a different key, also with `compute_on_miss=False`, so warming only
+    the per-inbox row leaves `/` rendering an empty widget. A test
+    asserting something about the front page's subsystem cards is then
+    vacuously true, which is how the card grid's gate went unguarded
+    while a mutation of it still passed.
+
+    `days=7` has to match the route; the cached row is limit-less, so
+    the route's `limit=12` slice does not affect the key.
+    """
+    from mimir.extensions import SessionLocal
+    from mimir.subsystems_dashboard import most_active_subsystems_global
+
+    with SessionLocal() as s:
+        return most_active_subsystems_global(s, days=7)

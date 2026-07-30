@@ -23,6 +23,34 @@ from mimir.models import (
 from tests.test_ingest._helpers import _alpha, _build_pubinbox_repo, _rfc5322
 
 
+def _ids_and_roots(
+    seeded_db, inbox_id: int, message_ids: tuple[str, ...]
+) -> tuple[dict[str, int], dict[str, int | None]]:
+    """`(message_id -> article id, message_id -> thread_root_id)`, one inbox.
+
+    The subtree-adoption tests each assert the same relation over a
+    different thread shape, and the shape plus the assertions are the
+    part worth reading. Roots are per-inbox because threading is.
+    """
+    with seeded_db() as s:
+        ids = {
+            mid: s.execute(
+                select(Article.id).where(Article.message_id == mid)
+            ).scalar_one()
+            for mid in message_ids
+        }
+        roots = {
+            mid: s.execute(
+                select(ArticleList.thread_root_id).where(
+                    ArticleList.article_id == aid,
+                    ArticleList.inbox_id == inbox_id,
+                )
+            ).scalar_one()
+            for mid, aid in ids.items()
+        }
+    return ids, roots
+
+
 def test_replay_failures_recovers_on_parser_fix(
     seeded_db, tmp_path, monkeypatch, broker_active
 ):
@@ -463,4 +491,272 @@ def test_replay_resolves_thread_roots_on_the_non_broker_path(
     assert link.thread_root_id == art.id, (
         "the non-broker replay path left the row unrooted; the raw-SQL "
         "passes ran before the ORM inserts were flushed"
+    )
+
+
+def test_replay_adopts_descendants_that_self_rooted_while_the_parent_failed(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """A recovered parent must adopt the subtree that self-rooted while
+    it was missing.
+
+    The three passes replay drives (`seed_roots`, `propagate`,
+    `break_cycle`) all gate on `thread_root_id IS NULL`. A child that
+    arrived while its parent was sitting in `parse_failures` correctly
+    self-rooted, which makes its row NON-NULL, so every one of those
+    passes skips it forever. Replaying the parent then leaves the
+    conversation permanently in two pieces: both halves render fine,
+    the sitemap advertises the child as a thread root it is not, and no
+    shipped command repairs it, because every repair path keys on NULL.
+
+    Ingest already handles exactly this case, via
+    `_pending._set_subtree_root`; replay reused only `drive_passes`,
+    which has no equivalent half.
+
+    Deliberately a THREE-message thread. Both other replay root tests
+    use single-message threads, so the recovered row never has a
+    pre-existing descendant, and the entire defect lives in having one.
+    The grandchild is here because the bug is a subtree bug, not a
+    single-row bug.
+    """
+    import mimir.parser
+    from mimir.models import Article, ArticleList
+
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "adopt-mirror"
+    mirror_root.mkdir()
+    # Parent oversized so it fails the cap; child and grandchild small
+    # so they land normally and self-root against an absent parent.
+    _build_pubinbox_repo(
+        mirror_root / "0.git",
+        [
+            _rfc5322("parent@example.com", body=b"x" * 500),
+            _rfc5322("child@example.com", in_reply_to="parent@example.com"),
+            _rfc5322("grandchild@example.com", in_reply_to="child@example.com"),
+        ],
+    )
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        s.commit()
+
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 200)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", mirror_root / "0.git", workers=1)
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 1_000_000)
+
+    # Precondition: the parent failed, and the child self-rooted. If
+    # this ever stops holding the test is no longer exercising the bug.
+    with seeded_db() as s:
+        assert (
+            s.execute(
+                select(func.count())
+                .select_from(ParseFailure)
+                .where(ParseFailure.inbox_id == alpha.id)
+            ).scalar_one()
+            == 1
+        )
+        child = s.execute(
+            select(Article).where(Article.message_id == "child@example.com")
+        ).scalar_one()
+        child_link = s.execute(
+            select(ArticleList).where(
+                ArticleList.article_id == child.id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one()
+        assert child_link.thread_root_id == child.id, (
+            "precondition: the child should self-root while its parent is absent"
+        )
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    result = replay_failures(ix)
+    assert result.recovered == 1, result
+
+    ids, roots = _ids_and_roots(
+        seeded_db,
+        alpha.id,
+        (
+            "parent@example.com",
+            "child@example.com",
+            "grandchild@example.com",
+        ),
+    )
+
+    parent_id = ids["parent@example.com"]
+    assert roots["parent@example.com"] == parent_id
+    assert roots["child@example.com"] == parent_id, (
+        "replay left the child rooted at itself; the recovered parent did "
+        "not adopt the subtree that self-rooted while it was missing, and "
+        "no repair path can reach a non-NULL row"
+    )
+    assert roots["grandchild@example.com"] == parent_id, (
+        "the grandchild was not re-rooted; the adoption must cover the "
+        "whole subtree, not just the immediate child"
+    )
+
+
+def test_replay_adopts_descendants_on_the_non_broker_path_too(
+    seeded_db, tmp_path, monkeypatch
+):
+    """The subtree adoption, on the Session branch.
+
+    Two axes, and the suite previously varied only one at a time. Every
+    adoption test takes `broker_active`, so it exercises the subtree
+    shape on a Connection; the one Session-path test uses a
+    single-message thread, and its own docstring says the defect lives
+    entirely in having a descendant. So applying the invalidation on the
+    Connection path alone left the whole suite green, measured, and the
+    Session branch's half of the fix was unguarded.
+
+    The branch matters because the two are not interchangeable here:
+    `SessionLocal` is autoflush=False while the invalidation and the
+    passes are raw `text()` statements, so on this path the ORM inserts
+    have to be flushed before any of it can see them. That is a distinct
+    failure mode from anything the Connection path can exhibit.
+    """
+    import mimir.parser
+    from mimir.broker import _context
+    from mimir.models import Article, ArticleList
+
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "adopt-session-mirror"
+    mirror_root.mkdir()
+    _build_pubinbox_repo(
+        mirror_root / "0.git",
+        [
+            _rfc5322("sp-parent@example.com", body=b"x" * 500),
+            _rfc5322("sp-child@example.com", in_reply_to="sp-parent@example.com"),
+            _rfc5322("sp-grandchild@example.com", in_reply_to="sp-child@example.com"),
+        ],
+    )
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        s.commit()
+
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 200)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", mirror_root / "0.git", workers=1)
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 1_000_000)
+
+    with seeded_db() as s:
+        assert (
+            s.execute(
+                select(func.count())
+                .select_from(ParseFailure)
+                .where(ParseFailure.inbox_id == alpha.id)
+            ).scalar_one()
+            == 1
+        )
+        child = s.execute(
+            select(Article).where(Article.message_id == "sp-child@example.com")
+        ).scalar_one()
+        child_link = s.execute(
+            select(ArticleList).where(
+                ArticleList.article_id == child.id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one()
+        assert child_link.thread_root_id == child.id, (
+            "precondition: the child should self-root while its parent is absent"
+        )
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+
+    # conftest holds an active broker context for the whole session, so
+    # dropping the fixture is not enough to reach the Session branch.
+    saved_pool, saved_writer = _context._active_pool, _context._active_writer
+    _context.clear_active()
+    try:
+        result = replay_failures(ix)
+    finally:
+        _context.set_active(saved_pool, saved_writer)
+    assert result.recovered == 1, result
+
+    ids, roots = _ids_and_roots(
+        seeded_db,
+        alpha.id,
+        (
+            "sp-parent@example.com",
+            "sp-child@example.com",
+            "sp-grandchild@example.com",
+        ),
+    )
+
+    parent_id = ids["sp-parent@example.com"]
+    assert roots["sp-parent@example.com"] == parent_id
+    assert roots["sp-child@example.com"] == parent_id, (
+        "the Session path left the child rooted at itself; the recovered "
+        "parent did not adopt the subtree, and no repair path reaches a "
+        "non-NULL row"
+    )
+    assert roots["sp-grandchild@example.com"] == parent_id, (
+        "the Session path re-rooted the child but not the grandchild"
+    )
+
+
+def test_replay_adopts_descendants_onto_the_real_root_not_the_recovered_row(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """The recovered article is a MID-THREAD reply, not the root.
+
+    Varies the axis the sibling test above holds fixed. There the
+    recovered message had no parent, so "the recovered article's id" and
+    "the thread's root" were the same value and any implementation that
+    conflated them looked correct. Here an earlier ancestor is already
+    present, so the two differ: the waiting subtree must land on the
+    ANCESTOR's root, and writing the recovered row's own id instead is a
+    non-NULL wrong value, which is the permanently-unrepairable shape
+    (every repair pass keys on NULL).
+
+    Confirmed by mutation: invalidating the subtree to `article_id`
+    rather than to NULL passes the sibling test and fails this one.
+    """
+    import mimir.parser
+
+    alpha = _alpha(seeded_db)
+    mirror_root = tmp_path / "midthread-mirror"
+    mirror_root.mkdir()
+    _build_pubinbox_repo(
+        mirror_root / "0.git",
+        [
+            _rfc5322("gp@example.com"),
+            _rfc5322("mid@example.com", body=b"x" * 500, in_reply_to="gp@example.com"),
+            _rfc5322("leaf@example.com", in_reply_to="mid@example.com"),
+        ],
+    )
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(mirror_root)
+        s.commit()
+
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 200)
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", mirror_root / "0.git", workers=1)
+    monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 1_000_000)
+
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    result = replay_failures(ix)
+    assert result.recovered == 1, result
+
+    ids, roots = _ids_and_roots(
+        seeded_db, alpha.id, ("gp@example.com", "mid@example.com", "leaf@example.com")
+    )
+
+    gp_id = ids["gp@example.com"]
+    assert roots["gp@example.com"] == gp_id
+    assert roots["mid@example.com"] == gp_id, (
+        "the recovered reply should inherit its present ancestor's root"
+    )
+    assert roots["leaf@example.com"] == gp_id, (
+        f"the waiting subtree landed on {roots['leaf@example.com']} instead of "
+        f"the thread's real root {gp_id}; a non-NULL wrong root is permanent, "
+        "because every repair pass skips non-NULL rows"
     )
