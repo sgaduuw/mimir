@@ -38,28 +38,32 @@ batch mode cannot take the native `ALTER TABLE` path and must move-and-
 copy: `CREATE TABLE _alembic_tmp_article_lists`, `INSERT ... SELECT`,
 `DROP TABLE article_lists`, rename, then rebuild the indexes.
 
-Cost, measured 2026-07-30 against a synthetic corpus matching
-production's shape (34.09M `article_lists` rows, 203 inboxes, UNIQUE
-`message_id` on 17.34M articles), with the same pragmas including
-`foreign_keys=ON`:
+Cost: **79 s**, measured 2026-07-30 on coruscant (the production host)
+against a reflink snapshot of the production database, 28,781,621
+`article_lists` rows across 203 inboxes, run in the deployed container
+image with production's pragmas. `01342fe0a018 -> e3aa78c72a8d` (the
+robots seed immediately below this one in the chain) adds 2 s, so a
+deploy from that revision spends ~81 s in migrations.
 
-    FK-enforced INSERT ... SELECT   55.4 s
-    DROP TABLE                      10.1 s
-    two index builds                34.4 s
-    COMMIT / WAL checkpoint         28.3 s
-    -------------------------------------
-    total                          130   s   (~110 s scaled to prod)
+Two caveats on that number, both making it a FLOOR rather than a
+ceiling. The database had just been read end to end by a
+`PRAGMA quick_check`, so much of it was in page cache on a 125 GiB
+host; a cold start will be slower. And the corpus only grows.
 
-An earlier version of this docstring said "~8 s on a seeded 6M-row
-corpus, so budget ~5x". That was wrong twice, and both are the standard
-traps. It counted two statements where there are five, and it assumed
-linear scaling: 5.7x the rows cost 12.5x the time, because the index
-builds sort and the WAL checkpoint is superlinear in dirty pages. Any
-budget derived from a row count needs measuring at that row count.
+The figure it replaces was ~110 s, extrapolated from a synthetic
+34.09M-row corpus on an 18 GiB laptop that was paging. Before that it
+was "~8 s on a seeded 6M-row corpus, so budget ~5x", which was wrong
+twice over in the standard ways: it counted two statements where there
+are five, and it assumed linear scaling when index builds sort and the
+WAL checkpoint is superlinear in dirty pages. Any budget derived from a
+row count has to be measured AT that row count, on the hardware that
+will run it.
 
 That is writer hold at broker startup before the sentinel flips, which
 is the right place to pay it, but it is not instant and should not be
-described as such.
+described as such. The production quadlet allows 600 s
+(`TimeoutStartSec`), and this migration is only one item in that budget:
+the one-time thread-root backfill runs after it and is the larger cost.
 """
 
 from typing import Sequence, Union
@@ -79,13 +83,12 @@ def _drop_batch_scratch_table() -> None:
     """Clear debris from a previous interrupted attempt, but ONLY when
     the live table still exists.
 
-    Alembic runs SQLite DDL NON-transactionally (it says so in its own
-    log: "Will assume non-transactional DDL"), so there is no rollback
-    to undo a half-finished move-and-copy. If the `INSERT ... SELECT`
-    raises, or the process is killed mid-rebuild,
-    `_alembic_tmp_article_lists` survives, and every subsequent attempt
-    dies immediately with `table _alembic_tmp_article_lists already
-    exists`.
+    The scratch table's `CREATE TABLE` autocommits (see the transaction
+    note below, which is the whole subtlety here), so if the
+    `INSERT ... SELECT` raises, or the process is killed mid-rebuild,
+    `_alembic_tmp_article_lists` survives even though its contents do
+    not, and every subsequent attempt dies immediately with `table
+    _alembic_tmp_article_lists already exists`.
 
     That turns a transient failure into a permanent one, and the
     deployment shape makes it worse: the broker runs this at startup

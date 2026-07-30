@@ -134,10 +134,9 @@ def _session_broker(_migrate_db):
     # daemon thread over a tiny corpus.
     #
     # Note the thread-roots sentinel is necessary but not sufficient:
-    # that step re-runs anyway if more rows are NULL than the sentinel
-    # records (a stale sentinel is a real production hazard, see the
-    # rollback case), and an empty sentinel records no baseline at all,
-    # so the fixtures below seed `thread_root_id` rather than leaving it
+    # that step re-runs anyway if any row is still NULL (a stale
+    # sentinel is a real production hazard, see the rollback case), so
+    # the fixtures below seed `thread_root_id` rather than leaving it
     # for the startup path to fill.
     (sock_dir / ".migrated").touch()
     (sock_dir / ".bootstrapped").touch()
