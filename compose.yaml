@@ -106,7 +106,11 @@ services:
       #
       # Thread-root VERIFICATION is deliberately not in that budget: it
       # runs on a daemon thread after startup, because it is not allowed
-      # to gate anything and cost ~23 s on a 200-inbox corpus.
+      # to gate anything and costs ~218 s on a prod-shape corpus
+      # (re-measured 2026-07-30, and a floor). It also runs on EVERY
+      # start now rather than once ever, so that cost recurs per deploy.
+      # Both facts are why it must stay off this budget rather than be
+      # folded into it.
       #
       # Subsequent restarts skip each step via its own sentinel. If the
       # backfill exhausts its pass budget it withholds its sentinel on

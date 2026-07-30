@@ -187,7 +187,7 @@ changes, not internal refactors. Categories: **Added**,
   message page and thread view were each linking a guaranteed 404, from
   pages that are themselves sitemap entries. The addressability check
   had been added in the previous change but applied at only two of the
-  five places that emit these links.
+  six places that emit these links.
 - The message page's ETag now covers the derived state it renders:
   subsystem attribution, lifecycle badge, review roll-up and the
   revisions fold. It previously covered only the article id, the

@@ -76,32 +76,75 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def _drop_batch_scratch_table() -> None:
-    """Clear debris from a previous interrupted attempt.
+    """Clear debris from a previous interrupted attempt, but ONLY when
+    the live table still exists.
 
     Alembic runs SQLite DDL NON-transactionally (it says so in its own
     log: "Will assume non-transactional DDL"), so there is no rollback
     to undo a half-finished move-and-copy. If the `INSERT ... SELECT`
-    raises, or the process is killed mid-rebuild, `_alembic_tmp_
-    article_lists` survives, and every subsequent attempt dies
-    immediately with `table _alembic_tmp_article_lists already exists`.
+    raises, or the process is killed mid-rebuild,
+    `_alembic_tmp_article_lists` survives, and every subsequent attempt
+    dies immediately with `table _alembic_tmp_article_lists already
+    exists`.
 
     That turns a transient failure into a permanent one, and the
     deployment shape makes it worse: the broker runs this at startup
     under systemd with `Restart=always` and `RestartUSec=100ms`, so a
     single SIGTERM landing inside the rebuild leaves the container
     crash-looping on debris it cannot clear itself, with `Requires=`
-    holding the web tier down behind it. Recovering needs an operator
-    with a sqlite3 prompt.
+    holding the web tier down behind it.
 
-    Reproduced locally on 2026-07-30: one failed attempt, then every
-    retry failing on the leftover table.
+    The `article_lists` check is NOT defensive padding, and an earlier
+    version of this function omitted it and was a data-loss bug. Batch
+    mode's order is:
 
-    Dropping it unconditionally is safe. The name is alembic's own
-    scratch namespace, so its presence means exactly one thing: an
-    earlier attempt did not finish. It holds no data the live table does
-    not, because it is populated by copying FROM that table.
+        CREATE TABLE _alembic_tmp_article_lists
+        INSERT INTO _alembic_tmp_article_lists SELECT ... FROM article_lists
+        DROP TABLE article_lists          <-- (b) begins here
+        ALTER TABLE _alembic_tmp_article_lists RENAME TO article_lists
+
+    so there are two distinct interrupted states, and they need opposite
+    handling:
+
+      (a) killed during the copy. Both tables exist, the scratch one is
+          a partial duplicate, dropping it is right.
+      (b) killed between the DROP and the RENAME. The scratch table is
+          the ONLY copy of the data. Dropping it destroys the table
+          outright; reproduced on 2026-07-30, 0 surviving rows and the
+          migration then failing with `NoSuchTableError: article_lists`.
+
+    Window (a) is ~55 s of the ~130 s rebuild and (b) is a metadata
+    rename, so (a) is overwhelmingly the likely kill point, which is
+    exactly why (b) is easy to reason past. Both are reachable, and only
+    one of them is survivable if this guesses wrong.
+
+    State (b) therefore raises rather than auto-repairing. Completing the
+    rename here would also have to recreate the indexes the rebuild had
+    not reached yet and then reconcile `alembic_version`, and a migration
+    that silently reshapes a 28.8M-row table on an assumption about how
+    it died is not a trade worth making. The error carries the exact
+    recovery, which is deterministic.
     """
-    op.execute("DROP TABLE IF EXISTS _alembic_tmp_article_lists")
+    bind = op.get_bind()
+    tables = set(sa.inspect(bind).get_table_names())
+    if "_alembic_tmp_article_lists" not in tables:
+        return
+    if "article_lists" not in tables:
+        raise RuntimeError(
+            "_alembic_tmp_article_lists exists but article_lists does not. "
+            "A previous run was interrupted between alembic's DROP and its "
+            "RENAME, so the scratch table is the ONLY copy of the data and "
+            "must not be dropped. Recover by hand, then restart:\n"
+            "  ALTER TABLE _alembic_tmp_article_lists RENAME TO article_lists;\n"
+            "  CREATE INDEX ix_article_lists_inbox_id\n"
+            "    ON article_lists (inbox_id);\n"
+            "  CREATE INDEX ix_article_lists_thread_root\n"
+            "    ON article_lists (inbox_id, thread_root_id);\n"
+            "Then mark this revision applied: alembic stamp 1072ad1fae96\n"
+            "(the renamed table already carries thread_root_id and its FK, "
+            "so re-running the migration would fail on a duplicate column)."
+        )
+    op.execute("DROP TABLE _alembic_tmp_article_lists")
 
 
 def upgrade() -> None:

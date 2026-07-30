@@ -25,7 +25,7 @@ from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Article, ArticleList, Inbox, Subsystem
 from mimir.config import settings
 from mimir.seo import _json_ld_index, _json_ld_inbox
-from mimir.subsystems import subsystem_path
+from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.subsystems_dashboard import (
     active_reviewers_in_subsystem,
     active_threads_in_subsystem,
@@ -156,6 +156,17 @@ def index():
             limit=12,
             compute_on_miss=False,
         )
+        # Drop names the dashboard route cannot serve before the template
+        # ever sees them. The card grid makes the WHOLE card an anchor,
+        # so unlike the inline chips there is no useful unlinked form to
+        # fall back to. Filtering here rather than in the template also
+        # means the section's `{% if %}` and its loop agree by
+        # construction: gating on the unfiltered list would render a
+        # heading over an empty grid whenever every active name happens
+        # to be unaddressable.
+        active_subsystems = [
+            s for s in active_subsystems if is_addressable_subsystem_name(s.name)
+        ]
     base = _site_base()
     return render_template(
         "index.html",
