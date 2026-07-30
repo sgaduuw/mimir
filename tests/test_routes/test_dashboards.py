@@ -1042,3 +1042,182 @@ def test_reviewer_view_inbox_scoped(client, tmp_path):
     assert "beta-only patch" not in a
     assert "No attestations" in a
     assert "beta-only patch" in b
+
+
+def test_subsystem_page_links_its_maintainers_to_their_profiles(client, tmp_path):
+    """`/maintainers/<address>` pages are in `/sitemap-maintainers.xml`
+    but were linked from NOWHERE: advertised to crawlers with no path
+    through the site to reach them. The subsystem dashboard already
+    renders each maintainer's address as visible text, so linking it
+    exposes nothing new and gives those profiles their inbound link.
+
+    Asserted as an anchor with the exact canonical path, so a link that
+    merely resolves to the profile (a different encoding of the same
+    address) does not count: that would be a duplicate-URL signal
+    rather than a clean one.
+    """
+    from tests.test_routes._helpers import _seed_subsystem as _seed
+
+    _seed(
+        "BCACHEFS",
+        "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[("M", "Kent Overstreet", "kent.overstreet@kernel.org")],
+    )
+    html = client.get("/alpha/subsystem/bcachefs/").get_data(as_text=True)
+    assert 'href="/maintainers/kent.overstreet@kernel.org"' in html
+
+
+def test_subsystem_index_lists_active_subsystems_and_links_them(client, tmp_path):
+    """The crawl hub. Per-subsystem dashboards were reachable only from
+    chips on individual message and thread pages, so a crawler had to
+    find a matching patch before it could discover one at all.
+
+    The list is warm-cache-backed, so this test warms it the way the
+    slow tier does rather than relying on a request-path compute the
+    route deliberately refuses to perform.
+    """
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.subsystems_dashboard import most_active_subsystems_in_inbox
+    from sqlalchemy import select as sa_select
+
+    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+
+    _seed_subsystem(
+        "BCACHEFS",
+        "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[("M", "Kent Overstreet", "kent.overstreet@kernel.org")],
+    )
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "idx-patch@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    with SessionLocal() as s:
+        inbox = s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        most_active_subsystems_in_inbox(s, inbox, days=7)
+
+    html = client.get("/alpha/subsystem/").get_data(as_text=True)
+    assert 'href="/alpha/subsystem/bcachefs/"' in html
+    assert "bcachefs" in html
+
+
+def test_subsystem_index_renders_when_the_cache_is_cold(client):
+    """Empty is a real state, not a 500.
+
+    The route refuses to compute on a request (the aggregation is
+    multi-second per inbox and is the 2.8.0 regression family), so a
+    cold cache must render an empty list rather than blocking or
+    erroring. 45 of ~200 production inboxes are also genuinely empty
+    here.
+    """
+    r = client.get("/alpha/subsystem/")
+    assert r.status_code == 200
+    assert "No subsystem has seen patch activity" in r.get_data(as_text=True)
+
+
+def test_inbox_dashboard_links_the_subsystem_index(client):
+    """The index is only worth building if something links to it, and
+    the dashboard is the sitemapped hub that should."""
+    html = client.get("/alpha/").get_data(as_text=True)
+    assert 'href="/alpha/subsystem/"' in html
+
+
+def test_subsystem_index_does_not_compute_on_a_cold_cache(client, tmp_path):
+    """Empty-on-cold has to be proved with data that WOULD have been
+    returned, otherwise it proves nothing.
+
+    The existing cold-cache test seeds nothing, so a route that ignored
+    `compute_on_miss=False` would compute, find nothing, and render the
+    same empty page: the assertion passes either way. Here a matching
+    patch exists and the cache is deliberately not warmed, so rendering
+    it would mean the route computed on the request path. That
+    aggregation is multi-second per inbox on production and is the
+    2.8.0 regression family; it must never run on a request.
+    """
+    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+
+    _seed_subsystem("BCACHEFS", "Maintained", files=["fs/bcachefs/"])
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "nocompute@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+
+    html = client.get("/alpha/subsystem/").get_data(as_text=True)
+    assert "bcachefs" not in html, "index computed the aggregation on a request"
+    assert "No subsystem has seen patch activity" in html
+
+
+def test_subsystem_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
+    client, tmp_path
+):
+    """`/maintainers/<address>` is an M-only surface.
+
+    This list carries both `M:` and `R:` rows, and the allowlist gate
+    does NOT stand in for a role check: the allowlist is the UNION of
+    M: and R:, so every reviewer passes it. That gate answers "is this
+    address safe to display", not "does this profile exist". Linking
+    an `R:` address produced a 404, on pages this same change set put
+    into the sitemap, so crawlers would walk them systematically.
+    """
+    from tests.test_routes._helpers import _seed_subsystem
+
+    _seed_subsystem(
+        "BCACHEFS",
+        "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[
+            ("M", "Kent Overstreet", "kent.overstreet@kernel.org"),
+            ("R", "Reviewer Person", "reviewer.only@kernel.org"),
+        ],
+    )
+    html = client.get("/alpha/subsystem/bcachefs/").get_data(as_text=True)
+
+    assert 'href="/maintainers/kent.overstreet@kernel.org"' in html
+    assert "reviewer.only@kernel.org" in html, "the reviewer should still be shown"
+    assert 'href="/maintainers/reviewer.only@kernel.org"' not in html
+    # And the thing that actually matters: nothing linked from here 404s.
+    assert client.get("/maintainers/kent.overstreet@kernel.org").status_code == 200
+    assert client.get("/maintainers/reviewer.only@kernel.org").status_code == 404
+
+
+def test_message_page_keeps_a_maintainer_who_has_no_address(client, tmp_path):
+    """MAINTAINERS permits a bare `M:` line with no address (rare but
+    legal). Keying the header's dedupe on the address dropped those
+    people from the page entirely, where they used to render as plain
+    text. They stay, they just do not get a link."""
+    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+
+    _seed_subsystem(
+        "BCACHEFS",
+        "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[("M", "No Address Person", "")],
+    )
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "noaddr@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    html = client.get(url).get_data(as_text=True)
+    assert "No Address Person" in html
+    assert 'href="/maintainers/"' not in html
+
+
+def test_subsystem_index_carries_its_own_meta_description_and_title(client):
+    """A new indexable page must not ship the site-wide boilerplate.
+
+    `base.html` declares `meta_description`; a child block named
+    anything else is silently dropped by Jinja, which is what happened.
+    On a change set whose whole premise is index shaping, a duplicate
+    description is the wrong outcome.
+    """
+    html = client.get("/alpha/subsystem/").get_data(as_text=True)
+    assert "<title>Active subsystems | alpha | mimir</title>" in html
+    assert 'name="description" content="Kernel subsystems with recent' in html

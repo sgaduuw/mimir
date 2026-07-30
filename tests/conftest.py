@@ -122,10 +122,26 @@ def _session_broker(_migrate_db):
 
     # Pre-touch the self-bootstrap sentinels so `build_server`'s
     # _migrate_if_needed / _bootstrap_inboxes_if_needed /
-    # _post_migrate_analyze_if_needed all short-circuit.
+    # _post_migrate_analyze_if_needed / _backfill_thread_roots_if_needed
+    # all short-circuit. The last one is the newest and is easy to
+    # forget: without it every test session pays a real backfill.
+    #
+    # It does NOT suppress the verification thread. That used to hang
+    # off the backfill; it now runs unconditionally from `build_server`,
+    # which is the point of the change (verification has to happen on
+    # every start, not only on the deploy that first fills the column).
+    # So every test session spawns it. Harmless here: it is a read-only
+    # daemon thread over a tiny corpus.
+    #
+    # Note the thread-roots sentinel is necessary but not sufficient:
+    # that step re-runs anyway if any row is still NULL (a stale
+    # sentinel is a real production hazard, see the rollback case), so
+    # the fixtures below seed `thread_root_id` rather than leaving it
+    # for the startup path to fill.
     (sock_dir / ".migrated").touch()
     (sock_dir / ".bootstrapped").touch()
     (sock_dir / ".broker_initial_analyze").touch()
+    (sock_dir / ".thread_roots_backfilled").touch()
 
     server = build_server(sock_path)
     server.writer.start()
@@ -166,9 +182,12 @@ def _session_broker(_migrate_db):
         server.read_pool.close()
         if sock_path.exists():
             sock_path.unlink()
-        # Sentinels + dir cleanup.
-        for name in (".migrated", ".bootstrapped", ".broker_initial_analyze"):
-            (sock_dir / name).unlink(missing_ok=True)
+        # Sentinels + dir cleanup. Sweep whatever the broker left
+        # rather than naming each sentinel: the list went stale every
+        # time startup gained one, and the failure surfaced as an
+        # unrelated "Directory not empty" in teardown.
+        for leftover in sock_dir.iterdir():
+            leftover.unlink(missing_ok=True)
         sock_dir.rmdir()
 
 
@@ -342,35 +361,47 @@ def _reset_db():
 
         s.add_all(
             [
+                # `thread_root_id` is set here because production rows
+                # always have one: ingest resolves it on insert and the
+                # backfill fills in anything older. Seeding rows without
+                # it would leave the fixture in a state the running
+                # system never reaches (NULL means "not yet computed"),
+                # and every consumer would then read the corpus as
+                # empty.
                 ArticleList(
                     article_id=art1.id,
                     inbox_id=alpha.id,
                     epoch="0.git",
                     commit_sha="aa" * 20,
+                    thread_root_id=art1.id,
                 ),
                 ArticleList(
                     article_id=art2.id,
                     inbox_id=beta.id,
                     epoch="0.git",
                     commit_sha="bb" * 20,
+                    thread_root_id=art2.id,
                 ),
                 ArticleList(
                     article_id=art3.id,
                     inbox_id=alpha.id,
                     epoch="0.git",
                     commit_sha="cc" * 20,
+                    thread_root_id=art3.id,
                 ),
                 ArticleList(
                     article_id=art3.id,
                     inbox_id=beta.id,
                     epoch="0.git",
                     commit_sha="cd" * 20,
+                    thread_root_id=art3.id,
                 ),
                 ArticleList(
                     article_id=art4.id,
                     inbox_id=alpha.id,
                     epoch="0.git",
                     commit_sha="dd" * 20,
+                    thread_root_id=art1.id,
                 ),
             ]
         )

@@ -15,18 +15,6 @@ def _star_present():
 # ----- list / get / migration seed --------------------------------------
 
 
-def test_migration_seeds_star_row():
-    """Per the migration, `*` exists with the previous hardcoded
-    template's values immediately after `alembic upgrade head`. The
-    autouse `_reset_db` re-seeds via `reset_rules()` so this remains
-    the per-test baseline."""
-    with SessionLocal() as session:
-        rule = robots.get_rule(session, "*")
-    assert rule is not None
-    assert rule.crawl_delay == 5
-    assert rule.disallow_paths == ["/*/attachment/"]
-
-
 def test_list_rules_orders_star_first_then_alphabetical():
     robots.add_rule("Zeta", disallow=["/"])
     robots.add_rule("AlphaBot", disallow=["/private/"])
@@ -175,7 +163,7 @@ def test_reset_rules_drops_extras_and_reseeds_star():
     assert [r.user_agent for r in rules] == ["*"]
     star = rules[0]
     assert star.crawl_delay == 5
-    assert star.disallow_paths == ["/*/attachment/"]
+    assert star.disallow_paths == ["/*/attachment/", "/api/", "/*/search"]
     assert star.content_signals == {
         "search": "yes",
         "ai-train": "no",
@@ -201,6 +189,8 @@ def test_render_matches_seeded_defaults():
         + "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
         + "Crawl-delay: 5\n"
         + "Disallow: /*/attachment/\n"
+        + "Disallow: /api/\n"
+        + "Disallow: /*/search\n"
         + "\n"
         + "Sitemap: https://example.com/sitemap.xml\n"
     )
@@ -251,6 +241,8 @@ def test_render_emits_per_ua_stanzas():
         + "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
         + "Crawl-delay: 5\n"
         + "Disallow: /*/attachment/\n"
+        + "Disallow: /api/\n"
+        + "Disallow: /*/search\n"
         + "\n"
         + "User-agent: ClaudeBot\n"
         + "Crawl-delay: 20\n"
@@ -293,9 +285,12 @@ def test_render_with_only_degenerate_rows_still_emits_sitemap():
     carry the Sitemap directive so crawlers can discover the index."""
     robots.reset_rules()
     # Mutate the seeded `*` row into a no-op.
+    # Strip whatever the seeded defaults are, not a hardcoded subset:
+    # leaving one behind would keep the row non-degenerate and quietly
+    # stop exercising the case this test exists for.
     robots.update_rule(
         "*",
-        remove_disallow=["/*/attachment/"],
+        remove_disallow=list(robots._DEFAULT_STAR_DISALLOW),
         clear_crawl_delay=True,
         clear_all_content_signals=True,
     )
@@ -387,3 +382,108 @@ def test_reset_rules_reseeds_content_signals():
         "ai-train": "no",
         "ai-input": "no",
     }
+
+
+# e3aa78c72a8d: backfilling the `*` stanza on EXISTING deploys.
+#
+# The route-level test in test_routes/test_static_meta.py proves fresh
+# seeds get the new paths, but it passes via `_DEFAULT_STAR_DISALLOW`,
+# not via the migration. Prod already has a seeded `*` row, and
+# `render_robots_txt` reads rows rather than the constant, so the
+# migration is the ONLY thing that reaches a running deploy. Untested,
+# it is precisely the "ships silently inert" failure mode.
+
+
+def _run_migration() -> None:
+    """Drive the migration's upgrade against the test DB.
+
+    `Operations.context` installs the global `op` proxy the migration
+    module reaches for, so the real function body runs rather than a
+    reimplementation of it. Loading by path (not import) because
+    revision filenames aren't importable module names.
+    """
+    import importlib.util
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    from mimir.extensions import engine
+
+    spec = importlib.util.spec_from_file_location(
+        "_mig_e3aa78c72a8d",
+        "alembic/versions/e3aa78c72a8d_seed_robots_disallow_for_api_and_search_.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    with engine.begin() as conn:
+        ctx = MigrationContext.configure(conn)
+        with Operations.context(ctx):
+            module.upgrade()
+
+
+def _star_paths() -> list[str]:
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import RobotsRule
+
+    with SessionLocal() as s:
+        row = s.execute(
+            select(RobotsRule).where(RobotsRule.user_agent == "*")
+        ).scalar_one()
+        return list(row.disallow_paths or [])
+
+
+def _set_star_paths(paths: list[str]) -> None:
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import RobotsRule
+
+    with SessionLocal() as s:
+        s.execute(
+            update(RobotsRule)
+            .where(RobotsRule.user_agent == "*")
+            .values(disallow_paths=paths)
+        )
+        s.commit()
+
+
+def test_migration_appends_new_disallow_paths_to_existing_star_row():
+    """The pre-migration prod shape: a `*` row carrying only the
+    attachment rule. Upgrade must append, not replace."""
+    _set_star_paths(["/*/attachment/"])
+    _run_migration()
+    assert _star_paths() == ["/*/attachment/", "/api/", "/*/search"]
+
+
+def test_migration_appends_only_missing_paths_and_preserves_operator_edits():
+    """An operator who already added `/api/` by hand must not end up
+    with a duplicate, and their own entries must survive: the migration
+    appends what's missing rather than rewriting the list (the same
+    don't-clobber guard as the 82e825291162 content_signals backfill).
+    """
+    _set_star_paths(["/*/attachment/", "/api/", "/operator-private/"])
+    _run_migration()
+    assert _star_paths() == [
+        "/*/attachment/",
+        "/api/",
+        "/operator-private/",
+        "/*/search",
+    ]
+
+
+def test_migration_backfills_a_row_whose_paths_were_all_removed():
+    """`update_rule` stores `paths or None` when the last disallow path
+    goes, and SQLAlchemy's JSON type writes Python None as the *string*
+    `'null'`, which decodes back to None. That must not be read as "no
+    `*` row at all": conflating them silently no-ops the backfill on
+    precisely the deploys that customised their robots.txt, which is
+    the failure this migration exists to prevent. Note `[]` and `null`
+    are two encodings of the same operator intent, so both must
+    backfill.
+    """
+    robots.update_rule("*", remove_disallow=list(robots._DEFAULT_STAR_DISALLOW))
+    _run_migration()
+    assert _star_paths() == ["/api/", "/*/search"]

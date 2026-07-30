@@ -5,6 +5,8 @@ revalidation, body redactions, off-list-parent hints, the
 subject-normalized fallback grouping, and the 4-tuple URL
 identity contract)."""
 
+import re
+
 from tests.test_routes._helpers import (
     _data_attr_values,
     _ingest_one_article,
@@ -645,8 +647,17 @@ def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
     assert "bcachefs" in body
     assert "Kent Overstreet" in body
     assert "Maintainer" in body
-    assert "kent.overstreet@kernel.org" not in body
     assert "<kbd>M</kbd>" not in body
+    # The address is not VISIBLE text here: the compact identity card
+    # shows the name, and the address-and-role detail lives on the
+    # subsystem dashboard (issue #72). It does appear once, as the
+    # href of the link to that maintainer's profile page, which is how
+    # those profiles get an inbound link at all. Asserting on visible
+    # text rather than on the raw body keeps the layout decision pinned
+    # without also forbidding the link.
+    assert 'href="/maintainers/kent.overstreet@kernel.org"' in body
+    visible = re.sub(r"<[^>]+>", "", body)
+    assert "kent.overstreet@kernel.org" not in visible
 
 
 def test_message_page_no_subsystem_block_when_no_match(client, tmp_path):
@@ -2571,3 +2582,177 @@ class TestRelatedDiscussionsPanel:
         resp = client.get(url)
         assert resp.status_code == 200
         assert b"Related discussions" not in resp.data
+
+
+def test_message_json_ld_interaction_statistic_counts_direct_replies(
+    client,
+    tmp_path,
+):
+    """`interactionStatistic` on the DiscussionForumPosting counts
+    replies to THAT message, not the whole thread.
+
+    The entity is the single message, so a reply page claiming the
+    thread's total would be inaccurate structured data. In the seeded
+    3-message chain (root -> reply -> nested), the root has exactly one
+    direct child and the nested leaf has none, so the leaf omits the
+    field entirely rather than emitting a zero count.
+    """
+    seeded = _seed_three_message_thread(tmp_path, "alpha")
+
+    _, root_url, _ = seeded["root"]
+    posting = next(
+        g
+        for g in _json_ld_blocks(client.get(root_url).data.decode())[0]["@graph"]
+        if g["@type"] == "DiscussionForumPosting"
+    )
+    stat = posting["interactionStatistic"]
+    assert stat["@type"] == "InteractionCounter"
+    assert stat["interactionType"] == "https://schema.org/ReplyAction"
+    # One direct child (the reply). The nested reply hangs off the
+    # reply, not the root, so it must NOT be counted here.
+    assert stat["userInteractionCount"] == 1
+
+    _, nested_url, _ = seeded["nested"]
+    leaf = next(
+        g
+        for g in _json_ld_blocks(client.get(nested_url).data.decode())[0]["@graph"]
+        if g["@type"] == "DiscussionForumPosting"
+    )
+    assert "interactionStatistic" not in leaf
+
+
+def test_message_json_ld_carries_subsystem_about_and_keywords(
+    client,
+    tmp_path,
+):
+    """Matched subsystems ride into the structured data as `about`
+    (schema.org Things) and `keywords`.
+
+    These are the topical terms for the page, and they're mimir-unique
+    (derived from MAINTAINERS path-matching, not present in the raw
+    message), so they're the signal worth handing a crawler. An article
+    touching no known subsystem emits neither field rather than an
+    empty list.
+    """
+    _seed_subsystem("BCACHEFS", "Supported", ["fs/bcachefs/"])
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "subsys-jsonld@example.com",
+        subject="[PATCH] bcachefs: fix a thing",
+        body=b"diff --git a/fs/bcachefs/btree.c b/fs/bcachefs/btree.c\n",
+    )
+    posting = next(
+        g
+        for g in _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
+        if g["@type"] == "DiscussionForumPosting"
+    )
+    assert posting["about"] == [{"@type": "Thing", "name": "BCACHEFS"}]
+    assert posting["keywords"] == ["BCACHEFS"]
+
+
+def test_message_json_ld_omits_subsystem_fields_when_no_match(
+    client,
+    tmp_path,
+):
+    """An article touching no known subsystem omits `about` /
+    `keywords` entirely rather than emitting empty lists, which would
+    read as broken data to a consumer. Separate test because
+    `_ingest_one_article` builds a fresh `0.git` per call and can't
+    share a tmp_path with the matching case."""
+    _seed_subsystem("BCACHEFS", "Supported", ["fs/bcachefs/"])
+    _, plain_url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "nosubsys-jsonld@example.com",
+        subject="just a question",
+    )
+    plain = next(
+        g
+        for g in _json_ld_blocks(client.get(plain_url).data.decode())[0]["@graph"]
+        if g["@type"] == "DiscussionForumPosting"
+    )
+    assert "about" not in plain
+    assert "keywords" not in plain
+
+
+def test_message_json_ld_reply_count_only_emitted_from_canonical_inbox(
+    client,
+    tmp_path,
+):
+    """`interactionStatistic` must not describe one `@id` two ways.
+
+    `get_thread` is scoped to the REQUESTED inbox, but the emitted
+    entity's `@id` is always the CANONICAL inbox's URL. So a
+    cross-posted root whose replies landed only in the non-canonical
+    inbox would, from that inbox's URL, claim "1 reply" about an `@id`
+    that the canonical rendering describes as having none.
+
+    Seed exactly that: root in alpha + beta (alpha wins canonical,
+    alphabetically), reply in beta only. Both renderings must agree.
+    """
+    from sqlalchemy import select as _sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from tests.test_related import _seed_message
+
+    art_id, alpha_url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "xpost-root@example.com",
+        subject="cross-posted root",
+    )
+    with SessionLocal() as s:
+        alpha = s.execute(_sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(_sa_select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        # A real cross-post resolves the same blob from either inbox, so
+        # beta needs alpha's mirror and alpha's (epoch, commit_sha)
+        # pointer. Without both, the beta URL 404s in `read_message`
+        # before it can emit any JSON-LD.
+        beta.mirror_path = alpha.mirror_path
+        alpha_link = s.execute(
+            _sa_select(ArticleList).where(
+                ArticleList.article_id == art_id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one()
+        s.add(
+            ArticleList(
+                article_id=art_id,
+                inbox_id=beta.id,
+                epoch=alpha_link.epoch,
+                commit_sha=alpha_link.commit_sha,
+            )
+        )
+        # The reply exists ONLY in beta, the non-canonical inbox.
+        _seed_message(
+            s,
+            beta,
+            "xpost-reply@example.com",
+            "Re: cross-posted root",
+            "Replier",
+            0,
+            thread_parent="xpost-root@example.com",
+        )
+        s.commit()
+        root = s.get(Article, art_id)
+        beta_url = f"/beta/{root.date.year}/{root.date.month:02d}/{art_id}"
+
+    def _posting(url):
+        blocks = _json_ld_blocks(client.get(url).data.decode())
+        return next(
+            g for g in blocks[0]["@graph"] if g["@type"] == "DiscussionForumPosting"
+        )
+
+    from_alpha = _posting(alpha_url)
+    from_beta = _posting(beta_url)
+
+    # Same entity from both URLs.
+    assert from_alpha["@id"] == from_beta["@id"]
+    # ...therefore the same claim about it. Beta sees the reply in its
+    # own thread scope but must not attribute it to alpha's `@id`.
+    assert from_alpha.get("interactionStatistic") == from_beta.get(
+        "interactionStatistic"
+    )
+    assert "interactionStatistic" not in from_beta

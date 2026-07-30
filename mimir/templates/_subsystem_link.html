@@ -1,0 +1,30 @@
+{# One place that decides whether a subsystem name becomes a link.
+
+   MAINTAINERS section titles are free text and the parser preserves
+   what it finds, so some are not addressable: production carries three
+   containing a literal tab (of 3,291 names, measured 2026-07-30).
+   `subsystem_path` will happily percent-encode those, and the route
+   refuses them, so an ungated emitter publishes a guaranteed 404.
+
+   The builder was already shared (`subsystem_url`); the DECISION was
+   not, and it had been applied at two of six emitters. Centralising
+   the builder while leaving the validity test at each call site is the
+   worse half of the job, because the call sites then look consolidated.
+   Anything rendering a subsystem name goes through here or through the
+   `is_addressable_subsystem` filter directly, never through
+   `subsystem_url` alone.
+
+   Unaddressable names render as PLAIN TEXT rather than being dropped:
+   on a patch page the chip says which subsystems the patch touches, so
+   omitting it loses real information about the patch, while the link is
+   the only part that has to go. Surfaces where the entry exists purely
+   as a navigation affordance (the front-page card grid, the subsystem
+   index) filter the name out instead, since an unclickable card is
+   nothing but noise. Same predicate either way. #}
+{% macro subsystem_link(name, inbox_name) -%}
+{% if name | is_addressable_subsystem -%}
+<a href="{{ name | subsystem_url(inbox_name) }}">{{ name|lower }}</a>
+{%- else -%}
+{{ name|lower }}
+{%- endif %}
+{%- endmacro %}

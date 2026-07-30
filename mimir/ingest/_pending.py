@@ -110,6 +110,135 @@ class _PendingWrites:
     last_commit_sha: str | None = None
 
 
+def _set_subtree_root(conn, inbox_id: int, article_id: int, root_id) -> None:
+    """Set `thread_root_id` for everything hanging off `article_id` in
+    this inbox. `root_id=None` invalidates the subtree so the backfill
+    recomputes it.
+
+    A cyclic `thread_parent` (sender-controlled, unguarded at ingest)
+    cannot spin this: `thread_parent` is single-valued, so any cycle
+    reachable from this article must contain it, and the
+    `a.id != :aid` guard cuts the walk there.
+    """
+    conn.execute(
+        text(
+            """
+            WITH RECURSIVE descendants(id) AS (
+                SELECT a.id
+                  FROM articles a
+                  JOIN article_lists al ON al.article_id = a.id
+                  JOIN articles self ON self.id = :aid
+                 WHERE al.inbox_id = :ix
+                   AND a.thread_parent = self.message_id
+                   AND a.id != :aid
+                UNION
+                SELECT a.id
+                  FROM articles a
+                  JOIN article_lists al ON al.article_id = a.id
+                  JOIN articles p ON p.message_id = a.thread_parent
+                  JOIN descendants d ON d.id = p.id
+                 WHERE al.inbox_id = :ix
+                   AND a.id != :aid
+            )
+            UPDATE article_lists
+               SET thread_root_id = :root
+             WHERE inbox_id = :ix
+               AND article_id IN (SELECT id FROM descendants)
+            """
+        ),
+        {"aid": article_id, "ix": inbox_id, "root": root_id},
+    )
+
+
+def _resolve_thread_root(conn, inbox_id: int, article_id: int, parent_msgid) -> None:
+    """Set `article_lists.thread_root_id` for one freshly-inserted
+    `(article, inbox)` row, then re-root anything that was waiting on it.
+
+    Two halves, because messages do not arrive in thread order.
+
+    **Inherit or self.** The row takes its parent's root IN THE SAME
+    INBOX. A parent that is absent from this inbox (an off-list
+    ancestor, or a cross-post whose root went to a different list)
+    leaves this article its own root, which is exactly what
+    `find_thread_root` concludes by walking up and finding nothing.
+
+    **Re-root the waiters.** A child ingested before its parent, which
+    happens across epoch boundaries, self-rooted on arrival. When the
+    parent lands, that child AND its whole subtree have to move onto
+    the parent's root, or the conversation stays split in two, quietly,
+    with both halves rendering fine. This is the case CONTEXT.md cites
+    as the reason materialised roots were deferred.
+
+    A cyclic `thread_parent` (sender-controlled, unguarded at ingest)
+    cannot spin the subtree walk: `thread_parent` is single-valued, so
+    any cycle reachable from this article must contain it, and the
+    `a.id != :aid` guard cuts the walk there. (`UNION` rather than
+    `UNION ALL` dedupes, but it is the guard that terminates, not the
+    set semantics.) Under a cycle the
+    members converge on whichever member was reached first; that is
+    deliberately NOT what `find_thread_root` returns (it walks to
+    MAX_DEPTH and lands wherever `1000 mod cycle_length` puts it), and
+    the difference is documented in `tests/test_thread_roots.py`.
+    """
+    root_id = None
+    parent_present = False
+    if parent_msgid:
+        row = conn.execute(
+            text(
+                "SELECT al.thread_root_id, al.article_id "
+                "FROM article_lists al JOIN articles p ON p.id = al.article_id "
+                "WHERE p.message_id = :mid AND al.inbox_id = :ix"
+            ),
+            {"mid": parent_msgid, "ix": inbox_id},
+        ).fetchone()
+        # A self-referential In-Reply-To resolves the parent to this
+        # very row; treat it as having no parent rather than pointing
+        # the article at its own unset root.
+        if row is not None and row[1] != article_id:
+            parent_present = True
+            root_id = row[0]
+
+    if parent_present and root_id is None:
+        # The parent is here but has no root yet. Do NOT fall back to
+        # the parent's article id: that is only right when the parent
+        # happens to BE a root, and when it is not the row is wrong AND
+        # unrepairable, because `seed_roots` and `propagate` both key on
+        # `IS NULL` and skip anything non-NULL forever.
+        #
+        # This is the state of every row between the migration landing
+        # and the backfill finishing, which is the normal deploy window:
+        # the broker migrates at startup, `mimir-tasks` begins firing
+        # `update` immediately, and the backfill is a manual operator
+        # step that may be hours later.
+        #
+        # Leave this row NULL, AND invalidate anything already hanging
+        # off it. A descendant that self-rooted earlier (its parent was
+        # absent at the time) is now stale, and stale is worse than
+        # unset: it is non-NULL, so `seed_roots` and `propagate` both
+        # skip it forever and the backfill can never repair it. That is
+        # the same permanent-corruption shape as inheriting the
+        # parent's id, just displaced onto a sibling.
+        #
+        # NULL is always safe to write here: it means "not yet
+        # computed", readers fall back to the recursive CTE, and the
+        # backfill recomputes the whole subtree correctly. The cost is
+        # recomputation, never a wrong answer.
+        _set_subtree_root(conn, inbox_id, article_id, None)
+        return
+    if root_id is None:
+        root_id = article_id
+
+    conn.execute(
+        text(
+            "UPDATE article_lists SET thread_root_id = :root "
+            "WHERE article_id = :aid AND inbox_id = :ix"
+        ),
+        {"root": root_id, "aid": article_id, "ix": inbox_id},
+    )
+
+    _set_subtree_root(conn, inbox_id, article_id, root_id)
+
+
 def _submit_ingest_batch(writer, pending: "_PendingWrites") -> WriteFuture:
     """Phase 3b of the two-pool restructure.
 
@@ -256,6 +385,19 @@ def _submit_ingest_batch(writer, pending: "_PendingWrites") -> WriteFuture:
                 )
                 .on_conflict_do_nothing(index_elements=["article_id", "inbox_id"])
             )
+            # Maintain the materialised root for this (article, inbox)
+            # pair, and re-root anything that was waiting on it.
+            # The accumulator already carries the parent for rows this
+            # batch inserted; only cross-post links (article_index -1,
+            # article already in the DB) need the lookup.
+            if al.article_index != -1:
+                parent_msgid = articles[al.article_index].thread_parent
+            else:
+                parent_msgid = conn.execute(
+                    text("SELECT thread_parent FROM articles WHERE id = :aid"),
+                    {"aid": article_id},
+                ).scalar()
+            _resolve_thread_root(conn, al.inbox_id, article_id, parent_msgid)
 
         # Step 3: ParseFailure DELETEs and UPSERTs.
         now = datetime.now(timezone.utc)

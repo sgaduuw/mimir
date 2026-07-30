@@ -78,6 +78,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.daily_yesterday": "public, max-age=600",
     "web.threads_since_view": "public, max-age=600",
     "web.subsystem_dashboard": "public, max-age=600",
+    "web.subsystem_index": "public, max-age=600",
     "web.year_archive": "public, max-age=600",
     "web.month_archive": "public, max-age=600",
     "web.search": "public, max-age=300",
@@ -98,7 +99,17 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.sitemap": "public, max-age=300",
     "web.meta_sitemap": "public, max-age=300",
     "web.inbox_sitemap": "public, max-age=300",
+    # The month sitemaps are ~32k URLs the index tells crawlers to
+    # fetch, and unlike the flat ones they are not warm-cache targets,
+    # so each is a cold compute at the origin. Omitting them here left
+    # every one of them with no edge shielding at all, on the same
+    # surface family as the 3.6.0 CDN incident.
+    "web.month_sitemap": "public, max-age=300",
     "web.maintainers_sitemap": "public, max-age=300",
+    # Maintainer profiles change only when MAINTAINERS is reparsed or
+    # a new review trailer lands, and they were the one reader-facing
+    # hub with no entry here at all (so no explicit Cache-Control).
+    "web.maintainer_view": "public, max-age=600",
     "web.message_id_lookup": "public, max-age=3600",
     "web.message_id_lookup_inbox": "public, max-age=3600",
     # web.message uses ETag-based conditional revalidation (set inside
@@ -108,6 +119,10 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # while the within-window stale-after-deploy problem (a code change
     # leaving cached pages mis-rendered up to max-age) goes away.
     "web.message": "public, no-cache",
+    # Same ETag-revalidation posture as web.message, and the payoff is
+    # larger here: a 304 skips up to `thread_view_render_cap` git blob
+    # fetches and parses, which is the whole cost of this page.
+    "web.thread_view": "public, no-cache",
     "web.attachment_download": "public, max-age=3600, immutable",
     "web.attachment_preview": "public, max-age=3600, immutable",
 }

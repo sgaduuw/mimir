@@ -81,9 +81,14 @@
    browse surface; the URL canonical form is already lowercase. #}
 <h2 id="subsystems" class="active-subsystems-heading">Active subsystems <small><em>(last 7 days)</em></small></h2>
 <div class="subsystem-grid" role="list">
+  {# `active_subsystems` arrives already filtered to names the dashboard
+     route can serve; see `dashboards.py`. Unlike the inline chips there
+     is no useful unlinked form here, because the whole card is the
+     anchor, so the row is dropped rather than rendered as text. Same
+     predicate, different presentation: see `_subsystem_link.html`. #}
   {% for s in active_subsystems %}
   <a class="subsystem-card" role="listitem"
-     href="/{{ s.inbox_name }}/subsystem/{{ s.name|lower|urlencode }}/"
+     href="{{ s.name | subsystem_url(s.inbox_name) }}"
      aria-label="Open {{ s.name|lower }} subsystem dashboard">
     <div class="subsystem-card-header">
       <strong class="subsystem-card-name">{{ s.name|lower }}</strong>

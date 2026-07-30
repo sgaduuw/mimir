@@ -77,10 +77,55 @@ services:
       interval: 10s
       timeout: 2s
       retries: 3
-      # Generous start_period: a fresh deploy runs alembic upgrade +
-      # bootstrap_inboxes + bounded ANALYZE on first startup before
-      # accepting RPCs. Subsequent restarts skip via sentinel.
-      start_period: 60s
+      # start_period has to cover everything the broker does BEFORE it
+      # accepts RPCs, on the one deploy that introduces a schema change:
+      # alembic upgrade (the thread_root_id migration rebuilds the whole
+      # article_lists table) + bootstrap_inboxes + bounded post-migrate
+      # ANALYZE + the one-time thread-root backfill + a second bounded
+      # ANALYZE. See `mimir.thread_roots` for the measured per-row cost
+      # AND the real corpus size; on the corpus measured 2026-07-28
+      # (28.8M article_lists rows) the backfill alone extrapolates to
+      # ~4.6 MINUTES, and that extrapolation is a floor.
+      #
+      # This was 60 s, then 180 s. Both were derived from a corpus
+      # figure that was wrong by 5x: "6M rows" is lkml ALONE, not the
+      # archive. Either value would have aborted the deploy it was
+      # written for, because `mimir` and `mimir-tasks` both gate on this
+      # healthcheck and compose aborts the whole `up` when a depends_on
+      # dependency goes unhealthy.
+      #
+      # 1200 s is deliberate headroom over that floor, not a tight fit.
+      # It fires once per schema change, the corpus only grows, and
+      # over-waiting costs a slower first deploy while under-waiting
+      # costs a failed one.
+      #
+      # Note the broker's socket is bound and listening this whole time
+      # (UnixStreamServer binds in its constructor), so a ping connects
+      # and then hangs until accept() starts. It reads as a timeout, not
+      # a refused connection.
+      #
+      # Thread-root VERIFICATION is deliberately not in that budget: it
+      # runs on a daemon thread after startup, because it is not allowed
+      # to gate anything and costs ~218 s on a prod-shape corpus
+      # (re-measured 2026-07-30, and a floor). It also runs on EVERY
+      # start now rather than once ever, so that cost recurs per deploy.
+      # Both facts are why it must stay off this budget rather than be
+      # folded into it.
+      #
+      # Subsequent restarts skip each step via its own sentinel. If the
+      # backfill exhausts its pass budget it withholds its sentinel on
+      # purpose, so every restart re-pays it: watch the broker log for
+      # "backfill incomplete" rather than raising this number.
+      #
+      # THIS FILE IS NOT THE PRODUCTION DEPLOY. Production runs podman
+      # quadlets managed from `ansible-eelco`, where the equivalent
+      # budget is the unit's `TimeoutStartSec` (the container is
+      # `Type=notify` with `Notify=healthy`, so systemd waits on this
+      # same healthcheck but bounds it with its own timeout). Raising
+      # the number here does nothing for production; the binding value
+      # lives in the role. Keep the two in the same ballpark, and treat
+      # this comment's reasoning as the shared rationale for both.
+      start_period: 1200s
 
   mimir:
     build: .

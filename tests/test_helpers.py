@@ -11,6 +11,7 @@ import pytest
 
 from mimir.models import Inbox
 from mimir.store import MessageNotFound, read_message
+from tests.test_routes._helpers import count_repo_opens
 from mimir.web import (
     _canonical_inbox_names_for,
     _content_disposition,
@@ -84,6 +85,170 @@ def test_read_message_stale_commit_sha_raises(seeded_db, tmp_path):
     alpha = _alpha(seeded_db)
     with seeded_db() as s, pytest.raises(MessageNotFound, match="blob"):
         read_message(s, alpha, "art1@example.com")
+
+
+# store.read_messages, the bulk sibling
+
+
+def _alpha_live():
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        return s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+
+def test_read_messages_opens_one_repo_for_a_single_epoch_thread(tmp_path, monkeypatch):
+    """The whole point of the bulk read. Six messages in one epoch is
+    six pack-index reopens on the per-message shape and one here."""
+    from mimir.extensions import SessionLocal
+    from mimir.store import read_messages
+    from tests.test_routes._helpers import seed_thread_shape
+
+    ids = [f"bulk{i}@x" for i in range(6)]
+    seed_thread_shape(
+        tmp_path, "alpha", [(ids[0], None)] + [(m, ids[0]) for m in ids[1:]]
+    )
+    alpha = _alpha_live()
+
+    opened = count_repo_opens(monkeypatch)
+    with SessionLocal() as s:
+        got = read_messages(s, alpha, ids)
+
+    assert set(got) == set(ids)
+    assert len(opened) == 1, f"expected one repo open, got {len(opened)}: {opened}"
+
+
+def test_read_messages_reads_a_thread_that_straddles_an_epoch_boundary(
+    tmp_path, monkeypatch
+):
+    """public-inbox chunks epochs by SIZE, not by conversation, so a
+    thread can span two of them. This is why the grouping is per-epoch
+    rather than one shared handle for the whole call: the simpler
+    single-handle shape silently drops every message on the far side of
+    the boundary."""
+    from mimir.extensions import SessionLocal
+    from mimir.store import read_messages
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seed_thread_shape(tmp_path, "alpha", [("span0@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("span1@x", "span0@x")], epoch="1.git")
+    alpha = _alpha_live()
+
+    opened = count_repo_opens(monkeypatch)
+    with SessionLocal() as s:
+        got = read_messages(s, alpha, ["span0@x", "span1@x"])
+
+    assert set(got) == {"span0@x", "span1@x"}, "a message on one side was dropped"
+    assert len(opened) == 2, "one open per epoch, and both epochs are needed"
+
+
+def test_read_messages_skips_a_missing_epoch_without_losing_the_rest(tmp_path):
+    """A mirror gap must degrade to "that message has no body", never
+    take out the whole conversation. The route renders each absent key
+    as a header row with no body, same as the per-message path's
+    `MessageNotFound` branch did."""
+    import shutil
+
+    from mimir.extensions import SessionLocal
+    from mimir.store import read_messages
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seed_thread_shape(tmp_path, "alpha", [("gap0@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("gap1@x", "gap0@x")], epoch="1.git")
+    shutil.rmtree(tmp_path / "1.git")
+    alpha = _alpha_live()
+
+    with SessionLocal() as s:
+        got = read_messages(s, alpha, ["gap0@x", "gap1@x"])
+
+    assert set(got) == {"gap0@x"}
+
+
+def test_read_messages_reads_this_inboxs_pointer_for_a_cross_post(
+    tmp_path, monkeypatch
+):
+    """Inbox scoping is load-bearing, not incidental. A cross-posted
+    message has ONE article row and one `article_lists` row per inbox,
+    each carrying its own `(epoch, commit_sha)`, because the same
+    message is a different commit in each mirror. A join that lost the
+    inbox filter reads some other inbox's pointer against THIS inbox's
+    mirror.
+
+    Pinned by counting repo opens rather than by comparing bodies: with
+    two candidate rows the surviving dict entry depends on iteration
+    order, so a body assertion would only fail some of the time.
+    Touching a second epoch at all is the defect, and that is
+    deterministic.
+    """
+    from sqlalchemy import select as sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+    from mimir.store import read_messages
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seed_thread_shape(tmp_path, "alpha", [("xpost@x", None)], epoch="0.git")
+    # A second epoch under the SAME mirror, so a wrong-pointer read
+    # actually resolves rather than being saved by the
+    # missing-directory guard.
+    seed_thread_shape(tmp_path, "alpha", [("elsewhere@x", None)], epoch="1.git")
+
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        xpost_id = s.execute(
+            sa_select(Article.id).where(Article.message_id == "xpost@x")
+        ).scalar_one()
+        other_sha = s.execute(
+            sa_select(ArticleList.commit_sha)
+            .join(Article, Article.id == ArticleList.article_id)
+            .where(Article.message_id == "elsewhere@x")
+        ).scalar_one()
+        # beta's pointer for the same message: different epoch,
+        # different commit, exactly as a real cross-post is.
+        s.add(
+            ArticleList(
+                article_id=xpost_id,
+                inbox_id=beta.id,
+                epoch="1.git",
+                commit_sha=other_sha,
+            )
+        )
+        s.commit()
+
+    alpha = _alpha_live()
+    opened = count_repo_opens(monkeypatch)
+    with SessionLocal() as s:
+        got = read_messages(s, alpha, ["xpost@x"])
+
+    assert len(opened) == 1, f"read another inbox's epoch too: {opened}"
+    assert set(got) == {"xpost@x"}
+    assert got["xpost@x"].message_id == "xpost@x", "resolved the wrong blob"
+
+
+def test_read_messages_ignores_a_message_absent_from_this_inbox(tmp_path):
+    """art2 is beta-only in the seed, so asking alpha for it yields no
+    key: the bulk analogue of `read_message`'s MessageNotFound."""
+    from mimir.extensions import SessionLocal
+    from mimir.store import read_messages
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seed_thread_shape(tmp_path, "alpha", [("mine@x", None)])
+    alpha = _alpha_live()
+
+    with SessionLocal() as s:
+        got = read_messages(s, alpha, ["mine@x", "art2@example.com"])
+
+    assert set(got) == {"mine@x"}
+
+
+def test_read_messages_on_an_empty_list_touches_neither_db_nor_disk(monkeypatch):
+    from mimir.extensions import SessionLocal
+    from mimir.store import read_messages
+
+    opened = count_repo_opens(monkeypatch)
+    with SessionLocal() as s:
+        assert read_messages(s, _alpha_live(), []) == {}
+    assert opened == []
 
 
 # web._safe_from_filter, privacy redaction
@@ -263,3 +428,147 @@ def test_redact_trailer_address_substring_match_is_intentionally_loose(monkeypat
     # even though the actual host is `kernel.org.evil.example`. The
     # redactor returns the allowlisted form.
     assert out == "<attacker@kernel.org.evil.example>"
+
+
+# web.filters._patch_synthesis_filter (SEO W3b synthesis prose)
+
+
+def _patch_state(*, is_patch=True, trailers=(), landings=(), series=()):
+    """Build a PatchState with only the fields the synthesis line
+    reads. Constructed directly rather than via `patch_state_for_article`
+    so each case pins one branch without seeding a corpus."""
+    from mimir.patch_state import PatchState
+
+    return PatchState(
+        is_patch=is_patch,
+        trailers=list(trailers),
+        mainline_landings=list(landings),
+        series=list(series),
+        days_since_last_reply=None,
+    )
+
+
+def _rev(version, *, current):
+    """A revision entry. Only `version` / `is_current` feed the
+    synthesis line; the rest is inert filler."""
+    from mimir.patch_state import StateSeriesEntry
+
+    return StateSeriesEntry(
+        version=version,
+        article_id=0,
+        date=None,
+        url="",
+        is_current=current,
+        diff_url=None,
+    )
+
+
+def _landing(tree, sha, when=None):
+    """A mainline landing. `tree_label` mirrors `tree_name` here; the
+    real resolver prettifies it, which the synthesis doesn't depend on."""
+    from mimir.patch_state import StateMainlineLanding
+
+    return StateMainlineLanding(
+        commit_sha=sha, tree_name=tree, tree_label=tree, committed_at=when
+    )
+
+
+def test_patch_synthesis_composes_revision_review_and_landing_clauses():
+    """The full sentence: revision position, review-trailer roll-up
+    with the maintainer subset, and the mainline landing. This is the
+    indexable restatement of the badges, so the facts have to match
+    what the pills claim."""
+    from datetime import datetime, timezone
+
+    from mimir.patch_state import StateTrailerCount
+    from mimir.web.filters import _patch_synthesis_filter
+
+    state = _patch_state(
+        series=[_rev("v1", current=False), _rev("v2", current=True)],
+        trailers=[
+            StateTrailerCount(role="Reviewed-by", total=3, maintainer_count=2),
+            StateTrailerCount(role="Acked-by", total=1, maintainer_count=0),
+            # Authorship, not review: must not inflate the count.
+            StateTrailerCount(role="Signed-off-by", total=5, maintainer_count=5),
+        ],
+        landings=[
+            _landing(
+                "linus", "abc123def4567890", datetime(2026, 6, 1, tzinfo=timezone.utc)
+            )
+        ],
+    )
+    out = _patch_synthesis_filter(state)
+    assert out == (
+        "Revision v2 of 2 in this series; 4 review trailers "
+        "(2 from subsystem maintainers); landed in mainline as "
+        "abc123def456 on 2026-06-01."
+    )
+
+
+def test_patch_synthesis_prefers_linus_landing_over_earlier_subsystem_tree():
+    """A patch that reached mainline carries SEVERAL landings (subsystem
+    tree, then linux-next, then Linus), ordered oldest-first. Reporting
+    the first row would say "queued in net-next" directly beneath a
+    LANDED badge showing the Linus sha, getting wrong the one fact
+    ("did this land?") the sentence exists to answer.
+
+    Mirrors `lifecycle_status`'s tree priority: Linus wins when present.
+    """
+    from datetime import datetime, timezone
+
+    from mimir.web.filters import _patch_synthesis_filter
+
+    state = _patch_state(
+        landings=[
+            _landing("net-next", "n" * 16, datetime(2026, 6, 1, tzinfo=timezone.utc)),
+            _landing("linus", "1" * 16, datetime(2026, 6, 20, tzinfo=timezone.utc)),
+        ],
+    )
+    assert _patch_synthesis_filter(state) == (
+        "Landed in mainline as 111111111111 on 2026-06-20."
+    )
+
+
+def test_patch_synthesis_reports_earliest_tree_as_queued_when_not_in_mainline():
+    """With no Linus landing the patch has NOT landed, so the sentence
+    says "queued", matching the QUEUED badge, and names the earliest
+    non-Linus tree (again mirroring the badge)."""
+    from datetime import datetime, timezone
+
+    from mimir.web.filters import _patch_synthesis_filter
+
+    state = _patch_state(
+        landings=[
+            _landing("net-next", "a" * 16, datetime(2026, 6, 1, tzinfo=timezone.utc)),
+            _landing("linux-next", "b" * 16, datetime(2026, 6, 5, tzinfo=timezone.utc)),
+        ],
+    )
+    assert _patch_synthesis_filter(state) == (
+        "Queued in net-next as aaaaaaaaaaaa on 2026-06-01."
+    )
+
+
+def test_patch_synthesis_empty_for_non_patch_and_bare_patch():
+    """Renders nothing when there's nothing to say, so the template
+    can call it unconditionally: a non-patch article, and a patch with
+    no revisions / reviews / landing, both yield ""."""
+    from mimir.web.filters import _patch_synthesis_filter
+
+    assert _patch_synthesis_filter(None) == ""
+    assert _patch_synthesis_filter(_patch_state(is_patch=False)) == ""
+    assert _patch_synthesis_filter(_patch_state()) == ""
+
+
+def test_patch_synthesis_singularises_and_omits_absent_clauses():
+    """One review reads "1 review trailer" (not "trailers"), the
+    maintainer parenthetical is omitted at zero, and a single-revision
+    patch gets no revision clause (matching `_revisions_fold.html`,
+    which only renders at >= 2)."""
+    from mimir.patch_state import StateTrailerCount
+    from mimir.web.filters import _patch_synthesis_filter
+
+    state = _patch_state(
+        series=[_rev("v1", current=True)],
+        trailers=[StateTrailerCount(role="Tested-by", total=1, maintainer_count=0)],
+    )
+    assert _patch_synthesis_filter(state) == "1 review trailer."

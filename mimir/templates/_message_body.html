@@ -21,11 +21,23 @@
          not as a floating aside above the body. Silently skipped
          for non-patch articles. #}
       {% if subsystem_hits %}
-      {% set _maint_names = [] %}
+      {# Collect (name, address) rather than names alone so each
+         maintainer can link to their profile page. Deduped on ADDRESS,
+         not name: the address is the profile's identity, and two
+         sections can spell the same person's name differently. #}
+      {% set _maints = [] %}
+      {% set _maint_seen = [] %}
       {% for hit in subsystem_hits %}
         {% for _role, _name, _addr in hit.maintainers %}
-          {% if _role == 'M' and _name and _name not in _maint_names %}
-            {% set _ = _maint_names.append(_name) %}
+          {# Keyed on the address when there is one, else on the name.
+             MAINTAINERS permits a bare `M:` line with no address (rare
+             but legal), and requiring one here dropped those people
+             from the header entirely, where they used to render as
+             plain text. They simply do not get a link. #}
+          {% set _key = (_addr|lower) if _addr else ('name:' ~ _name) %}
+          {% if _role == 'M' and _name and _key not in _maint_seen %}
+            {% set _ = _maint_seen.append(_key) %}
+            {% set _ = _maints.append((_name, _addr)) %}
           {% endif %}
         {% endfor %}
       {% endfor %}
@@ -34,12 +46,18 @@
          page acts as a launch pad into the broader subsystem
          context. URL takes the lowercased form (subsystem URL
          convention since 1.18.x); display keeps the upstream
-         MAINTAINERS casing. urlencode handles spaces in compound
-         names (`BTRFS FILE SYSTEM`). #}
-      {% for hit in subsystem_hits %}<a href="/{{ current_inbox }}/subsystem/{{ hit.name|lower|urlencode }}/">{{ hit.name|lower }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
-      {% if _maint_names %}
-        &middot; <strong>Maintainer{{ '' if _maint_names|length == 1 else 's' }}:</strong>
-        {{ _maint_names|join(', ') }}
+         MAINTAINERS casing, lowercased for the anti-shouty pass.
+
+         Via the macro, never `subsystem_url` directly: a name the
+         route cannot serve still has to render as text here, because
+         the chip is what tells the reader which subsystems the patch
+         touches. #}
+      {% from "_subsystem_link.html" import subsystem_link %}
+      {% for hit in subsystem_hits %}{{ subsystem_link(hit.name, current_inbox) }}{% if not loop.last %}, {% endif %}{% endfor %}
+      {% if _maints %}
+        &middot; <strong>Maintainer{{ '' if _maints|length == 1 else 's' }}:</strong>
+        {% for _name, _addr in _maints %}{% if _addr and _addr | is_allowlisted_address %}<a
+          href="{{ _addr | maintainer_url }}">{{ _name }}</a>{% else %}{{ _name }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
       {% endif %}
       {% endif %}
     </p>

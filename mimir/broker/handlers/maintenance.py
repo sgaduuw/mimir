@@ -31,6 +31,7 @@ re-raise as `ClickException` with the operator-facing text intact.
 import logging
 
 from mimir.broker.protocol import (
+    BackfillThreadRootsRequest,
     AnalyzeRequest,
     FailuresReplayRequest,
     InboxAddTrackedAuthorRequest,
@@ -70,6 +71,78 @@ def handle_update_mainline(req: UpdateMainlineRequest) -> Reply:
         force=req.force,
     )
     return Reply(rpc_id=req.rpc_id, ok=True, result=result.model_dump(mode="json"))
+
+
+def handle_backfill_thread_roots(req: "BackfillThreadRootsRequest") -> Reply:
+    """Fill in `thread_root_id` per inbox, ONE PASS PER WriteOp.
+
+    Cost is measured once, in `mimir.thread_roots`
+    (`FULL_RUN_SECONDS_AT_1M_ROWS`); do not restate the number here,
+    that duplication has already gone stale twice. Submitting a full
+    run as a single WriteOp would hold
+    the single writer for the whole run, queueing every web-tier
+    `cache.set` behind it, which is exactly the shape the two-pool
+    restructure broke up (CONTEXT.md, Phases 3a-3c: one continuous
+    transaction becomes N short bursts so concurrent cache writes drain
+    between them). Each pass here is one bulk UPDATE of a few hundred
+    ms, so the writer is released ~80 times over a full run instead of
+    once.
+
+    Idempotent per pass: every statement only touches NULL rows, so an
+    interrupted run resumes and live ingest is never clobbered.
+    """
+    from sqlalchemy import select
+
+    from mimir.broker import _context
+    from mimir.broker.writes import WriteOp
+    from mimir.models import Inbox
+    from mimir.thread_roots import MAX_PASSES, drive_passes
+
+    writer = _context.get_active_writer()
+    pool = _context.get_active_pool()
+
+    with pool.session() as read_session:
+        stmt = select(Inbox.id, Inbox.name)
+        if req.inbox:
+            stmt = stmt.where(Inbox.name == req.inbox)
+        inboxes = list(read_session.execute(stmt).all())
+
+    totals = {
+        "seeded": 0,
+        "propagated": 0,
+        "cycles_broken": 0,
+        "inboxes": 0,
+        "exhausted": 0,
+    }
+
+    for inbox_id, name in inboxes:
+        totals["inboxes"] += 1
+
+        def _run(fn, _id=inbox_id, _name=name):
+            """One pass, one WriteOp: the writer is released between
+            them so web-tier cache writes drain instead of queueing
+            behind a full-corpus run."""
+            return (
+                writer.submit(
+                    WriteOp(
+                        label=f"thread_roots:{fn.__name__}:{_name}",
+                        fn=lambda conn: fn(conn, _id),
+                    )
+                ).result(timeout=600)
+                or 0
+            )
+
+        counts = drive_passes(_run)
+        for key in ("seeded", "propagated", "cycles_broken", "exhausted"):
+            totals[key] += counts[key]
+        if counts["exhausted"]:
+            logger.warning(
+                "thread-roots: inbox %s hit MAX_PASSES (%s); rows remain unrooted",
+                name,
+                MAX_PASSES,
+            )
+
+    return Reply(rpc_id=req.rpc_id, ok=True, result=totals)
 
 
 def handle_analyze(req: AnalyzeRequest) -> Reply:

@@ -403,3 +403,217 @@ def test_update_no_echo_when_notify_returns_zero(
     _push_indexnow(["art2@example.com"])
     captured = capsys.readouterr()
     assert "indexnow:" not in captured.out
+
+
+def test_build_urls_emits_the_thread_url_for_a_multi_message_thread(client, tmp_path):
+    """The document that changed is the THREAD, so that is what gets
+    pushed.
+
+    Before this, a reply pushed its own message URL, which the page
+    itself disclaims via `<link rel="canonical">`, while the
+    consolidated page that actually grew was never announced at all.
+    That left the one page this workstream wants indexed with no
+    signal on the fastest channel mimir has.
+
+    Seeded through real ingest rather than direct INSERT, because
+    `thread_root_id` is maintained BY ingest and a hand-built row would
+    leave it NULL and silently exercise the fallback instead.
+    """
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("in1@x", None), ("in2@x", "in1@x"), ("in3@x", "in2@x")],
+    )
+    root_id, _url = seeded["in1@x"]
+
+    with SessionLocal() as s:
+        urls = indexnow.build_urls(
+            s, ["in1@x", "in2@x", "in3@x"], base="https://example.test"
+        )
+
+    # All three collapse onto one thread URL: deduping is a straight
+    # win against the endpoint's per-request URL budget.
+    assert len(urls) == 1, urls
+    assert urls[0].endswith(f"/{root_id}/t"), urls
+    assert urls[0].startswith("https://example.test/alpha/")
+
+
+def test_build_urls_keeps_the_message_url_for_a_single_message_thread(client, tmp_path):
+    """A single-message thread has nothing to consolidate, and its own
+    page is the richer one, so it stays its own URL."""
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("solo@x", None)])
+    art_id, _url = seeded["solo@x"]
+
+    with SessionLocal() as s:
+        urls = indexnow.build_urls(s, ["solo@x"], base="https://example.test")
+
+    assert len(urls) == 1
+    assert urls[0].endswith(f"/{art_id}")
+    assert not urls[0].endswith("/t")
+
+
+def test_build_urls_falls_back_to_the_message_url_before_the_backfill(client, tmp_path):
+    """A NULL `thread_root_id` must degrade to the message URL.
+
+    That is the state between the migration and the backfill. Pushing
+    nothing would lose the notification; guessing a thread URL without
+    a known root would push a URL that may not exist.
+    """
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("nb1@x", None), ("nb2@x", "nb1@x")])
+    with SessionLocal() as s:
+        s.execute(update(ArticleList).values(thread_root_id=None))
+        s.commit()
+
+    with SessionLocal() as s:
+        urls = indexnow.build_urls(s, ["nb1@x", "nb2@x"], base="https://example.test")
+
+    assert len(urls) == 2, urls
+    assert all(not u.endswith("/t") for u in urls), urls
+    assert {u.rsplit("/", 1)[-1] for u in urls} == {
+        str(seeded["nb1@x"][0]),
+        str(seeded["nb2@x"][0]),
+    }
+
+
+def test_build_urls_only_pushes_urls_that_resolve_and_self_canonicalise(
+    client, tmp_path
+):
+    """Fetch everything we push and check the destination agrees.
+
+    One assertion that would have caught both blocking bugs review
+    found: a URL built for an inbox the article is not linked to (404),
+    and a singleton thread handed a sibling inbox's thread URL (200 but
+    self-canonicalising to a DIFFERENT url, i.e. we advertise a
+    duplicate-content page nothing else lists).
+
+    `build_urls`'s own contract is that a dangling URL is worse than a
+    missed notification, and nothing was checking it.
+    """
+    import re
+
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seed_thread_shape(tmp_path, "alpha", [("rv1@x", None), ("rv2@x", "rv1@x")])
+    solo_mirror = tmp_path / "solo"
+    solo_mirror.mkdir()
+    seed_thread_shape(solo_mirror, "beta", [("rv3@x", None)])
+
+    with SessionLocal() as s:
+        urls = indexnow.build_urls(s, ["rv1@x", "rv2@x", "rv3@x"], base="")
+    assert urls
+
+    for url in urls:
+        resp = client.get(url)
+        assert resp.status_code == 200, (
+            f"pushed {url} which returned {resp.status_code}"
+        )
+        html = resp.get_data(as_text=True)
+        m = re.search(r'<link rel="canonical" href="([^"]+)"', html)
+        assert m, f"pushed {url}, which declares no canonical"
+        assert m.group(1).endswith(url), (
+            f"pushed {url} but that page canonicalises to {m.group(1)}; "
+            "we are advertising a page that disclaims itself"
+        )
+
+
+def test_build_urls_respects_the_inbox_a_thread_is_multi_message_in(client, tmp_path):
+    """The same root can head a real thread in one inbox and a
+    single-message one in another, because threading is inbox-scoped.
+
+    Deciding on the root alone let a singleton inherit a sibling
+    inbox's thread URL. Every earlier test here used ONE inbox, so
+    dropping the inbox scoping entirely passed the whole suite.
+    """
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("ix1@x", None), ("ix2@x", "ix1@x")])
+    root_id = seeded["ix1@x"][0]
+
+    # Cross-post ONLY the root into beta: multi-message in alpha,
+    # single-message in beta.
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        src = (
+            s.execute(select(ArticleList).where(ArticleList.article_id == root_id))
+            .scalars()
+            .first()
+        )
+        s.add(
+            ArticleList(
+                article_id=root_id,
+                inbox_id=beta.id,
+                epoch=src.epoch,
+                commit_sha=src.commit_sha,
+                thread_root_id=root_id,
+            )
+        )
+        s.execute(
+            select(Article).where(Article.id == root_id)
+        ).scalar_one().canonical_inbox_id = beta.id
+        s.commit()
+
+    # BOTH in one batch, which is what an ingest tick produces and
+    # what makes the bug reachable: the reply's pair contributes the
+    # "this root has replies" fact, and the root's pair must not
+    # inherit it across the inbox boundary.
+    with SessionLocal() as s:
+        urls = indexnow.build_urls(s, ["ix1@x", "ix2@x"], base="")
+
+    reply_id = seeded["ix2@x"][0]
+    assert sorted(urls) == sorted(
+        [f"/beta/2024/01/{root_id}", f"/alpha/2024/01/{root_id}/t"]
+    ), (
+        f"expected beta's singleton copy to stay a message URL and alpha's "
+        f"reply to consolidate; got {urls} (reply id {reply_id})"
+    )
+
+
+def test_build_urls_skips_a_canonical_inbox_the_article_is_not_linked_to(
+    client, tmp_path
+):
+    """`canonical_inbox_id` can name an inbox with no `article_lists`
+    row: it is assigned at ingest from To:/Cc: list addresses, and
+    nothing requires the article to be archived there.
+
+    Resolving to it produces a URL that 404s, which is exactly what
+    `build_urls` promises not to emit.
+    """
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, Inbox
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("un1@x", None)])
+    art_id = seeded["un1@x"][0]
+
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        # Addressed to beta's list, archived only in alpha.
+        s.execute(
+            select(Article).where(Article.id == art_id)
+        ).scalar_one().canonical_inbox_id = beta.id
+        s.commit()
+
+    with SessionLocal() as s:
+        urls = indexnow.build_urls(s, ["un1@x"], base="")
+
+    assert urls == [f"/alpha/2024/01/{art_id}"], urls
+    assert client.get(urls[0]).status_code == 200

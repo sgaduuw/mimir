@@ -489,3 +489,144 @@ def _ingest_series_pair(tmp_path, inbox_name, v1_messages, v2_messages):
         ).scalar_one()
         assert cover.patch_series_key is not None
         return cover.patch_series_key
+
+
+def seed_thread_shape(tmp_path, inbox_name, edges, *, date_for=None, epoch="0.git"):
+    """Build an ARBITRARY thread shape in one bare repo and ingest it.
+
+    `edges` is an ordered list of `(message_id, parent_message_id|None)`.
+    Cycles, self-parents, branches, and forward references are all
+    expressible, because the point of this helper is to exercise the
+    shapes real ingest can produce from attacker- or
+    accident-controlled `In-Reply-To` headers, not just the tidy linear
+    thread `_seed_three_message_thread` builds.
+
+    `date_for` optionally maps message_id -> RFC 5322 Date string, for
+    month/year-boundary shapes. `epoch` places the messages in a
+    specific epoch repo, for shapes that span epochs (what
+    `reindex --from-scratch` operates on).
+
+    Returns `{message_id: (article_id, url)}`.
+    """
+    from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.ingest import ingest_epoch
+    from mimir.models import Article, Inbox
+
+    repo_dir = tmp_path / epoch
+    repo = Repo.init_bare(str(repo_dir), mkdir=True)
+    prev = None
+    for i, (mid, parent) in enumerate(edges):
+        extra = b""
+        if parent is not None:
+            extra += b"In-Reply-To: <" + parent.encode() + b">\r\n"
+        date = (date_for or {}).get(mid, "Mon, 1 Jan 2024 00:00:00 +0000")
+        raw = (
+            b"Message-ID: <" + mid.encode() + b">\r\n"
+            b"From: a@b.example\r\n"
+            b"Subject: shape msg\r\n"
+            b"Date: " + date.encode() + b"\r\n" + extra + b"\r\n"
+            b"body"
+        )
+        blob = Blob.from_string(raw)
+        repo.object_store.add_object(blob)
+        tree = Tree()
+        tree.add(b"m", 0o100644, blob.id)
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.parents = [prev] if prev else []
+        commit.author = commit.committer = b"test <t@x>"
+        commit.commit_time = commit.author_time = 1704067200 + i
+        commit.commit_timezone = commit.author_timezone = 0
+        commit.encoding = b"UTF-8"
+        commit.message = b"add"
+        repo.object_store.add_object(commit)
+        prev = commit.id
+    repo.refs[b"HEAD"] = prev
+
+    with SessionLocal() as s:
+        ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        ix.mirror_path = str(tmp_path)
+        s.commit()
+        ingest_epoch(s, ix, epoch, repo_dir, workers=1)
+        out = {}
+        for mid, _parent in edges:
+            art = s.execute(
+                select(Article).where(Article.message_id == mid)
+            ).scalar_one()
+            out[mid] = (
+                art.id,
+                f"/{inbox_name}/{art.date.year}/{art.date.month:02d}/{art.id}",
+            )
+        return out
+
+
+def count_repo_opens(monkeypatch) -> list[str]:
+    """Record every `Repo(...)` construction `mimir.store` performs.
+
+    The saving `store.read_messages` exists for is entirely in the
+    NUMBER of opens: dulwich re-reads and re-mmaps the epoch's pack
+    index on each one. A test that only asserted the right bodies came
+    back would pass just as well against the per-message shape it
+    replaced, so the open count is the assertion that carries the
+    contract. Returns the list of opened paths, which keeps growing as
+    the code under test runs.
+    """
+    from dulwich.repo import Repo as RealRepo
+
+    import mimir.store
+
+    opened: list[str] = []
+
+    class _CountingRepo(RealRepo):
+        def __init__(self, path, *args, **kwargs):
+            opened.append(str(path))
+            super().__init__(path, *args, **kwargs)
+
+    monkeypatch.setattr(mimir.store, "Repo", _CountingRepo)
+    return opened
+
+
+def warm_subsystem_activity(inbox_name: str):
+    """Populate the cached most-active-subsystems row for one inbox.
+
+    Both the index route and the sitemap read this with
+    `compute_on_miss=False`, so a test that wants the entries present
+    has to warm it the way the slow tier does rather than relying on a
+    request-path compute they deliberately refuse to perform.
+    """
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.subsystems_dashboard import most_active_subsystems_in_inbox
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        return most_active_subsystems_in_inbox(s, inbox, days=7)
+
+
+def warm_global_subsystem_activity():
+    """Populate the cross-inbox most-active-subsystems row the front
+    page reads.
+
+    Distinct from `warm_subsystem_activity`, which only fills the
+    PER-INBOX row. The front page calls `most_active_subsystems_global`,
+    a different key, also with `compute_on_miss=False`, so warming only
+    the per-inbox row leaves `/` rendering an empty widget. A test
+    asserting something about the front page's subsystem cards is then
+    vacuously true, which is how the card grid's gate went unguarded
+    while a mutation of it still passed.
+
+    `days=7` has to match the route; the cached row is limit-less, so
+    the route's `limit=12` slice does not affect the key.
+    """
+    from mimir.extensions import SessionLocal
+    from mimir.subsystems_dashboard import most_active_subsystems_global
+
+    with SessionLocal() as s:
+        return most_active_subsystems_global(s, days=7)

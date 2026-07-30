@@ -124,26 +124,48 @@ and dispatch their writes via RPC over a UNIX socket at
 internals; the high-level contract is "broker is the sole SQLite
 writer; everything else is `query_only=1`."
 
-Opt-in in 1.x; 2.0.0 will make it mandatory. Enable by un-
-commenting three blocks in `compose.yaml`:
-
-1. `BROKER_SOCKET_PATH` + `MIMIR_ROLE: "web"` on the `mimir`
-   service env.
-2. `BROKER_SOCKET_PATH` + `MIMIR_ROLE: "tasks"` on the
-   `mimir-tasks` service env.
-3. The full `mimir-broker:` service block lower in the file,
-   plus add `mimir-broker: { condition: service_healthy }` to
-   the web service's `depends_on:`.
+Mandatory since 2.0.0. The broker container sets
+`MIMIR_IS_BROKER=true`; every other container leaves it unset
+and so opens `query_only=1`. `BROKER_SOCKET_PATH` defaults to
+`/data/.broker.sock`, so the canonical compose layout needs no
+explicit value.
 
 The broker's healthcheck is `mimir broker-ping --socket
-/data/.broker.sock` with `start_period: 30s` to cover the
-first-start bounded `ANALYZE`. On a fresh `/data` volume the
-boot chain is: scheduler-tasks runs alembic +
-`bootstrap-inboxes` + pre-flight warm-cache → touches
-`/data/.migrated` → broker comes up, runs post-migrate ANALYZE
-if `/data/.broker_initial_analyze` is missing, then accepts
-RPCs → web tier starts serving. Subsequent restarts skip the
-ANALYZE (sentinel-gated).
+/data/.broker.sock`. Its `start_period` has to cover everything
+the broker does *before* it accepts RPCs, because both `mimir`
+and `mimir-tasks` gate on this healthcheck and compose aborts
+the whole `up` when a `depends_on` dependency goes unhealthy.
+On a fresh `/data` volume, or on any deploy carrying a schema
+change, the broker runs in order:
+
+1. `alembic upgrade head`
+2. `bootstrap-inboxes`
+3. a bounded post-migrate `ANALYZE`
+4. the one-time thread-root backfill
+5. a second bounded `ANALYZE`
+
+then touches `/data/.migrated` and starts accepting RPCs, at
+which point the web tier starts serving. Each step is gated by
+its own sentinel, so subsequent restarts skip it.
+
+Two things to know when that window looks wrong. The socket is
+bound and listening the entire time (`UnixStreamServer` binds in
+its constructor), so a ping *connects* and then hangs until
+`accept()` starts: an overrun reads as a timeout, not as a
+refused connection. And if the thread-root backfill cannot
+finish it deliberately withholds its sentinel so the next
+restart retries, which means the cost recurs on every start.
+Watch the broker log for `backfill incomplete` rather than
+raising the budget.
+
+**`compose.yaml` is not the production deploy.** Production runs
+podman quadlets managed from `ansible-eelco`, where the binding
+value is the unit's `TimeoutStartSec` rather than compose's
+`start_period` (the container is `Type=notify` with
+`Notify=healthy`, so systemd waits on this same healthcheck but
+bounds it with its own timeout). Keep the two in the same
+ballpark; raising the compose number alone does nothing for
+production.
 
 To force a re-ANALYZE on the next broker start (e.g. after a
 manual schema change), delete the sentinel:

@@ -13,10 +13,11 @@ import-time cycle (web imports JSON-LD builders from this module at
 module load).
 """
 
-from datetime import timezone
+from collections.abc import Sequence
 from urllib.parse import quote
 
 from mimir.config import settings
+from mimir.datetime_utils import aware_utc
 from mimir.models import Article
 from mimir.parser import ParsedArticle
 from mimir.rendering import redact_trailer_addresses
@@ -64,6 +65,55 @@ def _json_ld_index(base: str, inboxes=()) -> dict:
     return payload
 
 
+def _thread_url_for(thread, inbox_name: str) -> str:
+    """Whole-thread URL for an `ActiveThread` with replies, else its
+    message URL.
+
+    `reply_count > 0` is exactly "this thread has more than one message
+    in this inbox", which is the consolidation rule, and it needs no
+    query. The equivalence is worth spelling out because the field is a
+    WINDOWED count and that looks like it should break it:
+
+    - `reply_count > 0` means at least one non-root message was seen in
+      the window, so the thread has at least two messages. Sound.
+    - `reply_count == 0` does NOT prove the thread is a single message,
+      and an earlier version of this docstring claimed it did. The
+      argument was "replies can only follow their root in time, so a
+      root inside the window cannot have replies outside it". That
+      relies on `articles.date` being send time. It is not: it is the
+      public-inbox commit time, i.e. ARCHIVAL order (see CONTEXT.md
+      "articles.date = public-inbox commit timestamp"). A child
+      archived before its parent is a documented, handled reality here
+      (`ingest/_pending.py`, "a child ingested before its parent, which
+      happens across epoch boundaries"), and in that case the reply's
+      date is earlier than its root's, so it can fall outside a window
+      the root is inside.
+
+      The consequence is bounded and in the safe direction: such a
+      thread is UNDER-consolidated, advertised as a message URL exactly
+      as it was before this change, so it is an incomplete fix rather
+      than a regression. Closing it properly needs a real per-thread
+      count, i.e. a query on a hot page, which is not worth it for a
+      hint; if this list ever becomes load-bearing, that is the trade
+      to revisit.
+
+    Inbox-scoped on purpose, matching what it replaces: this list is
+    rendered on `/<inbox>/`, so its URLs stay in that inbox rather than
+    hopping to each thread's canonical inbox. `reply_count` is computed
+    per inbox too, so the count and the URL agree.
+
+    Also immune to the cyclic-`thread_parent` inflation that
+    `dedupe_thread` exists to absorb: this counts recent messages
+    grouped by root, not a downward walk, so a cycle cannot re-emit an
+    article and fake a multi-message thread.
+    """
+    from mimir.web import _msg_url, _thread_view_url
+
+    if thread.reply_count > 0:
+        return _thread_view_url(thread, inbox_name)
+    return _msg_url(thread, inbox_name)
+
+
 def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
     """schema.org payload for `/<inbox_name>/`, a `DiscussionForum`
     container plus an `ItemList` of the currently-most-active threads
@@ -73,7 +123,7 @@ def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
     """
     # Lazy imports break a `web → seo → web` cycle: these helpers
     # live in web.py with the rest of the display filters.
-    from mimir.web import _clean_subject_filter, _msg_url
+    from mimir.web import _clean_subject_filter
 
     payload: dict = {
         "@context": "https://schema.org",
@@ -90,7 +140,7 @@ def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
                 {
                     "@type": "ListItem",
                     "position": i + 1,
-                    "url": f"{base}{_msg_url(t, inbox.name)}",
+                    "url": f"{base}{_thread_url_for(t, inbox.name)}",
                     "name": _clean_subject_filter(t.subject) or "(no subject)",
                 }
                 for i, t in enumerate(active_threads)
@@ -126,12 +176,107 @@ def _json_ld_text_snippet(body: str | None) -> str | None:
     return head[:cut].rstrip() + "..."
 
 
+BREADCRUMB_NAME_MAX = 80
+
+
+UNKNOWN_SENDER = "unknown sender"
+
+
+def _person(raw: str | None, *, base: str, inbox_name: str, with_url: bool) -> dict:
+    """schema.org `Person` for a message sender, redaction-aware.
+
+    `name` is the display name only (never the `<hidden>` placeholder,
+    which reads as broken data in metadata even though it is right on
+    the rendered page). `email` rides along only for allowlisted
+    senders, mirroring exactly what `_safe_from_filter` shows.
+
+    `with_url` points at the per-inbox author view, which Google wants
+    as a stable "more posts by this author" target for Discussions
+    eligibility. Off for thread comments: repeating the same per-inbox
+    URL for every participant adds no signal.
+    """
+    from mimir.web import _allowlisted_email, _display_name_filter
+
+    name = _display_name_filter(raw)
+    person: dict = {"@type": "Person", "name": name}
+    email = _allowlisted_email(raw)
+    if email:
+        person["email"] = email
+    if with_url and name and name != UNKNOWN_SENDER:
+        person["url"] = f"{base}/{inbox_name}/author/{quote(name, safe='')}"
+    return person
+
+
+def _graph_with_breadcrumbs(
+    entity: dict,
+    *,
+    base: str,
+    inbox_name: str,
+    subject: str,
+    canonical_url: str,
+) -> dict:
+    """Wrap a page entity in the `@graph` envelope plus the
+    Site -> Inbox -> Subject BreadcrumbList every content page emits.
+
+    One home for the SERP truncation rule, which was previously
+    spelled once per builder; two copies of an 80/77 constant in one
+    module is exactly the drift this collapses.
+    """
+    name = (
+        subject
+        if len(subject) <= BREADCRUMB_NAME_MAX
+        else subject[: BREADCRUMB_NAME_MAX - 3] + "..."
+    )
+    return {
+        "@context": "https://schema.org",
+        "@graph": [
+            entity,
+            {
+                "@type": "BreadcrumbList",
+                "itemListElement": [
+                    {
+                        "@type": "ListItem",
+                        "position": 1,
+                        "name": settings.site_name,
+                        "item": base + "/",
+                    },
+                    {
+                        "@type": "ListItem",
+                        "position": 2,
+                        "name": inbox_name,
+                        "item": f"{base}/{inbox_name}/",
+                    },
+                    {
+                        "@type": "ListItem",
+                        "position": 3,
+                        "name": name,
+                        "item": canonical_url,
+                    },
+                ],
+            },
+        ],
+    }
+
+
+def _iso_datetime(dt) -> str | None:
+    """ISO-8601 with offset, or None. Naive datetimes (an RFC 5322
+    `-0000` Date) are normalised through the project's `aware_utc`
+    rather than re-implementing the tzinfo fill per builder."""
+    if dt is None:
+        return None
+    return aware_utc(dt).strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
 def _json_ld_message(
     article: Article,
     parsed: ParsedArticle,
     canonical_url: str,
     inbox_name: str,
     base: str,
+    *,
+    reply_count: int,
+    subsystem_names: Sequence[str],
+    page_canonical_url: str | None = None,
 ) -> dict:
     """schema.org @graph carrying both DiscussionForumPosting (the
     primary signal, eligible for Google's "Discussions and forums"
@@ -162,36 +307,33 @@ def _json_ld_message(
 
     Prefers `parsed.date` (the original RFC 5322 Date header) over
     `article.date` (the public-inbox commit time), the message's
-    actual send date is more meaningful to search engines."""
+    actual send date is more meaningful to search engines.
+
+    `reply_count` / `subsystem_names` carry the discussion + topical
+    signals mimir already computes for the rendered page, so the
+    structured data reflects the same uniquely-mimir data a reader
+    sees (SEO index-shaping design, 2026-07-27 W3a):
+
+    - `interactionStatistic` counts replies to **this** message
+      (direct children in the thread graph), not the whole thread.
+      A DiscussionForumPosting is the single message, so claiming the
+      thread's total here would be inaccurate structured data on every
+      reply page. Omitted entirely at zero, an explicit
+      `userInteractionCount: 0` is noise, not signal.
+    - `about` / `keywords` carry the matched subsystem names. These
+      are the genuinely topical terms for the page (`net`, `bcachefs`).
+      The `[PATCH v3]`-style subject tag is deliberately NOT emitted as
+      a keyword: nobody searches "PATCH v3", so it would dilute the
+      keyword set with boilerplate rather than describe the subject
+      matter."""
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring). The redaction helpers and display filter live in
     # web.py with the rest of the visible-HTML pipeline.
-    from mimir.web import (
-        _allowlisted_email,
-        _display_name_filter,
-        _redact_trailer_address,
-    )
+    from mimir.web import _redact_trailer_address
 
-    raw_date = parsed.date or article.date
-    if raw_date is not None and raw_date.tzinfo is None:
-        # `-0000` Date headers come back tz-naive from
-        # parsedate_to_datetime; emit aware UTC so consumers don't
-        # see schema-invalid bare datetimes.
-        raw_date = raw_date.replace(tzinfo=timezone.utc)
-    iso_date = raw_date.strftime("%Y-%m-%dT%H:%M:%S%z") if raw_date else None
+    iso_date = _iso_datetime(parsed.date or article.date)
     subject = parsed.subject or "(no subject)"
-    breadcrumb_subject = subject if len(subject) <= 80 else subject[:77] + "..."
-    author_name = _display_name_filter(parsed.author)
-    author: dict = {"@type": "Person", "name": author_name}
-    author_email = _allowlisted_email(parsed.author)
-    if author_email:
-        author["email"] = author_email
-    # Per-inbox author view is a substring match on the From field;
-    # the display name is exactly what'll match the author's other
-    # posts. Skip the URL when we fell back to "unknown sender"
-    # that token doesn't match anyone.
-    if author_name and author_name != "unknown sender":
-        author["url"] = f"{base}/{inbox_name}/author/{quote(author_name, safe='')}"
+    author = _person(parsed.author, base=base, inbox_name=inbox_name, with_url=True)
     forum_post: dict = {
         "@type": "DiscussionForumPosting",
         "@id": canonical_url,
@@ -222,35 +364,29 @@ def _json_ld_message(
     if iso_date:
         forum_post["datePublished"] = iso_date
         forum_post["dateModified"] = iso_date
-    return {
-        "@context": "https://schema.org",
-        "@graph": [
-            forum_post,
-            {
-                "@type": "BreadcrumbList",
-                "itemListElement": [
-                    {
-                        "@type": "ListItem",
-                        "position": 1,
-                        "name": settings.site_name,
-                        "item": base + "/",
-                    },
-                    {
-                        "@type": "ListItem",
-                        "position": 2,
-                        "name": inbox_name,
-                        "item": f"{base}/{inbox_name}/",
-                    },
-                    {
-                        "@type": "ListItem",
-                        "position": 3,
-                        "name": breadcrumb_subject,
-                        "item": canonical_url,
-                    },
-                ],
-            },
-        ],
-    }
+    if reply_count > 0:
+        forum_post["interactionStatistic"] = {
+            "@type": "InteractionCounter",
+            "interactionType": "https://schema.org/ReplyAction",
+            "userInteractionCount": reply_count,
+        }
+    if subsystem_names:
+        forum_post["about"] = [
+            {"@type": "Thing", "name": name} for name in subsystem_names
+        ]
+        forum_post["keywords"] = list(subsystem_names)
+    # The breadcrumb leaf follows the PAGE's canonical, not the
+    # entity's `@id`. BreadcrumbList is a SERP-rendered navigation
+    # path, so pointing it at a URL the page itself disclaims (once
+    # consolidation moves the canonical to the thread view) puts a
+    # third URL in a document that already carries two.
+    return _graph_with_breadcrumbs(
+        forum_post,
+        base=base,
+        inbox_name=inbox_name,
+        subject=subject,
+        canonical_url=page_canonical_url or canonical_url,
+    )
 
 
 def _json_ld_search(
@@ -312,3 +448,117 @@ def _json_ld_author(
             "url": f"{base}/{inbox_name}/",
         },
     }
+
+
+def _json_ld_thread(
+    *,
+    nodes,
+    parsed_by_id: dict,
+    canonical_url: str,
+    inbox_name: str,
+    base: str,
+    total_replies: int,
+    last_activity=None,
+    subsystem_names: Sequence[str],
+) -> dict:
+    """schema.org payload for the whole-thread view: one
+    `DiscussionForumPosting` for the root carrying every reply as a
+    `comment` array.
+
+    This is Google's recommended shape for a forum thread and the
+    reason the thread view exists as an indexable surface: a single
+    message page can only ever describe one post, while this describes
+    the conversation, which is the substantial document.
+
+    `interactionStatistic` here legitimately counts the WHOLE thread
+    (unlike `_json_ld_message`, where the entity is a single message
+    and the thread total would be a false claim), because the entity
+    IS the thread. It reports every reply, including any past the
+    render cap: the count describes the discussion, not this page's
+    rendered subset.
+
+    `nodes` are the RENDERED ThreadNodes; `parsed_by_id` maps node id
+    to ParsedArticle for those whose blob resolved. A node with no
+    parsed body still contributes a comment (author + date + subject
+    are known from SQL), it just carries no `text`.
+
+    Every comment body goes through the same trailer redaction as the
+    visible HTML before snippeting. CONTEXT.md's redaction invariants
+    apply per surface, and this surface carries N bodies rather than
+    one, so a miss here would leak N times over.
+    """
+    from mimir.web import _clean_subject_filter, _msg_url, _redact_trailer_address
+
+    def _text_for(node) -> str | None:
+        parsed = parsed_by_id.get(node.id)
+        if parsed is None or not parsed.body:
+            return None
+        return _json_ld_text_snippet(
+            redact_trailer_addresses(parsed.body, _redact_trailer_address)
+        )
+
+    root = nodes[0]
+    root_subject = _clean_subject_filter(root.subject) or "(no subject)"
+    payload: dict = {
+        "@type": "DiscussionForumPosting",
+        "@id": canonical_url,
+        "url": canonical_url,
+        "mainEntityOfPage": canonical_url,
+        "headline": root_subject,
+        "author": _person(root.author, base=base, inbox_name=inbox_name, with_url=True),
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": inbox_name,
+            "url": f"{base}/{inbox_name}/",
+        },
+    }
+    root_text = _text_for(root)
+    if root_text:
+        payload["text"] = root_text
+    root_date = _iso_datetime(root.date)
+    if root_date:
+        payload["datePublished"] = root_date
+        # The thread's newest date, not `nodes[-1]`: that is the
+        # depth-first-last node of the CAPPED slice, so on any branched
+        # or truncated thread it understates freshness, and it can even
+        # fall below datePublished when a reply carries an earlier date.
+        payload["dateModified"] = _iso_datetime(last_activity) or root_date
+    if total_replies > 0:
+        payload["interactionStatistic"] = {
+            "@type": "InteractionCounter",
+            "interactionType": "https://schema.org/ReplyAction",
+            "userInteractionCount": total_replies,
+        }
+    if subsystem_names:
+        payload["about"] = [
+            {"@type": "Thing", "name": name} for name in subsystem_names
+        ]
+        payload["keywords"] = list(subsystem_names)
+
+    comments: list[dict] = []
+    for node in nodes[1:]:
+        comment: dict = {
+            "@type": "Comment",
+            "@id": base + _msg_url(node, inbox_name),
+            "url": base + _msg_url(node, inbox_name),
+            "author": _person(
+                node.author, base=base, inbox_name=inbox_name, with_url=False
+            ),
+        }
+        when = _iso_datetime(node.date)
+        if when:
+            comment["datePublished"] = when
+        body = _text_for(node)
+        if body:
+            comment["text"] = body
+        comments.append(comment)
+    if comments:
+        payload["comment"] = comments
+
+    return _graph_with_breadcrumbs(
+        payload,
+        base=base,
+        inbox_name=inbox_name,
+        subject=root_subject,
+        canonical_url=canonical_url,
+    )
