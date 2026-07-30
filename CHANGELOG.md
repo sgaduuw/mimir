@@ -42,9 +42,13 @@ changes, not internal refactors. Categories: **Added**,
   historical archive into a sitemap for the first time. The per-inbox
   sitemap caps at the 5,000 most recent threads, so on the production
   corpus everything older was undiscoverable by sitemap-driven
-  crawling. A month that exceeds 45,000 URLs pages into
-  `sitemap-2.xml` and so on, staying under the protocol's 50,000
-  per-urlset limit; the index enumerates every page. The flat
+  crawling. A month that exceeds 20,000 URLs pages into
+  `sitemap-2.xml` and so on; the index enumerates every page. Two
+  ceilings apply and the protocol's is not the tighter one: sitemaps.org
+  caps a urlset at 50,000, but a page slice is passed whole to three
+  queries as an expanding `IN` list and SQLite's bind-parameter limit is
+  32,766. On this corpus one bucket (`git` 2016-06, 40,429 thread roots)
+  exceeds the width and pages. The flat
   `/<inbox>/sitemap.xml` stays as the recent-activity view, so no URL
   crawlers already hold stops resolving.
 - Each message now records its thread's root per inbox
@@ -52,7 +56,9 @@ changes, not internal refactors. Categories: **Added**,
   per conversation with a truthful `<lastmod>` instead of re-deriving
   the root on every read. Threading is inbox-scoped, so the column is
   too: a cross-posted message legitimately has different roots in
-  different inboxes.
+  different inboxes. Ingest, `reindex` and `admin failures replay` all
+  maintain it, including the case where a reply arrives before the
+  parent it belongs to and has to be re-rooted once that parent lands.
 - `mimir backfill-thread-roots [--verify]` fills the column for messages
   that predate it, and re-verifies a random sample against an
   independent recomputation. Operators do not normally need to run it:
@@ -61,6 +67,22 @@ changes, not internal refactors. Categories: **Added**,
   that cannot complete withholds its sentinel so the next restart
   retries, and logs `backfill incomplete` for the post-deploy smoke to
   grep.
+
+  The broker also verifies the column on every start, not only on the
+  deploy that first fills it, and logs any disagreement at ERROR. Two
+  checks run: a sampled recomputation against an independent oracle,
+  which catches a thread rooted at the wrong article, and a complete
+  structural check that every message and its in-inbox parent name the
+  same root, which is what actually catches a thread materialised in two
+  pieces. Neither subsumes the other, and the sample alone is 200 rows
+  per inbox against 28.8M.
+- The schema migration adding the column is safe to retry. Alembic runs
+  SQLite DDL non-transactionally, and adding a foreign key forces a
+  table rebuild, so an interrupted attempt would otherwise leave a
+  scratch table behind that made every later attempt fail outright.
+  Measured at production shape, the rebuild takes about 110 s and runs
+  before the broker accepts connections, so budget the deploy window
+  accordingly.
 - `mimir reindex --from-scratch` now rebuilds the inbox's thread roots
   after the re-walk. Dropping one epoch's rows breaks the parent chain
   for replies living in other epochs, which previously left them
@@ -149,6 +171,23 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- A schema migration that rebuilds a table no longer leaves the query
+  planner blind. SQLite has no `ADD CONSTRAINT`, so adding a foreign key
+  makes alembic copy the table and `DROP` the original, which deletes
+  that table's `sqlite_stat1` rows. The compensating `ANALYZE` was gated
+  on a once-ever sentinel that has existed on production since
+  2026-05-22, so it could not run; it now also runs whenever the applied
+  revision moves. Bad stats on this table previously turned a
+  15-message thread read into 400 seconds. The post-backfill re-sample
+  also no longer sits behind a success branch that one erroring inbox
+  could skip.
+- Subsystem links are no longer emitted for names the dashboard route
+  refuses. MAINTAINERS section titles are free text and three on
+  production contain a literal tab, so the inbox dashboard, front page,
+  message page and thread view were each linking a guaranteed 404, from
+  pages that are themselves sitemap entries. The addressability check
+  had been added in the previous change but applied at only two of the
+  five places that emit these links.
 - The message page's ETag now covers the derived state it renders:
   subsystem attribution, lifecycle badge, review roll-up and the
   revisions fold. It previously covered only the article id, the
