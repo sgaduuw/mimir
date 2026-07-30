@@ -116,6 +116,15 @@ services:
       # backfill exhausts its pass budget it withholds its sentinel on
       # purpose, so every restart re-pays it: watch the broker log for
       # "backfill incomplete" rather than raising this number.
+      #
+      # THIS FILE IS NOT THE PRODUCTION DEPLOY. Production runs podman
+      # quadlets managed from `ansible-eelco`, where the equivalent
+      # budget is the unit's `TimeoutStartSec` (the container is
+      # `Type=notify` with `Notify=healthy`, so systemd waits on this
+      # same healthcheck but bounds it with its own timeout). Raising
+      # the number here does nothing for production; the binding value
+      # lives in the role. Keep the two in the same ballpark, and treat
+      # this comment's reasoning as the shared rationale for both.
       start_period: 1200s
 
   mimir:
