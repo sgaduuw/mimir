@@ -47,8 +47,9 @@ changes, not internal refactors. Categories: **Added**,
   ceilings apply and the protocol's is not the tighter one: sitemaps.org
   caps a urlset at 50,000, but a page slice is passed whole to three
   queries as an expanding `IN` list and SQLite's bind-parameter limit is
-  32,766. On this corpus one bucket (`git` 2016-06, 40,429 thread roots)
-  exceeds the width and pages. The flat
+  32,766. On this corpus one bucket (`git` 2016-06, 89,679 thread
+  roots, measured against production 2026-07-31) exceeds the width and
+  pages, into five pages. The flat
   `/<inbox>/sitemap.xml` stays as the recent-activity view, so no URL
   crawlers already hold stops resolving.
 - Each message now records its thread's root per inbox
