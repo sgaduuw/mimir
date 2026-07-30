@@ -9,7 +9,7 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
-## [Unreleased]
+## [3.7.0] - 2026-07-31
 
 ### Added
 
@@ -85,9 +85,10 @@ changes, not internal refactors. Categories: **Added**,
   that is a crash-loop, not a failed command. Retrying now clears the
   debris, except in the one state where the scratch table is the only
   copy of the data, which it refuses to touch and explains instead.
-  Measured at production shape, the rebuild takes about 110 s and runs
+  Measured against a snapshot of the production database (28.8M
+  `article_lists` rows, 2026-07-30), the rebuild takes 79 s and runs
   before the broker accepts connections, so budget the deploy window
-  accordingly.
+  accordingly. Treat that as a floor: the corpus only grows.
 - `mimir reindex --from-scratch` now rebuilds the inbox's thread roots
   after the re-walk. Dropping one epoch's rows breaks the parent chain
   for replies living in other epochs, which previously left them
