@@ -860,9 +860,16 @@ mimir runs three containers (since 2.0.0; see `compose.yaml`):
   Serves cache + admin RPCs over a UNIX socket at
   `/data/.broker.sock`. Self-bootstraps on startup (`alembic
   upgrade head` → `bootstrap_inboxes` → bounded post-migrate
+  `ANALYZE` → one-time thread-root backfill → a second bounded
   `ANALYZE`), each gated by a sentinel file so subsequent
-  restarts skip. Internal periodic purge thread drops expired
-  cache rows.
+  restarts skip. All of it runs before the broker accepts RPCs,
+  so a deploy carrying a schema change has to fit the start
+  budget: `start_period` in `compose.yaml`, `TimeoutStartSec` on
+  the production quadlet. Both other containers gate on the
+  broker's healthcheck, so overrunning it fails the deploy rather
+  than degrading it. Thread-root verification deliberately sits
+  outside that budget, on a daemon thread after startup.
+  Internal periodic purge thread drops expired cache rows.
 - **`mimir`** is the web tier. Opens every SQLite connection with
   `PRAGMA query_only=1`; cache writes route through the broker
   socket. Depends on the broker's healthcheck so cold requests
