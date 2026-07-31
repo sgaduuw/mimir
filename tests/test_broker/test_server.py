@@ -4,6 +4,7 @@ in-thread broker on a tmp UNIX socket. RPC content is tested
 in `test_handlers.py`; here we care about the socket lifecycle
 and the bytes-on-the-wire framing."""
 
+import re
 import socket
 import time
 from pathlib import Path
@@ -1121,4 +1122,173 @@ def test_post_backfill_analyze_runs_even_when_the_backfill_blows_up(
     assert not (sock_dir / ".thread_roots_backfilled").exists(), (
         "sentinel written despite a failed run; no restart would retry, and "
         "the sentinel is the only thing that makes this retry at all"
+    )
+
+
+def test_incomplete_backfill_never_claims_complete(seeded_db, monkeypatch, tmp_path):
+    """The success line must not fire on a run that did not succeed.
+
+    It used to. The incomplete branch logged its ERROR and then fell
+    through to an UNCONDITIONAL `backfill complete in %.1fs` INFO, so a
+    failed run emitted both and an operator grepping for the ordinary
+    success line got a false positive on exactly the run that needed
+    attention. Worse than silence: silence is ambiguous, this asserted
+    the opposite of the truth.
+    """
+    import mimir.maintenance
+    import mimir.thread_roots
+    from mimir.broker import server
+
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda full=False: None)
+
+    def _explode_for_this_inbox(_run):
+        raise RuntimeError("simulated per-inbox failure")
+
+    monkeypatch.setattr(mimir.thread_roots, "drive_passes", _explode_for_this_inbox)
+
+    sock_dir = tmp_path / "partial"
+    sock_dir.mkdir()
+    records: list[str] = []
+    monkeypatch.setattr(
+        server.logger, "info", lambda msg, *a, **kw: records.append(msg % a)
+    )
+    monkeypatch.setattr(
+        server.logger, "error", lambda msg, *a, **kw: records.append(msg % a)
+    )
+    monkeypatch.setattr(server.logger, "exception", lambda *a, **kw: None)
+
+    server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
+
+    joined = "\n".join(records)
+    assert "backfill complete" not in joined, (
+        f"an incomplete run claimed completion; log said:\n{joined}"
+    )
+    assert "STOPPED" in joined, (
+        f"an incomplete run must say so on its own line; log said:\n{joined}"
+    )
+    assert not (sock_dir / ".thread_roots_backfilled").exists()
+
+
+def test_backfill_completion_line_reports_rows_still_unrooted(
+    seeded_db, monkeypatch, tmp_path
+):
+    """`remaining=` is what actually answers "did this finish".
+
+    The per-run counters cannot: the backfill only touches NULL rows, so
+    on a resumed run they describe the remainder alone. 3.7.0's deploy
+    logged seeded=1468645 propagated=4305393 against a 28.8M-row table,
+    which reads like a partial fill and is not one.
+    """
+    import mimir.maintenance
+    from mimir.broker import server
+
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda full=False: None)
+
+    sock_dir = tmp_path / "done"
+    sock_dir.mkdir()
+    records: list[str] = []
+    monkeypatch.setattr(
+        server.logger, "info", lambda msg, *a, **kw: records.append(msg % a)
+    )
+
+    server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
+
+    done = [r for r in records if "backfill complete" in r]
+    assert done, f"no completion line at all; got:\n{records}"
+    assert "remaining=0" in done[0], (
+        "the completion line must ASSERT the outcome, not leave it to be "
+        f"inferred from the per-run counters; got: {done[0]}"
+    )
+
+
+def test_verification_states_a_zero_rather_than_going_quiet(seeded_db, monkeypatch):
+    """A clean sweep must SAY it was clean.
+
+    Before this the thread logged only on failure, so "verified clean",
+    "still running" and "the thread died" were one observation: nothing.
+    Answering "is the column still correct?" meant running the invariant
+    by hand against production, twice, during the 3.7.0 deploy.
+    """
+    from mimir.broker import server
+
+    records: list[str] = []
+    monkeypatch.setattr(
+        server.logger, "info", lambda msg, *a, **kw: records.append(msg % a)
+    )
+
+    server._verify_thread_roots_async().join(timeout=60)
+
+    done = [r for r in records if "verification complete" in r]
+    assert done, f"a clean verification said nothing; got:\n{records}"
+    assert "split=0" in done[0] and "mismatched=0" in done[0], (
+        f"a stated zero is the evidence; got: {done[0]}"
+    )
+
+
+def test_verification_stays_silent_when_it_dies_midway(seeded_db, monkeypatch):
+    """No completion line on the failure path, deliberately.
+
+    Its absence is the signal that the sweep did not finish, which is
+    what a restart killing the daemon thread looks like. Emitting one
+    here would report a partial sweep as a clean one, reintroducing the
+    exact false-assurance this change removes from the backfill.
+    """
+    import mimir.thread_roots
+    from mimir.broker import server
+
+    def _explode(*_a, **_kw):
+        raise RuntimeError("simulated mid-sweep failure")
+
+    monkeypatch.setattr(mimir.thread_roots, "find_incoherent_roots", _explode)
+
+    records: list[str] = []
+    monkeypatch.setattr(
+        server.logger, "info", lambda msg, *a, **kw: records.append(msg % a)
+    )
+    monkeypatch.setattr(server.logger, "exception", lambda *a, **kw: None)
+
+    server._verify_thread_roots_async().join(timeout=60)
+
+    assert not [r for r in records if "verification complete" in r], (
+        f"a sweep that died claimed completion; got:\n{records}"
+    )
+
+
+def test_broker_log_lines_carry_a_timestamp_under_its_own_logging_config():
+    """Pin the PRODUCTION condition, not just that a formatter exists.
+
+    The broker calls `_configure_logging(max(verbose, 1))`, so INFO is
+    floored on regardless of `-v`. This asserts the line an operator
+    actually reads is timestamped, because without one a deploy's
+    multi-minute startup steps are indistinguishable from a hang. A
+    `caplog`-style assertion would prove the call was made and say
+    nothing about what reaches stderr, which is the 3.3.1 failure.
+    """
+    import logging
+
+    from mimir.cli._common import _configure_logging
+
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    try:
+        root.handlers = []
+        _configure_logging(1)
+        assert root.level == logging.INFO
+        assert root.handlers, "no handler installed; nothing reaches stderr"
+        formatted = root.handlers[0].format(
+            logging.LogRecord(
+                name="mimir.broker.server",
+                level=logging.INFO,
+                pathname=__file__,
+                lineno=1,
+                msg="broker: running alembic upgrade head",
+                args=(),
+                exc_info=None,
+            )
+        )
+    finally:
+        root.handlers, root.level = saved_handlers, saved_level
+
+    assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} INFO ", formatted), (
+        f"broker log line is not timestamped: {formatted!r}"
     )
