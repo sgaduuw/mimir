@@ -13,16 +13,19 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
-- Broker log lines now carry a timestamp, and so does alembic's
-  migration output. `alembic.ini` declared a date format its format
-  string never referenced, so migrations logged untimed. This is the
-  output an operator watches during a deploy, where one migration can
-  run for well over a minute and the thread-root backfill for several,
-  and without a timestamp per line there is no way to tell which step
-  is running or whether anything is progressing. `podman logs
-  --timestamps` is not a substitute: it records when the runtime
-  captured the line rather than when the event happened, and the skew
-  is worst across exactly the long steps worth timing.
+- Broker log lines now carry a timestamp, including the migration
+  output the broker emits on startup. This is what an operator watches
+  during a deploy, where one migration can run for well over a minute
+  and the thread-root backfill for several, and without a timestamp per
+  line there is no way to tell which step is running or whether
+  anything is progressing at all. `podman logs --timestamps` is not a
+  substitute: it records when the runtime captured the line rather than
+  when the event happened, and the skew is worst across exactly the
+  long steps worth timing. Separately, `alembic.ini` declared a date
+  format its format string never referenced, so direct `alembic` CLI
+  runs also logged untimed; that is fixed too, though it is a different
+  surface from the broker's (the broker builds its alembic config
+  programmatically and never loads that file).
 - The startup thread-root backfill no longer reports success when it
   failed. An incomplete run logged its error and then fell through to
   an unconditional "backfill complete" line, so it emitted both, and

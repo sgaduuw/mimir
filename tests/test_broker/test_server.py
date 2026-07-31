@@ -1125,7 +1125,9 @@ def test_post_backfill_analyze_runs_even_when_the_backfill_blows_up(
     )
 
 
-def test_incomplete_backfill_never_claims_complete(seeded_db, monkeypatch, tmp_path):
+def test_incomplete_backfill_never_claims_complete(
+    seeded_db, monkeypatch, tmp_path, caplog
+):
     """The success line must not fire on a run that did not succeed.
 
     It used to. The incomplete branch logged its ERROR and then fell
@@ -1135,6 +1137,8 @@ def test_incomplete_backfill_never_claims_complete(seeded_db, monkeypatch, tmp_p
     attention. Worse than silence: silence is ambiguous, this asserted
     the opposite of the truth.
     """
+    import logging
+
     import mimir.maintenance
     import mimir.thread_roots
     from mimir.broker import server
@@ -1148,17 +1152,11 @@ def test_incomplete_backfill_never_claims_complete(seeded_db, monkeypatch, tmp_p
 
     sock_dir = tmp_path / "partial"
     sock_dir.mkdir()
-    records: list[str] = []
-    monkeypatch.setattr(
-        server.logger, "info", lambda msg, *a, **kw: records.append(msg % a)
-    )
-    monkeypatch.setattr(
-        server.logger, "error", lambda msg, *a, **kw: records.append(msg % a)
-    )
-    monkeypatch.setattr(server.logger, "exception", lambda *a, **kw: None)
+    caplog.set_level(logging.INFO, logger="mimir.broker.server")
 
     server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
 
+    records = [r.getMessage() for r in caplog.records]
     joined = "\n".join(records)
     assert "backfill complete" not in joined, (
         f"an incomplete run claimed completion; log said:\n{joined}"
@@ -1180,7 +1178,7 @@ def test_incomplete_backfill_never_claims_complete(seeded_db, monkeypatch, tmp_p
 
 
 def test_backfill_completion_line_reports_rows_still_unrooted(
-    seeded_db, monkeypatch, tmp_path
+    seeded_db, monkeypatch, tmp_path, caplog
 ):
     """`remaining=` is what actually answers "did this finish".
 
@@ -1189,6 +1187,8 @@ def test_backfill_completion_line_reports_rows_still_unrooted(
     logged seeded=1468645 propagated=4305393 against a 28.8M-row table,
     which reads like a partial fill and is not one.
     """
+    import logging
+
     import mimir.maintenance
     from mimir.broker import server
 
@@ -1196,13 +1196,11 @@ def test_backfill_completion_line_reports_rows_still_unrooted(
 
     sock_dir = tmp_path / "done"
     sock_dir.mkdir()
-    records: list[str] = []
-    monkeypatch.setattr(
-        server.logger, "info", lambda msg, *a, **kw: records.append(msg % a)
-    )
+    caplog.set_level(logging.INFO, logger="mimir.broker.server")
 
     server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
 
+    records = [r.getMessage() for r in caplog.records]
     done = [r for r in records if "backfill complete" in r]
     assert done, f"no completion line at all; got:\n{records}"
     assert "remaining=0" in done[0], (
@@ -1211,7 +1209,7 @@ def test_backfill_completion_line_reports_rows_still_unrooted(
     )
 
 
-def test_verification_states_a_zero_rather_than_going_quiet(seeded_db, monkeypatch):
+def test_verification_states_a_zero_rather_than_going_quiet(seeded_db, caplog):
     """A clean sweep must SAY it was clean.
 
     Before this the thread logged only on failure, so "verified clean",
@@ -1219,23 +1217,35 @@ def test_verification_states_a_zero_rather_than_going_quiet(seeded_db, monkeypat
     Answering "is the column still correct?" meant running the invariant
     by hand against production, twice, during the 3.7.0 deploy.
     """
+    import logging
+
     from mimir.broker import server
 
-    records: list[str] = []
-    monkeypatch.setattr(
-        server.logger, "info", lambda msg, *a, **kw: records.append(msg % a)
-    )
+    caplog.set_level(logging.INFO, logger="mimir.broker.server")
 
     server._verify_thread_roots_async().join(timeout=60)
 
+    records = [r.getMessage() for r in caplog.records]
     done = [r for r in records if "verification complete" in r]
     assert done, f"a clean verification said nothing; got:\n{records}"
-    assert "split=0" in done[0] and "mismatched=0" in done[0], (
+    assert "split_inboxes=0" in done[0] and "mismatched_inboxes=0" in done[0], (
         f"a stated zero is the evidence; got: {done[0]}"
+    )
+    # Without this the assertions above are satisfied BY CONSTRUCTION on
+    # an empty corpus: zero inboxes trivially yields zero splits and
+    # zero mismatches, and the test would pass while verifying nothing.
+    #
+    # `\b` matters: a plain `"inboxes=0" not in ...` substring check is
+    # ALSO satisfied by construction, because "inboxes=0" appears inside
+    # "split_inboxes=0". `_` is a word character, so the boundary does
+    # not match there and only the standalone field is read.
+    swept = re.search(r"\binboxes=(\d+)", done[0])
+    assert swept and int(swept.group(1)) > 0, (
+        f"verification reported a clean sweep of nothing; got: {done[0]}"
     )
 
 
-def test_verification_stays_silent_when_it_dies_midway(seeded_db, monkeypatch):
+def test_verification_stays_silent_when_it_dies_midway(seeded_db, monkeypatch, caplog):
     """No completion line on the failure path, deliberately.
 
     Its absence is the signal that the sweep did not finish, which is
@@ -1243,6 +1253,8 @@ def test_verification_stays_silent_when_it_dies_midway(seeded_db, monkeypatch):
     here would report a partial sweep as a clean one, reintroducing the
     exact false-assurance this change removes from the backfill.
     """
+    import logging
+
     import mimir.thread_roots
     from mimir.broker import server
 
@@ -1250,15 +1262,11 @@ def test_verification_stays_silent_when_it_dies_midway(seeded_db, monkeypatch):
         raise RuntimeError("simulated mid-sweep failure")
 
     monkeypatch.setattr(mimir.thread_roots, "find_incoherent_roots", _explode)
-
-    records: list[str] = []
-    monkeypatch.setattr(
-        server.logger, "info", lambda msg, *a, **kw: records.append(msg % a)
-    )
-    monkeypatch.setattr(server.logger, "exception", lambda *a, **kw: None)
+    caplog.set_level(logging.INFO, logger="mimir.broker.server")
 
     server._verify_thread_roots_async().join(timeout=60)
 
+    records = [r.getMessage() for r in caplog.records]
     assert not [r for r in records if "verification complete" in r], (
         f"a sweep that died claimed completion; got:\n{records}"
     )
@@ -1301,4 +1309,88 @@ def test_broker_log_lines_carry_a_timestamp_under_its_own_logging_config():
 
     assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} INFO ", formatted), (
         f"broker log line is not timestamped: {formatted!r}"
+    )
+
+
+def test_backfill_that_leaves_rows_unrooted_is_not_called_complete(
+    seeded_db, monkeypatch, tmp_path, caplog
+):
+    """Rows left NULL make a run incomplete even with a clean sweep.
+
+    There is a third way to finish dirty, and deriving the outcome from
+    the pass budget and error count alone missed it: `break_cycle`
+    documents a state where it deliberately declines to act ("a stall
+    with no cycle in it is left alone: those rows stay NULL"), after
+    which `drive_passes` exits its loop normally. So `exhausted` and
+    `failed` are both 0 while rows are still unrooted, and the run wrote
+    its sentinel and logged "complete" over the top of that.
+
+    Which is the exact false positive this whole change exists to
+    remove, one level deeper: the operator's documented grep for
+    `backfill incomplete` finds nothing, while the broker silently
+    re-pays the multi-minute backfill on every subsequent deploy.
+    Found by the pre-PR whole-diff review, not by the author.
+    """
+    import logging
+
+    import mimir.maintenance
+    from mimir.broker import server
+
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda full=False: None)
+    # A clean run by every other signal: nothing raised, no pass budget
+    # hit. Only the count says otherwise.
+    monkeypatch.setattr(server, "_count_unrooted_rows", lambda: 5)
+
+    sock_dir = tmp_path / "dirty"
+    sock_dir.mkdir()
+    caplog.set_level(logging.INFO, logger="mimir.broker.server")
+
+    server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
+
+    joined = "\n".join(r.getMessage() for r in caplog.records)
+    assert "backfill complete" not in joined, (
+        f"rows are still unrooted and the run claimed completion:\n{joined}"
+    )
+    assert "backfill incomplete" in joined and "remaining=5" in joined, (
+        f"the outcome must name the rows it left behind:\n{joined}"
+    )
+    assert not (sock_dir / ".thread_roots_backfilled").exists(), (
+        "sentinel written despite unrooted rows; the next start would "
+        "skip the retry that is the only thing repairing them"
+    )
+
+
+def test_backfill_still_succeeds_when_the_remaining_count_cannot_be_taken(
+    seeded_db, monkeypatch, tmp_path, caplog
+):
+    """A failed COUNT must not be read as "rows remain".
+
+    `_count_unrooted_rows` returns None when it could not run, and that
+    is deliberately NOT treated as incomplete: the run's own signals say
+    it succeeded, and withholding the sentinel over a transient count
+    failure would re-pay the entire multi-minute backfill on every
+    deploy thereafter. It surfaces as "unknown" so it is visible rather
+    than silently rendered as a reassuring zero.
+    """
+    import logging
+
+    import mimir.maintenance
+    from mimir.broker import server
+
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda full=False: None)
+    monkeypatch.setattr(server, "_count_unrooted_rows", lambda: None)
+
+    sock_dir = tmp_path / "unknown"
+    sock_dir.mkdir()
+    caplog.set_level(logging.INFO, logger="mimir.broker.server")
+
+    server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
+
+    joined = "\n".join(r.getMessage() for r in caplog.records)
+    assert "backfill complete" in joined and "remaining=unknown" in joined, (
+        f"a failed count must read as unknown, not as zero:\n{joined}"
+    )
+    assert (sock_dir / ".thread_roots_backfilled").exists(), (
+        "sentinel withheld over a count that merely could not run; the "
+        "backfill itself succeeded"
     )
