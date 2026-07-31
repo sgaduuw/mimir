@@ -967,7 +967,8 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         return
 
     elapsed = time.monotonic() - t0
-    if totals["exhausted"] or failed:
+    incomplete = bool(totals["exhausted"] or failed)
+    if incomplete:
         # Withhold the sentinel: it is the ONLY thing preventing this
         # from being retried, and a partial fill that never retries is
         # permanent silent under-reporting in the sitemap.
@@ -990,13 +991,47 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     # case where the column's distribution changed AND the stats are
     # stale, so it is the last case that should skip this.
     _run_post_backfill_analyze()
+
+    # The counters are PER RUN, not cumulative, because the backfill only
+    # touches NULL rows and is therefore resumable. On a resumed run they
+    # describe the remainder and nothing else, which reads exactly like a
+    # partial fill: 3.7.0's deploy logged seeded=1468645 propagated=4305393
+    # against a 28.8M-row table and cost a diagnostic round to establish
+    # that an earlier interrupted start had already done the other ~23M.
+    #
+    # `remaining` is the number that actually answers "did this finish",
+    # and it is an ASSERTION rather than an inference from the counters.
+    # One indexed COUNT against `ix_article_lists_thread_root`, paid once
+    # per deploy, against a run measured in minutes.
+    remaining = _count_unrooted_rows()
+
+    if incomplete:
+        # Deliberately not the word "complete" on this path. It used to
+        # fall through to the success line unconditionally, so an
+        # incomplete run logged BOTH "backfill incomplete" (ERROR) and
+        # "backfill complete in 149.1s" (INFO). An operator grepping for
+        # the ordinary success line got a false positive on precisely the
+        # run that needed attention.
+        logger.error(
+            "broker: thread-roots backfill STOPPED after %.1fs "
+            "(seeded=%d propagated=%d cycles=%d remaining=%s); sentinel "
+            "withheld, next start retries",
+            elapsed,
+            totals["seeded"],
+            totals["propagated"],
+            totals["cycles_broken"],
+            "unknown" if remaining is None else remaining,
+        )
+        return
+
     logger.info(
         "broker: thread-roots backfill complete in %.1fs "
-        "(seeded=%d propagated=%d cycles=%d)",
+        "(seeded=%d propagated=%d cycles=%d remaining=%s)",
         elapsed,
         totals["seeded"],
         totals["propagated"],
         totals["cycles_broken"],
+        "unknown" if remaining is None else remaining,
     )
 
 
@@ -1045,6 +1080,39 @@ def _has_unrooted_rows() -> bool:
         return False
 
 
+def _count_unrooted_rows() -> int | None:
+    """How many `article_lists` rows are still NULL? One indexed COUNT.
+
+    Reported on the backfill's own completion line so that line asserts
+    the outcome instead of leaving it to be inferred from per-run
+    counters (see the caller for why that inference misled).
+
+    `None` means the count could not be taken, and the caller renders it
+    as "unknown" rather than as a number. Reporting a failed count as 0
+    would turn a diagnostic that could not run into a clean bill of
+    health, which is the failure this whole change exists to remove:
+    the sibling `_has_unrooted_rows` can safely answer "no" when it
+    cannot tell, because its caller's fallback is to run the backfill
+    anyway, but nothing downstream re-checks a log line.
+    """
+    from sqlalchemy import func, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList
+
+    try:
+        with SessionLocal() as session:
+            return int(
+                session.scalar(
+                    select(func.count()).where(ArticleList.thread_root_id.is_(None))
+                )
+                or 0
+            )
+    except Exception:
+        logger.exception("broker: could not count unrooted rows")
+        return None
+
+
 def _verify_thread_roots_async() -> threading.Thread:
     """Recompute a sample per inbox and report disagreements, off the
     startup path.
@@ -1089,14 +1157,33 @@ def _verify_thread_roots_async() -> threading.Thread:
         from mimir.models import Inbox
         from mimir.thread_roots import find_incoherent_roots, verify_thread_roots
 
+        # Counted so the completion line can state the result rather
+        # than leave it to be inferred from silence. Before this, the
+        # only output was on failure, so "verified clean", "still
+        # running" and "the thread died" were the same observation:
+        # nothing. Answering "is the column still correct?" meant
+        # running the invariant by hand against production, which it
+        # did, twice, on the 3.7.0 deploy.
+        t0 = time.monotonic()
+        checked = 0
+        split_inboxes = 0
+        mismatch_inboxes = 0
+
+        logger.info(
+            "broker: verifying thread roots in the background "
+            "(read-only, off the healthcheck path; expect minutes on a "
+            "large corpus, and only the completion line proves it finished)"
+        )
         try:
             with SessionLocal() as session:
                 for inbox in session.execute(select(Inbox)).scalars():
+                    checked += 1
                     # Complete structural check first: it is the one that
                     # actually catches a split thread, because it looks at
                     # every row instead of a 200-row sample.
                     split = find_incoherent_roots(session, inbox)
                     if split:
+                        split_inboxes += 1
                         # "at least", because the query is LIMITed: the
                         # count is a sample size, not a total, and
                         # reporting it as a total would understate a
@@ -1112,6 +1199,7 @@ def _verify_thread_roots_async() -> threading.Thread:
                         )
                     bad = verify_thread_roots(session, inbox)
                     if bad:
+                        mismatch_inboxes += 1
                         logger.error(
                             "broker: thread-roots verification found %d "
                             "mismatch(es) in inbox %s, e.g. %s; the "
@@ -1121,7 +1209,28 @@ def _verify_thread_roots_async() -> threading.Thread:
                             bad[0],
                         )
         except Exception:
-            logger.exception("broker: thread-roots verification failed to run")
+            # No completion line on this path, deliberately: its absence
+            # is the signal that the run did not finish, and emitting one
+            # here would report a partial sweep as a clean one.
+            logger.exception(
+                "broker: thread-roots verification failed to run after %d inbox(es)",
+                checked,
+            )
+            return
+
+        # The whole point of this change. A stated zero is evidence; an
+        # absent line is not, and this line is absent precisely when it
+        # should be: the thread is a daemon, so a restart inside the run
+        # kills it mid-sweep and nothing is logged, which is exactly what
+        # "did not finish" should look like.
+        logger.info(
+            "broker: thread-roots verification complete in %.1fs "
+            "(inboxes=%d split=%d mismatched=%d)",
+            time.monotonic() - t0,
+            checked,
+            split_inboxes,
+            mismatch_inboxes,
+        )
 
     # Returned so tests can join it. Callers on the startup path
     # deliberately do not: the whole point is that it is off the
