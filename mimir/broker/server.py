@@ -967,21 +967,20 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         return
 
     elapsed = time.monotonic() - t0
-    incomplete = bool(totals["exhausted"] or failed)
-    if not incomplete:
-        # The sentinel is the ONLY thing preventing a retry, so it is
-        # withheld on any incomplete run: a partial fill that never
-        # retries is permanent silent under-reporting in the sitemap.
-        sentinel.touch()
 
-    # Re-sample OUTSIDE the success branch, deliberately. The fill
+    # Re-sample BEFORE deciding anything, and unconditionally. The fill
     # rewrote rows of a column ANALYZE may have sampled while it was 100%
     # NULL, so the planner otherwise keeps treating it as single-valued.
-    # This used to sit under `else:`, which meant one inbox hitting the
-    # pass budget or erroring skipped the re-sample for the whole corpus
-    # while the broker went on to serve: a partial fill is exactly the
-    # case where the column's distribution changed AND the stats are
-    # stale, so it is the last case that should skip this.
+    # This used to sit under a success branch, which meant one inbox
+    # hitting the pass budget or erroring skipped the re-sample for the
+    # whole corpus while the broker went on to serve: a partial fill is
+    # exactly the case where the column's distribution changed AND the
+    # stats are stale, so it is the last case that should skip this.
+    #
+    # Running it before the count below is also what keeps that count
+    # cheap: with fresh stats the planner takes a skip-scan over
+    # `ix_article_lists_thread_root` instead of scanning the covering
+    # index (measured at 28.8M rows: 0.00 s vs 0.47 s).
     _run_post_backfill_analyze()
 
     # The counters are PER RUN, not cumulative, because the backfill only
@@ -992,10 +991,30 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     # that an earlier interrupted start had already done the other ~23M.
     #
     # `remaining` is the number that actually answers "did this finish",
-    # and it is an ASSERTION rather than an inference from the counters.
-    # One indexed COUNT against `ix_article_lists_thread_root`, paid once
-    # per deploy, against a run measured in minutes.
+    # so it GATES the outcome rather than merely decorating the log line.
+    # Deriving `incomplete` from the pass budget and error count alone
+    # left a third way to finish dirty: `break_cycle` documents a state
+    # where it deliberately declines to act ("a stall with no cycle in it
+    # is left alone: those rows stay NULL"), and `drive_passes` then
+    # exits its loop normally, so exhausted == failed == 0 while rows are
+    # still unrooted. That run wrote the sentinel and logged "complete",
+    # which is precisely the false positive this change exists to remove,
+    # one level deeper. Found by the pre-PR whole-diff review.
+    #
+    # `None` (the count itself failed) deliberately does NOT mark the run
+    # incomplete: the run's own signals say it succeeded, and withholding
+    # the sentinel on a transient count failure would re-pay the whole
+    # multi-minute backfill on every deploy. It renders as "unknown" on
+    # the line, so it is visible rather than silently treated as zero.
     remaining = _count_unrooted_rows()
+    incomplete = bool(totals["exhausted"] or failed or remaining)
+    remaining_display = "unknown" if remaining is None else remaining
+
+    if not incomplete:
+        # The sentinel is the ONLY thing preventing a retry, so it is
+        # withheld on any incomplete run: a partial fill that never
+        # retries is permanent silent under-reporting in the sitemap.
+        sentinel.touch()
 
     # ONE line per outcome, and the failure line deliberately never says
     # "complete". This used to log the failure and then fall through to
@@ -1017,7 +1036,7 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
             totals["seeded"],
             totals["propagated"],
             totals["cycles_broken"],
-            "unknown" if remaining is None else remaining,
+            remaining_display,
         )
         return
 
@@ -1028,7 +1047,7 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         totals["seeded"],
         totals["propagated"],
         totals["cycles_broken"],
-        "unknown" if remaining is None else remaining,
+        remaining_display,
     )
 
 
@@ -1174,7 +1193,6 @@ def _verify_thread_roots_async() -> threading.Thread:
         try:
             with SessionLocal() as session:
                 for inbox in session.execute(select(Inbox)).scalars():
-                    checked += 1
                     # Complete structural check first: it is the one that
                     # actually catches a split thread, because it looks at
                     # every row instead of a 200-row sample.
@@ -1205,6 +1223,13 @@ def _verify_thread_roots_async() -> threading.Thread:
                             inbox.name,
                             bad[0],
                         )
+                    # Incremented only after both checks have actually
+                    # run for this inbox, so the failure path's "after %d
+                    # inbox(es)" counts inboxes VERIFIED, not inboxes
+                    # reached. Counting at the top of the loop reported
+                    # "after 1 inbox(es)" when the very first one raised
+                    # and none had been verified at all.
+                    checked += 1
         except Exception:
             # No completion line on this path, deliberately: its absence
             # is the signal that the run did not finish, and emitting one
@@ -1222,7 +1247,7 @@ def _verify_thread_roots_async() -> threading.Thread:
         # "did not finish" should look like.
         logger.info(
             "broker: thread-roots verification complete in %.1fs "
-            "(inboxes=%d split=%d mismatched=%d)",
+            "(inboxes=%d split_inboxes=%d mismatched_inboxes=%d)",
             time.monotonic() - t0,
             checked,
             split_inboxes,

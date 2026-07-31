@@ -56,9 +56,15 @@ def _configure_logging(verbose: int) -> None:
         # exactly the long steps you are trying to time. It is also
         # opt-in, so the default `podman logs` view has nothing.
         #
-        # Kept byte-identical to `alembic.ini`'s `formatter_generic` so
-        # the migration's own output lines up with the broker's in one
-        # stream; they interleave on the same stderr during startup.
+        # This handler is what timestamps the BROKER's migration output
+        # too, which is not obvious: `_migrate_if_needed` builds its
+        # alembic `Config()` programmatically and deliberately never
+        # loads `alembic.ini` (loading it would run `fileConfig` and
+        # clear every root handler). So alembic's own
+        # `formatter_generic` is not installed in the broker container,
+        # and alembic's `Running upgrade ...` lines are formatted by
+        # THIS handler, via the root logger. `alembic.ini`'s formatter
+        # governs only direct `alembic` CLI invocations.
         handler.setFormatter(
             logging.Formatter(
                 "%(asctime)s %(levelname)s %(message)s",
