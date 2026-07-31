@@ -968,18 +968,10 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
 
     elapsed = time.monotonic() - t0
     incomplete = bool(totals["exhausted"] or failed)
-    if incomplete:
-        # Withhold the sentinel: it is the ONLY thing preventing this
-        # from being retried, and a partial fill that never retries is
-        # permanent silent under-reporting in the sitemap.
-        logger.error(
-            "broker: thread-roots backfill incomplete "
-            "(pass budget hit on %d inbox(es), errored on %d); rows remain "
-            "unrooted, re-run `mimir backfill-thread-roots`",
-            totals["exhausted"],
-            failed,
-        )
-    else:
+    if not incomplete:
+        # The sentinel is the ONLY thing preventing a retry, so it is
+        # withheld on any incomplete run: a partial fill that never
+        # retries is permanent silent under-reporting in the sitemap.
         sentinel.touch()
 
     # Re-sample OUTSIDE the success branch, deliberately. The fill
@@ -1005,18 +997,23 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     # per deploy, against a run measured in minutes.
     remaining = _count_unrooted_rows()
 
+    # ONE line per outcome, and the failure line deliberately never says
+    # "complete". This used to log the failure and then fall through to
+    # an unconditional "backfill complete in %.1fs", so a failed run
+    # emitted both and grepping for the ordinary success line returned a
+    # false positive on precisely the run that needed attention. The
+    # word "incomplete" is retained because README.md and
+    # deploy/README.md both name it as the string to grep for.
     if incomplete:
-        # Deliberately not the word "complete" on this path. It used to
-        # fall through to the success line unconditionally, so an
-        # incomplete run logged BOTH "backfill incomplete" (ERROR) and
-        # "backfill complete in 149.1s" (INFO). An operator grepping for
-        # the ordinary success line got a false positive on precisely the
-        # run that needed attention.
         logger.error(
-            "broker: thread-roots backfill STOPPED after %.1fs "
-            "(seeded=%d propagated=%d cycles=%d remaining=%s); sentinel "
-            "withheld, next start retries",
+            "broker: thread-roots backfill incomplete after %.1fs "
+            "(pass budget hit on %d inbox(es), errored on %d; "
+            "seeded=%d propagated=%d cycles=%d remaining=%s); sentinel "
+            "withheld so the next start retries, or re-run "
+            "`mimir backfill-thread-roots`",
             elapsed,
+            totals["exhausted"],
+            failed,
             totals["seeded"],
             totals["propagated"],
             totals["cycles_broken"],

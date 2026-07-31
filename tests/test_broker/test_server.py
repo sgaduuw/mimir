@@ -1163,8 +1163,18 @@ def test_incomplete_backfill_never_claims_complete(seeded_db, monkeypatch, tmp_p
     assert "backfill complete" not in joined, (
         f"an incomplete run claimed completion; log said:\n{joined}"
     )
-    assert "STOPPED" in joined, (
-        f"an incomplete run must say so on its own line; log said:\n{joined}"
+    # Both README.md and deploy/README.md tell the operator to grep for
+    # this exact string after a deploy, so it is a documented interface
+    # and renaming it silently breaks the post-deploy smoke check.
+    assert "backfill incomplete" in joined, (
+        f"the documented grep string is gone; log said:\n{joined}"
+    )
+    outcomes = [
+        r for r in records if "backfill complete" in r or "backfill incomplete" in r
+    ]
+    assert len(outcomes) == 1, (
+        "one outcome should produce exactly one line; an earlier draft "
+        f"emitted a redundant second error, log said:\n{joined}"
     )
     assert not (sock_dir / ".thread_roots_backfilled").exists()
 
