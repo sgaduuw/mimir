@@ -1194,6 +1194,18 @@ def test_backfill_completion_line_reports_rows_still_unrooted(
 
     monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda full=False: None)
 
+    # The seeded corpus has no unrooted rows, so "remaining=0" is true
+    # whether or not the count was ever taken: hardcoding 0 in the log
+    # call passes this test on content alone. Recording the call is what
+    # makes the assertion about the CODE rather than about the fixture.
+    calls: list[int] = []
+
+    def _counted():
+        calls.append(1)
+        return 0
+
+    monkeypatch.setattr(server, "_count_unrooted_rows", _counted)
+
     sock_dir = tmp_path / "done"
     sock_dir.mkdir()
     caplog.set_level(logging.INFO, logger="mimir.broker.server")
@@ -1203,7 +1215,11 @@ def test_backfill_completion_line_reports_rows_still_unrooted(
     records = [r.getMessage() for r in caplog.records]
     done = [r for r in records if "backfill complete" in r]
     assert done, f"no completion line at all; got:\n{records}"
-    assert "remaining=0" in done[0], (
+    assert calls, (
+        "the completion line reported a remaining count without ever "
+        "taking one; the number is a constant, not an assertion"
+    )
+    assert re.search(r"\bremaining=0\b", done[0]), (
         "the completion line must ASSERT the outcome, not leave it to be "
         f"inferred from the per-run counters; got: {done[0]}"
     )
@@ -1351,7 +1367,7 @@ def test_backfill_that_leaves_rows_unrooted_is_not_called_complete(
     assert "backfill complete" not in joined, (
         f"rows are still unrooted and the run claimed completion:\n{joined}"
     )
-    assert "backfill incomplete" in joined and "remaining=5" in joined, (
+    assert "backfill incomplete" in joined and re.search(r"\bremaining=5\b", joined), (
         f"the outcome must name the rows it left behind:\n{joined}"
     )
     assert not (sock_dir / ".thread_roots_backfilled").exists(), (

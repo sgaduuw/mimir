@@ -1002,18 +1002,31 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     # one level deeper. Found by the pre-PR whole-diff review.
     #
     # `None` (the count itself failed) deliberately does NOT mark the run
-    # incomplete: the run's own signals say it succeeded, and withholding
-    # the sentinel on a transient count failure would re-pay the whole
-    # multi-minute backfill on every deploy. It renders as "unknown" on
-    # the line, so it is visible rather than silently treated as zero.
+    # incomplete: the run's own signals say it succeeded, so a transient
+    # count failure should not date-stamp it as dirty. Cheap either way,
+    # and the earlier version of this comment overstated the stake: a
+    # re-run against an already-filled corpus is an index seek per
+    # inbox, seconds, not the multi-minute first fill. It renders as
+    # "unknown" on the line, so it is visible rather than silently
+    # treated as a reassuring zero.
     remaining = _count_unrooted_rows()
     incomplete = bool(totals["exhausted"] or failed or remaining)
     remaining_display = "unknown" if remaining is None else remaining
 
     if not incomplete:
-        # The sentinel is the ONLY thing preventing a retry, so it is
-        # withheld on any incomplete run: a partial fill that never
-        # retries is permanent silent under-reporting in the sitemap.
+        # NOT touched on an incomplete run. Note what that does and does
+        # not buy, because an earlier version of this comment claimed
+        # the sentinel is "the ONLY thing preventing a retry" and that
+        # is false: the gate above is `sentinel.exists() and not
+        # _has_unrooted_rows()`, so a run is retried whenever rows are
+        # unrooted, sentinel or no sentinel. Nothing here ever unlinks
+        # it either, so on any deploy after the first success the file
+        # is already present and withholding it withholds nothing.
+        #
+        # It still earns the conditional: the sentinel's mtime is the
+        # operator-visible record of the last CLEAN fill, and refreshing
+        # it on a dirty run would date-stamp a success that did not
+        # happen.
         sentinel.touch()
 
     # ONE line per outcome, and the failure line deliberately never says
@@ -1027,9 +1040,9 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
         logger.error(
             "broker: thread-roots backfill incomplete after %.1fs "
             "(pass budget hit on %d inbox(es), errored on %d; "
-            "seeded=%d propagated=%d cycles=%d remaining=%s); sentinel "
-            "withheld so the next start retries, or re-run "
-            "`mimir backfill-thread-roots`",
+            "seeded=%d propagated=%d cycles=%d remaining=%s); the next "
+            "start retries automatically while any row is unrooted, or "
+            "re-run `mimir backfill-thread-roots`",
             elapsed,
             totals["exhausted"],
             failed,

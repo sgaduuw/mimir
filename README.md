@@ -1012,10 +1012,17 @@ conversation without re-deriving the root on every read. Ingest,
 
 **Operators do not normally need to run this.** The broker fills the
 column itself at startup, before it opens its socket and therefore
-before the web tier is allowed to serve, gated on a
-`/data/.thread_roots_backfilled` sentinel. A run that cannot complete
-withholds that sentinel so the next restart retries, and logs
-`backfill incomplete`, which is the line to grep for after a deploy.
+before the web tier is allowed to serve. It re-runs on any start where
+rows are still unrooted, so an interrupted fill resumes by itself; the
+`/data/.thread_roots_backfilled` sentinel records the last clean run
+rather than being what drives the retry, and is not refreshed by a run
+that left rows behind.
+
+A run that cannot finish logs `backfill incomplete`, which is the line
+to grep for after a deploy. A clean one logs `backfill complete` with
+`remaining=0`; that count is the assertion worth reading, since the
+other counters are per-run and on a resumed fill describe only the
+remainder.
 
 ```sh
 uv run mimir backfill-thread-roots            # fill rows that predate the column
