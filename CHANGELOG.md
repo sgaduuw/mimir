@@ -9,6 +9,45 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
+## [3.7.1] - 2026-08-01
+
+### Fixed
+
+- Broker log lines now carry a timestamp, including the migration
+  output the broker emits on startup. This is what an operator watches
+  during a deploy, where one migration can run for well over a minute
+  and the thread-root backfill for several, and without a timestamp per
+  line there is no way to tell which step is running or whether
+  anything is progressing at all. `podman logs --timestamps` is not a
+  substitute: it records when the runtime captured the line rather than
+  when the event happened, and the skew is worst across exactly the
+  long steps worth timing. Separately, `alembic.ini` declared a date
+  format its format string never referenced, so direct `alembic` CLI
+  runs also logged untimed; that is fixed too, though it is a different
+  surface from the broker's (the broker builds its alembic config
+  programmatically and never loads that file).
+- The startup thread-root backfill no longer reports success when it
+  failed. An incomplete run logged its error and then fell through to
+  an unconditional "backfill complete" line, so it emitted both, and
+  grepping for the ordinary success line returned a false positive on
+  precisely the run that needed attention. The outcome is now decided
+  by whether rows were actually left unrooted, rather than only by
+  whether a pass budget was hit or an inbox raised: a run could finish
+  with neither of those and still leave rows behind, and it reported
+  itself complete.
+- The backfill's completion line now reports how many rows remain
+  unrooted. Its other counters are per-run, and because the backfill
+  only touches rows it has not filled yet, a resumed run reports the
+  remainder alone, which reads like a partial fill and is not one.
+- Thread-root verification now announces that it started and states its
+  result, including when that result is zero. It previously logged only
+  on failure, so a clean sweep, a sweep still in progress, and a sweep
+  killed by a restart were indistinguishable, and confirming the column
+  was still correct meant running the check by hand against production.
+  It stays silent when it dies partway through, where the absence of a
+  completion line is the accurate signal
+  ([#560](https://github.com/sgaduuw/mimir/issues/560)).
+
 ## [3.7.0] - 2026-07-31
 
 ### Added
@@ -47,8 +86,9 @@ changes, not internal refactors. Categories: **Added**,
   ceilings apply and the protocol's is not the tighter one: sitemaps.org
   caps a urlset at 50,000, but a page slice is passed whole to three
   queries as an expanding `IN` list and SQLite's bind-parameter limit is
-  32,766. On this corpus one bucket (`git` 2016-06, 40,429 thread roots)
-  exceeds the width and pages. The flat
+  32,766. On this corpus one bucket (`git` 2016-06, 89,679 thread
+  roots, measured against production 2026-07-31) exceeds the width and
+  pages, into five pages. The flat
   `/<inbox>/sitemap.xml` stays as the recent-activity view, so no URL
   crawlers already hold stops resolving.
 - Each message now records its thread's root per inbox

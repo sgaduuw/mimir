@@ -43,12 +43,22 @@ SITEMAP_RECENT_PER_INBOX = 5000
 #      the slice width IS a bound-parameter count.
 #
 # This was 45,000, which satisfies (1) and breaches (2). `git` 2016-06
-# holds 40,429 roots, so that month's sitemap raised `too many SQL
-# variables` and returned 500 on every request, while `/sitemap.xml`
+# is the widest bucket on this corpus and raised `too many SQL
+# variables`, returning 500 on every request while `/sitemap.xml`
 # advertised it and nothing warmed it, leaving a crawler to find out.
 #
+# That bucket holds **89,679** roots, counted against production
+# 2026-07-31 (rows in inbox `git` where `thread_root_id = article_id`
+# and the root's own date falls in 2016-06, i.e. exactly what the month
+# sitemap emits; confirmed by summing its five served pages). An earlier
+# comment here said 40,429, understating it 2.2x. The conclusion is
+# unaffected and gets stronger, not weaker: 89,679 breaches the bind
+# limit far more decisively than 40,429 does. A historical month cannot
+# grow, so that was a mis-measurement rather than drift, which is the
+# reason it is worth correcting instead of refreshing.
+#
 # 20,000 sits under both with room to spare, and costs only that the
-# one oversized bucket pages three times instead of once. Correctness
+# one oversized bucket pages five times instead of once. Correctness
 # per page is unchanged: a page is still a fixed-width slice of a
 # snapshot, so it cannot exceed this number however fast the month
 # grows. (An earlier comment claimed the margin absorbed growth between
