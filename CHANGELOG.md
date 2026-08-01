@@ -9,7 +9,7 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
-## [Unreleased]
+## [3.7.1] - 2026-08-01
 
 ### Fixed
 
@@ -30,7 +30,11 @@ changes, not internal refactors. Categories: **Added**,
   failed. An incomplete run logged its error and then fell through to
   an unconditional "backfill complete" line, so it emitted both, and
   grepping for the ordinary success line returned a false positive on
-  precisely the run that needed attention.
+  precisely the run that needed attention. The outcome is now decided
+  by whether rows were actually left unrooted, rather than only by
+  whether a pass budget was hit or an inbox raised: a run could finish
+  with neither of those and still leave rows behind, and it reported
+  itself complete.
 - The backfill's completion line now reports how many rows remain
   unrooted. Its other counters are per-run, and because the backfill
   only touches rows it has not filled yet, a resumed run reports the
