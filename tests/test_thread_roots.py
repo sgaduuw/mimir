@@ -1601,3 +1601,113 @@ def test_reindex_from_scratch_fails_loudly_on_a_truncated_rebuild(
 
     assert result.exit_code != 0, result.output
     assert "pass budget" in result.output, result.output
+
+
+def test_verification_completion_line_counts_match_the_errors_it_logged(
+    client, tmp_path, caplog, monkeypatch
+):
+    """Pin each counter to the errors it claims to summarise.
+
+    Nothing tied either label to its value: swapping the two arguments
+    in the log call passed the entire suite. Both read 0 on a clean
+    corpus, which is every other test's corpus, so the labels could be
+    wrong in production and no test would care.
+
+    Run ASYMMETRICALLY, in both directions, which is the whole point. A
+    corrupted root trips BOTH detectors, giving split=1 mismatched=1,
+    and against that a swap is undetectable: the first version of this
+    test asserted the counts and still passed the swap mutant. Each
+    direction here suppresses one detector so the two counts differ.
+    """
+    import logging
+    import re
+    import threading
+
+    from sqlalchemy import update
+
+    import mimir.thread_roots
+    from mimir.broker.server import _verify_thread_roots_async
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("wm1@x", None), ("wm2@x", "wm1@x"), ("wm3@x", "wm2@x")]
+    )
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.article_id == seeded["wm2@x"][0],
+            )
+            .values(thread_root_id=seeded["wm3@x"][0])
+        )
+        s.commit()
+
+    def _counts_after_run() -> tuple[int, int]:
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="mimir.broker.server"):
+            _verify_thread_roots_async().join(timeout=30)
+            for t in threading.enumerate():
+                if t.name == "thread-roots-verify":
+                    t.join(timeout=30)
+        messages = [r.getMessage() for r in caplog.records]
+        done = [m for m in messages if "verification complete" in m]
+        assert done, f"no completion line; got:\n{messages}"
+        return (
+            int(re.search(r"\bsplit_inboxes=(\d+)", done[0]).group(1)),
+            int(re.search(r"\bmismatched_inboxes=(\d+)", done[0]).group(1)),
+        )
+
+    # Suppress the coherence check: only the sampled verifier may fire.
+    monkeypatch.setattr(mimir.thread_roots, "find_incoherent_roots", lambda *a, **k: [])
+    split, mismatched = _counts_after_run()
+    assert (split, mismatched) == (0, 1), (
+        "with splits suppressed the line must read split_inboxes=0 and "
+        f"mismatched_inboxes=1; got split={split} mismatched={mismatched}"
+    )
+
+    # And the mirror image: only the coherence check may fire.
+    monkeypatch.undo()
+    monkeypatch.setattr(mimir.thread_roots, "verify_thread_roots", lambda *a, **k: [])
+    split, mismatched = _counts_after_run()
+    assert (split, mismatched) == (1, 0), (
+        "with mismatches suppressed the line must read split_inboxes=1 "
+        f"and mismatched_inboxes=0; got split={split} mismatched={mismatched}"
+    )
+
+
+def test_verification_failure_line_counts_only_inboxes_it_verified(
+    client, tmp_path, caplog, monkeypatch
+):
+    """A first-inbox failure has verified nothing, and must say so.
+
+    The counter was incremented at the top of the loop, so an inbox that
+    raised was still counted as checked and the failure line read "after
+    1 inbox(es)" having verified none. Moving it shipped unguarded, and
+    a faithful revert passed the whole suite.
+    """
+    import logging
+    import threading
+
+    import mimir.thread_roots
+    from mimir.broker.server import _verify_thread_roots_async
+
+    seed_thread_shape(tmp_path, "alpha", [("xm1@x", None), ("xm2@x", "xm1@x")])
+
+    def _explode(*_a, **_kw):
+        raise RuntimeError("simulated failure on the very first inbox")
+
+    monkeypatch.setattr(mimir.thread_roots, "find_incoherent_roots", _explode)
+
+    with caplog.at_level(logging.INFO, logger="mimir.broker.server"):
+        _verify_thread_roots_async().join(timeout=30)
+        for t in threading.enumerate():
+            if t.name == "thread-roots-verify":
+                t.join(timeout=30)
+
+    messages = [r.getMessage() for r in caplog.records]
+    failed = [m for m in messages if "verification failed to run" in m]
+    assert failed, f"no failure line; got:\n{messages}"
+    assert "after 0 inbox(es)" in failed[0], (
+        f"counted an inbox that raised as verified; got: {failed[0]}"
+    )

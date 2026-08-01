@@ -43,7 +43,34 @@ def _configure_logging(verbose: int) -> None:
     root = logging.getLogger()
     if not root.handlers:
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+        # `%(asctime)s` is load-bearing on the container tiers, not
+        # decoration. The broker's startup does several multi-minute
+        # steps back to back (migration, bootstrap, ANALYZE, thread-root
+        # backfill), and without a timestamp per line an operator
+        # watching a deploy cannot tell which step is running, which one
+        # is slow, or whether anything is progressing at all.
+        #
+        # `podman logs --timestamps` is NOT a substitute: it stamps when
+        # the runtime CAPTURED the line, which for buffered stderr is
+        # not when the event happened, and the skew is worst across
+        # exactly the long steps you are trying to time. It is also
+        # opt-in, so the default `podman logs` view has nothing.
+        #
+        # This handler is what timestamps the BROKER's migration output
+        # too, which is not obvious: `_migrate_if_needed` builds its
+        # alembic `Config()` programmatically and deliberately never
+        # loads `alembic.ini` (loading it would run `fileConfig` and
+        # clear every root handler). So alembic's own
+        # `formatter_generic` is not installed in the broker container,
+        # and alembic's `Running upgrade ...` lines are formatted by
+        # THIS handler, via the root logger. `alembic.ini`'s formatter
+        # governs only direct `alembic` CLI invocations.
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
         root.addHandler(handler)
     root.setLevel(level)
 
