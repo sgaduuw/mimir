@@ -152,11 +152,11 @@ Two things to know when that window looks wrong. The socket is
 bound and listening the entire time (`UnixStreamServer` binds in
 its constructor), so a ping *connects* and then hangs until
 `accept()` starts: an overrun reads as a timeout, not as a
-refused connection. And if the thread-root backfill cannot
-finish it deliberately withholds its sentinel so the next
-restart retries, which means the cost recurs on every start.
-Watch the broker log for `backfill incomplete` rather than
-raising the budget.
+refused connection. And the thread-root backfill re-runs on any
+start where rows are still unrooted, so an interrupted fill
+resumes by itself and its cost recurs until it finishes. Watch
+the broker log for `backfill incomplete` rather than raising the
+budget; a clean run says `backfill complete` and `remaining=0`.
 
 **`compose.yaml` is not the production deploy.** Production runs
 podman quadlets managed from `ansible-eelco`, where the binding
