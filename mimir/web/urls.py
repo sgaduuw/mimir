@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, aliased
 from mimir.canonical import fallback_canonical_name
 from mimir.config import settings
 from mimir.models import Article, ArticleList, Inbox
+from mimir.threading import unmaterialised_roots, thread_page_of
 
 
 def _get_inbox_or_404(session: Session, name: str) -> Inbox:
@@ -218,12 +219,14 @@ def _advertised_urls_for(
     `mimir.web.routes.message` answers when it decides what a page
     claims as its own `<link rel="canonical">`:
 
-    - A *page* cedes its canonical to the thread view only when the
-      thread view actually CONTAINS it, so it also checks the message's
-      position against `thread_view_render_cap`. A reply past the cap is
-      linked, not inlined, so it keeps its own canonical.
-    - An *advertising* surface names the entry point for a
-      conversation, and does not need containment. It matches what the
+    - A *page* cedes its canonical to the thread PAGE that contains it.
+      Since 3.8.0 the view paginates, so every message is rendered
+      somewhere and the old "past the cap keeps its own canonical" rule
+      is gone.
+    - An *advertising* surface used not to need containment. It does
+      now, for the same reason: a reply lands on the LAST page, so
+      announcing page 1 named a URL that had not changed while the page
+      that grew went unannounced. It matches what the
       sitemap already does: list one URL per conversation and no
       individual replies at all.
 
@@ -254,7 +257,9 @@ def _advertised_urls_for(
     NULL falls back to its message URL, because without a root there is
     no thread URL to name. Less consolidated, never dangling.
 
-    Four queries regardless of batch size, all on indexed columns.
+    Four queries plus one `thread_page_of` COUNT per article, all
+    on indexed columns. It was batch-independent until 3.8.0 made the
+    advertised URL page-aware; see `indexnow.py` for the cost.
     """
     if not articles:
         return {}
@@ -338,6 +343,20 @@ def _advertised_urls_for(
         ).scalars()
     }
 
+    # Which roots the column cannot fully rank, batched per inbox
+    # rather than asked per article. A thread with unrooted members is
+    # rendered from the walk, so any page number derived from the
+    # column is too low for every message after the gap.
+    roots_by_inbox: dict[int, set[int]] = {}
+    for art_id, name in canonical_names.items():
+        ix_id = inbox_ids.get(name)
+        root = root_articles.get(consolidated.get(art_id))
+        if ix_id is not None and root is not None:
+            roots_by_inbox.setdefault(ix_id, set()).add(root.id)
+    unrankable_roots: set[int] = set()
+    for ix_id, roots in roots_by_inbox.items():
+        unrankable_roots |= unmaterialised_roots(session, ix_id, list(roots))
+
     out: dict[int, str] = {}
     for art_id, name in canonical_names.items():
         article = by_id.get(art_id)
@@ -345,7 +364,34 @@ def _advertised_urls_for(
             continue
         root = root_articles.get(consolidated.get(art_id))
         if root is not None and root.date is not None:
-            out[art_id] = base + _thread_view_url(root, name)
+            # The PAGE holding this message, not page 1. A new reply
+            # lands on the LAST page, so announcing the first one
+            # reported a URL that had not changed while the page that
+            # actually grew was never announced at all. Same helper the
+            # thread view and the message canonical use, so this cannot
+            # become a third opinion about where a message lives.
+            ix_id = inbox_ids.get(name)
+            if ix_id is not None and root.id in unrankable_roots:
+                # The thread has members the column cannot see, so any
+                # page number computed from it would be too low. Announce
+                # the message's own URL instead of a page that may not
+                # contain it: less consolidated, never dangling, which
+                # is this function's existing posture for the NULL-root
+                # case one branch down.
+                out[art_id] = base + _msg_url(article, name)
+                continue
+            path = _thread_view_url(root, name)
+            if ix_id is not None:
+                page_no = thread_page_of(
+                    session,
+                    ix_id,
+                    root.id,
+                    article,
+                    max(1, settings.thread_view_render_cap),
+                )
+                if page_no > 1:
+                    path += f"/{page_no}"
+            out[art_id] = base + path
         else:
             out[art_id] = base + _msg_url(article, name)
     return out

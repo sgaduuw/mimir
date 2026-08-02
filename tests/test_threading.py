@@ -837,3 +837,159 @@ def test_active_threads_recursive_cte_uses_date_index_no_full_scan(seeded_db):
         f"(ix_articles_date / ix_article_lists_inbox_id / PK); "
         f"a regression to no-index-at-all would surface here. plan:\n{plan}"
     )
+
+
+def test_thread_by_root_id_is_not_capped_by_max_depth(seeded_db):
+    """The indexed path returns the whole thread; the walk truncates.
+
+    `get_thread` stops at `MAX_DEPTH` (1000), so a thread deeper than
+    that silently renders short: no error, no warning, just a missing
+    tail. `thread_by_root_id` reads membership from
+    `article_lists.thread_root_id`, which has no notion of depth, so it
+    cannot truncate.
+
+    Production's deepest thread is 63 (measured 2026-08-02), so this is
+    latent rather than live. It is pinned because the difference was
+    found by accident while benchmarking, and because the obvious
+    "consistency" fix, reintroducing a depth cap here to match
+    `get_thread`, would reinstate a silent data-loss bug.
+
+    Rows are inserted directly: 1,200 real git commits would measure
+    dulwich, and the depth cap is a property of the query.
+    """
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import insert, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.threading import MAX_DEPTH, get_thread, thread_by_root_id
+
+    depth = MAX_DEPTH + 200
+    base_id = 800000
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        start = datetime(2026, 1, 1)
+        s.execute(
+            insert(Article),
+            [
+                {
+                    "id": base_id + i,
+                    "message_id": f"deep{i}@x",
+                    "thread_parent": None if i == 0 else f"deep{i - 1}@x",
+                    "subject": "deep",
+                    "author": "a@b.example",
+                    "date": start + timedelta(seconds=i),
+                    "subject_normalized": "deep",
+                }
+                for i in range(depth)
+            ],
+        )
+        s.execute(
+            insert(ArticleList),
+            [
+                {
+                    "article_id": base_id + i,
+                    "inbox_id": inbox.id,
+                    "epoch": "0.git",
+                    "commit_sha": f"{base_id + i:040x}",
+                    "thread_root_id": base_id,
+                }
+                for i in range(depth)
+            ],
+        )
+        s.commit()
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        indexed = thread_by_root_id(s, inbox, base_id)
+        walked = get_thread(s, inbox, "deep0@x")
+
+    assert len(indexed) == depth, (
+        f"indexed path returned {len(indexed)} of {depth}; it must not "
+        "acquire a depth cap"
+    )
+    assert len(walked) < depth, (
+        "get_thread no longer truncates at MAX_DEPTH, so this test's "
+        "premise is stale; re-check whether the cap still exists"
+    )
+    assert indexed[0].id == base_id, "root not first"
+
+
+def test_thread_ordering_places_dateless_messages_first_consistently(seeded_db):
+    """SQL and the Python sort key must agree about dateless rows.
+
+    `articles.date` is nullable and `thread_page_of` compares it in a
+    row-value predicate, where a NULL makes the whole comparison NULL
+    rather than true, so dateless rows were skipped in the rank while
+    the ORDER BY sorted them FIRST. Every message after one drifted a
+    page. Both sides now COALESCE to `_DATE_FLOOR`.
+
+    No test constructed a dateless article at all, so the entire
+    sentinel apparatus was unpinned.
+    """
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import insert, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.threading import thread_by_root_id, thread_page_of, thread_sort_key
+
+    base_id = 700000
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        start = datetime(2026, 3, 1)
+        rows = []
+        for i in range(8):
+            rows.append(
+                {
+                    "id": base_id + i,
+                    "message_id": f"dl{i}@x",
+                    "thread_parent": None if i == 0 else "dl0@x",
+                    "subject": "dateless",
+                    "author": "a@b.example",
+                    # Two dateless replies, deliberately not adjacent.
+                    "date": None if i in (2, 5) else start + timedelta(seconds=i),
+                    "subject_normalized": "dateless",
+                }
+            )
+        s.execute(insert(Article), rows)
+        s.execute(
+            insert(ArticleList),
+            [
+                {
+                    "article_id": base_id + i,
+                    "inbox_id": inbox.id,
+                    "epoch": "0.git",
+                    "commit_sha": f"{base_id + i:040x}",
+                    "thread_root_id": base_id,
+                }
+                for i in range(8)
+            ],
+        )
+        s.commit()
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        nodes = thread_by_root_id(s, inbox, base_id)
+        sql_order = [n.id for n in nodes]
+
+        # The Python key must reproduce the SQL order exactly; it is what
+        # the CTE fallback sorts by, and a disagreement puts a message on
+        # a page its canonical does not name.
+        assert [n.id for n in sorted(nodes, key=thread_sort_key(base_id))] == sql_order
+
+        # And the rank must agree with the position, for every message.
+        cap = 3
+        for position, node in enumerate(nodes):
+            article = s.get(Article, node.id)
+            expected_page = position // cap + 1
+            assert (
+                thread_page_of(s, inbox.id, base_id, article, cap) == expected_page
+            ), (
+                f"article {node.id} sits at position {position} "
+                f"(page {expected_page}) but ranks to page "
+                f"{thread_page_of(s, inbox.id, base_id, article, cap)}"
+            )

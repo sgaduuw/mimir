@@ -615,16 +615,23 @@ Routes:
   patch hunks. 24h cached, source emails are immutable in the
   mirror. Linked from each non-current entry in the patch page's
   Revisions fold (the `[diff vs current]` chip).
-- `GET /<inbox>/<YYYY>/<MM>/<root-id>/t`, whole-thread view: every
-  message in the conversation rendered inline on one page, newest
-  reply last, each linking to its own message page. Rendering is
-  capped at `THREAD_VIEW_RENDER_CAP` messages (default 50); past
-  that the remainder is listed as links rather than inlined.
-  Requesting `/t` on a reply 301s to its thread root, so a
-  conversation has exactly one URL per inbox. Message pages in a
-  multi-message thread carry a `<link rel="canonical">` pointing here;
-  messages past the cap and single-message threads keep their own
-  (this page would not contain them, or would be the poorer page). The
+- `GET /<inbox>/<YYYY>/<MM>/<root-id>/t` (and `/t/<page>`), the flat
+  whole-thread view: every message in the conversation rendered inline
+  in arrival order, each linking to its own message page. It is a FLAT
+  view, deliberately: the reply hierarchy is not drawn, and the
+  messages are ordered chronologically rather than depth-first.
+  `THREAD_VIEW_RENDER_CAP` messages per page (default 100), paginated
+  beyond that, so nothing is truncated at any cap. The next-page
+  control is a real link that HTMX upgrades to an in-place append, so
+  it works without JavaScript and stays a crawl path. A thread that
+  fits on one page shows no pagination furniture at all, which is
+  almost every thread. Requesting `/t` on a reply 301s to its thread
+  root, so a conversation has exactly one URL sequence per inbox.
+  Message pages in a multi-message thread carry a
+  `<link rel="canonical">` pointing at the PAGE that holds them;
+  single-message threads keep their own (the message page already is
+  the whole conversation, and is the richer document). Each page is
+  self-canonical and every page is listed in the sitemap. The
   view repeats the root's subsystem attribution, lifecycle badges and
   lifecycle prose so the canonical target is not thinner than the
   pages consolidating onto it. Thread views are self-canonical per

@@ -1518,3 +1518,99 @@ def test_sitemap_page_width_stays_under_the_sqlite_bind_limit():
             "passed as an expanding IN list and would raise 'too many SQL "
             "variables', returning 500 on a URL the sitemap index advertises"
         )
+
+
+def test_sitemap_lists_every_thread_page_and_each_one_resolves(
+    client, tmp_path, monkeypatch
+):
+    """Every advertised thread page exists, and is self-canonical.
+
+    Three separate claims have to agree here or the surface is
+    incoherent, and each has been wrong in this project before:
+
+    * the sitemap advertises a URL,
+    * that URL returns a page rather than a 404,
+    * and that page names ITSELF canonical.
+
+    A page absent from the sitemap would be reachable only by walking
+    the `next` chain, and since messages on it canonicalise TO it, they
+    would defer to a URL crawlers never fetch. A page advertised but
+    404ing is the emitter/acceptor split. And an advertised page whose
+    canonical points elsewhere spends crawl budget to be told it does
+    not count.
+
+    Comparison is by exact string, not "equivalent after
+    normalisation": that normalisation is the crawler's to do and it is
+    charged as a duplicate-URL signal.
+    """
+    import re as _re
+
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    # FIVE messages at cap 2, deliberately NOT an exact multiple: at 6
+    # the floor and the ceiling of 6/2 are both 3, so a page count using
+    # integer division instead of ceiling division advertises the right
+    # number by luck and the mutant survives. Five needs 3 pages and
+    # floor gives 2.
+    edges = [("p0@x", None)] + [(f"p{i}@x", "p0@x") for i in range(1, 5)]
+    seeded = seed_thread_shape(tmp_path, "alpha", edges)
+    root_id, root_url = seeded["p0@x"]
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    advertised = _re.findall(rf"<loc>[^<]*({_re.escape(root_url)}/t[^<]*)</loc>", xml)
+
+    assert len(advertised) == 3, (
+        f"expected 3 advertised pages for a 6-message thread at cap 2, got {advertised}"
+    )
+    assert advertised[0].endswith("/t"), "page 1 must be the bare /t"
+
+    for loc in advertised:
+        resp = client.get(loc)
+        assert resp.status_code == 200, (
+            f"sitemap advertises {loc}, which {resp.status_code}s"
+        )
+        canonical_match = _re.search(
+            r'<link rel="canonical" href="([^"]+)"', resp.get_data(as_text=True)
+        )
+        canonical = canonical_match.group(1) if canonical_match else None
+        assert canonical is not None and canonical.endswith(loc), (
+            f"{loc} is advertised but names {canonical} as canonical"
+        )
+
+    # And nothing beyond the end is advertised or served.
+    assert client.get(root_url + "/t/4").status_code == 404
+
+
+def test_single_page_threads_advertise_and_show_nothing_extra(
+    client, tmp_path, monkeypatch
+):
+    """A thread that fits on one page is indistinguishable from before.
+
+    That is 6,072,481 of 6,074,374 production threads at cap 200
+    (measured 2026-08-02), so it is the default case, and any
+    pagination furniture leaking into it would be visible on
+    essentially every thread page in the archive.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 50)
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    edges = [("q0@x", None), ("q1@x", "q0@x"), ("q2@x", "q1@x")]
+    seeded = seed_thread_shape(tmp_path, "alpha", edges)
+    _root_id, root_url = seeded["q0@x"]
+
+    html = client.get(root_url + "/t").get_data(as_text=True)
+    assert 'class="thread-more"' not in html, "pagination control on a single page"
+    assert '<link rel="next"' not in html
+    assert '<link rel="prev"' not in html
+    assert "page 1 of" not in html
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    assert f"{root_url}/t</loc>" in xml
+    assert f"{root_url}/t/2" not in xml, "advertised a page that does not exist"

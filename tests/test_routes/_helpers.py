@@ -630,3 +630,137 @@ def warm_global_subsystem_activity():
 
     with SessionLocal() as s:
         return most_active_subsystems_global(s, days=7)
+
+
+# --- Thread fixture matrix -------------------------------------------------
+#
+# Three consecutive adversarial rounds on the thread-view pagination work
+# found the same thing: every guard that missed a bug missed it because
+# its fixture held an axis fixed. Not the same axis each time, which is
+# why fixing them one at a time did not converge. The axes, and what each
+# one hid:
+#
+#   inbox scope   -- no fixture cross-posted, so dropping the `inbox_id`
+#                    filter from three separate queries was invisible.
+#   arrival time  -- `seed_thread_shape` stamps `commit_time + i`, so
+#                    every message was seconds apart and `max()` vs
+#                    `min()` on last-activity read the same.
+#   author        -- every message was `a@b.example`, so a distinct-author
+#                    count could not be wrong.
+#   size vs cap   -- fixtures were exact multiples, where floor == ceil,
+#                    so a ceiling-division bug survived.
+#   which rows are materialised -- guards exercised only the fast path,
+#                    or nulled a member in a position where the resulting
+#                    off-by-one happened not to cross a page boundary.
+#
+# `build_thread` takes all five. Prefer it over `seed_thread_shape` for
+# anything asserting page membership, ordering, counts or canonicals.
+
+THREAD_SHAPES = {
+    # Each reply answers the root: cheap to walk, wide. Greg KH's
+    # `[PATCH 0000/2077]` series is this.
+    "fan_out": lambda n: [("m0", None)] + [(f"m{i}", "m0") for i in range(1, n)],
+    # Each reply answers the previous one.
+    "chain": lambda n: [("m0", None)] + [(f"m{i}", f"m{i - 1}") for i in range(1, n)],
+    # Branches at several levels; syzbot's 12,342-message thread is this
+    # (depth 63, ~1.04 children per parent).
+    "bushy": lambda n: (
+        [("m0", None)] + [(f"m{i}", f"m{max(0, (i - 1) // 2)}") for i in range(1, n)]
+    ),
+    # The root names a parent this inbox does not carry.
+    "off_list": lambda n: (
+        [("m0", "absent@elsewhere")] + [(f"m{i}", f"m{i - 1}") for i in range(1, n)]
+    ),
+}
+
+
+def build_thread(
+    tmp_path,
+    inbox_name,
+    *,
+    shape="chain",
+    size=6,
+    dates="dense",
+    authors=1,
+    cross_post_to=None,
+    unroot=(),
+    epoch="0.git",
+):
+    """Seed one thread, with every axis a guard has been blind on.
+
+    `shape`   one of THREAD_SHAPES.
+    `size`    message count including the root.
+    `dates`   "dense" (seconds apart, the old default), "spread" (months
+              apart, so max != min and relative-time strings differ), or
+              "dateless" (two non-adjacent replies get a NULL date).
+    `authors` how many distinct addresses to cycle through. Display names
+              are varied per message so a tally that counts raw author
+              STRINGS instead of parsed addresses over-counts.
+    `cross_post_to` a second inbox name; the same articles are linked
+              there too, WITH `thread_root_id` populated, which is what
+              makes an inbox-scoping bug visible.
+    `unroot`  message indices whose `thread_root_id` is set NULL after
+              ingest. Index 0 is the root, which is its own case: with no
+              rooted row left, anything detecting unrooted rows by looking
+              at their parents finds nothing.
+
+    Returns `{message_id: (article_id, url)}` like `seed_thread_shape`.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    edges = THREAD_SHAPES[shape](size)
+    seeded = seed_thread_shape(tmp_path, inbox_name, edges, epoch=epoch)
+    ids = [seeded[mid][0] for mid, _ in edges]
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+
+        if dates != "dense":
+            base = s.get(Article, ids[0]).date
+            for i, art_id in enumerate(ids):
+                art = s.get(Article, art_id)
+                if dates == "spread":
+                    art.date = base + timedelta(days=30 * i)
+                elif dates == "dateless" and i in (2, size - 2) and i != 0:
+                    art.date = None
+
+        if authors > 1:
+            for i, art_id in enumerate(ids):
+                art = s.get(Article, art_id)
+                # Display name varies per message, address cycles: a tally
+                # over raw strings sees `size` people, over parsed
+                # addresses it sees `authors`.
+                art.author = f"Person {i} <p{i % authors}@example.com>"
+
+        if cross_post_to:
+            other = s.execute(
+                select(Inbox).where(Inbox.name == cross_post_to)
+            ).scalar_one()
+            for art_id in ids:
+                s.add(
+                    ArticleList(
+                        article_id=art_id,
+                        inbox_id=other.id,
+                        epoch=epoch,
+                        commit_sha=f"{art_id:040x}",
+                        thread_root_id=ids[0],
+                    )
+                )
+
+        for i in unroot:
+            s.execute(
+                update(ArticleList)
+                .where(
+                    ArticleList.inbox_id == inbox.id,
+                    ArticleList.article_id == ids[i],
+                )
+                .values(thread_root_id=None)
+            )
+        s.commit()
+
+    return seeded

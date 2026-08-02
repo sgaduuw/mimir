@@ -584,22 +584,51 @@ class Settings(BaseSettings):
     # Override via SUBSYSTEM_TRIAGE_MAX_AGE_DAYS.
     subsystem_triage_max_age_days: int = 180
 
-    # Hard upper bound on messages rendered inline by the whole-thread
-    # view (`/<inbox>/<YYYY>/<MM>/<root_id>/t`). Each rendered message
-    # is a git blob fetch plus a parse (~2 ms warm per CONTEXT.md) and
-    # the page is not server-cached, so the cap directly sets the
-    # worst-case cost of a request. At 200 that is ~400 ms against a
-    # 2-worker sync gunicorn tier, and the sitemap now points crawlers
-    # straight at these URLs (MEMORY.md 2026-05-29 records one crawler
-    # sustaining 195 req/min while ignoring Crawl-delay), so two
-    # concurrent worst-case renders occupy the whole tier. 50 keeps
-    # that under ~100 ms while still inlining the overwhelming
-    # majority of real threads; longer ones list their tail as links,
-    # and those messages keep their own canonical since the page does
-    # not contain them. Raise once the render is cached or the
-    # per-message Repo open is hoisted (see the tracking issue).
+    # Messages rendered per PAGE of the whole-thread view
+    # (`/<inbox>/<YYYY>/<MM>/<root_id>/t`, and `/t/<page>` beyond the
+    # first). Since 3.8.0 this is a page-weight budget and nothing else:
+    # the view paginates, so no message is dropped at any value, which
+    # is what it used to control.
+    #
+    # It is a genuine trade with no optimum, and both sides are
+    # measured against production 2026-08-02.
+    #
+    # Raising it advertises FEWER urls. Every page is sitemapped
+    # (a page absent from the sitemap is reachable only down the `next`
+    # chain, while messages on it canonicalise TO it), so the cap sets
+    # how many pagination urls exist across 6,074,551 threads:
+    #
+    #     cap  50 -> +60,653 entries   (+188% on the 32,229 indexed)
+    #     cap 100 -> +13,013 entries   (+40%)
+    #     cap 200 ->  +2,759 entries   (+8.6%)
+    #
+    # Lowering it bounds the WORST page. Per-message weight varies 10x
+    # by inbox: ~11 KB on linux-fsdevel, ~101 KB on syzbot, whose CI
+    # reports carry kernel logs and reproducers. So the same cap is a
+    # very different page depending where you are:
+    #
+    #     cap  50 -> ~0.6 MB typical,  ~5 MB on syzbot
+    #     cap 100 -> ~1.2 MB typical, ~10 MB on syzbot
+    #     cap 200 -> ~2.4 MB typical, ~20 MB on syzbot
+    #
+    # 100 because 50's crawl-budget cost is the larger and more
+    # corpus-wide harm (60k urls of pagination against 32k of content),
+    # while 200's cost is confined to the handful of inboxes with
+    # enormous messages. A second, byte-based budget would dominate
+    # both and is deliberately NOT added: one knob set conservatively
+    # gets most of the benefit, and two interacting caps is more
+    # machinery than this has earned. Revisit if a real page misbehaves.
+    #
+    # Blob cost still applies per rendered message (~10 ms each, one
+    # `read_messages` bulk fetch per page) but is no longer the binding
+    # constraint it was written up as: until 3.8.0 this comment reasoned
+    # entirely about blob fetches while 93% of the response was the
+    # recursive thread walk, which no longer happens. Its old release
+    # condition ("raise once the per-message Repo open is hoisted") was
+    # satisfied by 3.7.0 and went unread.
+    #
     # Override via THREAD_VIEW_RENDER_CAP.
-    thread_view_render_cap: int = 50
+    thread_view_render_cap: int = 100
 
     # Hard upper bound on age of "related patches" surfaced on a
     # message page (1.36.3). The `recent_patches_touching` helper

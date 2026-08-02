@@ -9,6 +9,63 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
+## [Unreleased]
+
+### Changed
+
+- The whole-thread view is paginated, at
+  `/<inbox>/<YYYY>/<MM>/<root-id>/t/<page>`, with page 1 staying at the
+  bare `/t` so no existing URL moves. It renders
+  `THREAD_VIEW_RENDER_CAP` messages per page (default raised from 50 to
+  100) and nothing is truncated at any value, which is what the cap
+  used to control; it is now purely a page-weight budget. The
+  "N further messages" list it replaces is gone. The next-page control
+  is an ordinary link that HTMX upgrades into an in-place append, so a
+  conversation reads without page reloads while still working without
+  JavaScript and remaining a path a crawler can follow.
+- Messages in the thread view are ordered by arrival rather than
+  depth-first through the reply tree. The page never drew the
+  hierarchy, and reconstructing that order required walking the whole
+  reply graph, which is the cost this release removes. A flat view in
+  arrival order is what a mailbox is.
+- A message in a multi-message thread canonicalises to the thread page
+  that contains it, rather than only when it fell inside the render
+  cap. Each page is self-canonical and every page is listed in the
+  sitemap.
+- The render cap default is 100. The trade is measured: at 50 the
+  sitemap would carry 60,653 extra pagination URLs against 32,229
+  indexed pages, while at 200 a page in an inbox whose messages are
+  large (syzbot's CI reports run about 101 KB each against 11 KB
+  elsewhere) would approach 20 MB.
+
+### Fixed
+
+- The whole-thread view no longer rebuilds an entire thread to render
+  one page of it. It reconstructed membership by walking the reply
+  graph, then discarded everything past the render cap, so every
+  message in a conversation was visited to show fifty. On the largest
+  thread in the production archive (12,342 messages) that walk was 14.4
+  seconds of a 15.5 second response, and it was paid even when the
+  answer was a 304, because the validator is derived from the thread's
+  shape. Membership now comes from the per-inbox thread-root column
+  added in 3.7.0: 41 ms against 10.7 seconds on a locally reproduced
+  thread of the same size and shape.
+- A thread deeper than 1000 replies no longer renders short. The
+  recursive walk stopped at that depth and silently returned a partial
+  conversation. The deepest thread in production is 63, so this was
+  latent.
+- Structured data on the thread view nests each reply under the message
+  it answers. Every reply was previously attached directly to the
+  thread root, which told search engines that a reply to a reply was an
+  answer to the original post.
+- A thread whose root-pointer column is incomplete for any of its
+  messages is rendered in full from the recursive walk and makes no
+  page claims at all: its messages keep their own canonical, and its
+  root is listed in the sitemap as a message URL. Previously the parts
+  of the system that count and rank messages could disagree with the
+  part that renders them, which put a message's canonical on a page
+  that did not contain it.
+
 ## [3.7.1] - 2026-08-01
 
 ### Fixed

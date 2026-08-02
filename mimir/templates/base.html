@@ -32,6 +32,11 @@
         href="/{{ current_inbox }}/feed.atom">
   {% endif %}
   {% block extra_atom_feeds %}{% endblock %}
+  {# Sequence links for paginated surfaces. Emitted for Bing, which
+     still consumes them; Google dropped rel=next/prev as an indexing
+     signal in 2019, so these consolidate nothing there. Absent
+     entirely on a single-page surface, which is almost every thread. #}
+  {% block seq_links %}{% endblock %}
   {# Thread-fold controller. Synchronous (no defer/async) so the FOUC-free
      block at the top of the file runs before <body> parses, sets
      data-thread-fold on <html> from any localStorage pin + context default,
