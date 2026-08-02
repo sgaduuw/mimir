@@ -398,6 +398,13 @@ def thread_view(
         # `DiscussionForumPosting` rooted at a post the page does not
         # carry would misrepresent it. Structured data is optional; a
         # wrong one is not better than none.
+        #
+        # This also drops the `BreadcrumbList` from pages 2+, since it
+        # rides in the same graph. Deliberate, not an oversight: those
+        # pages are already linked, self-canonical and sitemapped, so
+        # breadcrumbs would add a second emission path for a secondary
+        # signal on a page whose place in the hierarchy is already
+        # stated three other ways.
         page_json_ld = None
         if page == 1:
             page_json_ld = _json_ld_thread(

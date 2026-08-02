@@ -620,7 +620,7 @@ Routes:
   in arrival order, each linking to its own message page. It is a FLAT
   view, deliberately: the reply hierarchy is not drawn, and the
   messages are ordered chronologically rather than depth-first.
-  `THREAD_VIEW_RENDER_CAP` messages per page (default 100), paginated
+  `THREAD_VIEW_RENDER_CAP` messages per page (default 75), paginated
   beyond that, so nothing is truncated at any cap. The next-page
   control is a real link that HTMX upgrades to an in-place append, so
   it works without JavaScript and stays a crawl path. A thread that
