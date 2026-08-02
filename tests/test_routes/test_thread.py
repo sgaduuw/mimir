@@ -10,6 +10,7 @@ from tests.test_routes._helpers import (
     _ingest_one_article,
     _json_ld_blocks,
     _seed_three_message_thread,
+    seed_thread_shape,
 )
 
 
@@ -48,27 +49,55 @@ def test_thread_view_on_a_reply_redirects_to_the_root(client, tmp_path):
     assert r.headers["Location"].endswith(root_url + "/t")
 
 
-def test_thread_view_json_ld_carries_replies_as_comments(client, tmp_path):
-    """The forum-thread shape: one DiscussionForumPosting for the root
-    with every reply as a `comment`. This is the rich-result signal a
-    single message page structurally cannot emit, and the reason the
-    thread view is the indexed surface.
+def test_thread_view_json_ld_nests_replies_under_their_parent(client, tmp_path):
+    """The forum-thread shape, with the reply structure intact.
 
-    `interactionStatistic` here counts the WHOLE thread, unlike the
+    One `DiscussionForumPosting` for the root, and each reply attached
+    to the message it actually answers. Until 3.8.0 every reply was
+    attached directly to the root, which asserts to crawlers that a
+    reply-to-a-reply answers the original post: a false structural
+    claim about the one document every message in the thread
+    canonicalises to.
+
+    The fixture is a three-deep CHAIN on purpose. A two-level fixture
+    passes the flat implementation trivially, which is how the
+    flattening shipped, so the assertion that matters is the negative
+    one: the grandchild must NOT be a top-level comment.
+
+    `interactionStatistic` still counts the WHOLE thread, unlike the
     message page (where the entity is one message and the thread total
-    would be a false claim)."""
+    would be a false claim).
+    """
     seeded = _seed_three_message_thread(tmp_path, "alpha")
     _, root_url, _ = seeded["root"]
+    reply_id, reply_url, _ = seeded["reply"]
+    nested_id, nested_url, _ = seeded["nested"]
 
     blocks = _json_ld_blocks(client.get(root_url + "/t").data.decode())
     posting = next(
         g for g in blocks[0]["@graph"] if g["@type"] == "DiscussionForumPosting"
     )
     assert posting["@id"].endswith(root_url + "/t")
-    comments = posting["comment"]
-    assert len(comments) == 2
-    assert all(c["@type"] == "Comment" for c in comments)
     assert posting["interactionStatistic"]["userInteractionCount"] == 2
+
+    top = posting["comment"]
+    assert len(top) == 1, (
+        f"the grandchild was attached to the root; top-level comments: "
+        f"{[c['@id'] for c in top]}"
+    )
+    assert top[0]["@type"] == "Comment"
+    assert top[0]["@id"].endswith(reply_url)
+
+    nested = top[0].get("comment")
+    assert nested and len(nested) == 1, (
+        "the reply's own reply is missing from the structure entirely"
+    )
+    assert nested[0]["@id"].endswith(nested_url)
+
+    # The negative, stated separately because it is the whole point.
+    assert not any(c["@id"].endswith(nested_url) for c in top), (
+        "a reply-to-a-reply is still claimed as a reply to the root"
+    )
 
 
 def test_message_pages_canonicalise_to_the_thread_view(client, tmp_path):
@@ -142,19 +171,15 @@ def test_thread_view_survives_a_message_whose_blob_is_missing(client, tmp_path):
     assert html.count('class="thread-message"') == 3
 
 
-def test_messages_past_the_render_cap_keep_their_own_canonical(
+def test_messages_past_the_cap_canonicalise_to_the_page_holding_them(
     client,
     tmp_path,
     monkeypatch,
 ):
-    """The consolidation is conditional on containment. Past
-    `thread_view_render_cap` the thread view only LINKS to a message
-    rather than rendering it, so a canonical pointing there would claim
-    the page contains content it doesn't. Those messages stay
-    self-canonical.
+    """The linear case, and that the overflow list is gone.
 
-    Cap forced to 2 against a 3-message thread, so the third message is
-    the overflow case.
+    Split from the bushy test above because `seed_thread_shape` and
+    `_seed_three_message_thread` both write `0.git` into `tmp_path`.
     """
     from mimir.config import settings
 
@@ -165,24 +190,30 @@ def test_messages_past_the_render_cap_keep_their_own_canonical(
     _, reply_url, _ = seeded["reply"]
     _, nested_url, _ = seeded["nested"]
 
-    # Inside the cap: consolidates onto the thread view.
+    # Page 1 holds the first two.
     assert _canonical_of(client.get(root_url).get_data(as_text=True)).endswith(
         root_url + "/t"
     )
     assert _canonical_of(client.get(reply_url).get_data(as_text=True)).endswith(
         root_url + "/t"
     )
-    # Past the cap: keeps its own URL, because the thread view does not
-    # contain it.
+    # The third is on page 2, and says so.
     assert _canonical_of(client.get(nested_url).get_data(as_text=True)).endswith(
-        nested_url
+        root_url + "/t/2"
     )
 
-    # ...and the thread view links to it instead of inlining it.
-    html = client.get(root_url + "/t").get_data(as_text=True)
-    assert html.count('class="thread-message"') == 2
-    assert "further message" in html
-    assert nested_url in html
+    # And that page really does contain it: a canonical naming a page
+    # that does not hold the message is the failure this asserts away.
+    page1 = client.get(root_url + "/t").get_data(as_text=True)
+    page2 = client.get(root_url + "/t/2").get_data(as_text=True)
+    assert page1.count('class="thread-message"') == 2
+    assert page2.count('class="thread-message"') == 1
+    nested_id = int(nested_url.rsplit("/", 1)[1])
+    assert f'id="m{nested_id}"' in page2, (
+        "message canonicalises to page 2 but page 2 does not render it"
+    )
+    # The overflow list it replaced is gone.
+    assert "further message" not in page1
 
 
 def _cross_post(seeded, roles, *, canonical_for=None):
@@ -993,3 +1024,128 @@ def test_single_message_threads_are_not_linked_to_their_thread_view(client, tmp_
     html = client.get("/alpha/").get_data(as_text=True)
     assert url in html, "the message itself should still be listed"
     assert f'<a href="{url}/t"' not in html, "linked /t for a thread with no replies"
+
+
+@pytest.mark.parametrize(
+    "path_suffix,expected",
+    [("/t/0", 404), ("/t/99999999999999999999", 404), ("/t/10001", 404)],
+)
+def test_out_of_range_pages_are_rejected(client, tmp_path, path_suffix, expected):
+    """Page bounds are validated before the number reaches SQL.
+
+    An astronomically large page became an OFFSET and 500'd the month
+    sitemap on a public URL once; this route copied the bound and
+    nothing pinned it, so a mutation deleting the check survived the
+    whole suite.
+    """
+    seeded = _seed_three_message_thread(tmp_path, "alpha")
+    _, root_url, _ = seeded["root"]
+    assert client.get(root_url + path_suffix).status_code == expected
+
+
+def test_explicit_page_one_redirects_to_the_bare_url(client, tmp_path):
+    """`/t/1` was a second crawlable URL for page 1.
+
+    Werkzeug's int converter is `\\d+` then `int()`, so `/t/01`,
+    `/t/001` and so on are an unbounded family of duplicates. The
+    redirect target is built by hand because `url_for` renders the
+    month unpadded, which would swap one duplicate spelling for
+    another.
+    """
+    seeded = _seed_three_message_thread(tmp_path, "alpha")
+    _, root_url, _ = seeded["root"]
+
+    for suffix in ("/t/1", "/t/01"):
+        resp = client.get(root_url + suffix)
+        assert resp.status_code == 301, f"{suffix} did not redirect"
+        assert resp.headers["Location"].endswith(root_url + "/t"), (
+            f"{suffix} redirected to {resp.headers['Location']}"
+        )
+    # The bare URL must NOT redirect to itself.
+    assert client.get(root_url + "/t").status_code == 200
+
+
+def test_each_page_gets_its_own_etag_and_title(client, tmp_path, monkeypatch):
+    """Pages are separate self-canonical documents, so they need
+    separate validators and separate titles.
+
+    Both were missing: `page` was absent from the ETag input, so page 2
+    answered 304 to page 1's validator; and every page shipped a
+    byte-identical `<title>` and description while each was
+    self-canonical and separately sitemapped, which is a duplicate-title
+    signal on every URL the pagination adds.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    edges = [("t0@x", None)] + [(f"t{i}@x", "t0@x") for i in range(1, 6)]
+    seeded = seed_thread_shape(tmp_path, "alpha", edges)
+    _root_id, root_url = seeded["t0@x"]
+
+    seen_etags, seen_titles = set(), set()
+    for page in ("/t", "/t/2", "/t/3"):
+        resp = client.get(root_url + page)
+        assert resp.status_code == 200, f"{page} -> {resp.status_code}"
+        html = resp.get_data(as_text=True)
+        seen_etags.add(resp.headers["ETag"])
+        seen_titles.add(re.search(r"<title>(.*?)</title>", html, re.S).group(1).strip())
+
+    assert len(seen_etags) == 3, f"pages share validators: {seen_etags}"
+    assert len(seen_titles) == 3, f"pages share titles: {seen_titles}"
+
+
+def test_pages_past_the_first_carry_no_forum_structured_data(
+    client, tmp_path, monkeypatch
+):
+    """Only page 1 holds the root's body.
+
+    A `DiscussionForumPosting` on page 2 would be rooted at a post that
+    page does not contain. Nothing pinned this, so emitting it
+    everywhere survived the suite.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    edges = [("u0@x", None)] + [(f"u{i}@x", "u0@x") for i in range(1, 5)]
+    seeded = seed_thread_shape(tmp_path, "alpha", edges)
+    _root_id, root_url = seeded["u0@x"]
+
+    page1 = _json_ld_blocks(client.get(root_url + "/t").data.decode())
+    assert any(
+        g["@type"] == "DiscussionForumPosting"
+        for block in page1
+        for g in block.get("@graph", [])
+    ), "page 1 lost its forum structured data"
+
+    for later in ("/t/2", "/t/3"):
+        blocks = _json_ld_blocks(client.get(root_url + later).data.decode())
+        assert not any(
+            g["@type"] == "DiscussionForumPosting"
+            for block in blocks
+            for g in block.get("@graph", [])
+        ), f"{later} claims to be the forum thread but lacks the root"
+
+
+def test_thread_view_sends_vary_hx_request(client, tmp_path):
+    """Two representations at one URL need the header that says so.
+
+    The route serves a partial under `HX-Request: true` and the page
+    otherwise. `hooks.py` gated this on the message endpoint only, while
+    two comments in the thread route asserted it was being set here.
+    Divergent ETags cover any cache that revalidates; bfcache and
+    prerender do not.
+    """
+    seeded = _seed_three_message_thread(tmp_path, "alpha")
+    _, root_url, _ = seeded["root"]
+
+    full = client.get(root_url + "/t")
+    partial = client.get(root_url + "/t", headers={"HX-Request": "true"})
+    assert full.headers.get("Vary") == "HX-Request"
+    assert partial.headers.get("Vary") == "HX-Request"
+    assert full.headers["ETag"] != partial.headers["ETag"], (
+        "the two representations share a validator"
+    )
+    assert "<h1" in full.get_data(as_text=True)
+    assert "<h1" not in partial.get_data(as_text=True), (
+        "the HTMX fragment carries page chrome"
+    )

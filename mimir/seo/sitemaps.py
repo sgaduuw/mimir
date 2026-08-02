@@ -21,9 +21,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
+from mimir.config import settings
 from mimir.maintainer_directory import all_maintainers, maintainer_path
 from mimir.models import Article, ArticleList, Inbox
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
+from mimir.threading import unmaterialised_roots
 from mimir.subsystems_dashboard import (
     MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     most_active_subsystems_in_inbox,
@@ -170,6 +172,8 @@ def _sitemap_entries_for_roots(
     roots: list[tuple[int, datetime]],
     singleton_ids: set[int],
     last_activity: dict[int, datetime],
+    message_counts: dict[int, int],
+    unrankable_roots: set[int],
     inbox_name: str,
     base: str,
 ) -> tuple[list[tuple[str, str | None]], str | None]:
@@ -189,17 +193,51 @@ def _sitemap_entries_for_roots(
     single-message page, which can never change, advertise another
     thread's date. For correct data the branch is a no-op.
     """
+    cap = max(1, settings.thread_view_render_cap)
     entries: list[tuple[str, str | None]] = []
     newest: str | None = None
     for art_id, date in roots:
         loc = f"{base}/{inbox_name}/{date.year}/{date.month:02d}/{art_id}"
-        if art_id not in singleton_ids:
+        activity = last_activity.get(art_id)
+        count = message_counts.get(art_id, 1)
+        # A thread the column cannot fully rank is advertised as its
+        # root's MESSAGE url, exactly like a singleton, because that is
+        # what its messages claim as their canonical in that state. The
+        # thread view still exists and is still self-canonical; it is
+        # simply not advertised while nothing can agree on how many
+        # pages it has. Listing `/t` here instead would advertise a URL
+        # that the messages themselves disclaim, which is the
+        # incoherence `test_sitemap_is_coherent_midway_through_a_backfill`
+        # exists to catch, and did.
+        if art_id in singleton_ids or art_id in unrankable_roots:
+            entries.append((loc, date.strftime("%Y-%m-%d")))
+            stamp = date.strftime("%Y-%m-%d")
+        else:
             loc += "/t"
-        lastmod = (
-            date if art_id in singleton_ids else (last_activity.get(art_id) or date)
-        )
-        stamp = lastmod.strftime("%Y-%m-%d")
-        entries.append((loc, stamp))
+            stamp = (activity or date).strftime("%Y-%m-%d")
+            # EVERY page, not just the first. Since 3.8.0 the thread
+            # view is paginated and each page is self-canonical, so a
+            # page absent from the sitemap is reachable only by walking
+            # the `next` chain, one hop deeper each time. Messages on it
+            # canonicalise TO it, which would leave them deferring to a
+            # URL crawlers never fetch.
+            #
+            # Measured 2026-08-02: 1,893 of 6,074,374 threads paginate
+            # at cap 200, adding 2,759 entries against 32,229 already
+            # in the index. The extra pages carry the same `<lastmod>`
+            # as page 1 because a reply anywhere changes the thread's
+            # newest date, which is the freshness signal being reported.
+            # A thread with unrooted members is rendered from the walk,
+            # whose membership the column cannot see, so `count` (and
+            # therefore the page count) is an undercount for it. Emitting
+            # page 1 only is the safe direction: the reader still reaches
+            # the rest down the `next` chain, and we never advertise a
+            # page number derived from a population the route did not
+            # use. Matches what the message canonical does in the same
+            # state, which is what keeps the two from disagreeing.
+            pages = 1 if art_id in unrankable_roots else max(1, -(-count // cap))
+            for pg in range(1, pages + 1):
+                entries.append((loc if pg == 1 else f"{loc}/{pg}", stamp))
         if newest is None or stamp > newest:
             newest = stamp
     return entries, newest
@@ -418,6 +456,37 @@ def _thread_last_activity(
     return dict(rows)
 
 
+def _thread_message_counts(
+    session, inbox: Inbox, root_ids: list[int]
+) -> dict[int, int]:
+    """`root_id -> message count in that thread, in this inbox.`
+
+    3.8.0 paginates the thread view, so the sitemap has to know how
+    many pages a thread has, which is `ceil(count / cap)`.
+
+    A separate grouped scan rather than an extra column on
+    `_thread_last_activity`, deliberately. Folding it in there was tried
+    and reverted: it saves one indexed aggregate (measured ~9.4 ms for
+    an lkml-shaped inbox, ~100 ms across all 200 per warm cycle, on an
+    hourly cached surface) and costs a function that answers two
+    unrelated questions plus a return type five existing lastmod tests
+    had to be rewritten around. The scan is not the expensive thing
+    here.
+    """
+    if not root_ids:
+        return {}
+    return dict(
+        session.execute(
+            select(ArticleList.thread_root_id, func.count())
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.thread_root_id.in_(root_ids),
+            )
+            .group_by(ArticleList.thread_root_id)
+        ).all()
+    )
+
+
 def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
     """Of `root_ids`, those whose thread is just themselves in this
     inbox (no reply hangs off them here).
@@ -557,6 +626,8 @@ def month_sitemap_xml(
             roots,
             _singleton_root_ids(session, inbox, page_ids),
             _thread_last_activity(session, inbox, page_ids),
+            _thread_message_counts(session, inbox, page_ids),
+            unmaterialised_roots(session, inbox.id, page_ids),
             inbox.name,
             base,
         )
@@ -865,8 +936,15 @@ def inbox_sitemap_xml(
         last_activity = _thread_last_activity(
             session, inbox, [art_id for art_id, _ in recent_roots]
         )
+        recent_root_ids = [art_id for art_id, _ in recent_roots]
         root_entries, _newest = _sitemap_entries_for_roots(
-            recent_roots, singleton_ids, last_activity, inbox.name, base
+            recent_roots,
+            singleton_ids,
+            last_activity,
+            _thread_message_counts(session, inbox, recent_root_ids),
+            unmaterialised_roots(session, inbox.id, recent_root_ids),
+            inbox.name,
+            base,
         )
         entries.extend(root_entries)
         return SitemapPayload(

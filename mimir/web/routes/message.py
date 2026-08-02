@@ -34,7 +34,13 @@ from mimir.rendering.linkify import _extract_lore_msgid
 from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import recent_patches_touching, subsystems_for_article
-from mimir.threading import dedupe_thread, find_thread_root, get_thread
+from mimir.threading import (
+    dedupe_thread,
+    find_thread_root,
+    get_thread,
+    thread_is_materialised,
+    thread_page_of,
+)
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _thread_summary
 from mimir.web.routes._validators import render_state_tag
@@ -415,6 +421,10 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         if canonical_url:
             target_inbox = inbox
             target_thread = thread
+            # Same-inbox default; the cross-post branch recomputes it
+            # against the target's own walk, because threading is
+            # inbox-scoped and the root can differ there.
+            target_root = root_msgid
             if canonical_inbox_name != inbox.name:
                 target_inbox = session.execute(
                     select(Inbox).where(Inbox.name == canonical_inbox_name)
@@ -429,30 +439,60 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                             get_thread(session, target_inbox, target_root)
                         )
 
-            cap = settings.thread_view_render_cap
-            position = next(
-                (
-                    i
-                    for i, n in enumerate(target_thread)
-                    if n.message_id == article.message_id
-                ),
-                None,
+            cap = max(1, settings.thread_view_render_cap)
+            # By IDENTITY, not position. `get_thread`'s `sort_path` is
+            # NULL for a dateless node and NULL sorts first, so
+            # `target_thread[0]` is that node rather than the root, and
+            # one dateless message stripped the thread canonical from
+            # every message in its thread. `thread.py` carried this same
+            # guard until it stopped needing one.
+            root_candidate = next(
+                (n for n in target_thread if n.message_id == target_root),
+                target_thread[0] if target_thread else None,
             )
+            root_candidate_id = root_candidate.id if root_candidate else None
+            in_thread = any(n.message_id == article.message_id for n in target_thread)
             # `len(target_thread) > 1` because a single-message thread
             # has nothing to consolidate: the message page already IS
             # the whole conversation and is the RICHER of the two
             # (subsystem header, lifecycle badges, the indexable
             # lifecycle prose, attachments, related patches).
+            # Same predicate the thread view renders by. A thread with
+            # unrooted members is rendered from the walk, while
+            # `thread_page_of` ranks over the column, so the page number
+            # would be one too low for every message after the gap. Less
+            # consolidated for as long as the data is unrepaired, never
+            # pointing at a page that does not hold this message.
+            thread_rooted = target_inbox is not None and thread_is_materialised(
+                session, target_inbox.id, root_candidate_id
+            )
             if (
                 target_inbox is not None
                 and len(target_thread) > 1
-                and position is not None
-                and position < cap
+                and in_thread
+                and thread_rooted
             ):
-                root_node = target_thread[0]
+                root_node = root_candidate
                 root_article = session.get(Article, root_node.id)
                 if root_article is not None and root_article.date is not None:
+                    # Canonicalise to the PAGE that contains this
+                    # message, not to page 1. Since 3.8.0 the thread
+                    # view is paginated, so every message is rendered
+                    # somewhere; before it, anything past the cap was
+                    # only linked and therefore stayed self-canonical.
+                    #
+                    # The page number comes from `thread_page_of`, the
+                    # same helper the thread view builds its page URLs
+                    # with. Deriving it here from `target_thread`'s
+                    # position would use DEPTH-FIRST order against a
+                    # view that pages CHRONOLOGICALLY, so the canonical
+                    # would name a page not containing this message.
+                    page_no = thread_page_of(
+                        session, target_inbox.id, root_article.id, article, cap
+                    )
                     thread_view_url = _thread_view_url(root_article, target_inbox.name)
+                    if page_no > 1:
+                        thread_view_url += f"/{page_no}"
                     canonical_url = base + thread_view_url
 
         page_json_ld = (

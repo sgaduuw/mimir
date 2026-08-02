@@ -238,14 +238,20 @@ def _add_cache_headers(response):
         rule = _CACHE_CONTROL_BY_ENDPOINT.get(request.endpoint)
         if rule:
             response.headers["Cache-Control"] = rule
-    # The message route returns a partial (`_message_body.html`) under
-    # `HX-Request: true` and the full page otherwise. Without Vary,
-    # caches (browser bfcache, Cloudflare, Chrome's prerender cache
-    # for sites with speculation rules) can serve a full-page response
-    # to an HTMX request, which then swaps the entire <body>'s
-    # children into `#msg` and visibly duplicates the page chrome.
-    # The Vary header keys the two response variants separately.
-    if request.endpoint == "web.message":
+    # Both of these routes return a partial under `HX-Request: true`
+    # and the full page otherwise. Without Vary, caches (browser
+    # bfcache, Cloudflare, Chrome's prerender cache for sites with
+    # speculation rules) can serve a full-page response to an HTMX
+    # request, which then swaps the entire <body>'s children into the
+    # target and visibly duplicates the page chrome, or the reverse:
+    # a bare fragment rendered as a page.
+    #
+    # `web.thread_view` was MISSING here when it gained its HTMX path
+    # in 3.8.0, while two comments in that route asserted this header
+    # was being set for it. Divergent ETags rescue any cache that
+    # revalidates, which is why nothing failed; the exact cases
+    # enumerated above are the ones that do not revalidate.
+    if request.endpoint in ("web.message", "web.thread_view"):
         response.headers["Vary"] = "HX-Request"
     for k, v in _SECURITY_HEADERS.items():
         response.headers.setdefault(k, v)

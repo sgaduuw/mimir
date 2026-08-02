@@ -16,7 +16,14 @@ canonical (see the containment gate in `mimir.web.routes.message`).
 import hashlib
 import logging
 
-from flask import Response, abort, make_response, redirect, render_template, request
+from flask import (
+    Response,
+    abort,
+    make_response,
+    redirect,
+    render_template,
+    request,
+)
 from sqlalchemy import select
 
 import mimir
@@ -31,9 +38,17 @@ from mimir.patch_state import patch_state_for_article
 from mimir.seo import _json_ld_thread
 from mimir.store import read_messages
 from mimir.subsystems import subsystems_for_article
-from mimir.threading import dedupe_thread, find_thread_root, get_thread
+from mimir.threading import (
+    dedupe_thread,
+    find_thread_root,
+    get_thread,
+    thread_aggregates,
+    thread_by_root_id,
+    thread_is_materialised,
+    thread_sort_key,
+)
 from mimir.web._blueprint import bp_web
-from mimir.web.filters import _thread_summary
+from mimir.web.filters import thread_summary_from
 from mimir.web.routes._validators import render_state_tag
 from mimir.web.urls import (
     _abort_404_if_url_date_mismatches,
@@ -47,7 +62,38 @@ logger = logging.getLogger(__name__)
 
 
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>/t")
-def thread_view(inbox_name: str, year: int, month: int, article_id: int):
+@bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>/t/<int:page>")
+def thread_view(
+    inbox_name: str, year: int, month: int, article_id: int, page: int | None = None
+):
+    # `page` is attacker-supplied, and an astronomically large value
+    # reaching SQLite as an OFFSET used to 500 the month sitemap on a
+    # public URL. Same bound, same reason. Page 1 keeps the bare `/t`
+    # so no URL that crawlers already hold moves.
+    # `None` distinguishes the bare `/t` from an explicit `/t/1`. Both
+    # render page 1, but only the second is a redundant URL worth
+    # redirecting away, and defaulting the parameter to 1 made the bare
+    # route redirect to itself.
+    explicit_page = page is not None
+    if page is None:
+        page = 1
+    if not 1 <= page <= 10_000:
+        abort(404)
+    if explicit_page and page == 1:
+        # `/t/1` and `/t` were two crawlable URLs for one body. The
+        # canonical contained the damage, but the route already 301s a
+        # reply's `/t` to the root's for the same "one thread, one URL
+        # sequence" reason, and `/t/01`, `/t/001`... are an unbounded
+        # family (Werkzeug's int converter is `\d+` then `int()`).
+        #
+        # Built by hand rather than with `url_for`, which renders the
+        # month unpadded (`/2024/1/`) while every other URL this app
+        # emits is zero-padded. Redirecting to a differently-spelled URL
+        # would trade one duplicate for another.
+        return redirect(
+            f"/{inbox_name}/{year:04d}/{month:02d}/{article_id}/t", code=301
+        )
+
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         article = session.get(Article, article_id)
@@ -106,39 +152,120 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
                 return redirect(_thread_view_url(root, inbox.name), code=301)
             root_msgid = article.message_id
 
-        nodes = get_thread(session, inbox, root_msgid)
-        if not nodes:
-            abort(404)
-        nodes = dedupe_thread(nodes)
+        # Membership from the materialised column, NOT a walk. Measured
+        # 2026-08-02 on the largest production thread (syzbot, 12,342
+        # messages): 6 ms against 14,424 ms for `get_thread`, which was
+        # 93% of that page's response and was paid even on a 304,
+        # because the validator is derived from the thread's shape.
+        #
+        # `thread_is_materialised` owns the whole question of whether
+        # the column may answer, including that this article is its own
+        # root here. Asking half of it at the call site is how a earlier
+        # version reported a wholly-unrooted thread healthy: every
+        # message then claimed page 1 while the view paginated.
+        #
+        # By this point `root_msgid` is always `article.message_id`: the
+        # block above either redirected or reset it, so the render root
+        # is always `article` itself.
+        thread_rooted = thread_is_materialised(session, inbox.id, article.id)
+        # Named because it is an ETag input: the two paths order
+        # messages identically, but they answer from different sources,
+        # and a body that could differ must not share a validator with
+        # one that does.
+        membership_source = "idx" if thread_rooted else "cte"
 
-        # ETag before any blob read, mirroring the message route: on a
-        # 304 we skip the whole render, which matters more here than
-        # anywhere else in the app (a capped render is up to
-        # `thread_view_render_cap` blob fetches). The cap is an input
-        # because changing it changes the response body.
-        thread_max_date = max(
-            (n.date for n in nodes if n.date is not None),
-            default=article.date,
-        )
-        root_id_for_etag = next(
-            (n.id for n in nodes if n.message_id == root_msgid),
-            nodes[0].id,
-        )
         # A cap below 1 would render no messages and then IndexError in
         # the JSON-LD builder (which needs a root), 500ing every thread
         # view. Clamp rather than validate: this is an ops knob and an
         # unusable value should degrade, not take the surface down.
         cap = max(1, settings.thread_view_render_cap)
+        offset = (page - 1) * cap
+
+        if membership_source == "idx":
+            # Paged: the slice is fetched, the totals are asked for
+            # separately, and the whole thread is never materialised.
+            # That is the point of the change, so do not "simplify" this
+            # by fetching everything and slicing in Python.
+            agg = thread_aggregates(session, inbox, article.id)
+            total_count = agg.total
+            thread_max_date = agg.last_activity or article.date
+            authors = agg.authors
+            rendered_nodes = thread_by_root_id(
+                session, inbox, article.id, offset=offset, limit=cap
+            )
+        else:
+            # `dedupe_thread` is only needed on the walk: a cyclic
+            # `thread_parent` makes the CTE re-emit an article once per
+            # level. The indexed query cannot repeat a row, because
+            # `article_lists` is keyed `(article_id, inbox_id)` and the
+            # query pins one inbox.
+            all_nodes = dedupe_thread(get_thread(session, inbox, root_msgid))
+            if not all_nodes:
+                abort(404)
+            total_count = len(all_nodes)
+            thread_max_date = (
+                max((n.date for n in all_nodes if n.date is not None), default=None)
+                or article.date
+            )
+            authors = [n.author for n in all_nodes]
+            # Sorted into the SAME order the indexed path uses before
+            # slicing. Slicing `get_thread`'s depth-first output while
+            # `thread_page_of` ranks chronologically put a message on a
+            # page its own canonical did not name, on any thread that
+            # is not a linear chain.
+            # Visible in production, deliberately. This branch means
+            # the column could not answer, which is a data-repair
+            # condition and not a normal read: without a line here it is
+            # indistinguishable from the fast path except by latency.
+            logger.warning(
+                "thread-view: %s/%s fell back to the recursive walk; "
+                "thread has unrooted members and its pages are not "
+                "advertised or canonicalised until the backfill repairs "
+                "them",
+                inbox.name,
+                article.id,
+            )
+            all_nodes.sort(key=thread_sort_key(article.id))
+            rendered_nodes = all_nodes[offset : offset + cap]
+
+        if total_count == 0:
+            abort(404)
+        # A page past the end 404s rather than rendering an empty
+        # conversation, for the same reason the month sitemap does: an
+        # empty 200 is a URL a crawler keeps re-fetching.
+        total_pages = max(1, -(-total_count // cap))
+        if page > total_pages:
+            abort(404)
+
+        # The render root is always `article`: the redirect block above
+        # either sent a reply to its root or reset `root_msgid` to this
+        # article, so there is no case left where they differ. Taking it
+        # from the node list would break on page 2, where the root is
+        # not in the slice.
+        root_node = article
+
+        # ETag before any blob read, mirroring the message route: on a
+        # 304 we skip the whole render, which matters more here than
+        # anywhere else in the app (a page is up to
+        # `thread_view_render_cap` blob fetches). Cap, page and the
+        # HTMX-vs-full representation are all inputs because each of
+        # them changes the body. `hooks.py` also sends
+        # `Vary: HX-Request` for this endpoint, which it did NOT until
+        # a review caught these comments asserting it. The ETags
+        # differ per representation, so revalidating caches were safe,
+        # but bfcache and prerender do not revalidate.
+        hx_request = request.headers.get("HX-Request") == "true"
         # Everything the page renders ABOUT the root that no message
         # carries: landing state, review roll-up, subsystem
-        # attribution. None of them moves `len(nodes)` or
+        # attribution. None of them moves `total_count` or
         # `thread_max_date`, so without this a patch landing (or a
         # MAINTAINERS reparse, every 10 minutes in prod) leaves the
         # edge and every crawler holding a validator that pins the
         # exact "did $series land" text this release made canonical.
-        state_tag = render_state_tag(session, root_id_for_etag, root_msgid)
+        state_tag = render_state_tag(session, article.id, root_msgid)
         etag_input = (
-            f"thread|{article.id}|{mimir.__version__}|{cap}|{len(nodes)}|"
+            f"thread|{article.id}|{mimir.__version__}|{cap}|{page}|"
+            f"{'hx' if hx_request else 'full'}|{membership_source}|{total_count}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|{state_tag}"
         )
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
@@ -146,9 +273,6 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
             response = Response(status=304)
             response.set_etag(etag)
             return response
-
-        rendered_nodes = nodes[:cap]
-        overflow = nodes[cap:]
 
         # One bulk read rather than one `read_message` per node: that
         # reopened the epoch's dulwich Repo every time, 31-79% of this
@@ -174,15 +298,6 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
                 )
             messages.append((node, parsed, _msg_url(node, inbox.name)))
 
-        overflow_links = [(n, _msg_url(n, inbox.name)) for n in overflow]
-
-        # The root by identity, not by position: `get_thread`'s
-        # `sort_path` is NULL for a dateless node and NULL sorts first,
-        # so `nodes[0]` is not reliably the root.
-        root_node = next(
-            (n for n in nodes if n.message_id == root_msgid),
-            nodes[0],
-        )
         subsystem_hits = subsystems_for_article(session, root_node.id)
         subsystem_names = [h.name for h in subsystem_hits]
 
@@ -200,7 +315,12 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
             root_patch_state = patch_state_for_article(
                 session,
                 root_article,
-                thread_dates=[n.date for n in nodes],
+                # `_days_since_last_reply` reduces this to the newest
+                # date later than the article's own, so the whole-thread
+                # maximum is the entire answer. Passing every date would
+                # mean materialising the thread again, which is the cost
+                # this route just stopped paying.
+                thread_dates=[thread_max_date],
                 subsystem_ids=[h.id for h in subsystem_hits],
                 inbox_name=inbox.name,
             )
@@ -231,36 +351,74 @@ def thread_view(inbox_name: str, year: int, month: int, article_id: int):
         # W8 does not change this: per-inbox threading is fundamental to
         # the data model, not an artefact of how roots are computed.
         base = _site_base()
-        canonical_url = base + _thread_view_url(root_node, inbox.name)
-        page_json_ld = _json_ld_thread(
-            nodes=rendered_nodes,
-            parsed_by_id={n.id: p for n, p, _ in messages if p is not None},
-            canonical_url=canonical_url,
-            inbox_name=inbox.name,
-            base=base,
-            total_replies=len(nodes) - 1,
-            last_activity=thread_max_date,
-            subsystem_names=subsystem_names,
-        )
+        # SELF-canonical, including the page suffix. Pointing page 2 at
+        # page 1 would assert that they are the same document, which
+        # they are not: Google's pagination guidance warns the content
+        # of later pages may then go unindexed, and since messages on
+        # page 2 canonicalise TO page 2, it would also build a canonical
+        # CHAIN (message -> /t/2 -> /t). Caught by
+        # `test_sitemap_lists_every_thread_page_and_each_one_resolves`,
+        # which is what an advertised-but-self-disclaiming page looks
+        # like from the outside.
+        page_path = _thread_view_url(root_node, inbox.name)
+        if page > 1:
+            page_path += f"/{page}"
+        canonical_url = base + page_path
+        # Page 1 only. Pages 2+ do not contain the root's body, so a
+        # `DiscussionForumPosting` rooted at a post the page does not
+        # carry would misrepresent it. Structured data is optional; a
+        # wrong one is not better than none.
+        page_json_ld = None
+        if page == 1:
+            page_json_ld = _json_ld_thread(
+                nodes=rendered_nodes,
+                parsed_by_id={n.id: p for n, p, _ in messages if p is not None},
+                canonical_url=canonical_url,
+                inbox_name=inbox.name,
+                base=base,
+                total_replies=total_count - 1,
+                last_activity=thread_max_date,
+                subsystem_names=subsystem_names,
+            )
 
-    thread_summary = _thread_summary(nodes)
-    response = make_response(
-        render_template(
-            "thread.html",
-            inbox_name=inbox.name,
-            current_inbox=inbox.name,
-            root=root_node,
-            messages=messages,
-            overflow_links=overflow_links,
-            total_count=len(nodes),
-            thread_summary=thread_summary,
-            canonical_url=canonical_url,
-            page_json_ld=page_json_ld,
-            root_url=_msg_url(root_node, inbox.name),
-            subsystem_hits=subsystem_hits,
-            patch_state=root_patch_state,
-            lifecycle_status=root_lifecycle,
-        )
+        next_page_url = None
+        prev_page_url = None
+        if page < total_pages:
+            next_page_url = f"{_thread_view_url(root_node, inbox.name)}/{page + 1}"
+        if page > 1:
+            prev_page_url = _thread_view_url(root_node, inbox.name) + (
+                "" if page == 2 else f"/{page - 1}"
+            )
+        remaining = max(0, total_count - (offset + len(rendered_nodes)))
+
+    thread_summary = thread_summary_from(authors, thread_max_date, total_count)
+    context = dict(
+        inbox_name=inbox.name,
+        current_inbox=inbox.name,
+        root=root_node,
+        messages=messages,
+        total_count=total_count,
+        page=page,
+        total_pages=total_pages,
+        next_page_url=next_page_url,
+        prev_page_url=prev_page_url,
+        remaining=remaining,
+        page_size=cap,
+        thread_summary=thread_summary,
+        canonical_url=canonical_url,
+        page_json_ld=page_json_ld,
+        root_url=_msg_url(root_node, inbox.name),
+        subsystem_hits=subsystem_hits,
+        patch_state=root_patch_state,
+        lifecycle_status=root_lifecycle,
     )
+    # Same URL, two representations, exactly as `message.py` does it:
+    # HTMX gets just the next slice to append, everything else gets the
+    # page. Both are folded into the ETag above, and `hooks.py` sends
+    # `Vary: HX-Request` for this endpoint (it was added there for
+    # `web.thread_view` only after a review found this comment claiming
+    # a header nothing was setting).
+    template = "_thread_messages.html" if hx_request else "thread.html"
+    response = make_response(render_template(template, **context))
     response.set_etag(etag)
     return response
