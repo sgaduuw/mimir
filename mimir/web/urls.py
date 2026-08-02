@@ -353,9 +353,17 @@ def _advertised_urls_for(
         root = root_articles.get(consolidated.get(art_id))
         if ix_id is not None and root is not None:
             roots_by_inbox.setdefault(ix_id, set()).add(root.id)
-    unrankable_roots: set[int] = set()
+    # Keyed on the `(inbox, root)` PAIR. Root ids are global
+    # `articles.id`, so a flat set of them made a root flagged in one
+    # inbox match in every other, and a single unrepaired row anywhere
+    # dropped a healthy cross-posted thread's whole page-aware
+    # advertising. That contradicted this function's own docstring
+    # three paragraphs up, which is the shape that keeps hiding these.
+    unrankable: set[tuple[int, int]] = set()
     for ix_id, roots in roots_by_inbox.items():
-        unrankable_roots |= unmaterialised_roots(session, ix_id, list(roots))
+        unrankable |= {
+            (ix_id, r) for r in unmaterialised_roots(session, ix_id, list(roots))
+        }
 
     out: dict[int, str] = {}
     for art_id, name in canonical_names.items():
@@ -371,7 +379,7 @@ def _advertised_urls_for(
             # thread view and the message canonical use, so this cannot
             # become a third opinion about where a message lives.
             ix_id = inbox_ids.get(name)
-            if ix_id is not None and root.id in unrankable_roots:
+            if ix_id is not None and (ix_id, root.id) in unrankable:
                 # The thread has members the column cannot see, so any
                 # page number computed from it would be too low. Announce
                 # the message's own URL instead of a page that may not

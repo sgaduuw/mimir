@@ -222,20 +222,20 @@ def _sitemap_entries_for_roots(
             # canonicalise TO it, which would leave them deferring to a
             # URL crawlers never fetch.
             #
-            # Measured 2026-08-02: 1,893 of 6,074,374 threads paginate
-            # at cap 200, adding 2,759 entries against 32,229 already
-            # in the index. The extra pages carry the same `<lastmod>`
-            # as page 1 because a reply anywhere changes the thread's
-            # newest date, which is the freshness signal being reported.
-            # A thread with unrooted members is rendered from the walk,
-            # whose membership the column cannot see, so `count` (and
-            # therefore the page count) is an undercount for it. Emitting
-            # page 1 only is the safe direction: the reader still reaches
-            # the rest down the `next` chain, and we never advertise a
-            # page number derived from a population the route did not
-            # use. Matches what the message canonical does in the same
-            # state, which is what keeps the two from disagreeing.
-            pages = 1 if art_id in unrankable_roots else max(1, -(-count // cap))
+            # Measured against production 2026-08-02: at cap 75 a few
+            # thousand of 6,074,810 threads paginate, adding entries in
+            # the low tens of thousands against 6.07M advertised thread
+            # URLs, i.e. well under 1%. An earlier version of this note
+            # compared that figure to 32,229, which is the number of
+            # sitemap FILES in the index, not URLs, and so overstated
+            # the cost by about 188x. Pagination adds no index entries
+            # at all. Re-derive both numbers, and say which population
+            # they count, before deriving anything from them.
+            #
+            # The extra pages carry the same `<lastmod>` as page 1
+            # because a reply anywhere changes the thread's newest
+            # date, which is the freshness signal being reported.
+            pages = max(1, -(-count // cap))
             for pg in range(1, pages + 1):
                 entries.append((loc if pg == 1 else f"{loc}/{pg}", stamp))
         if newest is None or stamp > newest:

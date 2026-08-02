@@ -674,6 +674,19 @@ THREAD_SHAPES = {
 }
 
 
+def _dateless_indices(size):
+    """Two NON-ADJACENT reply indices, never the root.
+
+    The first version computed `(2, size - 2)`, which collides into one
+    index at size 4 and is adjacent at size 5, so it built neither the
+    count nor the separation its docstring promised. No test used it, so
+    nothing noticed.
+    """
+    if size < 5:
+        return (2,) if size > 2 else ()
+    return (2, size - 1)
+
+
 def build_thread(
     tmp_path,
     inbox_name,
@@ -691,8 +704,11 @@ def build_thread(
     `shape`   one of THREAD_SHAPES.
     `size`    message count including the root.
     `dates`   "dense" (seconds apart, the old default), "spread" (months
-              apart, so max != min and relative-time strings differ), or
-              "dateless" (two non-adjacent replies get a NULL date).
+              apart, so max != min and relative-time strings differ),
+              "dateless" (two NON-ADJACENT replies get a NULL date), or
+              "ties" (two replies share an arrival second, which is the
+              only thing that exercises the `id` tie-break in the
+              ordering and the rank).
     `authors` how many distinct addresses to cycle through. Display names
               are varied per message so a tally that counts raw author
               STRINGS instead of parsed addresses over-counts.
@@ -720,13 +736,20 @@ def build_thread(
     with SessionLocal() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
 
-        if dates != "dense":
+        if dates == "ties":
+            # Two members share a date. Without this, `seed_thread_shape`
+            # stamps `commit_time + i`, so date order and id order agree
+            # in every fixture and the `id` tie-break in both the SQL
+            # ORDER BY and the Python sort key is unreachable.
+            twin = s.get(Article, ids[2]).date
+            s.get(Article, ids[3]).date = twin
+        elif dates != "dense":
             base = s.get(Article, ids[0]).date
             for i, art_id in enumerate(ids):
                 art = s.get(Article, art_id)
                 if dates == "spread":
                     art.date = base + timedelta(days=30 * i)
-                elif dates == "dateless" and i in (2, size - 2) and i != 0:
+                elif dates == "dateless" and i in _dateless_indices(size):
                     art.date = None
 
         if authors > 1:
