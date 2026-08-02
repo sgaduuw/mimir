@@ -1266,3 +1266,91 @@ def test_json_ld_survives_a_parent_cycle_in_the_thread_graph():
             f"{cyclic} is reachable from the payload, so the cycle is now "
             "serialised and the next corrupt thread 500s"
         )
+
+
+def test_no_source_comment_still_claims_the_overflow_containment_gate(client, tmp_path):
+    """The two routes must not still DESCRIBE the behaviour 3.8.0
+    removed.
+
+    Property pinned: for every claim this branch invalidated, the code
+    that carried the claim carries the current one instead. Concretely,
+    "past the render cap the thread view only LINKS to a message rather
+    than containing it, so those messages keep their own canonical" is
+    now false in all three of its parts: nothing is linked-not-inlined,
+    nothing is dropped at any cap, and a message past the cap
+    canonicalises to the PAGE that holds it. The live gate is
+    `thread_is_materialised`, not a position-versus-cap comparison.
+
+    Why the current code violates it: `README.md` and `CHANGELOG.md`
+    were swept, but `mimir/web/routes/thread.py`'s module docstring and
+    the comment directly above the consolidation block in
+    `mimir/web/routes/message.py` still state the removed rule. Those
+    are the two files a reader opens to understand the surface, and this
+    project's own record (MEMORY.md 2026-07-30 and 2026-08-01) is that a
+    confident comment asserting a dead invariant is precisely what lets
+    the next defect survive re-reading -- three such comments on this
+    branch alone, one of which had already propagated into the operator
+    docs.
+
+    Asserted as a documentation-currency guard rather than a behaviour
+    guard because the BEHAVIOUR is already correct and pinned above; it
+    is only the prose that disagrees with it. The behavioural half is
+    re-asserted here too so the test cannot pass by the comments being
+    right about a regression.
+    """
+    import pathlib
+
+    from mimir.config import settings
+
+    # The behaviour the comments deny: a third message at cap 2 is
+    # rendered (on page 2) and canonicalises there, rather than being
+    # "listed as a link" and keeping its own canonical.
+    settings_cap = settings.thread_view_render_cap
+    try:
+        settings.thread_view_render_cap = 2
+        seeded = _seed_three_message_thread(tmp_path, "alpha")
+        _, root_url, _ = seeded["root"]
+        _, nested_url, _ = seeded["nested"]
+        nested_id = int(nested_url.rsplit("/", 1)[1])
+        page2 = client.get(root_url + "/t/2").get_data(as_text=True)
+        assert f'id="m{nested_id}"' in page2, (
+            "premise stale: the third message is no longer rendered on "
+            "page 2, so the comments under test may have become true again"
+        )
+    finally:
+        settings.thread_view_render_cap = settings_cap
+
+    root = pathlib.Path(__file__).resolve().parent.parent.parent / "mimir"
+    # Phrases unique to the removed rule. Matched case-insensitively on
+    # collapsed whitespace so a re-wrap cannot smuggle one past.
+    #
+    # This matches TEXT, not meaning, so a sentence using one of these
+    # phrases about a different subject trips it too: the unrankable
+    # case genuinely does keep a per-message canonical, and saying so in
+    # those exact words fails here. That is the intended direction. A
+    # doc-drift guard should fail closed and be answered by rewording
+    # the comment, not by narrowing the list, because every phrase
+    # removed from it is a claim that can quietly come back.
+    dead_claims = [
+        "the tail is linked rather than inlined",
+        "those messages keep their own canonical",
+        "the thread view only links to a message rather than containing it",
+        "those messages keep their own self-canonical",
+    ]
+    offenders = []
+    for path in (
+        root / "web" / "routes" / "thread.py",
+        root / "web" / "routes" / "message.py",
+    ):
+        text = " ".join(path.read_text().split()).lower()
+        # Comment markers are stripped by the whitespace collapse above
+        # only for `#`-prefixed lines, so normalise those away too.
+        text = text.replace("# ", "")
+        for claim in dead_claims:
+            if claim in text:
+                offenders.append(f"{path.name}: {claim!r}")
+    assert not offenders, (
+        "these source files still assert the containment rule 3.8.0 "
+        "removed; the README and CHANGELOG were updated for the same "
+        "change and these were not:\n  " + "\n  ".join(offenders)
+    )

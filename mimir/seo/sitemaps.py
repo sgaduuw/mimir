@@ -31,7 +31,6 @@ from mimir.maintainer_directory import all_maintainers, maintainer_path
 from mimir.models import Article, ArticleList, Inbox
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.threading import unmaterialised_roots
-from mimir.web.urls import _msg_path, thread_page_url
 from mimir.subsystems_dashboard import (
     MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     most_active_subsystems_in_inbox,
@@ -112,26 +111,35 @@ logger = logging.getLogger(__name__)
 #
 # This width bounds ROOTS per page, and since thread pagination shipped
 # a root no longer costs exactly one URL: it costs
-# `ceil(messages / THREAD_VIEW_RENDER_CAP)`. So the invariant is now
+# `ceil(messages / THREAD_VIEW_RENDER_CAP)`. So the headroom to the
+# 50,000 protocol limit is what has to be re-checked, not the root
+# count.
 #
-#     urls_per_page <= 20,000 + (messages in those roots / 75)
+# Measured against production 2026-08-03, on the population this file
+# actually emits (roots whose OWN date falls in the bucket, and every
+# message in the threads they head, regardless of that message's date):
+# the widest bucket is `git` 2016-06 at **89,679 roots / 288,499
+# messages**, whose largest single thread is 205 messages. Expanded at
+# cap 75 that is **89,734 URLs**, i.e. 55 more than the root count,
+# +0.06%. A full 20,000-root slice therefore emits about 20,012.
 #
-# rather than a flat 20,000, and the headroom to the 50,000 protocol
-# limit is what has to be re-checked, not the root count.
+# State the population, not just the number. An earlier version of this
+# note said 89,946 roots, which came from grouping `article_lists` by
+# each ARTICLE's month: that counts roots whose threads saw activity in
+# the month rather than roots dated in it, which is not what
+# `_month_root_ids` selects. Same 2026-07-28 trap as the "6M rows"
+# figure, one level subtler, because the number was freshly measured
+# and still counted the wrong thing.
 #
-# Measured 2026-08-02 on production, grouping `article_lists` by
-# (inbox, month) over rows with a materialised `thread_root_id`:
-# exactly ONE bucket exceeds a single page, `git` 2016-06 at 89,946
-# roots / 288,315 messages. Even if a slice held every one of those
-# messages it emits at most 20,000 + 3,844 = 23,844 URLs. The
-# next-largest bucket is 13,714 roots / 66,951 messages, a single page
-# of at most 14,607. Reaching 50,000 would need ~2.25M messages inside
-# one 20,000-root slice, i.e. an average thread of 112 against a
-# current worst-bucket average of 3.2.
+# The earlier bound (`20,000 + messages/75`) was arithmetically valid
+# and useless: it assumed one slice could hold every message in the
+# bucket, giving 23,844 where the real answer is 20,012. Kept out of
+# the file rather than corrected in place, because a loose bound
+# invites re-deriving from it.
 #
-# Re-derive both numbers if this width, the render cap, or the ceiling
-# changes; `_build_sitemap_xml` warns if a document ever breaches, so a
-# wrong derivation here is loud rather than silent.
+# Re-measure if this width, the render cap, or the ceiling changes.
+# `_warn_if_over_cap` makes a breach loud rather than silent, so a
+# wrong derivation here costs a log line, not a rejected sitemap.
 SITEMAP_URLS_PER_PAGE = 20000
 # sitemaps.org caps a single urlset at 50,000 URLs.
 SITEMAP_MAX_URLS = 50000
@@ -155,6 +163,22 @@ class SitemapPayload:
 cache.register("SitemapPayload", SitemapPayload)
 
 
+def _warn_if_over_cap(entries: list, kind: str) -> None:
+    """Both sitemap shapes cap at 50,000 entries, and a breach is silent
+    by construction: the document renders, the route serves 200, and
+    only the crawler discovers it is unusable. Every caller derives its
+    entry count from a different query, so the builders are the one
+    place that sees the number that actually binds."""
+    if len(entries) > SITEMAP_MAX_URLS:
+        logger.warning(
+            "sitemap %s over protocol cap: %d entries (max %d); "
+            "crawlers will reject this document",
+            kind,
+            len(entries),
+            SITEMAP_MAX_URLS,
+        )
+
+
 def _build_sitemap_xml(entries: list[tuple[str, str | None]]) -> str:
     """Render an XML <urlset> sitemap. Each entry is
     `(loc, lastmod | None)`; when `lastmod` is None the element is
@@ -168,13 +192,7 @@ def _build_sitemap_xml(entries: list[tuple[str, str | None]]) -> str:
     a different query, so this is the one place that sees the number
     that actually matters.
     """
-    if len(entries) > SITEMAP_MAX_URLS:
-        logger.warning(
-            "sitemap urlset over protocol cap: %d entries (max %d); "
-            "crawlers will reject this document",
-            len(entries),
-            SITEMAP_MAX_URLS,
-        )
+    _warn_if_over_cap(entries, "urlset")
     root = Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
     for loc, lastmod in entries:
         url_el = SubElement(root, "url")
@@ -198,13 +216,7 @@ def _build_sitemap_index_xml(entries: list[tuple[str, str | None]]) -> str:
     # It is also the one that grows without bound: every calendar month
     # adds about one entry per inbox, and an `admin inbox add` for a
     # historically-imported list can add hundreds at once.
-    if len(entries) > SITEMAP_MAX_URLS:
-        logger.warning(
-            "sitemap index over protocol cap: %d entries (max %d); "
-            "crawlers will reject this document",
-            len(entries),
-            SITEMAP_MAX_URLS,
-        )
+    _warn_if_over_cap(entries, "index")
     root = Element("sitemapindex", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
     for loc, lastmod in entries:
         sm = SubElement(root, "sitemap")
@@ -255,6 +267,15 @@ def _sitemap_entries_for_roots(
     single-message page, which can never change, advertise another
     thread's date. For correct data the branch is a no-op.
     """
+    # Function-local, NOT module-level: `mimir.web` imports this package
+    # at module load, so a top-level import here closes the cycle and
+    # any entry point that reaches `mimir.seo` before `mimir.web` dies
+    # with a partially-initialised-module ImportError. `json_ld.py` and
+    # `atom.py` have done it this way all along and the package
+    # docstring says so; this file briefly did not, which is what
+    # `tests/test_import_graph.py` now pins.
+    from mimir.web.urls import _msg_path, thread_page_url
+
     cap = max(1, settings.thread_view_render_cap)
     entries: list[tuple[str, str | None]] = []
     newest: str | None = None
@@ -282,8 +303,8 @@ def _sitemap_entries_for_roots(
             # delays a re-crawl; the alternative can assert a date the
             # thread never had. Self-corrects when the backfill
             # completes and the root leaves this branch.
-            entries.append((loc, date.strftime("%Y-%m-%d")))
             stamp = date.strftime("%Y-%m-%d")
+            entries.append((loc, stamp))
         else:
             stamp = (activity or date).strftime("%Y-%m-%d")
             # EVERY page, not just the first. Since 3.8.0 the thread
@@ -293,10 +314,9 @@ def _sitemap_entries_for_roots(
             # canonicalise TO it, which would leave them deferring to a
             # URL crawlers never fetch.
             #
-            # Measured against production 2026-08-02: at cap 75 a few
-            # thousand of 6,074,810 thread roots paginate, adding
-            # entries in the low tens of thousands against 6.07M
-            # root-derived sitemap URLs, i.e. well under 1%. (That
+            # Measured against production 2026-08-03: **16,726** of
+            # **6,074,908** thread roots hold more than 75 messages and
+            # so paginate, adding **24,753** URLs, or +0.41%. (The
             # denominator counts every root's advertised URL, most of
             # which are singleton MESSAGE urls rather than `/t`; it is
             # the right denominator for "how much does pagination add
