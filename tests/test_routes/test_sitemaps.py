@@ -7,7 +7,11 @@ import logging
 import re
 import pytest
 
-from tests.test_routes._helpers import _clear_sitemap_cache, _seed_subsystem
+from tests.test_routes._helpers import (
+    _clear_sitemap_cache,
+    _seed_subsystem,
+    build_thread,
+)
 
 
 def test_sitemap_xml(client):
@@ -1690,15 +1694,88 @@ def test_urlset_over_the_protocol_cap_warns(caplog):
     """
     from mimir.seo.sitemaps import SITEMAP_MAX_URLS, _build_sitemap_xml
 
+    # Filtered by logger name, not `caplog.records` wholesale: caplog
+    # captures everything reaching the root handler, and background
+    # broker threads emit warnings at arbitrary points in a suite run.
+    # The unfiltered form passed alone and failed in full-suite order
+    # when an unrelated `mimir.broker.server` warning landed mid-test.
+    def sitemap_warnings():
+        return [r for r in caplog.records if r.name == "mimir.seo.sitemaps"]
+
     at_cap = [(f"https://example.test/{i}", None) for i in range(SITEMAP_MAX_URLS)]
     with caplog.at_level(logging.WARNING, logger="mimir.seo.sitemaps"):
         _build_sitemap_xml(at_cap)
-    assert not caplog.records, "warned at exactly the cap, which is legal"
+    assert not sitemap_warnings(), "warned at exactly the cap, which is legal"
 
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="mimir.seo.sitemaps"):
         _build_sitemap_xml([*at_cap, ("https://example.test/over", None)])
-    assert len(caplog.records) == 1
+    assert len(sitemap_warnings()) == 1
     # The count, not just the fact: an operator reading this line needs
     # to know how far over it is to pick a new width.
-    assert str(SITEMAP_MAX_URLS + 1) in caplog.records[0].getMessage()
+    assert str(SITEMAP_MAX_URLS + 1) in sitemap_warnings()[0].getMessage()
+
+    # The INDEX has the same protocol cap and less headroom (measured
+    # 32,229 entries vs a worst-case urlset of 23,844), and unlike a
+    # month bucket it grows every calendar month and on every
+    # `admin inbox add`. It was left unguarded when the urlset alarm
+    # shipped.
+    from mimir.seo.sitemaps import _build_sitemap_index_xml
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="mimir.seo.sitemaps"):
+        _build_sitemap_index_xml([*at_cap, ("https://example.test/over", None)])
+    assert len(sitemap_warnings()) == 1, "the sitemap index is not guarded"
+    assert str(SITEMAP_MAX_URLS + 1) in sitemap_warnings()[0].getMessage()
+
+
+def test_sitemap_loc_is_byte_identical_to_the_pages_own_canonical(
+    client, tmp_path, monkeypatch
+):
+    """Not "equivalent after normalisation": the same bytes.
+
+    The sitemap used to hand-build this path with its own f-string while
+    the page built its canonical from `_thread_view_url`. Two spellings
+    of one URL, agreeing only because both happened to write the year
+    unpadded and the month `:02d`, with nothing forcing either. The
+    route accepts BOTH spellings, so every existing test would have
+    stayed green while each advertised URL disagreed with the canonical
+    of the page it points at, which is the duplicate-URL signal the
+    canonical exists to suppress. Normalisation is the crawler's to do
+    and it is charged as a duplicate.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=5)
+    _root_id, _root_url = seeded["m0"]
+
+    body = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    # Selected by SHAPE, not by the seeded URL's spelling. Matching on
+    # `root_url` would couple this to one spelling of the path, so a
+    # change to the shared builder would fail it on the count rather
+    # than on the property, which reads like a broken test instead of a
+    # divergence.
+    locs = [
+        loc
+        for loc in re.findall(r"<loc>([^<]+)</loc>", body)
+        if re.search(r"/t(/\d+)?$", loc)
+    ]
+    # The fixture's own thread must be advertised as three pages. Keyed
+    # on the root's ID, which no spelling change can move, rather than
+    # on its date segments, which are the thing under test.
+    mine = [loc for loc in locs if re.search(rf"/{_root_id}/t(/\d+)?$", loc)]
+    assert len(mine) == 3, f"expected 3 advertised pages for the root, got {mine}"
+
+    for loc in locs:
+        path = loc.replace("http://localhost", "")
+        page = client.get(path)
+        assert page.status_code == 200, f"{loc} does not resolve"
+        canonical = re.search(
+            r'<link rel="canonical" href="([^"]+)"', page.get_data(as_text=True)
+        )
+        assert canonical is not None, f"{loc} emitted no canonical"
+        assert canonical.group(1) == loc, (
+            f"sitemap advertises {loc} but that page self-nominates as "
+            f"{canonical.group(1)}"
+        )

@@ -91,11 +91,17 @@ def _msg_url(article: Article, inbox_name: str) -> str:
     `inbox_name`. With cross-posts, the same article can render at
     multiple URLs (one per inbox it's linked to); the caller picks
     based on context (the URL's inbox)."""
-    if article.date is not None:
-        return (
-            f"/{inbox_name}/{article.date.year}/{article.date.month:02d}/{article.id}"
-        )
-    return f"/{inbox_name}/0000/00/{article.id}"
+    return _msg_path(article.id, article.date, inbox_name)
+
+
+def _msg_path(article_id: int, date, inbox_name: str) -> str:
+    """The `(id, date)` form of `_msg_url`, for callers that have rows
+    rather than Articles. Every message-URL spelling in the codebase
+    resolves here, so there is one place that decides how a year and a
+    month are written into a path."""
+    if date is not None:
+        return f"/{inbox_name}/{date.year}/{date.month:02d}/{article_id}"
+    return f"/{inbox_name}/0000/00/{article_id}"
 
 
 def _thread_view_url(article: Article, inbox_name: str) -> str:
@@ -105,6 +111,29 @@ def _thread_view_url(article: Article, inbox_name: str) -> str:
     than a new top-level namespace. Callers are responsible for passing
     a root; `/t` on a reply 301s to the root's own thread view."""
     return _msg_url(article, inbox_name) + "/t"
+
+
+def thread_page_url(article_id: int, date, inbox_name: str, page: int = 1) -> str:
+    """One page of a thread view, from a root's `(id, date)` rather than
+    an Article.
+
+    Exists because the sitemap does not have Article objects: it works
+    from `(id, date)` rows and used to hand-build the same path with its
+    own f-string. That made the sitemap's `<loc>` and the page's own
+    canonical two parallel implementations of one URL, which agreed only
+    because both happened to spell the year unpadded and the month
+    `:02d`. Nothing forced them to, and the route accepts BOTH
+    spellings, so a change to either would have gone unnoticed while
+    every advertised URL disagreed with the canonical of the page it
+    points at, i.e. exactly the duplicate-URL signal the canonical
+    exists to prevent (CONTEXT.md "Emitter and acceptor must share one
+    validity rule").
+
+    Page 1 has no suffix: `/t` and `/t/1` are the same page, and `/t` is
+    the spelling every other surface uses.
+    """
+    path = _msg_path(article_id, date, inbox_name) + "/t"
+    return path if page <= 1 else f"{path}/{page}"
 
 
 def _canonical_inbox_name(

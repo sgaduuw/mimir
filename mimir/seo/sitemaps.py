@@ -31,6 +31,7 @@ from mimir.maintainer_directory import all_maintainers, maintainer_path
 from mimir.models import Article, ArticleList, Inbox
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.threading import unmaterialised_roots
+from mimir.web.urls import _msg_path, thread_page_url
 from mimir.subsystems_dashboard import (
     MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     most_active_subsystems_in_inbox,
@@ -48,7 +49,8 @@ logger = logging.getLogger(__name__)
 #      everyone reaches for, and it is not the binding one.
 #   2. SQLite's SQLITE_LIMIT_VARIABLE_NUMBER is 32,766 on this build
 #      (measured 2026-07-30, sqlite 3.50.4). A page slice is passed
-#      whole to five separate queries as an expanding `IN` list, so
+#      whole to five call sites as an expanding `IN` list (six
+#      statements: `unmaterialised_roots` issues two), so
 #      the slice width IS a bound-parameter count.
 #
 # This was 45,000, which satisfies (1) and breaches (2). `git` 2016-06
@@ -142,9 +144,9 @@ class SitemapPayload:
     last_modified field is an ISO-8601 date string (`YYYY-MM-DD`) or
     None when the sitemap has no datable content. It reaches crawlers
     only through `<lastmod>` in the body; routes do NOT project it into
-    a `Last-Modified` header (see the module docstring). The cache (`cache.register("SitemapPayload", ...)` below) stores
-    the full dataclass so a warmed body + lastmod are always
-    consistent."""
+    a `Last-Modified` header (see the module docstring). The cache
+    (`cache.register("SitemapPayload", ...)` below) stores the full
+    dataclass so a warmed body + lastmod are always consistent."""
 
     body: str
     last_modified: str | None
@@ -189,6 +191,20 @@ def _build_sitemap_index_xml(entries: list[tuple[str, str | None]]) -> str:
     `(loc, lastmod)` shape as `_build_sitemap_xml`; the schema and
     element names differ, `<sitemapindex>` of `<sitemap>` rather
     than `<urlset>` of `<url>`."""
+    # Same alarm as `_build_sitemap_xml`, and this is the surface with
+    # LESS headroom: sitemaps.org caps an index at 50,000 `<sitemap>`
+    # entries too, and the index was measured at 32,229 on 2026-07-30
+    # (64% of the limit) against a worst-case urlset of 23,844 (48%).
+    # It is also the one that grows without bound: every calendar month
+    # adds about one entry per inbox, and an `admin inbox add` for a
+    # historically-imported list can add hundreds at once.
+    if len(entries) > SITEMAP_MAX_URLS:
+        logger.warning(
+            "sitemap index over protocol cap: %d entries (max %d); "
+            "crawlers will reject this document",
+            len(entries),
+            SITEMAP_MAX_URLS,
+        )
     root = Element("sitemapindex", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
     for loc, lastmod in entries:
         sm = SubElement(root, "sitemap")
@@ -243,7 +259,7 @@ def _sitemap_entries_for_roots(
     entries: list[tuple[str, str | None]] = []
     newest: str | None = None
     for art_id, date in roots:
-        loc = f"{base}/{inbox_name}/{date.year}/{date.month:02d}/{art_id}"
+        loc = base + _msg_path(art_id, date, inbox_name)
         activity = last_activity.get(art_id)
         count = message_counts.get(art_id, 1)
         # A thread the column cannot fully rank is advertised as its
@@ -269,7 +285,6 @@ def _sitemap_entries_for_roots(
             entries.append((loc, date.strftime("%Y-%m-%d")))
             stamp = date.strftime("%Y-%m-%d")
         else:
-            loc += "/t"
             stamp = (activity or date).strftime("%Y-%m-%d")
             # EVERY page, not just the first. Since 3.8.0 the thread
             # view is paginated and each page is self-canonical, so a
@@ -279,9 +294,13 @@ def _sitemap_entries_for_roots(
             # URL crawlers never fetch.
             #
             # Measured against production 2026-08-02: at cap 75 a few
-            # thousand of 6,074,810 threads paginate, adding entries in
-            # the low tens of thousands against 6.07M advertised thread
-            # URLs, i.e. well under 1%. An earlier version of this note
+            # thousand of 6,074,810 thread roots paginate, adding
+            # entries in the low tens of thousands against 6.07M
+            # root-derived sitemap URLs, i.e. well under 1%. (That
+            # denominator counts every root's advertised URL, most of
+            # which are singleton MESSAGE urls rather than `/t`; it is
+            # the right denominator for "how much does pagination add
+            # to the sitemap", which is the question being asked.) An earlier version of this note
             # compared that figure to 32,229, which is the number of
             # sitemap FILES in the index, not URLs, and so overstated
             # the cost by about 188x. Pagination adds no index entries
@@ -293,7 +312,9 @@ def _sitemap_entries_for_roots(
             # date, which is the freshness signal being reported.
             pages = max(1, -(-count // cap))
             for pg in range(1, pages + 1):
-                entries.append((loc if pg == 1 else f"{loc}/{pg}", stamp))
+                entries.append(
+                    (base + thread_page_url(art_id, date, inbox_name, pg), stamp)
+                )
         if newest is None or stamp > newest:
             newest = stamp
     return entries, newest
@@ -707,8 +728,10 @@ def sitemap_index_xml(
     (`sitemap:index`) so `warm-cache` can pre-populate it via
     `force=True`. The `last_modified` field of the returned
     `SitemapPayload` is the global-max article date (max across all
-    per-inbox lastmods), which drives the `Last-Modified` response
-    header at the route layer."""
+    per-inbox lastmods). It is NOT projected into a `Last-Modified`
+    response header: this is the surface whose date validator 304-pinned
+    Cloudflare's edge on a pre-deploy index in 3.6.0, which is why no
+    sitemap route sets one. See the module docstring."""
 
     def compute() -> SitemapPayload:
         per_inbox_latest = _per_inbox_latest_date(session)
@@ -781,7 +804,9 @@ def meta_sitemap_xml(
     """Cached body of `/meta-sitemap.xml`. One-URL urlset covering `/`
     with the global-max article date as lastmod. The `last_modified`
     field carries the same global-max date so the route's
-    `Last-Modified` header stays in sync with the body's `<lastmod>`."""
+    body's `<lastmod>` stays truthful. It does not reach an HTTP
+    `Last-Modified` header; sitemap routes set no validator at all (see
+    the module docstring)."""
 
     def compute() -> SitemapPayload:
         per_inbox_latest = _per_inbox_latest_date(session)
@@ -807,8 +832,10 @@ def maintainers_sitemap_xml(
     every maintainer's profile page (`/maintainers/<address>`).
 
     Slice-1 decision: no per-url `<lastmod>` and `last_modified=None`
-    on the returned payload, so the route emits a plain 200 with no
-    `Last-Modified` header. `all_maintainers` doesn't carry a
+    on the returned payload. (The route emits a plain 200 either way:
+    no sitemap route sets a `Last-Modified` header, so a non-None value
+    here would NOT produce one, contrary to what this said.)
+    `all_maintainers` doesn't carry a
     per-maintainer "last active" date, and deriving one would mean a
     date query per maintainer (~4000 on the production MAINTAINERS
     corpus) just to populate a freshness hint crawlers treat as
