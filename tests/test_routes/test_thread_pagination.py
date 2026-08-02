@@ -569,3 +569,40 @@ def test_dateless_fixture_builds_what_it_promises(size):
     if size >= 5:
         assert len(idx) == 2, f"size {size}: expected two indices, got {idx}"
         assert idx[1] - idx[0] > 1, f"size {size}: indices are adjacent {idx}"
+
+
+def test_a_non_canonical_page_number_does_not_self_nominate(
+    client, tmp_path, monkeypatch
+):
+    """`/t/02` renders page 2 and must advertise `/t/2`.
+
+    Werkzeug's `int` converter matches `\\d+`, so a leading zero is
+    accepted and every zero-padding is a distinct URL for one page. No
+    emitter in the codebase produces them (the link, the sitemap entry
+    and the canonical all come from `_thread_view_url`), so the only way
+    to arrive is by hand or by a mangling intermediary, and adding a
+    redirect would be code for a caller that does not exist.
+
+    What must hold is the weaker, load-bearing property: the page does
+    not nominate ITSELF under the padded spelling. A self-canonical
+    there would turn every padding into an indexable duplicate of the
+    same content, which is the exact signal the canonical exists to
+    suppress.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=6)
+    _root_id, root_url = seeded["m0"]
+
+    padded = client.get(f"{root_url}/t/02")
+    assert padded.status_code == 200, "leading zeros stopped resolving"
+    body = padded.get_data(as_text=True)
+    plain = client.get(f"{root_url}/t/2").get_data(as_text=True)
+    assert _rendered(body) == _rendered(plain), "/t/02 is not page 2"
+
+    canonical = _canonical(body)
+    assert canonical is not None
+    assert canonical.endswith(f"{root_url}/t/2"), (
+        f"padded page self-nominated as {canonical}"
+    )

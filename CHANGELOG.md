@@ -17,7 +17,7 @@ changes, not internal refactors. Categories: **Added**,
   `/<inbox>/<YYYY>/<MM>/<root-id>/t/<page>`, with page 1 staying at the
   bare `/t` so no existing URL moves. It renders
   `THREAD_VIEW_RENDER_CAP` messages per page (default raised from 50 to
-  100) and nothing is truncated at any value, which is what the cap
+  75) and nothing is truncated at any value, which is what the cap
   used to control; it is now purely a page-weight budget. The
   "N further messages" list it replaces is gone. The next-page control
   is an ordinary link that HTMX upgrades into an in-place append, so a
@@ -32,11 +32,14 @@ changes, not internal refactors. Categories: **Added**,
   that contains it, rather than only when it fell inside the render
   cap. Each page is self-canonical and every page is listed in the
   sitemap.
-- The render cap default is 100. The trade is measured: at 50 the
-  sitemap would carry 60,653 extra pagination URLs against 32,229
-  indexed pages, while at 200 a page in an inbox whose messages are
-  large (syzbot's CI reports run about 101 KB each against 11 KB
-  elsewhere) would approach 20 MB.
+- The render cap default is 75. It bounds one thing: how much HTML a
+  single page can be. Measured on the production archive, a page of 200
+  messages is about 2.6 MB of HTML on an ordinary long thread, and in
+  an inbox whose messages are large (syzbot's CI reports run about
+  101 KB each against 11 KB elsewhere) it approaches 20 MB. At 75 the
+  extra pagination URLs are in the low tens of thousands against
+  6,074,810 advertised thread URLs, under 1%, so the sitemap cost does
+  not constrain the choice in either direction.
 
 ### Fixed
 
@@ -50,10 +53,13 @@ changes, not internal refactors. Categories: **Added**,
   shape. Membership now comes from the per-inbox thread-root column
   added in 3.7.0: 41 ms against 10.7 seconds on a locally reproduced
   thread of the same size and shape.
-- A thread deeper than 1000 replies no longer renders short. The
-  recursive walk stopped at that depth and silently returned a partial
-  conversation. The deepest thread in production is 63, so this was
-  latent.
+- A thread deeper than 1000 replies no longer renders short *in the
+  thread view*, which reads the root column directly instead of walking
+  the reply graph. The recursive walk stopped at that depth and
+  silently returned a partial conversation; it still backs the message
+  page's thread tree and the fallback path, so the limit is narrowed
+  rather than gone. The deepest thread in production is 63, so this was
+  latent either way.
 - Structured data on the thread view nests each reply under the message
   it answers. Every reply was previously attached directly to the
   thread root, which told search engines that a reply to a reply was an
