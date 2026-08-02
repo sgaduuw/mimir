@@ -596,10 +596,16 @@ class Settings(BaseSettings):
     # ~101 KB on syzbot, whose CI reports carry kernel logs and
     # reproducers. So:
     #
-    #     cap  50 -> ~0.6 MB typical,  ~5 MB on syzbot
+    # The per-message weights are MEASURED; the per-page figures below
+    # are that weight times the cap, i.e. derived, not observed. Stated
+    # because an earlier version of this table and the changelog quoted
+    # two different numbers for the same page (2.4 MB and 2.6 MB), which
+    # is what an unlabelled extrapolation invites.
+    #
+    #     cap  50 -> ~0.5 MB typical,  ~5.1 MB on syzbot
     #     cap  75 -> ~0.8 MB typical,  ~7.6 MB
-    #     cap 100 -> ~1.2 MB typical,  ~10 MB
-    #     cap 200 -> ~2.4 MB typical,  ~20 MB
+    #     cap 100 -> ~1.1 MB typical,  ~10.1 MB
+    #     cap 200 -> ~2.2 MB typical,  ~20.2 MB
     #
     # 75 keeps the worst inbox comfortably under 10 MB while leaving the
     # overwhelmingly common case under a megabyte.
@@ -628,6 +634,13 @@ class Settings(BaseSettings):
     # Treat it like `SITEMAP_URLS_PER_PAGE`, which carries the same
     # hazard and says so: bump `cache.NAMESPACE_VERSION` alongside any
     # change so stale sitemaps cannot advertise the old page count.
+    #
+    # The 100 -> 75 change on this branch did NOT bump it, and that is
+    # the one exemption: thread pagination is unreleased, so no cached
+    # sitemap row anywhere was ever cut at 100. Stated explicitly
+    # because otherwise this reads as a rule sitting directly above a
+    # counter-example, with nothing telling a future reader which of
+    # the two to follow. Any change after this ships needs the bump.
     #
     # Blob cost still applies per rendered message (~10 ms each, one
     # `read_messages` bulk fetch per page) but is no longer the binding

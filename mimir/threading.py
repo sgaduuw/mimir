@@ -502,6 +502,17 @@ def thread_by_root_id(
             # Same COALESCE as `thread_page_of`'s rank predicate. The
             # two must agree on where dateless rows sit or a message
             # canonicalises to a page that does not hold it.
+            #
+            # `Article.id` here is DEFENSIVE and deliberately untested:
+            # deleting it does not change behaviour on SQLite, because
+            # rows with equal dates already arrive in rowid order, which
+            # is the same order this imposes. So no fixture can
+            # distinguish it and mutation-testing reports it as a
+            # survivor. It stays because "equal keys happen to come back
+            # in id order" is a property of the current plan, not a
+            # guarantee, and the rank predicate above (which IS
+            # observable, and tested) sorts by it explicitly. The two
+            # disagreeing is the failure mode.
             func.coalesce(Article.date, _DATE_FLOOR),
             Article.id,
         )

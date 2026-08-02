@@ -308,22 +308,44 @@ def test_pages_partition_the_thread_across_date_shapes(
     from mimir.config import settings
 
     monkeypatch.setattr(settings, "thread_view_render_cap", 2)
-    seeded = build_thread(tmp_path, "alpha", shape="chain", size=7, dates=dates)
+    size = 7
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=size, dates=dates)
     ids = {aid for aid, _ in seeded.values()}
     _root_id, root_url = seeded["m0"]
 
     pages = _walk_pages(client, root_url)
     assert set(pages) == ids, f"{dates}: pages do not partition the thread"
 
+    asserted = 0
     for art_id, page_url in pages.items():
         _, msg_url = next(v for v in seeded.values() if v[0] == art_id)
         canonical = _canonical(client.get(msg_url).get_data(as_text=True))
         if canonical is None or canonical.endswith(msg_url):
             continue
+        asserted += 1
         assert canonical.endswith(page_url), (
             f"{dates}: article {art_id} renders on {page_url} but "
             f"canonicalises to {canonical}"
         )
+
+    # How many messages actually reached the assertion, pinned. The
+    # `continue` above is legitimate (a self-canonical message claims
+    # nothing about a page), but it also silently absorbs a fixture that
+    # has stopped producing resolvable URLs: `spread` ran 2 of 7 for
+    # exactly that reason and looked like full coverage. A count is the
+    # cheapest thing that fails when an axis quietly stops testing.
+    # Per-axis, because `dateless` legitimately cannot reach it for its
+    # dateless members: the URL carries the date, so those message pages
+    # 404 by design and have no canonical to compare. Every other
+    # message must.
+    from tests.test_routes._helpers import _dateless_indices
+
+    unreachable = len(_dateless_indices(size)) if dates == "dateless" else 0
+    assert asserted == size - unreachable, (
+        f"{dates}: only {asserted} of {size - unreachable} reachable "
+        "messages hit the containment assertion; the axis has stopped "
+        "exercising it"
+    )
 
 
 def test_cross_posted_thread_ranks_pages_per_inbox(client, tmp_path, monkeypatch):
@@ -487,35 +509,46 @@ def test_a_date_tie_across_a_page_boundary_does_not_drift(
     page also proves nothing, because both members land on the same page
     either way. The tie has to cross the boundary.
     """
-    from sqlalchemy import select, update
+    from sqlalchemy import select
 
     from mimir.config import settings
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
     monkeypatch.setattr(settings, "thread_view_render_cap", 2)
-    seeded = build_thread(tmp_path, "alpha", shape="chain", size=6)
+    # The tie comes from the fixture's own `ties` axis rather than a
+    # second hand-rolled UPDATE here. Two places creating ties is two
+    # places to drift, and the drift is invisible: this test would still
+    # pass with the shared axis tying the wrong pair, which is how the
+    # axis came to guard nothing at all.
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=6, dates="ties")
     _root_id, root_url = seeded["m0"]
     ids = [seeded[f"m{i}"][0] for i in range(6)]
 
-    # At cap 2 page 1 holds positions 0-1 and page 2 holds 2-3, so the
-    # boundary the tie must straddle is between 1 and 2. An earlier
-    # version tied 2 and 3, which sit on the SAME page and would have
-    # held whether or not the tie-break exists; the fixture asserts the
-    # straddle below rather than trusting this arithmetic.
+    tied = (ids[1], ids[2])
+
+    # The fixture's PRECONDITION, asserted rather than assumed. Without
+    # this the test passes when the `ties` axis stops producing a tie:
+    # the pair still straddles the boundary and every canonical is still
+    # right, because a thread with no tie has nothing to get wrong. It
+    # would read as green while exercising the untied case, which every
+    # other test already covers.
     with SessionLocal() as s:
-        shared = s.execute(
-            select(Article.date).where(Article.id == ids[2])
-        ).scalar_one()
-        s.execute(update(Article).where(Article.id == ids[3]).values(date=shared))
-        s.commit()
+        dates = [
+            s.execute(select(Article.date).where(Article.id == i)).scalar_one()
+            for i in tied
+        ]
+    assert dates[0] == dates[1], (
+        f"the fixture did not tie {tied}: {dates}. The `ties` axis has "
+        "stopped producing the condition this test exists for"
+    )
 
     pages = _walk_pages(client, root_url)
-    assert pages[ids[1]] != pages[ids[2]], (
-        "fixture did not straddle a boundary; the assertion below would "
-        "hold whether or not the tie-break exists"
+    assert pages[tied[0]] != pages[tied[1]], (
+        "the TIED pair did not straddle a boundary; the assertion below "
+        "would hold whether or not the tie-break exists"
     )
-    for art_id in (ids[1], ids[2]):
+    for art_id in tied:
         _, msg_url = next(v for v in seeded.values() if v[0] == art_id)
         canonical = _canonical(client.get(msg_url).get_data(as_text=True))
         assert canonical is not None and canonical.endswith(pages[art_id]), (
@@ -605,4 +638,61 @@ def test_a_non_canonical_page_number_does_not_self_nominate(
     assert canonical is not None
     assert canonical.endswith(f"{root_url}/t/2"), (
         f"padded page self-nominated as {canonical}"
+    )
+
+
+def test_a_reply_in_an_unrankable_thread_redirects_to_the_bare_thread_url(
+    client, tmp_path, monkeypatch
+):
+    """`/t` on a reply names a page only when a page can be named.
+
+    The redirect computes its page with `thread_page_of`, which ranks
+    over the materialised column, while an unrankable thread RENDERS
+    from the recursive walk. The column is missing rows there by
+    definition, so the rank undercounts and the redirect lands on a page
+    that does not hold the reply.
+
+    It never 404s, which is what makes it silent: the walk sees at least
+    as many messages as the column, so the undercounted page is always
+    in range. The route logs that the thread's pages are not advertised
+    on the very response that just named one.
+
+    Note the bare `/t` is page 1, not the whole conversation: unrankable
+    threads paginate like any other, they just make no page CLAIMS.
+
+    This is the gate that shipped with round 4's fix and had nothing
+    holding it: replacing it with `if True` passed 556 tests.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    # unroot=(3,) leaves the thread unrankable while keeping the root
+    # itself self-rooted, so the reply still resolves to a root and the
+    # redirect is reached at all.
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=7, unroot=(3,))
+    _root_id, root_url = seeded["m0"]
+    _reply_id, reply_url = seeded["m6"]
+
+    r = client.get(reply_url + "/t")
+    assert r.status_code == 301
+    location = r.headers["Location"]
+    assert location.endswith(root_url + "/t"), (
+        f"named page {location} for a thread whose pages cannot be ranked"
+    )
+
+    # The bare `/t` does NOT render the reply, and that is correct: an
+    # unrankable thread is still paginated, it simply makes no page
+    # CLAIMS. So the redirect is a navigational entry point to the
+    # conversation, not a containment claim, and the reply keeps its own
+    # canonical. Asserting containment here (the first version of this
+    # test) fails against correct behaviour.
+    landed_path = location.replace("http://localhost", "")
+    assert _reply_id not in _rendered(client.get(landed_path).get_data(as_text=True))
+    assert _reply_id in _walk_pages(client, root_url), (
+        "the reply is unreachable by following the next-links"
+    )
+    _, msg_url = seeded["m6"]
+    canonical = _canonical(client.get(msg_url).get_data(as_text=True))
+    assert canonical is not None and canonical.endswith(msg_url), (
+        f"an unrankable thread's reply claimed page {canonical}"
     )

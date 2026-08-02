@@ -33,10 +33,10 @@ changes, not internal refactors. Categories: **Added**,
   cap. Each page is self-canonical and every page is listed in the
   sitemap.
 - The render cap default is 75. It bounds one thing: how much HTML a
-  single page can be. Measured on the production archive, a page of 200
-  messages is about 2.6 MB of HTML on an ordinary long thread, and in
-  an inbox whose messages are large (syzbot's CI reports run about
-  101 KB each against 11 KB elsewhere) it approaches 20 MB. At 75 the
+  single page can be. Measured on the production archive, a message is
+  about 11 KB of HTML on an ordinary inbox and about 101 KB on syzbot,
+  whose CI reports carry kernel logs and reproducers, so a 200-message
+  page is roughly 2.2 MB in the common case and over 20 MB there. At 75 the
   extra pagination URLs are in the low tens of thousands against
   6,074,810 advertised thread URLs, under 1%, so the sitemap cost does
   not constrain the choice in either direction.

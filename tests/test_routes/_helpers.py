@@ -675,7 +675,12 @@ THREAD_SHAPES = {
 
 
 def _dateless_indices(size):
-    """Two NON-ADJACENT reply indices, never the root.
+    """Up to two NON-ADJACENT reply indices, never the root.
+
+    "Up to": a thread of 3 or 4 has no pair of non-adjacent replies to
+    pick, so it gets one index, and a thread of 2 gets none. The first
+    version of this line promised two unconditionally, which was the
+    same shape of overclaim as the bug below.
 
     The first version computed `(2, size - 2)`, which collides into one
     index at size 4 and is adjacent at size 5, so it built neither the
@@ -741,8 +746,13 @@ def build_thread(
             # stamps `commit_time + i`, so date order and id order agree
             # in every fixture and the `id` tie-break in both the SQL
             # ORDER BY and the Python sort key is unreachable.
-            twin = s.get(Article, ids[2]).date
-            s.get(Article, ids[3]).date = twin
+            # 1 and 2, not 2 and 3: at the small caps the pagination
+            # tests use, 2 and 3 land on the SAME page, so the tie is
+            # decided before ordering ever matters and the `id`
+            # tie-break stays unreachable. 1 and 2 straddle the first
+            # page boundary at cap 2.
+            twin = s.get(Article, ids[1]).date
+            s.get(Article, ids[2]).date = twin
         elif dates != "dense":
             base = s.get(Article, ids[0]).date
             for i, art_id in enumerate(ids):
@@ -785,5 +795,21 @@ def build_thread(
                 .values(thread_root_id=None)
             )
         s.commit()
+
+        # Rebuild the returned URLs from the FINAL dates. The URL
+        # carries the message's year and month and the route 404s a
+        # mismatch, so any axis that moves a date (`spread`, `dateless`)
+        # otherwise hands back URLs that no longer resolve. Callers then
+        # get a 404 where they expected a message page, and a test that
+        # skips on a missing canonical silently degrades instead of
+        # failing: the `spread` axis was asserting on 2 of 7 messages
+        # and reading as full coverage.
+        for key, (art_id, _stale_url) in list(seeded.items()):
+            art = s.get(Article, art_id)
+            if art.date is not None:
+                url = f"/{inbox_name}/{art.date.year}/{art.date.month:02d}/{art_id}"
+            else:
+                url = f"/{inbox_name}/0000/00/{art_id}"
+            seeded[key] = (art_id, url)
 
     return seeded

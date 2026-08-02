@@ -106,10 +106,18 @@ def thread_view(
         # inside `redirect()`, i.e. a 500 on a public URL. Cloudflare
         # forwards those bytes rather than rejecting them.
         #
-        # Built with `_thread_view_url`, the same helper the sitemap, the
-        # canonical and IndexNow use, so the target is byte-identical to
-        # them by construction rather than by a hand-written f-string
-        # that has to be kept in step.
+        # Built with `_thread_view_url`. That and the sitemap's
+        # `thread_page_url` both resolve to `_msg_path`, so there is one
+        # place deciding how a year and a month are written into a path
+        # and the redirect target, the canonical, the sitemap `<loc>`
+        # and IndexNow are byte-identical by construction.
+        #
+        # This was NOT true when first written: the sitemap hand-built
+        # the same path with its own f-string, and the comment claimed
+        # the sharing anyway. The route accepts both `2024/01` and
+        # `2024/1`, so the two could have drifted apart with every test
+        # still green. `test_sitemap_loc_is_byte_identical_to_the_pages_own_canonical`
+        # now holds them together.
         if explicit_page and page == 1:
             return redirect(_thread_view_url(article, inbox.name), code=301)
 
