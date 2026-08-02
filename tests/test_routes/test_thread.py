@@ -1149,3 +1149,52 @@ def test_thread_view_sends_vary_hx_request(client, tmp_path):
     assert "<h1" not in partial.get_data(as_text=True), (
         "the HTMX fragment carries page chrome"
     )
+
+
+def test_one_dateless_message_does_not_strip_the_thread_canonical(
+    client, tmp_path, monkeypatch
+):
+    """The root is taken by IDENTITY, not by position.
+
+    `get_thread`'s `sort_path` is NULL for a dateless node and NULL sorts
+    first, so `target_thread[0]` was that node rather than the root, its
+    `date` was None, and the whole consolidation block was skipped: ONE
+    dateless message stripped the thread canonical from every message in
+    its thread. Reverting the fix passed the entire suite.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 50)
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("g0@x", None), ("g1@x", "g0@x"), ("g2@x", "g1@x"), ("g3@x", "g2@x")],
+    )
+    root_id, root_url = seeded["g0@x"]
+
+    with SessionLocal() as s:
+        s.execute(
+            update(Article).where(Article.id == seeded["g2@x"][0]).values(date=None)
+        )
+        s.commit()
+        assert (
+            s.execute(
+                select(Article.date).where(Article.id == seeded["g2@x"][0])
+            ).scalar_one()
+            is None
+        ), "fixture did not null the date"
+
+    # The dateless message is not addressable (its URL renders as
+    # 0000/00), but every OTHER message must still consolidate.
+    for mid in ("g0@x", "g1@x", "g3@x"):
+        _, msg_url = seeded[mid]
+        html = client.get(msg_url).get_data(as_text=True)
+        canonical = _canonical_of(html)
+        assert canonical is not None and canonical.endswith(root_url + "/t"), (
+            f"{mid} lost its thread canonical because another message in "
+            f"the thread has no date; got {canonical}"
+        )

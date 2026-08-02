@@ -45,6 +45,7 @@ from mimir.threading import (
     thread_aggregates,
     thread_by_root_id,
     thread_is_materialised,
+    thread_page_of,
     thread_sort_key,
 )
 from mimir.web._blueprint import bp_web
@@ -71,28 +72,15 @@ def thread_view(
     # public URL. Same bound, same reason. Page 1 keeps the bare `/t`
     # so no URL that crawlers already hold moves.
     # `None` distinguishes the bare `/t` from an explicit `/t/1`. Both
-    # render page 1, but only the second is a redundant URL worth
-    # redirecting away, and defaulting the parameter to 1 made the bare
-    # route redirect to itself.
+    # render page 1; only the second is a redundant URL. Defaulting this
+    # to 1 made the bare route redirect to itself.
     explicit_page = page is not None
     if page is None:
         page = 1
+    # Bounds first, and before any redirect: an astronomically large page
+    # reaching SQLite as an OFFSET 500'd the month sitemap once.
     if not 1 <= page <= 10_000:
         abort(404)
-    if explicit_page and page == 1:
-        # `/t/1` and `/t` were two crawlable URLs for one body. The
-        # canonical contained the damage, but the route already 301s a
-        # reply's `/t` to the root's for the same "one thread, one URL
-        # sequence" reason, and `/t/01`, `/t/001`... are an unbounded
-        # family (Werkzeug's int converter is `\d+` then `int()`).
-        #
-        # Built by hand rather than with `url_for`, which renders the
-        # month unpadded (`/2024/1/`) while every other URL this app
-        # emits is zero-padded. Redirecting to a differently-spelled URL
-        # would trade one duplicate for another.
-        return redirect(
-            f"/{inbox_name}/{year:04d}/{month:02d}/{article_id}/t", code=301
-        )
 
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
@@ -108,6 +96,22 @@ def thread_view(
         if linked is None:
             abort(404)
         _abort_404_if_url_date_mismatches(article, year, month)
+
+        # `/t/1` collapses to the bare `/t`, but ONLY once the inbox, the
+        # article, its membership and the URL's date have been checked.
+        # Redirecting first reflected raw URL segments into a `Location`
+        # header: every bogus path suffixed `/t/1` became a cacheable 301
+        # to a 404, and a segment containing an encoded CRLF raised
+        # `ValueError: Header values must not contain newline characters`
+        # inside `redirect()`, i.e. a 500 on a public URL. Cloudflare
+        # forwards those bytes rather than rejecting them.
+        #
+        # Built with `_thread_view_url`, the same helper the sitemap, the
+        # canonical and IndexNow use, so the target is byte-identical to
+        # them by construction rather than by a hand-written f-string
+        # that has to be kept in step.
+        if explicit_page and page == 1:
+            return redirect(_thread_view_url(article, inbox.name), code=301)
 
         # One thread, one URL. Asking for `/t` on a reply is a coherent
         # request ("show me this conversation"), so redirect to the
@@ -149,7 +153,24 @@ def thread_view(
                 find_thread_root(session, inbox, root.message_id) == root.message_id
             )
             if settles and root.date is not None:
-                return redirect(_thread_view_url(root, inbox.name), code=301)
+                # Land on the page that actually renders this reply, not
+                # page 1. Dropping the page contradicted the reply's own
+                # canonical, which names the page holding it, and it
+                # laundered an out-of-range page into a 200. Guarded on
+                # the same predicate everything else uses: an unrankable
+                # thread has no page to name, so it keeps the bare `/t`.
+                target = _thread_view_url(root, inbox.name)
+                if thread_is_materialised(session, inbox.id, root.id):
+                    pg = thread_page_of(
+                        session,
+                        inbox.id,
+                        root.id,
+                        article,
+                        max(1, settings.thread_view_render_cap),
+                    )
+                    if pg > 1:
+                        target += f"/{pg}"
+                return redirect(target, code=301)
             root_msgid = article.message_id
 
         # Membership from the materialised column, NOT a walk. Measured
@@ -235,6 +256,15 @@ def thread_view(
         # empty 200 is a URL a crawler keeps re-fetching.
         total_pages = max(1, -(-total_count // cap))
         if page > total_pages:
+            abort(404)
+
+        # An empty slice is a 404, not a 500. `total_count` and the slice
+        # are separate queries and pysqlite gives a read session no
+        # snapshot isolation across statements, so rows vanishing between
+        # them (a concurrent `reindex --from-scratch`) left `page > 1`
+        # passing the bounds check with nothing to render, and
+        # `_json_ld_thread` indexes `nodes[0]`.
+        if not rendered_nodes:
             abort(404)
 
         # The render root is always `article`: the redirect block above

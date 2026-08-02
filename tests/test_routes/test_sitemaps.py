@@ -1614,3 +1614,61 @@ def test_single_page_threads_advertise_and_show_nothing_extra(
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
     assert f"{root_url}/t</loc>" in xml
     assert f"{root_url}/t/2" not in xml, "advertised a page that does not exist"
+
+
+def test_sitemap_page_counts_are_scoped_to_one_inbox(client, tmp_path, monkeypatch):
+    """`_thread_message_counts` must count this inbox's copy only.
+
+    Dropping its `inbox_id` filter survived the whole suite, because no
+    sitemap fixture cross-posted. It makes the advertised page count the
+    sum across every inbox a thread appears in, so the sitemap lists
+    pages the route 404s: the emitter/acceptor split, on the surface
+    crawlers are pointed at.
+    """
+    from mimir.config import settings
+
+    from tests.test_routes._helpers import build_thread
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(
+        tmp_path, "alpha", shape="chain", size=5, cross_post_to="beta"
+    )
+    _root_id, root_url = seeded["m0"]
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    advertised = [
+        loc for loc in re.findall(r"<loc>([^<]+)</loc>", xml) if root_url + "/t" in loc
+    ]
+    assert len(advertised) == 3, (
+        f"5 messages at cap 2 is 3 pages in this inbox; advertised "
+        f"{len(advertised)}: {advertised}"
+    )
+    for loc in advertised:
+        path = loc.replace("http://localhost", "")
+        assert client.get(path).status_code == 200, f"{path} is advertised but 404s"
+
+
+def test_month_sitemaps_paginate_threads_too(client, tmp_path, monkeypatch):
+    """The month sitemaps are the surface that covers the whole archive.
+
+    Only the per-inbox sitemap was tested, so replacing the month
+    sitemap's page counts with an empty mapping left the suite green
+    while every month sitemap listed page 1 only, for all 6M threads.
+    """
+    from mimir.config import settings
+
+    from tests.test_routes._helpers import build_thread
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=5)
+    _root_id, root_url = seeded["m0"]
+    year, month = root_url.split("/")[2:4]
+
+    xml = client.get(f"/alpha/{year}/{month}/sitemap.xml").get_data(as_text=True)
+    advertised = [
+        loc for loc in re.findall(r"<loc>([^<]+)</loc>", xml) if root_url + "/t" in loc
+    ]
+    assert len(advertised) == 3, (
+        f"the month sitemap advertised {len(advertised)} pages, expected 3: "
+        f"{advertised}"
+    )

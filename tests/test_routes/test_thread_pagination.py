@@ -21,7 +21,10 @@ import re
 
 import pytest
 
-from tests.test_routes._helpers import build_thread
+from tests.test_routes._helpers import (
+    _seed_three_message_thread,
+    build_thread,
+)
 
 
 def _canonical(html):
@@ -286,3 +289,283 @@ def test_both_membership_paths_render_the_same_order(
         "the materialised path and the walk render the thread in "
         f"different orders:\n  fast={fast_by_mid}\n  walk={slow_by_mid}"
     )
+
+
+@pytest.mark.parametrize("dates", ["dense", "spread", "dateless", "ties"])
+def test_pages_partition_the_thread_across_date_shapes(
+    client, tmp_path, monkeypatch, dates
+):
+    """The date axis, crossed with pagination rather than tested alone.
+
+    `ties` is the one that had no fixture anywhere: `seed_thread_shape`
+    stamps arrival as `commit_time + i`, so date order and id order
+    agreed in every case and the `id` tie-break in both the SQL ORDER BY
+    and the Python sort key was unreachable. Two replies sharing an
+    arrival second is ordinary (a mail burst committed in the same
+    second), and without the tie-break the page a message renders on and
+    the page its canonical names can differ.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=7, dates=dates)
+    ids = {aid for aid, _ in seeded.values()}
+    _root_id, root_url = seeded["m0"]
+
+    pages = _walk_pages(client, root_url)
+    assert set(pages) == ids, f"{dates}: pages do not partition the thread"
+
+    for art_id, page_url in pages.items():
+        _, msg_url = next(v for v in seeded.values() if v[0] == art_id)
+        canonical = _canonical(client.get(msg_url).get_data(as_text=True))
+        if canonical is None or canonical.endswith(msg_url):
+            continue
+        assert canonical.endswith(page_url), (
+            f"{dates}: article {art_id} renders on {page_url} but "
+            f"canonicalises to {canonical}"
+        )
+
+
+def test_cross_posted_thread_ranks_pages_per_inbox(client, tmp_path, monkeypatch):
+    """The rank must be inbox-scoped too, not just membership and count.
+
+    The existing cross-post test ran at cap 50 on a 4-message thread, so
+    `thread_page_of` returned 1 unconditionally and its `inbox_id` filter
+    was never exercised: deleting that filter passed the whole suite
+    while messages canonicalised to pages that 404.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(
+        tmp_path, "alpha", shape="chain", size=6, cross_post_to="beta"
+    )
+    _root_id, root_url = seeded["m0"]
+
+    pages = _walk_pages(client, root_url)
+    assert len(set(pages.values())) == 3, (
+        f"6 messages at cap 2 should be 3 pages, got {set(pages.values())}"
+    )
+    for art_id, page_url in pages.items():
+        _, msg_url = next(v for v in seeded.values() if v[0] == art_id)
+        canonical = _canonical(client.get(msg_url).get_data(as_text=True))
+        assert canonical is not None
+        target = canonical.replace("http://localhost", "")
+        assert client.get(target).status_code == 200, (
+            f"article {art_id} canonicalises to {target}, which 404s"
+        )
+        assert art_id in _rendered(client.get(target).get_data(as_text=True))
+
+
+def test_a_reply_reaches_the_page_that_holds_it(client, tmp_path, monkeypatch):
+    """`/t` on a reply must land on the reply's page, in ONE hop.
+
+    It redirected to page 1 and dropped the page, so the app
+    simultaneously told crawlers "this message lives on page 3" (its
+    canonical) and permanently redirected its thread request to page 1.
+    `/t/<n>` on a reply did the same, laundering an out-of-range page
+    into a 200.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=7)
+    _root_id, root_url = seeded["m0"]
+    pages = _walk_pages(client, root_url)
+
+    for mid in ("m4", "m5", "m6"):
+        art_id, msg_url = seeded[mid]
+        resp = client.get(msg_url + "/t")
+        assert resp.status_code == 301, f"{mid}: expected a redirect"
+        target = resp.headers["Location"].replace("http://localhost", "")
+        assert target == pages[art_id], (
+            f"{mid} renders on {pages[art_id]} but its /t redirects to {target}"
+        )
+        # One hop, not two.
+        assert client.get(target).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/nosuchinbox/2024/01/1/t/1",
+        "/alpha/2024/01/99999/t/1",
+        "/%0d%0aX-Injected:%20y/2024/01/1/t/1",
+    ],
+)
+def test_page_one_collapse_never_redirects_an_unvalidated_url(client, tmp_path, path):
+    """The `/t/1` collapse must not run before the existence checks.
+
+    It did, reflecting raw URL segments into a `Location` header. Every
+    bogus path suffixed `/t/1` became a cacheable 301 to a 404, and a
+    segment carrying an encoded CRLF raised `ValueError: Header values
+    must not contain newline characters` inside `redirect()` -- a 500 on
+    a public URL, with the edge forwarding those bytes rather than
+    rejecting them.
+    """
+    _seed_three_message_thread(tmp_path, "alpha")
+    resp = client.get(path)
+    assert resp.status_code == 404, (
+        f"{path} returned {resp.status_code}; a URL that does not resolve "
+        "must 404 rather than redirect or raise"
+    )
+
+
+def test_pagination_furniture_is_present_when_it_should_be(
+    client, tmp_path, monkeypatch
+):
+    """Every piece of it was asserted only as ABSENT on a single page.
+
+    So deleting `rel=next`, `rel=prev`, the previous-page link, the
+    "page X of Y" counter and the remaining-count all survived the suite:
+    five mutants, none observable, because nothing ever asserted the
+    positive case.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=5)
+    _root_id, root_url = seeded["m0"]
+
+    page1 = client.get(root_url + "/t").get_data(as_text=True)
+    assert '<link rel="next"' in page1
+    assert '<link rel="prev"' not in page1
+    assert "page 1 of 3" in page1
+    # 5 messages, 2 rendered on page 1, so 3 remain.
+    assert "Next 2 of 3 remaining" in page1
+
+    page2 = client.get(root_url + "/t/2").get_data(as_text=True)
+    assert '<link rel="prev"' in page2
+    assert '<link rel="next"' in page2
+    assert "page 2 of 3" in page2
+    assert "Previous page" in page2
+
+    page3 = client.get(root_url + "/t/3").get_data(as_text=True)
+    assert '<link rel="next"' not in page3, "rel=next past the last page"
+    assert "page 3 of 3" in page3
+    assert 'class="thread-more"' not in page3
+
+
+def test_an_empty_slice_is_a_404_not_a_500(client, tmp_path, monkeypatch):
+    """The count and the slice are separate queries with no isolation.
+
+    pysqlite gives a read session no snapshot isolation across
+    statements, so rows can vanish between `thread_aggregates` and the
+    page query (a concurrent `reindex --from-scratch`, or the
+    `break_cycle` stall). The bounds check passed on the stale count and
+    the render then indexed `nodes[0]` in the JSON-LD builder: a 500 on
+    a public URL, from a data state the code's own docstrings call
+    reachable.
+
+    Simulated by emptying the slice, because the race itself is not
+    reproducible in a single-threaded test and the guard is what matters.
+    """
+    from mimir.config import settings
+    from mimir.web.routes import thread as thread_route
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=5)
+    _root_id, root_url = seeded["m0"]
+    assert client.get(root_url + "/t").status_code == 200
+
+    monkeypatch.setattr(thread_route, "thread_by_root_id", lambda *a, **k: [])
+    resp = client.get(root_url + "/t")
+    assert resp.status_code == 404, (
+        f"an empty slice returned {resp.status_code}; it must 404 rather "
+        "than reach the JSON-LD builder with no root"
+    )
+
+
+def test_a_date_tie_across_a_page_boundary_does_not_drift(
+    client, tmp_path, monkeypatch
+):
+    """Two messages sharing an arrival second, straddling a page edge.
+
+    `seed_thread_shape` stamps arrival as `commit_time + i`, so date
+    order and id order agree in every other fixture and the `id`
+    tie-break in the rank predicate is unreachable. A tie WITHIN one
+    page also proves nothing, because both members land on the same page
+    either way. The tie has to cross the boundary.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=6)
+    _root_id, root_url = seeded["m0"]
+    ids = [seeded[f"m{i}"][0] for i in range(6)]
+
+    # At cap 2 page 1 holds positions 0-1 and page 2 holds 2-3, so the
+    # boundary the tie must straddle is between 1 and 2. An earlier
+    # version tied 2 and 3, which sit on the SAME page and would have
+    # held whether or not the tie-break exists; the fixture asserts the
+    # straddle below rather than trusting this arithmetic.
+    with SessionLocal() as s:
+        shared = s.execute(
+            select(Article.date).where(Article.id == ids[2])
+        ).scalar_one()
+        s.execute(update(Article).where(Article.id == ids[3]).values(date=shared))
+        s.commit()
+
+    pages = _walk_pages(client, root_url)
+    assert pages[ids[1]] != pages[ids[2]], (
+        "fixture did not straddle a boundary; the assertion below would "
+        "hold whether or not the tie-break exists"
+    )
+    for art_id in (ids[1], ids[2]):
+        _, msg_url = next(v for v in seeded.values() if v[0] == art_id)
+        canonical = _canonical(client.get(msg_url).get_data(as_text=True))
+        assert canonical is not None and canonical.endswith(pages[art_id]), (
+            f"tied article {art_id} renders on {pages[art_id]} but "
+            f"canonicalises to {canonical}"
+        )
+
+
+def test_the_last_next_link_promises_what_the_last_page_delivers(
+    client, tmp_path, monkeypatch
+):
+    """The label must be `min(remaining, page_size)`, not `page_size`.
+
+    On every page but the last those two are equal, so a fixture that
+    only reads page 1 cannot tell them apart. On the last hop the
+    remainder is smaller than a full page and the control would promise
+    more messages than the next page contains.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=5)
+    _root_id, root_url = seeded["m0"]
+
+    page2 = client.get(root_url + "/t/2").get_data(as_text=True)
+    assert "Next 1 of 1 remaining" in page2, (
+        "the last next-link should promise the single message page 3 "
+        f"actually holds; page 2 said: "
+        f"{re.search(r'Next [^<]*', page2).group(0) if 'Next ' in page2 else 'nothing'}"
+    )
+    assert len(_rendered(client.get(root_url + "/t/3").get_data(as_text=True))) == 1
+
+
+@pytest.mark.parametrize("size", [4, 5, 6, 7, 8])
+def test_dateless_fixture_builds_what_it_promises(size):
+    """The fixture axis itself, pinned.
+
+    `_dateless_indices` promises "two NON-ADJACENT replies, never the
+    root". Its first version computed `(2, size - 2)`, which collides
+    into a single index at size 4 and is adjacent at size 5, so at those
+    sizes it built neither the count nor the separation it claimed. No
+    test used the axis, so nothing noticed, and a test that later did
+    would have been quietly weaker than its docstring.
+    """
+    from tests.test_routes._helpers import _dateless_indices
+
+    idx = _dateless_indices(size)
+    assert 0 not in idx, f"size {size}: nulled the root"
+    assert len(idx) == len(set(idx)), f"size {size}: duplicate index {idx}"
+    assert all(i < size for i in idx), f"size {size}: index out of range {idx}"
+    if size >= 5:
+        assert len(idx) == 2, f"size {size}: expected two indices, got {idx}"
+        assert idx[1] - idx[0] > 1, f"size {size}: indices are adjacent {idx}"
