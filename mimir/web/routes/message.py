@@ -358,11 +358,16 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # at the conversation gives search engines one substantial
         # document per thread instead.
         #
-        # Conditional on the message being INSIDE the thread view's
-        # render cap. Past the cap the thread view only links to a
-        # message rather than containing it, and a canonical pointing
-        # at a page that does not contain this content would be a false
-        # claim. Those messages keep their own self-canonical.
+        # Conditional on the thread being RANKABLE, not on the
+        # message's position: since 3.8.0 the view paginates and
+        # truncates nothing, so every message is contained by some
+        # page and the canonical names that page rather than page 1.
+        # What it cannot do is name a page for a thread whose
+        # `thread_root_id` column is incomplete, because the rank would
+        # be computed from rows the renderer does not agree with; those
+        # threads stay self-canonical per message. The gate below is
+        # `thread_is_materialised`, and a canonical pointing at a page
+        # that does not contain this content would be a false claim.
         #
         # Built on the canonical inbox, so this composes with (rather
         # than fights) the existing cross-post consolidation: a

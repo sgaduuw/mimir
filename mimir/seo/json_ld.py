@@ -564,7 +564,6 @@ def _json_ld_thread(
             comment["text"] = body
         by_msgid[node.message_id] = comment
 
-    root_msgid = nodes[0].message_id
     comments: list[dict] = []
     for node in nodes[1:]:
         comment = by_msgid[node.message_id]
@@ -572,9 +571,17 @@ def _json_ld_thread(
         # A message whose parent is not in THIS document attaches at top
         # level: on a paginated thread the parent may be on an earlier
         # page, and inventing a container for a post the page does not
-        # carry is the failure being fixed, one level down. Root-parented
-        # replies land here too, which is correct.
-        if parent is None or node.thread_parent == root_msgid:
+        # carry is the failure being fixed, one level down.
+        #
+        # Root-parented replies land here too, via the same test rather
+        # than a clause of their own: `by_msgid` is built from
+        # `nodes[1:]`, so it never holds the ROOT's message-id and the
+        # lookup is already None for them. An explicit
+        # `or node.thread_parent == root_msgid` used to sit here and was
+        # dead in every reachable state (a mutation deleting it survived
+        # the whole suite), while the comment beside it implied the
+        # routing depended on it.
+        if parent is None:
             comments.append(comment)
         else:
             parent.setdefault("comment", []).append(comment)

@@ -8,9 +8,18 @@ near-duplicate URLs. The conversation as a whole is the substantial,
 genuinely unique document, so it is what the sitemap lists and what the
 individual message pages canonicalise to.
 
-Rendering is capped at `settings.thread_view_render_cap`; past that the
-tail is linked rather than inlined, and those messages keep their own
-canonical (see the containment gate in `mimir.web.routes.message`).
+The view PAGINATES at `settings.thread_view_render_cap` messages per
+page and truncates nothing: every message is rendered on exactly one
+page, and every page is self-canonical, sitemapped, and reachable by
+following the next-link. A message's canonical names the page that
+holds it (`threading.thread_page_of`), which is why the render order
+and the rank predicate are one rule.
+
+The exception is a thread the materialised `thread_root_id` column
+cannot rank, which is served whole from the recursive walk and makes NO
+page claims at all: its messages keep their own canonical and its root
+is advertised as a message URL. See `threading.unmaterialised_roots`,
+the single predicate every one of those surfaces consults.
 """
 
 import hashlib
@@ -57,6 +66,7 @@ from mimir.web.urls import (
     _msg_url,
     _site_base,
     _thread_view_url,
+    thread_page_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,7 +177,7 @@ def thread_view(
                 # laundered an out-of-range page into a 200. Guarded on
                 # the same predicate everything else uses: an unrankable
                 # thread has no page to name, so it keeps the bare `/t`.
-                target = _thread_view_url(root, inbox.name)
+                pg = 1
                 if thread_is_materialised(session, inbox.id, root.id):
                     pg = thread_page_of(
                         session,
@@ -176,9 +186,9 @@ def thread_view(
                         article,
                         max(1, settings.thread_view_render_cap),
                     )
-                    if pg > 1:
-                        target += f"/{pg}"
-                return redirect(target, code=301)
+                return redirect(
+                    thread_page_url(root.id, root.date, inbox.name, pg), code=301
+                )
             root_msgid = article.message_id
 
         # Membership from the materialised column, NOT a walk. Measured
@@ -210,7 +220,7 @@ def thread_view(
         cap = max(1, settings.thread_view_render_cap)
         offset = (page - 1) * cap
 
-        if membership_source == "idx":
+        if thread_rooted:
             # Paged: the slice is fetched, the totals are asked for
             # separately, and the whole thread is never materialised.
             # That is the point of the change, so do not "simplify" this
@@ -398,10 +408,9 @@ def thread_view(
         # `test_sitemap_lists_every_thread_page_and_each_one_resolves`,
         # which is what an advertised-but-self-disclaiming page looks
         # like from the outside.
-        page_path = _thread_view_url(root_node, inbox.name)
-        if page > 1:
-            page_path += f"/{page}"
-        canonical_url = base + page_path
+        canonical_url = base + thread_page_url(
+            root_node.id, root_node.date, inbox.name, page
+        )
         # Page 1 only. Pages 2+ do not contain the root's body, so a
         # `DiscussionForumPosting` rooted at a post the page does not
         # carry would misrepresent it. Structured data is optional; a
@@ -429,10 +438,12 @@ def thread_view(
         next_page_url = None
         prev_page_url = None
         if page < total_pages:
-            next_page_url = f"{_thread_view_url(root_node, inbox.name)}/{page + 1}"
+            next_page_url = thread_page_url(
+                root_node.id, root_node.date, inbox.name, page + 1
+            )
         if page > 1:
-            prev_page_url = _thread_view_url(root_node, inbox.name) + (
-                "" if page == 2 else f"/{page - 1}"
+            prev_page_url = thread_page_url(
+                root_node.id, root_node.date, inbox.name, page - 1
             )
         remaining = max(0, total_count - (offset + len(rendered_nodes)))
 
