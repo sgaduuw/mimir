@@ -1198,3 +1198,71 @@ def test_one_dateless_message_does_not_strip_the_thread_canonical(
             f"{mid} lost its thread canonical because another message in "
             f"the thread has no date; got {canonical}"
         )
+
+
+def test_json_ld_survives_a_parent_cycle_in_the_thread_graph():
+    """A `thread_parent` cycle must not produce an unserialisable
+    payload.
+
+    The nesting pass reparents live dicts, so if two messages named each
+    other as parent the object graph would contain a cycle and
+    `json.dumps` would raise `ValueError: Circular reference detected`,
+    500ing the one URL every message in the thread canonicalises to.
+
+    The claim is that this cannot happen: every member of a cycle has
+    its parent present in the document, so no member is ever appended to
+    the top-level list, and nothing reachable from the payload points
+    into the cycle. That is a structural argument about code I wrote,
+    which is exactly the kind this branch has repeatedly found wanting,
+    so it is asserted rather than reasoned. The cost of being wrong is a
+    hard 500; the cost of the test is one dict.
+
+    The cycle is unreachable, not repaired: those messages are absent
+    from the JSON-LD. That is the correct trade (a corrupt thread loses
+    machine-readable comments, the page still serves) and is asserted
+    below so a future "fix" that reattaches them has to confront the
+    serialisation question deliberately.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    from mimir.seo.json_ld import _json_ld_thread
+    from mimir.threading import ThreadNode
+
+    def node(n, parent):
+        return ThreadNode(
+            id=n,
+            message_id=f"<m{n}@example.test>",
+            thread_parent=parent,
+            subject=f"subject {n}",
+            author="A <a@example.test>",
+            # Dated: comment URLs carry the year/month, so a dateless
+            # node would make the assertions below match nothing and
+            # pass for the wrong reason.
+            date=datetime(2024, 1, 5, tzinfo=timezone.utc),
+            depth=None,
+        )
+
+    payload = _json_ld_thread(
+        # 2 and 3 name each other; 4 is an ordinary reply to the root.
+        nodes=[
+            node(1, None),
+            node(2, "<m3@example.test>"),
+            node(3, "<m2@example.test>"),
+            node(4, "<m1@example.test>"),
+        ],
+        parsed_by_id={},
+        canonical_url="https://example.test/alpha/2024/01/1/t",
+        inbox_name="alpha",
+        base="https://example.test",
+        total_replies=3,
+        subsystem_names=[],
+    )
+
+    encoded = json.dumps(payload)
+    assert "/2024/01/4" in encoded, "the ordinary reply is still described"
+    for cyclic in ("/2024/01/2", "/2024/01/3"):
+        assert cyclic not in encoded, (
+            f"{cyclic} is reachable from the payload, so the cycle is now "
+            "serialised and the next corrupt thread 500s"
+        )

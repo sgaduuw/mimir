@@ -2,6 +2,8 @@
 per-inbox sitemap, maintainers sitemap, `<lastmod>` correctness,
 cache invalidation after canonical-inbox flips."""
 
+import logging
+
 import re
 import pytest
 
@@ -1672,3 +1674,31 @@ def test_month_sitemaps_paginate_threads_too(client, tmp_path, monkeypatch):
         f"the month sitemap advertised {len(advertised)} pages, expected 3: "
         f"{advertised}"
     )
+
+
+def test_urlset_over_the_protocol_cap_warns(caplog):
+    """A breach of the 50,000-per-urlset limit is silent by
+    construction: the XML renders, the route serves 200, and only the
+    crawler discovers the document is unusable. Since thread pagination
+    shipped, a page's URL count is no longer equal to the root count it
+    was sliced by, so the width constant alone no longer proves the
+    document is legal. This is the one place that sees the real number.
+
+    Unlike the module's other guards this cannot be pinned against
+    production data, so it pins the alarm rather than the headroom; the
+    headroom is a measured comment next to `SITEMAP_URLS_PER_PAGE`.
+    """
+    from mimir.seo.sitemaps import SITEMAP_MAX_URLS, _build_sitemap_xml
+
+    at_cap = [(f"https://example.test/{i}", None) for i in range(SITEMAP_MAX_URLS)]
+    with caplog.at_level(logging.WARNING, logger="mimir.seo.sitemaps"):
+        _build_sitemap_xml(at_cap)
+    assert not caplog.records, "warned at exactly the cap, which is legal"
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="mimir.seo.sitemaps"):
+        _build_sitemap_xml([*at_cap, ("https://example.test/over", None)])
+    assert len(caplog.records) == 1
+    # The count, not just the fact: an operator reading this line needs
+    # to know how far over it is to pick a new width.
+    assert str(SITEMAP_MAX_URLS + 1) in caplog.records[0].getMessage()

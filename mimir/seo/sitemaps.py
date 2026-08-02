@@ -6,13 +6,18 @@ stable; bumping `cache.NAMESPACE_VERSION` invalidates everything if a
 payload shape changes, so per-route expiry is purely about freshness.
 
 Each surface returns a `SitemapPayload` carrying both the XML body and
-the most-recent `<lastmod>` date represented in that body. Route
-handlers project the date into the HTTP `Last-Modified` header and
-honour `If-Modified-Since` for conditional GETs, so crawlers (Google
-in particular) can re-fetch the sitemap on a real change rather than
-relying on body-content compare which they deprioritise.
+the most-recent `<lastmod>` date represented in that body. That date is
+an in-body signal only: it goes into `<lastmod>` elements, NOT into an
+HTTP `Last-Modified` header. Sitemap responses deliberately carry no
+conditional-GET validator and always answer 200, because a content-date
+validator lies about structural changes (adding a urlset to the index
+moves no article date) and 3.6.0 pinned Cloudflare's edge on a stale
+index for hours that way. Freshness rides `<lastmod>` plus
+`Cache-Control: max-age`, which can delay but never pin. See CONTEXT.md
+"SEO posture" before reintroducing a validator here.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from xml.etree.ElementTree import Element, SubElement, tostring
@@ -33,6 +38,8 @@ from mimir.subsystems_dashboard import (
 
 SITEMAP_RECENT_PER_INBOX = 5000
 
+logger = logging.getLogger(__name__)
+
 # URLs per month sitemap page.
 #
 # TWO ceilings apply and the smaller one is not the obvious one:
@@ -41,7 +48,7 @@ SITEMAP_RECENT_PER_INBOX = 5000
 #      everyone reaches for, and it is not the binding one.
 #   2. SQLite's SQLITE_LIMIT_VARIABLE_NUMBER is 32,766 on this build
 #      (measured 2026-07-30, sqlite 3.50.4). A page slice is passed
-#      whole to three separate queries as an expanding `IN` list, so
+#      whole to five separate queries as an expanding `IN` list, so
 #      the slice width IS a bound-parameter count.
 #
 # This was 45,000, which satisfies (1) and breaches (2). `git` 2016-06
@@ -100,7 +107,32 @@ SITEMAP_RECENT_PER_INBOX = 5000
 # time and a wholesale archive import clusters into whatever month it
 # was seeded. Every future `admin inbox add` can produce another, so
 # this is recurrent by construction rather than one bad row.
+#
+# This width bounds ROOTS per page, and since thread pagination shipped
+# a root no longer costs exactly one URL: it costs
+# `ceil(messages / THREAD_VIEW_RENDER_CAP)`. So the invariant is now
+#
+#     urls_per_page <= 20,000 + (messages in those roots / 75)
+#
+# rather than a flat 20,000, and the headroom to the 50,000 protocol
+# limit is what has to be re-checked, not the root count.
+#
+# Measured 2026-08-02 on production, grouping `article_lists` by
+# (inbox, month) over rows with a materialised `thread_root_id`:
+# exactly ONE bucket exceeds a single page, `git` 2016-06 at 89,946
+# roots / 288,315 messages. Even if a slice held every one of those
+# messages it emits at most 20,000 + 3,844 = 23,844 URLs. The
+# next-largest bucket is 13,714 roots / 66,951 messages, a single page
+# of at most 14,607. Reaching 50,000 would need ~2.25M messages inside
+# one 20,000-root slice, i.e. an average thread of 112 against a
+# current worst-bucket average of 3.2.
+#
+# Re-derive both numbers if this width, the render cap, or the ceiling
+# changes; `_build_sitemap_xml` warns if a document ever breaches, so a
+# wrong derivation here is loud rather than silent.
 SITEMAP_URLS_PER_PAGE = 20000
+# sitemaps.org caps a single urlset at 50,000 URLs.
+SITEMAP_MAX_URLS = 50000
 SITEMAP_TTL_SEC = 3600
 
 
@@ -108,9 +140,9 @@ SITEMAP_TTL_SEC = 3600
 class SitemapPayload:
     """The body + last-modified pair for one sitemap surface. The
     last_modified field is an ISO-8601 date string (`YYYY-MM-DD`) or
-    None when the sitemap has no datable content. Routes parse it back
-    into a datetime to populate `Last-Modified` on the HTTP response.
-    The cache (`cache.register("SitemapPayload", ...)` below) stores
+    None when the sitemap has no datable content. It reaches crawlers
+    only through `<lastmod>` in the body; routes do NOT project it into
+    a `Last-Modified` header (see the module docstring). The cache (`cache.register("SitemapPayload", ...)` below) stores
     the full dataclass so a warmed body + lastmod are always
     consistent."""
 
@@ -126,7 +158,21 @@ def _build_sitemap_xml(entries: list[tuple[str, str | None]]) -> str:
     `(loc, lastmod | None)`; when `lastmod` is None the element is
     omitted. Caller formats the timestamp, date-only `YYYY-MM-DD`
     is what Google's docs recommend for crawl-scheduling and is what
-    mimir emits."""
+    mimir emits.
+
+    The over-cap warning exists because a breach is silent by
+    construction: the document renders, the route serves 200, and the
+    crawler discards it. Every caller derives its own entry count from
+    a different query, so this is the one place that sees the number
+    that actually matters.
+    """
+    if len(entries) > SITEMAP_MAX_URLS:
+        logger.warning(
+            "sitemap urlset over protocol cap: %d entries (max %d); "
+            "crawlers will reject this document",
+            len(entries),
+            SITEMAP_MAX_URLS,
+        )
     root = Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
     for loc, lastmod in entries:
         url_el = SubElement(root, "url")
@@ -210,6 +256,16 @@ def _sitemap_entries_for_roots(
         # incoherence `test_sitemap_is_coherent_midway_through_a_backfill`
         # exists to catch, and did.
         if art_id in singleton_ids or art_id in unrankable_roots:
+            # The lastmod is the ROOT's date, not the thread's newest
+            # activity, and for an unrankable thread that is a
+            # deliberate understatement rather than an oversight. The
+            # activity aggregate is computed FROM the materialised
+            # column, which is the thing just declared unreliable for
+            # this root, so trusting it here would launder an untrusted
+            # value into a freshness claim. An understated lastmod
+            # delays a re-crawl; the alternative can assert a date the
+            # thread never had. Self-corrects when the backfill
+            # completes and the root leaves this branch.
             entries.append((loc, date.strftime("%Y-%m-%d")))
             stamp = date.strftime("%Y-%m-%d")
         else:
