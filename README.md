@@ -21,9 +21,10 @@ defaults assume:
   behind a CDN / reverse proxy; writes (ingest) need to be
   serialized to one process at a time. No Postgres path; SQLite
   handles the lkml-scale corpus comfortably.
-- **Multi-million-message scale.** Tested on the full lkml corpus
-  (~6 M articles, ~3.6 GB DB on disk). Comfortable on a laptop;
-  growing past ~50 M would warrant revisiting SQLite.
+- **Multi-million-message scale.** Running in production across 203
+  inboxes at 17.4 M articles and a 15 GB DB (measured 2026-08-03); lkml
+  alone is 6.4 M of that. Comfortable on a laptop; growing past ~50 M
+  would warrant revisiting SQLite.
 - **Single-user ingest at a time.** `mimir update` /
   `ingest` are not safe to run concurrently against the same DB.
   Multiple readers (web server + warm-cache cron) are fine, WAL
@@ -668,8 +669,13 @@ Routes:
 - `GET /<inbox>/sitemap.xml`, per-inbox urlset: the dashboard, the
   subsystem index and the subsystem dashboards active in that inbox
   (`<lastmod>` = that subsystem's last activity), the year and month
-  archives that have messages, and the most recent thread views (one URL per conversation, not one per message, since
-  message pages canonicalise to their thread). Each thread's
+  archives that have messages, and the most recent thread views. Since
+  3.8.0 that is one URL per thread PAGE rather than per conversation
+  (still far fewer than one per message, which is the point: message
+  pages canonicalise to the page holding them). A thread whose
+  root-pointer column is incomplete is listed as its root's message URL
+  instead, because nothing can agree on how many pages it has. Each
+  thread's
   `<lastmod>` is the date of its NEWEST message, so a thread that
   gains a reply announces that it changed; the URL still carries the
   root's date, since that is the thread's identity. (Until the
@@ -811,8 +817,11 @@ Sample `crontab` (daily at 04:00, only if no ingest is running):
 0 4 * * * cd ~/Projects/mimir && uv run mimir vacuum >/dev/null
 ```
 
-On lkml-scale (~6 M articles, ~3.6 GB DB) a full VACUUM takes
-80 to 120 s.
+The 80 to 120 s figure previously quoted here was measured against
+~6 M articles / ~3.6 GB. Production is now 17.4 M articles / 15 GB
+(measured 2026-08-03) and the VACUUM cost at that size has NOT been
+re-measured, so budget the window from a real run rather than from a
+number scaled off this one.
 
 ## Refreshing query-planner stats (ANALYZE)
 
