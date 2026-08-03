@@ -145,7 +145,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
 #   update this CSP entry in lockstep, the test
 #   `test_csp_script_src_pins_specific_htmx_version` enforces that.
 #   Pygments is configured `noclasses=False` (both inline-renderer in
-#   `mimir/rendering.py` and attachment-preview in
+#   `mimir/rendering/diff.py` and attachment-preview in
 #   `mimir/web/routes/attachments.py`) so it emits class names, not
 #   inline `style="color:..."`.
 # Permissions-Policy: deny every powerful feature mimir doesn't use,
