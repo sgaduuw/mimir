@@ -630,3 +630,186 @@ def warm_global_subsystem_activity():
 
     with SessionLocal() as s:
         return most_active_subsystems_global(s, days=7)
+
+
+# --- Thread fixture matrix -------------------------------------------------
+#
+# Three consecutive adversarial rounds on the thread-view pagination work
+# found the same thing: every guard that missed a bug missed it because
+# its fixture held an axis fixed. Not the same axis each time, which is
+# why fixing them one at a time did not converge. The axes, and what each
+# one hid:
+#
+#   inbox scope   -- no fixture cross-posted, so dropping the `inbox_id`
+#                    filter from three separate queries was invisible.
+#   arrival time  -- `seed_thread_shape` stamps `commit_time + i`, so
+#                    every message was seconds apart and `max()` vs
+#                    `min()` on last-activity read the same.
+#   author        -- every message was `a@b.example`, so a distinct-author
+#                    count could not be wrong.
+#   size vs cap   -- fixtures were exact multiples, where floor == ceil,
+#                    so a ceiling-division bug survived.
+#   which rows are materialised -- guards exercised only the fast path,
+#                    or nulled a member in a position where the resulting
+#                    off-by-one happened not to cross a page boundary.
+#
+# `build_thread` takes all five. Prefer it over `seed_thread_shape` for
+# anything asserting page membership, ordering, counts or canonicals.
+
+THREAD_SHAPES = {
+    # Each reply answers the root: cheap to walk, wide. Greg KH's
+    # `[PATCH 0000/2077]` series is this.
+    "fan_out": lambda n: [("m0", None)] + [(f"m{i}", "m0") for i in range(1, n)],
+    # Each reply answers the previous one.
+    "chain": lambda n: [("m0", None)] + [(f"m{i}", f"m{i - 1}") for i in range(1, n)],
+    # Branches at several levels; syzbot's 12,342-message thread is this
+    # (depth 63, ~1.04 children per parent).
+    "bushy": lambda n: (
+        [("m0", None)] + [(f"m{i}", f"m{max(0, (i - 1) // 2)}") for i in range(1, n)]
+    ),
+    # The root names a parent this inbox does not carry.
+    "off_list": lambda n: (
+        [("m0", "absent@elsewhere")] + [(f"m{i}", f"m{i - 1}") for i in range(1, n)]
+    ),
+}
+
+
+def _dateless_indices(size):
+    """Up to two NON-ADJACENT reply indices, never the root.
+
+    "Up to": a thread of 3 or 4 has no pair of non-adjacent replies to
+    pick, so it gets one index, and a thread of 2 gets none. The first
+    version of this line promised two unconditionally, which was the
+    same shape of overclaim as the bug below.
+
+    The first version computed `(2, size - 2)`, which collides into one
+    index at size 4 and is adjacent at size 5, so it built neither the
+    count nor the separation its docstring promised. No test used it, so
+    nothing noticed.
+    """
+    if size < 5:
+        return (2,) if size > 2 else ()
+    return (2, size - 1)
+
+
+def build_thread(
+    tmp_path,
+    inbox_name,
+    *,
+    shape="chain",
+    size=6,
+    dates="dense",
+    authors=1,
+    cross_post_to=None,
+    unroot=(),
+    epoch="0.git",
+):
+    """Seed one thread, with every axis a guard has been blind on.
+
+    `shape`   one of THREAD_SHAPES.
+    `size`    message count including the root.
+    `dates`   "dense" (seconds apart, the old default), "spread" (months
+              apart, so max != min and relative-time strings differ),
+              "dateless" (two NON-ADJACENT replies get a NULL date), or
+              "ties" (two replies share an arrival second, which is the
+              only thing that exercises the `id` tie-break in the
+              ordering and the rank).
+    `authors` how many distinct addresses to cycle through. Display names
+              are varied per message so a tally that counts raw author
+              STRINGS instead of parsed addresses over-counts.
+    `cross_post_to` a second inbox name; the same articles are linked
+              there too, WITH `thread_root_id` populated, which is what
+              makes an inbox-scoping bug visible.
+    `unroot`  message indices whose `thread_root_id` is set NULL after
+              ingest. Index 0 is the root, which is its own case: with no
+              rooted row left, anything detecting unrooted rows by looking
+              at their parents finds nothing.
+
+    Returns `{message_id: (article_id, url)}` like `seed_thread_shape`.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    edges = THREAD_SHAPES[shape](size)
+    seeded = seed_thread_shape(tmp_path, inbox_name, edges, epoch=epoch)
+    ids = [seeded[mid][0] for mid, _ in edges]
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+
+        if dates == "ties":
+            # Two members share a date. Without this, `seed_thread_shape`
+            # stamps `commit_time + i`, so date order and id order agree
+            # in every fixture and the `id` tie-break in both the SQL
+            # ORDER BY and the Python sort key is unreachable.
+            # 1 and 2, not 2 and 3: at the small caps the pagination
+            # tests use, 2 and 3 land on the SAME page, so the tie is
+            # decided before ordering ever matters and the `id`
+            # tie-break stays unreachable. 1 and 2 straddle the first
+            # page boundary at cap 2.
+            twin = s.get(Article, ids[1]).date
+            s.get(Article, ids[2]).date = twin
+        elif dates != "dense":
+            base = s.get(Article, ids[0]).date
+            for i, art_id in enumerate(ids):
+                art = s.get(Article, art_id)
+                if dates == "spread":
+                    art.date = base + timedelta(days=30 * i)
+                elif dates == "dateless" and i in _dateless_indices(size):
+                    art.date = None
+
+        if authors > 1:
+            for i, art_id in enumerate(ids):
+                art = s.get(Article, art_id)
+                # Display name varies per message, address cycles: a tally
+                # over raw strings sees `size` people, over parsed
+                # addresses it sees `authors`.
+                art.author = f"Person {i} <p{i % authors}@example.com>"
+
+        if cross_post_to:
+            other = s.execute(
+                select(Inbox).where(Inbox.name == cross_post_to)
+            ).scalar_one()
+            for art_id in ids:
+                s.add(
+                    ArticleList(
+                        article_id=art_id,
+                        inbox_id=other.id,
+                        epoch=epoch,
+                        commit_sha=f"{art_id:040x}",
+                        thread_root_id=ids[0],
+                    )
+                )
+
+        for i in unroot:
+            s.execute(
+                update(ArticleList)
+                .where(
+                    ArticleList.inbox_id == inbox.id,
+                    ArticleList.article_id == ids[i],
+                )
+                .values(thread_root_id=None)
+            )
+        s.commit()
+
+        # Rebuild the returned URLs from the FINAL dates. The URL
+        # carries the message's year and month and the route 404s a
+        # mismatch, so any axis that moves a date (`spread`, `dateless`)
+        # otherwise hands back URLs that no longer resolve. Callers then
+        # get a 404 where they expected a message page, and a test that
+        # skips on a missing canonical silently degrades instead of
+        # failing: the `spread` axis was asserting on 2 of 7 messages
+        # and reading as full coverage.
+        for key, (art_id, _stale_url) in list(seeded.items()):
+            art = s.get(Article, art_id)
+            if art.date is not None:
+                url = f"/{inbox_name}/{art.date.year}/{art.date.month:02d}/{art_id}"
+            else:
+                url = f"/{inbox_name}/0000/00/{art_id}"
+            seeded[key] = (art_id, url)
+
+    return seeded

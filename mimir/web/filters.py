@@ -56,26 +56,48 @@ def _relative_time(then: datetime, now: datetime | None = None) -> str:
     return then.strftime("%Y-%m-%d")
 
 
-def _thread_summary(thread) -> dict:
-    """Compute the headline stats shown in the `closed` fold state:
-    total message count, unique-author count (by email so display-name
-    drift doesn't fragment the tally), and a coarse relative-time
-    string for the most-recent message in the thread."""
-    if not thread:
-        return {"author_count": 0, "last_activity_rel": "?"}
+def thread_summary_from(authors, last_activity, total: int) -> dict:
+    """The headline stats, from pre-aggregated pieces.
+
+    Split out so the paginated thread view can pass thread-WIDE values
+    it fetched separately, while the message page keeps passing its
+    in-memory node list. One implementation of the tally either way,
+    which matters because it is not a plain distinct count: authors are
+    reduced by `parseaddr` so display-name drift ("Alice <a@x>" vs
+    "alice <a@x>") counts once. A SQL `COUNT(DISTINCT author)` would
+    quietly report two people there.
+
+    `total` is the fallback when no address parses at all, preserving
+    the original behaviour of showing the message count rather than 0.
+    """
     emails: set[str] = set()
-    for n in thread:
-        if not n.author:
+    for author in authors:
+        if not author:
             continue
-        _, addr = parseaddr(n.author)
+        _, addr = parseaddr(author)
         if addr:
             emails.add(addr.lower())
-    dates = [n.date for n in thread if n.date]
-    last = max(dates) if dates else None
     return {
-        "author_count": len(emails) or len(thread),
-        "last_activity_rel": _relative_time(last) if last else "?",
+        "author_count": len(emails) or total,
+        "last_activity_rel": _relative_time(last_activity) if last_activity else "?",
     }
+
+
+def _thread_summary(thread) -> dict:
+    """Headline stats for an in-memory thread (the message page).
+
+    Thin wrapper over `thread_summary_from`; the thread view uses that
+    directly because its page is a slice and cannot answer thread-wide
+    questions from what it rendered.
+    """
+    if not thread:
+        return {"author_count": 0, "last_activity_rel": "?"}
+    dates = [n.date for n in thread if n.date]
+    return thread_summary_from(
+        (n.author for n in thread),
+        max(dates) if dates else None,
+        len(thread),
+    )
 
 
 _TEXT_LIKE_EXTENSIONS = {
