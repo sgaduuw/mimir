@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-08-03
+
 ### Changed
 
 - The whole-thread view is paginated, at
@@ -36,10 +38,10 @@ changes, not internal refactors. Categories: **Added**,
   single page can be. Measured on the production archive, a message is
   about 11 KB of HTML on an ordinary inbox and about 101 KB on syzbot,
   whose CI reports carry kernel logs and reproducers, so a 200-message
-  page is roughly 2.2 MB in the common case and over 20 MB there. At 75 the
-  extra pagination URLs are in the low tens of thousands against
-  6,074,810 advertised thread URLs, under 1%, so the sitemap cost does
-  not constrain the choice in either direction.
+  page is roughly 2.2 MB in the common case and over 20 MB there. At 75
+  the sitemap cost does not constrain the choice in either direction:
+  16,726 of 6,074,908 thread roots hold more than 75 messages and so
+  paginate, adding 24,753 URLs, or +0.41%.
 
 ### Fixed
 
@@ -51,8 +53,8 @@ changes, not internal refactors. Categories: **Added**,
   seconds of a 15.5 second response, and it was paid even when the
   answer was a 304, because the validator is derived from the thread's
   shape. Membership now comes from the per-inbox thread-root column
-  added in 3.7.0: 41 ms against 10.7 seconds on a locally reproduced
-  thread of the same size and shape.
+  added in 3.7.0: on that same production thread, 6 ms against
+  14,424 ms for the walk it replaces.
 - A thread deeper than 1000 replies no longer renders short *in the
   thread view*, which reads the root column directly instead of walking
   the reply graph. The recursive walk stopped at that depth and
