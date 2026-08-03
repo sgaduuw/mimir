@@ -70,7 +70,11 @@ def build_urls(session: Session, message_ids: list[str], base: str) -> list[str]
     no date are skipped silently, the alternative is a dangling URL
     in the push, which is worse than a missed notification.
 
-    Query count is bounded and independent of batch size; the batch
+    Query count is 6 + N in the batch size (measured 2026-08-02),
+    since 3.8.0 made the advertised URL name the thread PAGE holding
+    each message. At the default 1000-per-tick ceiling that is ~1006
+    indexed queries on the tasks tier, roughly a second; batch the rank
+    if that ever matters; the batch
     itself is capped by the `update` caller.
     """
     if not message_ids:

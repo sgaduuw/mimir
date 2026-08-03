@@ -1,0 +1,60 @@
+{# One page of a thread's messages, plus the control that reaches the
+   next one.
+
+   Used for BOTH the initial render (included by thread.html) and as
+   the response body when HTMX asks for a later page, which is why the
+   trigger is the last thing in the fragment: `hx-swap="outerHTML"` on
+   it replaces the control with this whole fragment, appending the next
+   slice in place. Same shape as the dashboard's load-more, and the same
+   shape `message.py` uses to serve one URL as two representations.
+
+   Vars: `messages` (list of (node, parsed, url)), `next_page_url`,
+   `remaining`, `page_size`. `page_size` is passed rather than
+   hardcoded: a literal here said "Next 200" while the cap was 100, so
+   the control promised a number the next page did not deliver. #}
+{% for node, parsed, url in messages %}
+{# Anchored so a permalink can deep-link into the conversation, and so
+   the message pages' link can land on the right message. #}
+<article class="thread-message" id="m{{ node.id }}">
+  <header>
+    <h2><a href="{{ url }}">{{ node.subject|clean_subject or '(no subject)' }}</a></h2>
+    <p>
+      <strong>From:</strong> {{ node.author|safe_from }}<br>
+      <strong>Date:</strong> {{ node.date.strftime('%Y-%m-%d %H:%M:%S %z') if node.date else '?' }}
+    </p>
+  </header>
+  {% if parsed and parsed.body %}
+  {# Message-ID linkification and the parent-quote jump link are both
+     omitted: they need per-message bulk lookups, and inside a
+     whole-thread render the referenced messages are almost always
+     already on this page. #}
+  {{ parsed.body|render_body }}
+  {% elif parsed %}
+  <p><em>(no body)</em></p>
+  {% else %}
+  {# The blob was unreachable for this one message (mirror gap, or a
+     repacked epoch). The rest of the conversation still renders; only
+     this body is missing. #}
+  <p><small><em>Message body unavailable.
+    <a href="{{ url }}">Try the message page</a>.</em></small></p>
+  {% endif %}
+</article>
+{% endfor %}
+
+{% if next_page_url %}
+{# A REAL anchor carrying hx-get, not a button. HTMX intercepts the
+   click and appends in place; crawlers and readers without JS follow
+   the href to a page that renders standalone. The dashboard's
+   load-more is a <button> and so is JS-only, which is fine there
+   because those messages are reachable elsewhere; here the link is the
+   crawl path to the rest of the conversation, which is the decision
+   this template has carried since the overflow list it replaced. #}
+<div class="thread-more">
+  <a href="{{ next_page_url }}"
+     hx-get="{{ next_page_url }}"
+     hx-target="closest .thread-more"
+     hx-swap="outerHTML">
+    Next {{ [remaining, page_size]|min }} of {{ remaining }} remaining
+  </a>
+</div>
+{% endif %}

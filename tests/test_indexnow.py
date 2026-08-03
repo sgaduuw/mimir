@@ -8,6 +8,8 @@ uses. The HTTP transport is monkeypatched at
 the production caller) so no real network traffic flies during tests.
 """
 
+import re
+
 import json
 
 import pytest
@@ -617,3 +619,146 @@ def test_build_urls_skips_a_canonical_inbox_the_article_is_not_linked_to(
 
     assert urls == [f"/alpha/2024/01/{art_id}"], urls
     assert client.get(urls[0]).status_code == 200
+
+
+def test_advertised_url_names_the_page_holding_the_message(
+    client, tmp_path, monkeypatch
+):
+    """IndexNow must announce the page that changed, not page 1.
+
+    A new reply lands on the LAST page, so announcing page 1 named a URL
+    that had not changed while the page that grew went unannounced. Both
+    the page suffix and the hold-back for threads the column cannot rank
+    survived deletion: this is one of the change's headline behaviours
+    and had no test at all.
+    """
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from mimir.web.urls import _advertised_urls_for
+
+    from tests.test_routes._helpers import build_thread
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=5)
+    _root_id, root_url = seeded["m0"]
+
+    with SessionLocal() as s:
+        articles = [s.get(Article, aid) for aid, _ in seeded.values()]
+        urls = _advertised_urls_for(s, articles, base="")
+
+    # Page membership, read from the rendered pages rather than
+    # recomputed, so a shared mistake cannot satisfy both sides.
+    page_of = {}
+    url = root_url + "/t"
+    while url is not None:
+        html = client.get(url).get_data(as_text=True)
+        for m in re.findall(r'class="thread-message" id="m(\d+)"', html):
+            page_of[int(m)] = url
+        nxt = re.search(r'<div class="thread-more">\s*<a href="([^"]+)"', html)
+        url = nxt.group(1) if nxt else None
+
+    assert len(set(page_of.values())) == 3, "fixture did not paginate"
+    for art_id, expected in page_of.items():
+        assert urls[art_id] == expected, (
+            f"article {art_id} renders on {expected} but IndexNow "
+            f"announces {urls[art_id]}"
+        )
+
+
+def test_unrankable_thread_announces_message_urls(client, tmp_path, monkeypatch):
+    """A thread the column cannot rank makes no page claims anywhere.
+
+    Including on the push channel: announcing a page number derived from
+    a population the route did not use is the same false claim as
+    putting it in a canonical.
+    """
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from mimir.web.urls import _advertised_urls_for
+
+    from tests.test_routes._helpers import build_thread
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=5, unroot=(2,))
+
+    with SessionLocal() as s:
+        articles = [s.get(Article, aid) for aid, _ in seeded.values()]
+        urls = _advertised_urls_for(s, articles, base="")
+
+    for art_id, msg_url in ((a, u) for a, u in seeded.values()):
+        assert urls[art_id] == msg_url, (
+            f"article {art_id} should be announced as its own URL while "
+            f"the thread is unrankable; got {urls[art_id]}"
+        )
+
+
+def test_one_inbox_being_unrepaired_does_not_mute_another(
+    client, tmp_path, monkeypatch
+):
+    """Unrankable roots are keyed on the `(inbox, root)` PAIR.
+
+    Root ids are global `articles.id`, so collecting them into a flat set
+    made a root flagged in one inbox match in every other: a single
+    unrepaired row anywhere dropped page-aware advertising for a HEALTHY
+    cross-posted thread elsewhere, and IndexNow then announced page 1 for
+    messages whose own pages disclaim it.
+
+    Needs two inboxes that DISAGREE about the same thread, which is why
+    a single-inbox fixture could not see it.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.web.urls import _advertised_urls_for
+
+    from tests.test_routes._helpers import build_thread
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(
+        tmp_path, "alpha", shape="chain", size=5, cross_post_to="beta"
+    )
+    ids = [aid for aid, _ in seeded.values()]
+
+    # Alternate the CANONICAL inbox across the thread. `_advertised_urls_for`
+    # groups roots by each article's canonical inbox, so with every article
+    # canonicalising to one inbox the other is never queried and the flat
+    # set is indistinguishable from the keyed one. This is the shape the
+    # bug needs: two inboxes both consulted for the same root.
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        for i, art_id in enumerate(ids):
+            s.execute(
+                update(Article)
+                .where(Article.id == art_id)
+                .values(canonical_inbox_id=alpha.id if i % 2 == 0 else beta.id)
+            )
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.inbox_id == beta.id,
+                ArticleList.article_id == ids[2],
+            )
+            .values(thread_root_id=None)
+        )
+        s.commit()
+        articles = [s.get(Article, aid) for aid in ids]
+        urls = _advertised_urls_for(s, articles, base="")
+
+    paged = [u for u in urls.values() if "/t" in u]
+    assert paged, (
+        "beta being unrepaired muted alpha's page-aware advertising; "
+        f"got {sorted(set(urls.values()))}"
+    )
+    for art_id, url in urls.items():
+        if "/t" not in url:
+            continue
+        assert client.get(url).status_code == 200
+        html = client.get(url).get_data(as_text=True)
+        assert f'id="m{art_id}"' in html, (
+            f"announced {url} for article {art_id}, which it does not render"
+        )

@@ -535,7 +535,18 @@ def _json_ld_thread(
         ]
         payload["keywords"] = list(subsystem_names)
 
-    comments: list[dict] = []
+    # NESTED, not flat. Every reply used to be attached directly to the
+    # root, which asserts to crawlers that a reply-to-a-reply answers
+    # the original post. That is a false structural claim about the one
+    # document every message in the thread canonicalises to, and it is
+    # the machine-readable half of the same gap a reader noticed in the
+    # rendered page (2026-08-02): the hierarchy was computed, carried
+    # to the template, and thrown away.
+    #
+    # Nesting does not grow the payload. It reparents the same comment
+    # objects rather than duplicating them, so object count and total
+    # text are unchanged.
+    by_msgid: dict[str, dict] = {}
     for node in nodes[1:]:
         comment: dict = {
             "@type": "Comment",
@@ -551,7 +562,29 @@ def _json_ld_thread(
         body = _text_for(node)
         if body:
             comment["text"] = body
-        comments.append(comment)
+        by_msgid[node.message_id] = comment
+
+    comments: list[dict] = []
+    for node in nodes[1:]:
+        comment = by_msgid[node.message_id]
+        parent = by_msgid.get(node.thread_parent or "")
+        # A message whose parent is not in THIS document attaches at top
+        # level: on a paginated thread the parent may be on an earlier
+        # page, and inventing a container for a post the page does not
+        # carry is the failure being fixed, one level down.
+        #
+        # Root-parented replies land here too, via the same test rather
+        # than a clause of their own: `by_msgid` is built from
+        # `nodes[1:]`, so it never holds the ROOT's message-id and the
+        # lookup is already None for them. An explicit
+        # `or node.thread_parent == root_msgid` used to sit here and was
+        # dead in every reachable state (a mutation deleting it survived
+        # the whole suite), while the comment beside it implied the
+        # routing depended on it.
+        if parent is None:
+            comments.append(comment)
+        else:
+            parent.setdefault("comment", []).append(comment)
     if comments:
         payload["comment"] = comments
 

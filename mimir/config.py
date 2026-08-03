@@ -584,22 +584,72 @@ class Settings(BaseSettings):
     # Override via SUBSYSTEM_TRIAGE_MAX_AGE_DAYS.
     subsystem_triage_max_age_days: int = 180
 
-    # Hard upper bound on messages rendered inline by the whole-thread
-    # view (`/<inbox>/<YYYY>/<MM>/<root_id>/t`). Each rendered message
-    # is a git blob fetch plus a parse (~2 ms warm per CONTEXT.md) and
-    # the page is not server-cached, so the cap directly sets the
-    # worst-case cost of a request. At 200 that is ~400 ms against a
-    # 2-worker sync gunicorn tier, and the sitemap now points crawlers
-    # straight at these URLs (MEMORY.md 2026-05-29 records one crawler
-    # sustaining 195 req/min while ignoring Crawl-delay), so two
-    # concurrent worst-case renders occupy the whole tier. 50 keeps
-    # that under ~100 ms while still inlining the overwhelming
-    # majority of real threads; longer ones list their tail as links,
-    # and those messages keep their own canonical since the page does
-    # not contain them. Raise once the render is cached or the
-    # per-message Repo open is hoisted (see the tracking issue).
+    # Messages rendered per PAGE of the whole-thread view
+    # (`/<inbox>/<YYYY>/<MM>/<root_id>/t`, and `/t/<page>` beyond the
+    # first). Since 3.8.0 this is a PAGE-WEIGHT budget and nothing else:
+    # the view paginates, so no message is dropped at any value, which is
+    # what it used to control.
+    #
+    # The question it answers is "how large a download is one page of a
+    # flattened thread". Per-message weight varies about 10x by inbox,
+    # measured against production 2026-08-02: ~11 KB on linux-fsdevel,
+    # ~101 KB on syzbot, whose CI reports carry kernel logs and
+    # reproducers. So:
+    #
+    # The per-message weights are MEASURED; the per-page figures below
+    # are that weight times the cap, i.e. derived, not observed. Stated
+    # because an earlier version of this table and the changelog quoted
+    # two different numbers for the same page (2.4 MB and 2.6 MB), which
+    # is what an unlabelled extrapolation invites.
+    #
+    #     cap  50 -> ~0.5 MB typical,  ~5.1 MB on syzbot
+    #     cap  75 -> ~0.8 MB typical,  ~7.6 MB
+    #     cap 100 -> ~1.1 MB typical,  ~10.1 MB
+    #     cap 200 -> ~2.2 MB typical,  ~20.2 MB
+    #
+    # 75 keeps the worst inbox comfortably under 10 MB while leaving the
+    # overwhelmingly common case under a megabyte.
+    #
+    # A CRAWL-BUDGET argument used to sit here as the deciding factor and
+    # has been removed because it was wrong, not because it lost. Every
+    # page is sitemapped, and the note compared the extra pagination URLs
+    # (60,653 at cap 50, 13,013 at 100, 2,759 at 200) against "32,229
+    # indexed pages". 32,229 is the number of sitemap FILES in the index,
+    # not URLs; the population those entries actually join is the
+    # 6,074,810 advertised thread URLs, so the real cost is +1.0%,
+    # +0.21% and +0.045%. Negligible at every candidate, and therefore
+    # unable to discriminate between them. The raw counts were right and
+    # current; the denominator was a different thing entirely. Standing
+    # rule, earned again: name the population a figure counts, next to
+    # the figure.
+    #
+    # A second, byte-based budget would dominate this one and is
+    # deliberately NOT added: one knob set conservatively gets most of
+    # the benefit, and two interacting caps is more machinery than this
+    # has earned. Revisit if a real page misbehaves.
+    #
+    # CHANGING THIS RE-SLICES EVERY THREAD. Advertised `/t/<page>` URLs
+    # move or 404, every message's canonical moves with them, and the
+    # sitemap cache holds the old slicing for up to `SITEMAP_TTL_SEC`.
+    # Treat it like `SITEMAP_URLS_PER_PAGE`, which carries the same
+    # hazard and says so: bump `cache.NAMESPACE_VERSION` alongside any
+    # change so stale sitemaps cannot advertise the old page count.
+    #
+    # The 100 -> 75 change on this branch did NOT bump it, and that is
+    # the one exemption: thread pagination is unreleased, so no cached
+    # sitemap row anywhere was ever cut at 100. Stated explicitly
+    # because otherwise this reads as a rule sitting directly above a
+    # counter-example, with nothing telling a future reader which of
+    # the two to follow. Any change after this ships needs the bump.
+    #
+    # Blob cost still applies per rendered message (~10 ms each, one
+    # `read_messages` bulk fetch per page) but is no longer the binding
+    # constraint the pre-3.8.0 comment here described: it reasoned
+    # entirely about blob fetches while 93% of the response was a
+    # recursive thread walk that no longer happens.
+    #
     # Override via THREAD_VIEW_RENDER_CAP.
-    thread_view_render_cap: int = 50
+    thread_view_render_cap: int = 75
 
     # Hard upper bound on age of "related patches" surfaced on a
     # message page (1.36.3). The `recent_patches_touching` helper

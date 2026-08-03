@@ -2,10 +2,16 @@
 per-inbox sitemap, maintainers sitemap, `<lastmod>` correctness,
 cache invalidation after canonical-inbox flips."""
 
+import logging
+
 import re
 import pytest
 
-from tests.test_routes._helpers import _clear_sitemap_cache, _seed_subsystem
+from tests.test_routes._helpers import (
+    _clear_sitemap_cache,
+    _seed_subsystem,
+    build_thread,
+)
 
 
 def test_sitemap_xml(client):
@@ -1517,4 +1523,259 @@ def test_sitemap_page_width_stays_under_the_sqlite_bind_limit():
             f"SQLITE_LIMIT_VARIABLE_NUMBER ({limit}); a full-width slice is "
             "passed as an expanding IN list and would raise 'too many SQL "
             "variables', returning 500 on a URL the sitemap index advertises"
+        )
+
+
+def test_sitemap_lists_every_thread_page_and_each_one_resolves(
+    client, tmp_path, monkeypatch
+):
+    """Every advertised thread page exists, and is self-canonical.
+
+    Three separate claims have to agree here or the surface is
+    incoherent, and each has been wrong in this project before:
+
+    * the sitemap advertises a URL,
+    * that URL returns a page rather than a 404,
+    * and that page names ITSELF canonical.
+
+    A page absent from the sitemap would be reachable only by walking
+    the `next` chain, and since messages on it canonicalise TO it, they
+    would defer to a URL crawlers never fetch. A page advertised but
+    404ing is the emitter/acceptor split. And an advertised page whose
+    canonical points elsewhere spends crawl budget to be told it does
+    not count.
+
+    Comparison is by exact string, not "equivalent after
+    normalisation": that normalisation is the crawler's to do and it is
+    charged as a duplicate-URL signal.
+    """
+    import re as _re
+
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    # FIVE messages at cap 2, deliberately NOT an exact multiple: at 6
+    # the floor and the ceiling of 6/2 are both 3, so a page count using
+    # integer division instead of ceiling division advertises the right
+    # number by luck and the mutant survives. Five needs 3 pages and
+    # floor gives 2.
+    edges = [("p0@x", None)] + [(f"p{i}@x", "p0@x") for i in range(1, 5)]
+    seeded = seed_thread_shape(tmp_path, "alpha", edges)
+    root_id, root_url = seeded["p0@x"]
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    advertised = _re.findall(rf"<loc>[^<]*({_re.escape(root_url)}/t[^<]*)</loc>", xml)
+
+    assert len(advertised) == 3, (
+        f"expected 3 advertised pages for a 6-message thread at cap 2, got {advertised}"
+    )
+    assert advertised[0].endswith("/t"), "page 1 must be the bare /t"
+
+    for loc in advertised:
+        resp = client.get(loc)
+        assert resp.status_code == 200, (
+            f"sitemap advertises {loc}, which {resp.status_code}s"
+        )
+        canonical_match = _re.search(
+            r'<link rel="canonical" href="([^"]+)"', resp.get_data(as_text=True)
+        )
+        canonical = canonical_match.group(1) if canonical_match else None
+        assert canonical is not None and canonical.endswith(loc), (
+            f"{loc} is advertised but names {canonical} as canonical"
+        )
+
+    # And nothing beyond the end is advertised or served.
+    assert client.get(root_url + "/t/4").status_code == 404
+
+
+def test_single_page_threads_advertise_and_show_nothing_extra(
+    client, tmp_path, monkeypatch
+):
+    """A thread that fits on one page is indistinguishable from before.
+
+    That is 6,072,481 of 6,074,374 production threads at cap 200
+    (measured 2026-08-02), so it is the default case, and any
+    pagination furniture leaking into it would be visible on
+    essentially every thread page in the archive.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 50)
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    edges = [("q0@x", None), ("q1@x", "q0@x"), ("q2@x", "q1@x")]
+    seeded = seed_thread_shape(tmp_path, "alpha", edges)
+    _root_id, root_url = seeded["q0@x"]
+
+    html = client.get(root_url + "/t").get_data(as_text=True)
+    assert 'class="thread-more"' not in html, "pagination control on a single page"
+    assert '<link rel="next"' not in html
+    assert '<link rel="prev"' not in html
+    assert "page 1 of" not in html
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    assert f"{root_url}/t</loc>" in xml
+    assert f"{root_url}/t/2" not in xml, "advertised a page that does not exist"
+
+
+def test_sitemap_page_counts_are_scoped_to_one_inbox(client, tmp_path, monkeypatch):
+    """`_thread_message_counts` must count this inbox's copy only.
+
+    Dropping its `inbox_id` filter survived the whole suite, because no
+    sitemap fixture cross-posted. It makes the advertised page count the
+    sum across every inbox a thread appears in, so the sitemap lists
+    pages the route 404s: the emitter/acceptor split, on the surface
+    crawlers are pointed at.
+    """
+    from mimir.config import settings
+
+    from tests.test_routes._helpers import build_thread
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(
+        tmp_path, "alpha", shape="chain", size=5, cross_post_to="beta"
+    )
+    _root_id, root_url = seeded["m0"]
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    advertised = [
+        loc for loc in re.findall(r"<loc>([^<]+)</loc>", xml) if root_url + "/t" in loc
+    ]
+    assert len(advertised) == 3, (
+        f"5 messages at cap 2 is 3 pages in this inbox; advertised "
+        f"{len(advertised)}: {advertised}"
+    )
+    for loc in advertised:
+        path = loc.replace("http://localhost", "")
+        assert client.get(path).status_code == 200, f"{path} is advertised but 404s"
+
+
+def test_month_sitemaps_paginate_threads_too(client, tmp_path, monkeypatch):
+    """The month sitemaps are the surface that covers the whole archive.
+
+    Only the per-inbox sitemap was tested, so replacing the month
+    sitemap's page counts with an empty mapping left the suite green
+    while every month sitemap listed page 1 only, for all 6M threads.
+    """
+    from mimir.config import settings
+
+    from tests.test_routes._helpers import build_thread
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=5)
+    _root_id, root_url = seeded["m0"]
+    year, month = root_url.split("/")[2:4]
+
+    xml = client.get(f"/alpha/{year}/{month}/sitemap.xml").get_data(as_text=True)
+    advertised = [
+        loc for loc in re.findall(r"<loc>([^<]+)</loc>", xml) if root_url + "/t" in loc
+    ]
+    assert len(advertised) == 3, (
+        f"the month sitemap advertised {len(advertised)} pages, expected 3: "
+        f"{advertised}"
+    )
+
+
+def test_urlset_over_the_protocol_cap_warns(caplog):
+    """A breach of the 50,000-per-urlset limit is silent by
+    construction: the XML renders, the route serves 200, and only the
+    crawler discovers the document is unusable. Since thread pagination
+    shipped, a page's URL count is no longer equal to the root count it
+    was sliced by, so the width constant alone no longer proves the
+    document is legal. This is the one place that sees the real number.
+
+    Unlike the module's other guards this cannot be pinned against
+    production data, so it pins the alarm rather than the headroom; the
+    headroom is a measured comment next to `SITEMAP_URLS_PER_PAGE`.
+    """
+    from mimir.seo.sitemaps import SITEMAP_MAX_URLS, _build_sitemap_xml
+
+    # Filtered by logger name, not `caplog.records` wholesale: caplog
+    # captures everything reaching the root handler, and background
+    # broker threads emit warnings at arbitrary points in a suite run.
+    # The unfiltered form passed alone and failed in full-suite order
+    # when an unrelated `mimir.broker.server` warning landed mid-test.
+    def sitemap_warnings():
+        return [r for r in caplog.records if r.name == "mimir.seo.sitemaps"]
+
+    at_cap = [(f"https://example.test/{i}", None) for i in range(SITEMAP_MAX_URLS)]
+    with caplog.at_level(logging.WARNING, logger="mimir.seo.sitemaps"):
+        _build_sitemap_xml(at_cap)
+    assert not sitemap_warnings(), "warned at exactly the cap, which is legal"
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="mimir.seo.sitemaps"):
+        _build_sitemap_xml([*at_cap, ("https://example.test/over", None)])
+    assert len(sitemap_warnings()) == 1
+    # The count, not just the fact: an operator reading this line needs
+    # to know how far over it is to pick a new width.
+    assert str(SITEMAP_MAX_URLS + 1) in sitemap_warnings()[0].getMessage()
+
+    # The INDEX has the same protocol cap and less headroom (measured
+    # 32,229 entries vs a worst-case urlset of 23,844), and unlike a
+    # month bucket it grows every calendar month and on every
+    # `admin inbox add`. It was left unguarded when the urlset alarm
+    # shipped.
+    from mimir.seo.sitemaps import _build_sitemap_index_xml
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="mimir.seo.sitemaps"):
+        _build_sitemap_index_xml([*at_cap, ("https://example.test/over", None)])
+    assert len(sitemap_warnings()) == 1, "the sitemap index is not guarded"
+    assert str(SITEMAP_MAX_URLS + 1) in sitemap_warnings()[0].getMessage()
+
+
+def test_sitemap_loc_is_byte_identical_to_the_pages_own_canonical(
+    client, tmp_path, monkeypatch
+):
+    """Not "equivalent after normalisation": the same bytes.
+
+    The sitemap used to hand-build this path with its own f-string while
+    the page built its canonical from `_thread_view_url`. Two spellings
+    of one URL, agreeing only because both happened to write the year
+    unpadded and the month `:02d`, with nothing forcing either. The
+    route accepts BOTH spellings, so every existing test would have
+    stayed green while each advertised URL disagreed with the canonical
+    of the page it points at, which is the duplicate-URL signal the
+    canonical exists to suppress. Normalisation is the crawler's to do
+    and it is charged as a duplicate.
+    """
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=5)
+    _root_id, _root_url = seeded["m0"]
+
+    body = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    # Selected by SHAPE, not by the seeded URL's spelling. Matching on
+    # `root_url` would couple this to one spelling of the path, so a
+    # change to the shared builder would fail it on the count rather
+    # than on the property, which reads like a broken test instead of a
+    # divergence.
+    locs = [
+        loc
+        for loc in re.findall(r"<loc>([^<]+)</loc>", body)
+        if re.search(r"/t(/\d+)?$", loc)
+    ]
+    # The fixture's own thread must be advertised as three pages. Keyed
+    # on the root's ID, which no spelling change can move, rather than
+    # on its date segments, which are the thing under test.
+    mine = [loc for loc in locs if re.search(rf"/{_root_id}/t(/\d+)?$", loc)]
+    assert len(mine) == 3, f"expected 3 advertised pages for the root, got {mine}"
+
+    for loc in locs:
+        path = loc.replace("http://localhost", "")
+        page = client.get(path)
+        assert page.status_code == 200, f"{loc} does not resolve"
+        canonical = re.search(
+            r'<link rel="canonical" href="([^"]+)"', page.get_data(as_text=True)
+        )
+        assert canonical is not None, f"{loc} emitted no canonical"
+        assert canonical.group(1) == loc, (
+            f"sitemap advertises {loc} but that page self-nominates as "
+            f"{canonical.group(1)}"
         )
