@@ -8,6 +8,12 @@ parent: In-Reply-To OR last entry of References, computed at ingest):
 - `get_thread` walks down from a root, building a `sort_path` column so
   the result is a proper depth-first traversal with siblings ordered
   by date.
+- `thread_by_root_id` answers the same question as `get_thread` from
+  the materialised `article_lists.thread_root_id` instead, in
+  chronological order and without any traversal. It is what the
+  whole-thread view uses; see its docstring for the measured
+  difference (6 ms against 14.4 s on the largest production thread)
+  and for why depth-first ordering is not preserved.
 
 A 1000-deep depth limit guards against pathological cycles in the
 underlying data (real lkml threads rarely exceed ~50 deep).
@@ -16,13 +22,21 @@ underlying data (real lkml threads rarely exceed ~50 deep).
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy import func, literal, select, text, tuple_
+from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
-from mimir.models import Inbox
+from mimir.models import Article, ArticleList, Inbox
 
 MAX_DEPTH = 1000
+
+# Stand-in for a NULL `articles.date` in ordering and rank comparisons.
+# SQLite sorts NULL first, so the sentinel has to be below every real
+# date; the corpus starts in the 1990s. Used identically by
+# `thread_by_root_id`'s ORDER BY, `thread_page_of`'s rank count and
+# `thread_sort_key`, because a disagreement between any two of them
+# puts a message on a page its own canonical does not name.
+_DATE_FLOOR = datetime(1, 1, 1)
 ACTIVE_THREADS_CACHE_TTL_SEC = 300  # 5 minutes
 
 
@@ -34,7 +48,10 @@ class ThreadNode:
     subject: str | None
     author: str | None
     date: datetime | None
-    depth: int
+    # `None` on the `thread_by_root_id` path, which has no traversal to
+    # derive depth from. Deliberately not 0: a plausible-looking zero
+    # would be silently wrong for every reply, where None raises.
+    depth: int | None
 
 
 @dataclass
@@ -164,6 +181,356 @@ def _find_thread_root_cte(
     return session.execute(
         sql, {"inbox_id": inbox.id, "mid": message_id, "max_depth": MAX_DEPTH}
     ).scalar()
+
+
+@dataclass
+class ThreadAggregates:
+    """Thread-wide values a single page cannot answer for itself.
+
+    Once the view is paginated the rendered slice stops being the
+    thread, so anything describing the whole conversation (its size, its
+    newest activity, how many people are in it) has to be asked
+    separately. Kept together because they come from one predicate and
+    should not drift: the count feeds both the ETag and the visible
+    total, and those disagreeing is how a page serves a stale body.
+
+    `authors` is the DISTINCT author strings, not a count.
+    `web.filters` derives the tally by `parseaddr`ing each one so
+    display-name drift does not fragment it, which a SQL
+    `COUNT(DISTINCT author)` would get wrong: `Alice <a@x>` and
+    `alice <a@x>` are two strings and one person. Distinct-ing in SQL
+    first is safe and keeps the result tiny (5 rows on the 12,342
+    message syzbot thread).
+    """
+
+    total: int
+    last_activity: datetime | None
+    authors: list[str]
+
+
+def thread_aggregates(
+    session: Session, inbox: Inbox, root_article_id: int
+) -> ThreadAggregates:
+    """Whole-thread totals, without fetching the whole thread.
+
+    Two indexed queries against `ix_article_lists_thread_root`, both
+    measured at 6 ms on the largest production thread (2026-08-02).
+    """
+    total, last_activity = session.execute(
+        select(func.count(), func.max(Article.date))
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            ArticleList.thread_root_id == root_article_id,
+        )
+    ).one()
+    authors = list(
+        session.execute(
+            select(Article.author)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.thread_root_id == root_article_id,
+                Article.author.is_not(None),
+            )
+            .distinct()
+        ).scalars()
+    )
+    return ThreadAggregates(
+        total=total or 0,
+        last_activity=_coerce_dt(last_activity),
+        authors=authors,
+    )
+
+
+def unmaterialised_roots(
+    session: Session, inbox_id: int, root_ids: list[int]
+) -> set[int]:
+    """Of `root_ids`, those the materialised column cannot answer for.
+
+    One predicate, consulted by everything that renders a thread page or
+    makes a claim about one. A thread it returns is rendered from the
+    recursive walk and makes NO page claims anywhere: its messages
+    self-canonicalise, the sitemap lists its root's message URL, and
+    IndexNow announces message URLs. Less consolidated while the data is
+    unrepaired, never pointing at a page that does not hold the message.
+
+    TWO conditions, and both are necessary. An earlier version checked
+    only the second, with a docstring asserting the first was "already
+    excluded by the caller" -- true of one of its three callers, and the
+    sentence is what let the hole survive re-reading.
+
+    1. **The root must be its own root here.** `thread_root_id` is
+       per-inbox and a root points at itself, so anything else (NULL, or
+       another article) means the column has no answer for this thread.
+       This is also what makes (2) sound: (2) finds unrooted rows by
+       looking one hop up at a ROOTED parent, so with nothing rooted it
+       finds nothing and would report a wholly-unrooted thread healthy.
+       Reachable: `reindex --from-scratch` NULLs an entire inbox by
+       design, `break_cycle` documents a stall that leaves rows NULL,
+       and `drive_passes` can exhaust its budget.
+
+    2. **No unrooted row may hang off the rooted set.** An unrooted
+       member is invisible to every query keyed on the column, so the
+       page renders it (via the walk) while the rank and the count do
+       not see it, and every message after it drifts a page.
+
+       Depth-1 is complete for the shape ingest produces:
+       `_pending._set_subtree_root(..., None)` nulls a contiguous
+       DESCENDANT set, and a message with no in-inbox parent self-roots
+       and so is never NULL that way, therefore the topmost unrooted
+       node in any such region has a rooted parent. Condition (1) covers
+       the region that reaches the root.
+
+    Batched because the sitemap asks about thousands of roots at once.
+    Driven from the unrooted side, whose cardinality is the amount of
+    unrepaired data rather than the size of the inbox.
+    """
+    if not root_ids:
+        return set()
+
+    # (1) roots that are not self-rooted here, INCLUDING ones with no row
+    # at all in this inbox.
+    self_rooted = {
+        art_id
+        for art_id, root in session.execute(
+            select(ArticleList.article_id, ArticleList.thread_root_id).where(
+                ArticleList.inbox_id == inbox_id,
+                ArticleList.article_id.in_(root_ids),
+            )
+        ).all()
+        if root == art_id
+    }
+    bad = set(root_ids) - self_rooted
+
+    # (2) roots with an unrooted row hanging off their rooted set.
+    unrooted = aliased(ArticleList)
+    unrooted_art = aliased(Article)
+    parent_art = aliased(Article)
+    parent_link = aliased(ArticleList)
+    bad |= set(
+        session.execute(
+            select(parent_link.thread_root_id)
+            .select_from(unrooted)
+            .join(unrooted_art, unrooted_art.id == unrooted.article_id)
+            .join(parent_art, parent_art.message_id == unrooted_art.thread_parent)
+            .join(
+                parent_link,
+                (parent_link.article_id == parent_art.id)
+                & (parent_link.inbox_id == unrooted.inbox_id),
+            )
+            .where(
+                unrooted.inbox_id == inbox_id,
+                unrooted.thread_root_id.is_(None),
+                parent_link.thread_root_id.in_(root_ids),
+            )
+            .distinct()
+        ).scalars()
+    )
+    return bad
+
+
+def thread_is_materialised(
+    session: Session, inbox_id: int, root_article_id: int | None
+) -> bool:
+    """Can the column answer for this one thread? See
+    `unmaterialised_roots`, which this is the single-root form of.
+
+    `None` is not materialised: a caller with no root to ask about has
+    nothing the column can rank.
+    """
+    if root_article_id is None:
+        return False
+    return root_article_id not in unmaterialised_roots(
+        session, inbox_id, [root_article_id]
+    )
+
+
+def thread_sort_key(root_article_id: int):
+    """The thread view's ordering, as a Python sort key.
+
+    Exists so the CTE fallback can page in the SAME order the indexed
+    path does. It previously sliced `get_thread`'s depth-first output
+    while `thread_page_of` computed a message's page chronologically,
+    so on any non-linear thread the canonical named a page that did not
+    contain the message. Two orderings, one claim.
+
+    Mirrors `thread_by_root_id`'s ORDER BY, including that SQLite sorts
+    NULL dates FIRST: `date is not None` is False for them, and False
+    sorts before True.
+
+    Uses `_DATE_FLOOR`, the same sentinel the SQL side COALESCEs to. It
+    previously used `datetime.min`, which has the same VALUE and not the
+    same meaning, and a comment three lines up claimed the sentinel was
+    shared. One place to change if the floor ever moves.
+
+    The two orderings are not identical in one unreachable corner: a row
+    whose real date EQUALS the floor is interleaved with NULL-dated rows
+    by SQLite (they COALESCE to the same value) while Python sorts all
+    NULLs strictly first. Not producible from git commit times, and it
+    is why the floor is year 1 rather than something plausible like
+    1970.
+    """
+
+    def key(node):
+        return (
+            node.id != root_article_id,
+            node.date is not None,
+            node.date or _DATE_FLOOR,
+            node.id,
+        )
+
+    return key
+
+
+def thread_page_of(
+    session: Session,
+    inbox_id: int,
+    root_article_id: int,
+    article: Article,
+    cap: int,
+) -> int:
+    """1-based page of the thread view that contains this message.
+
+    Exists so the thread view and the message page cannot disagree
+    about where a message lives. The message page needs it to build a
+    canonical, the thread view needs it to build page URLs, and the two
+    deriving it independently is precisely the emitter/acceptor split
+    CONTEXT.md documents as this project's recurring defect: the
+    canonical would point at a page that does not contain the message,
+    silently, on the surface crawlers are aimed at.
+
+    It counts rather than re-sorting in Python deliberately. The
+    ordering lives in `thread_by_root_id`'s ORDER BY, and reproducing
+    it as a Python sort key would be a second implementation of the
+    same rule, including the NULL-date and tie-break behaviour. One
+    indexed COUNT against the same predicate cannot drift from it.
+    """
+    if article.id == root_article_id:
+        return 1
+    # Rank among non-root messages, under the same `(date, id)` order
+    # the page uses. `+ 1` for the root, which always occupies index 0.
+    earlier = session.execute(
+        select(func.count())
+        .select_from(ArticleList)
+        .join(Article, Article.id == ArticleList.article_id)
+        .where(
+            ArticleList.inbox_id == inbox_id,
+            ArticleList.thread_root_id == root_article_id,
+            Article.id != root_article_id,
+            # COALESCE so a dateless row participates in the comparison
+            # instead of evaluating to NULL and being skipped. Without
+            # it the rank undercounted by the number of dateless
+            # replies, which are sorted FIRST by the ORDER BY, so the
+            # claimed page drifted below the real one.
+            tuple_(
+                func.coalesce(Article.date, _DATE_FLOOR),
+                Article.id,
+            )
+            < tuple_(
+                func.coalesce(literal(article.date), _DATE_FLOOR),
+                literal(article.id),
+            ),
+        )
+    ).scalar_one()
+    return (earlier + 1) // max(1, cap) + 1
+
+
+def thread_by_root_id(
+    session: Session,
+    inbox: Inbox,
+    root_article_id: int,
+    *,
+    offset: int = 0,
+    limit: int | None = None,
+) -> list[ThreadNode]:
+    """Every message of one thread, chronologically, root first.
+
+    Same question `get_thread` answers, by a different route: it reads
+    the materialised `article_lists.thread_root_id` instead of walking
+    `thread_parent`. Measured on production 2026-08-02 against the
+    largest thread in the corpus (syzbot, 12,342 messages, depth 63):
+    **6 ms here against 14,424 ms for the recursive walk**, which was
+    93% of that page's response time and was paid even on a 304.
+
+    Two differences from `get_thread`, both deliberate:
+
+    * **Chronological, not depth-first.** Reconstructing depth-first
+      order needs the traversal this function exists to avoid, and
+      nothing renders the hierarchy: `ThreadNode.depth` reaches
+      `thread.html` and is used zero times there. The whole-thread page
+      is a flat view, and arrival order is what a flat view of a
+      mailbox means.
+    * **`depth` is None, not 0.** There is no depth without the walk,
+      and a plausible-looking 0 would be silently wrong for every reply.
+      `None` makes any future arithmetic on it raise instead.
+
+    The root sorts first regardless of its date. `articles.date` is the
+    public-inbox commit time, so a reply ingested before its parent
+    carries an earlier timestamp, and the JSON-LD builder requires the
+    root at index 0. `id` breaks date ties so paging is deterministic.
+
+    It also has no depth cap, where `get_thread` stops at `MAX_DEPTH`
+    and so silently returns a SHORT thread beyond 1000 levels. That is
+    latent rather than live (production's deepest thread is 63, measured
+    2026-08-02) and it was found by accident while benchmarking, but do
+    not "restore consistency" by adding a cap here: that would reinstate
+    silent data loss. Pinned by
+    `test_thread_by_root_id_is_not_capped_by_max_depth`.
+
+    Callers must confirm the article IS its own materialised root before
+    using this. A row whose `thread_root_id` is NULL (not yet computed)
+    or points elsewhere (a non-settling cycle) is not answerable here
+    and belongs on `get_thread`.
+    """
+    rows = session.execute(
+        select(
+            Article.id,
+            Article.message_id,
+            Article.thread_parent,
+            Article.subject,
+            Article.author,
+            Article.date,
+        )
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            ArticleList.thread_root_id == root_article_id,
+        )
+        .order_by(
+            (Article.id != root_article_id),
+            # Same COALESCE as `thread_page_of`'s rank predicate. The
+            # two must agree on where dateless rows sit or a message
+            # canonicalises to a page that does not hold it.
+            #
+            # `Article.id` here is DEFENSIVE and deliberately untested:
+            # deleting it does not change behaviour on SQLite, because
+            # rows with equal dates already arrive in rowid order, which
+            # is the same order this imposes. So no fixture can
+            # distinguish it and mutation-testing reports it as a
+            # survivor. It stays because "equal keys happen to come back
+            # in id order" is a property of the current plan, not a
+            # guarantee, and the rank predicate above (which IS
+            # observable, and tested) sorts by it explicitly. The two
+            # disagreeing is the failure mode.
+            func.coalesce(Article.date, _DATE_FLOOR),
+            Article.id,
+        )
+        .offset(offset or None)
+        .limit(limit)
+    ).all()
+    return [
+        ThreadNode(
+            id=r.id,
+            message_id=r.message_id,
+            thread_parent=r.thread_parent,
+            subject=r.subject,
+            author=r.author,
+            date=r.date,
+            depth=None,
+        )
+        for r in rows
+    ]
 
 
 def get_thread(

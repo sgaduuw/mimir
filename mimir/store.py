@@ -76,7 +76,8 @@ def read_messages(
 
     `Repo(...)` re-reads and re-mmaps the epoch's pack index every
     time. Measured 2026-07-29 against the PRODUCTION mirror, 50
-    messages (the `thread_view_render_cap` default) out of one epoch,
+    messages (which was the `thread_view_render_cap` default at the
+    time of measurement; it is 75 now) out of one epoch,
     page cache warm, median of 5:
 
         lkml 9.git        (1.1 GB)   40.6 ms -> 8.7 ms    -79%

@@ -21,9 +21,10 @@ defaults assume:
   behind a CDN / reverse proxy; writes (ingest) need to be
   serialized to one process at a time. No Postgres path; SQLite
   handles the lkml-scale corpus comfortably.
-- **Multi-million-message scale.** Tested on the full lkml corpus
-  (~6 M articles, ~3.6 GB DB on disk). Comfortable on a laptop;
-  growing past ~50 M would warrant revisiting SQLite.
+- **Multi-million-message scale.** Running in production across 203
+  inboxes at 17.4 M articles and a 15 GB DB (measured 2026-08-03); lkml
+  alone is 6.4 M of that. Comfortable on a laptop; growing past ~50 M
+  would warrant revisiting SQLite.
 - **Single-user ingest at a time.** `mimir update` /
   `ingest` are not safe to run concurrently against the same DB.
   Multiple readers (web server + warm-cache cron) are fine, WAL
@@ -615,16 +616,23 @@ Routes:
   patch hunks. 24h cached, source emails are immutable in the
   mirror. Linked from each non-current entry in the patch page's
   Revisions fold (the `[diff vs current]` chip).
-- `GET /<inbox>/<YYYY>/<MM>/<root-id>/t`, whole-thread view: every
-  message in the conversation rendered inline on one page, newest
-  reply last, each linking to its own message page. Rendering is
-  capped at `THREAD_VIEW_RENDER_CAP` messages (default 50); past
-  that the remainder is listed as links rather than inlined.
-  Requesting `/t` on a reply 301s to its thread root, so a
-  conversation has exactly one URL per inbox. Message pages in a
-  multi-message thread carry a `<link rel="canonical">` pointing here;
-  messages past the cap and single-message threads keep their own
-  (this page would not contain them, or would be the poorer page). The
+- `GET /<inbox>/<YYYY>/<MM>/<root-id>/t` (and `/t/<page>`), the flat
+  whole-thread view: every message in the conversation rendered inline
+  in arrival order, each linking to its own message page. It is a FLAT
+  view, deliberately: the reply hierarchy is not drawn, and the
+  messages are ordered chronologically rather than depth-first.
+  `THREAD_VIEW_RENDER_CAP` messages per page (default 75), paginated
+  beyond that, so nothing is truncated at any cap. The next-page
+  control is a real link that HTMX upgrades to an in-place append, so
+  it works without JavaScript and stays a crawl path. A thread that
+  fits on one page shows no pagination furniture at all, which is
+  almost every thread. Requesting `/t` on a reply 301s to its thread
+  root, so a conversation has exactly one URL sequence per inbox.
+  Message pages in a multi-message thread carry a
+  `<link rel="canonical">` pointing at the PAGE that holds them;
+  single-message threads keep their own (the message page already is
+  the whole conversation, and is the richer document). Each page is
+  self-canonical and every page is listed in the sitemap. The
   view repeats the root's subsystem attribution, lifecycle badges and
   lifecycle prose so the canonical target is not thinner than the
   pages consolidating onto it. Thread views are self-canonical per
@@ -661,8 +669,13 @@ Routes:
 - `GET /<inbox>/sitemap.xml`, per-inbox urlset: the dashboard, the
   subsystem index and the subsystem dashboards active in that inbox
   (`<lastmod>` = that subsystem's last activity), the year and month
-  archives that have messages, and the most recent thread views (one URL per conversation, not one per message, since
-  message pages canonicalise to their thread). Each thread's
+  archives that have messages, and the most recent thread views. Since
+  3.8.0 that is one URL per thread PAGE rather than per conversation
+  (still far fewer than one per message, which is the point: message
+  pages canonicalise to the page holding them). A thread whose
+  root-pointer column is incomplete is listed as its root's message URL
+  instead, because nothing can agree on how many pages it has. Each
+  thread's
   `<lastmod>` is the date of its NEWEST message, so a thread that
   gains a reply announces that it changed; the URL still carries the
   root's date, since that is the thread's identity. (Until the
@@ -804,8 +817,11 @@ Sample `crontab` (daily at 04:00, only if no ingest is running):
 0 4 * * * cd ~/Projects/mimir && uv run mimir vacuum >/dev/null
 ```
 
-On lkml-scale (~6 M articles, ~3.6 GB DB) a full VACUUM takes
-80 to 120 s.
+The 80 to 120 s figure previously quoted here was measured against
+~6 M articles / ~3.6 GB. Production is now 17.4 M articles / 15 GB
+(measured 2026-08-03) and the VACUUM cost at that size has NOT been
+re-measured, so budget the window from a real run rather than from a
+number scaled off this one.
 
 ## Refreshing query-planner stats (ANALYZE)
 
