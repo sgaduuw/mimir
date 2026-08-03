@@ -817,11 +817,18 @@ Sample `crontab` (daily at 04:00, only if no ingest is running):
 0 4 * * * cd ~/Projects/mimir && uv run mimir vacuum >/dev/null
 ```
 
-The 80 to 120 s figure previously quoted here was measured against
-~6 M articles / ~3.6 GB. Production is now 17.4 M articles / 15 GB
-(measured 2026-08-03) and the VACUUM cost at that size has NOT been
-re-measured, so budget the window from a real run rather than from a
-number scaled off this one.
+Measured 2026-08-03 on production (17.4 M articles, 16 GB DB):
+**158 s**. The 80 to 120 s previously quoted here was measured against
+~6 M articles / ~3.6 GB, so the cost scales roughly with size.
+
+Two things an operator should expect during the window. The WAL grows
+by about the size of the database, because in WAL mode VACUUM's rebuild
+goes through it, so budget free space for roughly 2x the DB rather than
+1x. And the WAL does NOT shrink back afterwards on a live deployment:
+the post-VACUUM `wal_checkpoint(TRUNCATE)` cannot complete while any
+other connection has the database open, and the web and tasks
+containers hold read connections continuously. It collapses on the next
+restart.
 
 ## Refreshing query-planner stats (ANALYZE)
 

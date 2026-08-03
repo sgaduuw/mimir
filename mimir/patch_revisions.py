@@ -313,7 +313,8 @@ class RevisionDiff:
 cache.register("RevisionDiff", RevisionDiff)
 
 
-# Pygments setup mirrors the inline-diff render in `mimir/rendering.py`.
+# Pygments setup mirrors the inline-diff render in
+# `mimir/rendering/diff.py`.
 # Two-instance duplication is intentional: rendering.py's instances are
 # underscore-prefixed module-locals (not part of its public surface),
 # and adding a public helper there for one extra caller would be the
