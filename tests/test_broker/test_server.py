@@ -1410,3 +1410,88 @@ def test_backfill_still_succeeds_when_the_remaining_count_cannot_be_taken(
         "sentinel withheld over a count that merely could not run; the "
         "backfill itself succeeded"
     )
+
+
+def test_web_tier_rpcs_all_route_to_the_cache_queue():
+    """`_BrokerServer`'s docstring calls `cache_queue` "the only thing
+    the web tier waits on", and that is the whole justification for the
+    queue split: long ops can hold the long queue for minutes because
+    nothing on a request path is behind them.
+
+    The op names are DERIVED from `mimir/cache.py` rather than listed
+    here, because the two halves of this claim live in different files
+    (cache.py produces the RPC, `_reader_loop` decides which queue it
+    lands on) and a hardcoded list would silently stop covering a
+    fifth web-tier RPC the day one is added. Every op cache.py can
+    issue must be a known op, and must be in neither `LONG_OPS` nor
+    `WARM_OPS` (the two sets `_reader_loop` routes away from
+    `cache_queue`)."""
+    import ast
+
+    from mimir.broker.handlers import LONG_OPS, WARM_OPS, _DISPATCH
+
+    src = (Path(__file__).resolve().parents[2] / "mimir" / "cache.py").read_text()
+    ops = set()
+    for node in ast.walk(ast.parse(src)):
+        # `get_broker_client().<method>(...)`
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Name)
+            and node.func.value.func.id == "get_broker_client"
+        ):
+            ops.add(node.func.attr)
+
+    assert ops, "found no broker RPCs in mimir/cache.py; the AST walk is stale"
+    unknown = ops - set(_DISPATCH)
+    assert not unknown, (
+        f"cache.py issues RPC(s) with no matching broker op: {sorted(unknown)}; "
+        "either the client method no longer shares its name with the op, or "
+        "this test can no longer see the routing"
+    )
+    misrouted = ops & (LONG_OPS | WARM_OPS)
+    assert not misrouted, (
+        f"web-tier RPC(s) {sorted(misrouted)} route off the cache queue; a "
+        "request would then wait behind a multi-minute long op"
+    )
+
+
+def test_schema_revision_reads_the_engine_alembic_migrates(monkeypatch):
+    """`_schema_revision`'s docstring says sharing
+    `mimir.extensions.engine` with `alembic/env.py` makes "which database
+    has the revision" and "which database gets migrated" agree by
+    construction. It is a producer/validator pair: `_migrate_if_needed`
+    compares the revision before and after, and if the two halves ever
+    read different databases the comparison reads unchanged and the
+    post-migrate ANALYZE is silently skipped.
+
+    Pinned from both sides. First: repoint `settings.database_url` at a
+    path that does not exist. An implementation that re-derived its own
+    connection from the URL (the shape the docstring says was replaced)
+    would find no `alembic_version` there and return None. Second: the
+    other half of the pair, that `alembic/env.py`'s online path really
+    does run on that same engine object."""
+    from mimir.broker.server import _schema_revision
+    from mimir.config import settings
+
+    before = _schema_revision()
+    assert before is not None, "test DB has no alembic_version; fixture broke"
+
+    monkeypatch.setattr(
+        settings, "database_url", "sqlite:////nonexistent-dir/definitely-not-here.db"
+    )
+    assert _schema_revision() == before, (
+        "_schema_revision followed settings.database_url instead of the "
+        "shared engine; it can now disagree with the database alembic migrates"
+    )
+
+    env_src = (Path(__file__).resolve().parents[2] / "alembic" / "env.py").read_text()
+    assert "from mimir.extensions import" in env_src and "engine" in env_src, (
+        "alembic/env.py no longer imports mimir.extensions.engine"
+    )
+    assert "with engine.connect()" in env_src, (
+        "alembic/env.py's online path no longer runs on the shared engine; "
+        "_schema_revision's before/after comparison can now read a "
+        "different database than the one that got migrated"
+    )

@@ -1779,3 +1779,103 @@ def test_sitemap_loc_is_byte_identical_to_the_pages_own_canonical(
             f"sitemap advertises {loc} but that page self-nominates as "
             f"{canonical.group(1)}"
         )
+
+
+def test_every_thread_page_emitter_agrees_byte_for_byte(client, tmp_path, monkeypatch):
+    """All FOUR emitters named in `thread.py`, not the two already pinned.
+
+    `mimir/web/routes/thread.py` claims "the redirect target, the
+    canonical, the sitemap `<loc>` and IndexNow are byte-identical by
+    construction". The sibling test above covers two of those (the
+    sitemap `<loc>` and the thread page's own canonical), and both go
+    through `thread_page_url`, so it cannot see the other two.
+
+    The other two do NOT share the page suffix. `routes/message.py` and
+    `urls._advertised_urls_for` each build it themselves:
+
+        thread_view_url = _thread_view_url(root, name)
+        if page_no > 1:
+            thread_view_url += f"/{page_no}"
+
+    Only the `_msg_path` PREFIX is shared. The `/N` suffix is three
+    parallel implementations of one rule, which is the emitter/acceptor
+    shape CONTEXT.md records as this project's recurring defect, and the
+    route accepts `/t/2` in exactly one spelling so a divergence is a
+    404 or a duplicate-URL signal rather than a test failure.
+
+    So this pins every emitter against ONE string, the one the sitemap
+    published, and additionally asserts CONTAINMENT (MEMORY.md
+    2026-08-03: containment is the claim that matters and it is
+    scope-independent) rather than re-deriving the page number.
+    """
+    from mimir import indexnow
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    # Five at cap 2 needs three pages, and 5/2 floors to 2, so a
+    # ceiling-division bug cannot pass by luck.
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=5)
+    root_id, root_url = seeded["m0"]
+    # `m3` is the fourth message in arrival order, so at cap 2 it is the
+    # first message on page 2: the only position that exercises a page
+    # suffix at all.
+    reply_id, _reply_url = seeded["m3"]
+
+    body = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    advertised = [
+        loc
+        for loc in re.findall(r"<loc>([^<]+)</loc>", body)
+        if re.search(rf"/{root_id}/t(/\d+)?$", loc)
+    ]
+    assert len(advertised) == 3, advertised
+    page1, page2 = advertised[0], advertised[1]
+    assert page1.endswith("/t") and page2.endswith("/t/2"), advertised
+
+    # Which advertised page actually renders `m3`. Derived by fetching,
+    # never by recomputing the rank: a shared miscalculation would make
+    # a recomputed expectation agree with the bug.
+    holder = None
+    for loc in advertised:
+        html = client.get(loc.replace("http://localhost", "")).get_data(as_text=True)
+        if f'id="m{reply_id}"' in html:
+            assert holder is None, f"{reply_id} rendered on two pages"
+            holder = loc
+    assert holder == page2, f"expected {reply_id} on {page2}, found it on {holder}"
+
+    # 1. IndexNow. Its own suffix implementation, on the same article.
+    with SessionLocal() as s:
+        msgid = s.get(Article, reply_id).message_id
+        pushed = indexnow.build_urls(s, [msgid], base="http://localhost")
+    assert pushed == [holder], (
+        f"IndexNow pushes {pushed}, the sitemap advertises {holder}; "
+        "the two page-suffix implementations have drifted"
+    )
+
+    # 2. The message page's canonical. A third suffix implementation.
+    msg_html = client.get(_reply_url).get_data(as_text=True)
+    msg_canonical = re.search(r'<link rel="canonical" href="([^"]+)"', msg_html)
+    assert msg_canonical is not None
+    assert msg_canonical.group(1) == holder, (
+        f"the message page canonicalises to {msg_canonical.group(1)} while "
+        f"the sitemap advertises {holder}"
+    )
+
+    # 3. The reply-redirect. `/t` on a reply must land on the page that
+    # holds it, spelled the same way.
+    redirect = client.get(_reply_url + "/t")
+    assert redirect.status_code == 301, redirect.status_code
+    assert redirect.headers["Location"] == holder.replace("http://localhost", ""), (
+        f"/t on a reply redirects to {redirect.headers['Location']}, "
+        f"but the advertised page is {holder}"
+    )
+
+    # 4. The `/t/1` collapse. Page 1 has no suffix anywhere else, so a
+    # redirect that kept one would advertise a URL nothing else names.
+    collapse = client.get(root_url + "/t/1")
+    assert collapse.status_code == 301
+    assert collapse.headers["Location"] == page1.replace("http://localhost", ""), (
+        f"/t/1 redirects to {collapse.headers['Location']}, "
+        f"the sitemap advertises {page1}"
+    )

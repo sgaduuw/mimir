@@ -2,6 +2,9 @@
 maintainer profile page. See mimir/web/routes/maintainers.py and
 mimir/templates/maintainer.html."""
 
+import re
+
+import pytest
 from sqlalchemy import select
 
 from mimir.models import Article, ArticleTrailer, Subsystem, SubsystemMaintainer
@@ -146,3 +149,132 @@ def test_maintainer_view_emits_profilepage_json_ld(client, session):
     assert payload["mainEntity"]["@type"] == "Person"
     assert payload["mainEntity"]["name"] == "Kent Overstreet"
     assert payload["url"].endswith("/maintainers/kent@kernel.org")
+
+
+# The emitter/acceptor pair. `maintainer_path` (used by the two
+# template link sites AND by /sitemap-maintainers.xml) produces the
+# address; `maintainer_view` decides whether to serve it. Nothing in
+# the code forces the two to agree, so the agreement is pinned here
+# rather than asserted in prose. See CONTEXT.md "Emitter and acceptor
+# must share one validity rule".
+
+
+def test_message_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
+    client, tmp_path
+):
+    """`/maintainers/<address>` is an M-only surface, and the message
+    page's subsystem header is the second place that linkifies a
+    maintainer.
+
+    The sibling guard on the subsystem page
+    (`test_subsystem_page_does_not_link_reviewer_addresses_to_maintainer_profiles`)
+    had no counterpart here, so the `_role == 'M'` filter in
+    `_message_body.html` was the only thing standing between an `R:`
+    reviewer and a linked 404, with nothing holding it.
+
+    The allowlist gate the template also applies does NOT stand in for
+    the role check: the allowlist is the UNION of `M:` and `R:`, so
+    every reviewer passes it. It answers "is this address safe to
+    display", not "does this profile exist".
+    """
+    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+
+    _seed_subsystem(
+        "BCACHEFS",
+        "Maintained",
+        files=["fs/bcachefs/"],
+        maintainers=[
+            ("M", "Kent Overstreet", "kent.overstreet@kernel.org"),
+            ("R", "Reviewer Person", "reviewer.only@kernel.org"),
+        ],
+    )
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "msgpage-roles@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    body = client.get(url).get_data(as_text=True)
+
+    assert 'href="/maintainers/kent.overstreet@kernel.org"' in body
+    assert 'href="/maintainers/reviewer.only@kernel.org"' not in body
+    # The gate would have passed the reviewer: it is allowlisted.
+    from mimir.web.filters import _is_allowlisted_address_filter
+
+    with client.application.test_request_context("/"):
+        assert _is_allowlisted_address_filter("reviewer.only@kernel.org") is True
+    # And the thing that actually matters: nothing linked from here 404s.
+    assert client.get("/maintainers/kent.overstreet@kernel.org").status_code == 200
+    assert client.get("/maintainers/reviewer.only@kernel.org").status_code == 404
+
+
+def test_every_url_the_maintainers_sitemap_advertises_resolves(client, session):
+    """Every `<loc>` in `/sitemap-maintainers.xml` must be a page.
+
+    The sitemap builds its URLs with `maintainer_path` and applies no
+    addressability predicate (unlike subsystem names, which go through
+    `subsystems.is_addressable_subsystem_name`), while the route gates
+    on `_MAINTAINER_ADDR_RE`. Production carried 2,467 distinct
+    (role, address) pairs on 2026-08-03 and all of them satisfy that
+    regex, so the two agree today; this pins that they keep agreeing
+    for the address shapes MAINTAINERS actually contains.
+    """
+    from tests.test_routes._helpers import _clear_sitemap_cache
+
+    _add_subsystem(
+        session,
+        "SHAPES",
+        "Maintained",
+        maintainers=[
+            # Every punctuation class the regex admits, plus the
+            # mixed-case form MAINTAINERS really uses.
+            ("M", "Dot Name", "first.last@vger.kernel.org"),
+            ("M", "Plus Tag", "someone+kernel@example.co.uk"),
+            ("M", "Dashed Host", "dev@my-host.example.com"),
+            ("M", "Under Score", "some_one@example.com"),
+            ("M", "Mixed Case", "Andrea.Ho@Advantech.COM.TW"),
+        ],
+    )
+    _clear_sitemap_cache()
+
+    xml = client.get("/sitemap-maintainers.xml").get_data(as_text=True)
+    locs = re.findall(r"<loc>([^<]+)</loc>", xml)
+    assert len(locs) == 5, f"expected one urlset entry per maintainer, got {locs}"
+
+    for loc in locs:
+        path = re.sub(r"^https?://[^/]+", "", loc)
+        assert client.get(path).status_code == 200, (
+            f"sitemap advertises {loc!r} but the route refuses it; the "
+            "URL builder and the route's validity rule have drifted"
+        )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "KNOWN GAP (latent, zero instances on production as of "
+        "2026-08-03): `maintainer_path` percent-encodes any address at "
+        "all, while `maintainer_view` rejects anything outside "
+        "`_MAINTAINER_ADDR_RE`. `maintainers._split_addr` stores "
+        "whatever sits between the last '<' and '>' of an `M:` line, so "
+        "one apostrophe or one non-ASCII character upstream publishes a "
+        "404 to every crawler via /sitemap-maintainers.xml. The fix is "
+        "a shared addressability predicate, the same shape as "
+        "`subsystems.is_addressable_subsystem_name`; remove this xfail "
+        "when it lands."
+    ),
+)
+def test_maintainer_path_never_emits_a_url_the_route_refuses(client, session):
+    """An apostrophe is legal in an email local part, legal in
+    MAINTAINERS, and accepted by mimir's parser. It should not be
+    possible to emit a link and a sitemap entry for an address the
+    route will not serve."""
+    from mimir.maintainer_directory import maintainer_path
+
+    _add_subsystem(
+        session,
+        "APOSTROPHE",
+        "Maintained",
+        maintainers=[("M", "Sean O'Brien", "o'brien@example.com")],
+    )
+    assert client.get(maintainer_path("o'brien@example.com")).status_code == 200

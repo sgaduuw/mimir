@@ -467,3 +467,61 @@ def test_writer_thread_run_disposes_engine_when_connect_fails(monkeypatch):
     with pytest.raises(RuntimeError, match="simulated connect failure"):
         writer._run()
     fake_engine.dispose.assert_called_once()
+
+
+def test_every_write_op_runs_on_the_one_writer_thread_with_one_connection(seeded_db):
+    """`WriterThread`'s class docstring justifies the absence of any lock
+    around the writable connection with "the writable connection lives
+    entirely on the writer thread and is never touched by anyone else".
+
+    That claim is what makes every WriteOp closure safe to write without
+    synchronisation, so pin its two observable halves: whichever thread
+    calls `submit()`, the closure runs on the single thread named
+    `mimir-broker-writer`, and every closure sees the SAME Connection
+    object. Submitting from several threads is the part that matters:
+    a fast path that ran a closure inline on the submitting thread, or a
+    second writer thread added for throughput, would hand two threads the
+    same Connection and SQLAlchemy Connections are not thread-safe."""
+    from mimir.config import settings
+
+    writer = WriterThread(database_url=settings.database_url, queue_depth=64)
+    writer.start()
+    seen: list[tuple[int, str, int]] = []
+    seen_lock = threading.Lock()
+
+    def record(conn):
+        me = threading.current_thread()
+        with seen_lock:
+            seen.append((me.ident or -1, me.name, id(conn)))
+
+    submitters = [
+        threading.Thread(
+            target=lambda i=i: [
+                writer.submit(WriteOp(label=f"probe:{i}:{n}", fn=record)).result(
+                    timeout=10
+                )
+                for n in range(3)
+            ]
+        )
+        for i in range(4)
+    ]
+    try:
+        for t in submitters:
+            t.start()
+        for t in submitters:
+            t.join(timeout=15)
+    finally:
+        writer.stop(timeout=10)
+
+    assert len(seen) == 12, seen
+    idents = {ident for ident, _name, _cid in seen}
+    names = {name for _ident, name, _cid in seen}
+    conn_ids = {cid for _ident, _name, cid in seen}
+    assert len(idents) == 1, f"closures ran on {len(idents)} threads: {seen}"
+    assert names == {"mimir-broker-writer"}, names
+    assert len(conn_ids) == 1, f"closures saw {len(conn_ids)} connections: {seen}"
+    submitter_idents = {t.ident for t in submitters}
+    assert not (idents & submitter_idents), (
+        "a closure ran on a submitting thread; the writable connection "
+        "escaped the writer thread"
+    )
