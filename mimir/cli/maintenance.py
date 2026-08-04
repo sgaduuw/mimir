@@ -23,8 +23,9 @@ from mimir.cli._common import _fmt_bytes
     help="Override the connection's `PRAGMA analysis_limit` and run "
     "with `analysis_limit=0` (no cap) for this pass. Produces "
     "fully-accurate per-index distribution stats at the cost of "
-    "a longer writer-lock hold (~25-30 s on the production-scale "
-    "11M-row corpus). Use as the periodic safety-net pass; the "
+    "a longer writer-lock hold (~25-30 s when measured at 11M rows; "
+    "the corpus is 28.8M as of 2026-08-04 and this has not been "
+    "re-measured). Use as the periodic safety-net pass; the "
     "default capped ANALYZE catches typical drift cheaply.",
 )
 def analyze_command(full: bool) -> None:

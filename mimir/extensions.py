@@ -21,9 +21,11 @@ def _sqlite_pragmas(dbapi_conn, _conn_record) -> None:
     cur.execute(f"PRAGMA busy_timeout={settings.sqlite_busy_timeout_ms}")
     # Bound ANALYZE's per-index row sample. SQLite default is 0
     # (no limit), which makes ANALYZE scan every row of every
-    # index and hold the writer lock for the full duration; on the
-    # 11M-row corpus that's ~25 s, dominant source of broker-side
-    # cache.set stalls in production. Setting `analysis_limit` on
+    # index and hold the writer lock for the full duration; that was
+    # ~25 s when measured against an 11M-row corpus, and the corpus is
+    # now 28.8M `article_lists` rows (measured 2026-08-04), so an
+    # unbounded pass costs proportionally more. Dominant source of
+    # broker-side cache.set stalls in production. Setting `analysis_limit` on
     # every connection means `mimir analyze`, auto-ANALYZE-after-
     # ingest, and any ad-hoc session running ANALYZE all inherit
     # the limit uniformly.

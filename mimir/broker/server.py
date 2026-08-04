@@ -992,7 +992,8 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     # Running it before the count below is also what keeps that count
     # cheap: with fresh stats the planner takes a skip-scan over
     # `ix_article_lists_thread_root` instead of scanning the covering
-    # index (measured at 28.8M rows: 0.00 s vs 0.47 s).
+    # index (measured at 28.8M rows: 0.00 s vs 0.47 s; still 28.8M on
+    # 2026-08-04).
     _run_post_backfill_analyze()
 
     # The counters are PER RUN, not cumulative, because the backfill only
@@ -1350,7 +1351,9 @@ def build_server(socket_path: Path) -> _BrokerServer:
     #   3. Post-migrate ANALYZE: a fresh schema migration may have
     #      added indexes whose `sqlite_stat1` needs populating
     #      before the planner sees them; the bounded pass takes
-    #      1-3 s on the production corpus.
+    #      ~10.8 s on the production corpus (2026-08-04). It runs
+    #      BEFORE the healthcheck sentinel, so it is on the startup
+    #      budget; re-measure it whenever that budget is reviewed.
     #
     # Each is sentinel-gated. The web tier gates on the broker's
     # healthcheck so cold requests after deploy never hit any of

@@ -428,13 +428,19 @@ class Settings(BaseSettings):
     # row of every index, which on the 11M-row prod corpus holds
     # the writer lock for ~25 s. SQLite's docs hint at "1000 or
     # 1500 for very large databases"; **4000** is a 10x margin on
-    # that for an 11M-row corpus and produces accurate-enough stats
+    # that (set when the corpus was 11M rows; it is 28.8M
+    # `article_lists` as of 2026-08-04) and produces accurate-enough
+    # stats
     # for the recursive-CTE shapes the read path leans on (thread
     # walk via `ix_articles_thread_parent`, the per-inbox
     # `(article_id, inbox_id)` covering index on `article_lists`,
     # etc.). ANALYZE wall time scales roughly linearly in the
-    # limit; 4000 measures at ~1-3 s on this corpus, still 10x
-    # better than the 25-30 s full scan. The pragma is set on every
+    # limit; 4000 measures at **10.8 s** on this corpus (2026-08-04,
+    # read off the broker's nightly `slow write [analyze]` line), which
+    # is still far better than an unbounded scan but is NOT the "~1-3 s"
+    # this comment claimed for three releases after the corpus tripled.
+    # It is also on the broker's pre-healthcheck startup path, so
+    # re-measure it whenever the startup budget is reviewed. The pragma is set on every
     # connection in `mimir.extensions._sqlite_pragmas`, so it
     # applies uniformly to `mimir analyze`, auto-ANALYZE-after-
     # ingest, and any ad-hoc session running ANALYZE.
@@ -579,8 +585,11 @@ class Settings(BaseSettings):
     # "quiet": the author has moved on, the patch won't land without
     # a fresh post. Bounding the queue this way is also load-bearing
     # for the query plan, walking `ix_articles_date` ASC over an
-    # unbounded range scans 6M+ rows for popular subsystems (8 s
-    # cold miss); over 180 days it's ~200k rows and milliseconds.
+    # unbounded range scans the whole `articles` table for popular
+    # subsystems (17.4M rows as of 2026-08-04; the "6M+" this used to
+    # say was lkml alone read as the archive, the trap CLAUDE.md
+    # documents). Measured at 8 s cold miss when that figure was
+    # written; over 180 days it is ~200k rows and milliseconds.
     # Override via SUBSYSTEM_TRIAGE_MAX_AGE_DAYS.
     subsystem_triage_max_age_days: int = 180
 
