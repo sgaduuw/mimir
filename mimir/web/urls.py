@@ -417,7 +417,7 @@ def _advertised_urls_for(
                 # case one branch down.
                 out[art_id] = base + _msg_url(article, name)
                 continue
-            path = _thread_view_url(root, name)
+            page_no = 1
             if ix_id is not None:
                 page_no = thread_page_of(
                     session,
@@ -426,9 +426,7 @@ def _advertised_urls_for(
                     article,
                     max(1, settings.thread_view_render_cap),
                 )
-                if page_no > 1:
-                    path += f"/{page_no}"
-            out[art_id] = base + path
+            out[art_id] = base + thread_page_url(root.id, root.date, name, page_no)
         else:
             out[art_id] = base + _msg_url(article, name)
     return out
