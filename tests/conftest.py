@@ -411,6 +411,52 @@ def _reset_db():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_surprise_clone(monkeypatch, request):
+    """Fail loudly instead of cloning a kernel tree during tests.
+
+    `mainline._ensure_tree` clones when its target path does not exist,
+    and `skip_fetch` does not prevent that: it only skips the fetch on
+    an existing clone. So on a machine where the tree happens to be
+    present every test passes, and in a FRESH checkout the same test
+    silently performs a ~3.6 GB `git clone` of torvalds/linux. That is
+    invisible to everyone who already has the tree, which is why it
+    survived, and it is why every subagent brief in this repo has had
+    to carry "do not run the full suite" as a workaround.
+
+    Wrapping rather than blanket-patching keeps the real code path
+    under test wherever the tree genuinely exists (the `linus_tree`
+    fixture points at a real temp repo), while any route to a clone
+    raises and names the tree and URL that would have been fetched.
+    """
+    # `allow_tree_clone` opts out, for the two tests that exercise the
+    # clone path itself with `subprocess.run` mocked. They are the only
+    # legitimate reason to reach it with a missing path.
+    if request.node.get_closest_marker("allow_tree_clone"):
+        return
+
+    import mimir.mainline as _mainline
+
+    real = _mainline._ensure_tree
+
+    def _guard(tree, *, reference, skip_fetch):
+        path = tree.path
+        if not path.is_absolute():
+            from mimir.config import PROJECT_ROOT
+
+            path = PROJECT_ROOT / path
+        if not path.exists():
+            raise AssertionError(
+                f"a test reached _ensure_tree for a tree at {path}, "
+                f"which does not exist, so it would `git clone` "
+                f"{tree.url}. Point settings.trees at a local repo (see "
+                f"the `linus_tree` helper) rather than the real URL."
+            )
+        return real(tree, reference=reference, skip_fetch=skip_fetch)
+
+    monkeypatch.setattr(_mainline, "_ensure_tree", _guard)
+
+
 def linus_tree(repo_path) -> dict:
     """Return a settings.trees dict containing only the linus entry
     pointing at `repo_path`. Used by tests that monkeypatch
@@ -418,8 +464,10 @@ def linus_tree(repo_path) -> dict:
     (no network round-trips, no other-tree cadence logic).
 
     `url` points at a placeholder HTTPS target that passes URL
-    validation; since tests all pass `--skip-fetch`, _ensure_tree
-    never attempts a network round-trip.
+    validation. Note `--skip-fetch` is NOT what keeps this offline:
+    it skips the fetch on an EXISTING clone, while a missing path is
+    cloned regardless. What keeps it offline is `repo_path` already
+    existing, plus the `_no_surprise_clone` guard below.
 
     `walk_every_seconds=0` disables the cadence gate so repeated
     calls within a single test always execute (the gate checks
