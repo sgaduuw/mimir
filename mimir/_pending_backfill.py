@@ -188,11 +188,23 @@ def _submit_patch_series_batch(
 
     The closure issues N `UPDATE articles SET patch_series_key=?,
     patch_series_version=?, patch_series_position=? WHERE id=?` in
-    payload order (the caller is responsible for sorting by
-    `article_id` ascending when ordering matters; SQLite's writer
-    lock makes intra-broker races impossible, so order is purely
-    a defensive consideration). NULL values overwrite previously-set
-    values (used by the orphan-clear / not-a-cover paths).
+    payload order. Order never matters here (one distinct `article_id`
+    per payload, one transaction), and no caller sorts, so the
+    "caller is responsible for sorting" contract this used to state was
+    dead.
+
+    It also credited the wrong mechanism: SQLite's writer lock
+    serialises TRANSACTIONS, not statements across transactions. What
+    actually rules out an intra-broker race is that every broker write
+    funnels through the single WriterThread and `writes._run_one` wraps
+    each WriteOp in one `conn.begin()`. The distinction is live rather
+    than pedantic, because this codebase's own idiom is splitting a long
+    closure into per-batch WriteOps to release the writer; do that here
+    and the lock-based justification still reads reassuring while the
+    real guarantee is gone.
+
+    NULL values overwrite previously-set values (used by the
+    orphan-clear / not-a-cover paths).
     """
     if not payloads:
         f: Future = Future()

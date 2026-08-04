@@ -233,7 +233,14 @@ def thread_view(
 
         if thread_rooted:
             # Paged: the slice is fetched, the totals are asked for
-            # separately, and the whole thread is never materialised.
+            # separately, and the whole thread is never materialised
+            # ON THIS PATH. Scoped deliberately: `lifecycle_status_for_articles`
+            # below still runs a recursive `WITH RECURSIVE descendants`
+            # over the whole thread (54.6 ms on the 12,342-message
+            # syzbot thread, and NOT inbox-scoped), so the request as a
+            # whole does still walk it. A 5-minute per-article cache
+            # amortises that; the sentence is about membership, not
+            # about the request.
             # That is the point of the change, so do not "simplify" this
             # by fetching everything and slicing in Python.
             agg = thread_aggregates(session, inbox, article.id)

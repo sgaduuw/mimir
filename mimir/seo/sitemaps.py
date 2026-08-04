@@ -383,9 +383,17 @@ def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
 
     Drives the index: each bucket contributes
     `ceil(count / SITEMAP_URLS_PER_PAGE)` entries, so the index has to
-    know the count before it can name the pages. sitemaps.org forbids
-    an index referencing another index, so the pages cannot be hidden
-    behind a nested index and must be enumerated here.
+    know the count before it can name the pages. Nesting is not an
+    escape: GOOGLE rejects a nested index ("Incorrect sitemap index
+    format: Nested sitemap indexes"), so the pages must be enumerated
+    here.
+
+    The authority matters because this file used to credit
+    sitemaps.org, which in fact permits nesting outright ("You can have
+    more than one Sitemap index file"). The conclusion is unchanged,
+    but a reader checking the protocol would have found the opposite of
+    what the comment claimed and reasonably concluded the constraint
+    was imaginary.
 
     Cost, measured on a full-size corpus (17.3M articles / 28.4M
     `article_lists` rows matching the production distribution):
@@ -772,10 +780,10 @@ def sitemap_index_xml(
                 )
             )
             # Then every month, which is what actually reaches the
-            # historical tail. Enumerated per page because sitemaps.org
-            # forbids an index referencing another index, so a bucket
-            # over the urlset cap cannot hide its pages behind a nested
-            # index.
+            # historical tail. Enumerated per page because GOOGLE
+            # rejects a nested index (sitemaps.org itself permits one;
+            # see `_month_sitemap_pages`), so a bucket over the urlset
+            # cap cannot hide its pages behind one.
             for year, month, count in _month_root_counts(session, inbox):
                 pages = max(1, -(-count // SITEMAP_URLS_PER_PAGE))
                 for page in range(1, pages + 1):

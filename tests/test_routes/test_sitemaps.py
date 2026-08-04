@@ -942,9 +942,9 @@ def test_month_sitemap_pages_are_disjoint_and_complete(client, tmp_path, monkeyp
 
 
 def test_sitemap_index_enumerates_every_month_page(client, tmp_path, monkeypatch):
-    """sitemaps.org forbids an index referencing another index, so the
-    pages cannot hide behind a nested index and the top-level index
-    must name each one. An index that advertises fewer pages than exist
+    """Google rejects a nested sitemap index (sitemaps.org itself
+    permits one), so the pages cannot hide behind a nested index and
+    the top-level index must name each one. An index that advertises fewer pages than exist
     leaves those URLs undiscoverable, which is the failure this
     workstream is about.
     """

@@ -131,7 +131,12 @@ def find_thread_root(session: Session, inbox: Inbox, message_id: str) -> str | N
     NOT used by `thread_roots.verify_thread_roots`, which deliberately
     calls `_find_thread_root_cte` instead. Verification exists to catch
     a wrong column value, and a verifier that reads the column it is
-    checking would agree with any corruption by construction.
+    checking would agree, by construction, with any corruption whose
+    stored root is still a member of this inbox. (A root that is NOT a
+    member fails `find_thread_root`'s membership re-check and falls
+    back to the CTE, so that narrow class would be caught either way.
+    The reachable class is the first one.) Pinned by
+    `test_verify_thread_roots_recomputes_rather_than_reading_the_column`.
     """
     row = session.execute(
         text(
@@ -246,7 +251,19 @@ def thread_aggregates(
 def unmaterialised_roots(
     session: Session, inbox_id: int, root_ids: list[int]
 ) -> set[int]:
-    """Of `root_ids`, those the materialised column cannot answer for.
+    """Of `root_ids`, those whose thread has a NULL row the column
+    cannot see.
+
+    Read the summary literally: this detects MISSING values, not WRONG
+    ones. A root whose stored `thread_root_id` is non-NULL and
+    incorrect passes here, and every consumer treats passing as "this
+    thread's page claims are safe". That is deliberate (CONTEXT.md: a
+    plausible-but-wrong non-NULL value is strictly worse than none, and
+    `find_incoherent_roots` is the detector for it) and it is not
+    reachable from ingest, because the `dup_db` branch queues no
+    `ArticleList` row so resolution only ever runs against a freshly
+    inserted NULL row. But nothing at the call sites says coherence is
+    someone else's job, so it is said here.
 
     One predicate, consulted by everything that renders a thread page or
     makes a claim about one. A thread it returns is rendered from the
@@ -275,12 +292,31 @@ def unmaterialised_roots(
        page renders it (via the walk) while the rank and the count do
        not see it, and every message after it drifts a page.
 
-       Depth-1 is complete for the shape ingest produces:
-       `_pending._set_subtree_root(..., None)` nulls a contiguous
-       DESCENDANT set, and a message with no in-inbox parent self-roots
-       and so is never NULL that way, therefore the topmost unrooted
-       node in any such region has a rooted parent. Condition (1) covers
-       the region that reaches the root.
+       Depth-1 is complete, and the derivation is (1) plus chain
+       structure rather than anything about the shape ingest produces.
+       If root R passes (1) it is self-rooted, and every member of R's
+       thread reaches R by a chain of in-inbox parents; so on any chain
+       from an unrooted member up to R there is a LOWEST rooted
+       ancestor, which carries R, and its child is unrooted and one hop
+       below it. That is a depth-1 hit. Where no chain reaches a rooted
+       ancestor at all, R itself is unrooted and (1) fires.
+
+       An earlier version argued this from
+       `_pending._set_subtree_root(..., None)` nulling a contiguous
+       DESCENDANT set, concluding that the topmost unrooted node has a
+       rooted parent. That step is false for the region it names: that
+       call fires only where the parent is present AND unrooted, so the
+       unrooted region extends up THROUGH the article to its unrooted
+       parent, and its topmost node has an unrooted parent. The
+       conclusion held; the reason did not.
+
+       Settled by enumeration rather than argument, which is the only
+       reason the bad derivation was caught:
+       `test_unmaterialised_roots_depth1_is_complete_over_every_shape`
+       covers all 125 acyclic 4-node parent assignments x all 16 NULL
+       patterns, and a sibling test samples 1,200 more varying
+       per-inbox membership. Both assert the batched and single-root
+       forms agree.
 
     Batched because the sitemap asks about thousands of roots at once.
     Driven from the unrooted side, whose cardinality is the amount of

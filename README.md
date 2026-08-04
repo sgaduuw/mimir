@@ -691,8 +691,7 @@ Routes:
   covers the deep archive: the flat per-inbox sitemap above lists only
   the most recent few thousand threads, so on a corpus of this size
   everything older was in no sitemap at all. The index enumerates every
-  page, because sitemaps.org forbids an index referencing another
-  index. Cached for 1 h.
+  page, because Google rejects a nested sitemap index. Cached for 1 h.
 - `GET /sitemap-maintainers.xml`, one urlset listing every
   `/maintainers/<address>` profile page (one URL per MAINTAINERS
   `M:` maintainer). No per-URL `<lastmod>`. Cached for 1 h.

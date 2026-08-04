@@ -88,8 +88,17 @@ def handle_backfill_thread_roots(req: "BackfillThreadRootsRequest") -> Reply:
     ms, so the writer is released ~80 times over a full run instead of
     once.
 
-    Idempotent per pass: every statement only touches NULL rows, so an
-    interrupted run resumes and live ingest is never clobbered.
+    Idempotent per pass, so an interrupted run resumes and live ingest
+    is not clobbered. Note "every statement only touches NULL rows" is
+    not quite true: `seed_roots` and `propagate` carry a
+    `thread_root_id IS NULL` predicate, `break_cycle`'s UPDATE does
+    NOT, and is safe only because its `:aid` comes from a NULL-filtered
+    SELECT in the SAME transaction. That is weaker than it reads, and it
+    interacts with the paragraph above: pushing WriteOp granularity one
+    level deeper (SELECT in one op, UPDATE in the next) would let a row
+    be rooted in between and then silently self-rooted, which is the
+    invisible thread-split class. Pinned by
+    `test_backfill_passes_never_rewrite_an_already_rooted_row`.
     """
     from sqlalchemy import select
 

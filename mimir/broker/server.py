@@ -185,7 +185,13 @@ class _BrokerServer(socketserver.UnixStreamServer):
     worker thread draining three separate work queues:
 
     - `cache_queue` for cache ops (sub-ms commits). Always-on
-      throughput; the only thing the web tier waits on.
+      throughput; the only QUEUE the web tier's RPCs land on. Not the
+      only thing it waits on: since Phase 4 the cache handlers submit
+      to the WriterThread and await `.result()`, so a request
+      transitively waits on the writer FIFO, which long ops share. The
+      real guarantee is interleaving (a cache op lands between a long
+      op's per-batch WriteOps), which CONTEXT.md states correctly.
+      Pinned by `test_web_tier_rpcs_all_route_to_the_cache_queue`.
       `broker_cache_workers` workers (default 1, env
       `BROKER_CACHE_WORKERS`); single-worker default preserves
       FIFO commit order per submitting client.
@@ -731,7 +737,13 @@ def _migrate_if_needed(socket_path: Path) -> bool:
 def _bootstrap_inboxes_if_needed(socket_path: Path) -> None:
     """Reconcile `Settings.inboxes` (env config) into the `inboxes`
     table on broker startup. Idempotent via `ON CONFLICT (name) DO
-    NOTHING`; admin edits to existing rows are never clobbered.
+    NOTHING`; admin edits to existing rows are never clobbered. That
+    answers "are edits to a row preserved" (yes), not "does the table
+    still match admin intent": an `admin inbox update --new-name`
+    leaves `Settings.inboxes` naming the old name, so a later
+    bootstrap hits no conflict and INSERTS a phantom row under it.
+    Consistent with the insert-only reconcile, but not covered by the
+    sentence above.
 
     Sentinel-gated. The post-2.0.0 broker container owns this work
     because it's a write; pre-2.0.0 the tasks container's

@@ -193,7 +193,7 @@ def break_cycle(session: Session | Connection, inbox_id: int) -> int:
 def drive_passes(run) -> dict[str, int]:
     """Run the seed / propagate / break-cycle convergence to fixpoint.
 
-    `run(pass_fn) -> rowcount` is the only thing the three callers
+    `run(pass_fn) -> rowcount` is the only thing the four callers
     disagree about: the backfill handler submits each pass as its own
     WriteOp so the single writer is released between them, while the
     in-session and replay callers just execute inline. Keeping one copy
