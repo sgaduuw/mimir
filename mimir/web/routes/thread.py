@@ -116,11 +116,22 @@ def thread_view(
         # inside `redirect()`, i.e. a 500 on a public URL. Cloudflare
         # forwards those bytes rather than rejecting them.
         #
-        # Built with `_thread_view_url`. That and the sitemap's
-        # `thread_page_url` both resolve to `_msg_path`, so there is one
-        # place deciding how a year and a month are written into a path
-        # and the redirect target, the canonical, the sitemap `<loc>`
+        # Built with `_thread_view_url`. Every emitter of a thread-page
+        # URL now resolves through `urls.thread_page_url` (and through
+        # `_msg_path` beneath it), so the redirect target, this page's
+        # canonical, the message page's canonical, the sitemap `<loc>`
         # and IndexNow are byte-identical by construction.
+        #
+        # "By construction" was an overstatement when first written and
+        # is only now accurate. The PREFIX was shared from the start,
+        # but the `/N` page suffix had three implementations: this
+        # helper, `message.py`'s canonical, and IndexNow's, each
+        # appending its own f-string. They agreed solely because all
+        # three wrote the integer bare, which is the same coincidence
+        # the sitemap's year/month spelling relied on one commit
+        # earlier. Pinned by
+        # `test_every_thread_page_emitter_agrees_byte_for_byte`, which
+        # holds all four against the string the sitemap published.
         #
         # This was NOT true when first written: the sitemap hand-built
         # the same path with its own f-string, and the comment claimed

@@ -45,13 +45,13 @@ from mimir.web._blueprint import bp_web
 from mimir.web.filters import _thread_summary
 from mimir.web.routes._validators import render_state_tag
 from mimir.web.urls import (
+    thread_page_url,
     _abort_404_if_url_date_mismatches,
     _canonical_inbox_name,
     _canonical_url_for,
     _get_inbox_or_404,
     _msg_url,
     _site_base,
-    _thread_view_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -495,10 +495,12 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                     page_no = thread_page_of(
                         session, target_inbox.id, root_article.id, article, cap
                     )
-                    thread_view_url = _thread_view_url(root_article, target_inbox.name)
-                    if page_no > 1:
-                        thread_view_url += f"/{page_no}"
-                    canonical_url = base + thread_view_url
+                    canonical_url = base + thread_page_url(
+                        root_article.id,
+                        root_article.date,
+                        target_inbox.name,
+                        page_no,
+                    )
 
         page_json_ld = (
             _json_ld_message(
