@@ -87,7 +87,11 @@ def dev_seed_thread_command(
         get_inbox(inbox_name)
         click.echo(f"using existing inbox '{inbox_name}'")
     except InboxNotFound:
-        # Validators require https://; this URL is never fetched for a
+        # Validators require https://. NOT never-fetched: `mimir update`
+        # with no --inbox selects every row and calls `sync_epochs` on
+        # each, so this host IS resolved (and fails, counted as `sync
+        # failed`) in dev. Harmless, but it is a claim about caller
+        # behaviour, not a property of the value. Never fetched for a
         # dev-seed inbox, so the host is a placeholder. Narrow except
         # to InboxNotFound only so a real DB error (connection lost,
         # schema mismatch) surfaces as a traceback rather than

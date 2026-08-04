@@ -123,8 +123,14 @@ def articles_reviewed_by(
     warm cycle's 450 s refresh window, so every warm tick re-
     computed all ~140 reviewer rows per inbox. Pinned by
     `test_articles_reviewed_by_caches_for_one_hour`. Cache key uses
-    the address verbatim, it's already lowercased so casing
-    collisions are impossible.
+    the address VERBATIM and this function enforces nothing: both
+    production callers happen to pass a lowercased address
+    (`reviewer_view` lowercases; `cli/cache.py` passes
+    `address_normalized`, lowercased at ingest), which is what makes
+    casing collisions unreachable today. A third caller passing mixed
+    case would not merely duplicate the row, it would cache an EMPTY
+    result, since the SQL matches `address_normalized`. Pinned by
+    `test_every_production_caller_keys_articles_reviewed_by_on_a_lowercased_address`.
     """
 
     def compute() -> list[ReviewEntry]:

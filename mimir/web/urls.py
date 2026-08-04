@@ -330,7 +330,15 @@ def _advertised_urls_for(
             root_by_pair[(art_id, ix_id)] = root_id
 
     # Only pairs where the article IS the root need asking; a reply is
-    # multi-message by construction.
+    # multi-message by construction. That proposition is true and is
+    # not the one that matters: what the caller needs is "the thread
+    # page URL is servable in this inbox", and those come apart when a
+    # root row is gone from the inbox (a partial `reindex
+    # --from-scratch`, a hand repair), leaving a reply pointing at a
+    # root that is not here. What actually prevents the dangling push
+    # is `unmaterialised_roots` condition (1), which covers roots with
+    # no row in this inbox at all. Pinned by
+    # `test_build_urls_does_not_advertise_a_thread_whose_root_is_gone_from_the_inbox`.
     root_pairs = {
         (ix_id, root_id)
         for (art_id, ix_id), root_id in root_by_pair.items()

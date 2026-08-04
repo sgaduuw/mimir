@@ -78,8 +78,12 @@ class MaintainerProfile:
     `review_inboxes` is the inbox names where this address appears
     on a review-attestation trailer (Reviewed-by / Acked-by / ...),
     ordered by name. Empty when the maintainer has no indexed review
-    activity, most MAINTAINERS entries are never both a maintainer
-    and an active reviewer within the archived window.
+    activity, which is the MINORITY case: measured against production
+    2026-08-04, 1,764 of 1,992 distinct `M:` addresses (88.6%) carry at
+    least one indexed trailer. An earlier version of this line claimed
+    the opposite ("most entries are never both"), inverting the ratio
+    about 9:1 and implying this fan-out is a rare tail when it runs on
+    roughly nine profile renders in ten.
     """
 
     address: str

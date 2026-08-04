@@ -235,10 +235,21 @@ def _build_fast_global_targets() -> list[tuple[str, object]]:
     each" and keep crawler-facing surfaces "within a minute of fresh".
     Neither half survived contact with the real corpus. `sitemap:index`
     now enumerates every (inbox, month) bucket and measures ~36 s
-    across 203 inboxes, and a sitemap cannot BE fresher than its
-    `<lastmod>`, which is a date, behind an edge cache of 300 s. The
-    minute cadence bought nothing and only decided which tick paid a
-    half-minute rebuild, next to targets budgeted at 100 ms.
+    across 203 inboxes. The minute cadence bought nothing and only
+    decided which tick paid a half-minute rebuild, next to targets
+    budgeted at 100 ms.
+
+    What makes the cadence irrelevant is that the warm target calls
+    `sitemap_index_xml` WITHOUT `force=True`, against
+    `SITEMAP_TTL_SEC = 3600`: a 60 s tick was already a no-op 59 times
+    out of 60. An earlier version argued instead that "a sitemap cannot
+    be fresher than its `<lastmod>`, which is a date, behind an edge
+    cache of 300 s". That is vacuous for 99.4% of the index, whose
+    month entries deliberately carry no `<lastmod>` at all; it is the
+    wrong proposition anyway, since a sitemap's payload is which
+    `<loc>`s exist and `<lastmod>` is a hint crawlers treat as
+    secondary to discovery; and origin and edge staleness ADD rather
+    than capping one another.
 
     Takes no `sitemap_base`: it would be a parameter nothing reads,
     which is how a dead knob survives a refactor."""
