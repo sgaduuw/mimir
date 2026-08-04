@@ -594,6 +594,7 @@ def test_walk_commits_rebases_true_ignores_exclude_from(
     assert mids == {"c1@x", "c2@x"}
 
 
+@pytest.mark.allow_tree_clone
 def test_ensure_tree_passes_reference_to_clone(tmp_path, monkeypatch):
     """When reference is set, git clone is invoked with --reference."""
     calls = []
@@ -630,6 +631,7 @@ def test_ensure_tree_passes_reference_to_clone(tmp_path, monkeypatch):
     assert clone_cmd[ref_idx + 1] == str(linus_path)
 
 
+@pytest.mark.allow_tree_clone
 def test_ensure_tree_no_reference_for_linus(tmp_path, monkeypatch):
     """reference=None -> no --reference flag in the git clone command."""
     calls = []
@@ -1145,3 +1147,37 @@ def test_read_linus_head_returns_none_on_missing_repo(tmp_path):
     from mimir.mainline import _read_linus_head
 
     assert _read_linus_head(tmp_path / "does-not-exist") is None
+
+
+def test_a_missing_tree_path_raises_instead_of_cloning(tmp_path, monkeypatch):
+    """The fresh-checkout guard, asserted rather than assumed.
+
+    `_ensure_tree` clones when its target path is absent, and
+    `skip_fetch` does not prevent that: it skips the fetch on an
+    EXISTING clone only. So on any machine that already has the kernel
+    tree every test passes, while a fresh checkout silently performs a
+    ~3.6 GB `git clone` of torvalds/linux. Invisible to everyone who
+    has the tree, which is why it survived long enough to become a
+    standing "do not run the full suite" warning in subagent briefs.
+
+    The autouse `_no_surprise_clone` fixture converts that into an
+    immediate failure naming the tree and URL. This test pins the
+    guard itself; without it the guard is one accidental edit from
+    being a no-op that nobody notices until CI downloads a kernel.
+    """
+    import subprocess
+
+    from mimir.config import TreeConfig
+    from mimir.mainline import _ensure_tree
+
+    def _explode(*a, **k):  # pragma: no cover - must never be reached
+        raise AssertionError(f"a clone was attempted: {a!r}")
+
+    monkeypatch.setattr(subprocess, "run", _explode)
+
+    tree = TreeConfig(
+        url="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
+        path=tmp_path / "definitely-absent",
+    )
+    with pytest.raises(AssertionError, match="would `git clone`"):
+        _ensure_tree(tree, reference=None, skip_fetch=True)

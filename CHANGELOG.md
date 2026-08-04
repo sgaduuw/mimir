@@ -31,6 +31,13 @@ changes, not internal refactors. Categories: **Added**,
   `reclaimed` diffs the main file instead of the file plus its
   freshly-inflated WAL, which had it reporting -16.7 GB for an
   operation that reclaims space.
+- The test suite can no longer trigger a ~3.6 GB `git clone` of
+  torvalds/linux. `mainline._ensure_tree` clones whenever its target
+  path is absent, and `--skip-fetch` does not prevent that (it skips
+  the fetch on an existing clone only), so a fresh checkout downloaded
+  a kernel while every machine that already had the tree passed
+  silently. Any route to a clone now fails immediately, naming the URL
+  it would have fetched.
 
 
 ## [3.8.0] - 2026-08-03
