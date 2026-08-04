@@ -222,3 +222,54 @@ def test_read_session_pool_close_drain_timeout_proceeds_anyway(seeded_db, caplog
         for r in caplog.records
     ), [r.message for r in caplog.records]
     assert not errors, errors
+
+
+def test_read_session_pool_close_disposes_even_when_a_session_is_stuck(seeded_db):
+    """`close()`'s docstring says `dispose()` runs even after a drain
+    timeout "so a stuck handler can never block broker shutdown". The
+    sibling test above only asserts the WARNING, which is emitted
+    BEFORE the dispose call and would still fire if an early `return`
+    were added between them. Pin the dispose itself.
+
+    Deliberately not asserting anything about the stuck session's fate:
+    measured against the pinned SQLAlchemy 2.0.51 + QueuePool, a
+    checked-out connection SURVIVES `Engine.dispose()`, so the older
+    prose about it hitting OperationalError describes something that
+    does not happen (see the report accompanying this test)."""
+    pool = ReadSessionPool.from_settings()
+    disposed = threading.Event()
+    real_dispose = pool._engine.dispose
+
+    def _spy_dispose(*a, **kw):
+        disposed.set()
+        return real_dispose(*a, **kw)
+
+    pool._engine.dispose = _spy_dispose  # type: ignore[method-assign]
+
+    session_acquired = threading.Event()
+    release_session = threading.Event()
+
+    def hold_session():
+        with pool.session():
+            session_acquired.set()
+            release_session.wait(timeout=10.0)
+
+    t_hold = threading.Thread(target=hold_session)
+    t_hold.start()
+    try:
+        assert session_acquired.wait(timeout=5.0)
+        t0 = time.monotonic()
+        pool.close(drain_timeout=0.3)
+        elapsed = time.monotonic() - t0
+    finally:
+        release_session.set()
+        t_hold.join(timeout=5.0)
+
+    assert disposed.is_set(), (
+        "close() returned without disposing the engine; a stuck handler "
+        "would leak the pool's connections past broker shutdown"
+    )
+    assert elapsed < 5.0, (
+        f"close() waited {elapsed:.1f}s on a session that never releases; "
+        "the drain timeout is what keeps shutdown bounded"
+    )

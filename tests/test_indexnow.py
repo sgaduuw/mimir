@@ -762,3 +762,55 @@ def test_one_inbox_being_unrepaired_does_not_mute_another(
         assert f'id="m{art_id}"' in html, (
             f"announced {url} for article {art_id}, which it does not render"
         )
+
+
+def test_build_urls_does_not_advertise_a_thread_whose_root_is_gone_from_the_inbox(
+    client, tmp_path
+):
+    """The "a reply is multi-message BY CONSTRUCTION" shortcut, tested
+    on the one state that can falsify it.
+
+    `_advertised_urls_for` skips the has-reply query for any article
+    that is not its own root, on the stated grounds that a reply implies
+    the root plus itself. The count it is really asserting is over
+    `article_lists` rows in THIS inbox, and `thread_root_id` is an
+    `articles.id`, so a root row removed from the inbox (a partial
+    `reindex --from-scratch`, a hand-repair) leaves the reply pointing at
+    a root that is not here. "Multi-message" is then false and the
+    thread URL 404s, which is precisely the dangling push `build_urls`
+    documents as worse than a missed notification.
+
+    What actually holds the shortcut up is `unmaterialised_roots`
+    condition (1) ("INCLUDING ones with no row at all in this inbox"),
+    not the by-construction reasoning, and nothing pinned that.
+    """
+    from sqlalchemy import delete, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, Inbox
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("gr1@x", None), ("gr2@x", "gr1@x")])
+    root_id, reply_id = seeded["gr1@x"][0], seeded["gr2@x"][0]
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        # The root leaves the inbox; the reply keeps pointing at it.
+        s.execute(
+            delete(ArticleList).where(
+                ArticleList.article_id == root_id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        )
+        s.commit()
+
+    with SessionLocal() as s:
+        urls = indexnow.build_urls(s, ["gr2@x"], base="")
+
+    assert urls == [f"/alpha/2024/01/{reply_id}"], (
+        f"pushed {urls}; the thread URL for root {root_id} is not servable "
+        "in alpha any more"
+    )
+    # And the claim that matters: everything pushed resolves.
+    for url in urls:
+        assert client.get(url).status_code == 200, f"pushed {url}, which 404s"

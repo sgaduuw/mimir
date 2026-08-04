@@ -1559,3 +1559,40 @@ def test_no_production_module_references_direct_cache_helpers():
         "production modules must not call _direct_* cache helpers "
         f"(test-only per Phase 6b Option B): {offenders}"
     )
+
+
+def test_only_broker_warm_handlers_enter_the_refresh_window():
+    """`get_or_compute`'s probabilistic-refresh branch is guarded by a
+    comment saying it "is never reached outside the warm-cache cycle
+    (window is None by default)". That is a claim about who enters
+    `cache.refresh_window`, not about `get_or_compute`, so pin it where
+    it can be violated.
+
+    If a request-path module ever wraps work in `refresh_window`, hot
+    reads start recomputing still-fresh rows inline (the exact cost the
+    warm cycle exists to keep off the request path), and the comment
+    goes quietly wrong. Same shape as
+    `test_no_production_module_references_direct_cache_helpers`.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent / "mimir"
+    allowed = {root / "cache.py", root / "broker" / "handlers" / "warm.py"}
+    offenders = []
+    for path in root.rglob("*.py"):
+        if path in allowed:
+            continue
+        # Word-boundary match: a bare `refresh_window(` or an
+        # attribute call (`cache.refresh_window(`), but not
+        # `_check_warm_refresh_window(` in the doctor CLI. A plain
+        # substring test would be satisfied by that unrelated name.
+        if re.search(
+            r"(?<![A-Za-z0-9_])refresh_window\(", path.read_text(encoding="utf-8")
+        ):
+            offenders.append(str(path))
+    assert not offenders, (
+        "cache.refresh_window may only be entered by the broker's warm "
+        "handlers; anywhere else makes get_or_compute's "
+        f"'window is None outside the warm cycle' comment false: {offenders}"
+    )

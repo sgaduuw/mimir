@@ -528,3 +528,79 @@ def test_active_reviewers_keeps_latest_display_name_per_address(seeded_db):
 # `most_active_subsystems_in_inbox` + `most_active_subsystems_global`
 # integration tests. Powers the subsystem discoverability surfaces
 # on the inbox dashboard and the front page.
+
+
+def test_every_production_caller_keys_articles_reviewed_by_on_a_lowercased_address(
+    client,
+    seeded_db,
+):
+    """`articles_reviewed_by`'s cache key embeds the address verbatim,
+    so "already lowercased" is a claim about its CALLERS, not about the
+    helper. Nothing in the helper enforces it: a caller passing
+    `Alice@Kernel.ORG` gets a second cache row for the same person, and
+    the row is empty besides, because the SQL matches
+    `article_trailers.address_normalized`, which is lowercased at
+    ingest.
+
+    Both production callers are exercised here rather than read:
+
+    * `reviewer_view` (`mimir/web/routes/search.py`), driven with a
+      deliberately mixed-case URL segment.
+    * the warm path (`mimir/cli/cache.py`), which passes
+      `ReviewerStat.address_normalized` from
+      `active_reviewers_in_subsystem`.
+
+    Then every `articles_reviewed_by:` row the run produced is checked
+    for a lowercased address component, so a third caller that skips
+    the `.lower()` fails here rather than silently doubling the
+    reviewer fan-out.
+    """
+    from mimir.cache import NAMESPACE_VERSION
+    from mimir.models import CacheEntry
+    from mimir.subsystems_dashboard.reviewers import REVIEWS_PER_PAGE_LIMIT
+
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        _add_recent_patch_with_trailers(
+            s,
+            "mixedcase@x",
+            ["fs/bcachefs/super.c"],
+            [("Reviewed-by", "Mixed", "Mixed@KerneL.OrG")],
+        )
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+        # Caller 2: the warm path's argument is this dataclass field.
+        stats = active_reviewers_in_subsystem(
+            s, alpha, sub, days=30, limit=10, force=True
+        )
+        assert stats, "fixture must produce a reviewer to warm"
+        for stat in stats:
+            assert stat.address_normalized == stat.address_normalized.lower()
+            articles_reviewed_by(
+                s,
+                alpha,
+                stat.address_normalized,
+                limit=REVIEWS_PER_PAGE_LIMIT,
+                force=True,
+            )
+
+    # Caller 1: the route, with a mixed-case address in the URL.
+    assert client.get("/alpha/reviewer/Mixed@KerneL.OrG").status_code == 200
+
+    prefix = f"v{NAMESPACE_VERSION}:articles_reviewed_by:"
+    with seeded_db() as s:
+        keys = [
+            k
+            for (k,) in s.execute(select(CacheEntry.key)).all()
+            if k.startswith(prefix)
+        ]
+    assert keys, "no articles_reviewed_by cache rows were written"
+    for key in keys:
+        # key shape: v<N>:articles_reviewed_by:<inbox>:<address>:<limit>
+        address = key[len(prefix) :].split(":", 1)[1].rsplit(":", 1)[0]
+        assert address == address.lower(), (
+            f"cache key {key!r} embeds a non-lowercased address; that is a "
+            "second cache entry for one person, and it caches an empty "
+            "result because the SQL matches address_normalized"
+        )

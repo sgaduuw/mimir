@@ -445,3 +445,38 @@ def test_triage_queries_use_date_index_no_full_scans(seeded_db):
             assert "ix_articles_date" in plan, (
                 f"{label}: plan does not use ix_articles_date:\n{plan}"
             )
+
+
+def test_quiet_excludes_patch_whose_only_trailer_is_not_a_review_role(seeded_db):
+    """`PatchAttention.trailer_summary`'s docstring justifies being
+    empty on the quiet list because that list "by definition has no
+    trailers". The quiet query's predicate really is
+    `NOT EXISTS (SELECT 1 FROM article_trailers ...)` with no role
+    filter, and this pins the difference.
+
+    `test_quiet_excludes_patch_with_trailers` uses a `Reviewed-by`,
+    which is also in `_REVIEW_TRAILER_ROLES`, so it passes just as
+    happily against a narrowed predicate that only excluded review
+    roles. `Suggested-by` is indexed (see
+    `trailers.INDEXED_TRAILER_ROLES`) but is NOT in the review set, so
+    it separates the two readings: under the documented "no trailers"
+    rule this patch is not quiet; under a review-roles-only rule it
+    would be, and it would then render with an empty summary while
+    carrying attestations.
+    """
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _add_article(
+            s,
+            "suggested-only@x",
+            paths=["net/core/dev.c"],
+            days_ago=40,
+            trailers=[("Suggested-by", "s@x.com")],
+        )
+        s.commit()
+        result = quiet_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert result == [], (
+        "the quiet list excludes a patch carrying ANY trailer row, not "
+        "just the review-role subset"
+    )

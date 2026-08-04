@@ -267,6 +267,35 @@ def test_security_headers_present_on_unmatched_404(client):
     assert rid and rid != "-", f"X-Request-Id={rid!r}; before_app_request didn't run"
 
 
+def test_error_responses_carry_no_cache_control(client):
+    """Error responses must never be pinned in an upstream cache.
+
+    `_add_cache_headers` applies its per-endpoint rule only on
+    200/301/302/304, so a 404 carries no `Cache-Control` at all, on
+    purpose. `mimir/web/errors.py`'s module docstring lists
+    `Cache-Control` among the headers that "carry over for free" onto
+    error pages; it does not, and the code is the correct half of that
+    disagreement. Cloudflare fronts this site (see the 3.6.x incident
+    in CONTEXT.md), so a cacheable 404 on a route that later starts
+    resolving is a real edge-staleness footgun.
+
+    Checked on both error shapes: an unmatched-route 404 (no endpoint
+    at all) and a matched route that aborts (endpoint present and
+    carrying a rule in `_CACHE_CONTROL_BY_ENDPOINT`, which is the case
+    that would regress if the status guard were dropped).
+    """
+    unmatched = client.get("/no/such/route/exists/here")
+    assert unmatched.status_code == 404
+    assert unmatched.headers.get("Cache-Control") is None
+
+    aborted = client.get("/maintainers/nobody@example.com")
+    assert aborted.status_code == 404
+    assert aborted.headers.get("Cache-Control") is None, (
+        "web.maintainer_view has a Cache-Control rule; a 404 from it "
+        "must still not be cacheable"
+    )
+
+
 def test_security_headers_values_pin_csp_contract(client):
     """Header presence isn't enough -- the *values* are the contract.
     A future refactor that left `script-src 'unsafe-inline'` in the
