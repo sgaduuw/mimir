@@ -654,7 +654,18 @@ def test_verify_samples_randomly_not_newest_first(client, tmp_path):
     """`ORDER BY id DESC` samples roughly the last hour of ingest, so a
     daily verify run structurally could not see corruption written
     during a deploy window, which is exactly the damage worth finding.
-    Corrupt an OLD row and confirm a small sample reaches it."""
+    Corrupt an OLD row and confirm a small sample reaches it.
+
+    Probabilistic by nature, so the miss probability is bounded and
+    written down rather than left to chance: sampling 5 of 39 rows over
+    200 trials misses only if every trial avoids the victim, i.e.
+    `(34/39)**200` = 1.2e-12. It ran at 60 trials until 2026-08-04,
+    where that figure is 2.7e-4, about 1 in 3,700 -- observed failing
+    once during a verification pass and passing 8 reruns, which is
+    exactly how a flake presents. Keep the sample at 5: raising it is
+    the cheaper knob but weakens the "small sample" property that is
+    the whole point.
+    """
     from sqlalchemy import select, update
 
     from mimir.extensions import SessionLocal
@@ -683,7 +694,7 @@ def test_verify_samples_randomly_not_newest_first(client, tmp_path):
         # old row, random sampling reaches it with high probability.
         hits = sum(
             1
-            for _ in range(60)
+            for _ in range(200)
             if any(
                 m["message_id"] == "rs2@x"
                 for m in verify_thread_roots(s, inbox, limit=5)

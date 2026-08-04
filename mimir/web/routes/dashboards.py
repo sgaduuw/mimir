@@ -340,14 +340,32 @@ def subsystem_dashboard(inbox_name: str, name: str):
                 ),
                 code=301,
             )
-        subsystem = session.execute(
-            select(Subsystem)
-            .options(
-                selectinload(Subsystem.maintainers),
-                selectinload(Subsystem.paths),
+        # `.first()`, not `.scalar_one_or_none()`: `subsystems.name` has
+        # no unique constraint and the URL form is lowercased, so two
+        # MAINTAINERS sections differing only in case collapse onto one
+        # URL and `scalar_one_or_none()` raises `MultipleResultsFound`
+        # -- a 500 on a public, sitemapped page. Zero collisions on
+        # production (measured 2026-07-29), so this is one upstream edit
+        # away rather than live, and nothing in the schema or the parser
+        # prevents it.
+        #
+        # Serving one of them beats 404: they are near-duplicates and a
+        # reader wants the content. `ORDER BY id` makes the pick stable
+        # so the page does not flip between renders, which an unordered
+        # `.first()` would allow.
+        subsystem = (
+            session.execute(
+                select(Subsystem)
+                .options(
+                    selectinload(Subsystem.maintainers),
+                    selectinload(Subsystem.paths),
+                )
+                .where(func.lower(Subsystem.name) == name_lower)
+                .order_by(Subsystem.id)
             )
-            .where(func.lower(Subsystem.name) == name_lower)
-        ).scalar_one_or_none()
+            .scalars()
+            .first()
+        )
         if subsystem is None:
             abort(404)
         recent = recent_articles_in_subsystem(
