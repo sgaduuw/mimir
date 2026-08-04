@@ -7,8 +7,13 @@ wrappers, the click commands in `mimir.cli.maintenance` delegate
 here, and the Phase 2.3 broker handlers do too. Single-concern:
 "the SQLite hygiene writers, end to end."
 
-ANALYZE is cheap (~1-3 s on the production 11M-row corpus with
-`analysis_limit=4000` per `_sqlite_pragmas`). VACUUM holds an
+ANALYZE is bounded but no longer cheap: **10.8 s** on the production
+corpus with `analysis_limit=4000` (measured 2026-08-04 from the
+broker's own `slow write [analyze]` line; it trips that warning nightly).
+The "~1-3 s" this used to claim was measured against an 11M-row corpus
+and the corpus is now 28.8M `article_lists` rows. That matters beyond
+tidiness: the post-migrate ANALYZE runs before the broker touches its
+healthcheck sentinel, so it is on the startup budget. VACUUM holds an
 exclusive lock for the duration (minutes on large databases); under
 the broker that means every other broker worker pauses, so it
 should run in a quiet window only.

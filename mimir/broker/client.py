@@ -632,8 +632,9 @@ class BrokerClient:
         `AnalyzeResult` dict (`{full, elapsed_ms}`).
 
         Default `timeout=600 s` covers both the bounded daily pass
-        (~1-3 s) and the weekly `full=True` pass (~25-30 s) with
-        plenty of headroom for growth."""
+        (~10.8 s, measured 2026-08-04) and the weekly `full=True` pass
+        (~25-30 s when measured at 11M rows, not re-measured at the
+        current 28.8M) with headroom for growth."""
         req = AnalyzeRequest(rpc_id=0, full=full)
         reply = self._rpc(req, timeout=timeout)
         if not reply.ok:

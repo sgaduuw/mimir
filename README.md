@@ -850,10 +850,11 @@ uv run mimir analyze
 uv run mimir analyze --full
 ```
 
-The bounded form runs in 1 to 3 s on the lkml-scale corpus and is
-accurate enough for the common join shapes. The `--full` pass
-re-samples every row of every index, holds the writer lock 25 to
-30 s, and is the safety net for distribution drift in long-tail
+The bounded form runs in about 11 s on the production corpus
+(measured 2026-08-04 at 28.8M `article_lists` rows; it was 1 to 3 s
+when the corpus was 11M) and is accurate enough for the common join
+shapes. The `--full` pass re-samples every row of every index and held
+the writer lock 25 to 30 s at 11M rows, not re-measured since, and is the safety net for distribution drift in long-tail
 indexes the bounded sample might miss.
 
 Example crontab pair:
