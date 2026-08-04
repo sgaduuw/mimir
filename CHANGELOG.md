@@ -11,6 +11,28 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- The subsystem dashboard no longer 500s when two MAINTAINERS sections
+  differ only in case. The URL form is lowercased and `subsystems.name`
+  carries no unique constraint, so such sections collapse onto one URL
+  and the lookup raised rather than resolving. It now serves the first
+  by a stable order, which beats a 404 because the two are
+  near-duplicates and a reader wants the content. No occurrences on
+  production; one upstream edit away.
+- `VACUUM` reports whether it could collapse the WAL, and no longer
+  reports a compaction as a loss. The post-VACUUM
+  `wal_checkpoint(TRUNCATE)` is a silent no-op whenever another
+  connection holds the database open, which on a live deployment is
+  always, because the web and tasks containers hold read connections
+  continuously. The WAL therefore stays at roughly database size until
+  every connection closes, so the data volume needs room for about
+  twice the database rather than once. `mimir vacuum` now says so, and
+  `reclaimed` diffs the main file instead of the file plus its
+  freshly-inflated WAL, which had it reporting -16.7 GB for an
+  operation that reclaims space.
+
+
 ## [3.8.0] - 2026-08-03
 
 ### Changed

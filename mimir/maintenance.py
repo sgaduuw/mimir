@@ -19,6 +19,7 @@ the broker that means every other broker worker pauses, so it
 should run in a quiet window only.
 """
 
+import logging
 import sqlite3
 import time
 from pathlib import Path
@@ -28,6 +29,8 @@ from sqlalchemy import text
 
 from mimir.config import settings
 from mimir.extensions import engine
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyzeResult(BaseModel):
@@ -40,14 +43,25 @@ class AnalyzeResult(BaseModel):
 
 
 class VacuumResult(BaseModel):
-    """Outcome of one `run_vacuum` invocation. The size fields are
-    the sum of the main DB file plus its `-wal` and `-shm`
-    siblings (cleanup is most visible there)."""
+    """Outcome of one `run_vacuum` invocation.
+
+    `db_size_*` are the sum of the main DB file plus its `-wal` and
+    `-shm` siblings. `reclaimed` diffs the MAIN FILE ONLY, because the
+    WAL is transiently ~db_size straight after a VACUUM and staying
+    that way is the normal outcome on a live deployment (see
+    `wal_truncated`); including it reported a large negative reclaim.
+
+    `wal_truncated` is False when the post-VACUUM
+    `wal_checkpoint(TRUNCATE)` could not run because another
+    connection held the database open. Then the WAL remains at roughly
+    database size until every connection closes, so the volume needs
+    room for ~2x the DB rather than 1x."""
 
     elapsed_ms: int
     db_size_before: int
     db_size_after: int
     reclaimed: int
+    wal_truncated: bool = True
 
 
 def run_analyze(*, full: bool = False) -> AnalyzeResult:
@@ -132,6 +146,34 @@ def _db_sizes() -> dict[str, int]:
     return out
 
 
+def _checkpoint_truncate(conn: sqlite3.Connection, phase: str) -> bool:
+    """Run `wal_checkpoint(TRUNCATE)` and report whether it actually ran.
+
+    The pragma returns `(busy, log, checkpointed)` and is a NO-OP
+    returning `busy=1` whenever another connection has the database
+    open. It never raises, so an unchecked call is silently ignored,
+    which is what shipped: on a live deployment `ct-mimir-web` and
+    `ct-mimir-tasks` hold `query_only` connections continuously, so the
+    post-VACUUM truncate never ran and the WAL stayed at ~database size
+    until the next container restart (observed 2026-08-03: 16.7 GB of
+    WAL still present 26 minutes after a VACUUM).
+
+    The old docstring justified the call with "the broker satisfies
+    this by being the sole writer". True, and the wrong predicate:
+    a truncate needs the sole CONNECTION, and readers block it.
+    """
+    row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    busy = bool(row and row[0])
+    if busy:
+        logger.warning(
+            "vacuum: %s wal_checkpoint(TRUNCATE) could not run (busy); "
+            "another connection holds the database open, so the WAL stays "
+            "at roughly database size until every connection closes",
+            phase,
+        )
+    return not busy
+
+
 def run_vacuum() -> VacuumResult:
     """Compact the database via `VACUUM` and collapse the WAL via
     `PRAGMA wal_checkpoint(TRUNCATE)`. Two checkpoints: one before
@@ -162,22 +204,28 @@ def run_vacuum() -> VacuumResult:
         # Checkpoint *after* to collapse it; the pre-checkpoint
         # clears any leftover WAL from prior writers so the
         # truncate can run cleanly when we're done.
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        _checkpoint_truncate(conn, "pre-vacuum")
         conn.execute("VACUUM")
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        wal_truncated = _checkpoint_truncate(conn, "post-vacuum")
     finally:
         conn.close()
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
     after = _db_sizes()
     total_after = after["db"] + after["-wal"] + after["-shm"]
-    reclaimed = total_before - total_after
+    # Diff the MAIN DB only. The WAL is transiently ~db_size right
+    # after a VACUUM and, when the truncate could not run, stays that
+    # way, so including it reported a large NEGATIVE reclaim for an
+    # operation whose whole purpose is reclaiming space: production
+    # logged `reclaimed -16720121472 bytes` on 2026-08-03.
+    reclaimed = before["db"] - after["db"]
 
     return VacuumResult(
         elapsed_ms=elapsed_ms,
         db_size_before=total_before,
         db_size_after=total_after,
         reclaimed=reclaimed,
+        wal_truncated=wal_truncated,
     )
 
 

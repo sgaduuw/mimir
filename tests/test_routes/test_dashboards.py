@@ -1221,3 +1221,46 @@ def test_subsystem_index_carries_its_own_meta_description_and_title(client):
     html = client.get("/alpha/subsystem/").get_data(as_text=True)
     assert "<title>Active subsystems | alpha | mimir</title>" in html
     assert 'name="description" content="Kernel subsystems with recent' in html
+
+
+def test_subsystem_dashboard_does_not_500_on_case_colliding_section_names(
+    client, tmp_path
+):
+    """Two MAINTAINERS sections differing only in case must not 500.
+
+    `subsystems.name` carries no unique constraint and the URL form is
+    lowercased, so two sections whose titles differ only in case
+    collapse onto one URL. The lookup used `scalar_one_or_none()`,
+    which raises `MultipleResultsFound` on two rows: a 500 on a public,
+    sitemapped URL rather than a page or a 404.
+
+    Zero occurrences on production (measured 2026-07-29), so this is
+    one upstream MAINTAINERS edit away rather than live. Nothing in the
+    schema or the parser prevents it, which is why it is pinned rather
+    than argued about.
+
+    Serving the first match by a deterministic order is the right
+    answer over 404: the sections are near-duplicates of one another,
+    a reader wants the content, and a stable pick means the page does
+    not flip between renders.
+    """
+    from mimir.extensions import SessionLocal
+    from mimir.models import Subsystem
+
+    with SessionLocal() as s:
+        s.add(Subsystem(name="Case Collide", status="Maintained"))
+        s.add(Subsystem(name="CASE COLLIDE", status="Odd Fixes"))
+        s.commit()
+
+    r = client.get("/alpha/subsystem/case%20collide/")
+    assert r.status_code in (200, 404), (
+        f"case-colliding section names returned {r.status_code}; "
+        "the lookup raised instead of resolving"
+    )
+    # And the pick is stable, not order-of-insertion roulette.
+    again = client.get("/alpha/subsystem/case%20collide/")
+    assert again.status_code == r.status_code
+    if r.status_code == 200:
+        assert again.get_data() == r.get_data(), (
+            "the chosen section flips between renders"
+        )
