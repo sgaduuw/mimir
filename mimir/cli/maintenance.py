@@ -86,3 +86,12 @@ def _echo_vacuum_outcome(payload: dict) -> None:
     click.echo(f"before: total={_fmt_bytes(before)}")
     click.echo(f"after:  total={_fmt_bytes(after)}")
     click.echo(f"reclaimed {_fmt_bytes(reclaimed)} in {elapsed_s:.1f} s")
+    if not payload.get("wal_truncated", True):
+        # The operator-visible half of the same finding: without this
+        # line the only symptom is a volume that quietly holds twice
+        # the database until the next restart.
+        click.echo(
+            "note: the WAL could not be truncated (another connection "
+            "holds the database open), so it stays at roughly database "
+            "size until every connection closes"
+        )
