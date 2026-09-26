@@ -594,6 +594,7 @@ def test_walk_commits_rebases_true_ignores_exclude_from(
     assert mids == {"c1@x", "c2@x"}
 
 
+@pytest.mark.allow_tree_clone
 def test_ensure_tree_passes_reference_to_clone(tmp_path, monkeypatch):
     """When reference is set, git clone is invoked with --reference."""
     calls = []
@@ -630,6 +631,7 @@ def test_ensure_tree_passes_reference_to_clone(tmp_path, monkeypatch):
     assert clone_cmd[ref_idx + 1] == str(linus_path)
 
 
+@pytest.mark.allow_tree_clone
 def test_ensure_tree_no_reference_for_linus(tmp_path, monkeypatch):
     """reference=None -> no --reference flag in the git clone command."""
     calls = []
@@ -1145,3 +1147,98 @@ def test_read_linus_head_returns_none_on_missing_repo(tmp_path):
     from mimir.mainline import _read_linus_head
 
     assert _read_linus_head(tmp_path / "does-not-exist") is None
+
+
+def test_a_missing_tree_path_raises_instead_of_cloning(tmp_path, monkeypatch):
+    """The fresh-checkout guard, asserted rather than assumed.
+
+    `_ensure_tree` clones when its target path is absent, and
+    `skip_fetch` does not prevent that: it skips the fetch on an
+    EXISTING clone only. So on any machine that already has the kernel
+    tree every test passes, while a fresh checkout silently performs a
+    ~3.6 GB `git clone` of torvalds/linux. Invisible to everyone who
+    has the tree, which is why it survived long enough to become a
+    standing "do not run the full suite" warning in subagent briefs.
+
+    The autouse `_no_surprise_clone` fixture converts that into an
+    immediate failure naming the tree and URL. This test pins the
+    guard itself; without it the guard is one accidental edit from
+    being a no-op that nobody notices until CI downloads a kernel.
+    """
+    import subprocess
+
+    from mimir.config import TreeConfig
+    from mimir.mainline import _ensure_tree
+
+    def _explode(*a, **k):  # pragma: no cover - must never be reached
+        raise AssertionError(f"a clone was attempted: {a!r}")
+
+    monkeypatch.setattr(subprocess, "run", _explode)
+
+    tree = TreeConfig(
+        url="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
+        path=tmp_path / "definitely-absent",
+    )
+    # BaseException, not AssertionError: the guard deliberately raises
+    # outside the `except Exception` that `update_mainline` wraps each
+    # tree in. Pinning AssertionError here would re-admit the swallowed
+    # form.
+    with pytest.raises(BaseException, match="would `git clone`"):
+        _ensure_tree(tree, reference=None, skip_fetch=True)
+
+
+def test_the_clone_guard_survives_update_mainlines_per_tree_except(
+    seeded_db, tmp_path, monkeypatch
+):
+    """The guard must reach the TEST, not just the application's logger.
+
+    `update_mainline` wraps each tree's work in `except Exception:` and
+    turns any failure into a WARNING plus `tr.ok = False` (deliberately:
+    one broken tree must not abort the tick). `AssertionError` is an
+    `Exception`, so the `_no_surprise_clone` guard is swallowed on the
+    only production path that calls `_ensure_tree`. Nothing fails; the
+    tick reports a failed tree and the test that drove it passes.
+
+    That matters because it is exactly how a would-be clone reaches the
+    suite. `test_mainline_phase3.py::
+    test_update_mainline_uses_writer_thread_via_active_context` calls
+    `update_mainline()` against the REAL `settings.trees` (seven trees,
+    no `linus_tree` monkeypatch) and asserts only `result is not None`.
+    On a machine that has `Mainline/*.git` it exercises the writer path
+    for real; on a fresh checkout it used to clone seven kernel trees,
+    and with the guard as written it now silently skips every tree and
+    still passes, having reached neither `_ensure_tree`'s successor code
+    nor the writer dispatch the test exists to pin. The suite's meaning
+    becomes machine-dependent, which is the same blind spot the guard
+    was written to close.
+
+    A test-infrastructure guard therefore has to raise something the
+    code under test cannot catch: `pytest.fail(..., pytrace=False)`
+    (`Failed` derives from `BaseException`), or a private
+    `BaseException` subclass. Production code is unchanged either way.
+    """
+    from mimir.config import TreeConfig, settings
+    from mimir.mainline import update_mainline
+
+    monkeypatch.setattr(
+        settings,
+        "trees",
+        {
+            "linus": TreeConfig(
+                url=(
+                    "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+                ),
+                path=tmp_path / "definitely-absent",
+                walk_every_seconds=0,
+            )
+        },
+    )
+
+    # BaseException, not Exception: an `except Exception` handler in the
+    # code under test must not be able to absorb a test guard.
+    with pytest.raises(BaseException, match="would `git clone`"):
+        update_mainline(
+            skip_fetch=True,
+            skip_maintainers=True,
+            skip_commits=True,
+        )

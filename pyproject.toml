@@ -32,6 +32,9 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+markers = [
+    "allow_tree_clone: test deliberately exercises mainline._ensure_tree's clone path with subprocess mocked",
+]
 testpaths = ["tests"]
 
 [build-system]

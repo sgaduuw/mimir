@@ -340,14 +340,26 @@ def subsystem_dashboard(inbox_name: str, name: str):
                 ),
                 code=301,
             )
-        subsystem = session.execute(
-            select(Subsystem)
-            .options(
-                selectinload(Subsystem.maintainers),
-                selectinload(Subsystem.paths),
+        # `.first()`, not `.scalar_one_or_none()`: `subsystems.name` has
+        # no unique constraint and the URL form is lowercased, so two
+        # MAINTAINERS sections differing only in case collapse onto one
+        # URL and `scalar_one_or_none()` RAISES, i.e. a 500 on a public,
+        # sitemapped page. Serving one beats 404 (they are
+        # near-duplicates), and `ORDER BY id` keeps the pick stable
+        # across renders. Prevalence and alternatives: issue #554.
+        subsystem = (
+            session.execute(
+                select(Subsystem)
+                .options(
+                    selectinload(Subsystem.maintainers),
+                    selectinload(Subsystem.paths),
+                )
+                .where(func.lower(Subsystem.name) == name_lower)
+                .order_by(Subsystem.id)
             )
-            .where(func.lower(Subsystem.name) == name_lower)
-        ).scalar_one_or_none()
+            .scalars()
+            .first()
+        )
         if subsystem is None:
             abort(404)
         recent = recent_articles_in_subsystem(
