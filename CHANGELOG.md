@@ -27,17 +27,26 @@ changes, not internal refactors. Categories: **Added**,
   always, because the web and tasks containers hold read connections
   continuously. The WAL therefore stays at roughly database size until
   every connection closes, so the data volume needs room for about
-  twice the database rather than once. `mimir vacuum` now says so, and
-  `reclaimed` diffs the main file instead of the file plus its
-  freshly-inflated WAL, which had it reporting -16.7 GB for an
-  operation that reclaims space.
+  twice the database rather than once. `mimir vacuum` now says so.
+
+  The size figures also move to one basis: all three are the database's
+  logical size (`page_count * page_size`), so `before - after` is
+  exactly `reclaimed`. Summing the on-disk files reported -16.7 GB for a
+  compaction, because the WAL had just been inflated by the rebuild;
+  diffing the main file alone reports 0, because with any reader
+  connected a checkpoint cannot advance and the main file never moves.
+  The logical size is unaffected by checkpoint timing, and the on-disk
+  footprint is logged for whoever is chasing disk.
 - The test suite can no longer trigger a ~3.6 GB `git clone` of
   torvalds/linux. `mainline._ensure_tree` clones whenever its target
   path is absent, and `--skip-fetch` does not prevent that (it skips
   the fetch on an existing clone only), so a fresh checkout downloaded
   a kernel while every machine that already had the tree passed
-  silently. Any route to a clone now fails immediately, naming the URL
-  it would have fetched.
+  silently. Any route to a clone now fails the test immediately, naming
+  the URL it would have fetched, via `pytest.fail` rather than an
+  assertion: `update_mainline` isolates per-tree failures behind
+  `except Exception`, which would have swallowed an `AssertionError` on
+  the one production path that reaches the clone.
 
 
 ## [3.8.0] - 2026-08-03

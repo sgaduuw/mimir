@@ -1179,5 +1179,66 @@ def test_a_missing_tree_path_raises_instead_of_cloning(tmp_path, monkeypatch):
         url="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
         path=tmp_path / "definitely-absent",
     )
-    with pytest.raises(AssertionError, match="would `git clone`"):
+    # BaseException, not AssertionError: the guard deliberately raises
+    # outside the `except Exception` that `update_mainline` wraps each
+    # tree in. Pinning AssertionError here would re-admit the swallowed
+    # form.
+    with pytest.raises(BaseException, match="would `git clone`"):
         _ensure_tree(tree, reference=None, skip_fetch=True)
+
+
+def test_the_clone_guard_survives_update_mainlines_per_tree_except(
+    seeded_db, tmp_path, monkeypatch
+):
+    """The guard must reach the TEST, not just the application's logger.
+
+    `update_mainline` wraps each tree's work in `except Exception:` and
+    turns any failure into a WARNING plus `tr.ok = False` (deliberately:
+    one broken tree must not abort the tick). `AssertionError` is an
+    `Exception`, so the `_no_surprise_clone` guard is swallowed on the
+    only production path that calls `_ensure_tree`. Nothing fails; the
+    tick reports a failed tree and the test that drove it passes.
+
+    That matters because it is exactly how a would-be clone reaches the
+    suite. `test_mainline_phase3.py::
+    test_update_mainline_uses_writer_thread_via_active_context` calls
+    `update_mainline()` against the REAL `settings.trees` (seven trees,
+    no `linus_tree` monkeypatch) and asserts only `result is not None`.
+    On a machine that has `Mainline/*.git` it exercises the writer path
+    for real; on a fresh checkout it used to clone seven kernel trees,
+    and with the guard as written it now silently skips every tree and
+    still passes, having reached neither `_ensure_tree`'s successor code
+    nor the writer dispatch the test exists to pin. The suite's meaning
+    becomes machine-dependent, which is the same blind spot the guard
+    was written to close.
+
+    A test-infrastructure guard therefore has to raise something the
+    code under test cannot catch: `pytest.fail(..., pytrace=False)`
+    (`Failed` derives from `BaseException`), or a private
+    `BaseException` subclass. Production code is unchanged either way.
+    """
+    from mimir.config import TreeConfig, settings
+    from mimir.mainline import update_mainline
+
+    monkeypatch.setattr(
+        settings,
+        "trees",
+        {
+            "linus": TreeConfig(
+                url=(
+                    "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+                ),
+                path=tmp_path / "definitely-absent",
+                walk_every_seconds=0,
+            )
+        },
+    )
+
+    # BaseException, not Exception: an `except Exception` handler in the
+    # code under test must not be able to absorb a test guard.
+    with pytest.raises(BaseException, match="would `git clone`"):
+        update_mainline(
+            skip_fetch=True,
+            skip_maintainers=True,
+            skip_commits=True,
+        )
