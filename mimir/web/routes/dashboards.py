@@ -343,16 +343,10 @@ def subsystem_dashboard(inbox_name: str, name: str):
         # `.first()`, not `.scalar_one_or_none()`: `subsystems.name` has
         # no unique constraint and the URL form is lowercased, so two
         # MAINTAINERS sections differing only in case collapse onto one
-        # URL and `scalar_one_or_none()` raises `MultipleResultsFound`
-        # -- a 500 on a public, sitemapped page. Zero collisions on
-        # production (measured 2026-07-29), so this is one upstream edit
-        # away rather than live, and nothing in the schema or the parser
-        # prevents it.
-        #
-        # Serving one of them beats 404: they are near-duplicates and a
-        # reader wants the content. `ORDER BY id` makes the pick stable
-        # so the page does not flip between renders, which an unordered
-        # `.first()` would allow.
+        # URL and `scalar_one_or_none()` RAISES, i.e. a 500 on a public,
+        # sitemapped page. Serving one beats 404 (they are
+        # near-duplicates), and `ORDER BY id` keeps the pick stable
+        # across renders. Prevalence and alternatives: issue #554.
         subsystem = (
             session.execute(
                 select(Subsystem)

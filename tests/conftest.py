@@ -415,19 +415,13 @@ def _reset_db():
 def _no_surprise_clone(monkeypatch, request):
     """Fail loudly instead of cloning a kernel tree during tests.
 
-    `mainline._ensure_tree` clones when its target path does not exist,
-    and `skip_fetch` does not prevent that: it only skips the fetch on
-    an existing clone. So on a machine where the tree happens to be
-    present every test passes, and in a FRESH checkout the same test
-    silently performs a ~3.6 GB `git clone` of torvalds/linux. That is
-    invisible to everyone who already has the tree, which is why it
-    survived, and it is why every subagent brief in this repo has had
-    to carry "do not run the full suite" as a workaround.
-
-    Wrapping rather than blanket-patching keeps the real code path
-    under test wherever the tree genuinely exists (the `linus_tree`
-    fixture points at a real temp repo), while any route to a clone
-    raises and names the tree and URL that would have been fetched.
+    `mainline._ensure_tree` clones when its target path is absent, and
+    `skip_fetch` does not prevent that (it skips the fetch on an
+    EXISTING clone), so a fresh checkout performs a ~3.6 GB `git clone`
+    of torvalds/linux while every machine that already has the tree
+    passes. Wrapping rather than blanket-patching keeps the real path
+    under test where the tree genuinely exists. Pinned by
+    `test_a_missing_tree_path_raises_instead_of_cloning`.
     """
     # `allow_tree_clone` opts out, for the two tests that exercise the
     # clone path itself with `subprocess.run` mocked. They are the only
@@ -446,11 +440,21 @@ def _no_surprise_clone(monkeypatch, request):
 
             path = PROJECT_ROOT / path
         if not path.exists():
-            raise AssertionError(
+            # `pytest.fail`, NOT `raise AssertionError`. `update_mainline`
+            # wraps each tree in `except Exception` for failure isolation
+            # (one broken tree must not abort the tick), and
+            # `AssertionError` IS an `Exception`, so an assert here is
+            # swallowed on the ONLY production path that reaches
+            # `_ensure_tree`: the tick logs a failed tree, the guard
+            # never reaches the test, and the test passes having
+            # exercised nothing. `Failed` derives from `BaseException`,
+            # which that handler cannot catch.
+            pytest.fail(
                 f"a test reached _ensure_tree for a tree at {path}, "
                 f"which does not exist, so it would `git clone` "
                 f"{tree.url}. Point settings.trees at a local repo (see "
-                f"the `linus_tree` helper) rather than the real URL."
+                f"the `linus_tree` helper) rather than the real URL.",
+                pytrace=False,
             )
         return real(tree, reference=reference, skip_fetch=skip_fetch)
 
@@ -464,10 +468,8 @@ def linus_tree(repo_path) -> dict:
     (no network round-trips, no other-tree cadence logic).
 
     `url` points at a placeholder HTTPS target that passes URL
-    validation. Note `--skip-fetch` is NOT what keeps this offline:
-    it skips the fetch on an EXISTING clone, while a missing path is
-    cloned regardless. What keeps it offline is `repo_path` already
-    existing, plus the `_no_surprise_clone` guard below.
+    validation. What keeps it offline is `repo_path` already existing
+    plus the `_no_surprise_clone` guard above, NOT `--skip-fetch`.
 
     `walk_every_seconds=0` disables the cadence gate so repeated
     calls within a single test always execute (the gate checks
