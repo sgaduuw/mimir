@@ -2,7 +2,11 @@
 discrete blocks (text / quote / diff / code) for the renderer to
 dispatch on.
 
-`parse_blocks` is the only public entry. Its output is a list of
+`parse_blocks` is the only entry point OUTSIDE this package (no module
+beyond `mimir/rendering/` imports this one, and `__init__` re-exports
+only `parse_blocks` from it). Within the package, `body.py` also takes
+`_Block` and `_strip_one_quote_level`, and `diff.py` takes
+`DIFF_TRAILER_LINE`. Its output is a list of
 `_Block` dataclasses that the orchestrator in `body.py` walks
 recursively (quote blocks re-enter `parse_blocks` after one level
 of `>`-prefix stripping, which is how nested quotes render).

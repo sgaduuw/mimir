@@ -691,8 +691,7 @@ Routes:
   covers the deep archive: the flat per-inbox sitemap above lists only
   the most recent few thousand threads, so on a corpus of this size
   everything older was in no sitemap at all. The index enumerates every
-  page, because sitemaps.org forbids an index referencing another
-  index. Cached for 1 h.
+  page, because Google rejects a nested sitemap index. Cached for 1 h.
 - `GET /sitemap-maintainers.xml`, one urlset listing every
   `/maintainers/<address>` profile page (one URL per MAINTAINERS
   `M:` maintainer). No per-URL `<lastmod>`. Cached for 1 h.
@@ -817,11 +816,18 @@ Sample `crontab` (daily at 04:00, only if no ingest is running):
 0 4 * * * cd ~/Projects/mimir && uv run mimir vacuum >/dev/null
 ```
 
-The 80 to 120 s figure previously quoted here was measured against
-~6 M articles / ~3.6 GB. Production is now 17.4 M articles / 15 GB
-(measured 2026-08-03) and the VACUUM cost at that size has NOT been
-re-measured, so budget the window from a real run rather than from a
-number scaled off this one.
+Measured 2026-08-03 on production (17.4 M articles, 16 GB DB):
+**158 s**. The 80 to 120 s previously quoted here was measured against
+~6 M articles / ~3.6 GB, so the cost scales roughly with size.
+
+Two things an operator should expect during the window. The WAL grows
+by about the size of the database, because in WAL mode VACUUM's rebuild
+goes through it, so budget free space for roughly 2x the DB rather than
+1x. And the WAL does NOT shrink back afterwards on a live deployment:
+the post-VACUUM `wal_checkpoint(TRUNCATE)` cannot complete while any
+other connection has the database open, and the web and tasks
+containers hold read connections continuously. It collapses on the next
+restart.
 
 ## Refreshing query-planner stats (ANALYZE)
 
@@ -844,10 +850,11 @@ uv run mimir analyze
 uv run mimir analyze --full
 ```
 
-The bounded form runs in 1 to 3 s on the lkml-scale corpus and is
-accurate enough for the common join shapes. The `--full` pass
-re-samples every row of every index, holds the writer lock 25 to
-30 s, and is the safety net for distribution drift in long-tail
+The bounded form runs in about 11 s on the production corpus
+(measured 2026-08-04 at 28.8M `article_lists` rows; it was 1 to 3 s
+when the corpus was 11M) and is accurate enough for the common join
+shapes. The `--full` pass re-samples every row of every index and held
+the writer lock 25 to 30 s at 11M rows, not re-measured since, and is the safety net for distribution drift in long-tail
 indexes the bounded sample might miss.
 
 Example crontab pair:
@@ -1135,8 +1142,21 @@ around 200 to 400 MB.
 
 ```sh
 uv run ruff check mimir/ tests/
+uv run ruff format --check mimir/ tests/
 uv run pytest
 ```
+
+All three are separate CI steps and all three must pass; lint-clean is
+not format-clean. Run them bare and judge them by exit code rather than
+by reading the output, because ruff's trailing "No fixes available" hint
+is not the error count and a pipe replaces its exit status.
+
+The rule set is an explicit `[tool.ruff.lint] select` in
+`pyproject.toml`, not ruff's defaults, which moved from 59 enabled rules
+to 413 between 0.15.21 and 0.16.x. Four groups (`B`, `RUF`, `PLW`,
+`SIM`) are deliberately deferred with counts and a plan recorded beside
+the list; a `select` entry is a gate, so a group is enabled only in the
+change that makes it pass.
 
 Both `mimir/` and `tests/` are linted because CI runs ruff over
 the same set; a pre-push sweep that omits `tests/` can pass

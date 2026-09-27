@@ -92,8 +92,7 @@ def discover_remote_epochs(upstream_url: str) -> list[tuple[str, str]]:
         if not key.startswith(upstream_prefix):
             continue
         name = key.rsplit("/", 1)[-1]
-        if name.endswith(".git"):
-            name = name[:-4]
+        name = name.removesuffix(".git")
         if not name.isdigit():
             continue
         out.append((name, origin + key))
@@ -122,7 +121,7 @@ def local_epoch_names(mirror_path: Path) -> set[str]:
     for child in mirror_path.iterdir():
         if not child.is_dir():
             continue
-        n = child.name[:-4] if child.name.endswith(".git") else child.name
+        n = child.name.removesuffix(".git")
         if n.isdigit():
             names.add(n)
     return names

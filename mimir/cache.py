@@ -19,13 +19,15 @@ import dataclasses
 import json
 import logging
 import threading
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import date, datetime, timezone
-from typing import Any, Callable, Iterator
+from datetime import UTC, date, datetime
+from typing import Any
 
 from pydantic import BaseModel
-from sqlalchemy import delete as delete_stmt, or_, select
+from sqlalchemy import delete as delete_stmt
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -198,7 +200,7 @@ def _decode(obj: Any) -> Any:
 
 
 def _now() -> int:
-    return int(datetime.now(timezone.utc).timestamp())
+    return int(datetime.now(UTC).timestamp())
 
 
 def _should_dispatch_to_broker() -> bool:
@@ -410,7 +412,7 @@ def set(key: str, value: Any, ttl: int) -> None:
             # Fire-and-forget; matches cache.set's best-effort posture.
             # Local import avoids a module-level circular dependency
             # between cache.py and broker.writes (which imports cache).
-            from mimir.cache import set_via_writer  # noqa: PLC0415
+            from mimir.cache import set_via_writer
 
             set_via_writer(_writer, key, value, ttl)
             return
@@ -640,7 +642,7 @@ def keys() -> list[str]:
     prefix = f"v{NAMESPACE_VERSION}:"
     with SessionLocal() as session:
         return [
-            (k[len(prefix) :] if k.startswith(prefix) else k)
+            (k.removeprefix(prefix))
             for (k,) in session.execute(
                 select(CacheEntry.key).where(CacheEntry.expires_at >= now)
             )

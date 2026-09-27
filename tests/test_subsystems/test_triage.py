@@ -7,7 +7,7 @@ maintainer-Ack vs not), plus an EXPLAIN-plan pin so a regression
 that lost index-driven access surfaces in CI rather than as a
 production cold-miss."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, text
 
@@ -23,7 +23,6 @@ from mimir.subsystems_dashboard.triage import (
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
 )
-
 from tests.test_subsystems._helpers import _add_subsystem
 
 
@@ -50,7 +49,7 @@ def _add_article(
         message_id=msgid,
         subject=f"patch {msgid}",
         author="author@example.com",
-        date=datetime.now(timezone.utc) - timedelta(days=days_ago),
+        date=datetime.now(UTC) - timedelta(days=days_ago),
         thread_parent=thread_parent,
         subject_normalized=f"patch {msgid}",
         canonical_inbox_id=inbox.id,
@@ -160,7 +159,7 @@ def test_needs_attention_excludes_landed_in_mainline(seeded_db):
                 commit_sha="a" * 40,
                 message_id="landed@x",
                 tree_name="linux.git",
-                committed_at=datetime.now(timezone.utc),
+                committed_at=datetime.now(UTC),
             )
         )
         s.commit()
@@ -416,7 +415,7 @@ def test_triage_queries_use_date_index_no_full_scans(seeded_db):
             excludes=["net/bluetooth/"],
         )
         s.commit()
-        cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+        cutoff = datetime.now(UTC) - timedelta(days=14)
         inbox = _alpha(s)
         for label, fn in [
             ("needs_attention", _candidate_query_needs_attention),
@@ -445,3 +444,38 @@ def test_triage_queries_use_date_index_no_full_scans(seeded_db):
             assert "ix_articles_date" in plan, (
                 f"{label}: plan does not use ix_articles_date:\n{plan}"
             )
+
+
+def test_quiet_excludes_patch_whose_only_trailer_is_not_a_review_role(seeded_db):
+    """`PatchAttention.trailer_summary`'s docstring justifies being
+    empty on the quiet list because that list "by definition has no
+    trailers". The quiet query's predicate really is
+    `NOT EXISTS (SELECT 1 FROM article_trailers ...)` with no role
+    filter, and this pins the difference.
+
+    `test_quiet_excludes_patch_with_trailers` uses a `Reviewed-by`,
+    which is also in `_REVIEW_TRAILER_ROLES`, so it passes just as
+    happily against a narrowed predicate that only excluded review
+    roles. `Suggested-by` is indexed (see
+    `trailers.INDEXED_TRAILER_ROLES`) but is NOT in the review set, so
+    it separates the two readings: under the documented "no trailers"
+    rule this patch is not quiet; under a review-roles-only rule it
+    would be, and it would then render with an empty summary while
+    carrying attestations.
+    """
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _add_article(
+            s,
+            "suggested-only@x",
+            paths=["net/core/dev.c"],
+            days_ago=40,
+            trailers=[("Suggested-by", "s@x.com")],
+        )
+        s.commit()
+        result = quiet_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert result == [], (
+        "the quiet list excludes a patch carrying ANY trailer row, not "
+        "just the review-role subset"
+    )

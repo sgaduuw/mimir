@@ -183,7 +183,8 @@ def test_analyze_limit_default_is_4000():
     sample stats produced catastrophically wrong recursive-CTE
     plans (400 s `get_thread` for a 15-message thread; 200-1700x
     speedups under a full ANALYZE). 4000 keeps the daily ANALYZE
-    fast (~1-3 s) while giving the planner enough samples to
+    bounded (~10.8 s at 28.8M rows, 2026-08-04; it was ~1-3 s at 11M)
+    while giving the planner enough samples to
     estimate join cardinalities correctly at this scale. Pinning
     so an accidental edit ("400 is what SQLite docs say") doesn't
     silently regress production back to the bad plans."""

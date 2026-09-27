@@ -9,7 +9,6 @@ from mimir.maintainers import (
     parse,
 )
 
-
 _PREAMBLE = (
     b"List of maintainers and how to submit kernel changes\n"
     b"====================================================\n"

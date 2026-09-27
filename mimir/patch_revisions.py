@@ -36,7 +36,6 @@ from sqlalchemy.orm import Session, selectinload
 from mimir import cache
 from mimir.models import Article, ArticleList, Inbox
 
-
 # `^[<inside>] <title>` matched only when the bracket starts the
 # subject; matches the existing cover-letter parser's anchoring so
 # `Re:` replies don't masquerade as in-series patches.
@@ -212,7 +211,7 @@ def match_revision_position(
     v1_patches: list[InSeriesPatch],
     v2_patches: list[InSeriesPatch],
     pos: int,
-) -> tuple[InSeriesPatch, InSeriesPatch] | None | object:
+) -> tuple[InSeriesPatch, InSeriesPatch] | object | None:
     """Find the patch in `v2_patches` corresponding to the patch
     at `pos` in `v1_patches`.
 
@@ -262,7 +261,7 @@ def match_revision_position(
 def _pick_by_file_overlap(
     v1_match: InSeriesPatch,
     candidates: list[InSeriesPatch],
-) -> tuple[InSeriesPatch, InSeriesPatch] | None | object:
+) -> tuple[InSeriesPatch, InSeriesPatch] | object | None:
     """Return the candidate with maximum touched-file overlap with
     `v1_match`. Requires at least one path in common; returns None
     when none overlap, `AMBIGUOUS_MATCH` when two or more tie at
@@ -313,7 +312,8 @@ class RevisionDiff:
 cache.register("RevisionDiff", RevisionDiff)
 
 
-# Pygments setup mirrors the inline-diff render in `mimir/rendering.py`.
+# Pygments setup mirrors the inline-diff render in
+# `mimir/rendering/diff.py`.
 # Two-instance duplication is intentional: rendering.py's instances are
 # underscore-prefixed module-locals (not part of its public surface),
 # and adding a public helper there for one extra caller would be the

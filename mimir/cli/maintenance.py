@@ -23,8 +23,9 @@ from mimir.cli._common import _fmt_bytes
     help="Override the connection's `PRAGMA analysis_limit` and run "
     "with `analysis_limit=0` (no cap) for this pass. Produces "
     "fully-accurate per-index distribution stats at the cost of "
-    "a longer writer-lock hold (~25-30 s on the production-scale "
-    "11M-row corpus). Use as the periodic safety-net pass; the "
+    "a longer writer-lock hold (~25-30 s when measured at 11M rows; "
+    "the corpus is 28.8M as of 2026-08-04 and this has not been "
+    "re-measured). Use as the periodic safety-net pass; the "
     "default capped ANALYZE catches typical drift cheaply.",
 )
 def analyze_command(full: bool) -> None:
@@ -85,3 +86,12 @@ def _echo_vacuum_outcome(payload: dict) -> None:
     click.echo(f"before: total={_fmt_bytes(before)}")
     click.echo(f"after:  total={_fmt_bytes(after)}")
     click.echo(f"reclaimed {_fmt_bytes(reclaimed)} in {elapsed_s:.1f} s")
+    if not payload.get("wal_truncated", True):
+        # The operator-visible half of the same finding: without this
+        # line the only symptom is a volume that quietly holds twice
+        # the database until the next restart.
+        click.echo(
+            "note: the WAL could not be truncated (another connection "
+            "holds the database open), so it stays at roughly database "
+            "size until every connection closes"
+        )

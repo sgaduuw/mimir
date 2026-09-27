@@ -10,13 +10,17 @@ The companion `before_app_request` / `after_app_request` hooks in
 `hooks.py` already fire for these responses (pinned by
 `test_security_headers_present_on_unmatched_404`), so CSP / HSTS /
 Permissions-Policy / X-Frame-Options / X-Content-Type-Options /
-Referrer-Policy / Cache-Control / X-Request-Id all carry over for
-free. This module adds the only thing missing: the rendered HTML
-body.
+Referrer-Policy / X-Request-Id all carry over for free. `Cache-Control`
+does NOT: `_add_cache_headers` applies its rule only on 200/301/302/304,
+deliberately, so error responses are not pinned in upstream caches. It
+was listed here until 2026-08-04. This module adds what is actually
+missing: the rendered HTML body.
 
 `app_errorhandler` (not the blueprint-scoped `errorhandler`) so the
-handlers fire for every error the app produces, including unmatched-
-route 404s that don't even hit the blueprint. `noindex=True` is
+handlers fire for every error the app RAISES, including unmatched-
+route 404s that don't even hit the blueprint. Not literally every
+error: a 405 gets the security headers and Werkzeug's plain body,
+unbranded. `noindex=True` is
 passed into the template so `base.html` skips the canonical link
 (a canonical pointing at the error URL would tell search engines
 "this 404 is authoritative") and emits `<meta name="robots"

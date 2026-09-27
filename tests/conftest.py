@@ -50,6 +50,8 @@ os.environ.setdefault("FLASK_DEBUG", "false")
 # of this process-wide setting.
 os.environ["MIMIR_IS_BROKER"] = "true"
 
+from datetime import UTC  # noqa: E402  (module-level setup runs above)
+
 import pytest  # noqa: E402
 
 # Test seed constants, exposed so tests can reference them rather
@@ -61,8 +63,9 @@ TEST_INBOX_SECONDARY = "beta"
 @pytest.fixture(scope="session", autouse=True)
 def _migrate_db():
     """alembic upgrade head once for the whole test session."""
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
@@ -249,12 +252,12 @@ def _ensure_session_broker_context(_session_broker):
 def _reset_db():
     """Wipe + reseed before every test so each one starts from a
     known baseline. ~10 ms on a fresh DB."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import delete
 
-    from mimir.extensions import SessionLocal
     import mimir.inboxes
+    from mimir.extensions import SessionLocal
     from mimir.models import (
         Article,
         ArticleFile,
@@ -309,13 +312,13 @@ def _reset_db():
             name=TEST_INBOX_PRIMARY,
             mirror_path="/tmp/alpha",
             upstream_url="https://example.com/alpha",
-            last_article_date=datetime(2024, 3, 1, 12, 0, tzinfo=timezone.utc),
+            last_article_date=datetime(2024, 3, 1, 12, 0, tzinfo=UTC),
         )
         beta = Inbox(
             name=TEST_INBOX_SECONDARY,
             mirror_path="/tmp/beta",
             upstream_url="https://example.com/beta",
-            last_article_date=datetime(2024, 3, 1, 12, 0, tzinfo=timezone.utc),
+            last_article_date=datetime(2024, 3, 1, 12, 0, tzinfo=UTC),
         )
         s.add_all([alpha, beta])
         s.flush()
@@ -328,7 +331,7 @@ def _reset_db():
             message_id="art1@example.com",
             subject="hello alpha",
             author="Alice <alice@example.com>",
-            date=datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc),
+            date=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="hello alpha",
         )
@@ -336,7 +339,7 @@ def _reset_db():
             message_id="art2@example.com",
             subject="hello beta",
             author="Bob <bob@example.com>",
-            date=datetime(2024, 2, 1, 12, 0, tzinfo=timezone.utc),
+            date=datetime(2024, 2, 1, 12, 0, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="hello beta",
         )
@@ -344,7 +347,7 @@ def _reset_db():
             message_id="art3@example.com",
             subject="cross-posted note",
             author="Carol <carol@kernel.org>",
-            date=datetime(2024, 3, 1, 12, 0, tzinfo=timezone.utc),
+            date=datetime(2024, 3, 1, 12, 0, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="cross-posted note",
         )
@@ -352,7 +355,7 @@ def _reset_db():
             message_id="art4@example.com",
             subject="Re: hello alpha",
             author="Dave <dave@example.com>",
-            date=datetime(2024, 1, 2, 12, 0, tzinfo=timezone.utc),
+            date=datetime(2024, 1, 2, 12, 0, tzinfo=UTC),
             thread_parent="art1@example.com",
             subject_normalized="hello alpha",
         )
@@ -411,6 +414,56 @@ def _reset_db():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_surprise_clone(monkeypatch, request):
+    """Fail loudly instead of cloning a kernel tree during tests.
+
+    `mainline._ensure_tree` clones when its target path is absent, and
+    `skip_fetch` does not prevent that (it skips the fetch on an
+    EXISTING clone), so a fresh checkout performs a ~3.6 GB `git clone`
+    of torvalds/linux while every machine that already has the tree
+    passes. Wrapping rather than blanket-patching keeps the real path
+    under test where the tree genuinely exists. Pinned by
+    `test_a_missing_tree_path_raises_instead_of_cloning`.
+    """
+    # `allow_tree_clone` opts out, for the two tests that exercise the
+    # clone path itself with `subprocess.run` mocked. They are the only
+    # legitimate reason to reach it with a missing path.
+    if request.node.get_closest_marker("allow_tree_clone"):
+        return
+
+    import mimir.mainline as _mainline
+
+    real = _mainline._ensure_tree
+
+    def _guard(tree, *, reference, skip_fetch):
+        path = tree.path
+        if not path.is_absolute():
+            from mimir.config import PROJECT_ROOT
+
+            path = PROJECT_ROOT / path
+        if not path.exists():
+            # `pytest.fail`, NOT `raise AssertionError`. `update_mainline`
+            # wraps each tree in `except Exception` for failure isolation
+            # (one broken tree must not abort the tick), and
+            # `AssertionError` IS an `Exception`, so an assert here is
+            # swallowed on the ONLY production path that reaches
+            # `_ensure_tree`: the tick logs a failed tree, the guard
+            # never reaches the test, and the test passes having
+            # exercised nothing. `Failed` derives from `BaseException`,
+            # which that handler cannot catch.
+            pytest.fail(
+                f"a test reached _ensure_tree for a tree at {path}, "
+                f"which does not exist, so it would `git clone` "
+                f"{tree.url}. Point settings.trees at a local repo (see "
+                f"the `linus_tree` helper) rather than the real URL.",
+                pytrace=False,
+            )
+        return real(tree, reference=reference, skip_fetch=skip_fetch)
+
+    monkeypatch.setattr(_mainline, "_ensure_tree", _guard)
+
+
 def linus_tree(repo_path) -> dict:
     """Return a settings.trees dict containing only the linus entry
     pointing at `repo_path`. Used by tests that monkeypatch
@@ -418,8 +471,8 @@ def linus_tree(repo_path) -> dict:
     (no network round-trips, no other-tree cadence logic).
 
     `url` points at a placeholder HTTPS target that passes URL
-    validation; since tests all pass `--skip-fetch`, _ensure_tree
-    never attempts a network round-trip.
+    validation. What keeps it offline is `repo_path` already existing
+    plus the `_no_surprise_clone` guard above, NOT `--skip-fetch`.
 
     `walk_every_seconds=0` disables the cadence gate so repeated
     calls within a single test always execute (the gate checks

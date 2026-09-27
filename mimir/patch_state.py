@@ -29,9 +29,9 @@ and so don't surface in the roll-up. Indexing them needs a parser
 extension + a backfill; that's its own follow-up.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Iterable
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -45,8 +45,8 @@ from mimir.models import (
     MainlineCommit,
     SubsystemMaintainer,
 )
-from mimir.patch_series import parse_cover_letter
 from mimir.patch_revisions import parse_in_series_patch_subject
+from mimir.patch_series import parse_cover_letter
 from mimir.trailers import INDEXED_TRAILER_ROLES
 from mimir.web.urls import _canonical_url_for
 
@@ -323,7 +323,7 @@ def _days_since_last_reply(
     if not later_dates:
         return None
     last_reply = max(later_dates)
-    delta = datetime.now(timezone.utc) - last_reply
+    delta = datetime.now(UTC) - last_reply
     return max(int(delta.days), 0)
 
 

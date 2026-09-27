@@ -13,7 +13,7 @@ Lazy-imports `mimir.web` display helpers inside the function body to
 avoid an import-time cycle.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from flask import Response
@@ -53,7 +53,7 @@ def atom_response(
 
     feed_updated = max(
         (e.date for e in entries if e.date), default=None
-    ) or datetime.now(timezone.utc)
+    ) or datetime.now(UTC)
     canonical_map = canonical_inbox_by_article or {}
 
     feed = Element("feed", xmlns="http://www.w3.org/2005/Atom")

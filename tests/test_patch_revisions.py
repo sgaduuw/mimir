@@ -8,7 +8,7 @@ construct `InSeriesPatch` dataclasses directly (no DB) so the
 matching logic is isolated from query shape.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -21,7 +21,6 @@ from mimir.patch_revisions import (
     parse_in_series_patch_subject,
     resolve_series_patches,
 )
-
 
 # --- parse_in_series_patch_subject ---
 
@@ -275,7 +274,7 @@ def _make_article(s, message_id, subject, thread_parent=None, paths=()):
         message_id=message_id,
         subject=subject,
         author="Maintainer <m@example.com>",
-        date=datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc),
+        date=datetime(2024, 6, 1, 12, 0, tzinfo=UTC),
         thread_parent=thread_parent,
         subject_normalized=subject.lower(),
         lists=[ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="aa" * 20)],
@@ -470,7 +469,7 @@ def test_resolve_series_patches_scoped_to_inbox(seeded_db):
             message_id="p2@x",
             subject="[PATCH 2/2] baz: fix",
             author="Other <o@x>",
-            date=datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc),
+            date=datetime(2024, 6, 1, 12, 0, tzinfo=UTC),
             thread_parent=cover.message_id,
             subject_normalized="[patch 2/2] baz: fix",
             lists=[ArticleList(inbox_id=beta.id, epoch="0.git", commit_sha="bb" * 20)],

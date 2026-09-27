@@ -22,7 +22,6 @@ from mimir.subsystems_dashboard import (
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _get_inbox_or_404, _site_base
 
-
 # Search input bounds. The query string flows into a cache key, so a
 # soft length cap keeps the cache bounded and makes DoS-via-arbitrary-
 # queries less interesting. Min length avoids matching the entire

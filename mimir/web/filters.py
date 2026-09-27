@@ -16,7 +16,7 @@ straight to the cache.
 """
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parseaddr
 
 from flask import g
@@ -27,11 +27,11 @@ from pygments.util import ClassNotFound
 from mimir import maintainer_allowlist
 from mimir.config import settings
 from mimir.datetime_utils import aware_utc
+from mimir.maintainer_directory import maintainer_path
 from mimir.models import Article
 from mimir.rendering import render_body
-from mimir.web._blueprint import bp_web
-from mimir.maintainer_directory import maintainer_path
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
+from mimir.web._blueprint import bp_web
 from mimir.web.urls import _msg_url, _thread_view_url
 
 
@@ -41,7 +41,7 @@ def _relative_time(then: datetime, now: datetime | None = None) -> str:
     units under 30 days; falls back to an absolute YYYY-MM-DD beyond
     that, since "47d ago" is harder to parse than the date itself."""
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     then = aware_utc(then)
     delta = now - then
     secs = int(delta.total_seconds())
@@ -457,12 +457,30 @@ def _maintainer_url_filter(address: str | None) -> str:
     canonical and to its sitemap entry, rather than a near-miss that
     resolves to them.
 
-    Callers gate on `is_allowlisted_address` first, same posture as the
-    reviewer links above. MAINTAINERS `M:`/`R:` addresses are what the
-    allowlist is built FROM, so the gate passes by construction; it is
-    there so the invariant is enforced rather than assumed, and so a
-    future narrowing of the allowlist cannot silently start emitting
-    links to addresses the page redacts.
+    What makes a link safe is the caller's `role == 'M'` filter, NOT
+    the allowlist gate. Both link sites (`subsystem.html`,
+    `_message_body.html`) filter on role, because
+    `/maintainers/<address>` serves `M:` only while the allowlist is
+    the union of `M:` and `R:`. An earlier version of this docstring
+    credited the gate alone ("the allowlist is built FROM these
+    addresses, so it passes by construction"), which is true and is
+    exactly why it was the wrong gate: every reviewer passed it and got
+    a 404 link. That was a shipped bug (MEMORY.md 2026-07-30).
+
+    The gate is still applied, for the redaction question it does
+    answer: an address the page would redact should not be linked. Note
+    it is conditional rather than structural, since a deploy without the
+    kernel tree has an empty MAINTAINERS-derived set and it fails closed
+    for every non-`@kernel.org` maintainer.
+
+    Still open: `maintainer_path` percent-encodes ANY address, with no
+    addressability predicate, while the route gates on
+    `_MAINTAINER_ADDR_RE`. Subsystems got
+    `is_addressable_subsystem_name` for precisely this; maintainers did
+    not. Zero of 2,467 production addresses violate it today (measured
+    2026-08-04); an apostrophe upstream would publish a 404 into the
+    sitemap. Carried as a strict xfail in
+    `test_maintainer_path_never_emits_a_url_the_route_refuses`.
     """
     return maintainer_path(address or "")
 

@@ -6,6 +6,8 @@ restructure (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
 Kept in its own file so the Phase 3c PR audit is easy.
 """
 
+from datetime import UTC
+
 import pytest
 from sqlalchemy import insert, select
 
@@ -338,7 +340,7 @@ def test_submit_canonical_batch_updates_canonical_and_observations(writer, seede
     """Happy path: payload's canonical id lands on the article; observation
     deltas land in inbox_address_observations with count + last_seen
     aggregated via the UPSERT."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select
 
@@ -352,7 +354,7 @@ def test_submit_canonical_batch_updates_canonical_and_observations(writer, seede
         article_id = s.execute(select(Article.id).limit(1)).scalar_one()
         alpha_id = s.execute(select(Inbox.id).where(Inbox.name == "alpha")).scalar_one()
 
-    ts = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
     payloads = [
         _CanonicalPending(
             article_id=article_id,
@@ -386,7 +388,7 @@ def test_submit_canonical_batch_updates_canonical_and_observations(writer, seede
 def test_submit_canonical_batch_no_canonical_change_skips_update(writer, seeded_db):
     """When the resolved canonical equals what's already there, the
     closure's UPDATE is a no-op (no row churn). Observations still land."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select, update
 
@@ -406,7 +408,7 @@ def test_submit_canonical_batch_no_canonical_change_skips_update(writer, seeded_
         )
         s.commit()
 
-    ts = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
     payloads = [
         _CanonicalPending(
             article_id=article_id,
@@ -430,7 +432,7 @@ def test_submit_promote_list_address_sweep_promotes_eligible_inbox(writer, seede
     """The sweep helper runs the promotion check for every inbox at
     NULL `list_address`. An eligible inbox (top_count >= threshold
     AND top/(top+second) >= dominance) gets its `list_address` set."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import insert, select, update
 
@@ -441,7 +443,7 @@ def test_submit_promote_list_address_sweep_promotes_eligible_inbox(writer, seede
     with seeded_db() as s:
         beta_id = s.execute(select(Inbox.id).where(Inbox.name == "beta")).scalar_one()
         s.execute(update(Inbox).where(Inbox.id == beta_id).values(list_address=None))
-        ts = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+        ts = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
         s.execute(
             insert(InboxAddressObservation).values(
                 inbox_id=beta_id,
@@ -601,7 +603,7 @@ def test_submit_batch_issues_exactly_one_writeop(backfill_name, writer, seeded_d
     Wrap `writer.submit` to count calls; invoke each backfill's submit
     with a minimal valid payload; assert exactly ONE submission.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select
 
@@ -661,7 +663,7 @@ def test_submit_batch_issues_exactly_one_writeop(backfill_name, writer, seeded_d
         submit_fn = _submit_patch_series_batch
         submit_args = (writer, payloads)
     elif backfill_name == "canonical":
-        ts = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+        ts = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
         payloads = [
             _CanonicalPending(
                 article_id=article_id,
@@ -722,7 +724,7 @@ def test_submit_canonical_batch_rolls_back_observations_on_canonical_update_fail
     test asserts both the observations DIDN'T land AND the canonical
     UPDATE didn't either.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     import pytest as _pytest
     from sqlalchemy import select, update
@@ -746,7 +748,7 @@ def test_submit_canonical_batch_rolls_back_observations_on_canonical_update_fail
         s.commit()
 
     invalid_inbox_id = 999_999  # no inbox row with this id
-    ts = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
     payloads = [
         _CanonicalPending(
             article_id=article_id,

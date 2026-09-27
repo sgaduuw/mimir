@@ -6,6 +6,7 @@ subject-normalized fallback grouping, and the 4-tuple URL
 identity contract)."""
 
 import re
+from datetime import UTC
 
 from tests.test_routes._helpers import (
     _data_attr_values,
@@ -114,7 +115,8 @@ def test_thread_summary_helper_counts_and_relative_time(frozen_clock):
     coarse relative-time string for the most-recent message. Drives
     the closed-state fold one-liner ('23 messages, 5 authors, 2h ago')."""
     from dataclasses import dataclass
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from mimir.web import _thread_summary
 
     @dataclass
@@ -124,7 +126,7 @@ def test_thread_summary_helper_counts_and_relative_time(frozen_clock):
         message_id: str = ""
         depth: int = 0
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     nodes = [
         N(author="Alice <a@x.example>", date=now - timedelta(days=2)),
         # Same address, different display name. Dedup must key on
@@ -570,7 +572,7 @@ def test_message_page_json_ld_date_published_prefers_parsed_date_over_article_da
     canonical-publishing date matches the rendered page.
     """
     import re
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select, update
 
@@ -586,7 +588,7 @@ def test_message_page_json_ld_date_published_prefers_parsed_date_over_article_da
     # Force `article.date` to a year far in the future so the two
     # dates are unambiguously different. parsed.date stays at the
     # helper's default "Mon, 1 Jan 2024 00:00:00 +0000".
-    far_future = datetime(2030, 6, 1, 12, 0, tzinfo=timezone.utc)
+    far_future = datetime(2030, 6, 1, 12, 0, tzinfo=UTC)
     with SessionLocal() as s:
         s.execute(update(Article).where(Article.id == art_id).values(date=far_future))
         s.commit()
@@ -808,8 +810,10 @@ def test_message_page_thread_tree_stacks_above_body(client, tmp_path):
     length-conditional right-rail layout (issue #68 slice 2) was removed,
     so no `message-page-grid` wrapper class is emitted regardless of how
     long the thread is."""
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article, ArticleList, Inbox
 
@@ -830,7 +834,7 @@ def test_message_page_thread_tree_stacks_above_body(client, tmp_path):
                 message_id=f"stacked-r{i}@example.com",
                 subject=f"Re: stacked thread root [{i}]",
                 author="r@example",
-                date=datetime(2024, 1, 1, 12, i, tzinfo=timezone.utc),
+                date=datetime(2024, 1, 1, 12, i, tzinfo=UTC),
                 thread_parent="stacked-root@example.com",
                 subject_normalized="stacked thread root",
                 lists=[
@@ -1044,7 +1048,7 @@ def test_message_page_shows_multiple_landings_across_trees(
     tested the lifecycle-timeline section, which was removed in the
     badge redesign (the data moves to the lifecycle pill tooltip).
     Those assertions are intentionally absent until the pill lands."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     _, url = _ingest_one_article(
         tmp_path,
@@ -1056,13 +1060,13 @@ def test_message_page_shows_multiple_landings_across_trees(
         message_id="multi-app@example.com",
         commit_sha="11" * 20,
         tree_name="net-next",
-        date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+        date=datetime(2024, 6, 1, tzinfo=UTC),
     )
     _seed_mainline_commit(
         message_id="multi-app@example.com",
         commit_sha="22" * 20,
         tree_name="linus",
-        date=datetime(2024, 7, 1, tzinfo=timezone.utc),
+        date=datetime(2024, 7, 1, tzinfo=UTC),
     )
     body = client.get(url).data.decode()
     # Patch-state card became the badges row in the badge redesign.
@@ -1274,8 +1278,10 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
     info moved from `<small><strong>Activity:</strong>` inside
     `<aside>` into the `badge-activity-<heat>` chip in `msg-badges`.
     The chip carries `activity_detail` ("3d" etc.) in `.badge-detail`."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article, ArticleList, Inbox
 
@@ -1289,11 +1295,11 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
     # 3 days ago is plausibly *after* it. `_ingest_one_article`
     # defaults to "yesterday" (1.36.3), which was after the reply
     # date and made the activity chip stay dormant.
-    reply_at = datetime.now(timezone.utc) - timedelta(days=3)
+    reply_at = datetime.now(UTC) - timedelta(days=3)
     with SessionLocal() as s:
         ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         art = s.get(Article, art_id)
-        art.date = datetime.now(timezone.utc) - timedelta(days=10)
+        art.date = datetime.now(UTC) - timedelta(days=10)
         reply = Article(
             message_id="reply-3d-old@example.com",
             subject="Re: [PATCH] foo: trigger reply",
@@ -1803,6 +1809,7 @@ def test_message_page_dco_trailer_no_xss_via_address_metacharacters(
     is used (no monkeypatch) since it's what the route actually
     wires."""
     import re as _re
+
     from mimir.config import settings
 
     monkeypatch.setattr(settings, "email_allowlist", ["kernel.org"])
@@ -1876,6 +1883,7 @@ def test_off_list_parent_hint_skips_already_configured_lists(client, tmp_path):
     the hint must be suppressed, there's nothing to add, that list
     is already indexed."""
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
 
@@ -1921,9 +1929,10 @@ def test_message_page_patch_series_revisions_does_not_n1_inbox(client, tmp_path)
     Without the fix a third per-id SELECT would fire for the
     cross-post inbox the identity map hasn't cached yet."""
     from sqlalchemy import event
+    from sqlalchemy import select as _sa_select
+
     from mimir.extensions import SessionLocal, engine
     from mimir.models import Article, ArticleList, Inbox
-    from sqlalchemy import select as _sa_select
 
     # Two cover-letter revisions, same author + title so they share a
     # `patch_series_key`. Ingest both into alpha via the public helper.
@@ -2064,14 +2073,22 @@ def test_message_page_etag_changes_when_thread_gains_a_reply(client, tmp_path):
     (the route's body fetch would then 404, never getting to the
     ETag check). Direct DB insert is enough; the ETag only reads
     the date column."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from sqlalchemy import delete as _delete
     from sqlalchemy import select as _select
+
     from mimir.extensions import SessionLocal as _SL
     from mimir.models import (
         Article as _Article,
+    )
+    from mimir.models import (
         ArticleList as _ArticleList,
+    )
+    from mimir.models import (
         CacheEntry as _CacheEntry,
+    )
+    from mimir.models import (
         Inbox as _Inbox,
     )
 
@@ -2097,7 +2114,7 @@ def test_message_page_etag_changes_when_thread_gains_a_reply(client, tmp_path):
             message_id="etag-thread-reply@example.com",
             subject="Re: root subject",
             author="r@b.example",
-            date=(root_date or datetime.now(timezone.utc)) + timedelta(hours=1),
+            date=(root_date or datetime.now(UTC)) + timedelta(hours=1),
             thread_parent="etag-thread-root@example.com",
             subject_normalized="root subject",
             lists=[
@@ -2201,6 +2218,7 @@ def test_message_page_revisions_fold_renders_when_multiple_versions(
     """When a patch has >= 2 revisions, a Revisions fold renders
     with the count in the summary."""
     from sqlalchemy import update
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 

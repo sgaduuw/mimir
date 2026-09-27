@@ -16,7 +16,7 @@ import json
 import logging
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from flask import g, request
 
@@ -145,7 +145,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
 #   update this CSP entry in lockstep, the test
 #   `test_csp_script_src_pins_specific_htmx_version` enforces that.
 #   Pygments is configured `noclasses=False` (both inline-renderer in
-#   `mimir/rendering.py` and attachment-preview in
+#   `mimir/rendering/diff.py` and attachment-preview in
 #   `mimir/web/routes/attachments.py`) so it emits class names, not
 #   inline `style="color:..."`.
 # Permissions-Policy: deny every powerful feature mimir doesn't use,
@@ -289,7 +289,7 @@ def _log_request(response):
     _request_logger.info(
         json.dumps(
             {
-                "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
                 "request_id": getattr(g, "_request_id", None),
                 "method": request.method,
                 "path": request.path,

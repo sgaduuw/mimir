@@ -6,6 +6,7 @@ on every page, the external-stylesheet contract, and small
 helper / filter unit tests imported from mimir.web."""
 
 import pytest
+
 from tests.test_routes._helpers import (
     _build_app_with_hops,
     _ingest_one_article,
@@ -87,6 +88,7 @@ def test_footer_includes_mimir_version(client):
     as long as the version number is rendered somewhere in the
     footer."""
     import re
+
     from mimir import __version__
 
     body = client.get("/").data.decode()
@@ -265,6 +267,35 @@ def test_security_headers_present_on_unmatched_404(client):
     # absence (or the "-" placeholder) means the hook didn't fire.
     rid = r.headers.get("X-Request-Id")
     assert rid and rid != "-", f"X-Request-Id={rid!r}; before_app_request didn't run"
+
+
+def test_error_responses_carry_no_cache_control(client):
+    """Error responses must never be pinned in an upstream cache.
+
+    `_add_cache_headers` applies its per-endpoint rule only on
+    200/301/302/304, so a 404 carries no `Cache-Control` at all, on
+    purpose. `mimir/web/errors.py`'s module docstring lists
+    `Cache-Control` among the headers that "carry over for free" onto
+    error pages; it does not, and the code is the correct half of that
+    disagreement. Cloudflare fronts this site (see the 3.6.x incident
+    in CONTEXT.md), so a cacheable 404 on a route that later starts
+    resolving is a real edge-staleness footgun.
+
+    Checked on both error shapes: an unmatched-route 404 (no endpoint
+    at all) and a matched route that aborts (endpoint present and
+    carrying a rule in `_CACHE_CONTROL_BY_ENDPOINT`, which is the case
+    that would regress if the status guard were dropped).
+    """
+    unmatched = client.get("/no/such/route/exists/here")
+    assert unmatched.status_code == 404
+    assert unmatched.headers.get("Cache-Control") is None
+
+    aborted = client.get("/maintainers/nobody@example.com")
+    assert aborted.status_code == 404
+    assert aborted.headers.get("Cache-Control") is None, (
+        "web.maintainer_view has a Cache-Control rule; a 404 from it "
+        "must still not be cacheable"
+    )
 
 
 def test_security_headers_values_pin_csp_contract(client):
@@ -556,6 +587,7 @@ def test_access_log_records_user_agent(client):
 
 def test_canonical_inbox_name_uses_canonical_id():
     from unittest.mock import MagicMock
+
     from mimir.web import _canonical_inbox_name
 
     art = MagicMock()
@@ -567,6 +599,7 @@ def test_canonical_inbox_name_uses_canonical_id():
 
 def test_canonical_inbox_name_falls_back_alphabetical_when_null():
     from unittest.mock import MagicMock
+
     from mimir.web import _canonical_inbox_name
 
     art = MagicMock()
@@ -577,6 +610,7 @@ def test_canonical_inbox_name_falls_back_alphabetical_when_null():
 
 def test_canonical_inbox_name_returns_none_for_orphan_article():
     from unittest.mock import MagicMock
+
     from mimir.web import _canonical_inbox_name
 
     art = MagicMock()
@@ -585,8 +619,9 @@ def test_canonical_inbox_name_returns_none_for_orphan_article():
 
 
 def test_canonical_url_for_combines_base_and_msg_url():
-    from unittest.mock import MagicMock
     from datetime import datetime
+    from unittest.mock import MagicMock
+
     from mimir.web import _canonical_url_for
 
     art = MagicMock()

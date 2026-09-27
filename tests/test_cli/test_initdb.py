@@ -22,9 +22,10 @@ def test_init_db_command_runs_and_creates_schema(tmp_path, monkeypatch):
        catches it.
     """
     import sqlalchemy
-    from mimir.extensions import Base
+
     from mimir import extensions as ext_module
     from mimir.cli import initdb as cli_module
+    from mimir.extensions import Base
 
     fresh_db = tmp_path / "fresh-init-db.sqlite"
     fresh_url = f"sqlite:///{fresh_db}"

@@ -3,8 +3,9 @@ per-inbox sitemap, maintainers sitemap, `<lastmod>` correctness,
 cache invalidation after canonical-inbox flips."""
 
 import logging
-
 import re
+from datetime import UTC
+
 import pytest
 
 from tests.test_routes._helpers import (
@@ -72,7 +73,9 @@ def test_sitemap_cross_post_appears_in_each_linked_inbox(client):
     art3 has no replies, so it is listed as a message URL rather than
     `/t`, matching what its own canonical says."""
     import xml.etree.ElementTree as ET
+
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
@@ -239,7 +242,9 @@ def test_inbox_sitemap_article_lastmod_is_the_threads_latest_activity(client):
     fails if the two are swapped back.
     """
     import xml.etree.ElementTree as ET
+
     from sqlalchemy import func, select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article, ArticleList, Inbox
 
@@ -314,7 +319,9 @@ def test_inbox_sitemap_articles_scoped_to_that_inbox(client):
     art2 has no replies, so it is a single-message thread and the
     sitemap lists its MESSAGE URL (which is its canonical), not `/t`."""
     import xml.etree.ElementTree as ET
+
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
@@ -542,7 +549,7 @@ def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
 
     checked = 0
     for loc in locs:
-        page = loc[:-2] if loc.endswith("/t") else loc
+        page = loc.removesuffix("/t")
         if page not in ours:
             continue  # conftest rows have synthetic blobs and 404
         html = client.get(page).get_data(as_text=True)
@@ -559,7 +566,7 @@ def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
 
 
 def _active_thread(article_id, *, reply_count, subject="A thread"):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.threading import ActiveThread
 
@@ -569,10 +576,10 @@ def _active_thread(article_id, *, reply_count, subject="A thread"):
         message_id=f"t{article_id}@x",
         subject=subject,
         author="a@b.example",
-        date=datetime(2024, 3, 1, tzinfo=timezone.utc),
+        date=datetime(2024, 3, 1, tzinfo=UTC),
         recent_count=reply_count + 1,
         reply_count=reply_count,
-        last_activity=datetime(2024, 3, 1, tzinfo=timezone.utc),
+        last_activity=datetime(2024, 3, 1, tzinfo=UTC),
     )
 
 
@@ -631,7 +638,7 @@ def test_thread_lastmod_is_scoped_to_the_inbox(client, tmp_path):
     blocking bugs in the surrounding work: every test held it at one
     inbox, so dropping the inbox scoping entirely passed the suite.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select
 
@@ -645,7 +652,7 @@ def test_thread_lastmod_is_scoped_to_the_inbox(client, tmp_path):
     # `articles.date` is the public-inbox COMMIT time, not the `Date:`
     # header (CONTEXT.md), so `seed_thread_shape`'s `date_for` cannot
     # move it. Set it directly.
-    _set_article_date(seeded["la2@x"][0], datetime(2024, 6, 5, tzinfo=timezone.utc))
+    _set_article_date(seeded["la2@x"][0], datetime(2024, 6, 5, tzinfo=UTC))
 
     # Cross-post the ROOT only into beta: alpha's thread runs to June,
     # beta's copy is a lone January message.
@@ -704,7 +711,7 @@ def test_thread_lastmod_understates_rather_than_overstates_mid_backfill(
     until the backfill lands, while overstating would spend crawl
     budget on documents that had not changed.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select, update
 
@@ -716,7 +723,7 @@ def test_thread_lastmod_understates_rather_than_overstates_mid_backfill(
     seeded = seed_thread_shape(tmp_path, "alpha", [("mb1@x", None), ("mb2@x", "mb1@x")])
     root_id = seeded["mb1@x"][0]
     reply_id = seeded["mb2@x"][0]
-    _set_article_date(reply_id, datetime(2024, 6, 5, tzinfo=timezone.utc))
+    _set_article_date(reply_id, datetime(2024, 6, 5, tzinfo=UTC))
 
     with SessionLocal() as s:
         s.execute(
@@ -763,7 +770,7 @@ def test_thread_lastmod_is_the_max_not_the_last_row(client, tmp_path, shape, new
     by re-running the production query, so it cannot agree with a
     broken implementation by construction.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select
 
@@ -779,9 +786,7 @@ def test_thread_lastmod_is_the_max_not_the_last_row(client, tmp_path, shape, new
         [(f"{mids[0]}@x", None)] + [(f"{m}@x", f"{mids[0]}@x") for m in mids[1:]],
     )
     for mid, day in shape.items():
-        _set_article_date(
-            seeded[f"{mid}@x"][0], datetime(2024, 5, day, tzinfo=timezone.utc)
-        )
+        _set_article_date(seeded[f"{mid}@x"][0], datetime(2024, 5, day, tzinfo=UTC))
 
     root_id = seeded[f"{mids[0]}@x"][0]
     with SessionLocal() as s:
@@ -812,7 +817,7 @@ def test_singleton_lastmod_survives_a_corrupt_thread_root(client, tmp_path):
     is what a W8 write-path bug produces.
     """
     import xml.etree.ElementTree as ET
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select, update
 
@@ -825,7 +830,7 @@ def test_singleton_lastmod_survives_a_corrupt_thread_root(client, tmp_path):
     other_mirror.mkdir()
     other = seed_thread_shape(other_mirror, "alpha", [("cs2@x", None)])
     solo_id = solo["cs1@x"][0]
-    _set_article_date(other["cs2@x"][0], datetime(2029, 12, 31, tzinfo=timezone.utc))
+    _set_article_date(other["cs2@x"][0], datetime(2029, 12, 31, tzinfo=UTC))
 
     with SessionLocal() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
@@ -878,7 +883,7 @@ def test_month_sitemap_reaches_threads_the_flat_sitemap_caps_off(
     unreachable by sitemap-driven discovery. A thread past that cap
     must still appear in its month.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     import mimir.seo.sitemaps as sm
     from tests.test_routes._helpers import seed_thread_shape
@@ -886,12 +891,12 @@ def test_month_sitemap_reaches_threads_the_flat_sitemap_caps_off(
     monkeypatch.setattr(sm, "SITEMAP_RECENT_PER_INBOX", 1)
     seeded = seed_thread_shape(tmp_path, "alpha", [("old1@x", None)])
     old_id = seeded["old1@x"][0]
-    _set_article_date(old_id, datetime(2011, 3, 9, tzinfo=timezone.utc))
+    _set_article_date(old_id, datetime(2011, 3, 9, tzinfo=UTC))
 
     other = tmp_path / "recent"
     other.mkdir()
     newer = seed_thread_shape(other, "alpha", [("new1@x", None)])
-    _set_article_date(newer["new1@x"][0], datetime(2026, 7, 1, tzinfo=timezone.utc))
+    _set_article_date(newer["new1@x"][0], datetime(2026, 7, 1, tzinfo=UTC))
 
     _clear_sitemap_cache()
     flat = _locs(client, "/alpha/sitemap.xml")
@@ -911,7 +916,7 @@ def test_month_sitemap_pages_are_disjoint_and_complete(client, tmp_path, monkeyp
     Page size is monkeypatched rather than seeding 45,000 threads; the
     boundary behaviour is what matters and it is size-independent.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     import mimir.seo.sitemaps as sm
     from tests.test_routes._helpers import seed_thread_shape
@@ -923,7 +928,7 @@ def test_month_sitemap_pages_are_disjoint_and_complete(client, tmp_path, monkeyp
         mirror.mkdir()
         seeded = seed_thread_shape(mirror, "alpha", [(f"pg{i}@x", None)])
         art_id = seeded[f"pg{i}@x"][0]
-        _set_article_date(art_id, datetime(2019, 4, 1 + i, tzinfo=timezone.utc))
+        _set_article_date(art_id, datetime(2019, 4, 1 + i, tzinfo=UTC))
         ids.append(art_id)
 
     _clear_sitemap_cache()
@@ -942,14 +947,14 @@ def test_month_sitemap_pages_are_disjoint_and_complete(client, tmp_path, monkeyp
 
 
 def test_sitemap_index_enumerates_every_month_page(client, tmp_path, monkeypatch):
-    """sitemaps.org forbids an index referencing another index, so the
-    pages cannot hide behind a nested index and the top-level index
-    must name each one. An index that advertises fewer pages than exist
+    """Google rejects a nested sitemap index (sitemaps.org itself
+    permits one), so the pages cannot hide behind a nested index and
+    the top-level index must name each one. An index that advertises fewer pages than exist
     leaves those URLs undiscoverable, which is the failure this
     workstream is about.
     """
     import xml.etree.ElementTree as ET
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     import mimir.seo.sitemaps as sm
     from tests.test_routes._helpers import seed_thread_shape
@@ -959,9 +964,7 @@ def test_sitemap_index_enumerates_every_month_page(client, tmp_path, monkeypatch
         mirror = tmp_path / f"ix{i}"
         mirror.mkdir()
         seeded = seed_thread_shape(mirror, "alpha", [(f"ixp{i}@x", None)])
-        _set_article_date(
-            seeded[f"ixp{i}@x"][0], datetime(2015, 8, 1 + i, tzinfo=timezone.utc)
-        )
+        _set_article_date(seeded[f"ixp{i}@x"][0], datetime(2015, 8, 1 + i, tzinfo=UTC))
 
     _clear_sitemap_cache()
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
@@ -984,13 +987,13 @@ def test_month_sitemap_rejects_impossible_months(client):
 def test_month_sitemap_is_scoped_to_its_inbox(client, tmp_path):
     """The axis that produced three blocking bugs in this workstream:
     every test used one inbox, so dropping the inbox filter passed."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from tests.test_routes._helpers import seed_thread_shape
 
     seeded = seed_thread_shape(tmp_path, "alpha", [("sc1@x", None)])
     art_id = seeded["sc1@x"][0]
-    _set_article_date(art_id, datetime(2013, 2, 4, tzinfo=timezone.utc))
+    _set_article_date(art_id, datetime(2013, 2, 4, tzinfo=UTC))
 
     _clear_sitemap_cache()
     assert any(
@@ -1024,13 +1027,13 @@ def test_month_sitemap_pages_stay_disjoint_when_dates_collide(
     genuinely pins is the disjoint-and-complete property of paging,
     with ties present.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     import mimir.seo.sitemaps as sm
     from tests.test_routes._helpers import seed_thread_shape
 
     monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 2)
-    same = datetime(2018, 9, 12, 6, 30, 0, tzinfo=timezone.utc)
+    same = datetime(2018, 9, 12, 6, 30, 0, tzinfo=UTC)
     ids = []
     for i in range(5):
         mirror = tmp_path / f"tie{i}"
@@ -1062,7 +1065,7 @@ def test_month_sitemap_lists_roots_not_replies(client, tmp_path):
     Asserted against the flat sitemap rather than a hardcoded list, so
     the two can never drift apart on the same thread.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from tests.test_routes._helpers import seed_thread_shape
 
@@ -1071,7 +1074,7 @@ def test_month_sitemap_lists_roots_not_replies(client, tmp_path):
         "alpha",
         [("rr1@x", None), ("rr2@x", "rr1@x"), ("rr3@x", "rr2@x")],
     )
-    when = datetime(2023, 9, 14, tzinfo=timezone.utc)
+    when = datetime(2023, 9, 14, tzinfo=UTC)
     for mid in seeded:
         _set_article_date(seeded[mid][0], when)
     root_id = seeded["rr1@x"][0]
@@ -1095,13 +1098,13 @@ def test_month_sitemap_excludes_the_first_instant_of_the_next_month(client, tmp_
     (that buckets via strftime). Commit timestamps have second
     precision, so this is reachable, not theoretical.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from tests.test_routes._helpers import seed_thread_shape
 
     seeded = seed_thread_shape(tmp_path, "alpha", [("bd1@x", None)])
     edge_id = seeded["bd1@x"][0]
-    _set_article_date(edge_id, datetime(2020, 7, 1, 0, 0, 0, tzinfo=timezone.utc))
+    _set_article_date(edge_id, datetime(2020, 7, 1, 0, 0, 0, tzinfo=UTC))
 
     _clear_sitemap_cache()
     assert client.get("/alpha/2020/06/sitemap.xml").status_code == 404, (
@@ -1164,12 +1167,12 @@ def test_month_sitemap_sends_cache_control(client, tmp_path):
     """Every other sitemap surface is edge-shielded; these are ~32k
     URLs the index actively points crawlers at, and they are not
     warm-cache targets, so each miss is a cold compute at the origin."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from tests.test_routes._helpers import seed_thread_shape
 
     seeded = seed_thread_shape(tmp_path, "alpha", [("cc1@x", None)])
-    _set_article_date(seeded["cc1@x"][0], datetime(2017, 5, 3, tzinfo=timezone.utc))
+    _set_article_date(seeded["cc1@x"][0], datetime(2017, 5, 3, tzinfo=UTC))
     _clear_sitemap_cache()
     r = client.get("/alpha/2017/05/sitemap.xml")
     assert r.status_code == 200
@@ -1463,7 +1466,7 @@ def test_sitemap_uses_the_loops_own_inbox_not_the_activity_rows(
     Pinned structurally: hand the builder a row whose `inbox_name`
     disagrees and assert the emitted URL follows the inbox being built.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.seo import sitemaps as sitemaps_mod
     from mimir.subsystems_dashboard import SubsystemActivity
@@ -1473,7 +1476,7 @@ def test_sitemap_uses_the_loops_own_inbox_not_the_activity_rows(
         name="BCACHEFS",
         inbox_name="beta",
         message_count=3,
-        last_activity=datetime(2026, 7, 28, tzinfo=timezone.utc),
+        last_activity=datetime(2026, 7, 28, tzinfo=UTC),
     )
     monkeypatch.setattr(
         sitemaps_mod, "most_active_subsystems_in_inbox", lambda *a, **k: [fake]
@@ -1632,7 +1635,6 @@ def test_sitemap_page_counts_are_scoped_to_one_inbox(client, tmp_path, monkeypat
     crawlers are pointed at.
     """
     from mimir.config import settings
-
     from tests.test_routes._helpers import build_thread
 
     monkeypatch.setattr(settings, "thread_view_render_cap", 2)
@@ -1662,7 +1664,6 @@ def test_month_sitemaps_paginate_threads_too(client, tmp_path, monkeypatch):
     while every month sitemap listed page 1 only, for all 6M threads.
     """
     from mimir.config import settings
-
     from tests.test_routes._helpers import build_thread
 
     monkeypatch.setattr(settings, "thread_view_render_cap", 2)
@@ -1779,3 +1780,103 @@ def test_sitemap_loc_is_byte_identical_to_the_pages_own_canonical(
             f"sitemap advertises {loc} but that page self-nominates as "
             f"{canonical.group(1)}"
         )
+
+
+def test_every_thread_page_emitter_agrees_byte_for_byte(client, tmp_path, monkeypatch):
+    """All FOUR emitters named in `thread.py`, not the two already pinned.
+
+    `mimir/web/routes/thread.py` claims "the redirect target, the
+    canonical, the sitemap `<loc>` and IndexNow are byte-identical by
+    construction". The sibling test above covers two of those (the
+    sitemap `<loc>` and the thread page's own canonical), and both go
+    through `thread_page_url`, so it cannot see the other two.
+
+    The other two do NOT share the page suffix. `routes/message.py` and
+    `urls._advertised_urls_for` each build it themselves:
+
+        thread_view_url = _thread_view_url(root, name)
+        if page_no > 1:
+            thread_view_url += f"/{page_no}"
+
+    Only the `_msg_path` PREFIX is shared. The `/N` suffix is three
+    parallel implementations of one rule, which is the emitter/acceptor
+    shape CONTEXT.md records as this project's recurring defect, and the
+    route accepts `/t/2` in exactly one spelling so a divergence is a
+    404 or a duplicate-URL signal rather than a test failure.
+
+    So this pins every emitter against ONE string, the one the sitemap
+    published, and additionally asserts CONTAINMENT (MEMORY.md
+    2026-08-03: containment is the claim that matters and it is
+    scope-independent) rather than re-deriving the page number.
+    """
+    from mimir import indexnow
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    # Five at cap 2 needs three pages, and 5/2 floors to 2, so a
+    # ceiling-division bug cannot pass by luck.
+    seeded = build_thread(tmp_path, "alpha", shape="chain", size=5)
+    root_id, root_url = seeded["m0"]
+    # `m3` is the fourth message in arrival order, so at cap 2 it is the
+    # first message on page 2: the only position that exercises a page
+    # suffix at all.
+    reply_id, _reply_url = seeded["m3"]
+
+    body = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    advertised = [
+        loc
+        for loc in re.findall(r"<loc>([^<]+)</loc>", body)
+        if re.search(rf"/{root_id}/t(/\d+)?$", loc)
+    ]
+    assert len(advertised) == 3, advertised
+    page1, page2 = advertised[0], advertised[1]
+    assert page1.endswith("/t") and page2.endswith("/t/2"), advertised
+
+    # Which advertised page actually renders `m3`. Derived by fetching,
+    # never by recomputing the rank: a shared miscalculation would make
+    # a recomputed expectation agree with the bug.
+    holder = None
+    for loc in advertised:
+        html = client.get(loc.replace("http://localhost", "")).get_data(as_text=True)
+        if f'id="m{reply_id}"' in html:
+            assert holder is None, f"{reply_id} rendered on two pages"
+            holder = loc
+    assert holder == page2, f"expected {reply_id} on {page2}, found it on {holder}"
+
+    # 1. IndexNow. Its own suffix implementation, on the same article.
+    with SessionLocal() as s:
+        msgid = s.get(Article, reply_id).message_id
+        pushed = indexnow.build_urls(s, [msgid], base="http://localhost")
+    assert pushed == [holder], (
+        f"IndexNow pushes {pushed}, the sitemap advertises {holder}; "
+        "the two page-suffix implementations have drifted"
+    )
+
+    # 2. The message page's canonical. A third suffix implementation.
+    msg_html = client.get(_reply_url).get_data(as_text=True)
+    msg_canonical = re.search(r'<link rel="canonical" href="([^"]+)"', msg_html)
+    assert msg_canonical is not None
+    assert msg_canonical.group(1) == holder, (
+        f"the message page canonicalises to {msg_canonical.group(1)} while "
+        f"the sitemap advertises {holder}"
+    )
+
+    # 3. The reply-redirect. `/t` on a reply must land on the page that
+    # holds it, spelled the same way.
+    redirect = client.get(_reply_url + "/t")
+    assert redirect.status_code == 301, redirect.status_code
+    assert redirect.headers["Location"] == holder.replace("http://localhost", ""), (
+        f"/t on a reply redirects to {redirect.headers['Location']}, "
+        f"but the advertised page is {holder}"
+    )
+
+    # 4. The `/t/1` collapse. Page 1 has no suffix anywhere else, so a
+    # redirect that kept one would advertise a URL nothing else names.
+    collapse = client.get(root_url + "/t/1")
+    assert collapse.status_code == 301
+    assert collapse.headers["Location"] == page1.replace("http://localhost", ""), (
+        f"/t/1 redirects to {collapse.headers['Location']}, "
+        f"the sitemap advertises {page1}"
+    )

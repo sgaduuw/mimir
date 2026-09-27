@@ -31,7 +31,7 @@ returned to the pool either way.
 
 import json
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
@@ -76,11 +76,11 @@ from mimir.broker.handlers.warm import (
 )
 from mimir.broker.protocol import (
     AnalyzeRequest,
-    BackfillThreadRootsRequest,
     BackfillArticleFilesRequest,
     BackfillArticleTrailersRequest,
     BackfillCanonicalsRequest,
     BackfillPatchSeriesRequest,
+    BackfillThreadRootsRequest,
     BootstrapInboxesRequest,
     CacheDeleteForInboxRequest,
     CacheDeleteRequest,

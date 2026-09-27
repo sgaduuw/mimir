@@ -12,6 +12,7 @@ from flask import abort, redirect, render_template, url_for
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from mimir.config import settings
 from mimir.dashboard import (
     archive_stats,
     author_recent,
@@ -23,15 +24,14 @@ from mimir.dashboard import (
 from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Article, ArticleList, Inbox, Subsystem
-from mimir.config import settings
-from mimir.seo import _json_ld_index, _json_ld_inbox
+from mimir.seo import _json_ld_inbox, _json_ld_index
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.subsystems_dashboard import (
+    MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     active_reviewers_in_subsystem,
     active_threads_in_subsystem,
     daily_volume_in_subsystem,
     most_active_subsystems_global,
-    MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     most_active_subsystems_in_inbox,
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
@@ -45,7 +45,6 @@ from mimir.web.urls import (
     _site_base,
     _year_decade_groups,
 )
-
 
 RECENT_PAGE_SIZE = 10
 
@@ -340,14 +339,26 @@ def subsystem_dashboard(inbox_name: str, name: str):
                 ),
                 code=301,
             )
-        subsystem = session.execute(
-            select(Subsystem)
-            .options(
-                selectinload(Subsystem.maintainers),
-                selectinload(Subsystem.paths),
+        # `.first()`, not `.scalar_one_or_none()`: `subsystems.name` has
+        # no unique constraint and the URL form is lowercased, so two
+        # MAINTAINERS sections differing only in case collapse onto one
+        # URL and `scalar_one_or_none()` RAISES, i.e. a 500 on a public,
+        # sitemapped page. Serving one beats 404 (they are
+        # near-duplicates), and `ORDER BY id` keeps the pick stable
+        # across renders. Prevalence and alternatives: issue #554.
+        subsystem = (
+            session.execute(
+                select(Subsystem)
+                .options(
+                    selectinload(Subsystem.maintainers),
+                    selectinload(Subsystem.paths),
+                )
+                .where(func.lower(Subsystem.name) == name_lower)
+                .order_by(Subsystem.id)
             )
-            .where(func.lower(Subsystem.name) == name_lower)
-        ).scalar_one_or_none()
+            .scalars()
+            .first()
+        )
         if subsystem is None:
             abort(404)
         recent = recent_articles_in_subsystem(

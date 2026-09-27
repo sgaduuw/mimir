@@ -11,6 +11,69 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-09-27
+
+### Changed
+
+- Dependency refresh: sqlalchemy 2.0.54, alembic 1.20.0, dulwich 1.2.15,
+  pydantic 2.13.5, pydantic-settings 2.15.0, pygments 2.21.0, gunicorn
+  floor 26.2.0. sqlalchemy and dulwich carry C extensions, so the
+  post-deploy smoke for this release includes confirming the broker is
+  still running GIL-free (3.14t re-enables the GIL when a C extension
+  lacking `Py_GIL_DISABLED` is imported, and `PYTHON_GIL=0` is what
+  holds it off).
+- Lint is now governed by an explicit ruff rule set rather than the
+  tool's defaults, which moved from 59 enabled rules to 413 between
+  0.15.21 and 0.16.x. No runtime change; recorded because it is why this
+  release touches 130-odd files with mechanical import-order and
+  `datetime.UTC` rewrites.
+
+### Fixed
+
+- The subsystem dashboard no longer 500s when two MAINTAINERS sections
+  differ only in case. The URL form is lowercased and `subsystems.name`
+  carries no unique constraint, so such sections collapse onto one URL
+  and the lookup raised rather than resolving. It now serves the first
+  by a stable order, which beats a 404 because the two are
+  near-duplicates and a reader wants the content. No occurrences on
+  production; one upstream edit away.
+- `VACUUM` reports whether it could collapse the WAL, and no longer
+  reports a compaction as a loss. The post-VACUUM
+  `wal_checkpoint(TRUNCATE)` is a silent no-op whenever another
+  connection holds the database open, which on a live deployment is
+  always, because the web and tasks containers hold read connections
+  continuously. The WAL therefore stays at roughly database size until
+  every connection closes, so the data volume needs room for about
+  twice the database rather than once. `mimir vacuum` now says so.
+
+  The size figures also move to one basis: all three are the database's
+  logical size (`page_count * page_size`), so `before - after` is
+  exactly `reclaimed`. Summing the on-disk files reported -16.7 GB for a
+  compaction, because the WAL had just been inflated by the rebuild;
+  diffing the main file alone reports 0, because with any reader
+  connected a checkpoint cannot advance and the main file never moves.
+  The logical size is unaffected by checkpoint timing, and the on-disk
+  footprint is logged for whoever is chasing disk.
+- `import mimir.web` could have started raising `ImportError` after the
+  import-order sweep. `mimir/seo` deliberately keeps its `mimir.web`
+  imports inside function bodies to avoid an import-time cycle, which
+  only holds while `mimir.web` is the package entered first; the sweep
+  hoisted a `mimir.seo` import above the side-effect imports that
+  guarantee it. Latent rather than live (no module-level `mimir.web`
+  import exists under `mimir/seo/` today), and now fenced and pinned by
+  a test that reads the real `sys.modules` entry order.
+- The test suite can no longer trigger a ~3.6 GB `git clone` of
+  torvalds/linux. `mainline._ensure_tree` clones whenever its target
+  path is absent, and `--skip-fetch` does not prevent that (it skips
+  the fetch on an existing clone only), so a fresh checkout downloaded
+  a kernel while every machine that already had the tree passed
+  silently. Any route to a clone now fails the test immediately, naming
+  the URL it would have fetched, via `pytest.fail` rather than an
+  assertion: `update_mainline` isolates per-tree failures behind
+  `except Exception`, which would have swallowed an `AssertionError` on
+  the one production path that reaches the clone.
+
+
 ## [3.8.0] - 2026-08-03
 
 ### Changed
