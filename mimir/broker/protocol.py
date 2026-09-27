@@ -27,7 +27,6 @@ from typing import Any, Literal, Union
 
 from pydantic import BaseModel, Field, field_validator
 
-
 # Mirror of `mimir.inboxes._NAME_RE`. Duplicated here (rather than
 # imported) so the broker protocol module stays free of the heavy
 # inboxes/cache/extensions import chain that an `inboxes` import

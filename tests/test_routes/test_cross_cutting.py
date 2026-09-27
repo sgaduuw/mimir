@@ -6,6 +6,7 @@ on every page, the external-stylesheet contract, and small
 helper / filter unit tests imported from mimir.web."""
 
 import pytest
+
 from tests.test_routes._helpers import (
     _build_app_with_hops,
     _ingest_one_article,
@@ -87,6 +88,7 @@ def test_footer_includes_mimir_version(client):
     as long as the version number is rendered somewhere in the
     footer."""
     import re
+
     from mimir import __version__
 
     body = client.get("/").data.decode()
@@ -585,6 +587,7 @@ def test_access_log_records_user_agent(client):
 
 def test_canonical_inbox_name_uses_canonical_id():
     from unittest.mock import MagicMock
+
     from mimir.web import _canonical_inbox_name
 
     art = MagicMock()
@@ -596,6 +599,7 @@ def test_canonical_inbox_name_uses_canonical_id():
 
 def test_canonical_inbox_name_falls_back_alphabetical_when_null():
     from unittest.mock import MagicMock
+
     from mimir.web import _canonical_inbox_name
 
     art = MagicMock()
@@ -606,6 +610,7 @@ def test_canonical_inbox_name_falls_back_alphabetical_when_null():
 
 def test_canonical_inbox_name_returns_none_for_orphan_article():
     from unittest.mock import MagicMock
+
     from mimir.web import _canonical_inbox_name
 
     art = MagicMock()
@@ -614,8 +619,9 @@ def test_canonical_inbox_name_returns_none_for_orphan_article():
 
 
 def test_canonical_url_for_combines_base_and_msg_url():
-    from unittest.mock import MagicMock
     from datetime import datetime
+    from unittest.mock import MagicMock
+
     from mimir.web import _canonical_url_for
 
     art = MagicMock()

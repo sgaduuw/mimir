@@ -2,6 +2,8 @@
 `/<inbox>/yesterday`, `/<inbox>/since/<date>`, year and
 month archive routes, and the date-shaped 404 guards."""
 
+from datetime import UTC
+
 from tests.test_routes._helpers import _title_of
 
 
@@ -9,9 +11,9 @@ def test_inbox_today_route_renders_today_label(client, inbox_name, frozen_clock)
     """`/today` heading must reference the current date (UTC). A
     template change that hardcoded a static label would pass the
     smoke status check but mislabel every daily view."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     body = client.get(f"/{inbox_name}/today").data.decode()
     assert today in body, f"today's date {today!r} missing from /today body"
 
@@ -19,9 +21,9 @@ def test_inbox_today_route_renders_today_label(client, inbox_name, frozen_clock)
 def test_inbox_yesterday_route_renders_yesterday_label(
     client, inbox_name, frozen_clock
 ):
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
     body = client.get(f"/{inbox_name}/yesterday").data.decode()
     assert yesterday in body
 
@@ -30,9 +32,9 @@ def test_inbox_since_smoke_recent(client, inbox_name, frozen_clock):
     """`/since/<recent-date>` resolves and renders without the cap
     notice; the seeded archive is older than 90d so the body just
     says 'no messages in this window' but the route still 200s."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    recent = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+    recent = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
     r = client.get(f"/{inbox_name}/since/{recent}")
     assert r.status_code == 200
     body = r.data.decode()
@@ -44,15 +46,15 @@ def test_inbox_since_caps_window_with_notice(client, inbox_name, frozen_clock):
     """A since-date older than 90 days clamps the window to the
     90-day floor and the template surfaces a notice so the operator
     sees why the window starts where it does."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    old = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+    old = (datetime.now(UTC) - timedelta(days=365)).strftime("%Y-%m-%d")
     r = client.get(f"/{inbox_name}/since/{old}")
     assert r.status_code == 200
     body = r.data.decode()
     assert "Window capped" in body
     # The effective-since date (today - 90d) appears in the notice.
-    floor = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+    floor = (datetime.now(UTC) - timedelta(days=90)).strftime("%Y-%m-%d")
     assert floor in body
 
 
@@ -63,9 +65,9 @@ def test_inbox_since_malformed_date_404(client, inbox_name):
 
 
 def test_inbox_since_future_date_404(client, inbox_name, frozen_clock):
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    future = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d")
+    future = (datetime.now(UTC) + timedelta(days=2)).strftime("%Y-%m-%d")
     assert client.get(f"/{inbox_name}/since/{future}").status_code == 404
 
 
@@ -133,9 +135,9 @@ def test_daily_today_title(client, inbox_name):
 
 
 def test_since_title_shape(client, inbox_name, frozen_clock):
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    recent = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
+    recent = (datetime.now(UTC) - timedelta(days=5)).strftime("%Y-%m-%d")
     title = _title_of(client.get(f"/{inbox_name}/since/{recent}").data.decode())
     assert title.endswith(f" | {inbox_name} | mimir")
     assert recent in title
@@ -148,13 +150,14 @@ def test_daily_view_counts_messages_in_window(client, frozen_clock):
     `Article.date >= start.strftime(...)` form as brittle on
     SQLA 2.x typing; the datetime-comparison form keeps the
     column's DateTime type live across the round-trip."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article, ArticleList, Inbox
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     yesterday = now - timedelta(days=1)
     with SessionLocal() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()

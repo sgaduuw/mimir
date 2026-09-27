@@ -3,6 +3,7 @@ unscoped redirect and the `/<inbox>/m/<id>` scoped form,
 including 301 vs 302 contract and canonical-inbox routing."""
 
 import pytest
+
 from tests.test_routes._helpers import _any_article_in
 
 
@@ -39,6 +40,7 @@ def test_global_message_id_lookup_uses_canonical_inbox(client):
     beta makes /m/<id> redirect to /beta/.../<id>, not /alpha/.../<id>
     (which would be the alphabetical-first fallback)."""
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article, Inbox
 

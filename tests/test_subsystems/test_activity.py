@@ -11,7 +11,6 @@ from mimir.subsystems_dashboard import (
     most_active_subsystems_global,
     most_active_subsystems_in_inbox,
 )
-
 from tests.test_subsystems._helpers import _add_recent_thread_root, _add_subsystem
 
 

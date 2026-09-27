@@ -12,6 +12,8 @@ badge rendering through `_lifecycle_badges.html` exercises the same
 include partial that every other listing template uses.
 """
 
+from datetime import UTC
+
 
 def test_recent_listing_renders_landed_pill_for_landed_article(client):
     """Seeding a `mainline_commits` row tagged `linus` for one of the
@@ -24,7 +26,7 @@ def test_recent_listing_renders_landed_pill_for_landed_article(client):
     bulk fetcher's per-id cache is populated by the page render
     itself; we clear the cache row beforehand so the test isn't
     racing a stale entry from another test."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir import cache
     from mimir.extensions import SessionLocal
@@ -36,7 +38,7 @@ def test_recent_listing_renders_landed_pill_for_landed_article(client):
                 commit_sha="f" * 40,
                 message_id="art1@example.com",
                 tree_name="linus",
-                committed_at=datetime.now(timezone.utc),
+                committed_at=datetime.now(UTC),
             )
         )
         s.commit()
@@ -44,6 +46,7 @@ def test_recent_listing_renders_landed_pill_for_landed_article(client):
         # the seeded MainlineCommit could collide with a pre-existing
         # cache row if test ordering changes; clear explicitly.
         from sqlalchemy import select
+
         from mimir.models import Article
 
         art = s.execute(

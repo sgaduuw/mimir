@@ -5,7 +5,7 @@ backfill). Filed here rather than in any one ingest
 submodule because the SQL runs against the schema, not
 through the ingest pipeline."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -13,7 +13,6 @@ from mimir.models import (
     Article,
     Inbox,
 )
-
 from tests.test_ingest._helpers import _naive_utc
 
 
@@ -29,6 +28,7 @@ def test_migration_backfill_sql_populates_last_article_date(seeded_db):
     simulate the pre-upgrade state, then run the migration's backfill
     SQL inline and verify both inboxes pick up the right max."""
     from datetime import datetime
+
     from sqlalchemy import text
 
     with seeded_db() as s:
@@ -69,7 +69,7 @@ def test_migration_backfill_sets_position_zero_on_keyed_covers(seeded_db):
             message_id="legacy-cv@x",
             subject="[PATCH 0/2] legacy",
             author="A <a@x>",
-            date=datetime(2024, 5, 1, tzinfo=timezone.utc),
+            date=datetime(2024, 5, 1, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="legacy",
             patch_series_key="legacy",

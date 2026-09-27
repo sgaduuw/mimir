@@ -14,7 +14,7 @@ The conftest seed already gives us:
 Tests that need richer shapes add extra Articles inline.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -83,7 +83,7 @@ def test_find_thread_root_off_list_parent_stops_walk(seeded_db):
             message_id="orphan@example.com",
             subject="orphan",
             author="X",
-            date=datetime(2024, 4, 1, tzinfo=timezone.utc),
+            date=datetime(2024, 4, 1, tzinfo=UTC),
             thread_parent="off-list@x.com",
             subject_normalized="orphan",
         )
@@ -143,7 +143,7 @@ def test_get_thread_orders_siblings_by_date(seeded_db):
             message_id="r1@example.com",
             subject="Re: cross-posted note",
             author="E",
-            date=datetime(2024, 3, 2, tzinfo=timezone.utc),
+            date=datetime(2024, 3, 2, tzinfo=UTC),
             thread_parent="art3@example.com",
             subject_normalized="cross-posted note",
         )
@@ -151,7 +151,7 @@ def test_get_thread_orders_siblings_by_date(seeded_db):
             message_id="r2@example.com",
             subject="Re: cross-posted note",
             author="L",
-            date=datetime(2024, 3, 3, tzinfo=timezone.utc),
+            date=datetime(2024, 3, 3, tzinfo=UTC),
             thread_parent="art3@example.com",
             subject_normalized="cross-posted note",
         )
@@ -188,7 +188,7 @@ def test_get_thread_depth_for_nested_replies(seeded_db):
             message_id="d2@example.com",
             subject="Re: hello alpha",
             author="X",
-            date=datetime(2024, 1, 3, tzinfo=timezone.utc),
+            date=datetime(2024, 1, 3, tzinfo=UTC),
             thread_parent="art4@example.com",
             subject_normalized="hello alpha",
         )
@@ -196,7 +196,7 @@ def test_get_thread_depth_for_nested_replies(seeded_db):
             message_id="d3@example.com",
             subject="Re: hello alpha",
             author="Y",
-            date=datetime(2024, 1, 4, tzinfo=timezone.utc),
+            date=datetime(2024, 1, 4, tzinfo=UTC),
             thread_parent="d2@example.com",
             subject_normalized="hello alpha",
         )
@@ -241,7 +241,7 @@ def test_find_thread_root_terminates_on_cycle(seeded_db):
             message_id="cycle-a@example.com",
             subject="a",
             author="x",
-            date=datetime(2024, 5, 1, tzinfo=timezone.utc),
+            date=datetime(2024, 5, 1, tzinfo=UTC),
             thread_parent="cycle-b@example.com",
             subject_normalized="a",
         )
@@ -249,7 +249,7 @@ def test_find_thread_root_terminates_on_cycle(seeded_db):
             message_id="cycle-b@example.com",
             subject="b",
             author="x",
-            date=datetime(2024, 5, 2, tzinfo=timezone.utc),
+            date=datetime(2024, 5, 2, tzinfo=UTC),
             thread_parent="cycle-a@example.com",
             subject_normalized="b",
         )
@@ -307,7 +307,7 @@ def test_find_thread_root_handles_out_of_order_arrival(seeded_db):
             message_id="ooo-reply@example.com",
             subject="Re: ooo",
             author="r",
-            date=datetime(2024, 6, 2, tzinfo=timezone.utc),
+            date=datetime(2024, 6, 2, tzinfo=UTC),
             thread_parent="ooo-parent@example.com",
             subject_normalized="ooo",
         )
@@ -332,7 +332,7 @@ def test_find_thread_root_handles_out_of_order_arrival(seeded_db):
             message_id="ooo-parent@example.com",
             subject="ooo",
             author="p",
-            date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            date=datetime(2024, 6, 1, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="ooo",
         )
@@ -371,8 +371,8 @@ def test_active_threads_query_returns_root_for_recent_reply(seeded_db):
     The earlier presence-only check would have passed a regression
     that emitted duplicate rows or miscounted the contributors."""
     alpha = _inbox(seeded_db, "alpha")
-    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    end = datetime(2024, 1, 31, tzinfo=timezone.utc)
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    end = datetime(2024, 1, 31, tzinfo=UTC)
     with seeded_db() as s:
         results = _active_threads_query(
             s, alpha, start, end, order_by="last_activity", limit=None
@@ -407,7 +407,7 @@ def test_active_threads_score_clamps_future_dated_articles(seeded_db):
     """
     from sqlalchemy import text
 
-    future = datetime(2099, 12, 31, tzinfo=timezone.utc)
+    future = datetime(2099, 12, 31, tzinfo=UTC)
     with seeded_db() as s:
         future_art = Article(
             message_id="future-decay@example.com",
@@ -461,7 +461,7 @@ def test_threads_since_finds_recent_thread(seeded_db):
     from datetime import timedelta
 
     alpha = _inbox(seeded_db, "alpha")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with seeded_db() as s:
         art = Article(
             message_id="recent-since@example.com",
@@ -495,7 +495,7 @@ def test_threads_since_future_returns_empty(seeded_db):
     from datetime import timedelta
 
     alpha = _inbox(seeded_db, "alpha")
-    future = (datetime.now(timezone.utc) + timedelta(days=2)).date()
+    future = (datetime.now(UTC) + timedelta(days=2)).date()
     with seeded_db() as s:
         results = threads_since(s, alpha, future, force=True)
     assert results == []
@@ -536,7 +536,7 @@ def test_threads_for_month_respects_limit(seeded_db):
                 message_id=f"extra{i}@example.com",
                 subject=f"thread {i}",
                 author="X",
-                date=datetime(2024, 5, 1, 12, i, tzinfo=timezone.utc),
+                date=datetime(2024, 5, 1, 12, i, tzinfo=UTC),
                 thread_parent=None,
                 subject_normalized=f"thread {i}",
             )
@@ -625,7 +625,7 @@ def test_active_threads_decay_ranks_recent_burst_above_older_chatter(seeded_db):
     from datetime import timedelta
 
     alpha = _inbox(seeded_db, "alpha")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # Recent burst: a single message a few hours ago. Score ~ 1.0.
     _seed_thread_with_messages(
         seeded_db,
@@ -772,12 +772,12 @@ def test_active_threads_recursive_cte_uses_date_index_no_full_scan(seeded_db):
     Pin: no full SCAN of `articles` or `article_lists` anywhere in
     the plan; the date index `ix_articles_date` is the seed driver.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from sqlalchemy import text
 
     alpha = _inbox(seeded_db, "alpha")
-    end = datetime.now(timezone.utc)
+    end = datetime.now(UTC)
     start = end - timedelta(days=7)
 
     with seeded_db() as s:

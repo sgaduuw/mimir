@@ -6,11 +6,10 @@ included as parser fixtures; the walker tests use fake bare repos
 built with dulwich so the suite stays offline + fast.
 """
 
-import pytest
-
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from dulwich.objects import Commit, Tree
 from dulwich.repo import Repo
 from sqlalchemy import func, select
@@ -258,7 +257,7 @@ def test_walk_commits_records_commit_time(seeded_db, tmp_path, writer_thread):
     the patch-page surface renders as "on <date>"."""
     repo = _bare_repo(tmp_path / "tree.git")
     # 2024-06-01 00:00:00 UTC
-    ts = int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp())
+    ts = int(datetime(2024, 6, 1, tzinfo=UTC).timestamp())
     _build_commit(
         repo,
         b"x\n\nLink: https://lore.kernel.org/r/m@x\n",
@@ -272,11 +271,11 @@ def test_walk_commits_records_commit_time(seeded_db, tmp_path, writer_thread):
     # value is naive UTC by convention (same shape as
     # `Article.date`, see CONTEXT.md "tz-aware UTC normalization").
     # Render code attaches UTC at the consumer end.
-    assert row.committed_at.replace(tzinfo=timezone.utc) == datetime(
+    assert row.committed_at.replace(tzinfo=UTC) == datetime(
         2024,
         6,
         1,
-        tzinfo=timezone.utc,
+        tzinfo=UTC,
     )
 
 
@@ -399,7 +398,7 @@ def test_walk_commits_rebases_true_clears_old_rows_for_tree(
                 commit_sha="staleshastaleshastaleshastalesha000000000",
                 message_id="orphan@example.com",
                 tree_name="linux-next",
-                committed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                committed_at=datetime(2026, 1, 1, tzinfo=UTC),
             )
         )
         s.commit()
@@ -443,7 +442,7 @@ def test_walk_commits_rebases_false_keeps_other_tree_rows(
                 commit_sha=other_sha,
                 message_id="other@example.com",
                 tree_name="linus",
-                committed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                committed_at=datetime(2026, 1, 1, tzinfo=UTC),
             )
         )
         s.commit()
@@ -704,7 +703,7 @@ def test_walk_commits_full_rewalk_is_idempotent_via_on_conflict(
 
 def test_update_mainline_skips_tree_not_yet_due(seeded_db, monkeypatch, tmp_path):
     """A tree whose last_walked_at is recent enough is skipped."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.config import TreeConfig, settings
     from mimir.mainline import update_mainline
@@ -727,7 +726,7 @@ def test_update_mainline_skips_tree_not_yet_due(seeded_db, monkeypatch, tmp_path
     with seeded_db() as s:
         state = MainlineState(
             tree_name="fake",
-            last_walked_at=datetime.now(timezone.utc),
+            last_walked_at=datetime.now(UTC),
         )
         s.add(state)
         s.commit()
@@ -811,6 +810,7 @@ def test_walk_commits_closes_repo_at_function_exit(
     through __exit__). The spy unambiguously differentiates
     pre-fix from post-fix."""
     from dulwich.repo import Repo as DulwichRepo
+
     from mimir.extensions import SessionLocal
 
     exit_calls: list[bool] = []

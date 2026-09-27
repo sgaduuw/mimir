@@ -19,7 +19,7 @@ index for hours that way. Freshness rides `<lastmod>` plus
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import func, select
@@ -30,11 +30,11 @@ from mimir.config import settings
 from mimir.maintainer_directory import all_maintainers, maintainer_path
 from mimir.models import Article, ArticleList, Inbox
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
-from mimir.threading import unmaterialised_roots
 from mimir.subsystems_dashboard import (
     MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     most_active_subsystems_in_inbox,
 )
+from mimir.threading import unmaterialised_roots
 
 SITEMAP_RECENT_PER_INBOX = 5000
 
@@ -348,11 +348,11 @@ def _month_bounds(year: int, month: int) -> tuple[datetime, datetime]:
     unsargable, which is the same trap CONTEXT.md records for
     `LIKE 'prefix%' ESCAPE` on `article_files.path`.
     """
-    start = datetime(year, month, 1, tzinfo=timezone.utc)
+    start = datetime(year, month, 1, tzinfo=UTC)
     end = (
-        datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        datetime(year + 1, 1, 1, tzinfo=UTC)
         if month == 12
-        else datetime(year, month + 1, 1, tzinfo=timezone.utc)
+        else datetime(year, month + 1, 1, tzinfo=UTC)
     )
     return start, end
 

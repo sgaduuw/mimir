@@ -2,6 +2,8 @@
 exercised in `tests/test_patch_series.py`; this pins the walker's
 idempotence + the bucket counters."""
 
+from datetime import UTC
+
 from click.testing import CliRunner
 from sqlalchemy import select
 
@@ -14,7 +16,7 @@ def _add_article(seeded_db, msgid, subject, author="A <a@x>"):
     """Insert a minimal Article with no series-key set, so the
     backfill has something to do. Linked to the seeded `alpha`
     inbox for the route-side compatibility shape."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     with seeded_db() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
@@ -22,7 +24,7 @@ def _add_article(seeded_db, msgid, subject, author="A <a@x>"):
             message_id=msgid,
             subject=subject,
             author=author,
-            date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            date=datetime(2024, 6, 1, tzinfo=UTC),
             thread_parent=None,
             subject_normalized=subject.lower(),
             canonical_inbox_id=inbox.id,
@@ -111,7 +113,7 @@ def test_backfill_cli_honours_limit(seeded_db, broker_active):
 def _add_article_with_parent(seeded_db, msgid, subject, parent_msgid):
     """Like `_add_article` but with `thread_parent` set so the
     backfill's in-series linker can walk up to the cover."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     with seeded_db() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
@@ -119,7 +121,7 @@ def _add_article_with_parent(seeded_db, msgid, subject, parent_msgid):
             message_id=msgid,
             subject=subject,
             author="A <a@x>",
-            date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            date=datetime(2024, 6, 1, tzinfo=UTC),
             thread_parent=parent_msgid,
             subject_normalized=subject.lower(),
             canonical_inbox_id=inbox.id,

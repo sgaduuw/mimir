@@ -17,16 +17,16 @@ from sqlalchemy import select
 
 import mimir
 from mimir import cache
-from mimir.config import settings
 from mimir.canonical import extract_list_addresses
+from mimir.config import settings
 from mimir.extensions import SessionLocal
+from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import (
     Article,
     ArticleFile,
     ArticleList,
     Inbox,
 )
-from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.patch_state import patch_state_for_article
 from mimir.related import is_bot_sender, related_discussions
 from mimir.rendering import URL_OR_MSGID_RE
@@ -45,13 +45,13 @@ from mimir.web._blueprint import bp_web
 from mimir.web.filters import _thread_summary
 from mimir.web.routes._validators import render_state_tag
 from mimir.web.urls import (
-    thread_page_url,
     _abort_404_if_url_date_mismatches,
     _canonical_inbox_name,
     _canonical_url_for,
     _get_inbox_or_404,
     _msg_url,
     _site_base,
+    thread_page_url,
 )
 
 logger = logging.getLogger(__name__)

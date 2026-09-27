@@ -79,8 +79,8 @@ def test_warm_ops_routing_set():
     joined the set in Option A (2026-06-01) when the slow-tier CLI
     started fanning out per-(inbox, subsystem) work as separate
     RPCs."""
-    assert handlers.WARM_OPS == frozenset(
-        {"warm_inbox", "warm_subsystem", "warm_global"}
+    assert (
+        frozenset({"warm_inbox", "warm_subsystem", "warm_global"}) == handlers.WARM_OPS
     )
     # No warm op shows up in LONG_OPS (mutual exclusion).
     assert not (handlers.WARM_OPS & handlers.LONG_OPS)
@@ -287,6 +287,7 @@ def test_warm_workers_drain_in_parallel(seeded_db, monkeypatch):
     multi-worker drain works. Single-worker would take ~1 s.
     """
     import threading
+
     from mimir.broker import handlers as _handlers
     from mimir.broker.handlers.warm import handle_warm_inbox
 
@@ -350,6 +351,7 @@ def test_warm_cache_command_broker_mode_dispatches_via_rpc(
     `BrokerClient.warm_inbox` / `warm_global` to capture calls.
     """
     from pathlib import Path
+
     from click.testing import CliRunner
 
     from mimir.broker import client as broker_client_mod

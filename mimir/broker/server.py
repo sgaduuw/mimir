@@ -65,7 +65,7 @@ import threading
 import time
 import tracemalloc
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mimir import cache
@@ -234,10 +234,10 @@ class _BrokerServer(socketserver.UnixStreamServer):
         # would just drop work silently. The slow-RPC WARNING
         # (with breakdown into queue vs dispatch) is the operator-
         # facing signal.
-        self.cache_queue: "queue.Queue[tuple[bytes, ClientConnection, float]]" = (
+        self.cache_queue: queue.Queue[tuple[bytes, ClientConnection, float]] = (
             queue.Queue()
         )
-        self.long_queue: "queue.Queue[tuple[bytes, ClientConnection, float]]" = (
+        self.long_queue: queue.Queue[tuple[bytes, ClientConnection, float]] = (
             queue.Queue()
         )
         # Warm queue is a PriorityQueue so fast-tier RPCs
@@ -249,7 +249,9 @@ class _BrokerServer(socketserver.UnixStreamServer):
         # (PriorityQueue compares tuples element-wise, so equal
         # priority falls through to enqueued_at). Task 5 of the
         # fast/slow tier split (spec §2 §5).
-        self.warm_queue: "queue.PriorityQueue[tuple[int, float, bytes, ClientConnection]]" = queue.PriorityQueue()
+        self.warm_queue: queue.PriorityQueue[
+            tuple[int, float, bytes, ClientConnection]
+        ] = queue.PriorityQueue()
         self._reader_threads: list[threading.Thread] = []
         # Held around `_reader_threads` mutations so the per-reader
         # self-removal in `_reader_loop`'s finally block does not race
@@ -405,7 +407,7 @@ class _BrokerServer(socketserver.UnixStreamServer):
 
     def _worker_loop(
         self,
-        q: "queue.Queue",
+        q: queue.Queue,
         worker_tag: str,
     ) -> None:
         """Drain one queue serially. One RPC at a time on this
@@ -698,8 +700,9 @@ def _migrate_if_needed(socket_path: Path) -> bool:
     )
     t0 = time.monotonic()
     try:
-        from alembic import command
         from alembic.config import Config
+
+        from alembic import command
 
         # Construct Config programmatically rather than passing
         # "alembic.ini": that ini carries [loggers] / [handlers] /
@@ -1396,7 +1399,7 @@ def build_server(socket_path: Path) -> _BrokerServer:
     return server
 
 
-def _make_signal_handler(server: "_BrokerServer"):
+def _make_signal_handler(server: _BrokerServer):
     """Build the SIGTERM/SIGINT handler used by `serve()`. Returns
     `(handler, state)` so callers (and tests) can inspect the handler's
     state without touching module-level globals.
@@ -1571,7 +1574,7 @@ def _maybe_start_tracemalloc_snapshotter(
         while True:
             try:
                 snap = tracemalloc.take_snapshot()
-                ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                ts = datetime.now(UTC).isoformat(timespec="seconds")
                 path = diagnostics_dir / f"tracemalloc-{ts}.pkl"
                 tmp = path.with_suffix(".pkl.tmp")
                 with open(tmp, "wb") as f:
@@ -1596,4 +1599,4 @@ def _maybe_start_tracemalloc_snapshotter(
     return thread
 
 
-__all__ = ["build_server", "serve", "ClientConnection", "Reply", "PURGE_INTERVAL_SEC"]
+__all__ = ["PURGE_INTERVAL_SEC", "ClientConnection", "Reply", "build_server", "serve"]

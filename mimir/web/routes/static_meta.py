@@ -7,7 +7,7 @@ context processor in `hooks.py`; importing from this module avoids
 duplicating the values.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from flask import Response, abort, render_template, send_from_directory
@@ -17,7 +17,6 @@ from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _site_base
-
 
 # OG image: 1200x630 PNG composited from a 17th-century Icelandic
 # Edda manuscript depiction of Ratatoskr (AM 738 4to era, Árni
@@ -92,9 +91,7 @@ def security_txt():
     request time as `now + 1 year` so it never falls into the past."""
     if not settings.security_contact:
         abort(404)
-    expires = (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(
-        timespec="seconds"
-    )
+    expires = (datetime.now(UTC) + timedelta(days=365)).isoformat(timespec="seconds")
     body = render_template(
         "security.txt",
         contact=settings.security_contact,

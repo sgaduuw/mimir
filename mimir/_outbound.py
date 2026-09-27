@@ -51,7 +51,6 @@ from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, build_opener
 
-
 # Hostnames that aren't IP literals but unambiguously target the
 # local machine. Anything else that resolves locally is caught by
 # the IP-literal check after `gethostbyname`, except we deliberately
@@ -156,8 +155,8 @@ OUTBOUND_OPENER = build_opener(NoRedirectHandler())
 
 
 __all__ = [
-    "NoRedirectHandler",
     "OUTBOUND_OPENER",
+    "NoRedirectHandler",
     "OutboundUrlError",
     "validate_outbound_url",
 ]

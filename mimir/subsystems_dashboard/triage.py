@@ -13,8 +13,8 @@ helpers. Both cached for `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC` to
 ride out repeat dashboard hits within a refresh window.
 """
 
-from datetime import datetime, timedelta, timezone
-from typing import Callable
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel
 from sqlalchemy import select, text
@@ -340,7 +340,7 @@ def needs_attention_patches_in_subsystem(
     `days=None` defers to `Settings.subsystem_needs_attention_days`
     (default 14)."""
     age_days = days if days is not None else settings.subsystem_needs_attention_days
-    cutoff = datetime.now(timezone.utc) - timedelta(days=age_days)
+    cutoff = datetime.now(UTC) - timedelta(days=age_days)
 
     def compute() -> list[PatchAttention]:
         return _run_triage(
@@ -380,7 +380,7 @@ def quiet_patches_in_subsystem(
     not "Stalled": authors who didn't get review are often just
     busy or working on something else, not stalled."""
     age_days = days if days is not None else settings.subsystem_quiet_days
-    cutoff = datetime.now(timezone.utc) - timedelta(days=age_days)
+    cutoff = datetime.now(UTC) - timedelta(days=age_days)
 
     def compute() -> list[PatchAttention]:
         return _run_triage(

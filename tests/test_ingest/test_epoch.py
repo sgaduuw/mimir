@@ -8,7 +8,7 @@ auto-promotion (the `_submit_promote_list_address` WriteOp
 gate), the kept-headers filter, and the tz-aware UTC normalisation for
 `-0000`-dated messages."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from dulwich.repo import Repo
@@ -30,7 +30,6 @@ from mimir.models import (
     IngestState,
     ParseFailure,
 )
-
 from tests.test_ingest._helpers import (
     _alpha,
     _build_pubinbox_repo,
@@ -1536,7 +1535,7 @@ def test_ingest_last_article_date_is_monotonic(seeded_db, tmp_path, broker_activ
     from datetime import datetime
 
     alpha = _alpha(seeded_db)
-    future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    future = datetime(2099, 1, 1, tzinfo=UTC)
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
         ix.last_article_date = future

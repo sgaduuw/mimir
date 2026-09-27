@@ -21,8 +21,8 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import Future
-from typing import Callable
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Connection
@@ -88,7 +88,7 @@ class WriterThread:
         self._stopped = threading.Event()
 
     @classmethod
-    def from_settings(cls) -> "WriterThread":
+    def from_settings(cls) -> WriterThread:
         return cls(
             database_url=settings.database_url,
             queue_depth=settings.broker_writer_queue_depth,
@@ -178,5 +178,5 @@ class WriterThread:
                     elapsed_ms,
                 )
             future.set_result(result)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             future.set_exception(exc)

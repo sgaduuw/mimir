@@ -8,7 +8,8 @@ module covers one concern (read fan-outs) and the sibling
 """
 
 from collections import defaultdict
-from datetime import date as date_cls, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from datetime import date as date_cls
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -21,8 +22,8 @@ from mimir.models import (
     Subsystem,
 )
 from mimir.subsystems import (
-    RelatedPatch,
     SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
+    RelatedPatch,
 )
 from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
 from mimir.threading import ActiveThread, _active_threads_query, _coerce_dt
@@ -157,7 +158,7 @@ def daily_volume_in_subsystem(
         # so the bucket window must use the UTC date too. `date.today()`
         # would advance at *local* midnight, dropping boundary-day
         # articles outside the range on any non-UTC TZ.
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         start = today - timedelta(days=days - 1)
         path_filter = _subsystem_path_filter_sql(subsystem, prefix="dvss")
         if path_filter is None:
@@ -225,7 +226,7 @@ def active_threads_in_subsystem(
         if path_filter is None:
             return []
         path_sql, path_params = path_filter
-        end = datetime.now(timezone.utc)
+        end = datetime.now(UTC)
         start = end - timedelta(days=days)
         # Materialise the path-matched article ids once before the
         # recursive CTE runs. Without `MATERIALIZED`, SQLite inlines

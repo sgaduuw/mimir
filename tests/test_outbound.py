@@ -22,7 +22,6 @@ from mimir._outbound import (
     validate_outbound_url,
 )
 
-
 # --- validate_outbound_url: happy paths ---
 
 
