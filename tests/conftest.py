@@ -50,7 +50,7 @@ os.environ.setdefault("FLASK_DEBUG", "false")
 # of this process-wide setting.
 os.environ["MIMIR_IS_BROKER"] = "true"
 
-from datetime import UTC
+from datetime import UTC  # noqa: E402  (module-level setup runs above)
 
 import pytest  # noqa: E402
 

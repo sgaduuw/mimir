@@ -106,7 +106,7 @@ def test_ingest_inbox_skips_analyze_when_disabled(
     assert not analyze_calls, "ANALYZE must not run when disabled (threshold=0)"
 
 
-from datetime import UTC
+from datetime import UTC  # noqa: E402  (module-level setup runs above)
 
 import pytest  # noqa: E402  (kept adjacent to the parametrised test that needs it)
 

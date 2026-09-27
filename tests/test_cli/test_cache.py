@@ -402,10 +402,10 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
 
     ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
     expected_root = {
-        "sitemap:index": "{%s}sitemapindex" % ns,
-        "sitemap:meta": "{%s}urlset" % ns,
-        "sitemap:inbox:alpha": "{%s}urlset" % ns,
-        "sitemap:inbox:beta": "{%s}urlset" % ns,
+        "sitemap:index": f"{{{ns}}}sitemapindex",
+        "sitemap:meta": f"{{{ns}}}urlset",
+        "sitemap:inbox:alpha": f"{{{ns}}}urlset",
+        "sitemap:inbox:beta": f"{{{ns}}}urlset",
     }
     for key, expected_tag in expected_root.items():
         payload = cache.get(key)
