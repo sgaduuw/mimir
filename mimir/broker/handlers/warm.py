@@ -225,22 +225,14 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
             rpc_id=req.rpc_id, ok=False, error=f"UnknownInbox:{req.inbox_name}"
         )
 
-    # UTC, and DTZ011/DTZ005 in the selected ruff rule set is what keeps
-    # it that way: `date.today()` here is a lint error, so the linter is
-    # the regression guard and a test would be a weaker copy of it.
-    #
-    # It matters because this handler is the sole PRODUCER of
+    # UTC because this handler is the sole PRODUCER of
     # `threads_for_day` cache keys and those keys embed the date, while
     # `web.routes.timeviews` (the consumer) derives its day from
     # `datetime.now(UTC).date()`. A local clock here would spend a
-    # non-UTC server's offset window writing keys nothing asks for.
-    #
-    # Deliberately untested behaviourally: `freeze_time` applies its
-    # `tz_offset` to aware `datetime.now(UTC)` as well as to
-    # `date.today()`, so it cannot produce a fixture where the two
-    # straddle midnight, which is the only state that distinguishes the
-    # two bases. Six attempts at such a test all passed under a
-    # local-clock mutant.
+    # non-UTC server's offset window writing keys nothing reads.
+    # DTZ011 in the selected rule set is the guard: `date.today()` is a
+    # lint error here, which no behavioural test can match (freezegun
+    # cannot make the two bases straddle midnight).
     today = datetime.now(UTC).date()
     yesterday = today - timedelta(days=1)
     sitemap_base = (settings.site_base_url or "").rstrip("/")
