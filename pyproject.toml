@@ -24,11 +24,64 @@ mimir = "mimir.cli:mimir"
 
 [dependency-groups]
 dev = [
-    "ruff>=0.15.21,<0.16",
+    "ruff>=0.16.5,<0.17",
     "pytest>=9.1.1,<10",
     "pillow>=12.3.0,<13",
     "pytest-cov>=7.1.0,<8",
     "freezegun>=1.5.5,<2",
+]
+
+[tool.ruff.lint]
+# EXPLICIT, because the alternative is delegating "what counts as
+# correct code" to whoever cuts the next ruff release. This project had
+# no ruff config at all, so it rode the defaults, and those moved from
+# **59 enabled rules in 0.15.21 to 413 in 0.16.5** (measured
+# 2026-09-26): a dependabot PR changed the definition of a clean tree
+# and produced 636 findings. None of them were caused by the bump; they
+# were pre-existing debt the narrower default had not looked for.
+#
+# Chosen per group, on the merits, not copied from the old default:
+#
+#   E4/E7/E9, F  the historical baseline (import/syntax/pyflakes).
+#   I            import sorting. Unsorted imports were hand-noticed
+#                twice during the 2026-08 verification work.
+#   UP           pyupgrade. Pure modernisation, almost all autofixable,
+#                and this codebase targets one pinned Python.
+#   DTZ          naive `datetime`. Earned its place: a `-0000` Date
+#                header rolling back a whole ingest batch is why
+#                `_aware_utc` exists (CONTEXT.md "tz-aware UTC
+#                normalization"). A linter that catches the next one is
+#                worth the noise.
+#   B            bugbear. Real bug shapes rather than style.
+#   RUF          ruff's own, including unused-noqa.
+#   SIM/RET/FURB/PLW  small, mechanical, few findings.
+#
+# Deliberately NOT selected:
+#
+#   BLE          blind `except Exception`. 30 findings, and some are
+#                load-bearing by design: `update_mainline` isolates
+#                per-tree failures behind exactly that, which this
+#                branch relied on when a guard raised `AssertionError`
+#                and was swallowed. Needs per-site judgment, so it gets
+#                its own pass rather than a blanket enable or a blanket
+#                ignore.
+#   ANN/D/ERA/COM  documentation and annotation mandates, and
+#                commented-out-code detection. House style already
+#                covers the prose; these would fight it.
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "I",
+    "UP",
+    "DTZ",
+    "B",
+    "RUF",
+    "SIM",
+    "RET",
+    "FURB",
+    "PLW",
 ]
 
 [tool.pytest.ini_options]
