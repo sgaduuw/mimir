@@ -11,6 +11,23 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-09-27
+
+### Changed
+
+- Dependency refresh: sqlalchemy 2.0.54, alembic 1.20.0, dulwich 1.2.15,
+  pydantic 2.13.5, pydantic-settings 2.15.0, pygments 2.21.0, gunicorn
+  floor 26.2.0. sqlalchemy and dulwich carry C extensions, so the
+  post-deploy smoke for this release includes confirming the broker is
+  still running GIL-free (3.14t re-enables the GIL when a C extension
+  lacking `Py_GIL_DISABLED` is imported, and `PYTHON_GIL=0` is what
+  holds it off).
+- Lint is now governed by an explicit ruff rule set rather than the
+  tool's defaults, which moved from 59 enabled rules to 413 between
+  0.15.21 and 0.16.x. No runtime change; recorded because it is why this
+  release touches 130-odd files with mechanical import-order and
+  `datetime.UTC` rewrites.
+
 ### Fixed
 
 - The subsystem dashboard no longer 500s when two MAINTAINERS sections
@@ -37,6 +54,14 @@ changes, not internal refactors. Categories: **Added**,
   connected a checkpoint cannot advance and the main file never moves.
   The logical size is unaffected by checkpoint timing, and the on-disk
   footprint is logged for whoever is chasing disk.
+- `import mimir.web` could have started raising `ImportError` after the
+  import-order sweep. `mimir/seo` deliberately keeps its `mimir.web`
+  imports inside function bodies to avoid an import-time cycle, which
+  only holds while `mimir.web` is the package entered first; the sweep
+  hoisted a `mimir.seo` import above the side-effect imports that
+  guarantee it. Latent rather than live (no module-level `mimir.web`
+  import exists under `mimir/seo/` today), and now fenced and pinned by
+  a test that reads the real `sys.modules` entry order.
 - The test suite can no longer trigger a ~3.6 GB `git clone` of
   torvalds/linux. `mainline._ensure_tree` clones whenever its target
   path is absent, and `--skip-fetch` does not prevent that (it skips
