@@ -84,6 +84,15 @@ select = [
     "PLW",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# `datetime(...)` without tzinfo is deliberate in tests: they assert
+# against values SQLite hands back, which are NAIVE (`Article.date`
+# carries no timezone), so an aware literal would never compare equal.
+# The clock-READING rules stay on everywhere (DTZ005 `now()`, DTZ011
+# `date.today()`), because those are the ones that bake a server's local
+# offset into behaviour, which is the class worth catching.
+"tests/**" = ["DTZ001"]
+
 [tool.pytest.ini_options]
 markers = [
     "allow_tree_clone: test deliberately exercises mainline._ensure_tree's clone path with subprocess mocked",

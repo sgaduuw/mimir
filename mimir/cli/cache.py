@@ -10,7 +10,7 @@ per-inbox cache rows instead of re-doing the underlying SQL.
 
 import os
 import time
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import click
 
@@ -440,7 +440,17 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
         # threads_for_day's cache key includes the date; compute
         # today / yesterday once so both per-inbox labels carry
         # the same cycle's dates.
-        today = date.today()
+        #
+        # UTC, matching the broker and the read path rather than the
+        # local clock. This is CONSISTENCY, not a bug fix: the value
+        # here only enumerates target LABELS (date-free strings) for the
+        # RPC, and the date that actually reaches a cache key is
+        # computed by `broker/handlers/warm.py`, which already uses UTC.
+        # An earlier version of this comment claimed a daily two-hour
+        # window of cold misses across every inbox; that was wrong, from
+        # tracing "warm computes a date" and "the key embeds a date"
+        # without checking this date reaches that key. Flagged by DTZ011.
+        today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
 
         def per_inbox_targets(inbox):
