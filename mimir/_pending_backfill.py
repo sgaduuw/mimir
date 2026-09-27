@@ -17,7 +17,8 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import delete, func, insert as sa_insert, select, update
+from sqlalchemy import delete, func, select, update
+from sqlalchemy import insert as sa_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mimir.broker.writes import WriteFuture, WriteOp

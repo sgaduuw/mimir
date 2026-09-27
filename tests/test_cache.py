@@ -8,7 +8,7 @@ so future drift gets caught the moment someone runs the suite.
 
 import json
 import logging
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 
 import pytest
 from sqlalchemy import text
@@ -46,13 +46,13 @@ def test_registry_has_expected_tags():
 
 
 def test_article_summary_roundtrip():
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     s = ArticleSummary(
         id=42,
         subject="patch",
         author="Foo <foo@bar>",
-        date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        date=datetime(2025, 1, 1, tzinfo=UTC),
     )
     assert _roundtrip(s) == s
 
@@ -63,7 +63,7 @@ def test_primitives_passthrough(value):
 
 
 def test_datetime_keeps_tz():
-    dt = datetime(2025, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    dt = datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC)
     out = _roundtrip(dt)
     assert out == dt
     assert out.tzinfo is not None
@@ -115,10 +115,10 @@ def test_active_thread_full():
         message_id="abc@x",
         subject="s",
         author="a",
-        date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        date=datetime(2025, 1, 1, tzinfo=UTC),
         recent_count=2,
         reply_count=1,
-        last_activity=datetime(2025, 1, 2, tzinfo=timezone.utc),
+        last_activity=datetime(2025, 1, 2, tzinfo=UTC),
     )
     assert _roundtrip(at) == at
 
@@ -142,8 +142,8 @@ def test_archive_stats_full():
     stats = ArchiveStats(
         total=100,
         epochs=3,
-        first_date=datetime(2020, 1, 1, tzinfo=timezone.utc),
-        last_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        first_date=datetime(2020, 1, 1, tzinfo=UTC),
+        last_date=datetime(2025, 1, 1, tzinfo=UTC),
     )
     assert _roundtrip(stats) == stats
 
@@ -259,7 +259,7 @@ def test_pydantic_basemodel_roundtrip():
         message_id="msg@example.com",
         subject="patch subject",
         author="A. Hacker",
-        date=datetime(2026, 5, 15, 10, 0, tzinfo=timezone.utc),
+        date=datetime(2026, 5, 15, 10, 0, tzinfo=UTC),
         inbox_name="lkml",
     )
     out = _roundtrip(rp)
@@ -537,7 +537,8 @@ def test_delete_for_inbox_pattern_boundary():
     """
     from sqlalchemy import delete as sql_delete
 
-    from mimir.cache import delete_for_inbox, set as cache_set
+    from mimir.cache import delete_for_inbox
+    from mimir.cache import set as cache_set
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
@@ -580,7 +581,7 @@ def test_delete_for_inbox_pattern_boundary():
         with SessionLocal() as session:
             session.execute(
                 sql_delete(CacheEntry).where(
-                    CacheEntry.key.in_([_ns(k) for k in sentinels.keys()])
+                    CacheEntry.key.in_([_ns(k) for k in sentinels])
                 )
             )
             session.commit()
@@ -596,6 +597,7 @@ def test_namespace_version_isolates_stale_rows():
     the current version) does NOT see it.
     """
     import datetime as _dt
+
     from sqlalchemy import delete as sql_delete
 
     from mimir.cache import NAMESPACE_VERSION
@@ -604,9 +606,7 @@ def test_namespace_version_isolates_stale_rows():
 
     stale_prefix = f"v{NAMESPACE_VERSION - 1}:"
     stale_key = stale_prefix + "xtest-stale-row"
-    expires_at = int(
-        (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=1)).timestamp()
-    )
+    expires_at = int((_dt.datetime.now(_dt.UTC) + _dt.timedelta(hours=1)).timestamp())
     with SessionLocal() as session:
         session.execute(sql_delete(CacheEntry).where(CacheEntry.key == stale_key))
         session.add(
@@ -638,11 +638,9 @@ def test_namespace_version_isolates_stale_rows():
 
 def _seconds_from_now(delta_seconds: int) -> int:
     """Helper for inserting raw CacheEntry rows with a chosen expiry."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
 
-    return int(
-        (datetime.now(timezone.utc) + timedelta(seconds=delta_seconds)).timestamp()
-    )
+    return int((datetime.now(UTC) + timedelta(seconds=delta_seconds)).timestamp())
 
 
 def test_purge_expired_drops_expired_rows():
@@ -652,6 +650,7 @@ def test_purge_expired_drops_expired_rows():
     (`threads_for_day:<inbox>:<YYYY-MM-DD>`, `monthly_volume:...`)
     accumulate."""
     from sqlalchemy import delete as sql_delete
+
     from mimir.cache import _ns, purge_expired
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
@@ -712,7 +711,9 @@ def test_purge_expired_returns_zero_when_nothing_to_drop():
     0 AND the live row survives. The older shape ("delete every row
     first, then call purge") was tautological, nothing was there
     to drop because the test had just emptied the table."""
-    from sqlalchemy import delete as sql_delete, select
+    from sqlalchemy import delete as sql_delete
+    from sqlalchemy import select
+
     from mimir.cache import _ns, purge_expired
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
@@ -748,6 +749,7 @@ def test_get_or_compute_miss_calls_fn_and_stores():
     persisted via `cache.set()`, and the return value flows through
     to the caller."""
     from sqlalchemy import delete as sql_delete
+
     from mimir.cache import _ns, get_or_compute
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
@@ -782,6 +784,7 @@ def test_get_or_compute_hit_skips_fn():
     whole point of cache-aside. This is the path that was previously
     untested because all dashboard tests pass `force=True`."""
     from sqlalchemy import delete as sql_delete
+
     from mimir.cache import _ns, get_or_compute
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
@@ -817,6 +820,7 @@ def test_get_or_compute_force_recomputes_despite_live_row():
     present. This is the warm-cache cron's mechanism for refreshing
     stale-but-not-yet-expired entries after an ingest."""
     from sqlalchemy import delete as sql_delete
+
     from mimir.cache import _ns, get_or_compute
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
@@ -853,6 +857,7 @@ def test_refresh_window_recomputes_when_near_expiry():
     what lets warm-cache refresh 24h-TTL keys *before* they expire,
     without recomputing every key on every cron tick."""
     from sqlalchemy import delete as sql_delete
+
     from mimir.cache import _ns, get_or_compute, refresh_window
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
@@ -899,6 +904,7 @@ def test_refresh_window_skips_when_plenty_of_ttl_left():
     what lets 24h-TTL keys (archive_stats) sit unbothered across most
     5-minute warm-cache ticks."""
     from sqlalchemy import delete as sql_delete
+
     from mimir.cache import _ns, get_or_compute, refresh_window
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
@@ -939,6 +945,7 @@ def test_get_or_compute_expired_row_treated_as_miss():
     `get_or_compute`. Without `force=True`, the helper still falls
     through to `fn()` because the read filter is `expires_at >= now`."""
     from sqlalchemy import delete as sql_delete
+
     from mimir.cache import _ns, get_or_compute
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
@@ -997,6 +1004,7 @@ def _real_path_roundtrip(key: str, value):
 
 def _drop_cache_key(key: str) -> None:
     from sqlalchemy import delete as sql_delete
+
     from mimir.cache import _ns
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
@@ -1014,10 +1022,10 @@ def test_real_path_roundtrip_active_thread():
         message_id="m1@x",
         subject="s",
         author="a",
-        date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        date=datetime(2025, 1, 1, tzinfo=UTC),
         recent_count=2,
         reply_count=1,
-        last_activity=datetime(2025, 1, 2, tzinfo=timezone.utc),
+        last_activity=datetime(2025, 1, 2, tzinfo=UTC),
     )
     try:
         assert _real_path_roundtrip(key, value) == value
@@ -1031,7 +1039,7 @@ def test_real_path_roundtrip_article_summary():
         id=42,
         subject="patch",
         author="Foo <foo@bar>",
-        date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        date=datetime(2025, 1, 1, tzinfo=UTC),
     )
     try:
         assert _real_path_roundtrip(key, value) == value
@@ -1044,8 +1052,8 @@ def test_real_path_roundtrip_archive_stats():
     value = ArchiveStats(
         total=100,
         epochs=3,
-        first_date=datetime(2020, 1, 1, tzinfo=timezone.utc),
-        last_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        first_date=datetime(2020, 1, 1, tzinfo=UTC),
+        last_date=datetime(2025, 1, 1, tzinfo=UTC),
     )
     try:
         assert _real_path_roundtrip(key, value) == value
@@ -1107,7 +1115,7 @@ def test_real_path_roundtrip_string_with_surrogate_escape_range():
         # body. Lone surrogate; not part of a valid pair.
         subject="bad encoding \udcff in subject",
         author="a@b.example",
-        date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        date=datetime(2025, 1, 1, tzinfo=UTC),
     )
     try:
         out = _real_path_roundtrip(key, payload)
@@ -1216,10 +1224,10 @@ def test_cache_set_routes_through_active_writer_when_registered(seeded_db):
 
     from sqlalchemy import create_engine, text
 
+    from mimir import cache
     from mimir.broker import _context
     from mimir.broker.pools import ReadSessionPool
     from mimir.broker.writes import WriterThread
-    from mimir import cache
     from mimir.config import settings
 
     saved_pool = _context._active_pool
@@ -1273,8 +1281,8 @@ def test_cache_set_falls_back_to_inline_when_no_active_writer(seeded_db):
     path."""
     from sqlalchemy import create_engine, text
 
-    from mimir.broker import _context
     from mimir import cache
+    from mimir.broker import _context
     from mimir.config import settings
 
     # Save and restore the active context: the session-scoped broker
@@ -1356,9 +1364,8 @@ def test_ttl_extension_inner_none_overrides_outer_extension(seeded_db):
         s.execute(delete(CacheEntry))
         s.commit()
 
-    with ttl_extension(600):
-        with ttl_extension(None):
-            cache.set("test:inner_none", "v", ttl=100)
+    with ttl_extension(600), ttl_extension(None):
+        cache.set("test:inner_none", "v", ttl=100)
     with SessionLocal() as s:
         row = s.execute(
             select(CacheEntry).where(CacheEntry.key.like("%test:inner_none"))

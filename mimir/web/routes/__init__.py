@@ -5,17 +5,19 @@ the package `__init__.py` imports this subpackage to trigger the
 registration before `create_app` registers the blueprint.
 """
 
-from mimir.web.routes import api  # noqa: F401
-from mimir.web.routes import attachments  # noqa: F401
-from mimir.web.routes import dashboards  # noqa: F401
-from mimir.web.routes import feeds  # noqa: F401
-from mimir.web.routes import health  # noqa: F401
-from mimir.web.routes import maintainers  # noqa: F401
+from mimir.web.routes import (
+    api,  # noqa: F401
+    attachments,  # noqa: F401
+    dashboards,  # noqa: F401
+    feeds,  # noqa: F401
+    health,  # noqa: F401
+    maintainers,  # noqa: F401
+    message_id,  # noqa: F401
+    search,  # noqa: F401
+    series_diff,  # noqa: F401
+    sitemaps,  # noqa: F401
+    static_meta,  # noqa: F401
+    timeviews,  # noqa: F401
+)
 from mimir.web.routes import message as message_route  # noqa: F401
-from mimir.web.routes import message_id  # noqa: F401
-from mimir.web.routes import search  # noqa: F401
-from mimir.web.routes import series_diff  # noqa: F401
-from mimir.web.routes import sitemaps  # noqa: F401
-from mimir.web.routes import static_meta  # noqa: F401
 from mimir.web.routes import thread as thread_route  # noqa: F401
-from mimir.web.routes import timeviews  # noqa: F401

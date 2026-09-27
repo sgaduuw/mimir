@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import create_engine, text
 
@@ -24,7 +24,7 @@ def _row(commit_sha: str, message_id: str, tree_name: str = "linus"):
         "commit_sha": commit_sha,
         "message_id": message_id,
         "tree_name": tree_name,
-        "committed_at": datetime(2026, 5, 30, 0, 0, 0, tzinfo=timezone.utc),
+        "committed_at": datetime(2026, 5, 30, 0, 0, 0, tzinfo=UTC),
     }
 
 
@@ -394,12 +394,11 @@ def test_update_mainline_uses_writer_thread_via_active_context(
     while reaching neither `_ensure_tree`'s successor code nor the
     writer dispatch it exists to pin.
     """
-    from tests.conftest import linus_tree
     from mimir.broker import _context
     from mimir.broker.pools import ReadSessionPool
     from mimir.broker.writes import WriterThread
-
     from mimir.config import settings
+    from tests.conftest import linus_tree
 
     repo = tmp_path / "linus.git"
     subprocess.run(["git", "init", "--bare", "-q", str(repo)], check=True)

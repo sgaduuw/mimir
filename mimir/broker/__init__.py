@@ -26,7 +26,6 @@ The submodules split by concern:
 """
 
 from mimir.broker.client import BrokerClient, BrokerUnavailable, get_broker_client
-from mimir.broker.server import serve
 
 # Two-pool restructure primitives
 # (_claude/specs/2026-05-29-broker-two-pool-design.md): the read pool
@@ -34,14 +33,15 @@ from mimir.broker.server import serve
 # writes through. Re-exported on the package surface per the house
 # "re-export the public surface" convention.
 from mimir.broker.pools import ReadSessionPool
+from mimir.broker.server import serve
 from mimir.broker.writes import WriteOp, WriterThread
 
 __all__ = [
     "BrokerClient",
     "BrokerUnavailable",
-    "get_broker_client",
-    "serve",
     "ReadSessionPool",
     "WriteOp",
     "WriterThread",
+    "get_broker_client",
+    "serve",
 ]

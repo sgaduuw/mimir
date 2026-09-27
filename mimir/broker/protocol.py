@@ -23,10 +23,9 @@ op. See `handlers.LONG_OPS` for the routing set.
 """
 
 import re
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
-
 
 # Mirror of `mimir.inboxes._NAME_RE`. Duplicated here (rather than
 # imported) so the broker protocol module stays free of the heavy
@@ -641,37 +640,37 @@ class WarmGlobalRequest(_BrokerRequest):
 # pydantic dispatches to the right model on parse; an unknown `op`
 # raises `ValidationError` at the broker boundary, which the
 # handlers module turns into `Reply(ok=False, error=...)`.
-Request = Union[
-    CacheSetRequest,
-    CacheDeleteRequest,
-    CacheDeleteForInboxRequest,
-    CachePurgeExpiredRequest,
-    PingRequest,
-    BootstrapInboxesRequest,
-    IngestInboxRequest,
-    BackfillArticleFilesRequest,
-    BackfillArticleTrailersRequest,
-    BackfillPatchSeriesRequest,
-    BackfillCanonicalsRequest,
-    UpdateMainlineRequest,
-    AnalyzeRequest,
-    VacuumRequest,
-    FailuresReplayRequest,
-    InboxCreateRequest,
-    InboxUpdateRequest,
-    InboxDeleteRequest,
-    InboxSetTrackedAuthorsRequest,
-    InboxAddTrackedAuthorRequest,
-    InboxRemoveTrackedAuthorRequest,
-    InboxClearTrackedAuthorsRequest,
-    RobotsAddRequest,
-    RobotsUpdateRequest,
-    RobotsRemoveRequest,
-    RobotsResetRequest,
-    WarmInboxRequest,
-    WarmSubsystemRequest,
-    WarmGlobalRequest,
-]
+Request = (
+    CacheSetRequest
+    | CacheDeleteRequest
+    | CacheDeleteForInboxRequest
+    | CachePurgeExpiredRequest
+    | PingRequest
+    | BootstrapInboxesRequest
+    | IngestInboxRequest
+    | BackfillArticleFilesRequest
+    | BackfillArticleTrailersRequest
+    | BackfillPatchSeriesRequest
+    | BackfillCanonicalsRequest
+    | UpdateMainlineRequest
+    | AnalyzeRequest
+    | VacuumRequest
+    | FailuresReplayRequest
+    | InboxCreateRequest
+    | InboxUpdateRequest
+    | InboxDeleteRequest
+    | InboxSetTrackedAuthorsRequest
+    | InboxAddTrackedAuthorRequest
+    | InboxRemoveTrackedAuthorRequest
+    | InboxClearTrackedAuthorsRequest
+    | RobotsAddRequest
+    | RobotsUpdateRequest
+    | RobotsRemoveRequest
+    | RobotsResetRequest
+    | WarmInboxRequest
+    | WarmSubsystemRequest
+    | WarmGlobalRequest
+)
 
 
 class Reply(BaseModel):

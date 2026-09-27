@@ -7,7 +7,7 @@ in their docstrings; this file is the single source of behaviour
 truth now.
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -17,7 +17,7 @@ from mimir.datetime_utils import aware_utc
 def test_aware_utc_replaces_missing_tzinfo_with_utc():
     naive = datetime(2024, 6, 1, 12, 0, 0)
     out = aware_utc(naive)
-    assert out.tzinfo == timezone.utc
+    assert out.tzinfo == UTC
     # Wall-clock fields are untouched -- the helper attaches UTC,
     # it does NOT shift the value (since "no TZ" by convention is
     # already taken to mean UTC across this codebase).
@@ -25,7 +25,7 @@ def test_aware_utc_replaces_missing_tzinfo_with_utc():
 
 
 def test_aware_utc_is_noop_on_already_aware_datetime():
-    aware = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    aware = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
     out = aware_utc(aware)
     assert out is aware
 

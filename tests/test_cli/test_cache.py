@@ -3,7 +3,7 @@ verbose vs default output, per-key dashboard / reviewer /
 atom-feed / sitemap targets), `analyze`, and `vacuum`
 (post-vacuum size reporting)."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from click.testing import CliRunner
@@ -87,13 +87,14 @@ def test_warm_cache_parallel_propagates_refresh_window(
     warm-cache. The row's `expires_at` must move forward (recompute
     happened) instead of staying near-now (skipped)."""
     from sqlalchemy import delete as sql_delete
+
     from mimir.cache import _ns
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
     # active_threads target for alpha; key matches dashboard helper.
     key = "active_threads:alpha:7:10"
-    near_expiry = int(datetime.now(timezone.utc).timestamp()) + 30  # 30 s left
+    near_expiry = int(datetime.now(UTC).timestamp()) + 30  # 30 s left
     with SessionLocal() as s:
         s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
         s.add(CacheEntry(key=_ns(key), value="[]", expires_at=near_expiry))
@@ -159,7 +160,7 @@ def test_warm_cache_subsystem_dashboards_populate_cache(
     # past the window as wall-clock advances; we hit that on
     # 2026-05-20 when CI started failing the very test that had been
     # green the day before.
-    recent = datetime.now(timezone.utc) - timedelta(days=2)
+    recent = datetime.now(UTC) - timedelta(days=2)
     with SessionLocal() as s:
         sub = Subsystem(name="BCACHEFS", status="Supported")
         s.add(sub)
@@ -262,7 +263,7 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
     # articles_reviewed_by. Relative date (see companion test above)
     # so the article stays inside the 7-day "most active" window
     # regardless of when the test runs.
-    recent = datetime.now(timezone.utc) - timedelta(days=2)
+    recent = datetime.now(UTC) - timedelta(days=2)
     with SessionLocal() as s:
         sub = Subsystem(name="BCACHEFS", status="Supported")
         s.add(sub)
@@ -374,6 +375,7 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
     sitemap surfaces, index, meta, and per-inbox, so the first
     crawler hit per hour gets a cache-hit."""
     from sqlalchemy import delete
+
     from mimir import cache
     from mimir.config import settings
     from mimir.extensions import SessionLocal
@@ -400,10 +402,10 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
 
     ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
     expected_root = {
-        "sitemap:index": "{%s}sitemapindex" % ns,
-        "sitemap:meta": "{%s}urlset" % ns,
-        "sitemap:inbox:alpha": "{%s}urlset" % ns,
-        "sitemap:inbox:beta": "{%s}urlset" % ns,
+        "sitemap:index": f"{{{ns}}}sitemapindex",
+        "sitemap:meta": f"{{{ns}}}urlset",
+        "sitemap:inbox:alpha": f"{{{ns}}}urlset",
+        "sitemap:inbox:beta": f"{{{ns}}}urlset",
     }
     for key, expected_tag in expected_root.items():
         payload = cache.get(key)
@@ -427,6 +429,7 @@ def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
     this, warm-cache after a fresh ingest wouldn't see the new
     article URLs until the 1h TTL elapsed."""
     from sqlalchemy import select
+
     from mimir import cache
     from mimir.extensions import SessionLocal
     from mimir.seo import inbox_sitemap_xml
@@ -470,6 +473,7 @@ def test_vacuum_command_runs_and_reports_sizes(seeded_db):
     reclaimed lines must all emit and the DB must still be openable
     afterwards."""
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
 
     result = CliRunner().invoke(vacuum_command, [])

@@ -76,7 +76,7 @@ class ReadSessionPool:
         self._in_flight = 0
 
     @classmethod
-    def from_settings(cls) -> "ReadSessionPool":
+    def from_settings(cls) -> ReadSessionPool:
         return cls(
             database_url=settings.database_url,
             pool_size=settings.broker_read_pool_size,

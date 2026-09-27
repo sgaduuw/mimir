@@ -13,7 +13,6 @@ from markupsafe import Markup
 
 from mimir.rendering import URL_OR_MSGID_RE, linkify, parse_blocks, render_body
 
-
 # linkify, escaping + URL handling
 
 

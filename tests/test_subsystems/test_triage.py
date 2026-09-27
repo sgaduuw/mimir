@@ -7,7 +7,7 @@ maintainer-Ack vs not), plus an EXPLAIN-plan pin so a regression
 that lost index-driven access surfaces in CI rather than as a
 production cold-miss."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, text
 
@@ -23,7 +23,6 @@ from mimir.subsystems_dashboard.triage import (
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
 )
-
 from tests.test_subsystems._helpers import _add_subsystem
 
 
@@ -50,7 +49,7 @@ def _add_article(
         message_id=msgid,
         subject=f"patch {msgid}",
         author="author@example.com",
-        date=datetime.now(timezone.utc) - timedelta(days=days_ago),
+        date=datetime.now(UTC) - timedelta(days=days_ago),
         thread_parent=thread_parent,
         subject_normalized=f"patch {msgid}",
         canonical_inbox_id=inbox.id,
@@ -160,7 +159,7 @@ def test_needs_attention_excludes_landed_in_mainline(seeded_db):
                 commit_sha="a" * 40,
                 message_id="landed@x",
                 tree_name="linux.git",
-                committed_at=datetime.now(timezone.utc),
+                committed_at=datetime.now(UTC),
             )
         )
         s.commit()
@@ -416,7 +415,7 @@ def test_triage_queries_use_date_index_no_full_scans(seeded_db):
             excludes=["net/bluetooth/"],
         )
         s.commit()
-        cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+        cutoff = datetime.now(UTC) - timedelta(days=14)
         inbox = _alpha(s)
         for label, fn in [
             ("needs_attention", _candidate_query_needs_attention),

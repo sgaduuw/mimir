@@ -8,9 +8,8 @@ uses. The HTTP transport is monkeypatched at
 the production caller) so no real network traffic flies during tests.
 """
 
-import re
-
 import json
+import re
 
 import pytest
 from sqlalchemy import select
@@ -636,7 +635,6 @@ def test_advertised_url_names_the_page_holding_the_message(
     from mimir.extensions import SessionLocal
     from mimir.models import Article
     from mimir.web.urls import _advertised_urls_for
-
     from tests.test_routes._helpers import build_thread
 
     monkeypatch.setattr(settings, "thread_view_render_cap", 2)
@@ -677,7 +675,6 @@ def test_unrankable_thread_announces_message_urls(client, tmp_path, monkeypatch)
     from mimir.extensions import SessionLocal
     from mimir.models import Article
     from mimir.web.urls import _advertised_urls_for
-
     from tests.test_routes._helpers import build_thread
 
     monkeypatch.setattr(settings, "thread_view_render_cap", 2)
@@ -714,7 +711,6 @@ def test_one_inbox_being_unrepaired_does_not_mute_another(
     from mimir.extensions import SessionLocal
     from mimir.models import Article, ArticleList, Inbox
     from mimir.web.urls import _advertised_urls_for
-
     from tests.test_routes._helpers import build_thread
 
     monkeypatch.setattr(settings, "thread_view_render_cap", 2)

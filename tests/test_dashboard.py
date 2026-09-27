@@ -11,7 +11,7 @@ Seed recap (from conftest.py):
 - art3 is cross-posted between alpha and beta.
 """
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -83,7 +83,7 @@ def test_archive_stats_respects_min_plausible_date(seeded_db):
             subject="hello",
             author="X",
             # 1991, before lkml itself existed.
-            date=datetime(1991, 1, 1, tzinfo=timezone.utc),
+            date=datetime(1991, 1, 1, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="hello",
         )
@@ -147,14 +147,15 @@ def test_daily_volume_max_count(seeded_db):
     outside the 30-day window for any plausible test run date, so
     without an in-window seed the helper's max_count is 0 and the
     `vol.max_count == max(...)` check passes trivially."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from mimir.models import Article, ArticleList
 
     alpha = _inbox(seeded_db, "alpha")
     # Insert two articles dated 3 days ago so they fall in the
     # daily_volume(days=30) window. Same day -> count of 2 on that day,
     # 0 on the rest -> max_count == 2.
-    three_days_ago = datetime.now(timezone.utc) - timedelta(days=3)
+    three_days_ago = datetime.now(UTC) - timedelta(days=3)
     with seeded_db() as s:
         for i in range(2):
             art = Article(
@@ -227,7 +228,7 @@ def test_dashboard_today_helpers_use_utc_not_local_date(seeded_db, monkeypatch):
     class _UTCOnlyDatetime(dm.datetime):
         @classmethod
         def now(cls, tz=None):
-            if tz != timezone.utc:
+            if tz != UTC:
                 raise AssertionError(
                     "dashboard helpers must call datetime.now(timezone.utc); "
                     f"got tz={tz!r}"
@@ -280,7 +281,8 @@ def test_monthly_volume_year_boundary(seeded_db):
     BETWEEN-year filter (e.g. inclusive vs exclusive upper bound,
     UTC drift) are an easy regression that the existing test for
     "groups_by_month" doesn't exercise."""
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from mimir.models import Article, ArticleList
 
     alpha = _inbox(seeded_db, "alpha")
@@ -288,7 +290,7 @@ def test_monthly_volume_year_boundary(seeded_db):
     # strftime rounds .999999s up across the year boundary on some
     # builds, which is a separate edge from the BETWEEN-bounds
     # regression this test is guarding -- so stay clearly inside 2022.
-    boundary = datetime(2022, 12, 31, 23, 59, 0, tzinfo=timezone.utc)
+    boundary = datetime(2022, 12, 31, 23, 59, 0, tzinfo=UTC)
     with seeded_db() as s:
         art = Article(
             message_id="year-boundary@x",
@@ -405,7 +407,7 @@ def test_search_articles_escapes_percent_wildcard(seeded_db):
             message_id="pct@example.com",
             subject="100% complete",
             author="X",
-            date=datetime(2024, 4, 1, tzinfo=timezone.utc),
+            date=datetime(2024, 4, 1, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="100% complete",
         )
@@ -471,7 +473,7 @@ def test_author_recent_respects_limit(seeded_db):
 
 def test_latest_pull_requests_matches_subject_prefix(seeded_db):
     alpha = _inbox(seeded_db, "alpha")
-    recent = datetime.now(timezone.utc) - timedelta(days=7)
+    recent = datetime.now(UTC) - timedelta(days=7)
     with seeded_db() as s:
         pull = Article(
             message_id="pull@example.com",
@@ -505,9 +507,7 @@ def test_latest_pull_requests_recency_floor_excludes_old(seeded_db):
     from mimir.dashboard import LISTING_RECENCY_FLOOR_DAYS
 
     alpha = _inbox(seeded_db, "alpha")
-    too_old = datetime.now(timezone.utc) - timedelta(
-        days=LISTING_RECENCY_FLOOR_DAYS + 30
-    )
+    too_old = datetime.now(UTC) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS + 30)
     with seeded_db() as s:
         pull = Article(
             message_id="oldpull@example.com",
@@ -535,7 +535,7 @@ def test_latest_pull_requests_recency_floor_excludes_old(seeded_db):
 def test_latest_stable_releases_matches_glob(seeded_db):
     """`Linux <digit>...` is the GLOB pattern."""
     alpha = _inbox(seeded_db, "alpha")
-    recent = datetime.now(timezone.utc) - timedelta(days=7)
+    recent = datetime.now(UTC) - timedelta(days=7)
     with seeded_db() as s:
         rel = Article(
             message_id="rel@example.com",
@@ -566,9 +566,7 @@ def test_latest_stable_releases_recency_floor_excludes_old(seeded_db):
     from mimir.dashboard import LISTING_RECENCY_FLOOR_DAYS
 
     alpha = _inbox(seeded_db, "alpha")
-    too_old = datetime.now(timezone.utc) - timedelta(
-        days=LISTING_RECENCY_FLOOR_DAYS + 30
-    )
+    too_old = datetime.now(UTC) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS + 30)
     with seeded_db() as s:
         rel = Article(
             message_id="oldrel@example.com",
@@ -604,7 +602,8 @@ def test_this_day_in_history_returns_articles_summary(seeded_db, frozen_clock):
     The older version only asserted the shape, which would have
     passed on a no-op implementation. Seed an article matching the
     today-minus-N filter and verify it's returned."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from mimir.dashboard import ArticleSummary
     from mimir.models import Article, ArticleList
 
@@ -615,7 +614,7 @@ def test_this_day_in_history_returns_articles_summary(seeded_db, frozen_clock):
     # a couple of days vs the same calendar date, and a regression
     # that hardcoded the wrong arithmetic would silently filter
     # out articles. Compute identically to the helper.
-    target = datetime.now(timezone.utc) - timedelta(days=365 * years_ago)
+    target = datetime.now(UTC) - timedelta(days=365 * years_ago)
     target_dt = target.replace(hour=12, minute=0, second=0, microsecond=0)
     with seeded_db() as s:
         art = Article(
@@ -716,12 +715,12 @@ def test_daily_volume_uses_indexed_seek_no_full_scan(seeded_db):
     seek drives the join, and that no full SCAN of articles or
     article_lists appears anywhere in the plan.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from sqlalchemy import text
 
     alpha = _inbox(seeded_db, "alpha")
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     start = today - timedelta(days=30 - 1)
 
     with seeded_db() as s:

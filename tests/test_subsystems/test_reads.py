@@ -3,7 +3,7 @@ subsystem read fan-outs that power the subsystem
 dashboard (`recent_articles_in_subsystem`,
 `active_threads_in_subsystem`, `daily_volume_in_subsystem`)."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -17,7 +17,6 @@ from mimir.subsystems_dashboard import (
     daily_volume_in_subsystem,
     recent_articles_in_subsystem,
 )
-
 from tests.test_subsystems._helpers import (
     _add_patch_article,
     _add_recent_thread_root,
@@ -46,10 +45,11 @@ def test_recent_articles_in_subsystem_is_cached(seeded_db):
     OR clause per F: glob, then a Python X: pass). A repeated call
     must short-circuit through the cache instead of re-running the
     join; a `force=True` call must bypass."""
+    from sqlalchemy import delete as sql_delete
+
     from mimir import cache
     from mimir.cache import _ns
     from mimir.models import CacheEntry
-    from sqlalchemy import delete as sql_delete
 
     with seeded_db() as s:
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
@@ -159,7 +159,7 @@ def test_recent_articles_in_subsystem_orders_by_date_desc(seeded_db):
                 message_id=f"d{i}@x",
                 subject=f"patch {i}",
                 author="a@x",
-                date=datetime(2024, 6, day, tzinfo=timezone.utc),
+                date=datetime(2024, 6, day, tzinfo=UTC),
                 thread_parent=None,
                 subject_normalized=f"patch {i}",
                 canonical_inbox_id=alpha.id,

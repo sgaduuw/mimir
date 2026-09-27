@@ -9,7 +9,7 @@ after a parser change.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from dulwich.errors import NotGitRepository
@@ -108,9 +108,7 @@ def _replay_loop(
                     tree = repo[commit.tree]
                     _mode, blob_sha = tree[b"m"]
                     raw = repo[blob_sha].data
-                    commit_time = datetime.fromtimestamp(
-                        commit.commit_time, timezone.utc
-                    )
+                    commit_time = datetime.fromtimestamp(commit.commit_time, UTC)
                 except KeyError:
                     # Commit or `m` blob missing; mirror was pruned or rewound.
                     # Leave the row in place for the operator to inspect.
@@ -131,11 +129,11 @@ def _replay_loop(
                         "_commit_sha": row_commit_sha,
                         "_error_class": type(exc).__name__,
                         "_error_message": str(exc)[:1000],
-                        "_now": datetime.now(timezone.utc),
+                        "_now": datetime.now(UTC),
                     }
                 )
             else:
-                row.last_attempt = datetime.now(timezone.utc)
+                row.last_attempt = datetime.now(UTC)
                 row.attempts += 1
                 row.error_class = type(exc).__name__
                 row.error_message = str(exc)[:1000]

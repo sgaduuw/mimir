@@ -2,7 +2,7 @@
 5-state lifecycle taxonomy (Landed / Superseded / Queued / Reviewed
 / Pending)."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -38,7 +38,7 @@ def _seed_article(session, message_id, **overrides):
     art = Article(
         message_id=message_id,
         subject=overrides.get("subject", f"[PATCH] {message_id}"),
-        date=overrides.get("date", datetime(2026, 4, 1, tzinfo=timezone.utc)),
+        date=overrides.get("date", datetime(2026, 4, 1, tzinfo=UTC)),
         author=overrides.get("author", "Alice <a@x>"),
         patch_series_key=overrides.get("patch_series_key"),
         patch_series_position=overrides.get("patch_series_position"),
@@ -65,7 +65,7 @@ def test_landed_when_linus_row_exists(session):
             commit_sha="a" * 40,
             message_id="landed@x",
             tree_name="linus",
-            committed_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+            committed_at=datetime(2026, 5, 1, tzinfo=UTC),
         )
     )
     session.commit()
@@ -114,7 +114,7 @@ def test_landed_outranks_superseded(session):
             commit_sha="b" * 40,
             message_id="v1L@x",
             tree_name="linus",
-            committed_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+            committed_at=datetime(2026, 5, 1, tzinfo=UTC),
         )
     )
     session.commit()
@@ -129,7 +129,7 @@ def test_queued_when_only_non_linus_row(session):
             commit_sha="c" * 40,
             message_id="queued@x",
             tree_name="net-next",
-            committed_at=datetime(2026, 4, 20, tzinfo=timezone.utc),
+            committed_at=datetime(2026, 4, 20, tzinfo=UTC),
         )
     )
     session.commit()
@@ -185,7 +185,7 @@ def test_bulk_mixed_states(session):
             commit_sha="d" * 40,
             message_id="ml1@x",
             tree_name="linus",
-            committed_at=datetime.now(timezone.utc),
+            committed_at=datetime.now(UTC),
         )
     )
     a_queued = _seed_article(session, "mq1@x")
@@ -194,7 +194,7 @@ def test_bulk_mixed_states(session):
             commit_sha="e" * 40,
             message_id="mq1@x",
             tree_name="tip",
-            committed_at=datetime.now(timezone.utc),
+            committed_at=datetime.now(UTC),
         )
     )
     a_pending = _seed_article(session, "mp1@x")
@@ -297,16 +297,17 @@ def test_format_count_suffix_omits_when_zero():
 
 
 def test_format_tooltip_landed_with_reviewers():
+    from datetime import datetime
+
     from mimir.lifecycle_status import (
         LifecycleStatus,
         _format_tooltip,
     )
-    from datetime import datetime, timezone
 
     tip = _format_tooltip(
         state=LifecycleStatus.LANDED,
         linus_sha="feedface12345678",
-        linus_committed_at=datetime(2025, 11, 22, 9, 30, tzinfo=timezone.utc),
+        linus_committed_at=datetime(2025, 11, 22, 9, 30, tzinfo=UTC),
         earliest_other_sha=None,
         earliest_other_at=None,
         superseded_by_version=None,
@@ -320,15 +321,16 @@ def test_format_tooltip_landed_with_reviewers():
 
 
 def test_format_tooltip_queued_uses_earliest_other_tree():
+    from datetime import datetime
+
     from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
-    from datetime import datetime, timezone
 
     tip = _format_tooltip(
         state=LifecycleStatus.QUEUED,
         linus_sha=None,
         linus_committed_at=None,
         earliest_other_sha="24be70885101abcd",
-        earliest_other_at=datetime(2026, 5, 25, 14, 8, tzinfo=timezone.utc),
+        earliest_other_at=datetime(2026, 5, 25, 14, 8, tzinfo=UTC),
         superseded_by_version=None,
         superseded_by_posted_at=None,
         reviewers=[("Alice", True), ("Bob", False)],
@@ -410,8 +412,9 @@ def test_format_tooltip_dedups_mixed_reviewers_preserving_order():
 
 
 def test_format_tooltip_superseded_uses_supersede_note():
+    from datetime import datetime
+
     from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
-    from datetime import datetime, timezone
 
     tip = _format_tooltip(
         state=LifecycleStatus.SUPERSEDED,
@@ -420,7 +423,7 @@ def test_format_tooltip_superseded_uses_supersede_note():
         earliest_other_sha=None,
         earliest_other_at=None,
         superseded_by_version="4",
-        superseded_by_posted_at=datetime(2026, 5, 18, tzinfo=timezone.utc),
+        superseded_by_posted_at=datetime(2026, 5, 18, tzinfo=UTC),
         reviewers=[("Alice", True), ("Bob", False)],
     )
     assert tip.startswith("Superseded by v4 posted 2026-05-18")
@@ -460,13 +463,14 @@ def test_format_tooltip_scrubs_control_bytes_from_names():
 
 
 def test_format_tooltip_landed_no_reviewers():
+    from datetime import datetime
+
     from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
-    from datetime import datetime, timezone
 
     tip = _format_tooltip(
         state=LifecycleStatus.LANDED,
         linus_sha="cafebabe98765432",
-        linus_committed_at=datetime(2026, 4, 14, 11, 8, tzinfo=timezone.utc),
+        linus_committed_at=datetime(2026, 4, 14, 11, 8, tzinfo=UTC),
         earliest_other_sha=None,
         earliest_other_at=None,
         superseded_by_version=None,
@@ -542,10 +546,10 @@ def test_bulk_uncached_computes_thread_activity(session):
 
     from mimir.lifecycle_status import _bulk_uncached
 
-    root_date = datetime.now(timezone.utc) - timedelta(days=30)
+    root_date = datetime.now(UTC) - timedelta(days=30)
     root = _seed_article(session, "root@x", date=root_date)
     inbox = session.execute(select(Inbox).where(Inbox.name == "lkml")).scalar_one()
-    today = datetime.now(timezone.utc)
+    today = datetime.now(UTC)
     reply = Article(
         message_id="reply@x",
         subject="Re: foo",

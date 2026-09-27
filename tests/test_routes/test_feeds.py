@@ -105,6 +105,7 @@ def test_atom_feed_author_name_is_display_name_only(
     address rides along separately in <author><email>, gated on the
     allowlist (see test_atom_feed_author_includes_email_when_allowlisted)."""
     import xml.etree.ElementTree as ET
+
     from mimir.config import settings
 
     monkeypatch.setattr(settings, "email_allowlist", [])
@@ -145,6 +146,7 @@ def test_atom_feed_author_includes_email_when_allowlisted(
     page and in the public git blob, omitting it from the feed
     under-attributes the only set of senders we don't redact."""
     import xml.etree.ElementTree as ET
+
     from mimir.config import settings
 
     monkeypatch.setattr(settings, "email_allowlist", ["@b.example"])
@@ -174,6 +176,7 @@ def test_atom_feed_author_omits_email_when_not_allowlisted(
     """Inverse: a non-allowlisted sender's address stays out of the
     feed entirely, matching the visible HTML's `<hidden>` redaction."""
     import xml.etree.ElementTree as ET
+
     from mimir.config import settings
 
     monkeypatch.setattr(settings, "email_allowlist", [])
@@ -204,7 +207,9 @@ def test_atom_feed_cross_post_id_is_canonical_in_either_feed(client):
     for art3 must carry the SAME <id>, the canonical URL, so feed
     readers that key on <id> deduplicate across feeds."""
     import xml.etree.ElementTree as ET
+
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 

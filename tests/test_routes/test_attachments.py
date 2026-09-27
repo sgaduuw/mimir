@@ -61,6 +61,7 @@ def test_attachment_404_when_blob_unreachable_via_read_message(client, seeded_db
     article fails inside `_read_blob` and surfaces as MessageNotFound
     -- the exact race-condition shape this branch defends against."""
     from sqlalchemy import select
+
     from mimir.models import Article
 
     with seeded_db() as s:

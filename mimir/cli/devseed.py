@@ -7,7 +7,7 @@ with a synthetic mirror, appends more messages to the same epoch
 on re-run.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import click
@@ -119,7 +119,7 @@ def dev_seed_thread_command(
     # Build a thread: root + n_messages-1 replies. Half flat-under-root,
     # half nested (each replying to the previous), so the tree exercises
     # both wide and deep shapes. Spread dates 1 hour apart.
-    start = datetime(2024, 6, 1, 9, 0, tzinfo=timezone.utc)
+    start = datetime(2024, 6, 1, 9, 0, tzinfo=UTC)
     parent_msgids: list[str] = []
     prev_commit = None
 
@@ -145,7 +145,7 @@ def dev_seed_thread_command(
     # Per-invocation uniqifier so re-running within the same second
     # still produces fresh message-ids. Microsecond precision is enough
     # to make collisions essentially impossible in dev use.
-    stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
     for i in range(n_messages):
         is_root = i == 0
         if is_root:

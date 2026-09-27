@@ -9,7 +9,6 @@ from mimir.cli import (
     ingest_command,
     show_command,
 )
-
 from tests.test_cli._helpers import (
     _build_pubinbox_repo,
     _ingest_one_for_show,

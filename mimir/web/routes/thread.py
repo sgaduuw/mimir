@@ -38,11 +38,11 @@ from sqlalchemy import select
 import mimir
 from mimir.config import settings
 from mimir.extensions import SessionLocal
+from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import (
     Article,
     ArticleList,
 )
-from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.patch_state import patch_state_for_article
 from mimir.seo import _json_ld_thread
 from mimir.store import read_messages

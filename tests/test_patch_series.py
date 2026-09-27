@@ -6,7 +6,6 @@ from mimir.patch_series import (
     series_key,
 )
 
-
 # parse_cover_letter, recognising shapes.
 
 

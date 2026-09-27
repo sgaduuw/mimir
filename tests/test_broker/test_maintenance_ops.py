@@ -20,7 +20,6 @@ from mimir.config import settings
 from tests.conftest import linus_tree as _linus_tree
 from tests.test_broker._helpers import broker_running, short_socket_path
 
-
 # ----- classify_op --------------------------------------------------------
 
 
@@ -382,8 +381,8 @@ def test_run_analyze_full_resets_analysis_limit_on_shared_engine_fallback(seeded
     from sqlalchemy import text
 
     from mimir.broker import _context
-    from mimir.extensions import engine
     from mimir.config import settings
+    from mimir.extensions import engine
     from mimir.maintenance import run_analyze
 
     _context.clear_active()  # take the shared-engine fallback path

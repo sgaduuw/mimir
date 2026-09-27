@@ -6,7 +6,7 @@ prefixed filename so pytest does not collect this as a test
 module.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -61,7 +61,7 @@ def _add_patch_article(session, msgid, paths, inbox_name="alpha"):
         message_id=msgid,
         subject=f"patch {msgid}",
         author="a@example",
-        date=datetime.now(timezone.utc) - timedelta(days=1),
+        date=datetime.now(UTC) - timedelta(days=1),
         thread_parent=None,
         subject_normalized=f"patch {msgid}",
         canonical_inbox_id=inbox.id,
@@ -87,7 +87,7 @@ def _add_recent_thread_root(
         message_id=msgid,
         subject=subject,
         author="a@example",
-        date=datetime.now(timezone.utc) - timedelta(hours=1),
+        date=datetime.now(UTC) - timedelta(hours=1),
         thread_parent=None,
         subject_normalized=subject,
         canonical_inbox_id=inbox.id,
@@ -114,7 +114,7 @@ def _add_recent_patch_with_trailers(
         message_id=msgid,
         subject=f"patch {msgid}",
         author="a@example",
-        date=datetime.now(timezone.utc) - timedelta(days=days_ago, hours=1),
+        date=datetime.now(UTC) - timedelta(days=days_ago, hours=1),
         thread_parent=None,
         subject_normalized=f"patch {msgid}",
         canonical_inbox_id=inbox.id,

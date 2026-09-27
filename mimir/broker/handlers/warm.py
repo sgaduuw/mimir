@@ -23,6 +23,7 @@ pattern used by the long-op handlers.
 import logging
 import threading
 import time
+from datetime import UTC
 
 from mimir.broker import _context
 from mimir.broker.protocol import (
@@ -206,7 +207,7 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
     labelled subset, matching the post-ingest-warm posture used
     by `mimir.ingest.orchestrate._warm_after_ingest`.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from sqlalchemy import select
 
@@ -224,7 +225,15 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
             rpc_id=req.rpc_id, ok=False, error=f"UnknownInbox:{req.inbox_name}"
         )
 
-    today = datetime.now(timezone.utc).date()
+    # UTC because this handler is the sole PRODUCER of
+    # `threads_for_day` cache keys and those keys embed the date, while
+    # `web.routes.timeviews` (the consumer) derives its day from
+    # `datetime.now(UTC).date()`. A local clock here would spend a
+    # non-UTC server's offset window writing keys nothing reads.
+    # DTZ011 in the selected rule set is the guard: `date.today()` is a
+    # lint error here, which no behavioural test can match (freezegun
+    # cannot make the two bases straddle midnight).
+    today = datetime.now(UTC).date()
     yesterday = today - timedelta(days=1)
     sitemap_base = (settings.site_base_url or "").rstrip("/")
     targets = _build_inbox_targets(inbox, today, yesterday, sitemap_base)

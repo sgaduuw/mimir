@@ -29,9 +29,9 @@ exist in MAINTAINERS, `X:` only acts on its own section.
 
 import fnmatch
 import re
-from urllib.parse import quote
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from urllib.parse import quote
 
 from pydantic import BaseModel
 from sqlalchemy import exists, select
@@ -374,9 +374,7 @@ def recent_patches_touching(
     """
     if not paths:
         return []
-    min_date = datetime.now(timezone.utc) - timedelta(
-        days=settings.recent_patches_max_age_days
-    )
+    min_date = datetime.now(UTC) - timedelta(days=settings.recent_patches_max_age_days)
     # EXISTS-with-date-bound. The driver is `ix_articles_date` DESC
     # over the bounded window; the planner tests the EXISTS per
     # candidate article via the `(article_id, path)` PK on
@@ -440,8 +438,8 @@ def recent_patches_touching(
 
 
 __all__ = [
-    "RelatedPatch",
     "SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC",
+    "RelatedPatch",
     "SubsystemHit",
     "path_matches_glob",
     "recent_patches_touching",

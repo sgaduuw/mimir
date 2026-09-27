@@ -363,8 +363,8 @@ def test_broker_server_constructs_read_pool_and_writer(seeded_db):
     """build_server() now wires a ReadSessionPool and WriterThread
     onto the server instance. Phase 1: parallel infrastructure;
     no handler uses them yet."""
-    from mimir.broker.server import build_server
     from mimir.broker.pools import ReadSessionPool
+    from mimir.broker.server import build_server
     from mimir.broker.writes import WriterThread
     from tests.test_broker._helpers import short_socket_path
 
@@ -835,8 +835,9 @@ def test_concurrent_worker_replies_are_not_torn():
     line. Pins the per-connection _send_lock (3.0.0 pipelining)."""
     import socket
     import threading
-    from mimir.broker.server import ClientConnection
+
     from mimir.broker.protocol import Reply
+    from mimir.broker.server import ClientConnection
 
     # Create a connected socket pair: `peer` reads what `sock` writes.
     sock, peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -987,9 +988,9 @@ def test_migrate_reports_whether_the_revision_actually_moved(tmp_path, monkeypat
     ambient one: alembic here would otherwise target the developer's own
     database.
     """
-    import mimir.extensions
     from sqlalchemy import create_engine
 
+    import mimir.extensions
     from mimir.broker import server
     from mimir.config import settings
 
@@ -1049,9 +1050,9 @@ def test_schema_revision_reads_the_engine_alembic_migrates_not_the_url(
     """
     import sqlite3
 
-    import mimir.extensions
     from sqlalchemy import create_engine
 
+    import mimir.extensions
     from mimir.broker import server
     from mimir.config import settings
 
@@ -1428,7 +1429,7 @@ def test_web_tier_rpcs_all_route_to_the_cache_queue():
     `cache_queue`)."""
     import ast
 
-    from mimir.broker.handlers import LONG_OPS, WARM_OPS, _DISPATCH
+    from mimir.broker.handlers import _DISPATCH, LONG_OPS, WARM_OPS
 
     src = (Path(__file__).resolve().parents[2] / "mimir" / "cache.py").read_text()
     ops = set()

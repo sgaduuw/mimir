@@ -5,19 +5,20 @@ end. This file pins the error paths and the privacy / RFC-6266
 edge cases that would never surface from real-data smoke runs.
 """
 
-from sqlalchemy import select
+from datetime import UTC
 
 import pytest
+from sqlalchemy import select
 
 from mimir.models import Inbox
 from mimir.store import MessageNotFound, read_message
-from tests.test_routes._helpers import count_repo_opens
 from mimir.web import (
     _canonical_inbox_names_for,
     _content_disposition,
     _redact_trailer_address,
     _safe_from_filter,
 )
+from tests.test_routes._helpers import count_repo_opens
 
 
 def _alpha(seeded_db) -> Inbox:
@@ -387,6 +388,7 @@ def test_canonical_inbox_names_prefers_pinned_canonical_over_fallback(seeded_db)
     fallback. Pin art3's canonical to beta and confirm the resolver
     returns 'beta' (not the alphabetically-first 'alpha')."""
     from sqlalchemy import update
+
     from mimir.models import Article, Inbox
 
     with seeded_db() as s:
@@ -478,7 +480,7 @@ def test_patch_synthesis_composes_revision_review_and_landing_clauses():
     with the maintainer subset, and the mainline landing. This is the
     indexable restatement of the badges, so the facts have to match
     what the pills claim."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.patch_state import StateTrailerCount
     from mimir.web.filters import _patch_synthesis_filter
@@ -492,9 +494,7 @@ def test_patch_synthesis_composes_revision_review_and_landing_clauses():
             StateTrailerCount(role="Signed-off-by", total=5, maintainer_count=5),
         ],
         landings=[
-            _landing(
-                "linus", "abc123def4567890", datetime(2026, 6, 1, tzinfo=timezone.utc)
-            )
+            _landing("linus", "abc123def4567890", datetime(2026, 6, 1, tzinfo=UTC))
         ],
     )
     out = _patch_synthesis_filter(state)
@@ -514,14 +514,14 @@ def test_patch_synthesis_prefers_linus_landing_over_earlier_subsystem_tree():
 
     Mirrors `lifecycle_status`'s tree priority: Linus wins when present.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.web.filters import _patch_synthesis_filter
 
     state = _patch_state(
         landings=[
-            _landing("net-next", "n" * 16, datetime(2026, 6, 1, tzinfo=timezone.utc)),
-            _landing("linus", "1" * 16, datetime(2026, 6, 20, tzinfo=timezone.utc)),
+            _landing("net-next", "n" * 16, datetime(2026, 6, 1, tzinfo=UTC)),
+            _landing("linus", "1" * 16, datetime(2026, 6, 20, tzinfo=UTC)),
         ],
     )
     assert _patch_synthesis_filter(state) == (
@@ -533,14 +533,14 @@ def test_patch_synthesis_reports_earliest_tree_as_queued_when_not_in_mainline():
     """With no Linus landing the patch has NOT landed, so the sentence
     says "queued", matching the QUEUED badge, and names the earliest
     non-Linus tree (again mirroring the badge)."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.web.filters import _patch_synthesis_filter
 
     state = _patch_state(
         landings=[
-            _landing("net-next", "a" * 16, datetime(2026, 6, 1, tzinfo=timezone.utc)),
-            _landing("linux-next", "b" * 16, datetime(2026, 6, 5, tzinfo=timezone.utc)),
+            _landing("net-next", "a" * 16, datetime(2026, 6, 1, tzinfo=UTC)),
+            _landing("linux-next", "b" * 16, datetime(2026, 6, 5, tzinfo=UTC)),
         ],
     )
     assert _patch_synthesis_filter(state) == (

@@ -24,12 +24,80 @@ mimir = "mimir.cli:mimir"
 
 [dependency-groups]
 dev = [
-    "ruff>=0.15.21,<0.16",
+    "ruff>=0.16.5,<0.17",
     "pytest>=9.1.1,<10",
     "pillow>=12.3.0,<13",
     "pytest-cov>=7.1.0,<8",
     "freezegun>=1.5.5,<2",
 ]
+
+[tool.ruff.lint]
+# EXPLICIT, because the alternative is delegating "what counts as
+# correct code" to whoever cuts the next ruff release. This project had
+# no ruff config at all, so it rode the defaults, and those moved from
+# **59 enabled rules in 0.15.21 to 413 in 0.16.5** (measured
+# 2026-09-26): a dependabot PR changed the definition of a clean tree
+# and produced 636 findings. None of them were caused by the bump; they
+# were pre-existing debt the narrower default had not looked for.
+#
+# Per-group rationale lives with the lists below, not here: an earlier
+# version of this comment enumerated every group as "chosen on the
+# merits", and when `select` was narrowed it was left in place, so the
+# file carried two contradictory accounts and a reader met the wrong one
+# first.
+# SATISFIED TODAY. A `select` entry is a gate, not an aspiration: CI
+# runs `ruff check mimir/ tests/` unscoped, so a rule enabled with
+# findings outstanding is simply a red build. Groups below are enabled
+# because the tree is clean under them right now.
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "I",
+    "UP",
+    "DTZ",
+    "RET",
+    "FURB",
+]
+
+# TO ADOPT, one group per follow-up PR, each enabling its rules in the
+# same change that fixes them. Counts measured 2026-09-27 on this
+# branch; they are pre-existing debt the old 59-rule default never
+# looked for, not regressions.
+#
+#   B     37  mostly B904 (31), `raise ... from err` vs `from None`
+#             inside `except`. Per-site judgment, and the group where
+#             blind application would hurt: BLE is excluded for a
+#             related reason (see below).
+#   RUF   30  RUF059 unused unpacked names (12), RUF003/002 ambiguous
+#             `×` in prose (17, aligns with the house no-em-dash rule),
+#             RUF013 implicit Optional (1). Counted UNDER THIS CONFIG.
+#             `ruff check --select RUF` reports 60, because passing
+#             `--select` overrides the list above, which disables the
+#             other groups and turns every `# noqa` for them into a
+#             phantom `RUF100` unused-noqa. A first version of this
+#             comment recorded that 58/60. Measure a per-group count
+#             with `--statistics` under the project config, never with
+#             `--select` or `--isolated`.
+#   PLW   24  PLW0108 redundant lambdas, PLW0603 `global`, PLW1510
+#             `subprocess.run` without an explicit `check`.
+#   SIM   16  SIM105 `contextlib.suppress`, SIM117 nested `with`.
+#
+# NOT planned: BLE (blind `except Exception`), because some are
+# load-bearing by design. `update_mainline` isolates per-tree failures
+# behind exactly that, which this branch relied on when a test guard
+# raised `AssertionError` and was silently swallowed. ANN/D/ERA/COM
+# stay out too; house style already covers prose.
+
+[tool.ruff.lint.per-file-ignores]
+# `datetime(...)` without tzinfo is deliberate in tests: they assert
+# against values SQLite hands back, which are NAIVE (`Article.date`
+# carries no timezone), so an aware literal would never compare equal.
+# The clock-READING rules stay on everywhere (DTZ005 `now()`, DTZ011
+# `date.today()`), because those are the ones that bake a server's local
+# offset into behaviour, which is the class worth catching.
+"tests/**" = ["DTZ001"]
 
 [tool.pytest.ini_options]
 markers = [

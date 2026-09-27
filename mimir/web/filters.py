@@ -16,7 +16,7 @@ straight to the cache.
 """
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parseaddr
 
 from flask import g
@@ -27,11 +27,11 @@ from pygments.util import ClassNotFound
 from mimir import maintainer_allowlist
 from mimir.config import settings
 from mimir.datetime_utils import aware_utc
+from mimir.maintainer_directory import maintainer_path
 from mimir.models import Article
 from mimir.rendering import render_body
-from mimir.web._blueprint import bp_web
-from mimir.maintainer_directory import maintainer_path
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
+from mimir.web._blueprint import bp_web
 from mimir.web.urls import _msg_url, _thread_view_url
 
 
@@ -41,7 +41,7 @@ def _relative_time(then: datetime, now: datetime | None = None) -> str:
     units under 30 days; falls back to an absolute YYYY-MM-DD beyond
     that, since "47d ago" is harder to parse than the date itself."""
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     then = aware_utc(then)
     delta = now - then
     secs = int(delta.total_seconds())

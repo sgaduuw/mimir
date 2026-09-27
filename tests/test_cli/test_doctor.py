@@ -31,10 +31,11 @@ def test_doctor_all_ok(runner, seeded_db, monkeypatch, tmp_path):
     so SITE_BASE_URL is set, INDEXNOW_KEY is unset (info, not
     warning), broker is reachable, and inboxes are seeded with
     mirror paths that exist."""
+    from sqlalchemy import select
+
     from mimir.config import settings as live_settings
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
-    from sqlalchemy import select
 
     # Make the broker socket check pass by claiming this process is
     # the broker; the doctor short-circuits to "N/A (this IS the
@@ -74,10 +75,11 @@ def test_doctor_warns_on_unset_site_base_url(runner, seeded_db, monkeypatch, tmp
     is the load-bearing 2026-06-01 incident shape: an operator
     running `mimir doctor` against the broker container would have
     seen the gap before deploy."""
+    from sqlalchemy import select
+
     from mimir.config import settings as live_settings
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
-    from sqlalchemy import select
 
     monkeypatch.setattr(live_settings, "mimir_is_broker", True)
     monkeypatch.setattr(live_settings, "site_base_url", "")
@@ -105,10 +107,11 @@ def test_doctor_errors_on_unreachable_broker(runner, seeded_db, monkeypatch, tmp
     """When this process is NOT the broker and broker_socket_path
     points at a nonexistent socket, exit 1 (any error trumps any
     warnings). The check name + status flagged on the row."""
+    from sqlalchemy import select
+
     from mimir.config import settings as live_settings
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
-    from sqlalchemy import select
 
     monkeypatch.setattr(live_settings, "mimir_is_broker", False)
     monkeypatch.setattr(live_settings, "site_base_url", "https://example.com")
@@ -140,10 +143,11 @@ def test_doctor_json_output_shape(runner, seeded_db, monkeypatch, tmp_path):
     /exit_code keys, and each check carries name/status/value/
     remediation fields. Pinning the wire shape so a future scripting
     consumer doesn't break silently."""
+    from sqlalchemy import select
+
     from mimir.config import settings as live_settings
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
-    from sqlalchemy import select
 
     monkeypatch.setattr(live_settings, "mimir_is_broker", True)
     monkeypatch.setattr(live_settings, "site_base_url", "")
@@ -181,10 +185,11 @@ def test_doctor_indexnow_unset_is_ok_not_warning(
     """INDEXNOW_KEY is intentionally optional. An unset key reports
     info ("not set; IndexNow disabled"), not a warning; the exit
     code is unaffected by its absence."""
+    from sqlalchemy import select
+
     from mimir.config import settings as live_settings
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
-    from sqlalchemy import select
 
     monkeypatch.setattr(live_settings, "mimir_is_broker", True)
     monkeypatch.setattr(live_settings, "site_base_url", "https://example.com")
@@ -224,10 +229,11 @@ def test_doctor_warns_on_missing_mirror_path(runner, seeded_db, monkeypatch, tmp
     all `mkdir()` the mirror dirs; this one deliberately doesn't,
     asserting the WARN exit code and the "missing" diagnostic.
     """
+    from sqlalchemy import select
+
     from mimir.config import settings as live_settings
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
-    from sqlalchemy import select
 
     monkeypatch.setattr(live_settings, "mimir_is_broker", True)
     monkeypatch.setattr(live_settings, "site_base_url", "https://example.com")

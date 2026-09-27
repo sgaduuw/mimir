@@ -18,7 +18,6 @@ from mimir.patches import backfill_article_files
 # otherwise but the import shape used everywhere else proves it's fine.
 from tests.test_ingest._helpers import _build_pubinbox_repo
 
-
 _PATCH_BODY = (
     b"Signed-off-by: A <a@example>\n\n"
     b"diff --git a/fs/foo/a.c b/fs/foo/a.c\n"

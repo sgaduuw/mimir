@@ -17,7 +17,6 @@ from mimir.web._blueprint import bp_web
 from mimir.web.routes.search import SEARCH_QUERY_MAX_LEN, SEARCH_QUERY_MIN_LEN
 from mimir.web.urls import _canonical_inbox_names_for, _get_inbox_or_404, _site_base
 
-
 FEED_ENTRY_LIMIT = 50
 
 

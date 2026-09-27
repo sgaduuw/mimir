@@ -8,7 +8,6 @@ import pytest
 from sqlalchemy import select
 
 from mimir.models import Article, ArticleTrailer, Subsystem, SubsystemMaintainer
-
 from tests.test_routes._helpers import _json_ld_blocks
 
 

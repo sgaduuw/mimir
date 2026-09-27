@@ -274,6 +274,7 @@ def test_two_threads_dispatch_concurrently_no_serialization(seeded_db, monkeypat
     isolation from server-side serialisation."""
     import threading
     import time
+
     from mimir.broker import handlers
     from mimir.broker.protocol import PingRequest, Reply
     from mimir.config import settings
@@ -377,6 +378,7 @@ def test_caller_timeout_leaves_client_usable(seeded_db, monkeypatch):
     reply is silently dropped by the demux thread. The client must
     stay usable for subsequent RPCs."""
     import time
+
     from mimir.broker import handlers
     from mimir.broker.protocol import PingRequest, Reply
 
