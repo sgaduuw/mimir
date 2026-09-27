@@ -68,6 +68,10 @@ dev = [
 #   ANN/D/ERA/COM  documentation and annotation mandates, and
 #                commented-out-code detection. House style already
 #                covers the prose; these would fight it.
+# SATISFIED TODAY. A `select` entry is a gate, not an aspiration: CI
+# runs `ruff check mimir/ tests/` unscoped, so a rule enabled with
+# findings outstanding is simply a red build. Groups below are enabled
+# because the tree is clean under them right now.
 select = [
     "E4",
     "E7",
@@ -76,13 +80,31 @@ select = [
     "I",
     "UP",
     "DTZ",
-    "B",
-    "RUF",
-    "SIM",
     "RET",
     "FURB",
-    "PLW",
 ]
+
+# TO ADOPT, one group per follow-up PR, each enabling its rules in the
+# same change that fixes them. Counts measured 2026-09-27 on this
+# branch; they are pre-existing debt the old 59-rule default never
+# looked for, not regressions.
+#
+#   B     37  mostly B904 (31), `raise ... from err` vs `from None`
+#             inside `except`. Per-site judgment, and the group where
+#             blind application would hurt: BLE is excluded for a
+#             related reason (see below).
+#   RUF   58  RUF059 unused unpacked names, RUF003/002 ambiguous `×`
+#             in prose (aligns with the house no-em-dash rule), RUF013
+#             implicit Optional.
+#   PLW   24  PLW0108 redundant lambdas, PLW0603 `global`, PLW1510
+#             `subprocess.run` without an explicit `check`.
+#   SIM   16  SIM105 `contextlib.suppress`, SIM117 nested `with`.
+#
+# NOT planned: BLE (blind `except Exception`), because some are
+# load-bearing by design. `update_mainline` isolates per-tree failures
+# behind exactly that, which this branch relied on when a test guard
+# raised `AssertionError` and was silently swallowed. ANN/D/ERA/COM
+# stay out too; house style already covers prose.
 
 [tool.ruff.lint.per-file-ignores]
 # `datetime(...)` without tzinfo is deliberate in tests: they assert
