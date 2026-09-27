@@ -1142,8 +1142,21 @@ around 200 to 400 MB.
 
 ```sh
 uv run ruff check mimir/ tests/
+uv run ruff format --check mimir/ tests/
 uv run pytest
 ```
+
+All three are separate CI steps and all three must pass; lint-clean is
+not format-clean. Run them bare and judge them by exit code rather than
+by reading the output, because ruff's trailing "No fixes available" hint
+is not the error count and a pipe replaces its exit status.
+
+The rule set is an explicit `[tool.ruff.lint] select` in
+`pyproject.toml`, not ruff's defaults, which moved from 59 enabled rules
+to 413 between 0.15.21 and 0.16.x. Four groups (`B`, `RUF`, `PLW`,
+`SIM`) are deliberately deferred with counts and a plan recorded beside
+the list; a `select` entry is a gate, so a group is enabled only in the
+change that makes it pass.
 
 Both `mimir/` and `tests/` are linted because CI runs ruff over
 the same set; a pre-push sweep that omits `tests/` can pass
