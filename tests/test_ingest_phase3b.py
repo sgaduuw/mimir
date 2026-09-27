@@ -5,14 +5,15 @@ restructure (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
 Kept in its own file so the Phase 3b PR audit is easy.
 """
 
+from datetime import UTC, datetime
+
 import pytest
-from datetime import datetime, timezone
 
 from mimir.ingest._pending import (
-    _PendingWrites,
     _ArticleInsert,
     _ArticleListInsert,
     _ParseFailureRecord,
+    _PendingWrites,
 )
 
 
@@ -33,7 +34,7 @@ def test_pending_writes_accumulates_records():
             message_id="phase3b-a@kernel.org",
             subject="t1",
             author="<hidden>",
-            date=datetime(2026, 5, 30, tzinfo=timezone.utc),
+            date=datetime(2026, 5, 30, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="t1",
             canonical_inbox_id=None,
@@ -114,7 +115,7 @@ def test_submit_ingest_batch_inserts_articles_lists_and_advances_cursor(
             message_id="phase3b-a@kernel.org",
             subject="t1",
             author="<hidden>",
-            date=datetime(2026, 5, 30, tzinfo=timezone.utc),
+            date=datetime(2026, 5, 30, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="t1",
             canonical_inbox_id=None,
@@ -125,7 +126,7 @@ def test_submit_ingest_batch_inserts_articles_lists_and_advances_cursor(
             message_id="phase3b-b@kernel.org",
             subject="t2",
             author="<hidden>",
-            date=datetime(2026, 5, 30, tzinfo=timezone.utc),
+            date=datetime(2026, 5, 30, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="t2",
             canonical_inbox_id=None,
@@ -334,8 +335,8 @@ def test_submit_ingest_batch_observation_upsert_batch(writer, seeded_db):
         ).scalar_one()
 
     addr = "linux-kernel@vger.kernel.org"
-    t1 = datetime(2026, 5, 30, 10, 0, tzinfo=timezone.utc)
-    t2 = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 5, 30, 10, 0, tzinfo=UTC)
+    t2 = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
 
     # First batch: seed with count=3.
     pending1 = _PendingWrites(inbox_id=inbox_id, epoch="0.git")
@@ -359,7 +360,7 @@ def test_submit_ingest_batch_observation_upsert_batch(writer, seeded_db):
         assert row is not None
         assert row.count == 8  # additive: 3 + 5
         # last_seen should be t2 (the later timestamp).
-        assert row.last_seen.replace(tzinfo=timezone.utc) >= t2
+        assert row.last_seen.replace(tzinfo=UTC) >= t2
 
 
 def test_submit_ingest_batch_last_article_date_conditional(writer, seeded_db):
@@ -383,7 +384,7 @@ def test_submit_ingest_batch_last_article_date_conditional(writer, seeded_db):
         ).scalar_one()
 
     # Older candidate: should NOT update.
-    older = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    older = datetime(2024, 1, 1, tzinfo=UTC)
     pending_old = _PendingWrites(inbox_id=inbox_id, epoch="0.git")
     pending_old.last_article_date_candidate = older
     pending_old.last_commit_sha = "d1" + "0" * 38
@@ -396,7 +397,7 @@ def test_submit_ingest_batch_last_article_date_conditional(writer, seeded_db):
     assert date_after_old == current_date, "Older candidate should not change the date"
 
     # Newer candidate: SHOULD update.
-    newer = datetime(2026, 5, 30, tzinfo=timezone.utc)
+    newer = datetime(2026, 5, 30, tzinfo=UTC)
     pending_new = _PendingWrites(inbox_id=inbox_id, epoch="0.git")
     pending_new.last_article_date_candidate = newer
     pending_new.last_commit_sha = "d2" + "0" * 38
@@ -409,7 +410,7 @@ def test_submit_ingest_batch_last_article_date_conditional(writer, seeded_db):
     assert date_after_new is not None
     # Normalise to UTC for comparison (SQLite may return naive datetime).
     if date_after_new.tzinfo is None:
-        date_after_new = date_after_new.replace(tzinfo=timezone.utc)
+        date_after_new = date_after_new.replace(tzinfo=UTC)
     assert date_after_new == newer
 
 
@@ -457,19 +458,19 @@ def test_submit_promote_list_address_runs_via_writer(writer, seeded_db):
                     inbox_id=inbox_id,
                     address=addr1,
                     count=70,
-                    last_seen=datetime(2026, 5, 30, tzinfo=timezone.utc),
+                    last_seen=datetime(2026, 5, 30, tzinfo=UTC),
                 ),
                 InboxAddressObservation(
                     inbox_id=inbox_id,
                     address=addr2,
                     count=15,
-                    last_seen=datetime(2026, 5, 30, tzinfo=timezone.utc),
+                    last_seen=datetime(2026, 5, 30, tzinfo=UTC),
                 ),
                 InboxAddressObservation(
                     inbox_id=inbox_id,
                     address=addr3,
                     count=5,
-                    last_seen=datetime(2026, 5, 30, tzinfo=timezone.utc),
+                    last_seen=datetime(2026, 5, 30, tzinfo=UTC),
                 ),
             ]
         )
@@ -571,7 +572,7 @@ def test_mid_epoch_batch_failure_leaves_cursor_at_old_position(
 
     import mimir.ingest._pending as pending_mod
     from mimir.config import settings
-    from mimir.models import Article, ArticleList, IngestState, Inbox
+    from mimir.models import Article, ArticleList, Inbox, IngestState
     from tests.test_ingest._helpers import (
         _build_pubinbox_repo,
         _rfc5322,

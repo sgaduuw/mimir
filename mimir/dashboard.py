@@ -11,9 +11,9 @@ a multi-million-row inbox; warming the cache (see `flask --app mimir
 warm-cache`) keeps dashboard load times under cache-hit latency.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
-from typing import Sequence
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
@@ -156,7 +156,7 @@ def latest_pull_requests(
     session: Session, inbox: Inbox, limit: int = 5, force: bool = False
 ) -> list[ArticleSummary]:
     """Recent `[GIT PULL] ...` originals in `inbox`."""
-    floor = datetime.now(timezone.utc) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
+    floor = datetime.now(UTC) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
 
     def compute() -> list[ArticleSummary]:
         rows = (
@@ -189,7 +189,7 @@ def latest_stable_releases(
 ) -> list[ArticleSummary]:
     """Recent release announcements in `inbox`: subject starting with
     'Linux <digit>...'. GLOB is case-sensitive in SQLite."""
-    floor = datetime.now(timezone.utc) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
+    floor = datetime.now(UTC) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
 
     def compute() -> list[ArticleSummary]:
         rows = (
@@ -232,10 +232,10 @@ def this_day_in_history(
     # `date.today()` would advance at *local* midnight, so on a non-UTC
     # server the same request would hit a stale cache key for the wrong
     # day inside the offset window.
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
 
     def compute() -> list[ArticleSummary]:
-        target = datetime.now(timezone.utc) - timedelta(days=365 * years_ago)
+        target = datetime.now(UTC) - timedelta(days=365 * years_ago)
         start = target.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=1)
         rows = (
@@ -275,7 +275,7 @@ def daily_volume(
         # commit time in UTC. `date.today()` would use the local date and
         # the window would slide by the server's UTC offset, slipping
         # edge messages in/out around UTC midnight.
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         start = today - timedelta(days=days - 1)
         rows = session.execute(
             text(

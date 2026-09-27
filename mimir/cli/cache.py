@@ -10,13 +10,12 @@ per-inbox cache rows instead of re-doing the underlying SQL.
 
 import os
 import time
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import click
 
 from mimir import cache as cache_mod
 from mimir.config import settings
-from mimir.extensions import SessionLocal
 from mimir.dashboard import (
     archive_stats,
     author_recent,
@@ -26,6 +25,7 @@ from mimir.dashboard import (
     recent_articles,
     this_day_in_history,
 )
+from mimir.extensions import SessionLocal
 from mimir.inboxes import list_inboxes
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems_dashboard import (
@@ -49,7 +49,6 @@ from mimir.web import (
     meta_sitemap_xml,
     sitemap_index_xml,
 )
-
 
 # Refresh-window used by warm-cache. See the call site in
 # `warm_cache_command` for the calibration rationale (cron period +
@@ -441,7 +440,12 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
         # threads_for_day's cache key includes the date; compute
         # today / yesterday once so both per-inbox labels carry
         # the same cycle's dates.
-        today = date.today()
+        #
+        # UTC, matching the broker and the read path. Consistency
+        # only: this date enumerates target LABELS (date-free strings)
+        # for the RPC, and the date that reaches a cache key is computed
+        # in `broker/handlers/warm.py`. Flagged by DTZ011.
+        today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
 
         def per_inbox_targets(inbox):

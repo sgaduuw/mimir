@@ -5,7 +5,7 @@ exact-file / wildcard variants), `subsystems_for_article`
 (reverse lookup from article to other patches touching
 the same path)."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -19,7 +19,6 @@ from mimir.subsystems import (
     recent_patches_touching,
     subsystems_for_article,
 )
-
 from tests.test_subsystems._helpers import _add_patch_article, _add_subsystem
 
 
@@ -219,7 +218,7 @@ def test_recent_patches_touching_orders_by_date_desc(seeded_db):
         from mimir.models import ArticleList
 
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for i, dt in enumerate(
             [
                 now - timedelta(days=60),  # oldest
@@ -270,7 +269,7 @@ def test_recent_patches_touching_resolves_canonical_inbox(seeded_db):
             message_id="canon@x",
             subject="x",
             author="a@x",
-            date=datetime.now(timezone.utc) - timedelta(days=1),
+            date=datetime.now(UTC) - timedelta(days=1),
             thread_parent=None,
             subject_normalized="x",
             canonical_inbox_id=beta.id,
@@ -300,7 +299,7 @@ def test_recent_patches_touching_respects_max_age_bound(seeded_db):
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         # One article inside the window (10 days ago), one outside
         # (default window + 30 days), both touching the same path.
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         recent_art = Article(
             message_id="recent@x",
             subject="x",
@@ -381,11 +380,7 @@ def test_recent_patches_touching_uses_date_index_no_full_scan(seeded_db):
                 LIMIT 5
                 """
             ),
-            {
-                "min_date": (
-                    datetime.now(timezone.utc) - timedelta(days=180)
-                ).isoformat()
-            },
+            {"min_date": (datetime.now(UTC) - timedelta(days=180)).isoformat()},
         ).all()
         plan = "\n".join(r[3] for r in plan_rows)
 

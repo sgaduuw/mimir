@@ -10,6 +10,8 @@ subsystems and import-at-call avoids dragging every test-time
 dependency into the module's load path.
 """
 
+from datetime import UTC
+
 
 def _clear_sitemap_cache():
     """Sitemap routes cache their XML in the `cache` table; cross-test
@@ -17,6 +19,7 @@ def _clear_sitemap_cache():
     visible until the cached rows expire. Tests that need a fresh
     render call this first."""
     from sqlalchemy import delete
+
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
@@ -45,6 +48,7 @@ def _any_article_in(inbox_name):
     """Helper: return one (Article, inbox_name) pair from the running
     DB so the redirect tests have a real Message-ID to point at."""
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article, ArticleList, Inbox
 
@@ -93,6 +97,7 @@ def _ingest_one_article(
     from dulwich.objects import Blob, Commit, Tree
     from dulwich.repo import Repo
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.ingest import ingest_epoch
     from mimir.models import Article, Inbox
@@ -207,6 +212,7 @@ def _seed_three_message_thread(tmp_path, inbox_name):
     from dulwich.objects import Blob, Commit, Tree
     from dulwich.repo import Repo
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.ingest import ingest_epoch
     from mimir.models import Article, Inbox
@@ -296,7 +302,8 @@ def _seed_mainline_commit(
     """Insert a MainlineCommit row for a route test. The render
     side reads commit_sha (truncated to 12 chars), tree_name, and
     committed_at."""
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from mimir.extensions import SessionLocal
     from mimir.models import MainlineCommit
 
@@ -306,7 +313,7 @@ def _seed_mainline_commit(
                 commit_sha=commit_sha,
                 message_id=message_id,
                 tree_name=tree_name,
-                committed_at=date or datetime(2024, 6, 1, tzinfo=timezone.utc),
+                committed_at=date or datetime(2024, 6, 1, tzinfo=UTC),
             )
         )
         s.commit()
@@ -325,9 +332,11 @@ def _ingest_with_attachment(
     base64-encoded attachment. Returns the article URL prefix
     (without `/attachment/...`)."""
     import base64
+
     from dulwich.objects import Blob, Commit, Tree
     from dulwich.repo import Repo
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.ingest import ingest_epoch
     from mimir.models import Article, Inbox
@@ -389,9 +398,10 @@ def _ingest_with_attachment(
 def _seed_author_article(inbox_name: str, *, author: str, message_id: str) -> int:
     """Insert one Article row tied to the given inbox with a chosen
     author string. Returns the Article id."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article, ArticleList, Inbox
 
@@ -401,7 +411,7 @@ def _seed_author_article(inbox_name: str, *, author: str, message_id: str) -> in
             message_id=message_id,
             subject="author route subject",
             author=author,
-            date=datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc),
+            date=datetime(2024, 6, 1, 12, 0, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="author route subject",
         )
@@ -470,6 +480,7 @@ def _ingest_series_pair(tmp_path, inbox_name, v1_messages, v2_messages):
     Returns the cover letter's `patch_series_key` (the same for both
     revisions by construction)."""
     from sqlalchemy import select as _sa_select
+
     from mimir.extensions import SessionLocal
     from mimir.ingest import ingest_epoch
     from mimir.models import Article, Inbox

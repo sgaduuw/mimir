@@ -16,7 +16,7 @@ def admin_group() -> None:
 
 # Side-effect imports: each submodule attaches commands to admin_group
 # (or to its own nested group within admin_group) at import time.
-from mimir.cli.admin import inbox as _inbox  # noqa: F401, E402
-from mimir.cli.admin import failures as _failures  # noqa: F401, E402
 from mimir.cli.admin import canonicals as _canonicals  # noqa: F401, E402
+from mimir.cli.admin import failures as _failures  # noqa: F401, E402
+from mimir.cli.admin import inbox as _inbox  # noqa: F401, E402
 from mimir.cli.admin import robots as _robots  # noqa: F401, E402

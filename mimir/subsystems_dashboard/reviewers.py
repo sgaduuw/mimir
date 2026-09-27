@@ -10,7 +10,7 @@ attestation (`articles_reviewed_by`) or aggregated per reviewer
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -234,7 +234,7 @@ def active_reviewers_in_subsystem(
         if path_filter is None:
             return []
         path_sql, path_params = path_filter
-        end = datetime.now(timezone.utc)
+        end = datetime.now(UTC)
         start = end - timedelta(days=days)
         # Pull every matching trailer row for the window. ORDER BY
         # date DESC so the in-Python aggregator sees the freshest

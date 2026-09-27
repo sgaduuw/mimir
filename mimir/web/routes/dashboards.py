@@ -12,6 +12,7 @@ from flask import abort, redirect, render_template, url_for
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from mimir.config import settings
 from mimir.dashboard import (
     archive_stats,
     author_recent,
@@ -23,15 +24,14 @@ from mimir.dashboard import (
 from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Article, ArticleList, Inbox, Subsystem
-from mimir.config import settings
-from mimir.seo import _json_ld_index, _json_ld_inbox
+from mimir.seo import _json_ld_inbox, _json_ld_index
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.subsystems_dashboard import (
+    MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     active_reviewers_in_subsystem,
     active_threads_in_subsystem,
     daily_volume_in_subsystem,
     most_active_subsystems_global,
-    MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     most_active_subsystems_in_inbox,
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
@@ -45,7 +45,6 @@ from mimir.web.urls import (
     _site_base,
     _year_decade_groups,
 )
-
 
 RECENT_PAGE_SIZE = 10
 

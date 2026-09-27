@@ -253,8 +253,8 @@ def test_update_mainline_walks_link_trailers_in_commit_messages(
     # Append a commit with a lore Link trailer on top of the
     # MAINTAINERS commit. The walker should see two commits and
     # extract one row.
-    from dulwich.repo import Repo
     from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
 
     repo = Repo(str(repo_path))
     parent = repo.head()
@@ -327,8 +327,8 @@ def test_update_mainline_skip_maintainers_only_walks_commits(
         _SAMPLE_MAINTAINERS,
     )
     # Hand-build a commit with a Link trailer on top.
-    from dulwich.repo import Repo
     from dulwich.objects import Blob, Commit, Tree
+    from dulwich.repo import Repo
 
     repo = Repo(str(repo_path))
     parent = repo.head()

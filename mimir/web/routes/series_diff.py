@@ -40,7 +40,6 @@ from mimir.store import MessageNotFound, read_message
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _get_inbox_or_404, _msg_url
 
-
 # Long TTL: source emails are immutable in the public-inbox mirror
 # (see CONTEXT.md "Append-only upstreams"), so a computed diff
 # between two specific revisions is stable forever. 24h matches

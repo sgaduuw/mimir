@@ -30,7 +30,6 @@ from mimir.cli.admin.robots import (
 from mimir.config import settings
 from tests.test_broker._helpers import broker_running, short_socket_path
 
-
 # ----- classify_op --------------------------------------------------------
 
 

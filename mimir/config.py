@@ -72,7 +72,7 @@ class TreeConfig(BaseModel):
         return validate_outbound_url(v, allow_http=False)
 
 
-def _curated_default_trees() -> dict[str, "TreeConfig"]:
+def _curated_default_trees() -> dict[str, TreeConfig]:
     """The 7-tree default set. Function (not module-level constant)
     so each Settings() instantiation gets fresh TreeConfig objects;
     avoids mutation across tests."""

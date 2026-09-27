@@ -13,9 +13,10 @@ of the public surface.
 
 from concurrent.futures import Future
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, insert as sa_insert, select, text, update
+from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import insert as sa_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mimir.broker.writes import WriteFuture, WriteOp
@@ -239,7 +240,7 @@ def _resolve_thread_root(conn, inbox_id: int, article_id: int, parent_msgid) -> 
     _set_subtree_root(conn, inbox_id, article_id, root_id)
 
 
-def _submit_ingest_batch(writer, pending: "_PendingWrites") -> WriteFuture:
+def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
     """Phase 3b of the two-pool restructure.
 
     Compose a WriteOp running the full per-batch unit in dependency
@@ -400,7 +401,7 @@ def _submit_ingest_batch(writer, pending: "_PendingWrites") -> WriteFuture:
             _resolve_thread_root(conn, al.inbox_id, article_id, parent_msgid)
 
         # Step 3: ParseFailure DELETEs and UPSERTs.
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for pf in parse_failures:
             if pf.delete:
                 conn.execute(
@@ -542,7 +543,7 @@ def _submit_promote_list_address(writer, inbox_id: int) -> WriteFuture:
             select(Inbox.list_address).where(Inbox.id == inbox_id)
         ).scalar_one_or_none()
         if list_address is not None:
-            return None
+            return
 
         rows = conn.execute(
             select(
@@ -554,15 +555,15 @@ def _submit_promote_list_address(writer, inbox_id: int) -> WriteFuture:
             .limit(2)
         ).all()
         if not rows:
-            return None
+            return
 
         top_addr, top_count = rows[0]
         if top_count < MIN_PROMOTE_OBSERVATIONS:
-            return None
+            return
 
         second_count = rows[1][1] if len(rows) > 1 else 0
         if top_count / max(top_count + second_count, 1) < PROMOTE_DOMINANCE:
-            return None
+            return
 
         conn.execute(
             update(Inbox).where(Inbox.id == inbox_id).values(list_address=top_addr)

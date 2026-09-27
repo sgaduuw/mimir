@@ -9,27 +9,42 @@ have always imported from `mimir.web`, so the split is a pure
 refactor at the import boundary.
 """
 
+# isort: off
+#
+# Order matters, and ruff's isort WILL rewrite it if allowed. Kept
+# fenced rather than trusted, because a passing suite does not exercise
+# load order: the reorder that prompted this fence left all tests green.
+#
+# `bp_web` first because every module below attaches to it. `filters`
+# and `hooks` attach decorators; `routes` triggers each route
+# submodule's own registration; `errors` last because it registers
+# app-level rather than blueprint handlers. All of them before any
+# caller can render a response.
+#
+# `mimir.seo` stays BELOW them, preserving the one-way import
+# documented in `mimir/seo/__init__.py`: seo reaches back into
+# `mimir.web` inside function bodies to dodge an import-time cycle, and
+# that only holds while `mimir.web` is the package entered first.
 from mimir.web._blueprint import bp_web
-
-# Import order matters: `filters` and `hooks` attach decorators to
-# `bp_web`; `routes` triggers each route submodule's own
-# registration. Pull them all in before any caller can render a
-# response.
 from mimir.web import filters  # noqa: F401  (template filters)
 from mimir.web import hooks  # noqa: F401  (context processor + request hooks)
 from mimir.web import routes  # noqa: F401  (route handlers via the routes subpackage)
 from mimir.web import errors  # noqa: F401  (branded 4xx/5xx handlers)
 
-# Re-exports for backward-compatible imports from `mimir.web`.
-# Routes / helpers callers have historically imported from this
-# module by direct name; the package layout keeps those names
-# reachable from the same path.
+# Re-exports for backward-compatible imports from `mimir.web`. Kept
+# INSIDE the fence and below the side-effect imports: this is the
+# `mimir.seo` entry that has to come last, and isort hoisted it to the
+# top of the file when `I` was enabled. A comment above claimed it was
+# below them while it sat above; `test_mimir_web_is_entered_before_mimir_seo`
+# now holds the actual `sys.modules` entry order rather than the claim.
 from mimir.seo import (
     inbox_sitemap_xml,
     maintainers_sitemap_xml,
     meta_sitemap_xml,
     sitemap_index_xml,
 )
+
+# isort: on
 from mimir.web.filters import (
     _allowlisted_email,
     _clean_subject_filter,
@@ -48,12 +63,13 @@ from mimir.web.filters import (
     _safe_from_filter,
     _thread_summary,
 )
+from mimir.web.routes.attachments import _content_disposition
 from mimir.web.routes.dashboards import (
     RECENT_PAGE_SIZE,
     SUBSYSTEM_RECENT_PATCHES_LIMIT,
     _fetch_recent,
-    index,
     inbox_dashboard,
+    index,
     subsystem_dashboard,
 )
 from mimir.web.routes.feeds import (
@@ -78,10 +94,9 @@ from mimir.web.routes.static_meta import (
     OG_IMAGE_WIDTH,
 )
 from mimir.web.routes.timeviews import MONTH_THREAD_CAP
-from mimir.web.routes.attachments import _content_disposition
 from mimir.web.urls import (
-    _canonical_inbox_name,
     _advertised_urls_for,
+    _canonical_inbox_name,
     _canonical_inbox_names_for,
     _canonical_url_for,
     _get_inbox_or_404,
@@ -104,9 +119,9 @@ __all__ = [
     "SEARCH_QUERY_MIN_LEN",
     "SEARCH_RESULT_CAP",
     "SUBSYSTEM_RECENT_PATCHES_LIMIT",
+    "_advertised_urls_for",
     "_allowlisted_email",
     "_canonical_inbox_name",
-    "_advertised_urls_for",
     "_canonical_inbox_names_for",
     "_canonical_url_for",
     "_clean_subject_filter",
@@ -128,8 +143,8 @@ __all__ = [
     "_render_body_filter",
     "_safe_from_filter",
     "_site_base",
-    "_thread_view_url",
     "_thread_summary",
+    "_thread_view_url",
     "_year_decade_groups",
     "author_feed",
     "author_view",

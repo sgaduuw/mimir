@@ -50,6 +50,8 @@ os.environ.setdefault("FLASK_DEBUG", "false")
 # of this process-wide setting.
 os.environ["MIMIR_IS_BROKER"] = "true"
 
+from datetime import UTC  # noqa: E402  (module-level setup runs above)
+
 import pytest  # noqa: E402
 
 # Test seed constants, exposed so tests can reference them rather
@@ -61,8 +63,9 @@ TEST_INBOX_SECONDARY = "beta"
 @pytest.fixture(scope="session", autouse=True)
 def _migrate_db():
     """alembic upgrade head once for the whole test session."""
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
@@ -249,12 +252,12 @@ def _ensure_session_broker_context(_session_broker):
 def _reset_db():
     """Wipe + reseed before every test so each one starts from a
     known baseline. ~10 ms on a fresh DB."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import delete
 
-    from mimir.extensions import SessionLocal
     import mimir.inboxes
+    from mimir.extensions import SessionLocal
     from mimir.models import (
         Article,
         ArticleFile,
@@ -309,13 +312,13 @@ def _reset_db():
             name=TEST_INBOX_PRIMARY,
             mirror_path="/tmp/alpha",
             upstream_url="https://example.com/alpha",
-            last_article_date=datetime(2024, 3, 1, 12, 0, tzinfo=timezone.utc),
+            last_article_date=datetime(2024, 3, 1, 12, 0, tzinfo=UTC),
         )
         beta = Inbox(
             name=TEST_INBOX_SECONDARY,
             mirror_path="/tmp/beta",
             upstream_url="https://example.com/beta",
-            last_article_date=datetime(2024, 3, 1, 12, 0, tzinfo=timezone.utc),
+            last_article_date=datetime(2024, 3, 1, 12, 0, tzinfo=UTC),
         )
         s.add_all([alpha, beta])
         s.flush()
@@ -328,7 +331,7 @@ def _reset_db():
             message_id="art1@example.com",
             subject="hello alpha",
             author="Alice <alice@example.com>",
-            date=datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc),
+            date=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="hello alpha",
         )
@@ -336,7 +339,7 @@ def _reset_db():
             message_id="art2@example.com",
             subject="hello beta",
             author="Bob <bob@example.com>",
-            date=datetime(2024, 2, 1, 12, 0, tzinfo=timezone.utc),
+            date=datetime(2024, 2, 1, 12, 0, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="hello beta",
         )
@@ -344,7 +347,7 @@ def _reset_db():
             message_id="art3@example.com",
             subject="cross-posted note",
             author="Carol <carol@kernel.org>",
-            date=datetime(2024, 3, 1, 12, 0, tzinfo=timezone.utc),
+            date=datetime(2024, 3, 1, 12, 0, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="cross-posted note",
         )
@@ -352,7 +355,7 @@ def _reset_db():
             message_id="art4@example.com",
             subject="Re: hello alpha",
             author="Dave <dave@example.com>",
-            date=datetime(2024, 1, 2, 12, 0, tzinfo=timezone.utc),
+            date=datetime(2024, 1, 2, 12, 0, tzinfo=UTC),
             thread_parent="art1@example.com",
             subject_normalized="hello alpha",
         )

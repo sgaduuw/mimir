@@ -54,7 +54,7 @@ class Inbox(Base):
     # safe to lazy-load. ArticleList rows are millions per inbox, no
     # reverse collection on purpose; admin queries should COUNT(*) by
     # inbox_id directly.
-    ingest_states: Mapped[list["IngestState"]] = relationship(
+    ingest_states: Mapped[list[IngestState]] = relationship(
         back_populates="inbox", cascade="all, delete-orphan"
     )
 
@@ -115,13 +115,13 @@ class Article(Base):
         nullable=True,
         index=True,
     )
-    canonical_inbox: Mapped["Inbox | None"] = relationship(
+    canonical_inbox: Mapped[Inbox | None] = relationship(
         foreign_keys=[canonical_inbox_id],
     )
 
     # Cross-posted messages share one Article + multiple ArticleList
     # rows (one per inbox they appeared in).
-    lists: Mapped[list["ArticleList"]] = relationship(
+    lists: Mapped[list[ArticleList]] = relationship(
         back_populates="article",
         cascade="all, delete-orphan",
         foreign_keys="ArticleList.article_id",
@@ -132,7 +132,7 @@ class Article(Base):
     # `diff --git` headers; non-patch articles have zero rows here.
     # Used by the patch-page subsystem header and the "other recent
     # patches touching X" sidebar (issue #67 slices 2+3).
-    files: Mapped[list["ArticleFile"]] = relationship(
+    files: Mapped[list[ArticleFile]] = relationship(
         back_populates="article", cascade="all, delete-orphan"
     )
 
@@ -141,7 +141,7 @@ class Article(Base):
     # articles with no such trailers. Indexed for cross-reference
     # surfaces (issue #97 slices 2+3: per-subsystem active reviewers,
     # per-author "reviewed by this person").
-    trailers: Mapped[list["ArticleTrailer"]] = relationship(
+    trailers: Mapped[list[ArticleTrailer]] = relationship(
         back_populates="article", cascade="all, delete-orphan"
     )
 
@@ -324,10 +324,10 @@ class Subsystem(Base):
     name: Mapped[str] = mapped_column(String, index=True)
     status: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    paths: Mapped[list["SubsystemPath"]] = relationship(
+    paths: Mapped[list[SubsystemPath]] = relationship(
         back_populates="subsystem", cascade="all, delete-orphan"
     )
-    maintainers: Mapped[list["SubsystemMaintainer"]] = relationship(
+    maintainers: Mapped[list[SubsystemMaintainer]] = relationship(
         back_populates="subsystem", cascade="all, delete-orphan"
     )
 

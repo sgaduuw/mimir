@@ -15,7 +15,6 @@ from mimir.ingest import (
 from mimir.models import (
     Inbox,
 )
-
 from tests.test_ingest._helpers import (
     _build_pubinbox_repo,
     _cache_set_direct,
@@ -58,8 +57,9 @@ def test_ingest_inbox_runs_analyze_when_threshold_reached(
 def test_ingest_inbox_skips_analyze_below_threshold(
     seeded_db, tmp_path, monkeypatch, broker_active
 ):
-    from mimir.config import settings
     from concurrent.futures import Future
+
+    from mimir.config import settings
 
     alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
     monkeypatch.setattr(settings, "analyze_after_ingest_rows", 100)
@@ -83,8 +83,9 @@ def test_ingest_inbox_skips_analyze_below_threshold(
 def test_ingest_inbox_skips_analyze_when_disabled(
     seeded_db, tmp_path, monkeypatch, broker_active
 ):
-    from mimir.config import settings
     from concurrent.futures import Future
+
+    from mimir.config import settings
 
     alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
     monkeypatch.setattr(settings, "analyze_after_ingest_rows", 0)
@@ -104,6 +105,8 @@ def test_ingest_inbox_skips_analyze_when_disabled(
 
     assert not analyze_calls, "ANALYZE must not run when disabled (threshold=0)"
 
+
+from datetime import UTC  # noqa: E402  (module-level setup runs above)
 
 import pytest  # noqa: E402  (kept adjacent to the parametrised test that needs it)
 
@@ -354,7 +357,7 @@ def test_ingest_inbox_does_not_invalidate_cache_on_steady_state(
     force a COUNT(*) refresh on every UPDATE_EVERY tick, defeating
     the 24h TTL that exists precisely because the count is the slow
     piece."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir import cache
 
@@ -363,7 +366,7 @@ def test_ingest_inbox_does_not_invalidate_cache_on_steady_state(
     # capture sees a non-NULL value going into ingest.
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        ix.last_article_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ix.last_article_date = datetime(2026, 1, 1, tzinfo=UTC)
         s.commit()
 
     # Use _cache_set_direct so the sentinel is immediately readable

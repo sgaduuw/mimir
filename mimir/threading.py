@@ -20,7 +20,7 @@ underlying data (real lkml threads rarely exceed ~50 deep).
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import func, literal, select, text, tuple_
 from sqlalchemy.orm import Session, aliased
@@ -36,7 +36,13 @@ MAX_DEPTH = 1000
 # `thread_by_root_id`'s ORDER BY, `thread_page_of`'s rank count and
 # `thread_sort_key`, because a disagreement between any two of them
 # puts a message on a page its own canonical does not name.
-_DATE_FLOOR = datetime(1, 1, 1)
+# NAIVE deliberately, and `noqa`'d rather than "fixed": SQLite returns
+# `Article.date` naive (verified 2026-09-27), so an aware sentinel would
+# raise `TypeError: can't compare offset-naive and offset-aware
+# datetimes` the first time `thread_sort_key` met a dateless row. Ruff
+# offers the tzinfo as an UNSAFE fix; taking it would break the thread
+# view's ordering silently.
+_DATE_FLOOR = datetime(1, 1, 1)  # noqa: DTZ001
 ACTIVE_THREADS_CACHE_TTL_SEC = 300  # 5 minutes
 
 
@@ -736,7 +742,7 @@ def active_threads(
     (inbox, days, limit) key. Pass force=True to bypass and recompute."""
 
     def compute() -> list[ActiveThread]:
-        end = datetime.now(timezone.utc)
+        end = datetime.now(UTC)
         start = end - timedelta(days=days)
         return _active_threads_query(
             session, inbox, start, end, order_by="score", limit=limit
@@ -761,7 +767,7 @@ def threads_for_day(
     (UTC), ordered by last activity desc."""
 
     def compute() -> list[ActiveThread]:
-        start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+        start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
         end = start + timedelta(days=1)
         return _active_threads_query(
             session, inbox, start, end, order_by="last_activity", limit=None
@@ -802,9 +808,9 @@ def threads_since(
     """
 
     def compute() -> list[ActiveThread]:
-        end = datetime.now(timezone.utc)
+        end = datetime.now(UTC)
         floor = end - timedelta(days=THREADS_SINCE_MAX_DAYS)
-        start = datetime.combine(since, datetime.min.time(), tzinfo=timezone.utc)
+        start = datetime.combine(since, datetime.min.time(), tzinfo=UTC)
         if start < floor:
             start = floor
         if start >= end:
@@ -846,11 +852,11 @@ def threads_for_month(
     """
 
     def compute() -> list[ActiveThread]:
-        start = datetime(year, month, 1, tzinfo=timezone.utc)
+        start = datetime(year, month, 1, tzinfo=UTC)
         if month == 12:
-            end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+            end = datetime(year + 1, 1, 1, tzinfo=UTC)
         else:
-            end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
+            end = datetime(year, month + 1, 1, tzinfo=UTC)
         return _active_threads_query(
             session, inbox, start, end, order_by="last_activity", limit=limit
         )

@@ -77,9 +77,8 @@ def test_read_session_pool_close_releases_resources(seeded_db):
     with pool.session() as s:
         s.execute(text("SELECT 1"))
     pool.close()
-    with pytest.raises(RuntimeError, match="closed"):
-        with pool.session():
-            pass
+    with pytest.raises(RuntimeError, match="closed"), pool.session():
+        pass
 
 
 def test_read_session_pool_session_close_race(seeded_db):

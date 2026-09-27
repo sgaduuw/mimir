@@ -14,7 +14,6 @@ from mimir.models import (
     Inbox,
     InboxAddressObservation,
 )
-
 from tests.test_ingest._helpers import (
     _alpha,
     _build_pubinbox_repo,

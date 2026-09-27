@@ -4,6 +4,7 @@ seeded test DB. Covers the happy path for each op, plus the error
 boundary (malformed JSON / unknown op / invalid request)."""
 
 import json
+from datetime import UTC
 
 from mimir import cache
 from mimir.broker.handlers import dispatch
@@ -84,13 +85,13 @@ def test_dispatch_cache_purge_expired_reports_count(seeded_db):
     the `< now` filter doesn't quite catch) and one row that's
     safely alive, then dispatch `cache_purge_expired` and assert
     both the count and the post-purge survival."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.cache import _ns
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
-    now = int(datetime.now(timezone.utc).timestamp())
+    now = int(datetime.now(UTC).timestamp())
     with SessionLocal() as s:
         s.add(CacheEntry(key=_ns("expired_one"), value='"x"', expires_at=now - 60))
         s.add(CacheEntry(key=_ns("alive_one"), value='"y"', expires_at=now + 3600))

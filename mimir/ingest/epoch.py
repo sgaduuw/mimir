@@ -15,11 +15,12 @@ composite WriteOps in `._pending`, not here.
 import logging
 import os
 import time
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ProcessPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Iterator
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     # Imported lazily at call-site to avoid a heavy circular import on the
@@ -147,7 +148,7 @@ def _walk_epoch(
             except KeyError:
                 continue
             blob = repo[blob_sha]
-            commit_time = datetime.fromtimestamp(commit.commit_time, timezone.utc)
+            commit_time = datetime.fromtimestamp(commit.commit_time, UTC)
             yield commit.id.decode(), commit_time, blob.data
 
 
@@ -192,7 +193,7 @@ def _record_parse_failure(
     `already_recorded=True` means the row exists and we just bump
     last_attempt + attempts and refresh the error fields (the cause may
     have shifted between parser versions). Otherwise insert fresh."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     error_class = type(exc).__name__
     error_message = str(exc)[:1000]  # cap pathological repr/str
     if already_recorded:
@@ -334,8 +335,8 @@ def _to_article_insert(
     date: datetime,
     canonical_inbox_id: int | None = None,
     session: Session | None = None,
-    pending_articles: "list | None" = None,
-) -> "_ArticleInsert":
+    pending_articles: list | None = None,
+) -> _ArticleInsert:
     """Build an `_ArticleInsert` record for a new article without touching
     the ORM session (except for the optional in-series patch-parent lookup).
 
@@ -427,7 +428,7 @@ def ingest_epoch(
     epoch_name: str,
     repo_path: Path,
     *,
-    writer: "WriterThread | None" = None,
+    writer: WriterThread | None = None,
     batch_flush_seconds: float | None = None,
     limit: int | None = None,
     workers: int = DEFAULT_WORKERS,
@@ -451,17 +452,16 @@ def ingest_epoch(
     `batch_flush_seconds` defaults to `settings.ingest_batch_flush_seconds`
     when None; keyword-only to avoid silent positional confusion.
     """
+    # Import WriterThread type lazily to avoid a circular import at the
+    # module level (epoch.py is imported before the broker package in
+    # some test paths).
+    from mimir.broker.writes import WriterThread  # noqa: F401 (type hint)
     from mimir.ingest._pending import (
         _ArticleListInsert,
         _ParseFailureRecord,
         _PendingWrites,
         _submit_ingest_batch,
     )
-
-    # Import WriterThread type lazily to avoid a circular import at the
-    # module level (epoch.py is imported before the broker package in
-    # some test paths).
-    from mimir.broker.writes import WriterThread  # noqa: F401 (type hint)
 
     # Resolve the writer from the active context when not passed explicitly.
     if writer is None:

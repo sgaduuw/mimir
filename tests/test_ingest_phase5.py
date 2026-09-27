@@ -13,6 +13,8 @@ run the service function, assert at least one submit happened
 path).
 """
 
+from datetime import UTC
+
 
 def _writer_submit_recorder():
     """Helper: monkeypatch `writer.submit` on the active broker writer
@@ -222,9 +224,9 @@ def test_replay_failures_dispatches_via_writer(seeded_db, broker_active):
 
     with seeded_db() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         s.execute(
             insert(ParseFailure).values(
                 inbox_id=alpha.id,

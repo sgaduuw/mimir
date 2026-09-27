@@ -9,7 +9,8 @@ inline sparklines. The global helper composes per-inbox results.
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date as date_cls, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from datetime import date as date_cls
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
@@ -173,9 +174,9 @@ def _most_active_subsystems_in_inbox_full(
         # in an off-by-one bucket. UTC because `Article.date` is the
         # public-inbox commit time in UTC; `date.today()` would
         # advance at *local* midnight and drop boundary-day articles.
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         start_day = today - timedelta(days=days - 1)
-        start = datetime.combine(start_day, datetime.min.time(), tzinfo=timezone.utc)
+        start = datetime.combine(start_day, datetime.min.time(), tzinfo=UTC)
         # One SQL: every (article_id, path, date) tuple for recent
         # in-window articles linked to this inbox. The date filter
         # is selective on the production corpus (millions of rows
