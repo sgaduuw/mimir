@@ -227,10 +227,15 @@ def fallback_canonical_name(
     if not links:
         return None
     if demoted_names is None:
-        # Lazy import to avoid cycles: `mimir.config` doesn't import
-        # canonical, but `canonical` is imported early in `mimir.web`
-        # bootstrap before settings are guaranteed-initialised; the
-        # late import sidesteps any ordering risk.
+        # Lazy import, kept for locality rather than for the reason
+        # once given here. The old note claimed `canonical` is imported
+        # before settings are "guaranteed-initialised"; both halves are
+        # false. `mimir.config` imports no mimir module except
+        # `mimir._outbound` (stdlib only), so a module-level import
+        # cannot cycle, and `settings = Settings()` is built at config
+        # import, so any successful import yields it initialised.
+        # Verified by hoisting it to module scope and running the
+        # canonical + message-route suites clean.
         from mimir.config import settings
 
         demoted_names = frozenset(settings.canonical_demoted_inboxes)

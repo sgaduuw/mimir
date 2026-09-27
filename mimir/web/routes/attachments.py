@@ -16,15 +16,13 @@ from pygments.lexers.special import TextLexer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mimir.rendering.body import PYGMENTS_MAX_BLOCK_CHARS
-
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox
+from mimir.rendering.body import PYGMENTS_MAX_BLOCK_CHARS
 from mimir.store import MessageNotFound, read_message
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _is_previewable, _lexer_for
 from mimir.web.urls import _abort_404_if_url_date_mismatches, _get_inbox_or_404
-
 
 _HEADER_CTL_RE = re.compile(r"[\x00-\x1f\x7f]")
 

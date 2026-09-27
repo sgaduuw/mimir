@@ -27,6 +27,8 @@ recompute the answer independently.
 Cycles carry an explicit carve-out, see `CYCLIC`.
 """
 
+import re
+
 import pytest
 from sqlalchemy import select
 
@@ -654,7 +656,31 @@ def test_verify_samples_randomly_not_newest_first(client, tmp_path):
     """`ORDER BY id DESC` samples roughly the last hour of ingest, so a
     daily verify run structurally could not see corruption written
     during a deploy window, which is exactly the damage worth finding.
-    Corrupt an OLD row and confirm a small sample reaches it."""
+    Corrupt an OLD row and confirm a small sample reaches it.
+
+    Probabilistic by nature, so the miss probability is bounded and
+    written down rather than left to chance. `verify_thread_roots`
+    samples `ORDER BY random() LIMIT 5` over every row in the inbox
+    with a non-NULL `thread_root_id`, which is **42** here (measured
+    2026-09-26: the 39 this thread seeds plus three from `_reset_db`),
+    so 200 trials miss only if all 200 avoid the victim:
+    `(37/42)**200` = 9.8e-12.
+
+    The denominator is the point. A first version of this said 5 of
+    **39**, counting the seeded thread and reading it as the whole
+    sampled set: the same part-as-whole trap CLAUDE.md documents for
+    corpus figures, committed in a docstring written while fixing a
+    different instance of it. It understated the bound 8x, and put the
+    60-trial baseline at 2.7e-4 when it is 5.0e-4, about 1 in 2,000
+    rather than 1 in 3,700. The decision (200 trials) survives either
+    reading, which is exactly why nothing would have caught it; the
+    number is what a future reader reuses when they change the seed,
+    the sample or the trial count. Held to the real population by
+    `test_the_flake_bound_matches_the_population_actually_sampled`.
+
+    Keep the sample at 5: raising it is the cheaper knob but weakens
+    the "small sample" property that is the whole point.
+    """
     from sqlalchemy import select, update
 
     from mimir.extensions import SessionLocal
@@ -683,7 +709,7 @@ def test_verify_samples_randomly_not_newest_first(client, tmp_path):
         # old row, random sampling reaches it with high probability.
         hits = sum(
             1
-            for _ in range(60)
+            for _ in range(200)
             if any(
                 m["message_id"] == "rs2@x"
                 for m in verify_thread_roots(s, inbox, limit=5)
@@ -691,6 +717,72 @@ def test_verify_samples_randomly_not_newest_first(client, tmp_path):
         )
 
     assert hits > 0, "a small sample never reached an old corrupted row"
+
+
+def test_the_flake_bound_matches_the_population_actually_sampled(client, tmp_path):
+    """The bound written above must be computed over the sampled set.
+
+    `test_verify_samples_randomly_not_newest_first` justifies its trial
+    count with "sampling 5 of 39 rows", 39 being the thread it seeds.
+    But `verify_thread_roots` samples `ORDER BY random() LIMIT 5` over
+    EVERY `article_lists` row in the inbox with a non-NULL
+    `thread_root_id`, and `_reset_db` seeds alpha with three more. The
+    population is 42, measured 2026-09-26, so the denominator in the
+    docstring counts a PART and is read as the WHOLE.
+
+    Consequences, both directions: the claimed per-run miss probability
+    `(34/39)**200 = 1.2e-12` is really `(37/42)**200 = 9.8e-12`, 8x
+    higher, and the 60-trial figure it contrasts against was not
+    2.7e-4 (1 in 3,700) but 5.0e-4 (1 in 2,000). The conclusion holds
+    either way, which is exactly why nothing would have caught this;
+    the number is what a future reader will reuse when they change the
+    seed, the sample size, or the trial count.
+
+    This pins the relationship rather than the literal: whatever the
+    population becomes, the bound the sibling advertises has to remain
+    an upper bound on it.
+    """
+    from sqlalchemy import func, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    edges = [("rs1@x", None)] + [(f"rs{i}@x", f"rs{i - 1}@x") for i in range(2, 40)]
+    seed_thread_shape(tmp_path, "alpha", edges)
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        population = s.execute(
+            select(func.count())
+            .select_from(ArticleList)
+            .join(Article, Article.id == ArticleList.article_id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.thread_root_id.is_not(None),
+            )
+        ).scalar_one()
+
+    # PARSED from the sibling's docstring, not copied into a literal.
+    # The first version of this test hardcoded 1.2e-12 with a comment
+    # saying it was "the figure in the sibling test's docstring", which
+    # made it a snapshot rather than a relationship: correcting the
+    # docstring left the literal pinning the old wrong value, so the
+    # guard failed on the very fix it had asked for.
+    doc = test_verify_samples_randomly_not_newest_first.__doc__ or ""
+    m = re.search(r"=\s*([\d.]+e-\d+)", doc)
+    assert m, "the sibling no longer advertises a miss probability"
+    claimed_bound = float(m.group(1))
+
+    sample, trials = 5, 200
+    actual = ((population - sample) / population) ** trials
+
+    assert actual <= claimed_bound, (
+        f"the sibling advertises a miss probability of "
+        f"{claimed_bound:.1e}, but verify_thread_roots samples {sample} "
+        f"of {population} rows, giving {actual:.1e}. Whatever the "
+        f"population becomes, the advertised bound must remain an upper "
+        f"bound on it."
+    )
 
 
 def test_verify_does_a_full_recompute_not_just_coherence(client, tmp_path):
@@ -1710,4 +1802,140 @@ def test_verification_failure_line_counts_only_inboxes_it_verified(
     assert failed, f"no failure line; got:\n{messages}"
     assert "after 0 inbox(es)" in failed[0], (
         f"counted an inbox that raised as verified; got: {failed[0]}"
+    )
+
+
+def test_backfill_passes_never_rewrite_an_already_rooted_row(client, tmp_path):
+    """`handle_backfill_thread_roots` says "every statement only touches
+    NULL rows, so an interrupted run resumes and live ingest is never
+    clobbered". That consequence is what makes the fill safe to run
+    against a live corpus: ingest writes roots for arriving messages
+    while the backfill walks, and a pass that rewrote a non-NULL value
+    would split a thread invisibly (both halves render, nothing errors).
+
+    Pinned by pre-setting two rows to roots that are WRONG but non-NULL,
+    and DIFFERENT from each other. The differing part is load-bearing: if
+    both carried the same sentinel, `propagate` copying a parent's root
+    over a child's would be invisible, because the value it wrote would
+    equal the value it overwrote.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.thread_roots import backfill_inbox
+
+    edges = [
+        ("nr1@x", None),
+        ("nr2@x", "nr1@x"),
+        ("nr3@x", "nr2@x"),
+        ("nr4@x", "nr3@x"),
+    ]
+    seed_thread_shape(tmp_path, "alpha", edges)
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ids = {
+            mid: aid
+            for mid, aid in s.execute(
+                select(Article.message_id, Article.id).where(
+                    Article.message_id.in_([m for m, _ in edges])
+                )
+            ).all()
+        }
+
+        def _set(mid, root):
+            s.execute(
+                update(ArticleList)
+                .where(
+                    ArticleList.inbox_id == inbox.id,
+                    ArticleList.article_id == ids[mid],
+                )
+                .values(thread_root_id=root)
+            )
+
+        # Two distinct wrong-but-non-NULL sentinels, and two genuinely
+        # unfilled rows for the passes to do real work on.
+        _set("nr1@x", ids["nr4@x"])
+        _set("nr2@x", ids["nr3@x"])
+        _set("nr3@x", None)
+        _set("nr4@x", None)
+        s.commit()
+
+        backfill_inbox(s, inbox.id)
+        s.commit()
+
+    after = _roots_by_inbox("alpha", {m for m, _ in edges})
+    assert after["nr1@x"][0] == ids["nr4@x"], (
+        "seed_roots rewrote an already-rooted row; nr1 has no in-inbox "
+        "parent, so a pass that dropped its `thread_root_id IS NULL` "
+        "guard would self-root it over the operator's value"
+    )
+    assert after["nr2@x"][0] == ids["nr3@x"], (
+        "propagate rewrote an already-rooted row with its parent's root"
+    )
+    # Positive half: the passes did run and did fill what was NULL.
+    # Without this the assertions above are satisfied by a backfill that
+    # does nothing at all.
+    assert after["nr3@x"][0] is not None and after["nr4@x"][0] is not None, (
+        f"the backfill left NULL rows unfilled: {after}"
+    )
+
+
+def test_break_cycle_leaves_a_converged_cycle_alone(client, tmp_path):
+    """The one statement in the fill that carries NO `thread_root_id IS
+    NULL` predicate is `break_cycle`'s UPDATE: it targets an
+    `article_id` its own SELECT chose, and that SELECT is what filters
+    to NULL. The two are safe only because they share a transaction,
+    which is exactly the coupling the surrounding docstrings invite
+    breaking ("one pass, one WriteOp, release the writer between them").
+
+    So pin the behaviour rather than the predicate: over a cycle that has
+    already converged (every member non-NULL), the pass must move
+    nothing. Self-rooting a member here would re-point half the cycle and
+    split it.
+    """
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.thread_roots import drive_passes
+
+    edges = [("cc1@x", "cc2@x"), ("cc2@x", "cc1@x")]
+    seed_thread_shape(tmp_path, "alpha", edges)
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        ids = {
+            mid: aid
+            for mid, aid in s.execute(
+                select(Article.message_id, Article.id).where(
+                    Article.message_id.in_([m for m, _ in edges])
+                )
+            ).all()
+        }
+        # Converge the cycle on the member with the HIGHER id, so a
+        # blind self-root (which picks the lowest unrooted article) is
+        # a visible change rather than a no-op.
+        converged_on = max(ids.values())
+        s.execute(
+            update(ArticleList)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.article_id.in_(list(ids.values())),
+            )
+            .values(thread_root_id=converged_on)
+        )
+        s.commit()
+
+        counts = drive_passes(lambda fn: fn(s, inbox.id))
+        s.commit()
+
+    assert counts["cycles_broken"] == 0, (
+        "break_cycle fired on a cycle that was already converged; it can "
+        "only have reached a non-NULL row"
+    )
+    after = _roots_by_inbox("alpha", {m for m, _ in edges})
+    assert {root for root, _aid in after.values()} == {converged_on}, (
+        f"a converged cycle was re-pointed by the fill: {after}"
     )

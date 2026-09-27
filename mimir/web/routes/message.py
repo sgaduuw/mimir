@@ -17,16 +17,16 @@ from sqlalchemy import select
 
 import mimir
 from mimir import cache
-from mimir.config import settings
 from mimir.canonical import extract_list_addresses
+from mimir.config import settings
 from mimir.extensions import SessionLocal
+from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import (
     Article,
     ArticleFile,
     ArticleList,
     Inbox,
 )
-from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.patch_state import patch_state_for_article
 from mimir.related import is_bot_sender, related_discussions
 from mimir.rendering import URL_OR_MSGID_RE
@@ -51,7 +51,7 @@ from mimir.web.urls import (
     _get_inbox_or_404,
     _msg_url,
     _site_base,
-    _thread_view_url,
+    thread_page_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -495,10 +495,12 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                     page_no = thread_page_of(
                         session, target_inbox.id, root_article.id, article, cap
                     )
-                    thread_view_url = _thread_view_url(root_article, target_inbox.name)
-                    if page_no > 1:
-                        thread_view_url += f"/{page_no}"
-                    canonical_url = base + thread_view_url
+                    canonical_url = base + thread_page_url(
+                        root_article.id,
+                        root_article.date,
+                        target_inbox.name,
+                        page_no,
+                    )
 
         page_json_ld = (
             _json_ld_message(

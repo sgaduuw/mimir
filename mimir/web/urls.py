@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, aliased
 from mimir.canonical import fallback_canonical_name
 from mimir.config import settings
 from mimir.models import Article, ArticleList, Inbox
-from mimir.threading import unmaterialised_roots, thread_page_of
+from mimir.threading import thread_page_of, unmaterialised_roots
 
 
 def _get_inbox_or_404(session: Session, name: str) -> Inbox:
@@ -330,7 +330,15 @@ def _advertised_urls_for(
             root_by_pair[(art_id, ix_id)] = root_id
 
     # Only pairs where the article IS the root need asking; a reply is
-    # multi-message by construction.
+    # multi-message by construction. That proposition is true and is
+    # not the one that matters: what the caller needs is "the thread
+    # page URL is servable in this inbox", and those come apart when a
+    # root row is gone from the inbox (a partial `reindex
+    # --from-scratch`, a hand repair), leaving a reply pointing at a
+    # root that is not here. What actually prevents the dangling push
+    # is `unmaterialised_roots` condition (1), which covers roots with
+    # no row in this inbox at all. Pinned by
+    # `test_build_urls_does_not_advertise_a_thread_whose_root_is_gone_from_the_inbox`.
     root_pairs = {
         (ix_id, root_id)
         for (art_id, ix_id), root_id in root_by_pair.items()
@@ -417,7 +425,7 @@ def _advertised_urls_for(
                 # case one branch down.
                 out[art_id] = base + _msg_url(article, name)
                 continue
-            path = _thread_view_url(root, name)
+            page_no = 1
             if ix_id is not None:
                 page_no = thread_page_of(
                     session,
@@ -426,9 +434,7 @@ def _advertised_urls_for(
                     article,
                     max(1, settings.thread_view_render_cap),
                 )
-                if page_no > 1:
-                    path += f"/{page_no}"
-            out[art_id] = base + path
+            out[art_id] = base + thread_page_url(root.id, root.date, name, page_no)
         else:
             out[art_id] = base + _msg_url(article, name)
     return out

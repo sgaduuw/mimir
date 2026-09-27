@@ -19,7 +19,7 @@ index for hours that way. Freshness rides `<lastmod>` plus
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import func, select
@@ -30,11 +30,11 @@ from mimir.config import settings
 from mimir.maintainer_directory import all_maintainers, maintainer_path
 from mimir.models import Article, ArticleList, Inbox
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
-from mimir.threading import unmaterialised_roots
 from mimir.subsystems_dashboard import (
     MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     most_active_subsystems_in_inbox,
 )
+from mimir.threading import unmaterialised_roots
 
 SITEMAP_RECENT_PER_INBOX = 5000
 
@@ -348,11 +348,11 @@ def _month_bounds(year: int, month: int) -> tuple[datetime, datetime]:
     unsargable, which is the same trap CONTEXT.md records for
     `LIKE 'prefix%' ESCAPE` on `article_files.path`.
     """
-    start = datetime(year, month, 1, tzinfo=timezone.utc)
+    start = datetime(year, month, 1, tzinfo=UTC)
     end = (
-        datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        datetime(year + 1, 1, 1, tzinfo=UTC)
         if month == 12
-        else datetime(year, month + 1, 1, tzinfo=timezone.utc)
+        else datetime(year, month + 1, 1, tzinfo=UTC)
     )
     return start, end
 
@@ -383,9 +383,17 @@ def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
 
     Drives the index: each bucket contributes
     `ceil(count / SITEMAP_URLS_PER_PAGE)` entries, so the index has to
-    know the count before it can name the pages. sitemaps.org forbids
-    an index referencing another index, so the pages cannot be hidden
-    behind a nested index and must be enumerated here.
+    know the count before it can name the pages. Nesting is not an
+    escape: GOOGLE rejects a nested index ("Incorrect sitemap index
+    format: Nested sitemap indexes"), so the pages must be enumerated
+    here.
+
+    The authority matters because this file used to credit
+    sitemaps.org, which in fact permits nesting outright ("You can have
+    more than one Sitemap index file"). The conclusion is unchanged,
+    but a reader checking the protocol would have found the opposite of
+    what the comment claimed and reasonably concluded the constraint
+    was imaginary.
 
     Cost, measured on a full-size corpus (17.3M articles / 28.4M
     `article_lists` rows matching the production distribution):
@@ -772,10 +780,10 @@ def sitemap_index_xml(
                 )
             )
             # Then every month, which is what actually reaches the
-            # historical tail. Enumerated per page because sitemaps.org
-            # forbids an index referencing another index, so a bucket
-            # over the urlset cap cannot hide its pages behind a nested
-            # index.
+            # historical tail. Enumerated per page because GOOGLE
+            # rejects a nested index (sitemaps.org itself permits one;
+            # see `_month_sitemap_pages`), so a bucket over the urlset
+            # cap cannot hide its pages behind one.
             for year, month, count in _month_root_counts(session, inbox):
                 pages = max(1, -(-count // SITEMAP_URLS_PER_PAGE))
                 for page in range(1, pages + 1):

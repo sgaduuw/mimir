@@ -19,9 +19,9 @@ the message view reads it) is in `mimir.ingest` and `mimir.web`.
 import hashlib
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from email.utils import parseaddr
-from typing import Callable
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -143,7 +143,7 @@ def series_key(title: str, author: str | None) -> str:
     # already chopped them off, the title arg is the post-bracket
     # text. Just normalise for case + whitespace drift.
     norm_title = " ".join(title.lower().split())
-    payload = f"{address}|{norm_title}".encode("utf-8")
+    payload = f"{address}|{norm_title}".encode()
     return hashlib.sha1(payload).hexdigest()
 
 
@@ -164,7 +164,7 @@ class BackfillResult(BaseModel):
     partial: bool = False
     continuation: int | None = None
 
-    def merge(self, other: "BackfillResult") -> "BackfillResult":
+    def merge(self, other: BackfillResult) -> BackfillResult:
         """Sum counters with `other`, carrying `other`'s
         `partial`/`continuation` forward."""
         return BackfillResult(
@@ -239,10 +239,8 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
     from mimir._pending_backfill import _PatchSeriesPending
 
     is_fully_resolved = article.patch_series_position is not None and (
-        article.patch_series_position == 0
-        and article.patch_series_key is not None
-        or article.patch_series_position > 0
-        and article.patch_series_key is not None
+        (article.patch_series_position == 0 and article.patch_series_key is not None)
+        or (article.patch_series_position > 0 and article.patch_series_key is not None)
     )
     if is_fully_resolved and not reprocess:
         return "skipped", None
@@ -292,7 +290,7 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
 def backfill_patch_series(
     limit: int | None = None,
     reprocess: bool = False,
-    progress: Callable[["BackfillResult"], None] | None = None,
+    progress: Callable[[BackfillResult], None] | None = None,
     *,
     max_seconds: float | None = None,
     start_cursor: int | None = None,

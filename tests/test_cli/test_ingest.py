@@ -11,7 +11,6 @@ from mimir.cli import (
     reindex_command,
 )
 from mimir.models import Article, ArticleList, Inbox
-
 from tests.test_cli._helpers import _build_pubinbox_repo, _repoint_inbox, _rfc5322_msg
 
 
@@ -138,6 +137,7 @@ def test_reindex_from_scratch_deletes_existing_links(seeded_db, tmp_path):
     epoch before re-walking, so the messages re-ingest as `linked`
     (the Article rows survive because they may be cross-posted)."""
     from sqlalchemy import func
+
     from mimir.extensions import SessionLocal
 
     mirror = tmp_path / "alpha-mirror"

@@ -2,6 +2,7 @@
 the message page's canonical consolidation onto it."""
 
 import re
+from datetime import UTC
 
 import pytest
 
@@ -681,7 +682,7 @@ def _mutate_mainline_landing(seeded):
     message to the thread. Same class as the 3.6.1 sitemap incident: a
     validator that cannot see the change pins the wrong answer at the
     edge and in every crawler until a deploy bumps the version."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.extensions import SessionLocal
     from mimir.models import MainlineCommit
@@ -692,14 +693,14 @@ def _mutate_mainline_landing(seeded):
                 commit_sha="a" * 40,
                 message_id="root@x",
                 tree_name="linus",
-                committed_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
             )
         )
         s.commit()
 
 
 def _prepare_first_landing(seeded):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.extensions import SessionLocal
     from mimir.models import MainlineCommit
@@ -710,7 +711,7 @@ def _prepare_first_landing(seeded):
                 commit_sha="c" * 40,
                 message_id="root@x",
                 tree_name="linux-next",
-                committed_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
             )
         )
         s.commit()
@@ -725,7 +726,7 @@ def _mutate_second_landing(seeded):
     an empty table, moving count 0->1 and max None->date at once: each
     half covers for the other, and dropping either from the tag leaves
     the guard green."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.extensions import SessionLocal
     from mimir.models import MainlineCommit
@@ -737,7 +738,7 @@ def _mutate_second_landing(seeded):
                 message_id="root@x",
                 tree_name="linus",
                 # Deliberately NOT newer, so only the count moves.
-                committed_at=datetime(2024, 5, 1, tzinfo=timezone.utc),
+                committed_at=datetime(2024, 5, 1, tzinfo=UTC),
             )
         )
         s.commit()
@@ -748,7 +749,7 @@ def _mutate_relanded_in_rebasing_tree(seeded):
     and re-walks daily, so the same message reappears under a new
     commit sha with a new committer date at UNCHANGED count. This is
     the case that moves only the max, and the only one that pins it."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import delete
 
@@ -762,7 +763,7 @@ def _mutate_relanded_in_rebasing_tree(seeded):
                 commit_sha="e" * 40,
                 message_id="root@x",
                 tree_name="linux-next",
-                committed_at=datetime(2024, 9, 9, tzinfo=timezone.utc),
+                committed_at=datetime(2024, 9, 9, tzinfo=UTC),
             )
         )
         s.commit()
@@ -971,7 +972,7 @@ def test_listings_link_the_reply_count_to_the_thread_view(client, tmp_path, list
     free to drop its link silently, which is what a first pass here
     did: same held-fixed-axis mistake as the ETag guards.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from sqlalchemy import update
 
@@ -989,7 +990,7 @@ def test_listings_link_the_reply_count_to_the_thread_view(client, tmp_path, list
     # sits outside both the 7-day activity window and any day view.
     # Noon YESTERDAY is unambiguously inside both whatever time the
     # suite runs at, unlike `now - 1h`, which straddles midnight UTC.
-    when = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
+    when = (datetime.now(UTC) - timedelta(days=1)).replace(
         hour=12, minute=0, second=0, microsecond=0
     )
     with SessionLocal() as s:
@@ -1088,7 +1089,9 @@ def test_each_page_gets_its_own_etag_and_title(client, tmp_path, monkeypatch):
         assert resp.status_code == 200, f"{page} -> {resp.status_code}"
         html = resp.get_data(as_text=True)
         seen_etags.add(resp.headers["ETag"])
-        seen_titles.add(re.search(r"<title>(.*?)</title>", html, re.S).group(1).strip())
+        seen_titles.add(
+            re.search(r"<title>(.*?)</title>", html, re.DOTALL).group(1).strip()
+        )
 
     assert len(seen_etags) == 3, f"pages share validators: {seen_etags}"
     assert len(seen_titles) == 3, f"pages share titles: {seen_titles}"
@@ -1224,7 +1227,7 @@ def test_json_ld_survives_a_parent_cycle_in_the_thread_graph():
     serialisation question deliberately.
     """
     import json
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.seo.json_ld import _json_ld_thread
     from mimir.threading import ThreadNode
@@ -1239,7 +1242,7 @@ def test_json_ld_survives_a_parent_cycle_in_the_thread_graph():
             # Dated: comment URLs carry the year/month, so a dateless
             # node would make the assertions below match nothing and
             # pass for the wrong reason.
-            date=datetime(2024, 1, 5, tzinfo=timezone.utc),
+            date=datetime(2024, 1, 5, tzinfo=UTC),
             depth=None,
         )
 

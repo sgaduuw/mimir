@@ -29,8 +29,8 @@ from __future__ import annotations
 
 import json
 import socket
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from typing import Callable
 
 import click
 
@@ -273,8 +273,9 @@ def _check_inboxes_seeded(role, settings, session_factory) -> CheckResult:
     """At least one inbox must exist in the DB. Zero inboxes means
     a deploy is non-functional (no archive to browse) but not
     strictly broken: the broker still serves cache ops. Warning."""
-    from mimir.models import Inbox
     from sqlalchemy import func, select
+
+    from mimir.models import Inbox
 
     with session_factory() as s:
         count = s.execute(select(func.count()).select_from(Inbox)).scalar_one()
@@ -300,8 +301,9 @@ def _check_mirror_paths(role, settings, session_factory) -> CheckResult:
     runs."""
     from pathlib import Path
 
-    from mimir.models import Inbox
     from sqlalchemy import select
+
+    from mimir.models import Inbox
 
     with session_factory() as s:
         rows = s.execute(select(Inbox.name, Inbox.mirror_path)).all()
@@ -389,7 +391,7 @@ def _run_checks(role: str, version: str, settings, session_factory) -> _Report:
     for check in _CHECKS:
         try:
             result = check(role, settings, session_factory)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             result = CheckResult(
                 name=getattr(check, "__name__", "<check>").removeprefix("_check_"),
                 status=STATUS_ERROR,
@@ -483,10 +485,10 @@ def doctor_command(json_output: bool) -> None:
 
 
 __all__ = [
-    "CheckResult",
     "STATUS_ERROR",
     "STATUS_INFO",
     "STATUS_OK",
     "STATUS_WARNING",
+    "CheckResult",
     "doctor_command",
 ]

@@ -65,7 +65,7 @@ import threading
 import time
 import tracemalloc
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mimir import cache
@@ -185,7 +185,13 @@ class _BrokerServer(socketserver.UnixStreamServer):
     worker thread draining three separate work queues:
 
     - `cache_queue` for cache ops (sub-ms commits). Always-on
-      throughput; the only thing the web tier waits on.
+      throughput; the only QUEUE the web tier's RPCs land on. Not the
+      only thing it waits on: since Phase 4 the cache handlers submit
+      to the WriterThread and await `.result()`, so a request
+      transitively waits on the writer FIFO, which long ops share. The
+      real guarantee is interleaving (a cache op lands between a long
+      op's per-batch WriteOps), which CONTEXT.md states correctly.
+      Pinned by `test_web_tier_rpcs_all_route_to_the_cache_queue`.
       `broker_cache_workers` workers (default 1, env
       `BROKER_CACHE_WORKERS`); single-worker default preserves
       FIFO commit order per submitting client.
@@ -228,10 +234,10 @@ class _BrokerServer(socketserver.UnixStreamServer):
         # would just drop work silently. The slow-RPC WARNING
         # (with breakdown into queue vs dispatch) is the operator-
         # facing signal.
-        self.cache_queue: "queue.Queue[tuple[bytes, ClientConnection, float]]" = (
+        self.cache_queue: queue.Queue[tuple[bytes, ClientConnection, float]] = (
             queue.Queue()
         )
-        self.long_queue: "queue.Queue[tuple[bytes, ClientConnection, float]]" = (
+        self.long_queue: queue.Queue[tuple[bytes, ClientConnection, float]] = (
             queue.Queue()
         )
         # Warm queue is a PriorityQueue so fast-tier RPCs
@@ -243,7 +249,9 @@ class _BrokerServer(socketserver.UnixStreamServer):
         # (PriorityQueue compares tuples element-wise, so equal
         # priority falls through to enqueued_at). Task 5 of the
         # fast/slow tier split (spec §2 §5).
-        self.warm_queue: "queue.PriorityQueue[tuple[int, float, bytes, ClientConnection]]" = queue.PriorityQueue()
+        self.warm_queue: queue.PriorityQueue[
+            tuple[int, float, bytes, ClientConnection]
+        ] = queue.PriorityQueue()
         self._reader_threads: list[threading.Thread] = []
         # Held around `_reader_threads` mutations so the per-reader
         # self-removal in `_reader_loop`'s finally block does not race
@@ -399,7 +407,7 @@ class _BrokerServer(socketserver.UnixStreamServer):
 
     def _worker_loop(
         self,
-        q: "queue.Queue",
+        q: queue.Queue,
         worker_tag: str,
     ) -> None:
         """Drain one queue serially. One RPC at a time on this
@@ -692,8 +700,9 @@ def _migrate_if_needed(socket_path: Path) -> bool:
     )
     t0 = time.monotonic()
     try:
-        from alembic import command
         from alembic.config import Config
+
+        from alembic import command
 
         # Construct Config programmatically rather than passing
         # "alembic.ini": that ini carries [loggers] / [handlers] /
@@ -731,7 +740,13 @@ def _migrate_if_needed(socket_path: Path) -> bool:
 def _bootstrap_inboxes_if_needed(socket_path: Path) -> None:
     """Reconcile `Settings.inboxes` (env config) into the `inboxes`
     table on broker startup. Idempotent via `ON CONFLICT (name) DO
-    NOTHING`; admin edits to existing rows are never clobbered.
+    NOTHING`; admin edits to existing rows are never clobbered. That
+    answers "are edits to a row preserved" (yes), not "does the table
+    still match admin intent": an `admin inbox update --new-name`
+    leaves `Settings.inboxes` naming the old name, so a later
+    bootstrap hits no conflict and INSERTS a phantom row under it.
+    Consistent with the insert-only reconcile, but not covered by the
+    sentence above.
 
     Sentinel-gated. The post-2.0.0 broker container owns this work
     because it's a write; pre-2.0.0 the tasks container's
@@ -980,7 +995,8 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     # Running it before the count below is also what keeps that count
     # cheap: with fresh stats the planner takes a skip-scan over
     # `ix_article_lists_thread_root` instead of scanning the covering
-    # index (measured at 28.8M rows: 0.00 s vs 0.47 s).
+    # index (measured at 28.8M rows: 0.00 s vs 0.47 s; still 28.8M on
+    # 2026-08-04).
     _run_post_backfill_analyze()
 
     # The counters are PER RUN, not cumulative, because the backfill only
@@ -1338,7 +1354,9 @@ def build_server(socket_path: Path) -> _BrokerServer:
     #   3. Post-migrate ANALYZE: a fresh schema migration may have
     #      added indexes whose `sqlite_stat1` needs populating
     #      before the planner sees them; the bounded pass takes
-    #      1-3 s on the production corpus.
+    #      ~10.8 s on the production corpus (2026-08-04). It runs
+    #      BEFORE the healthcheck sentinel, so it is on the startup
+    #      budget; re-measure it whenever that budget is reviewed.
     #
     # Each is sentinel-gated. The web tier gates on the broker's
     # healthcheck so cold requests after deploy never hit any of
@@ -1381,7 +1399,7 @@ def build_server(socket_path: Path) -> _BrokerServer:
     return server
 
 
-def _make_signal_handler(server: "_BrokerServer"):
+def _make_signal_handler(server: _BrokerServer):
     """Build the SIGTERM/SIGINT handler used by `serve()`. Returns
     `(handler, state)` so callers (and tests) can inspect the handler's
     state without touching module-level globals.
@@ -1556,7 +1574,7 @@ def _maybe_start_tracemalloc_snapshotter(
         while True:
             try:
                 snap = tracemalloc.take_snapshot()
-                ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                ts = datetime.now(UTC).isoformat(timespec="seconds")
                 path = diagnostics_dir / f"tracemalloc-{ts}.pkl"
                 tmp = path.with_suffix(".pkl.tmp")
                 with open(tmp, "wb") as f:
@@ -1581,4 +1599,4 @@ def _maybe_start_tracemalloc_snapshotter(
     return thread
 
 
-__all__ = ["build_server", "serve", "ClientConnection", "Reply", "PURGE_INTERVAL_SEC"]
+__all__ = ["PURGE_INTERVAL_SEC", "ClientConnection", "Reply", "build_server", "serve"]

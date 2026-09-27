@@ -14,7 +14,6 @@ active pool + writer through these accessors."""
 from __future__ import annotations
 
 import threading
-from typing import Optional
 
 from mimir.broker.pools import ReadSessionPool
 from mimir.broker.writes import WriterThread
@@ -42,8 +41,8 @@ from mimir.broker.writes import WriterThread
 # dispatch time. Not worth optimising; the proposed fix would
 # regress. Lock stays.
 _lock = threading.Lock()
-_active_pool: Optional[ReadSessionPool] = None
-_active_writer: Optional[WriterThread] = None
+_active_pool: ReadSessionPool | None = None
+_active_writer: WriterThread | None = None
 
 
 def set_active(pool: ReadSessionPool, writer: WriterThread) -> None:

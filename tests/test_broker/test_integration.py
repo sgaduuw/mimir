@@ -14,7 +14,6 @@ import sys
 import threading
 import time
 
-
 from mimir import cache as cache_mod
 from mimir.broker.client import BrokerClient
 from tests.test_broker._helpers import broker_running, short_socket_path

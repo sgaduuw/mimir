@@ -22,7 +22,7 @@ no list-address signal anyway.
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -58,7 +58,7 @@ class BackfillResult(BaseModel):
     partial: bool = False
     continuation: int | None = None
 
-    def merge(self, other: "BackfillResult") -> "BackfillResult":
+    def merge(self, other: BackfillResult) -> BackfillResult:
         """Sum counters with `other`, carrying `other`'s
         `partial`/`continuation` forward."""
         return BackfillResult(
@@ -108,12 +108,12 @@ def backfill_canonicals(
     with a follow-up RPC carrying `start_cursor=<last>`. Direct
     callers leave both None and get the historical full-walk behaviour.
     """
-    from mimir.broker._context import get_active_pool, get_active_writer
     from mimir._pending_backfill import (
         _CanonicalPending,
         _submit_canonical_batch,
         _submit_promote_list_address_sweep,
     )
+    from mimir.broker._context import get_active_pool, get_active_writer
 
     pool = get_active_pool()
     writer = get_active_writer()
@@ -238,7 +238,7 @@ def backfill_canonicals(
                 obs_deltas: dict[int, dict[str, tuple[int, datetime]]] = {}
                 if list_addrs:
                     obs_time = aware_utc(
-                        parsed.date or article.date or datetime.now(timezone.utc)
+                        parsed.date or article.date or datetime.now(UTC)
                     )
                     for inbox_id in links:
                         obs_deltas.setdefault(inbox_id, {})

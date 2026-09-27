@@ -33,8 +33,8 @@ from mimir.extensions import SessionLocal
 from mimir.seo import (
     inbox_sitemap_xml,
     maintainers_sitemap_xml,
-    month_sitemap_xml,
     meta_sitemap_xml,
+    month_sitemap_xml,
     sitemap_index_xml,
 )
 from mimir.seo.sitemaps import SitemapPayload

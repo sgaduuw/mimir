@@ -23,9 +23,8 @@ from mimir.parser import (
     parse_message,
 )
 from mimir.patches import MAX_TOUCHED_PATHS, extract_touched_paths
-from mimir.rendering.body import PYGMENTS_MAX_BLOCK_CHARS, _render_block
 from mimir.rendering.blocks import _Block
-
+from mimir.rendering.body import PYGMENTS_MAX_BLOCK_CHARS, _render_block
 
 # ----- parser: multipart-count cap ----------------------------------------
 

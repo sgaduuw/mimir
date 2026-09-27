@@ -430,11 +430,11 @@ class InboxRemovalReport:
     report back to the operator."""
 
     __slots__ = (
-        "name",
         "article_lists_deleted",
         "ingest_state_deleted",
-        "orphan_articles_deleted",
         "mirror_path_deleted",
+        "name",
+        "orphan_articles_deleted",
     )
 
     def __init__(self, name: str):

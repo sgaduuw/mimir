@@ -13,7 +13,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import Select, or_, select
 from sqlalchemy.orm import Session
@@ -294,7 +294,7 @@ def related_discussions(
 
     def _compute() -> list[RelatedThread]:
         t0 = time.perf_counter()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         root = session.get(Article, root_id)
         if root is None:
             return []

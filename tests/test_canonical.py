@@ -9,7 +9,6 @@ from mimir.canonical import (
     pick_canonical_inbox_id,
 )
 
-
 # is_list_address: conservative suffix filter
 
 

@@ -6,11 +6,10 @@ included as parser fixtures; the walker tests use fake bare repos
 built with dulwich so the suite stays offline + fast.
 """
 
-import pytest
-
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from dulwich.objects import Commit, Tree
 from dulwich.repo import Repo
 from sqlalchemy import func, select
@@ -258,7 +257,7 @@ def test_walk_commits_records_commit_time(seeded_db, tmp_path, writer_thread):
     the patch-page surface renders as "on <date>"."""
     repo = _bare_repo(tmp_path / "tree.git")
     # 2024-06-01 00:00:00 UTC
-    ts = int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp())
+    ts = int(datetime(2024, 6, 1, tzinfo=UTC).timestamp())
     _build_commit(
         repo,
         b"x\n\nLink: https://lore.kernel.org/r/m@x\n",
@@ -272,11 +271,11 @@ def test_walk_commits_records_commit_time(seeded_db, tmp_path, writer_thread):
     # value is naive UTC by convention (same shape as
     # `Article.date`, see CONTEXT.md "tz-aware UTC normalization").
     # Render code attaches UTC at the consumer end.
-    assert row.committed_at.replace(tzinfo=timezone.utc) == datetime(
+    assert row.committed_at.replace(tzinfo=UTC) == datetime(
         2024,
         6,
         1,
-        tzinfo=timezone.utc,
+        tzinfo=UTC,
     )
 
 
@@ -399,7 +398,7 @@ def test_walk_commits_rebases_true_clears_old_rows_for_tree(
                 commit_sha="staleshastaleshastaleshastalesha000000000",
                 message_id="orphan@example.com",
                 tree_name="linux-next",
-                committed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                committed_at=datetime(2026, 1, 1, tzinfo=UTC),
             )
         )
         s.commit()
@@ -443,7 +442,7 @@ def test_walk_commits_rebases_false_keeps_other_tree_rows(
                 commit_sha=other_sha,
                 message_id="other@example.com",
                 tree_name="linus",
-                committed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                committed_at=datetime(2026, 1, 1, tzinfo=UTC),
             )
         )
         s.commit()
@@ -594,6 +593,7 @@ def test_walk_commits_rebases_true_ignores_exclude_from(
     assert mids == {"c1@x", "c2@x"}
 
 
+@pytest.mark.allow_tree_clone
 def test_ensure_tree_passes_reference_to_clone(tmp_path, monkeypatch):
     """When reference is set, git clone is invoked with --reference."""
     calls = []
@@ -630,6 +630,7 @@ def test_ensure_tree_passes_reference_to_clone(tmp_path, monkeypatch):
     assert clone_cmd[ref_idx + 1] == str(linus_path)
 
 
+@pytest.mark.allow_tree_clone
 def test_ensure_tree_no_reference_for_linus(tmp_path, monkeypatch):
     """reference=None -> no --reference flag in the git clone command."""
     calls = []
@@ -702,7 +703,7 @@ def test_walk_commits_full_rewalk_is_idempotent_via_on_conflict(
 
 def test_update_mainline_skips_tree_not_yet_due(seeded_db, monkeypatch, tmp_path):
     """A tree whose last_walked_at is recent enough is skipped."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.config import TreeConfig, settings
     from mimir.mainline import update_mainline
@@ -725,7 +726,7 @@ def test_update_mainline_skips_tree_not_yet_due(seeded_db, monkeypatch, tmp_path
     with seeded_db() as s:
         state = MainlineState(
             tree_name="fake",
-            last_walked_at=datetime.now(timezone.utc),
+            last_walked_at=datetime.now(UTC),
         )
         s.add(state)
         s.commit()
@@ -809,6 +810,7 @@ def test_walk_commits_closes_repo_at_function_exit(
     through __exit__). The spy unambiguously differentiates
     pre-fix from post-fix."""
     from dulwich.repo import Repo as DulwichRepo
+
     from mimir.extensions import SessionLocal
 
     exit_calls: list[bool] = []
@@ -1145,3 +1147,98 @@ def test_read_linus_head_returns_none_on_missing_repo(tmp_path):
     from mimir.mainline import _read_linus_head
 
     assert _read_linus_head(tmp_path / "does-not-exist") is None
+
+
+def test_a_missing_tree_path_raises_instead_of_cloning(tmp_path, monkeypatch):
+    """The fresh-checkout guard, asserted rather than assumed.
+
+    `_ensure_tree` clones when its target path is absent, and
+    `skip_fetch` does not prevent that: it skips the fetch on an
+    EXISTING clone only. So on any machine that already has the kernel
+    tree every test passes, while a fresh checkout silently performs a
+    ~3.6 GB `git clone` of torvalds/linux. Invisible to everyone who
+    has the tree, which is why it survived long enough to become a
+    standing "do not run the full suite" warning in subagent briefs.
+
+    The autouse `_no_surprise_clone` fixture converts that into an
+    immediate failure naming the tree and URL. This test pins the
+    guard itself; without it the guard is one accidental edit from
+    being a no-op that nobody notices until CI downloads a kernel.
+    """
+    import subprocess
+
+    from mimir.config import TreeConfig
+    from mimir.mainline import _ensure_tree
+
+    def _explode(*a, **k):  # pragma: no cover - must never be reached
+        raise AssertionError(f"a clone was attempted: {a!r}")
+
+    monkeypatch.setattr(subprocess, "run", _explode)
+
+    tree = TreeConfig(
+        url="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
+        path=tmp_path / "definitely-absent",
+    )
+    # BaseException, not AssertionError: the guard deliberately raises
+    # outside the `except Exception` that `update_mainline` wraps each
+    # tree in. Pinning AssertionError here would re-admit the swallowed
+    # form.
+    with pytest.raises(BaseException, match="would `git clone`"):
+        _ensure_tree(tree, reference=None, skip_fetch=True)
+
+
+def test_the_clone_guard_survives_update_mainlines_per_tree_except(
+    seeded_db, tmp_path, monkeypatch
+):
+    """The guard must reach the TEST, not just the application's logger.
+
+    `update_mainline` wraps each tree's work in `except Exception:` and
+    turns any failure into a WARNING plus `tr.ok = False` (deliberately:
+    one broken tree must not abort the tick). `AssertionError` is an
+    `Exception`, so the `_no_surprise_clone` guard is swallowed on the
+    only production path that calls `_ensure_tree`. Nothing fails; the
+    tick reports a failed tree and the test that drove it passes.
+
+    That matters because it is exactly how a would-be clone reaches the
+    suite. `test_mainline_phase3.py::
+    test_update_mainline_uses_writer_thread_via_active_context` calls
+    `update_mainline()` against the REAL `settings.trees` (seven trees,
+    no `linus_tree` monkeypatch) and asserts only `result is not None`.
+    On a machine that has `Mainline/*.git` it exercises the writer path
+    for real; on a fresh checkout it used to clone seven kernel trees,
+    and with the guard as written it now silently skips every tree and
+    still passes, having reached neither `_ensure_tree`'s successor code
+    nor the writer dispatch the test exists to pin. The suite's meaning
+    becomes machine-dependent, which is the same blind spot the guard
+    was written to close.
+
+    A test-infrastructure guard therefore has to raise something the
+    code under test cannot catch: `pytest.fail(..., pytrace=False)`
+    (`Failed` derives from `BaseException`), or a private
+    `BaseException` subclass. Production code is unchanged either way.
+    """
+    from mimir.config import TreeConfig, settings
+    from mimir.mainline import update_mainline
+
+    monkeypatch.setattr(
+        settings,
+        "trees",
+        {
+            "linus": TreeConfig(
+                url=(
+                    "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+                ),
+                path=tmp_path / "definitely-absent",
+                walk_every_seconds=0,
+            )
+        },
+    )
+
+    # BaseException, not Exception: an `except Exception` handler in the
+    # code under test must not be able to absorb a test guard.
+    with pytest.raises(BaseException, match="would `git clone`"):
+        update_mainline(
+            skip_fetch=True,
+            skip_maintainers=True,
+            skip_commits=True,
+        )

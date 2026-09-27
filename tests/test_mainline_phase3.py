@@ -6,10 +6,11 @@ Run alongside the existing test_mainline tests; kept in a separate
 file so the Phase 3 PR audit is easy."""
 
 import functools
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import create_engine, text
 
@@ -23,7 +24,7 @@ def _row(commit_sha: str, message_id: str, tree_name: str = "linus"):
         "commit_sha": commit_sha,
         "message_id": message_id,
         "tree_name": tree_name,
-        "committed_at": datetime(2026, 5, 30, 0, 0, 0, tzinfo=timezone.utc),
+        "committed_at": datetime(2026, 5, 30, 0, 0, 0, tzinfo=UTC),
     }
 
 
@@ -376,14 +377,32 @@ def test_mid_walk_cursor_failure_leaves_cursor_at_old_position(
         writer.stop(timeout=10)
 
 
-def test_update_mainline_uses_writer_thread_via_active_context(seeded_db):
+def test_update_mainline_uses_writer_thread_via_active_context(
+    seeded_db, tmp_path, monkeypatch
+):
     """update_mainline dispatches its writes through the active writer
     thread. write_transaction was removed in Phase 6b; the behavioral
     assertion here pins that update_mainline runs to completion via
-    the writer path without error."""
+    the writer path without error.
+
+    Scoped to ONE local tree via `linus_tree`. It previously ran against
+    the real seven-tree `settings.trees`, which made its meaning
+    machine-dependent: with `Mainline/*.git` present it exercised the
+    writer path for real, and without them it cloned seven kernel trees.
+    Once the `_no_surprise_clone` guard landed, the same test skipped
+    every tree and still passed, asserting only `result is not None`
+    while reaching neither `_ensure_tree`'s successor code nor the
+    writer dispatch it exists to pin.
+    """
     from mimir.broker import _context
     from mimir.broker.pools import ReadSessionPool
     from mimir.broker.writes import WriterThread
+    from mimir.config import settings
+    from tests.conftest import linus_tree
+
+    repo = tmp_path / "linus.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(repo)], check=True)
+    monkeypatch.setattr(settings, "trees", linus_tree(repo))
 
     pool = ReadSessionPool.from_settings()
     writer = WriterThread.from_settings()

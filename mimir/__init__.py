@@ -1,4 +1,5 @@
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 
 # Runtime version, read from the installed package metadata (poetry /
 # pip install). The sentinel covers a source-tree-only checkout where
@@ -9,12 +10,12 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
-from flask import Flask, Response  # noqa: E402
-from werkzeug.middleware.proxy_fix import ProxyFix  # noqa: E402
+from flask import Flask, Response
+from werkzeug.middleware.proxy_fix import ProxyFix
 
-from mimir.cli import register_cli  # noqa: E402
-from mimir.config import settings  # noqa: E402
-from mimir.web import bp_web  # noqa: E402
+from mimir.cli import register_cli
+from mimir.config import settings
+from mimir.web import bp_web
 
 
 def create_app() -> Flask:

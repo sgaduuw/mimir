@@ -5,7 +5,7 @@ test modules can import what they need. Underscore-prefixed
 filename so pytest does not collect this as a test module.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -92,11 +92,12 @@ def _ingest_one_for_show(tmp_path) -> tuple[str, Path]:
 def _seed_parse_failure(inbox_name: str = "alpha") -> None:
     """Insert one ParseFailure row tied to the seeded inbox."""
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
 
     with SessionLocal() as s:
         ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         s.add(
             ParseFailure(
                 inbox_id=ix.id,

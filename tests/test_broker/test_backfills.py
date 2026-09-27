@@ -27,6 +27,8 @@ typed-result reconstruction on the client.
 
 from __future__ import annotations
 
+from datetime import UTC
+
 from sqlalchemy import select
 
 from mimir.broker.handlers import dispatch
@@ -48,7 +50,7 @@ def _seed_extra_articles(n: int) -> list[int]:
     """Add `n` articles to the seeded DB with `[PATCH 0/N]` subjects
     so the patch-series walker has cover-letter candidates to chew
     on. Returns the new article IDs in insertion order."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from mimir.models import ArticleList, Inbox
 
@@ -60,7 +62,7 @@ def _seed_extra_articles(n: int) -> list[int]:
                 message_id=f"coop-{i}@example.com",
                 subject=f"[PATCH 0/{n}] coop test {i}",
                 author=f"Author{i} <a{i}@example.com>",
-                date=datetime(2025, 1, 1 + i, 12, 0, tzinfo=timezone.utc),
+                date=datetime(2025, 1, 1 + i, 12, 0, tzinfo=UTC),
                 thread_parent=None,
                 subject_normalized=f"coop test {i}",
             )

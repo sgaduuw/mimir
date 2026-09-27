@@ -20,7 +20,8 @@ single-transaction-per-walk locking model.
 """
 
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload, selectinload

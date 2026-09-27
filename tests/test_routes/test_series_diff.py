@@ -189,9 +189,10 @@ def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
         ],
     )
     # Viewing v2 cover, the card should link a diff from v1 to v2.
+    from sqlalchemy import select as _sa_select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
-    from sqlalchemy import select as _sa_select
 
     with SessionLocal() as s:
         v2_art = s.execute(
@@ -220,6 +221,7 @@ def test_series_diff_uses_indexed_lookup_without_thread_parent(
     `thread_parent=None`, the heuristic resolver from #210 would
     fail (no children to walk), the indexed path succeeds."""
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 

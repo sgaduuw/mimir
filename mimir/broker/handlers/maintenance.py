@@ -31,8 +31,8 @@ re-raise as `ClickException` with the operator-facing text intact.
 import logging
 
 from mimir.broker.protocol import (
-    BackfillThreadRootsRequest,
     AnalyzeRequest,
+    BackfillThreadRootsRequest,
     FailuresReplayRequest,
     InboxAddTrackedAuthorRequest,
     InboxClearTrackedAuthorsRequest,
@@ -73,7 +73,7 @@ def handle_update_mainline(req: UpdateMainlineRequest) -> Reply:
     return Reply(rpc_id=req.rpc_id, ok=True, result=result.model_dump(mode="json"))
 
 
-def handle_backfill_thread_roots(req: "BackfillThreadRootsRequest") -> Reply:
+def handle_backfill_thread_roots(req: BackfillThreadRootsRequest) -> Reply:
     """Fill in `thread_root_id` per inbox, ONE PASS PER WriteOp.
 
     Cost is measured once, in `mimir.thread_roots`
@@ -88,8 +88,17 @@ def handle_backfill_thread_roots(req: "BackfillThreadRootsRequest") -> Reply:
     ms, so the writer is released ~80 times over a full run instead of
     once.
 
-    Idempotent per pass: every statement only touches NULL rows, so an
-    interrupted run resumes and live ingest is never clobbered.
+    Idempotent per pass, so an interrupted run resumes and live ingest
+    is not clobbered. Note "every statement only touches NULL rows" is
+    not quite true: `seed_roots` and `propagate` carry a
+    `thread_root_id IS NULL` predicate, `break_cycle`'s UPDATE does
+    NOT, and is safe only because its `:aid` comes from a NULL-filtered
+    SELECT in the SAME transaction. That is weaker than it reads, and it
+    interacts with the paragraph above: pushing WriteOp granularity one
+    level deeper (SELECT in one op, UPDATE in the next) would let a row
+    be rooted in between and then silently self-rooted, which is the
+    invisible thread-split class. Pinned by
+    `test_backfill_passes_never_rewrite_an_already_rooted_row`.
     """
     from sqlalchemy import select
 
@@ -465,19 +474,19 @@ def handle_robots_reset(req: RobotsResetRequest) -> Reply:
 
 
 __all__ = [
-    "handle_update_mainline",
     "handle_analyze",
-    "handle_vacuum",
     "handle_failures_replay",
-    "handle_inbox_create",
-    "handle_inbox_update",
-    "handle_inbox_delete",
-    "handle_inbox_set_tracked_authors",
     "handle_inbox_add_tracked_author",
-    "handle_inbox_remove_tracked_author",
     "handle_inbox_clear_tracked_authors",
+    "handle_inbox_create",
+    "handle_inbox_delete",
+    "handle_inbox_remove_tracked_author",
+    "handle_inbox_set_tracked_authors",
+    "handle_inbox_update",
     "handle_robots_add",
-    "handle_robots_update",
     "handle_robots_remove",
     "handle_robots_reset",
+    "handle_robots_update",
+    "handle_update_mainline",
+    "handle_vacuum",
 ]
