@@ -36,7 +36,13 @@ MAX_DEPTH = 1000
 # `thread_by_root_id`'s ORDER BY, `thread_page_of`'s rank count and
 # `thread_sort_key`, because a disagreement between any two of them
 # puts a message on a page its own canonical does not name.
-_DATE_FLOOR = datetime(1, 1, 1)
+# NAIVE deliberately, and `noqa`'d rather than "fixed": SQLite returns
+# `Article.date` naive (verified 2026-09-27), so an aware sentinel would
+# raise `TypeError: can't compare offset-naive and offset-aware
+# datetimes` the first time `thread_sort_key` met a dateless row. Ruff
+# offers the tzinfo as an UNSAFE fix; taking it would break the thread
+# view's ordering silently.
+_DATE_FLOOR = datetime(1, 1, 1)  # noqa: DTZ001
 ACTIVE_THREADS_CACHE_TTL_SEC = 300  # 5 minutes
 
 

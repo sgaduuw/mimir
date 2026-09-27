@@ -145,7 +145,7 @@ def dev_seed_thread_command(
     # Per-invocation uniqifier so re-running within the same second
     # still produces fresh message-ids. Microsecond precision is enough
     # to make collisions essentially impossible in dev use.
-    stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
     for i in range(n_messages):
         is_root = i == 0
         if is_root:
