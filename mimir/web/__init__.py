@@ -22,22 +22,19 @@ from mimir.seo import (
 
 # isort: off
 #
-# Import order matters here, and ruff's isort WILL rewrite it if
-# allowed: enabling `I` in 2026-09 alphabetised this block to
-# errors/filters/hooks/routes, moved `bp_web` out of first position and
-# hoisted the `mimir.seo` import above the whole group. Tests stayed
-# green, which is the problem: the ordering constraint is a load-order
-# property that a passing suite does not exercise.
+# Order matters, and ruff's isort WILL rewrite it if allowed. Kept
+# fenced rather than trusted, because a passing suite does not exercise
+# load order: the reorder that prompted this fence left all tests green.
 #
 # `bp_web` first because every module below attaches to it. `filters`
 # and `hooks` attach decorators; `routes` triggers each route
 # submodule's own registration; `errors` last because it registers
-# app-level handlers rather than blueprint ones. All of them before any
+# app-level rather than blueprint handlers. All of them before any
 # caller can render a response.
 #
-# Keeping `mimir.seo` below them also preserves the one-way import
-# documented in `mimir/seo/__init__.py`: `mimir.seo` reaches back into
-# `mimir.web` inside function bodies to avoid an import-time cycle, and
+# `mimir.seo` stays BELOW them, preserving the one-way import
+# documented in `mimir/seo/__init__.py`: seo reaches back into
+# `mimir.web` inside function bodies to dodge an import-time cycle, and
 # that only holds while `mimir.web` is the package entered first.
 from mimir.web._blueprint import bp_web
 from mimir.web import filters  # noqa: F401  (template filters)
