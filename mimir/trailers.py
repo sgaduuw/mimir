@@ -19,7 +19,7 @@ trailer position are routing leftovers, not attestations.
 
 import logging
 import re
-from typing import Callable
+from collections.abc import Callable
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -113,7 +113,7 @@ class BackfillResult(BaseModel):
     partial: bool = False
     continuation: int | None = None
 
-    def merge(self, other: "BackfillResult") -> "BackfillResult":
+    def merge(self, other: BackfillResult) -> BackfillResult:
         """Sum counters with `other`, carrying `other`'s
         `partial`/`continuation` forward."""
         return BackfillResult(
@@ -130,7 +130,7 @@ class BackfillResult(BaseModel):
 def backfill_article_trailers(
     limit: int | None = None,
     reprocess: bool = False,
-    progress: Callable[["BackfillResult"], None] | None = None,
+    progress: Callable[[BackfillResult], None] | None = None,
     *,
     max_seconds: float | None = None,
     start_cursor: int | None = None,
@@ -229,8 +229,8 @@ def _process_one(session, article: Article, reprocess: bool) -> tuple[str, objec
 
 
 __all__ = [
-    "BackfillResult",
     "INDEXED_TRAILER_ROLES",
+    "BackfillResult",
     "backfill_article_trailers",
     "extract_trailers",
 ]

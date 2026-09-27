@@ -17,7 +17,6 @@ from mimir.inboxes import (
     validate_upstream_url,
 )
 
-
 # Pure-function validators, no DB needed.
 
 
@@ -504,6 +503,7 @@ def test_bootstrap_inboxes_inserts_env_rows_then_no_ops_on_rerun(
     web container's startup would race the scheduler sidecar's
     parallel bootstrap and trip a UNIQUE violation."""
     from sqlalchemy import select
+
     from mimir.config import InboxConfig, settings
     from mimir.inboxes import bootstrap_inboxes
     from mimir.models import Inbox
@@ -545,6 +545,7 @@ def test_bootstrap_inboxes_preserves_admin_managed_rows(
     must survive a bootstrap pass intact. Without this contract, every
     container restart would orphan operator changes."""
     from sqlalchemy import select
+
     from mimir.config import settings
     from mimir.inboxes import bootstrap_inboxes
     from mimir.models import Inbox
@@ -575,6 +576,7 @@ def test_bootstrap_inboxes_does_not_overwrite_admin_edits(
     to `on_conflict_do_update` would silently undo admin edits on
     the next container restart."""
     from sqlalchemy import select
+
     from mimir.config import InboxConfig, settings
     from mimir.inboxes import bootstrap_inboxes
     from mimir.models import Inbox
@@ -644,6 +646,7 @@ def test_delete_inbox_remove_inbox_data_rms_mirror_dir(
     the trailing `git` segment so the per-inbox wrapper directory
     goes too. The report carries the path actually deleted."""
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.inboxes import delete_inbox
     from mimir.models import Inbox
@@ -690,6 +693,7 @@ def test_delete_inbox_remove_inbox_data_refuses_parent_when_basename_mismatches(
     only the literal mirror_path must be removed, leaving the
     parent intact."""
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.inboxes import delete_inbox
     from mimir.models import Inbox
@@ -726,6 +730,7 @@ def test_delete_inbox_remove_inbox_data_no_git_segment(
     """When `mirror_path` doesn't end in `git/`, no parent promotion
     is attempted; the literal mirror_path is removed and that's it."""
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.inboxes import delete_inbox
     from mimir.models import Inbox
@@ -754,6 +759,7 @@ def test_delete_inbox_remove_inbox_data_handles_missing_mirror(
     exist on disk must NOT raise; the row deletion still succeeds
     and the report records nothing was actually rm'd."""
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.inboxes import delete_inbox
     from mimir.models import Inbox

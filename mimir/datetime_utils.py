@@ -27,7 +27,7 @@ datetime might cross a comparison boundary, import `aware_utc` from
 here. One concern per file, per CLAUDE.md.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def aware_utc(dt: datetime) -> datetime:
@@ -39,5 +39,5 @@ def aware_utc(dt: datetime) -> datetime:
     would mask a missing-data bug at the call site).
     """
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
+        return dt.replace(tzinfo=UTC)
     return dt

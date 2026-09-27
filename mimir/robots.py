@@ -279,8 +279,8 @@ def update_rule(
         # inside a closure, executed on the writer's conn. The closure re-
         # selects the current row, applies the same in-memory mutation logic,
         # then issues an UPDATE via Core so the writer's engine is used.
-        from sqlalchemy import update as sa_update
         from sqlalchemy import select as sa_select
+        from sqlalchemy import update as sa_update
 
         from mimir.broker.writes import WriteOp
 
@@ -396,7 +396,7 @@ def remove_rule(user_agent: str) -> None:
             result = conn.execute(delete(RobotsRule).where(RobotsRule.user_agent == ua))
             if result.rowcount == 0:
                 raise RobotsRuleNotFound(f"no rule for user_agent {ua!r}")
-            return None
+            return
 
         writer.submit(WriteOp(label=f"robots:remove:{ua}", fn=_fn)).result(timeout=30)
         return
@@ -460,7 +460,7 @@ def reset_rules() -> None:
                     content_signals=dict(_DEFAULT_STAR_CONTENT_SIGNALS),
                 )
             )
-            return None
+            return
 
         writer.submit(WriteOp(label="robots:reset", fn=_fn)).result(timeout=30)
         return

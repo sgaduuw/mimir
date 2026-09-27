@@ -3,6 +3,8 @@ the `/<inbox>/` dashboard, per-subsystem dashboards,
 per-author / per-reviewer pages, and the surrounding render
 contract (card grids, sparklines, tracker tiles, footer)."""
 
+from datetime import UTC
+
 from tests.test_routes._helpers import (
     _ingest_one_article,
     _json_ld_blocks,
@@ -26,6 +28,7 @@ def _warm_active_subsystems(inbox_name: str | None = None) -> None:
     dashboard). Tests that need both call this twice.
     """
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
     from mimir.subsystems_dashboard import (
@@ -157,8 +160,10 @@ def test_meta_index_last_activity_reads_from_inbox_column(client):
     re-request. The visible relative-time string should reflect the
     new value (a recent "m"/"h ago" stamp), not the conftest seed's
     14-month-old date."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
 
@@ -170,7 +175,7 @@ def test_meta_index_last_activity_reads_from_inbox_column(client):
     assert "Last activity: 2024-03-01" in body_before
 
     # Bump alpha to "5 minutes ago" without touching the cache.
-    five_min_ago = datetime.now(timezone.utc) - timedelta(minutes=5)
+    five_min_ago = datetime.now(UTC) - timedelta(minutes=5)
     with SessionLocal() as s:
         ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         ix.last_article_date = five_min_ago
@@ -191,7 +196,8 @@ def test_meta_index_renders_subsystem_chips_with_activity(client, tmp_path):
     or more subsystems have recent messages. Chips link to the
     busiest inbox's per-subsystem dashboard (lowercased URL).
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
@@ -208,7 +214,7 @@ def test_meta_index_renders_subsystem_chips_with_activity(client, tmp_path):
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
-        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        art.date = datetime.now(UTC) - timedelta(hours=2)
         s.commit()
     _warm_active_subsystems()
     text = client.get("/").data.decode()
@@ -235,7 +241,8 @@ def test_meta_index_subsystem_card_shows_maintainer_and_sparkline(
     """Front-page subsystem cards carry the top M: maintainer's
     name and a 7-day per-subsystem sparkline so they read as
     real cards rather than just name + count."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
@@ -257,7 +264,7 @@ def test_meta_index_subsystem_card_shows_maintainer_and_sparkline(
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
-        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        art.date = datetime.now(UTC) - timedelta(hours=2)
         s.commit()
     _warm_active_subsystems()
     text = client.get("/").data.decode()
@@ -273,7 +280,8 @@ def test_meta_index_subsystem_card_status_badge_when_non_default(
 ):
     """The Supported status surfaces as a corner badge; the default
     "Maintained" doesn't (would render on every card → noise)."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
@@ -295,7 +303,7 @@ def test_meta_index_subsystem_card_status_badge_when_non_default(
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
-        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        art.date = datetime.now(UTC) - timedelta(hours=2)
         s.commit()
     _warm_active_subsystems()
     text = client.get("/").data.decode()
@@ -313,7 +321,8 @@ def test_meta_index_subsystem_card_no_status_badge_for_default(
     at that value, so a badge on every card would be noise. Pin
     the suppression so a future change doesn't accidentally
     introduce that visual clutter."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
@@ -333,7 +342,7 @@ def test_meta_index_subsystem_card_no_status_badge_for_default(
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
-        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        art.date = datetime.now(UTC) - timedelta(hours=2)
         s.commit()
     _warm_active_subsystems()
     text = client.get("/").data.decode()
@@ -353,6 +362,7 @@ def test_meta_index_pins_inbox_first(client, monkeypatch):
     nav too, which means a brittle whole-body search would give the
     wrong index ordering. Anchor on the `<a href="/<name>/">` pattern."""
     import re
+
     from mimir.config import settings
 
     def first_inbox_link_order(body: str) -> list[str]:
@@ -487,7 +497,8 @@ def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
     backfill the article's date to a recent value post-ingest to
     land inside the 30-day reviewer window, same trick as the
     active-threads section test."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
@@ -507,7 +518,7 @@ def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
-        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        art.date = datetime.now(UTC) - timedelta(hours=2)
         s.commit()
     r = client.get("/alpha/subsystem/bcachefs/")
     assert r.status_code == 200
@@ -525,7 +536,8 @@ def test_subsystem_dashboard_no_link_for_non_allowlisted_reviewer(
     """Non-allowlisted addresses render via `safe_from` (display
     name + `<hidden>`) with NO clickable link to the per-reviewer
     page, so mimir doesn't surface non-public addresses in URLs."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
@@ -545,7 +557,7 @@ def test_subsystem_dashboard_no_link_for_non_allowlisted_reviewer(
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
-        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        art.date = datetime.now(UTC) - timedelta(hours=2)
         s.commit()
     text = client.get("/alpha/subsystem/bcachefs/").data.decode()
     assert "Active reviewers" in text
@@ -708,7 +720,8 @@ def test_subsystem_dashboard_renders_active_threads_section(
     `_ingest_one_article` pins commit_time at 2023-11-14, so we
     backfill the article's date to a recent value post-ingest to
     land inside the 7-day active window."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
@@ -728,7 +741,7 @@ def test_subsystem_dashboard_renders_active_threads_section(
     # the dashboard surface.
     with SessionLocal() as s:
         art = s.get(Article, art_id)
-        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        art.date = datetime.now(UTC) - timedelta(hours=2)
         s.commit()
     body = client.get("/alpha/subsystem/bcachefs/").data.decode()
     assert "Most active threads" in body
@@ -776,7 +789,8 @@ def test_inbox_dashboard_renders_subsystem_list_with_activity(
     Plain `<ul>` matches the surrounding sections' visual
     language; the front-page surface keeps a card grid. Link is
     the lowercased per-subsystem dashboard URL."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
@@ -793,7 +807,7 @@ def test_inbox_dashboard_renders_subsystem_list_with_activity(
     )
     with SessionLocal() as s:
         art = s.get(Article, art_id)
-        art.date = datetime.now(timezone.utc) - timedelta(hours=2)
+        art.date = datetime.now(UTC) - timedelta(hours=2)
         s.commit()
     _warm_active_subsystems(inbox_name="alpha")
     text = client.get("/alpha/").data.decode()
@@ -825,9 +839,10 @@ def test_inbox_dashboard_year_browse_uses_decade_grouping(client, inbox_name):
     two-decade span (2010s + 2020s), then assert the grouping class
     plus both decade headings appear. Concrete contract, not the
     earlier tautological `A or not B`."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article, ArticleList, Inbox
 
@@ -837,7 +852,7 @@ def test_inbox_dashboard_year_browse_uses_decade_grouping(client, inbox_name):
             message_id="decade-fixture-2018@example.com",
             subject="old",
             author="o@example.com",
-            date=datetime(2018, 6, 1, 0, 0, tzinfo=timezone.utc),
+            date=datetime(2018, 6, 1, 0, 0, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="old",
         )
@@ -1077,11 +1092,11 @@ def test_subsystem_index_lists_active_subsystems_and_links_them(client, tmp_path
     slow tier does rather than relying on a request-path compute the
     route deliberately refuses to perform.
     """
+    from sqlalchemy import select as sa_select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
     from mimir.subsystems_dashboard import most_active_subsystems_in_inbox
-    from sqlalchemy import select as sa_select
-
     from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
 
     _seed_subsystem(

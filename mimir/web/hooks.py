@@ -16,7 +16,7 @@ import json
 import logging
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from flask import g, request
 
@@ -289,7 +289,7 @@ def _log_request(response):
     _request_logger.info(
         json.dumps(
             {
-                "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
                 "request_id": getattr(g, "_request_id", None),
                 "method": request.method,
                 "path": request.path,

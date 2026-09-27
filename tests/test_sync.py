@@ -20,7 +20,6 @@ import json
 import subprocess
 from unittest.mock import MagicMock, patch
 
-
 import pytest
 
 import mimir.sync as sync_module

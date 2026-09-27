@@ -13,7 +13,7 @@ three LEFT JOIN sources stay on index seeks rather than scans
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 from sqlalchemy import bindparam, text
@@ -400,7 +400,7 @@ def _bulk_uncached(
     # path through cache.register at import time.
     from mimir.patch_state import _activity_heat
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     out: dict[int, LifecycleStatusInfo] = {}
     for row in rows:
         # State classification: same five-way priority as before

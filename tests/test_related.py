@@ -4,7 +4,7 @@ scoring for non-patch threads (#71).
 
 import contextlib
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 
 import pytest
@@ -89,7 +89,7 @@ class TestRelatedThreadCacheRoundTrip:
             year=2026,
             month=6,
             subject="bcachefs journal deadlock",
-            last_activity=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            last_activity=datetime(2026, 6, 1, tzinfo=UTC),
             score=8.25,
             signals=("token", "participant"),
         )
@@ -100,7 +100,7 @@ class TestRelatedThreadCacheRoundTrip:
 
 
 class TestScoreAndClassify:
-    NOW = datetime(2026, 6, 12, 12, 0, tzinfo=timezone.utc)
+    NOW = datetime(2026, 6, 12, 12, 0, tzinfo=UTC)
 
     def _call(self, **kw):
         from mimir.related import _score_and_classify
@@ -172,7 +172,7 @@ def _seed_message(
         message_id=message_id,
         subject=subject,
         author=author,
-        date=datetime.now(timezone.utc) - timedelta(days=days_ago),
+        date=datetime.now(UTC) - timedelta(days=days_ago),
         thread_parent=thread_parent,
         subject_normalized=normalize_subject(subject),
     )
@@ -224,7 +224,7 @@ class TestCandidates:
                 subject_normalized="bcachefs journal deadlock",
                 tokens=["journal"],
                 authors={"Carol"},
-                min_date=datetime.now(timezone.utc) - timedelta(days=365),
+                min_date=datetime.now(UTC) - timedelta(days=365),
             )
             got_ids = {r.id for r in rows}
             assert by_subject.id in got_ids  # exact subject_normalized
@@ -251,7 +251,7 @@ class TestCandidates:
                     subject_normalized="",
                     tokens=[],
                     authors=set(),
-                    min_date=datetime.now(timezone.utc),
+                    min_date=datetime.now(UTC),
                 )
                 == []
             )
@@ -283,7 +283,7 @@ class TestCandidates:
                 subject_normalized="bcachefs deadlock fix",
                 tokens=[],
                 authors=set(),
-                min_date=datetime.now(timezone.utc) - timedelta(days=365),
+                min_date=datetime.now(UTC) - timedelta(days=365),
             )
             ids = {r.id for r in rows}
             assert hit.id in ids
@@ -530,7 +530,8 @@ class TestCandidatePlanPin:
         a regression to a subject-index OR shape (which cannot use
         the index with leading wildcards) would surface here as a
         SCAN."""
-        from sqlalchemy import select as sa_select, text
+        from sqlalchemy import select as sa_select
+        from sqlalchemy import text
 
         from mimir.models import Inbox
         from mimir.related import _candidate_select
@@ -602,7 +603,7 @@ class TestCandidatePlanPin:
                 subject_normalized="subject number 7 lockdep",
                 tokens=["lockdep", "number"],
                 authors={"Author1", "Author2"},
-                min_date=datetime.now(timezone.utc) - timedelta(days=365),
+                min_date=datetime.now(UTC) - timedelta(days=365),
             )
             sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
             plan = "\n".join(

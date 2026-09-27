@@ -15,7 +15,6 @@ from mimir.trailers import backfill_article_trailers
 # every other test that builds a synthetic public-inbox repo.
 from tests.test_ingest._helpers import _build_pubinbox_repo
 
-
 _TRAILER_BODY = (
     b"Looks good.\n\n"
     b"Reviewed-by: Alice <Alice@Example.COM>\n"

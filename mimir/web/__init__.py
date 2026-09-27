@@ -9,17 +9,6 @@ have always imported from `mimir.web`, so the split is a pure
 refactor at the import boundary.
 """
 
-from mimir.web._blueprint import bp_web
-
-# Import order matters: `filters` and `hooks` attach decorators to
-# `bp_web`; `routes` triggers each route submodule's own
-# registration. Pull them all in before any caller can render a
-# response.
-from mimir.web import filters  # noqa: F401  (template filters)
-from mimir.web import hooks  # noqa: F401  (context processor + request hooks)
-from mimir.web import routes  # noqa: F401  (route handlers via the routes subpackage)
-from mimir.web import errors  # noqa: F401  (branded 4xx/5xx handlers)
-
 # Re-exports for backward-compatible imports from `mimir.web`.
 # Routes / helpers callers have historically imported from this
 # module by direct name; the package layout keeps those names
@@ -30,6 +19,33 @@ from mimir.seo import (
     meta_sitemap_xml,
     sitemap_index_xml,
 )
+
+# isort: off
+#
+# Import order matters here, and ruff's isort WILL rewrite it if
+# allowed: enabling `I` in 2026-09 alphabetised this block to
+# errors/filters/hooks/routes, moved `bp_web` out of first position and
+# hoisted the `mimir.seo` import above the whole group. Tests stayed
+# green, which is the problem: the ordering constraint is a load-order
+# property that a passing suite does not exercise.
+#
+# `bp_web` first because every module below attaches to it. `filters`
+# and `hooks` attach decorators; `routes` triggers each route
+# submodule's own registration; `errors` last because it registers
+# app-level handlers rather than blueprint ones. All of them before any
+# caller can render a response.
+#
+# Keeping `mimir.seo` below them also preserves the one-way import
+# documented in `mimir/seo/__init__.py`: `mimir.seo` reaches back into
+# `mimir.web` inside function bodies to avoid an import-time cycle, and
+# that only holds while `mimir.web` is the package entered first.
+from mimir.web._blueprint import bp_web
+from mimir.web import filters  # noqa: F401  (template filters)
+from mimir.web import hooks  # noqa: F401  (context processor + request hooks)
+from mimir.web import routes  # noqa: F401  (route handlers via the routes subpackage)
+from mimir.web import errors  # noqa: F401  (branded 4xx/5xx handlers)
+
+# isort: on
 from mimir.web.filters import (
     _allowlisted_email,
     _clean_subject_filter,
@@ -48,12 +64,13 @@ from mimir.web.filters import (
     _safe_from_filter,
     _thread_summary,
 )
+from mimir.web.routes.attachments import _content_disposition
 from mimir.web.routes.dashboards import (
     RECENT_PAGE_SIZE,
     SUBSYSTEM_RECENT_PATCHES_LIMIT,
     _fetch_recent,
-    index,
     inbox_dashboard,
+    index,
     subsystem_dashboard,
 )
 from mimir.web.routes.feeds import (
@@ -78,10 +95,9 @@ from mimir.web.routes.static_meta import (
     OG_IMAGE_WIDTH,
 )
 from mimir.web.routes.timeviews import MONTH_THREAD_CAP
-from mimir.web.routes.attachments import _content_disposition
 from mimir.web.urls import (
-    _canonical_inbox_name,
     _advertised_urls_for,
+    _canonical_inbox_name,
     _canonical_inbox_names_for,
     _canonical_url_for,
     _get_inbox_or_404,
@@ -104,9 +120,9 @@ __all__ = [
     "SEARCH_QUERY_MIN_LEN",
     "SEARCH_RESULT_CAP",
     "SUBSYSTEM_RECENT_PATCHES_LIMIT",
+    "_advertised_urls_for",
     "_allowlisted_email",
     "_canonical_inbox_name",
-    "_advertised_urls_for",
     "_canonical_inbox_names_for",
     "_canonical_url_for",
     "_clean_subject_filter",
@@ -128,8 +144,8 @@ __all__ = [
     "_render_body_filter",
     "_safe_from_filter",
     "_site_base",
-    "_thread_view_url",
     "_thread_summary",
+    "_thread_view_url",
     "_year_decade_groups",
     "author_feed",
     "author_view",

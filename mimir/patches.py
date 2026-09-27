@@ -24,7 +24,7 @@ moment to make that choice durable.
 
 import logging
 import re
-from typing import Callable
+from collections.abc import Callable
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -117,7 +117,7 @@ class BackfillResult(BaseModel):
     partial: bool = False
     continuation: int | None = None
 
-    def merge(self, other: "BackfillResult") -> "BackfillResult":
+    def merge(self, other: BackfillResult) -> BackfillResult:
         """Sum counters with `other`, carrying `other`'s
         `partial`/`continuation` forward. Used by the CLI loop that
         aggregates per-chunk results from the broker."""
@@ -135,7 +135,7 @@ class BackfillResult(BaseModel):
 def backfill_article_files(
     limit: int | None = None,
     reprocess: bool = False,
-    progress: Callable[["BackfillResult"], None] | None = None,
+    progress: Callable[[BackfillResult], None] | None = None,
     *,
     max_seconds: float | None = None,
     start_cursor: int | None = None,

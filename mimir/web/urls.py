@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, aliased
 from mimir.canonical import fallback_canonical_name
 from mimir.config import settings
 from mimir.models import Article, ArticleList, Inbox
-from mimir.threading import unmaterialised_roots, thread_page_of
+from mimir.threading import thread_page_of, unmaterialised_roots
 
 
 def _get_inbox_or_404(session: Session, name: str) -> Inbox:

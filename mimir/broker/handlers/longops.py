@@ -72,6 +72,7 @@ def handle_ingest_inbox(req: IngestInboxRequest) -> Reply:
     broker-mediated runs.
     """
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.ingest.epoch import DEFAULT_WORKERS
     from mimir.ingest.orchestrate import ingest_inbox

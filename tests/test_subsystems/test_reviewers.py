@@ -2,7 +2,7 @@
 reviewer surfaces (`active_reviewers_in_subsystem`,
 `articles_reviewed_by`)."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -17,7 +17,6 @@ from mimir.subsystems_dashboard import (
     active_reviewers_in_subsystem,
     articles_reviewed_by,
 )
-
 from tests.test_subsystems._helpers import (
     _add_recent_patch_with_trailers,
     _add_subsystem,
@@ -287,7 +286,7 @@ def test_articles_reviewed_by_canonical_null_uses_alphabetical_fallback(
             message_id="null-canon@x",
             subject="cross-post, no canonical pinned",
             author="a@example",
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             thread_parent=None,
             subject_normalized="cross-post no canonical pinned",
             canonical_inbox_id=None,
@@ -360,7 +359,7 @@ def test_articles_reviewed_by_matches_address_case_insensitively(
             message_id="case@x",
             subject="case-test",
             author="a@example",
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             thread_parent=None,
             subject_normalized="case-test",
             canonical_inbox_id=inbox.id,
@@ -469,7 +468,7 @@ def test_articles_reviewed_by_resolves_canonical_inbox(seeded_db):
             message_id="xpost@x",
             subject="cross-post",
             author="a@example",
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             thread_parent=None,
             subject_normalized="cross-post",
             canonical_inbox_id=beta.id,

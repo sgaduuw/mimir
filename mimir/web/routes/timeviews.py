@@ -6,7 +6,8 @@ storage chunking artifact with no semantic meaning to a reader);
 date-scoped views are the right shape for "what happened on a day".
 """
 
-from datetime import date as date_cls, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from datetime import date as date_cls
 
 from flask import abort, render_template
 from sqlalchemy import func, select
@@ -24,7 +25,6 @@ from mimir.threading import (
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _get_inbox_or_404
 
-
 # Plausible bounds for an inbox archive: lkml itself goes back to ~1995.
 # Outside this range a year URL is almost certainly user error / scraper
 # noise; 404 is the right response.
@@ -38,12 +38,12 @@ MONTH_THREAD_CAP = 100
 
 
 def _max_archive_year() -> int:
-    return datetime.now(timezone.utc).year + 1
+    return datetime.now(UTC).year + 1
 
 
 def _daily_view(inbox_name: str, day: date_cls, heading: str):
     """Shared renderer for /<list>/today and /<list>/yesterday."""
-    start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+    start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
     end = start + timedelta(days=1)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
@@ -80,13 +80,13 @@ def _daily_view(inbox_name: str, day: date_cls, heading: str):
 
 @bp_web.route("/<inbox_name>/today")
 def daily_today(inbox_name: str):
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     return _daily_view(inbox_name, today, "Today")
 
 
 @bp_web.route("/<inbox_name>/yesterday")
 def daily_yesterday(inbox_name: str):
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+    yesterday = (datetime.now(UTC) - timedelta(days=1)).date()
     return _daily_view(inbox_name, yesterday, "Yesterday")
 
 
@@ -101,14 +101,14 @@ def threads_since_view(inbox_name: str, since_str: str):
         since = date_cls.fromisoformat(since_str)
     except ValueError:
         abort(404)
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     if since > today:
         abort(404)
     floor = today - timedelta(days=THREADS_SINCE_MAX_DAYS)
     capped = since < floor
     effective = floor if capped else since
-    start = datetime.combine(effective, datetime.min.time(), tzinfo=timezone.utc)
-    end = datetime.now(timezone.utc)
+    start = datetime.combine(effective, datetime.min.time(), tzinfo=UTC)
+    end = datetime.now(UTC)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         threads = threads_since(session, inbox, since)
@@ -178,7 +178,7 @@ def month_archive(inbox_name: str, year: int, month: int):
         abort(404)
     if month < 1 or month > 12:
         abort(404)
-    start = datetime(year, month, 1, tzinfo=timezone.utc)
+    start = datetime(year, month, 1, tzinfo=UTC)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         threads = threads_for_month(session, inbox, year, month, limit=MONTH_THREAD_CAP)

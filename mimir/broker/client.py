@@ -20,16 +20,17 @@ the socket has no read timeout from the caller's perspective."""
 import logging
 import socket
 import threading
-from concurrent.futures import Future, TimeoutError as FuturesTimeoutError
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 from mimir.broker.protocol import (
     AnalyzeRequest,
-    BackfillThreadRootsRequest,
     BackfillArticleFilesRequest,
     BackfillArticleTrailersRequest,
     BackfillCanonicalsRequest,
     BackfillPatchSeriesRequest,
+    BackfillThreadRootsRequest,
     BootstrapInboxesRequest,
     CacheDeleteForInboxRequest,
     CacheDeleteRequest,

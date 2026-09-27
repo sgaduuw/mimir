@@ -1,9 +1,9 @@
 """Unit tests for `mimir.patch_state.patch_state_for_article`: the
 helper feeding the message-page state card (#208)."""
 
-import pytest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
 from mimir.models import (
@@ -36,7 +36,7 @@ def _seed_article(session, message_id):
         message_id=message_id,
         subject="[PATCH 1/2] foo: do bar",
         author="Author <a@example.com>",
-        date=datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc),
+        date=datetime(2024, 6, 1, 12, 0, tzinfo=UTC),
         thread_parent=None,
         subject_normalized="[patch 1/2] foo: do bar",
         lists=[ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="fa" * 20)],
@@ -97,7 +97,7 @@ def _add_alpha_article(s, message_id, subject, *, trailers=(), date=None, paths=
         message_id=message_id,
         subject=subject,
         author="Maintainer <m@example.com>",
-        date=date or datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc),
+        date=date or datetime(2024, 6, 1, 12, 0, tzinfo=UTC),
         thread_parent=None,
         subject_normalized=subject.lower(),
         lists=[ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="aa" * 20)],
@@ -254,7 +254,7 @@ def test_patch_state_surfaces_mainline_landing(seeded_db):
                 commit_sha="deadbeef" * 5,
                 tree_name="linus",
                 message_id="landed@x",
-                committed_at=datetime(2024, 7, 1, 0, 0, tzinfo=timezone.utc),
+                committed_at=datetime(2024, 7, 1, 0, 0, tzinfo=UTC),
             )
         )
         s.commit()
@@ -317,14 +317,14 @@ def test_patch_state_series_timeline_with_diff_links(seeded_db):
                 ],
             )
 
-        v1 = _cover("v1-cv@x", "v1", datetime(2024, 6, 1, tzinfo=timezone.utc))
+        v1 = _cover("v1-cv@x", "v1", datetime(2024, 6, 1, tzinfo=UTC))
         # v2 doesn't get the `v2 ` infix in version-strip; the parser
         # accepts both `[PATCH 0/2]` (v1 implicit) and `[PATCH v2 0/2]`.
         v2 = Article(
             message_id="v2-cv@x",
             subject="[PATCH v2 0/2] common series title",
             author="Author <a@example.com>",
-            date=datetime(2024, 6, 15, tzinfo=timezone.utc),
+            date=datetime(2024, 6, 15, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="[patch v2 0/2] common series title",
             patch_series_key="testkeyseries",
@@ -381,7 +381,7 @@ def test_patch_state_series_timeline_renders_on_in_series_patch(seeded_db):
                 message_id=mid,
                 subject=subj,
                 author="A <a@x>",
-                date=datetime(2024, 6, day, tzinfo=timezone.utc),
+                date=datetime(2024, 6, day, tzinfo=UTC),
                 thread_parent=None,
                 subject_normalized=subj.lower(),
                 patch_series_key="sk",
@@ -437,7 +437,7 @@ def test_patch_state_series_empty_for_solo_revision(seeded_db):
             message_id="solo-cv@x",
             subject="[PATCH 0/2] lonely cover",
             author="A <a@x>",
-            date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            date=datetime(2024, 6, 1, tzinfo=UTC),
             thread_parent=None,
             subject_normalized="[patch 0/2] lonely cover",
             patch_series_key="solo",
@@ -478,8 +478,8 @@ def test_patch_state_activity_computes_days_since_last_reply(seeded_db):
     """`days_since_last_reply` is the integer days from `now()` to
     the max thread date that's NEWER than the article itself."""
     with seeded_db() as s:
-        post_date = datetime.now(timezone.utc) - timedelta(days=10)
-        reply_date = datetime.now(timezone.utc) - timedelta(days=3)
+        post_date = datetime.now(UTC) - timedelta(days=10)
+        reply_date = datetime.now(UTC) - timedelta(days=3)
         art = _add_alpha_article(
             s,
             "with-replies@x",
@@ -553,7 +553,7 @@ def test_state_mainline_landing_has_tree_label(session):
             commit_sha="f" * 40,
             message_id="tl@x",
             tree_name="net-next",
-            committed_at=datetime.now(timezone.utc),
+            committed_at=datetime.now(UTC),
         )
     )
     session.commit()
@@ -575,7 +575,7 @@ def test_state_mainline_landing_uses_linus_display_name(session):
             commit_sha="g" * 40,
             message_id="tl2@x",
             tree_name="linus",
-            committed_at=datetime.now(timezone.utc),
+            committed_at=datetime.now(UTC),
         )
     )
     session.commit()

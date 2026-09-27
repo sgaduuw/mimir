@@ -22,10 +22,11 @@ to learn two paths. Keeping it together follows the same shape as
 import logging
 import re
 import subprocess
+from collections.abc import Callable
 from concurrent.futures import Future
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from dulwich.repo import Repo
 from pydantic import BaseModel, Field
@@ -317,7 +318,7 @@ def walk_commits(
                 result.linked += 1
                 committed_at = datetime.fromtimestamp(
                     commit.commit_time,
-                    tz=timezone.utc,
+                    tz=UTC,
                 )
                 for mid in msgids:
                     pending_rows.append(
@@ -401,7 +402,7 @@ class UpdateMainlineResult(BaseModel):
 
 
 def _ensure_tree(
-    tree: "TreeConfig",
+    tree: TreeConfig,
     *,
     reference: Path | None,
     skip_fetch: bool,
@@ -904,10 +905,10 @@ def update_mainline(
     if `_ensure_tree` succeeds and neither the MAINTAINERS nor commit
     phases raised an exception.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     result = UpdateMainlineResult()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     linus_path: Path | None = None
 
@@ -1046,11 +1047,11 @@ def update_mainline(
 
 
 __all__ = [
-    "WalkResult",
     "TreeWalkResult",
     "UpdateMainlineResult",
+    "WalkResult",
     "extract_message_ids",
-    "walk_commits",
     "load_maintainers",
     "update_mainline",
+    "walk_commits",
 ]

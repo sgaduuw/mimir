@@ -20,7 +20,6 @@ from mimir.broker import handlers
 from mimir.broker.client import BrokerClient
 from tests.test_broker._helpers import broker_running, short_socket_path
 
-
 # ----- classify_op --------------------------------------------------------
 
 
@@ -72,6 +71,7 @@ def test_bootstrap_inboxes_via_broker_reconciles_inboxes(seeded_db):
     count from `mimir.inboxes.bootstrap_inboxes()` and the DB
     actually got the rows."""
     from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
 
@@ -155,6 +155,7 @@ def test_ingest_inbox_via_broker_runs_to_completion(seeded_db, tmp_path):
     per-epoch `IngestResult` list. This is the Phase 2.1 happy path.
     """
     from sqlalchemy import select
+
     from mimir.broker.client import BrokerClient
     from mimir.extensions import SessionLocal
     from mimir.models import Article, Inbox
@@ -206,6 +207,7 @@ def test_ingest_inbox_via_broker_unknown_inbox_returns_clean_error(seeded_db):
     The client surfaces the error as `BrokerUnavailable`, callers
     in `cli/ingest.py` turn it into a ClickException."""
     import pytest
+
     from mimir.broker.client import BrokerClient, BrokerUnavailable
 
     sp = short_socket_path("ingest-unknown")
@@ -241,10 +243,11 @@ def test_cache_set_writes_direct_inside_broker_process(seeded_db, monkeypatch):
     (also non-self-RPC, a different direct path). The test clears
     the writer so it exercises the original `_should_dispatch_to_broker`
     guard in isolation."""
+    from pathlib import Path
+
     from mimir import cache
     from mimir.broker import _context
     from mimir.config import settings
-    from pathlib import Path
 
     monkeypatch.setattr(
         settings,
@@ -270,9 +273,10 @@ def test_cache_set_dispatches_outside_broker_process(monkeypatch):
     goes via the broker. Pins that the broker-self-RPC short-circuit
     doesn't accidentally disable broker mode for legitimate clients
     (web, tasks)."""
+    from pathlib import Path
+
     from mimir import cache
     from mimir.config import settings
-    from pathlib import Path
 
     sp = Path("/tmp/mimir-test-stub-broker.sock")
     monkeypatch.setattr(settings, "broker_socket_path", sp)

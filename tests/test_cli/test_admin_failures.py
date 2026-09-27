@@ -11,7 +11,6 @@ from mimir.cli import (
     admin_failures_replay_command,
 )
 from mimir.models import Inbox, ParseFailure
-
 from tests.test_cli._helpers import (
     _build_pubinbox_repo,
     _repoint_inbox,
@@ -66,8 +65,10 @@ def test_admin_failures_replay_happy_path_recovers_and_clears(
     Click runner so the CLI argument parsing + ClickException
     boundary + output-shape are all exercised end-to-end."""
     import datetime as _dt
-    import mimir.parser
+
     from sqlalchemy import func
+
+    import mimir.parser
     from mimir.extensions import SessionLocal
 
     # Build a real repo so replay_failures can fetch the blob.
@@ -84,7 +85,7 @@ def test_admin_failures_replay_happy_path_recovers_and_clears(
     # Stage a failure for the real commit_sha so replay finds work.
     repo = Repo(str(mirror_root / "0.git"))
     sha = repo.head().decode()
-    now = _dt.datetime.now(_dt.timezone.utc)
+    now = _dt.datetime.now(_dt.UTC)
     with SessionLocal() as s:
         ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         s.add(
@@ -129,9 +130,10 @@ def test_admin_failures_replay_epoch_filter_isolates_one_epoch(seeded_db):
     scope. A regression that ignored the filter would silently
     replay everything."""
     import datetime as _dt
+
     from mimir.extensions import SessionLocal
 
-    now = _dt.datetime.now(_dt.timezone.utc)
+    now = _dt.datetime.now(_dt.UTC)
     with SessionLocal() as s:
         ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         s.add_all(

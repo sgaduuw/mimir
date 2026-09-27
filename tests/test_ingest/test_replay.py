@@ -19,7 +19,6 @@ from mimir.models import (
     Inbox,
     ParseFailure,
 )
-
 from tests.test_ingest._helpers import _alpha, _build_pubinbox_repo, _rfc5322
 
 
@@ -233,8 +232,8 @@ def test_replay_failures_closes_cached_repos(seeded_db, tmp_path, monkeypatch):
     `replay_failures` returns."""
     import datetime as _dt
 
-    from mimir.ingest import replay as ingest_mod
     import mimir.parser
+    from mimir.ingest import replay as ingest_mod
 
     alpha = _alpha(seeded_db)
     mirror_root = tmp_path / "alpha-fd"
@@ -249,7 +248,7 @@ def test_replay_failures_closes_cached_repos(seeded_db, tmp_path, monkeypatch):
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
         ix.mirror_path = str(mirror_root)
-        now = _dt.datetime.now(_dt.timezone.utc)
+        now = _dt.datetime.now(_dt.UTC)
         for epoch, sha in [("0.git", sha0), ("1.git", sha1)]:
             s.add(
                 ParseFailure(
@@ -364,8 +363,8 @@ def test_replay_failures_cross_post_links_existing_article(
                 error_class="ValueError",
                 error_message="prior failure",
                 attempts=1,
-                first_seen=_dt.datetime.now(_dt.timezone.utc),
-                last_attempt=_dt.datetime.now(_dt.timezone.utc),
+                first_seen=_dt.datetime.now(_dt.UTC),
+                last_attempt=_dt.datetime.now(_dt.UTC),
             )
         )
         s.commit()
