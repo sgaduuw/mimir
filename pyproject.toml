@@ -40,34 +40,11 @@ dev = [
 # and produced 636 findings. None of them were caused by the bump; they
 # were pre-existing debt the narrower default had not looked for.
 #
-# Chosen per group, on the merits, not copied from the old default:
-#
-#   E4/E7/E9, F  the historical baseline (import/syntax/pyflakes).
-#   I            import sorting. Unsorted imports were hand-noticed
-#                twice during the 2026-08 verification work.
-#   UP           pyupgrade. Pure modernisation, almost all autofixable,
-#                and this codebase targets one pinned Python.
-#   DTZ          naive `datetime`. Earned its place: a `-0000` Date
-#                header rolling back a whole ingest batch is why
-#                `_aware_utc` exists (CONTEXT.md "tz-aware UTC
-#                normalization"). A linter that catches the next one is
-#                worth the noise.
-#   B            bugbear. Real bug shapes rather than style.
-#   RUF          ruff's own, including unused-noqa.
-#   SIM/RET/FURB/PLW  small, mechanical, few findings.
-#
-# Deliberately NOT selected:
-#
-#   BLE          blind `except Exception`. 30 findings, and some are
-#                load-bearing by design: `update_mainline` isolates
-#                per-tree failures behind exactly that, which this
-#                branch relied on when a guard raised `AssertionError`
-#                and was swallowed. Needs per-site judgment, so it gets
-#                its own pass rather than a blanket enable or a blanket
-#                ignore.
-#   ANN/D/ERA/COM  documentation and annotation mandates, and
-#                commented-out-code detection. House style already
-#                covers the prose; these would fight it.
+# Per-group rationale lives with the lists below, not here: an earlier
+# version of this comment enumerated every group as "chosen on the
+# merits", and when `select` was narrowed it was left in place, so the
+# file carried two contradictory accounts and a reader met the wrong one
+# first.
 # SATISFIED TODAY. A `select` entry is a gate, not an aspiration: CI
 # runs `ruff check mimir/ tests/` unscoped, so a rule enabled with
 # findings outstanding is simply a red build. Groups below are enabled
@@ -93,9 +70,16 @@ select = [
 #             inside `except`. Per-site judgment, and the group where
 #             blind application would hurt: BLE is excluded for a
 #             related reason (see below).
-#   RUF   58  RUF059 unused unpacked names, RUF003/002 ambiguous `×`
-#             in prose (aligns with the house no-em-dash rule), RUF013
-#             implicit Optional.
+#   RUF   30  RUF059 unused unpacked names (12), RUF003/002 ambiguous
+#             `×` in prose (17, aligns with the house no-em-dash rule),
+#             RUF013 implicit Optional (1). Counted UNDER THIS CONFIG.
+#             `ruff check --select RUF` reports 60, because passing
+#             `--select` overrides the list above, which disables the
+#             other groups and turns every `# noqa` for them into a
+#             phantom `RUF100` unused-noqa. A first version of this
+#             comment recorded that 58/60. Measure a per-group count
+#             with `--statistics` under the project config, never with
+#             `--select` or `--isolated`.
 #   PLW   24  PLW0108 redundant lambdas, PLW0603 `global`, PLW1510
 #             `subprocess.run` without an explicit `check`.
 #   SIM   16  SIM105 `contextlib.suppress`, SIM117 nested `with`.

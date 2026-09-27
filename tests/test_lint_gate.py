@@ -47,6 +47,21 @@ def _module_available() -> bool:
 
 
 def test_ruff_check_exits_zero():
+    """Mirror CI's `lint` job locally, judged by EXIT CODE.
+
+    Yes, this duplicates a gate CI already owns, and that duplication is
+    the point: CI only reports after a push and a PR, and on 2026-09-27
+    this branch spent six exchanges being described as "lint clean"
+    while `ruff check` exited 1 with 114 errors. The reason was a
+    home-made instrument, `ruff check ... | tail -1`, where the last
+    line is a "No fixes available" hint rather than the error count and
+    the pipe replaces ruff's exit code with tail's zero.
+
+    A `select` entry is a gate, not an aspiration, so enabling a group
+    with findings outstanding is simply a red build. This test makes
+    that visible in the suite, which gets run constantly, instead of at
+    the end of a push cycle.
+    """
     """`ruff check mimir/ tests/` must pass.
 
     This is `ci.yml`'s `lint` step verbatim. It is red on
@@ -70,34 +85,4 @@ def test_ruff_check_exits_zero():
         f"ruff check exited {proc.returncode}; CI's lint job runs this exact "
         f"command and will fail.\nLast line: {counts[0]}\n"
         "Per-rule breakdown: uv run ruff check --statistics mimir/ tests/"
-    )
-
-
-def test_ruff_autofix_left_no_e402_behind():
-    """No E402 anywhere, because this branch's own autofix created the
-    only two in the tree.
-
-    Narrower than the test above on purpose: these two findings are not
-    pre-existing debt that the wider rule set merely started looking for,
-    they were *introduced* by commit 3a3c529's safe-autofix pass and are
-    the only findings in the branch with that provenance.
-
-    `tests/conftest.py` and `tests/test_ingest/test_orchestrate.py` each
-    carry a deliberate mid-file `import pytest  # noqa: E402`. Ruff's
-    isort treats that suppressed import as a second import block, so the
-    UP017 rewrite's new `from datetime import UTC` was inserted *into*
-    that block, below `os.environ[...]` assignments in one file and below
-    three test functions in the other, and without the `# noqa: E402`
-    its neighbour has.
-
-    Checked apples-to-apples: running this branch's config against the
-    develop tree reports `All checks passed!` for E402, so develop has
-    none and HEAD has two. Fix is either the same `# noqa: E402` comment
-    the adjacent line already carries, or hoisting the import to the top
-    of the file where it belongs.
-    """
-    proc = _ruff("check", "--select", "E402", "--output-format", "concise", *PATHS)
-    hits = [ln for ln in proc.stdout.splitlines() if "E402" in ln]
-    assert not hits, "ruff's autofix introduced E402 violations:\n  " + "\n  ".join(
-        hits
     )
