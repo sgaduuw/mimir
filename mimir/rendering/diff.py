@@ -92,7 +92,9 @@ def _highlight_inline(text: str, lexer) -> str:
     return highlight(text, lexer, _INLINE_LANG_FORMATTER).rstrip("\n")
 
 
-def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
+def _render_diff_block(
+    lines: list[str], with_anchors: bool = True, *, headerless: bool = False
+) -> str:
     """Render a diff block with per-hunk anchors + per-language
     overlay (#211).
 
@@ -143,9 +145,16 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
     meta_buffer: list[str] = []
     hunk_buffer: list[str] = []
     current_lexer = TextLexer()
-    in_hunk = False
+    # `headerless`: a quoted hunk fragment whose `@@` line the
+    # reviewer left out of the quote. Opening the hunk up front is
+    # what gets its lines their `gi`/`gd` gutter colours, which
+    # otherwise only start once a `@@` has been seen. The lexer
+    # stays TextLexer because there is no `+++ b/<path>` to sniff a
+    # language from, so the fragment gets diff colouring without a
+    # per-language overlay.
+    in_hunk = headerless
     in_trailer = False
-    hunk_idx = 0
+    hunk_idx = 1 if headerless else 0
     line_in_hunk = 0
 
     def flush_meta() -> None:

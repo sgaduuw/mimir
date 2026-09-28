@@ -9,6 +9,8 @@ from email.utils import parsedate_to_datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from mimir.flowed import unflow
+
 logger = logging.getLogger(__name__)
 
 
@@ -301,6 +303,13 @@ MAX_RAW_MESSAGE_BYTES = 50 * 1024 * 1024
 MAX_ATTACHMENT_PARTS = 256
 
 
+def _param_is(part, name: str, value: str) -> bool:
+    """Case-insensitive content-type parameter match, tolerant of the
+    RFC 2231 tuple form `get_param` can return."""
+    got = part.get_param(name, "")
+    return isinstance(got, str) and got.lower() == value
+
+
 def parse_message(raw: bytes) -> ParsedArticle:
     if len(raw) > MAX_RAW_MESSAGE_BYTES:
         raise MessageTooLarge(
@@ -336,6 +345,15 @@ def parse_message(raw: bytes) -> ParsedArticle:
             else:
                 body = None
         body_content_type = body_part.get_content_type()
+        # RFC 3676 decoding, same class of work as the charset and
+        # transfer-encoding decoding above: `format=flowed` bodies
+        # carry space-stuffing and soft line breaks that the
+        # receiver is required to undo. `get_content_type()` drops
+        # the parameters, so the gate has to read them directly.
+        # `get_param` returns a 3-tuple for RFC 2231 encoded values,
+        # which no sane generator uses here, hence the isinstance.
+        if body is not None and _param_is(body_part, "format", "flowed"):
+            body = unflow(body, delsp=_param_is(body_part, "delsp", "yes"))
 
     attachments: list[ParsedAttachment] = []
     parts_walked = 0
