@@ -68,14 +68,20 @@ def unflow(text: str, *, delsp: bool = False) -> str:
         prefix = match.group(0) if match else ""
         content = line[len(prefix) :]
 
-        # A blank line is a paragraph boundary whatever preceded it,
-        # and is itself meaningful (it separates paragraphs), so it
-        # terminates any pending join and survives into the output.
-        # `rstrip` drops the prefix's separator space on an
-        # otherwise-empty quoted line: `"> "` renders as `">"`.
-        if not content:
+        # A line with nothing but whitespace is a paragraph boundary
+        # whatever preceded it: there is no content for a following
+        # line to continue, so it is not a soft break however it
+        # ends. It is also meaningful in its own right, twice over.
+        # Empty, it separates paragraphs. All-whitespace, it is very
+        # often a diff CONTEXT line inside a patch someone pasted
+        # into a flowed message, where the leading space is
+        # structure; joining it merges two hunk lines and the next
+        # line's `-` stops reading as a gutter marker. So emit it
+        # verbatim, except that an otherwise-empty quoted line sheds
+        # the prefix's separator space (`"> "` renders as `">"`).
+        if not content.strip():
             flush()
-            out.append(prefix.rstrip())
+            out.append(prefix + content if content else prefix.rstrip())
             continue
 
         if content == SIGNATURE_SEPARATOR:
