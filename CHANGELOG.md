@@ -11,6 +11,37 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Quoted patch hunks in an interleaved review now keep their syntax
+  highlighting past the first chunk. A reviewer who quotes a patch in
+  pieces with commentary between them produces a block list of
+  `quote / text / quote`, and each quote was parsed independently, so
+  only the piece carrying the `---` or `@@` marker opened a diff and
+  every later piece fell out as plain text. Measured on the 400 most
+  recent linux-wireless messages (2026-09-28): 29 of them, 4,612 lines.
+- A quoted hunk fragment with no `@@` header anywhere in the message
+  (the reviewer quoted only the body of a hunk) is now recognised by
+  shape and rendered as a diff. Scoped to quoted content, and requires
+  three or more lines with an addition or deletion among them plus an
+  added or context line, so a `- item` bullet list and indented prose
+  both stay prose.
+- `text/plain; format=flowed` bodies (RFC 3676) are now decoded at
+  parse time: space-stuffing is removed and soft line breaks re-join.
+  Undecoded, a stuffed quote arrives as `' > text'`, which the quote
+  matcher (anchored at the start of the line) does not see at all, so
+  the whole message rendered as one literal text block with no quote
+  structure, no fold, and no diff detection inside the quoted hunks.
+  Flowed is ~8% of recent lkml and ~4% of recent linux-wireless
+  messages, though the stuffed variant that causes the visible damage
+  is much rarer.
+
+  Note for operators: `article_files` and `article_trailers` are
+  derived at ingest from the same parsed body, so those rows could in
+  principle differ for a flowed message re-ingested after this
+  release. Patches are effectively never sent flowed, so no backfill
+  is proposed.
+
 ## [3.8.1] - 2026-09-27
 
 ### Changed

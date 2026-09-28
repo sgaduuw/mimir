@@ -1001,3 +1001,127 @@ def test_render_body_diff_dev_null_target_path_falls_back_to_text():
     # SOURCE side, but our lexer choice keys on `+++` (the target).
     # `/dev/null` → TextLexer → no `k` keyword spans.
     assert 'class="k">' not in out
+
+
+# Interleaved patch review: quoted diff chunks separated by inline
+# commentary (mimir issue surfaced on ratatoskr thread
+# /linux-wireless/2026/08/17481479/t).
+
+
+def test_render_body_interleaved_review_keeps_later_chunks_as_diff():
+    """A reviewer quoting a patch in chunks with commentary between
+    them produces `quote / text / quote` at top level. Each quote's
+    content is parsed independently, so only the chunk carrying the
+    `---` / `@@` marker used to open a diff; the later chunks resumed
+    mid-hunk and fell through to plain text.
+
+    The continuation chunk here is deliberately TWO lines, below the
+    orphaned-run reclassification threshold, so only the carried
+    diff state can rescue it. Without the carry this asserts 1
+    highlight block and sees 1; with it, 2.
+    """
+    body = (
+        "> --- a/drivers/net/foo.c\n"
+        "> +++ b/drivers/net/foo.c\n"
+        "> @@ -1,3 +1,4 @@\n"
+        ">  static void foo(void)\n"
+        ">  {\n"
+        "> +\tint ret;\n"
+        "\n"
+        "why is this needed?\n"
+        "\n"
+        "> +\tret = bar();\n"
+        ">  }\n"
+    )
+    out = str(render_body(body))
+    assert out.count('<div class="highlight">') == 2
+    # The continuation must not also be sitting in a plain text pre.
+    assert "ret = bar();</pre>" not in out
+
+
+def test_render_body_prose_quoted_after_hunk_is_not_swallowed_as_diff():
+    """Negative of the carry: commentary does not reset the carried
+    diff state (that is the point), so the guard against dragging a
+    later PROSE quote into the diff is the resume check on the
+    chunk's own first non-blank line."""
+    body = (
+        "> --- a/x.c\n"
+        "> +++ b/x.c\n"
+        "> @@ -1 +1 @@\n"
+        "> -old\n"
+        "> +new\n"
+        "\n"
+        "looks fine\n"
+        "\n"
+        "> By the way, the series needs a cover letter.\n"
+        "> I will not repeat that on every patch.\n"
+    )
+    out = str(render_body(body))
+    assert out.count('<div class="highlight">') == 1
+    assert 'class="gi"' in out  # the real hunk is still highlighted
+    # The prose landed in a plain text block, so the span it sits in
+    # carries no diff token classes. Sliced to the enclosing <pre>
+    # so the real hunk's spans elsewhere in the document cannot
+    # satisfy this by construction.
+    prose_block = out[out.index("By the way") :]
+    prose_block = prose_block[: prose_block.index("</pre>")]
+    assert "I will not repeat that on every patch." in prose_block
+    assert "class=" not in prose_block
+
+
+def test_render_body_blank_only_quote_after_hunk_emits_no_diff_block():
+    """A quote chunk of nothing but blank lines must not inherit the
+    carried diff state and render an empty `<div class="highlight">`.
+    The resume check returns False when there is no non-blank line."""
+    body = "> --- a/x.c\n> +++ b/x.c\n> @@ -1 +1 @@\n> +new\n\nack\n\n>\n>\n"
+    out = str(render_body(body))
+    assert out.count('<div class="highlight">') == 1
+
+
+# Orphaned diff runs: a quoted hunk fragment with no marker anywhere
+# in the message (the reviewer quoted only the body of a hunk).
+
+
+def test_render_body_quoted_hunk_fragment_without_marker_is_highlighted():
+    body = (
+        "> +\twhile (off > HAL_LINK_DESC_ALIGN) {\n"
+        "> +\t\toff -= HAL_LINK_DESC_ALIGN;\n"
+        "> +\t\tmemset(&cmd, 0, sizeof(cmd));\n"
+        "\n"
+        "unnecessary cleanup\n"
+    )
+    out = str(render_body(body))
+    assert out.count('<div class="highlight">') == 1
+    assert 'class="gi"' in out
+
+
+def test_render_body_quoted_bullet_list_is_not_a_diff():
+    """Three `- ` bullets are diff-shaped by prefix alone. The
+    reclassification requires an added line or a space-prefixed
+    context line, which a bullet list has neither of."""
+    body = "> - the first thing\n> - the second thing\n> - the third thing\n"
+    out = str(render_body(body))
+    assert '<div class="highlight">' not in out
+    assert "the second thing" in out
+
+
+def test_render_body_quoted_indented_prose_is_not_a_diff():
+    """All-space-prefixed lines with no add/delete line are indented
+    prose, not a hunk."""
+    body = (
+        ">   this paragraph is indented\n"
+        ">   across three lines with no\n"
+        ">   additions or deletions at all\n"
+    )
+    out = str(render_body(body))
+    assert '<div class="highlight">' not in out
+
+
+def test_render_body_unquoted_diff_shaped_run_is_not_reclassified():
+    """Reclassification is scoped to quoted content. At top level a
+    diff-shaped run with no marker is far more likely to be a list or
+    pasted prose, and the message's own patch always carries a
+    marker."""
+    body = "+ one\n+ two\n  three\n"
+    out = str(render_body(body))
+    assert '<div class="highlight">' not in out
