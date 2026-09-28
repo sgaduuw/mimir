@@ -80,118 +80,17 @@ def _reclassify_orphaned_diffs(blocks: list[_Block]) -> None:
     scopes `looks_like_orphaned_diff` to the case it is safe for.
     Mutating `kind` rather than special-casing the renderer keeps
     one answer to "is this a diff" for every consumer downstream:
-    the diff renderer, the `carry` in `_render_blocks`, and the
-    hunk-quote fold all read the same field, so a fragment that
-    highlights as a hunk also folds as one.
+    both the diff renderer and the hunk-quote fold read the same
+    field, so a fragment that highlights as a hunk also folds as one.
+
+    The block list is local to one quote's render and is never
+    cached or shared, so mutating it in place has no reach beyond
+    the call that built it.
     """
     for block in blocks:
         if block.kind == "text" and looks_like_orphaned_diff(block.lines):
             block.kind = "diff"
             block.headerless = True
-
-
-def _render_blocks(
-    blocks: list[_Block],
-    msgid_urls: dict[str, str],
-    address_redactor=None,
-    depth: int = 0,
-    parent_url: str | None = None,
-    lore_mirror_urls: dict[str, str] | None = None,
-) -> str:
-    """Render a run of sibling blocks, carrying diff state across
-    quote siblings.
-
-    An interleaved patch review quotes the patch in chunks with
-    commentary between them, so one level reads `quote / text /
-    quote / text / quote`. Each quote's content is parsed on its
-    own, and a diff is only ever OPENED by a start marker, so before
-    the carry only the chunk holding the `---` or `@@` became a
-    diff; every later chunk resumed mid-hunk and fell out as plain
-    text (measured 2026-09-28: 29 of 400 recent linux-wireless
-    messages, 4,612 lines).
-
-    Commentary between chunks deliberately does NOT reset the carry,
-    because the commentary IS the interleaving. What stops it
-    running away is `parse_blocks`' own `_resumes_diff` check on the
-    next chunk.
-    """
-    out: list[str] = []
-    carry = False
-    for block in blocks:
-        if block.kind == "quote":
-            inner = "\n".join(_strip_one_quote_level(line) for line in block.lines)
-            inner_blocks = parse_blocks(inner, seed_diff=carry)
-            _reclassify_orphaned_diffs(inner_blocks)
-            carry = bool(inner_blocks) and inner_blocks[-1].kind == "diff"
-            out.append(
-                _render_quote(
-                    inner_blocks,
-                    msgid_urls,
-                    address_redactor,
-                    depth,
-                    parent_url,
-                    lore_mirror_urls,
-                )
-            )
-            continue
-        if block.kind != "text":
-            # A code fence or a top-level diff ends whatever quoted
-            # hunk was in flight; only commentary is transparent.
-            carry = False
-        out.append(
-            _render_block(
-                block,
-                msgid_urls,
-                address_redactor,
-                depth,
-                parent_url,
-                lore_mirror_urls,
-            )
-        )
-    return "".join(out)
-
-
-def _render_quote(
-    inner_blocks: list[_Block],
-    msgid_urls: dict[str, str],
-    address_redactor=None,
-    depth: int = 0,
-    parent_url: str | None = None,
-    lore_mirror_urls: dict[str, str] | None = None,
-) -> str:
-    inner_html = _render_blocks(
-        inner_blocks,
-        msgid_urls,
-        address_redactor,
-        depth + 1,
-        parent_url,
-        lore_mirror_urls,
-    )
-    # A first-level quote containing a diff is the patch-review
-    # "quoted hunk" pattern: a reviewer pasting a chunk of the
-    # parent patch to comment on it. Without folding, deep reviews
-    # turn the page into wall-of-diff that buries the inline
-    # commentary. Wrap in <details> by default and surface a
-    # "↗ jump to hunk" link to the parent message (where the
-    # original hunk lives in context).
-    is_hunk_quote = depth == 0 and any(b.kind == "diff" for b in inner_blocks)
-    if is_hunk_quote:
-        jump = ""
-        if parent_url:
-            jump = ' <a href="' + html.escape(parent_url) + '">↗ jump to hunk</a>'
-        return (
-            '<details class="hunk-quote"><summary>'
-            f"<small><em>quoted hunk</em>{jump}</small></summary>"
-            f"<blockquote>{inner_html}</blockquote></details>"
-        )
-    if depth + 1 >= QUOTE_COLLAPSE_AT_DEPTH:
-        # Wrap deep quotes in <details> so the user can collapse the
-        # nested levels. Pico styles details/summary out of the box.
-        return (
-            "<details><summary><small><em>quoted</em></small></summary>"
-            f"<blockquote>{inner_html}</blockquote></details>"
-        )
-    return f"<blockquote>{inner_html}</blockquote>"
 
 
 def _render_block(
@@ -202,6 +101,53 @@ def _render_block(
     parent_url: str | None = None,
     lore_mirror_urls: dict[str, str] | None = None,
 ) -> str:
+    if block.kind == "quote":
+        stripped = [_strip_one_quote_level(line) for line in block.lines]
+        inner = "\n".join(stripped)
+        inner_blocks = parse_blocks(inner)
+        # Quoted content only: see `_reclassify_orphaned_diffs`. Done
+        # here rather than inside `parse_blocks` because "am I inside
+        # a quote" is the renderer's knowledge, and done BEFORE the
+        # `is_hunk_quote` test below so a promoted fragment folds as
+        # the hunk it is.
+        _reclassify_orphaned_diffs(inner_blocks)
+        inner_html = "".join(
+            _render_block(
+                b,
+                msgid_urls,
+                address_redactor,
+                depth + 1,
+                parent_url,
+                lore_mirror_urls,
+            )
+            for b in inner_blocks
+        )
+        # A first-level quote containing a diff is the patch-review
+        # "quoted hunk" pattern: a reviewer pasting a chunk of the
+        # parent patch to comment on it. Without folding, deep reviews
+        # turn the page into wall-of-diff that buries the inline
+        # commentary. Wrap in <details> by default and surface a
+        # "↗ jump to hunk" link to the parent message (where the
+        # original hunk lives in context).
+        is_hunk_quote = depth == 0 and any(b.kind == "diff" for b in inner_blocks)
+        if is_hunk_quote:
+            jump = ""
+            if parent_url:
+                jump = ' <a href="' + html.escape(parent_url) + '">↗ jump to hunk</a>'
+            return (
+                '<details class="hunk-quote"><summary>'
+                f"<small><em>quoted hunk</em>{jump}</small></summary>"
+                f"<blockquote>{inner_html}</blockquote></details>"
+            )
+        if depth + 1 >= QUOTE_COLLAPSE_AT_DEPTH:
+            # Wrap deep quotes in <details> so the user can collapse the
+            # nested levels. Pico styles details/summary out of the box.
+            return (
+                "<details><summary><small><em>quoted</em></small></summary>"
+                f"<blockquote>{inner_html}</blockquote></details>"
+            )
+        return f"<blockquote>{inner_html}</blockquote>"
+
     if block.kind == "diff":
         # Anchors only at top level; nested (inside a quote block)
         # diffs would collide on `h-N` / `h-N-LM` with the primary
@@ -255,11 +201,14 @@ def render_body(
     if not body:
         return Markup("")
     return Markup(
-        _render_blocks(
-            parse_blocks(body),
-            msgid_urls or {},
-            address_redactor,
-            parent_url=parent_url,
-            lore_mirror_urls=lore_mirror_urls,
+        "".join(
+            _render_block(
+                b,
+                msgid_urls or {},
+                address_redactor,
+                parent_url=parent_url,
+                lore_mirror_urls=lore_mirror_urls,
+            )
+            for b in parse_blocks(body)
         )
     )
