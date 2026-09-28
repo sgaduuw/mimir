@@ -13,19 +13,20 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
-- Quoted patch hunks in an interleaved review now keep their syntax
-  highlighting past the first chunk. A reviewer who quotes a patch in
-  pieces with commentary between them produces a block list of
-  `quote / text / quote`, and each quote was parsed independently, so
-  only the piece carrying the `---` or `@@` marker opened a diff and
-  every later piece fell out as plain text. Measured on the 400 most
-  recent linux-wireless messages (2026-09-28): 29 of them, 4,612 lines.
-- A quoted hunk fragment with no `@@` header anywhere in the message
-  (the reviewer quoted only the body of a hunk) is now recognised by
-  shape and rendered as a diff. Scoped to quoted content, and requires
-  three or more lines with an addition or deletion among them plus an
-  added or context line, so a `- item` bullet list and indented prose
-  both stay prose.
+- Quoted patch hunks now keep their syntax highlighting past the first
+  chunk. A reviewer who quotes a patch in pieces with commentary
+  between them leaves every piece after the first with no `---` or
+  `@@` to open a diff, so those pieces rendered as plain text. They
+  are now recognised by shape: three or more lines, all diff-shaped,
+  with an addition or deletion among them and an added or context
+  line, scoped to quoted content. A `- item` bullet list, uniformly
+  indented prose, and any run containing a prose line all stay prose.
+  Measured on the 400 most recent linux-wireless messages
+  (2026-09-28): 29 of them gain highlighting, none lose any.
+
+  Known limit, since the shape is genuinely ambiguous: a bullet list
+  whose items have indented continuation lines is indistinguishable
+  from a hunk of deletions and context, and is rendered as a diff.
 - `text/plain; format=flowed` bodies (RFC 3676) are now decoded at
   parse time: space-stuffing is removed and soft line breaks re-join.
   Undecoded, a stuffed quote arrives as `' > text'`, which the quote

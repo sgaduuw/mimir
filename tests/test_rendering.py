@@ -1003,79 +1003,131 @@ def test_render_body_diff_dev_null_target_path_falls_back_to_text():
     assert 'class="k">' not in out
 
 
-# Interleaved patch review: quoted diff chunks separated by inline
-# commentary (mimir issue surfaced on ratatoskr thread
-# /linux-wireless/2026/08/17481479/t).
+# Quoted patch review. A reviewer quoting a patch in pieces with
+# commentary between them leaves every piece after the first with no
+# `@@` or `---` to open a diff, so the later pieces are recognised by
+# SHAPE instead (`blocks.looks_like_orphaned_diff`, applied to quoted
+# content only by `body._reclassify_orphaned_diffs`). Surfaced on
+# ratatoskr thread /linux-wireless/2026/08/17481479/t.
+
+HUNK = (
+    "> --- a/drivers/net/foo.c\n"
+    "> +++ b/drivers/net/foo.c\n"
+    "> @@ -1,3 +1,4 @@\n"
+    ">  static void foo(void)\n"
+    ">  {\n"
+    "> +\tint ret;\n"
+    "\n"
+    "COMMENTARY-MARKER\n"
+    "\n"
+)
 
 
-def test_render_body_interleaved_review_keeps_later_chunks_as_diff():
-    """A reviewer quoting a patch in chunks with commentary between
-    them produces `quote / text / quote` at top level. Each quote's
-    content is parsed independently, so only the chunk carrying the
-    `---` / `@@` marker used to open a diff; the later chunks resumed
-    mid-hunk and fell through to plain text.
+def _tail(out: str) -> str:
+    """Everything emitted after the commentary, i.e. the second quoted
+    chunk only. Slicing is what stops the first hunk's own spans
+    satisfying an assertion about the second chunk."""
+    assert "COMMENTARY-MARKER" in out
+    return out[out.index("COMMENTARY-MARKER") :]
 
-    The continuation chunk here is deliberately TWO lines, below the
-    orphaned-run reclassification threshold, so only the carried
-    diff state can rescue it. Without the carry this asserts 1
-    highlight block and sees 1; with it, 2.
+
+def test_render_body_interleaved_review_highlights_the_later_chunk():
+    out = str(render_body(HUNK + "> +\tret = bar();\n> +\tif (ret)\n>  }\n"))
+    tail = _tail(out)
+    assert '<div class="highlight">' in tail
+    assert "ret = bar();" in tail
+    # The point is COLOUR, not a wrapper. `_render_diff_block` only
+    # applies gutter classes to lines it has seen a hunk header open,
+    # so a promoted block that forgot `headerless=True` would render
+    # an empty `<div class="highlight">` around plain `diff-meta`
+    # text and still satisfy a count-the-wrappers assertion. An
+    # earlier version of this test did exactly that and passed while
+    # the feature was inert.
+    assert 'class="gi"' in tail
+
+
+def test_render_body_short_quoted_continuation_stays_prose():
+    """Under `MIN_ORPHANED_DIFF_LINES` the shape is not evidence
+    enough, so a two-line continuation is left as text. Pins the
+    threshold: with the constant at 1 or 2 this chunk becomes a diff.
     """
-    body = (
-        "> --- a/drivers/net/foo.c\n"
-        "> +++ b/drivers/net/foo.c\n"
-        "> @@ -1,3 +1,4 @@\n"
-        ">  static void foo(void)\n"
-        ">  {\n"
-        "> +\tint ret;\n"
-        "\n"
-        "why is this needed?\n"
-        "\n"
-        "> +\tret = bar();\n"
-        ">  }\n"
-    )
-    out = str(render_body(body))
-    assert out.count('<div class="highlight">') == 2
-    # The continuation must not also be sitting in a plain text pre.
-    assert "ret = bar();</pre>" not in out
+    tail = _tail(str(render_body(HUNK + "> +\tret = bar();\n>  }\n")))
+    assert "ret = bar();" in tail
+    assert '<div class="highlight">' not in tail
 
 
-def test_render_body_prose_quoted_after_hunk_is_not_swallowed_as_diff():
-    """Negative of the carry: commentary does not reset the carried
-    diff state (that is the point), so the guard against dragging a
-    later PROSE quote into the diff is the resume check on the
-    chunk's own first non-blank line."""
-    body = (
-        "> --- a/x.c\n"
-        "> +++ b/x.c\n"
-        "> @@ -1 +1 @@\n"
-        "> -old\n"
-        "> +new\n"
-        "\n"
-        "looks fine\n"
-        "\n"
-        "> By the way, the series needs a cover letter.\n"
-        "> I will not repeat that on every patch.\n"
-    )
-    out = str(render_body(body))
+def test_render_body_quoted_chunk_left_as_prose_still_linkifies():
+    """A chunk that is not promoted keeps everything the text path
+    gives it. Guards the direction of the promotion: widening it
+    silently costs URL and Message-ID links."""
+    chunk = ">  see https://example.com/patch for the reason\n>  and the rest\n"
+    tail = _tail(str(render_body(HUNK + chunk)))
+    assert '<a href="https://example.com/patch"' in tail
+
+
+def test_render_body_quoted_signature_after_a_hunk_still_redacts_trailers():
+    """A quoted signature block must keep going through `linkify`,
+    which is where `address_redactor` is consulted. Routing it to the
+    diff renderer instead silently drops DCO redaction on the message
+    page, which is a disclosure rather than a cosmetic bug.
+
+    Uses a real DCO trailer: `linkify` only redacts recognised
+    trailer roles, so a `Cc:` line proves nothing either way.
+    """
+    chunk = "> -- \n> John Doe\n> Signed-off-by: Someone <someone@example.com>\n"
+
+    def redactor(addr):
+        return "<redacted>"
+
+    standalone = str(render_body(chunk, address_redactor=redactor))
+    assert "someone@example.com" not in standalone  # precondition
+    assert "redacted" in standalone
+
+    tail = _tail(str(render_body(HUNK + chunk, address_redactor=redactor)))
+    assert "John Doe" in tail  # precondition: the chunk rendered at all
+    assert "someone@example.com" not in tail
+    assert "redacted" in tail
+
+
+def test_render_body_quoted_scissors_line_after_a_hunk_is_not_dropped():
+    """`parse_blocks` strips a trailing `---` off a diff block and
+    pops the block if that empties it. A quoted chunk of a lone
+    `---` (the standard patch-email separator) must not be able to
+    reach that path and vanish from the page."""
+    tail = _tail(str(render_body(HUNK + "> ---\n")))
+    assert "---" in tail
+
+
+def test_render_body_quoted_bullet_list_after_a_hunk_is_not_a_diff():
+    """The `not_bullet` guard has to hold in context, not just in
+    isolation: a nearby hunk must not change how this run is
+    classified. One predicate, consulted the same way everywhere."""
+    chunk = "> - the first thing\n> - the second thing\n> - the third thing\n"
+    out = str(render_body(HUNK + chunk))
+    assert "the second thing" in out
     assert out.count('<div class="highlight">') == 1
-    assert 'class="gi"' in out  # the real hunk is still highlighted
-    # The prose landed in a plain text block, so the span it sits in
-    # carries no diff token classes. Sliced to the enclosing <pre>
-    # so the real hunk's spans elsewhere in the document cannot
-    # satisfy this by construction.
-    prose_block = out[out.index("By the way") :]
-    prose_block = prose_block[: prose_block.index("</pre>")]
-    assert "I will not repeat that on every patch." in prose_block
-    assert "class=" not in prose_block
 
 
-def test_render_body_blank_only_quote_after_hunk_emits_no_diff_block():
-    """A quote chunk of nothing but blank lines must not inherit the
-    carried diff state and render an empty `<div class="highlight">`.
-    The resume check returns False when there is no non-blank line."""
-    body = "> --- a/x.c\n> +++ b/x.c\n> @@ -1 +1 @@\n> +new\n\nack\n\n>\n>\n"
-    out = str(render_body(body))
+def test_render_body_quoted_indented_prose_after_a_hunk_is_not_a_diff():
+    """Same, for the `has_change` guard."""
+    chunk = (
+        ">   this paragraph is indented\n"
+        ">   across three lines with no\n"
+        ">   additions or deletions at all\n"
+    )
+    out = str(render_body(HUNK + chunk))
+    assert "additions or deletions at all" in out
     assert out.count('<div class="highlight">') == 1
+
+
+def test_render_body_headerless_run_survives_a_whitespace_only_line():
+    """`looks_like_orphaned_diff` ignores blank lines when deciding,
+    but they stay in `block.lines`. A tab-only line must not close
+    the synthesised hunk, or every line after it silently loses its
+    gutter colour."""
+    body = "> +\tfirst();\n> \t\n> +\tsecond();\n> +\tthird();\n"
+    out = str(render_body(body))
+    assert out.count('class="gi"') == 3
 
 
 # Orphaned diff runs: a quoted hunk fragment with no marker anywhere
@@ -1092,7 +1144,7 @@ def test_render_body_quoted_hunk_fragment_without_marker_is_highlighted():
     )
     out = str(render_body(body))
     assert out.count('<div class="highlight">') == 1
-    assert 'class="gi"' in out
+    assert out.count('class="gi"') == 3
 
 
 def test_render_body_quoted_bullet_list_is_not_a_diff():
@@ -1125,3 +1177,38 @@ def test_render_body_unquoted_diff_shaped_run_is_not_reclassified():
     body = "+ one\n+ two\n  three\n"
     out = str(render_body(body))
     assert '<div class="highlight">' not in out
+
+
+def test_looks_like_orphaned_diff_threshold_is_load_bearing():
+    """Pins `MIN_ORPHANED_DIFF_LINES` directly. Going through
+    `render_body` alone left the constant unguarded: a mutant setting
+    it to 1 survived the suite, which would promote a single quoted
+    `+foo` line to a diff."""
+    from mimir.rendering.blocks import MIN_ORPHANED_DIFF_LINES, looks_like_orphaned_diff
+
+    assert MIN_ORPHANED_DIFF_LINES == 3
+    run = ["+\tone();", "+\ttwo();", "+\tthree();"]
+    assert looks_like_orphaned_diff(run) is True
+    # One short, and the same shape is no longer evidence enough.
+    assert looks_like_orphaned_diff(run[:2]) is False
+    # Blank lines do not count toward the threshold.
+    assert looks_like_orphaned_diff([run[0], "", "", run[1]]) is False
+
+
+def test_quoted_prose_containing_a_plus_line_is_not_a_diff():
+    """The `all(DIFF_BODY_RE...)` check is the primary gate and was
+    the one condition no test exercised: a mutant deleting it
+    survived the suite. A quoted paragraph that happens to contain a
+    line starting with `+` or `-` still has prose lines in it, and
+    prose lines are what disqualify the run.
+    """
+    from mimir.rendering.blocks import looks_like_orphaned_diff
+
+    run = ["+ one", "this line is prose", "+ two"]
+    assert looks_like_orphaned_diff(run) is False
+    # Without the prose line the same run IS a hunk body, so the
+    # test is discriminating on that line and nothing else.
+    assert looks_like_orphaned_diff(["+ one", " ctx", "+ two"]) is True
+
+    body = "> + one\n> this line is prose\n> + two\n"
+    assert '<div class="highlight">' not in str(render_body(body))

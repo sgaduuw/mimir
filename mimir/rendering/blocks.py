@@ -53,10 +53,10 @@ DIFF_HEADER_RE = re.compile(
 DIFF_TRAILER_LINE = "-- "
 
 # A line that could be the body of a hunk already in progress:
-# context, addition, or deletion. Used for two things that both
-# exist because a diff block is only ever OPENED by a start marker
-# (`DIFF_START_RE`), and a reviewer routinely quotes a patch in
-# pieces where only the first piece carries one.
+# context, addition, or deletion. A diff block is only ever OPENED
+# by a start marker (`DIFF_START_RE`), and a reviewer routinely
+# quotes a patch in pieces where only the first piece carries one,
+# so the later pieces have to be recognised by shape instead.
 DIFF_BODY_RE = re.compile(r"^[ +-]")
 # Shortest run of diff-body lines worth reclassifying on shape
 # alone. Two lines is common in ordinary prose; three all-diff-shaped
@@ -102,24 +102,6 @@ def _strip_one_quote_level(line: str) -> str:
     return STRIP_ONE_LEVEL_RE.sub("", line, count=1)
 
 
-def _resumes_diff(text: str) -> bool:
-    """Whether `text` opens on a line that could continue a hunk.
-
-    Gate on the caller's `seed_diff`, so an inherited diff state is
-    only honoured by a chunk that actually looks like a
-    continuation. Two things it rules out: a quoted PROSE paragraph
-    following a quoted hunk (its first line starts with a letter, so
-    the seed is dropped rather than swallowing the prose into the
-    diff), and a chunk of nothing but blank lines (which would
-    otherwise render as an empty highlight block).
-    """
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        return DIFF_BODY_RE.match(line) is not None
-    return False
-
-
 def looks_like_orphaned_diff(lines: list[str]) -> bool:
     """Whether a run of TEXT lines is really the body of a hunk that
     no start marker ever opened.
@@ -149,13 +131,8 @@ def looks_like_orphaned_diff(lines: list[str]) -> bool:
     return has_change and not_bullet
 
 
-def parse_blocks(text: str, *, seed_diff: bool = False) -> list[_Block]:
+def parse_blocks(text: str) -> list[_Block]:
     """Walk lines, group runs of the same kind into blocks.
-
-    `seed_diff` starts the walk already inside a diff, for a chunk
-    that continues one opened by an earlier sibling (see
-    `body._render_blocks`). It is honoured only if the text actually
-    resumes a hunk, per `_resumes_diff`.
 
     Quote blocks store the *original* prefixed lines; render_block strips
     one level off and recurses, which handles arbitrary nesting naturally.
@@ -170,7 +147,7 @@ def parse_blocks(text: str, *, seed_diff: bool = False) -> list[_Block]:
     ``format-patch`` emits.
     """
     blocks: list[_Block] = []
-    in_diff = seed_diff and _resumes_diff(text)
+    in_diff = False
     in_trailer = False
     in_code = False
     code_info = ""

@@ -29,13 +29,20 @@ import re
 # already-quoted line (`> x` begins with `>`, so it ships as ` > x`),
 # so counting marks first would see the space and read depth 0.
 #
-# The trailing ` ?` is the separator space of the near-universal
-# `"> "` quoting convention, not content. It has to come off before
-# joining a soft break, or `"> abc "` + `"> def"` re-joins to
-# `"> abc  def"` with a doubled space; and it has to be re-emitted
-# verbatim so the output still looks like what the sender wrote.
-# Mirrors `blocks.STRIP_ONE_LEVEL_RE`'s `^>\s?` per-level shape.
-_PREFIX_RE = re.compile(r"^>+ ?")
+# The optional space after each mark is the separator of the
+# near-universal `"> "` convention, not content. It has to come off
+# before joining a soft break, or `"> abc "` + `"> def"` re-joins to
+# `"> abc  def"` with a doubled space, and `"> > abc "` + `"> > def"`
+# re-joins to `"> > abc > def"` with a quote mark spliced into the
+# middle of a sentence.
+#
+# Per-mark rather than once at the end, so this agrees with
+# `blocks.QUOTE_PREFIX_RE` (`^((?:>\s?)+)`) about where the prefix of
+# a given line ends. They must: that module decides how deep a line
+# is quoted, and this one decides which lines may be joined, so a
+# disagreement means joining across a depth boundary the renderer
+# then draws.
+_PREFIX_RE = re.compile(r"^(?:> ?)+")
 
 # Ends in a space and is therefore shaped like a soft break, but is
 # the signature delimiter. Every mail client keys on these exact
@@ -53,16 +60,31 @@ def unflow(text: str, *, delsp: bool = False) -> str:
     separator when two lines re-join.
     """
     out: list[str] = []
-    pending: str | None = None
+    # The paragraph under construction, held as a list of fragments
+    # rather than a growing str. A closure would make `pending` a
+    # CELL variable, and CPython's in-place unicode-concat
+    # specialisation only fires on STORE_FAST, so `pending += core`
+    # would copy the whole paragraph every line: measured 3.4x per
+    # doubling of the input. `parse_message` runs on the read path
+    # for every message view, so that is a request-time cost on a
+    # body an outsider controls, not just a slow batch job.
+    pending: list[str] | None = None
     pending_prefix = ""
 
     def flush() -> None:
         nonlocal pending, pending_prefix
         if pending is not None:
-            out.append(pending_prefix + pending)
+            out.append(pending_prefix + "".join(pending))
             pending, pending_prefix = None, ""
 
-    for raw in text.splitlines():
+    # `split("\n")` rather than `splitlines()`: the latter also
+    # breaks on form feed, U+2028, U+0085 and friends, and since the
+    # output is rejoined with "\n" those characters would be
+    # REWRITTEN into newlines. A form feed is a real section
+    # separator in kernel sources, so a patch quoted in a flowed
+    # message would gain a line break mid-hunk and the following
+    # line would lose its gutter marker.
+    for raw in text.split("\n"):
         line = raw.removeprefix(" ")  # §4.4 un-stuff
         match = _PREFIX_RE.match(line)
         prefix = match.group(0) if match else ""
@@ -102,7 +124,7 @@ def unflow(text: str, *, delsp: bool = False) -> str:
             flush()
 
         if pending is None:
-            pending, pending_prefix = core, prefix
+            pending, pending_prefix = [core], prefix
         else:
             # Joining at the PENDING prefix, which may be deeper than
             # this line's. Strictly §4.5 ends the paragraph on any
@@ -111,7 +133,9 @@ def unflow(text: str, *, delsp: bool = False) -> str:
             # soft-wrapped continuation dropped its `>`, and the
             # trailing space is the sender asserting the join.
             # Honouring it costs nothing when the depths do match.
-            pending += ("" if delsp else " ") + core
+            if not delsp:
+                pending.append(" ")
+            pending.append(core)
 
         if not soft:
             flush()

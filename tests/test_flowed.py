@@ -7,6 +7,7 @@ renders as one literal text block with no quote structure, no fold,
 and no diff detection inside the quoted hunks.
 """
 
+import time
 from email import policy
 from email.parser import BytesParser
 
@@ -150,3 +151,118 @@ def test_flowed_param_survives_the_stdlib_parser():
     assert part is not None
     assert part.get_content_type() == "text/plain"
     assert part.get_param("format") == "flowed"
+
+
+def test_unflow_whitespace_only_line_is_not_a_soft_break():
+    """A line holding nothing but whitespace has no content for a
+    following line to continue, so it is a paragraph boundary even
+    though it ends in a space.
+
+    This is not a nicety. A patch pasted into a flowed body has
+    context lines whose single leading space IS diff structure, and
+    an all-whitespace one looks exactly like a soft break. Joining
+    it merges two hunk lines into one, at which point the `-` of the
+    following line stops being a gutter marker and gets lexed as a
+    minus operator in the middle of a line of C. Observed against
+    linux-wireless commit 3eb5760f8672.
+    """
+    body = ">   \n> -\tif (count > size)\n> +\tif (count >= size)"
+    assert unflow(body) == body
+
+
+def test_unflow_joins_space_separated_quote_marks_without_reinserting_them():
+    """`_PREFIX_RE` is `^>+ ?`, so it reads `"> > "` as depth 1 with
+    content `"> def"`. Joining a soft break then splices the inner
+    `>` into the middle of the sentence, which is exactly the
+    `"> abc > def"` corruption
+    `test_unflow_joins_within_one_quote_depth_and_keeps_the_prefix`
+    exists to prevent; that test only covers the `">>"` spelling.
+
+    Space-separated quote marks are not hypothetical for mimir: the
+    renderer's own `blocks.QUOTE_PREFIX_RE` is `^((?:>\\s?)+)` and
+    scores `"> > abc"` as depth 2, so the two modules disagree about
+    what the quote prefix of the same line is.
+    """
+    from mimir.rendering.blocks import _quote_depth
+
+    # Precondition: the renderer treats this spelling as depth 2, so
+    # the string is a real quote prefix and not content.
+    assert _quote_depth("> > abc") == 2
+
+    assert unflow("> > abc \n> > def") == "> > abc def"
+
+
+def test_unflow_is_linear_in_line_count():
+    """`pending += ... + core` accumulates into a variable that the
+    nested `flush()` closes over, so it is a cell (STORE_DEREF) and
+    CPython's in-place string-concatenation specialisation, which
+    only applies to STORE_FAST locals, does not fire. The join is
+    therefore O(n^2) in the size of a soft-wrapped paragraph.
+
+    `parse_message` runs on the read path for every message view, and
+    caps the raw message at 50 MB, so a single crafted flowed body of
+    a few MB pins a gunicorn worker to its 60 s timeout on every
+    request.
+
+    Scale-invariant assertion (a ratio, not a wall-clock budget) so
+    this does not become a flaky machine-speed test. Linear work
+    doubles; measured on this branch the ratio is ~3.4.
+    """
+
+    def build(n: int) -> str:
+        return "\n".join(f"word{i:06d} " for i in range(n)) + "\nend"
+
+    def best_of(n: int, rounds: int = 3) -> float:
+        text = build(n)
+        unflow(text)  # warm
+        return min(_timed(text) for _ in range(rounds))
+
+    def _timed(text: str) -> float:
+        start = time.perf_counter()
+        unflow(text)
+        return time.perf_counter() - start
+
+    small = best_of(30_000)
+    large = best_of(60_000)
+    # Precondition: the small run is long enough that timer noise is
+    # not what the ratio measures.
+    assert small > 0.005, f"baseline too fast to compare: {small}s"
+    assert large / small < 2.6, (
+        f"doubling the input multiplied the work by {large / small:.2f}x "
+        f"({small * 1000:.1f}ms -> {large * 1000:.1f}ms); expected ~2x"
+    )
+
+
+def test_parse_message_honours_delsp_yes():
+    """`unflow(delsp=True)` is covered directly, but nothing pinned
+    that `parse_message` READS the parameter. A mutant hardcoding
+    `delsp=False` at the call site survived the suite."""
+    raw = _message(
+        "text/plain; charset=UTF-8; format=flowed; delsp=yes",
+        "abc \ndef\n",
+    )
+    assert parse_message(raw).body == "abcdef\n"
+
+    raw_plain = _message("text/plain; charset=UTF-8; format=flowed", "abc \ndef\n")
+    assert parse_message(raw_plain).body == "abc def\n"
+
+
+def test_unflow_does_not_rewrite_exotic_line_separators_into_newlines():
+    """`str.splitlines()` breaks on form feed, U+2028 and U+0085, and
+    the output is rejoined with `\\n`, so using it would REWRITE those
+    characters. A form feed is a real section separator in kernel
+    sources, so a quoted patch would gain a line break mid-hunk and
+    the following line would lose its gutter marker."""
+    for sep in ("\x0c", " ", "\x85"):
+        body = f"+ before{sep}after"
+        assert unflow(body) == body, f"rewrote {sep!r}"
+
+
+def test_unflow_preserves_a_trailing_newline():
+    """`split("\n")` keeps the empty final element that a trailing
+    newline produces, where `splitlines()` would swallow it. Pinned
+    because a non-flowed body keeps its trailing newline and a
+    flowed one has to agree: the decode is not allowed to change the
+    shape of the text in ways unrelated to flowing."""
+    assert unflow("one\ntwo\n") == "one\ntwo\n"
+    assert unflow("one\ntwo") == "one\ntwo"
