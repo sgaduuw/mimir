@@ -27,6 +27,19 @@ changes, not internal refactors. Categories: **Added**,
   Known limit, since the shape is genuinely ambiguous: a bullet list
   whose items have indented continuation lines is indistinguishable
   from a hunk of deletions and context, and is rendered as a diff.
+
+### Changed
+
+- A quoted patch hunk now renders an email address embedded in patch
+  content (a `MODULE_AUTHOR` line, a MAINTAINERS `M:` entry) verbatim,
+  where it previously showed `[off-list ref]`. That text was never a
+  redaction policy: it is the Message-ID linkifier failing to resolve
+  a `<local@domain>` token, and the same patch sent to the list rather
+  than quoted already rendered the address verbatim. Quoted and
+  unquoted hunks now agree. Measured at 4 of 400 recent
+  linux-wireless messages. DCO trailer redaction is unaffected and
+  cannot be reached this way; see CONTEXT.md "Redaction is a
+  display-time decision".
 - `text/plain; format=flowed` bodies (RFC 3676) are now decoded at
   parse time: space-stuffing is removed and soft line breaks re-join.
   Undecoded, a stuffed quote arrives as `' > text'`, which the quote

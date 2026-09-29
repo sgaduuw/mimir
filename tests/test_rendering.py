@@ -1263,3 +1263,81 @@ def test_render_body_hunk_quote_fold_is_first_level_only():
     out = str(render_body(doubly))
     assert out.count('class="hunk-quote"') == 0
     assert '<div class="highlight">' in out  # the hunk still renders
+
+
+# Shape promotion moves a run from the `linkify` path to the diff
+# path, and `linkify` is the only place three policies are applied.
+# The boundary is pinned here in the direction it was DECIDED, so
+# widening or narrowing the promotion shows up as a failing test
+# rather than as a quiet change to what a public archive prints.
+#
+# Reduced from linux-wireless message f04ebb46: a reviewer quoting
+# the MAINTAINERS hunk of a new-driver series.
+QUOTED_MAINTAINERS_HUNK = (
+    "> +M:     Luka Gejak <luka.gejak@linux.dev>\n"
+    "> +L:     linux-wireless@vger.kernel.org\n"
+    "> +S:     Maintained\n"
+)
+
+
+def test_promoted_hunk_renders_an_embedded_address_like_an_unquoted_hunk():
+    """DECIDED 2026-09-29, see CONTEXT.md "Redaction is a display-time
+    decision". A quoted hunk renders an address embedded in patch
+    content verbatim, which is what the same patch already did
+    unquoted. The `[off-list ref]` text it used to show was not a
+    redaction policy: it is the Message-ID linkifier failing to
+    resolve a `<local@domain>` token, the "smear" that motivated
+    `_redact_trailer_address` in the first place.
+
+    Measured when this was decided: 4 of 400 recent linux-wireless
+    messages change this way.
+    """
+    out = str(render_body(QUOTED_MAINTAINERS_HUNK))
+    assert "Luka Gejak" in out  # precondition: the chunk rendered
+    assert "luka.gejak@linux.dev" in out
+    assert "off-list ref" not in out
+
+    # The unquoted spelling of the same content, for the comparison
+    # the decision rests on.
+    unquoted = "@@ -1 +1 @@\n+M:     Luka Gejak <luka.gejak@linux.dev>\n"
+    assert "luka.gejak@linux.dev" in str(render_body(unquoted))
+
+
+def test_dco_trailer_redaction_cannot_be_reached_by_promotion():
+    """The line that MUST hold: promotion may never move a
+    redactable trailer off the `linkify` path. It cannot, and
+    structurally rather than by luck: `_TRAILER_LINE_RE` is anchored
+    on a trailer key at line start, while every line of a promoted
+    run begins with a space, `+` or `-`. Asserted because that is an
+    invariant across two modules, which is exactly the kind that
+    drifts."""
+    from mimir.rendering.blocks import looks_like_orphaned_diff
+
+    trailer_run = [
+        "Signed-off-by: Someone <someone@example.com>",
+        "Reviewed-by: Other <other@example.com>",
+        "Tested-by: Third <third@example.com>",
+    ]
+    assert looks_like_orphaned_diff(trailer_run) is False
+
+    def redactor(addr):
+        return "<redacted>"
+
+    body = "> " + "\n> ".join(trailer_run) + "\n"
+    out = str(render_body(body, address_redactor=redactor))
+    assert "someone@example.com" not in out
+    assert "redacted" in out
+
+
+def test_promoted_hunk_does_not_linkify_urls_in_patch_content():
+    """The second policy the same seam costs, pinned in the decided
+    direction. A URL inside quoted patch content renders as text,
+    matching the unquoted hunk it is a copy of."""
+    chunk = (
+        "> +/* see https://example.com/patch for the reason */\n"
+        "> +\tint ret;\n"
+        ">  \tint other;\n"
+    )
+    out = str(render_body(chunk))
+    assert "example.com/patch" in out  # precondition: content present
+    assert 'href="https://example.com/patch"' not in out
