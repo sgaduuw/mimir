@@ -27,6 +27,7 @@ from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
 
 from mimir.rendering.blocks import (
+    QUOTE_PREFIX_RE,
     _Block,
     _strip_one_quote_level,
     looks_like_orphaned_diff,
@@ -52,6 +53,49 @@ _DEFAULT_CODE_LEXER = CLexer()
 # tens of milliseconds. Same threshold reused by diff and attachment
 # preview rendering.
 PYGMENTS_MAX_BLOCK_CHARS = 64 * 1024
+
+# Deepest quote nesting `_render_block` will descend into. Past it,
+# the remaining lines render flat, prefixes and all.
+#
+# Rendering a quote recurses (strip one `>`, re-parse, render), so
+# without a cap the depth is the attacker's to choose and the stack
+# is the only limit. There is no single number for it: measured
+# 2026-09-29 at depth 497 from a bare call and 481 under pytest,
+# because what is left of the stack depends on how many frames the
+# caller already used, and a real request has Flask and Jinja on it.
+# Whatever the exact figure, blowing it is a 500 on a public
+# no-auth route, for as long as the message stays archived, which
+# is forever: the mirror is the source of truth and the body is
+# re-derived on every read. Same class as the caps above, and the
+# one that was missing (#581).
+#
+# 64 against a deepest-observed 7: measured 2026-09-29 over 1,000
+# messages from two inboxes (600 lkml, 400 linux-wireless), where
+# nothing exceeded 8. Re-measure before treating that as a fact;
+# the archive only grows.
+MAX_QUOTE_DEPTH = 64
+
+# Total quote levels one `render_body` call will descend into,
+# across every quote block in the message.
+#
+# `MAX_QUOTE_DEPTH` bounds one block; it does not bound the message,
+# because a blank line starts a new block and a body may hold
+# unboundedly many. Each level costs ~92 bytes of `<details>`
+# boilerplate for the one input byte (`>`) that asked for it, so
+# depth-capped-only rendering still amplified a body ~89x: measured
+# 2026-09-29, 1.05 MB in gave 93 MB out in 2.4 s, linearly, and the
+# 50 MB `parser.MAX_RAW_MESSAGE_BYTES` ceiling put the reachable
+# worst case in the gigabytes on a public uncached route. That is
+# the same denial of service the depth cap was added for, wearing a
+# timeout instead of a 500. Pre-dates the depth cap.
+#
+# A whole-render budget is what actually bounds it: boilerplate can
+# never exceed roughly `512 * 92` bytes however large the body is.
+#
+# 512 against a worst-observed 44: measured 2026-09-29 over the same
+# 1,000 messages, where the p99 is 14 and the deepest single message
+# rendered 44 levels in total.
+MAX_QUOTE_LEVELS_PER_RENDER = 512
 
 
 def _lexer_for_fence(info: str):
@@ -93,6 +137,55 @@ def _reclassify_orphaned_diffs(blocks: list[_Block]) -> None:
             block.headerless = True
 
 
+class _QuoteBudget:
+    """Mutable per-render allowance of quote levels.
+
+    One instance per `render_body` call, threaded through the
+    recursion, because the thing being bounded is a property of the
+    whole message rather than of any one block.
+    """
+
+    __slots__ = ("remaining",)
+
+    def __init__(self, remaining: int = MAX_QUOTE_LEVELS_PER_RENDER) -> None:
+        self.remaining = remaining
+
+
+def _flatten_quote(
+    block: _Block,
+    msgid_urls: dict[str, str],
+    address_redactor,
+    lore_mirror_urls: dict[str, str] | None,
+    reason: str,
+) -> str:
+    """Render a quote without descending into it.
+
+    Strips ALL remaining quote markers before handing the text on,
+    rather than leaving them in place. That is not cosmetic:
+    `linkify` applies the DCO address redactor only to lines
+    `_TRAILER_LINE_RE` matches, and that regex is anchored on a
+    trailer key at line start, so leaving the prefixes on means no
+    line rendered this way is ever redacted. Measured: a
+    `Signed-off-by:` holding `alice@localhost` is redacted at depth 2
+    and was printed verbatim at depth 65, because the Message-ID
+    linkifier that masks this for an ordinary address wants a dotted
+    alphabetic TLD. Stripping restores the anchor, so the flattened
+    text gets the same redaction and linkification as any other text
+    block.
+
+    `reason` replaces the markers in the summary, so the reader is
+    told why the nesting stopped being drawn rather than silently
+    seeing less of it.
+    """
+    flat = "\n".join(QUOTE_PREFIX_RE.sub("", line, count=1) for line in block.lines)
+    return (
+        f"<details><summary><small><em>{reason}</em></small></summary>"
+        '<blockquote><pre class="body-text-block">'
+        f"{linkify(flat, msgid_urls, address_redactor, lore_mirror_urls)}"
+        "</pre></blockquote></details>"
+    )
+
+
 def _render_block(
     block: _Block,
     msgid_urls: dict[str, str],
@@ -100,8 +193,28 @@ def _render_block(
     depth: int = 0,
     parent_url: str | None = None,
     lore_mirror_urls: dict[str, str] | None = None,
+    budget: _QuoteBudget | None = None,
 ) -> str:
+    if budget is None:
+        budget = _QuoteBudget()
     if block.kind == "quote":
+        if depth >= MAX_QUOTE_DEPTH:
+            return _flatten_quote(
+                block,
+                msgid_urls,
+                address_redactor,
+                lore_mirror_urls,
+                f"quoting continues past {MAX_QUOTE_DEPTH} levels",
+            )
+        if budget.remaining <= 0:
+            return _flatten_quote(
+                block,
+                msgid_urls,
+                address_redactor,
+                lore_mirror_urls,
+                "quoting not expanded further in this message",
+            )
+        budget.remaining -= 1
         stripped = [_strip_one_quote_level(line) for line in block.lines]
         inner = "\n".join(stripped)
         inner_blocks = parse_blocks(inner)
@@ -119,6 +232,7 @@ def _render_block(
                 depth + 1,
                 parent_url,
                 lore_mirror_urls,
+                budget,
             )
             for b in inner_blocks
         )
@@ -207,6 +321,7 @@ def render_body(
     """
     if not body:
         return Markup("")
+    budget = _QuoteBudget()
     return Markup(
         "".join(
             _render_block(
@@ -215,6 +330,7 @@ def render_body(
                 address_redactor,
                 parent_url=parent_url,
                 lore_mirror_urls=lore_mirror_urls,
+                budget=budget,
             )
             for b in parse_blocks(body)
         )
