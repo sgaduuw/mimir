@@ -20,8 +20,12 @@ changes, not internal refactors. Categories: **Added**,
   The message view is public and unauthenticated, and the body is
   re-derived from the mirror on every read, so one crafted post made
   its own page permanently unavailable. Quoting past
-  `MAX_QUOTE_DEPTH` (64) now renders flat, with the remaining markers
-  shown as text, so nothing is dropped. Deepest quoting measured
+  `MAX_QUOTE_DEPTH` (64) now renders flat, with a summary line
+  naming the depth in place of the markers, so no text is dropped.
+  The flattened lines keep DCO trailer redaction and linkification,
+  which required stripping the remaining `>` prefixes: the trailer
+  match is anchored at line start, so leaving them on would have
+  silently disabled redaction past the cap. Deepest quoting measured
   across 1,000 messages from two inboxes on 2026-09-29 was 7.
 
 - Quoted patch hunks now keep their syntax highlighting past the first

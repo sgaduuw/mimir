@@ -1365,16 +1365,54 @@ def test_render_body_survives_pathological_quote_nesting():
 
 
 def test_render_body_quote_depth_cap_preserves_the_undescended_text():
-    """At the cap the remaining lines render verbatim, prefixes and
-    all, rather than being dropped. Losing content is a worse failure
-    than rendering it flat."""
+    """At the cap the remaining lines render flat: the text is kept,
+    the still-undescended markers are stripped, and the depth the
+    reader loses is carried by the summary instead.
+
+    The markers have to go. `linkify` applies the DCO address
+    redactor only to lines `_TRAILER_LINE_RE` matches and that regex
+    is anchored at line start, so leaving them on means nothing past
+    the cap is ever redacted. See
+    `test_render_body_quote_depth_cap_still_redacts_dco_trailers`.
+    """
     from mimir.rendering.body import MAX_QUOTE_DEPTH
 
     marks = ">" * (MAX_QUOTE_DEPTH + 3)
     out = str(render_body(f"{marks} inner text\n"))
     assert "inner text" in out
-    # The still-undescended quote marks are shown as text, escaped.
-    assert "&gt;" in out
+    # Depth is conveyed, not silently dropped.
+    assert f"quoting continues past {MAX_QUOTE_DEPTH} levels" in out
+
+
+def test_render_body_quote_depth_cap_still_redacts_dco_trailers():
+    """The guarantee the flattening exists to keep. Below the cap a
+    trailer address goes through `address_redactor`; past the cap it
+    must too, or a public page prints an address the same page
+    redacts three lines higher.
+
+    Uses an address the Message-ID linkifier does NOT swallow (no
+    dotted alphabetic TLD), because for a normal address the
+    linkifier's `[off-list ref]` substitution masks the difference
+    and the test would pass without the redactor running at all.
+    """
+    seen = []
+
+    def redactor(addr):
+        seen.append(addr)
+        return "<redacted>"
+
+    from mimir.rendering.body import MAX_QUOTE_DEPTH
+
+    shallow = ">> Signed-off-by: Alice <alice@localhost>\n"
+    assert "alice@localhost" not in str(render_body(shallow, {}, redactor))
+    assert seen == ["alice@localhost"]  # precondition: redactor ran
+
+    seen.clear()
+    deep = ">" * (MAX_QUOTE_DEPTH + 1) + " Signed-off-by: Alice <alice@localhost>\n"
+    out = str(render_body(deep, {}, redactor))
+    assert "Signed-off-by" in out  # precondition: the line rendered
+    assert seen == ["alice@localhost"]
+    assert "alice@localhost" not in out
 
 
 def test_render_body_normal_nesting_is_untouched_by_the_cap():
@@ -1384,3 +1422,40 @@ def test_render_body_normal_nesting_is_untouched_by_the_cap():
     out = str(render_body(body))
     assert "ordinary deep reply" in out
     assert out.count("<blockquote>") == 7
+
+
+def test_render_body_quote_depth_cap_leaves_stack_headroom():
+    """Pins the cap to a value that leaves room for the caller,
+    without restating the literal.
+
+    The obvious assertion, `<blockquote>` count <= MAX_QUOTE_DEPTH,
+    moves with the constant and so passes for any value the
+    interpreter happens to survive: raising the cap to 256 leaves
+    every other test in this file green (verified by mutation). The
+    measured wall is around 480 to 497 levels depending on how much
+    stack the caller already used, so a later "let's be generous"
+    bump would put the page back on the 500 the cap exists to
+    remove, with a green suite the whole way.
+
+    Rendering at exactly the cap must therefore fit in a third of
+    the default recursion limit, leaving the rest for gunicorn,
+    Flask, Jinja and anything added later. The walk costs about 3
+    frames per quote level, so this holds while the cap stays well
+    under ~110.
+
+    Written by the reviewer that found the gap, not by the author of
+    the cap.
+    """
+    import sys
+
+    from mimir.rendering.body import MAX_QUOTE_DEPTH
+
+    budget = sys.getrecursionlimit() // 3
+    body = ">" * MAX_QUOTE_DEPTH + " payload\n"
+    old = sys.getrecursionlimit()
+    try:
+        sys.setrecursionlimit(budget)
+        out = str(render_body(body))
+    finally:
+        sys.setrecursionlimit(old)
+    assert "payload" in out

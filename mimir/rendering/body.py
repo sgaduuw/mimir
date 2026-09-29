@@ -27,6 +27,7 @@ from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
 
 from mimir.rendering.blocks import (
+    QUOTE_PREFIX_RE,
     _Block,
     _strip_one_quote_level,
     looks_like_orphaned_diff,
@@ -58,9 +59,11 @@ PYGMENTS_MAX_BLOCK_CHARS = 64 * 1024
 #
 # Rendering a quote recurses (strip one `>`, re-parse, render), so
 # without a cap the depth is the attacker's to choose and the stack
-# is the only limit: `RecursionError` at depth ~497 measured on a
-# bare call, and lower inside a request, where Flask and Jinja
-# frames are already on the stack. That is a 500 on a public
+# is the only limit. There is no single number for it: measured
+# 2026-09-29 at depth 497 from a bare call and 481 under pytest,
+# because what is left of the stack depends on how many frames the
+# caller already used, and a real request has Flask and Jinja on it.
+# Whatever the exact figure, blowing it is a 500 on a public
 # no-auth route, for as long as the message stays archived, which
 # is forever: the mirror is the source of truth and the body is
 # re-derived on every read. Same class as the caps above, and the
@@ -122,17 +125,34 @@ def _render_block(
 ) -> str:
     if block.kind == "quote":
         if depth >= MAX_QUOTE_DEPTH:
-            # Stop descending. The lines keep their remaining `>`
-            # prefixes and render as text, so nothing is lost and
-            # the reader can see the nesting continues; dropping
-            # content would be a worse failure than rendering it
-            # flat. Still linkified and still redacted, because it
-            # goes through the ordinary text path.
-            flat = "\n".join(block.lines)
+            # Stop descending, and strip ALL remaining quote markers
+            # before handing the text on rather than leaving them in
+            # place.
+            #
+            # That is not cosmetic. `linkify` applies the DCO address
+            # redactor only to lines `_TRAILER_LINE_RE` matches, and
+            # that regex is anchored on a trailer key at line start,
+            # so leaving the prefixes on means no line past the cap
+            # is ever redacted. Measured: a `Signed-off-by:` holding
+            # `alice@localhost` is redacted at depth 2 and rendered
+            # verbatim at depth 65, because the Message-ID linkifier
+            # that would otherwise have swallowed it wants a dotted
+            # alphabetic TLD. Stripping restores the anchor, so the
+            # flattened text gets the same redaction and the same
+            # linkification as any other text block.
+            #
+            # The markers are what the summary line replaces, so the
+            # depth information survives even though the bytes do
+            # not.
+            flat = "\n".join(
+                QUOTE_PREFIX_RE.sub("", line, count=1) for line in block.lines
+            )
             return (
+                "<details><summary><small><em>quoting continues past "
+                f"{MAX_QUOTE_DEPTH} levels</em></small></summary>"
                 '<blockquote><pre class="body-text-block">'
                 f"{linkify(flat, msgid_urls, address_redactor, lore_mirror_urls)}"
-                "</pre></blockquote>"
+                "</pre></blockquote></details>"
             )
         stripped = [_strip_one_quote_level(line) for line in block.lines]
         inner = "\n".join(stripped)
