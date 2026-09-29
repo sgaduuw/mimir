@@ -1341,3 +1341,46 @@ def test_promoted_hunk_does_not_linkify_urls_in_patch_content():
     out = str(render_body(chunk))
     assert "example.com/patch" in out  # precondition: content present
     assert 'href="https://example.com/patch"' not in out
+
+
+def test_render_body_survives_pathological_quote_nesting():
+    """`_render_block` recurses once per quote level, so before the
+    cap a body whose first line carried enough leading `>` exhausted
+    the interpreter stack: `RecursionError` at depth ~497, i.e. a
+    500 on a public unauthenticated route for as long as the message
+    stays archived, which is forever (#581).
+
+    Measured 2026-09-29 across 1,000 messages from two inboxes: the
+    deepest real quoting is 7, and nothing exceeds 8. The cap sits
+    far above that and far below the stack.
+    """
+    from mimir.rendering.body import MAX_QUOTE_DEPTH
+
+    body = ">" * 600 + " the deeply quoted text\n"
+    out = str(render_body(body))
+    # Degrades rather than raising: the content is still on the page.
+    assert "the deeply quoted text" in out
+    # And it stopped descending rather than nesting 600 blockquotes.
+    assert out.count("<blockquote>") <= MAX_QUOTE_DEPTH + 1
+
+
+def test_render_body_quote_depth_cap_preserves_the_undescended_text():
+    """At the cap the remaining lines render verbatim, prefixes and
+    all, rather than being dropped. Losing content is a worse failure
+    than rendering it flat."""
+    from mimir.rendering.body import MAX_QUOTE_DEPTH
+
+    marks = ">" * (MAX_QUOTE_DEPTH + 3)
+    out = str(render_body(f"{marks} inner text\n"))
+    assert "inner text" in out
+    # The still-undescended quote marks are shown as text, escaped.
+    assert "&gt;" in out
+
+
+def test_render_body_normal_nesting_is_untouched_by_the_cap():
+    """The cap must be invisible at real depths. Deepest quoting
+    measured in production sampling is 7."""
+    body = ">" * 7 + " ordinary deep reply\n"
+    out = str(render_body(body))
+    assert "ordinary deep reply" in out
+    assert out.count("<blockquote>") == 7

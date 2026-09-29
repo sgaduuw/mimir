@@ -13,6 +13,17 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- A message whose body carries extremely deep quote nesting no longer
+  returns 500. Rendering a quote recurses once per level, so the depth
+  was the sender's to choose and the stack was the only limit
+  (`RecursionError` at roughly 497 levels, lower inside a request).
+  The message view is public and unauthenticated, and the body is
+  re-derived from the mirror on every read, so one crafted post made
+  its own page permanently unavailable. Quoting past
+  `MAX_QUOTE_DEPTH` (64) now renders flat, with the remaining markers
+  shown as text, so nothing is dropped. Deepest quoting measured
+  across 1,000 messages from two inboxes on 2026-09-29 was 7.
+
 - Quoted patch hunks now keep their syntax highlighting past the first
   chunk. A reviewer who quotes a patch in pieces with commentary
   between them leaves every piece after the first with no `---` or

@@ -2774,3 +2774,25 @@ def test_message_json_ld_reply_count_only_emitted_from_canonical_inbox(
         "interactionStatistic"
     )
     assert "interactionStatistic" not in from_beta
+
+
+def test_message_page_survives_pathological_quote_nesting(client, tmp_path):
+    """The consumer-side claim for #581, asserted on the ROUTE and
+    not on `render_body`: an unbounded recursion in the renderer is
+    a 500 on a public unauthenticated page, and the page is what
+    had to stop breaking.
+
+    The message stays archived forever (the mirror is the source of
+    truth and the body is re-derived on every read), so a single
+    crafted post would have made its page permanently unavailable.
+    """
+    body = b">" * 600 + b" the deeply quoted text\n"
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "deep-quote-nesting@example.com",
+        body=body,
+    )
+    resp = client.get(url)
+    assert resp.status_code == 200
+    assert b"the deeply quoted text" in resp.data

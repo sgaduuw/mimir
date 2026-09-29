@@ -53,6 +53,25 @@ _DEFAULT_CODE_LEXER = CLexer()
 # preview rendering.
 PYGMENTS_MAX_BLOCK_CHARS = 64 * 1024
 
+# Deepest quote nesting `_render_block` will descend into. Past it,
+# the remaining lines render flat, prefixes and all.
+#
+# Rendering a quote recurses (strip one `>`, re-parse, render), so
+# without a cap the depth is the attacker's to choose and the stack
+# is the only limit: `RecursionError` at depth ~497 measured on a
+# bare call, and lower inside a request, where Flask and Jinja
+# frames are already on the stack. That is a 500 on a public
+# no-auth route, for as long as the message stays archived, which
+# is forever: the mirror is the source of truth and the body is
+# re-derived on every read. Same class as the caps above, and the
+# one that was missing (#581).
+#
+# 64 against a deepest-observed 7: measured 2026-09-29 over 1,000
+# messages from two inboxes (600 lkml, 400 linux-wireless), where
+# nothing exceeded 8. Re-measure before treating that as a fact;
+# the archive only grows.
+MAX_QUOTE_DEPTH = 64
+
 
 def _lexer_for_fence(info: str):
     """Pick a Pygments lexer for a code fence's info string.
@@ -102,6 +121,19 @@ def _render_block(
     lore_mirror_urls: dict[str, str] | None = None,
 ) -> str:
     if block.kind == "quote":
+        if depth >= MAX_QUOTE_DEPTH:
+            # Stop descending. The lines keep their remaining `>`
+            # prefixes and render as text, so nothing is lost and
+            # the reader can see the nesting continues; dropping
+            # content would be a worse failure than rendering it
+            # flat. Still linkified and still redacted, because it
+            # goes through the ordinary text path.
+            flat = "\n".join(block.lines)
+            return (
+                '<blockquote><pre class="body-text-block">'
+                f"{linkify(flat, msgid_urls, address_redactor, lore_mirror_urls)}"
+                "</pre></blockquote>"
+            )
         stripped = [_strip_one_quote_level(line) for line in block.lines]
         inner = "\n".join(stripped)
         inner_blocks = parse_blocks(inner)
