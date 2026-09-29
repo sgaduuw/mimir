@@ -11,6 +11,51 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Quoted patch hunks now keep their syntax highlighting past the first
+  chunk. A reviewer who quotes a patch in pieces with commentary
+  between them leaves every piece after the first with no `---` or
+  `@@` to open a diff, so those pieces rendered as plain text. They
+  are now recognised by shape: three or more lines, all diff-shaped,
+  with an addition or deletion among them and an added or context
+  line, scoped to quoted content. A `- item` bullet list, uniformly
+  indented prose, and any run containing a prose line all stay prose.
+  Measured on the 400 most recent linux-wireless messages
+  (2026-09-28): 29 of them gain highlighting, none lose any.
+
+  Known limit, since the shape is genuinely ambiguous: a bullet list
+  whose items have indented continuation lines is indistinguishable
+  from a hunk of deletions and context, and is rendered as a diff.
+
+### Changed
+
+- A quoted patch hunk now renders an email address embedded in patch
+  content (a `MODULE_AUTHOR` line, a MAINTAINERS `M:` entry) verbatim,
+  where it previously showed `[off-list ref]`. That text was never a
+  redaction policy: it is the Message-ID linkifier failing to resolve
+  a `<local@domain>` token, and the same patch sent to the list rather
+  than quoted already rendered the address verbatim. Quoted and
+  unquoted hunks now agree. Measured at 4 of 400 recent
+  linux-wireless messages. DCO trailer redaction is unaffected and
+  cannot be reached this way; see CONTEXT.md "Redaction is a
+  display-time decision".
+- `text/plain; format=flowed` bodies (RFC 3676) are now decoded at
+  parse time: space-stuffing is removed and soft line breaks re-join.
+  Undecoded, a stuffed quote arrives as `' > text'`, which the quote
+  matcher (anchored at the start of the line) does not see at all, so
+  the whole message rendered as one literal text block with no quote
+  structure, no fold, and no diff detection inside the quoted hunks.
+  Flowed is ~8% of recent lkml and ~4% of recent linux-wireless
+  messages, though the stuffed variant that causes the visible damage
+  is much rarer.
+
+  Note for operators: `article_files` and `article_trailers` are
+  derived at ingest from the same parsed body, so those rows could in
+  principle differ for a flowed message re-ingested after this
+  release. Patches are effectively never sent flowed, so no backfill
+  is proposed.
+
 ## [3.8.1] - 2026-09-27
 
 ### Changed
