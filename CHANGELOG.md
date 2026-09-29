@@ -55,6 +55,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- `mimir warm-cache --tier` help no longer tells operators that
+  `fast` covers sitemaps. The sitemap surfaces moved to the slow
+  (hourly) tier, whose cadence is all their date-grained `<lastmod>`
+  can express, and `--tier fast` now dispatches no global targets at
+  all. The same stale claim was corrected in three other places.
+
 - A quoted patch hunk now renders an email address embedded in patch
   content (a `MODULE_AUTHOR` line, a MAINTAINERS `M:` entry) verbatim,
   where it previously showed `[off-list ref]`. That text was never a
