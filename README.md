@@ -451,6 +451,8 @@ mimir/
                          register_cli(app) wires them onto Flask's cli.
   config.py              pydantic-settings Settings class + PROJECT_ROOT
   extensions.py          SQLAlchemy engine + WAL pragmas, sessionmaker, Base
+  flowed.py              RFC 3676 `format=flowed` decoding (un-stuffing +
+                         soft-break joining), applied by parser.py
   inboxes.py             Inbox lifecycle: bootstrap from env, mutate via admin,
                          expose via nav-name cache; shared validators.
   ingest/                Ingest pipeline split by flow: epoch (hot per-epoch
