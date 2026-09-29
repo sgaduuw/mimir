@@ -26,7 +26,12 @@ from pygments.lexers.c_cpp import CLexer
 from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
 
-from mimir.rendering.blocks import _Block, _strip_one_quote_level, parse_blocks
+from mimir.rendering.blocks import (
+    _Block,
+    _strip_one_quote_level,
+    looks_like_orphaned_diff,
+    parse_blocks,
+)
 from mimir.rendering.diff import _render_diff_block
 from mimir.rendering.linkify import linkify
 
@@ -68,6 +73,26 @@ def _lexer_for_fence(info: str):
 QUOTE_COLLAPSE_AT_DEPTH = 2  # depth at which nested quotes auto-collapse
 
 
+def _reclassify_orphaned_diffs(blocks: list[_Block]) -> None:
+    """Promote quoted text blocks that are really hunk bodies.
+
+    Applied to the block list of QUOTED content only, which is what
+    scopes `looks_like_orphaned_diff` to the case it is safe for.
+    Mutating `kind` rather than special-casing the renderer keeps
+    one answer to "is this a diff" for every consumer downstream:
+    both the diff renderer and the hunk-quote fold read the same
+    field, so a fragment that highlights as a hunk also folds as one.
+
+    The block list is local to one quote's render and is never
+    cached or shared, so mutating it in place has no reach beyond
+    the call that built it.
+    """
+    for block in blocks:
+        if block.kind == "text" and looks_like_orphaned_diff(block.lines):
+            block.kind = "diff"
+            block.headerless = True
+
+
 def _render_block(
     block: _Block,
     msgid_urls: dict[str, str],
@@ -80,6 +105,12 @@ def _render_block(
         stripped = [_strip_one_quote_level(line) for line in block.lines]
         inner = "\n".join(stripped)
         inner_blocks = parse_blocks(inner)
+        # Quoted content only: see `_reclassify_orphaned_diffs`. Done
+        # here rather than inside `parse_blocks` because "am I inside
+        # a quote" is the renderer's knowledge, and done BEFORE the
+        # `is_hunk_quote` test below so a promoted fragment folds as
+        # the hunk it is.
+        _reclassify_orphaned_diffs(inner_blocks)
         inner_html = "".join(
             _render_block(
                 b,
@@ -121,7 +152,18 @@ def _render_block(
         # Anchors only at top level; nested (inside a quote block)
         # diffs would collide on `h-N` / `h-N-LM` with the primary
         # patch's anchors on the same page.
-        return _render_diff_block(block.lines, with_anchors=(depth == 0))
+        # A headerless block never gets anchors, structurally rather
+        # than by coincidence. It is a fragment synthesised from
+        # quoted text, so its hunk is not a real hunk of this
+        # message's patch and `h-1` would collide with one that is.
+        # Today `depth == 0` already excludes it (promotion only
+        # happens to quoted content); this states the rule rather
+        # than relying on the two staying aligned.
+        return _render_diff_block(
+            block.lines,
+            with_anchors=(depth == 0 and not block.headerless),
+            headerless=block.headerless,
+        )
 
     if block.kind == "code":
         code_text = "\n".join(block.lines)

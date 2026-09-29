@@ -92,7 +92,9 @@ def _highlight_inline(text: str, lexer) -> str:
     return highlight(text, lexer, _INLINE_LANG_FORMATTER).rstrip("\n")
 
 
-def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
+def _render_diff_block(
+    lines: list[str], with_anchors: bool = True, *, headerless: bool = False
+) -> str:
     """Render a diff block with per-hunk anchors + per-language
     overlay (#211).
 
@@ -143,7 +145,14 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
     meta_buffer: list[str] = []
     hunk_buffer: list[str] = []
     current_lexer = TextLexer()
-    in_hunk = False
+    # `headerless`: a quoted hunk fragment whose `@@` line the
+    # reviewer left out of the quote. Opening the hunk up front is
+    # what gets its lines their `gi`/`gd` gutter colours, which
+    # otherwise only start once a `@@` has been seen. The lexer
+    # stays TextLexer because there is no `+++ b/<path>` to sniff a
+    # language from, so the fragment gets diff colouring without a
+    # per-language overlay.
+    in_hunk = headerless
     in_trailer = False
     hunk_idx = 0
     line_in_hunk = 0
@@ -219,13 +228,21 @@ def _render_diff_block(lines: list[str], with_anchors: bool = True) -> str:
             hunk_buffer.append(f"<span{line_attr()}>{marker_html}{highlighted}</span>")
             continue
 
-        if in_hunk and not line:
+        if in_hunk and not line.strip():
             # Blank line inside a hunk: rare in well-formed diffs
             # but possible at hunk boundaries. Preserve it as an
-            # anchorable empty line so the line-number scheme stays
-            # consistent.
+            # anchorable line so the line-number scheme stays
+            # consistent, and keep the hunk OPEN.
+            #
+            # Whitespace-only counts, not just empty. A mail client
+            # that trims a context line's marker leaves a bare tab,
+            # which is not in the `" +-"` set, so it used to fall
+            # through to the out-of-hunk branch below and close the
+            # hunk: every line after it in the same block lost its
+            # gutter colour. Escaped rather than dropped, because in
+            # a hunk the whitespace is content.
             line_in_hunk += 1
-            hunk_buffer.append(f"<span{line_attr()}></span>")
+            hunk_buffer.append(f"<span{line_attr()}>{html.escape(line)}</span>")
             continue
 
         # Out-of-hunk line. A new `diff --git` (multi-file patch) or
