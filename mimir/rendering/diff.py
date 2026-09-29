@@ -154,11 +154,7 @@ def _render_diff_block(
     # per-language overlay.
     in_hunk = headerless
     in_trailer = False
-    # Defensive rather than dead: `headerless` and `with_anchors` are
-    # decided by different callers, and today every headerless block
-    # renders at quote depth >= 1 where anchors are off. If that ever
-    # changes, starting at 0 would emit `id="h-0"`.
-    hunk_idx = 1 if headerless else 0
+    hunk_idx = 0
     line_in_hunk = 0
 
     def flush_meta() -> None:

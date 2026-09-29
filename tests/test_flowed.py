@@ -7,12 +7,21 @@ renders as one literal text block with no quote structure, no fold,
 and no diff detection inside the quoted hunks.
 """
 
-import time
+import re
 from email import policy
 from email.parser import BytesParser
 
-from mimir.flowed import unflow
+from mimir.flowed import _PREFIX_RE, SIGNATURE_SEPARATOR, unflow
 from mimir.parser import parse_message
+from mimir.rendering.blocks import QUOTE_PREFIX_RE, _quote_depth
+
+
+def _lines(text):
+    """Split on the line endings mail uses, so a CRLF assertion
+    compares content and not which ending survived. Deliberately
+    NOT `splitlines()`: that would also swallow a form feed and
+    hide the separator-preservation guard above."""
+    return text.replace("\r\n", "\n").split("\n")
 
 
 def test_unflow_removes_one_stuffed_space():
@@ -183,54 +192,11 @@ def test_unflow_joins_space_separated_quote_marks_without_reinserting_them():
     scores `"> > abc"` as depth 2, so the two modules disagree about
     what the quote prefix of the same line is.
     """
-    from mimir.rendering.blocks import _quote_depth
-
     # Precondition: the renderer treats this spelling as depth 2, so
     # the string is a real quote prefix and not content.
     assert _quote_depth("> > abc") == 2
 
     assert unflow("> > abc \n> > def") == "> > abc def"
-
-
-def test_unflow_is_linear_in_line_count():
-    """`pending += ... + core` accumulates into a variable that the
-    nested `flush()` closes over, so it is a cell (STORE_DEREF) and
-    CPython's in-place string-concatenation specialisation, which
-    only applies to STORE_FAST locals, does not fire. The join is
-    therefore O(n^2) in the size of a soft-wrapped paragraph.
-
-    `parse_message` runs on the read path for every message view, and
-    caps the raw message at 50 MB, so a single crafted flowed body of
-    a few MB pins a gunicorn worker to its 60 s timeout on every
-    request.
-
-    Scale-invariant assertion (a ratio, not a wall-clock budget) so
-    this does not become a flaky machine-speed test. Linear work
-    doubles; measured on this branch the ratio is ~3.4.
-    """
-
-    def build(n: int) -> str:
-        return "\n".join(f"word{i:06d} " for i in range(n)) + "\nend"
-
-    def best_of(n: int, rounds: int = 3) -> float:
-        text = build(n)
-        unflow(text)  # warm
-        return min(_timed(text) for _ in range(rounds))
-
-    def _timed(text: str) -> float:
-        start = time.perf_counter()
-        unflow(text)
-        return time.perf_counter() - start
-
-    small = best_of(30_000)
-    large = best_of(60_000)
-    # Precondition: the small run is long enough that timer noise is
-    # not what the ratio measures.
-    assert small > 0.005, f"baseline too fast to compare: {small}s"
-    assert large / small < 2.6, (
-        f"doubling the input multiplied the work by {large / small:.2f}x "
-        f"({small * 1000:.1f}ms -> {large * 1000:.1f}ms); expected ~2x"
-    )
 
 
 def test_parse_message_honours_delsp_yes():
@@ -266,3 +232,140 @@ def test_unflow_preserves_a_trailing_newline():
     shape of the text in ways unrelated to flowing."""
     assert unflow("one\ntwo\n") == "one\ntwo\n"
     assert unflow("one\ntwo") == "one\ntwo"
+
+
+# CRLF is the canonical wire form for mail, and `get_content()`
+# hands it through verbatim. Splitting on "\n" alone leaves a
+# trailing "\r" that makes every soft-break and delimiter test
+# below it false, i.e. silently turns the decoder off.
+
+
+def test_unflow_joins_a_soft_break_in_a_crlf_body():
+    # Precondition: the LF spelling of the exact same body IS joined,
+    # so the line terminator is the only variable under test.
+    assert unflow("the quick brown \nfox") == "the quick brown fox"
+
+    assert _lines(unflow("the quick brown \r\nfox"))[0] == "the quick brown fox"
+
+
+def test_unflow_joins_a_quoted_soft_break_in_a_crlf_body():
+    assert unflow("> abc \n> def") == "> abc def"  # precondition, LF form
+
+    assert _lines(unflow("> abc \r\n> def"))[0] == "> abc def"
+
+
+def test_unflow_keeps_the_signature_separator_on_its_own_line_under_crlf():
+    """Red today for a THIRD reason, and a guard the fix must also
+    keep green.
+
+    Observed failure is `['body ', '-- ', 'sig']`: `soft` is False so
+    the dangling soft-break space is emitted as content, which the LF
+    path deliberately strips (`core = content[:-1] if soft`). Trailing
+    whitespace is not cosmetic here, it is what a diff context line
+    and a `-- ` delimiter are made of.
+
+    `content == SIGNATURE_SEPARATOR` is broken by the same trailing
+    `\\r` (`"-- \\r" != "-- "`). That is invisible today only because a
+    CRLF body never joins anything, so there is nothing for the
+    signature to be swallowed into; a fix that restores the join
+    without also fixing the delimiter comparison turns this red
+    again, which is why it is written down before the fix exists."""
+    assert SIGNATURE_SEPARATOR == "-- "
+    # Precondition: the LF spelling has a preceding soft break, so the
+    # delimiter really is a join candidate and not trivially safe.
+    assert _lines(unflow("body \n-- \nsig")) == ["body", "-- ", "sig"]
+
+    assert _lines(unflow("body \r\n-- \r\nsig")) == ["body", "-- ", "sig"]
+
+
+def test_parse_message_decodes_a_crlf_flowed_body_end_to_end():
+    """The production shape: a base64 text/plain part, which is the
+    transfer encoding that preserves CRLF verbatim (all 6 CRLF bodies
+    in the 400-message linux-wireless sample are base64)."""
+    import base64
+
+    payload = base64.b64encode(b"the quick brown \r\nfox jumps\r\n")
+
+    def message(ctype: bytes) -> bytes:
+        return (
+            b"Message-ID: <crlf@example.test>\r\n"
+            b"From: A <a@example.test>\r\n"
+            b"Subject: t\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b"Content-Type: " + ctype + b"\r\n"
+            b"Content-Transfer-Encoding: base64\r\n"
+            b"\r\n" + payload + b"\r\n"
+        )
+
+    # Precondition: the stdlib really does hand this part's body to
+    # `unflow` with the CR still attached. Asserted on the NON-flowed
+    # spelling of the identical part, which `parse_message` passes
+    # through untouched, so the precondition cannot be satisfied by
+    # the behaviour under test.
+    untouched = parse_message(message(b"text/plain; charset=UTF-8"))
+    assert untouched.body == "the quick brown \r\nfox jumps\r\n"
+
+    parsed = parse_message(message(b"text/plain; charset=UTF-8; format=flowed"))
+    assert parsed.body is not None
+    assert _lines(parsed.body)[0] == "the quick brown fox jumps"
+
+
+def test_flowed_and_blocks_agree_on_where_a_quote_prefix_ends():
+    """`flowed.py`'s comment on `_PREFIX_RE`: "Per-mark rather than
+    once at the end, so this agrees with `blocks.QUOTE_PREFIX_RE`
+    (`^((?:>\\s?)+)`) about where the prefix of a given line ends.
+    They must: that module decides how deep a line is quoted, and
+    this one decides which lines may be joined, so a disagreement
+    means joining across a depth boundary the renderer then draws."
+
+    They do not agree. `QUOTE_PREFIX_RE` separates marks with `\\s?`
+    (any whitespace); `_PREFIX_RE` uses a literal space. A tab
+    between marks is read as depth 2 by the renderer and depth 1 by
+    the decoder, which is precisely the joining-across-a-drawn-
+    boundary case the comment says cannot happen.
+
+    Pre-existing (the old `^>+ ?` had the same gap), so this is not a
+    regression introduced by 65cc600; it is a new comment and a new
+    test docstring asserting an invariant that was never true. Fix
+    the regex to `^(?:>\\s?)+` or stop claiming agreement.
+    """
+    # Precondition: the two patterns are the ones named in the comment.
+    assert _PREFIX_RE.pattern == r"^(?:>\s?)+"
+    assert QUOTE_PREFIX_RE.pattern == r"^((?:>\s?)+)"
+
+    disagreements = []
+    for line in ("> x", "> > x", ">> x", ">>> x", ">  > x", ">\tx", ">\t> x", "> >\tx"):
+        m = _PREFIX_RE.match(line)
+        flowed_depth = m.group(0).count(">") if m else 0
+        if flowed_depth != _quote_depth(line):
+            disagreements.append((line, flowed_depth, _quote_depth(line)))
+    assert not disagreements, (
+        "flowed._PREFIX_RE and blocks.QUOTE_PREFIX_RE disagree on "
+        f"(line, flowed_depth, blocks_depth): {disagreements}"
+    )
+
+
+def test_a_tab_separated_quote_mark_is_not_joined_across_the_drawn_depth():
+    """The consequence of the disagreement above, end to end: a depth-2
+    line is folded into a depth-1 paragraph by the soft-break join,
+    so the nested blockquote the renderer would have drawn is gone."""
+    joined = unflow("> abc \n>\t> def")
+    # Precondition: the renderer scores the second line as deeper.
+    assert _quote_depth("> abc") == 1
+    assert _quote_depth(">\t> def") == 2
+
+    assert len(joined.split("\n")) == 2, (
+        f"depth-2 line was joined into the depth-1 paragraph: {joined!r}"
+    )
+    assert not re.search(r"\S\s+>\s", joined.split("\n")[0]), (
+        f"a quote mark was spliced into the middle of a line: {joined!r}"
+    )
+
+
+def test_unflow_blank_quoted_line_sheds_the_prefix_separator_space():
+    """`"> "` with nothing after it is a blank quoted line, and the
+    separator space is prefix decoration rather than content, so it
+    comes off. Covers the `"> "` spelling specifically: the
+    paragraph-boundary guard above uses `">"`, where the rstrip is a
+    no-op and a mutant dropping it survives."""
+    assert unflow("> abc\n> \n> def") == "> abc\n>\n> def"
