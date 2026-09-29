@@ -12,6 +12,7 @@ import re
 from markupsafe import Markup
 
 from mimir.rendering import URL_OR_MSGID_RE, linkify, parse_blocks, render_body
+from mimir.rendering.body import MAX_QUOTE_DEPTH
 
 # linkify, escaping + URL handling
 
@@ -1341,3 +1342,178 @@ def test_promoted_hunk_does_not_linkify_urls_in_patch_content():
     out = str(render_body(chunk))
     assert "example.com/patch" in out  # precondition: content present
     assert 'href="https://example.com/patch"' not in out
+
+
+def test_render_body_survives_pathological_quote_nesting():
+    """`_render_block` recurses once per quote level, so before the
+    cap a body whose first line carried enough leading `>` exhausted
+    the interpreter stack: `RecursionError` at depth ~497, i.e. a
+    500 on a public unauthenticated route for as long as the message
+    stays archived, which is forever (#581).
+
+    Measured 2026-09-29 across 1,000 messages from two inboxes: the
+    deepest real quoting is 7, and nothing exceeds 8. The cap sits
+    far above that and far below the stack.
+    """
+    from mimir.rendering.body import MAX_QUOTE_DEPTH
+
+    body = ">" * 600 + " the deeply quoted text\n"
+    out = str(render_body(body))
+    # Degrades rather than raising: the content is still on the page.
+    assert "the deeply quoted text" in out
+    # And it stopped descending rather than nesting 600 blockquotes.
+    assert out.count("<blockquote>") <= MAX_QUOTE_DEPTH + 1
+
+
+def test_render_body_quote_depth_cap_preserves_the_undescended_text():
+    """At the cap the remaining lines render flat: the text is kept,
+    the still-undescended markers are stripped, and the depth the
+    reader loses is carried by the summary instead.
+
+    The markers have to go. `linkify` applies the DCO address
+    redactor only to lines `_TRAILER_LINE_RE` matches and that regex
+    is anchored at line start, so leaving them on means nothing past
+    the cap is ever redacted. See
+    `test_render_body_quote_depth_cap_still_redacts_dco_trailers`.
+    """
+    from mimir.rendering.body import MAX_QUOTE_DEPTH
+
+    marks = ">" * (MAX_QUOTE_DEPTH + 3)
+    out = str(render_body(f"{marks} inner text\n"))
+    assert "inner text" in out
+    # Depth is conveyed, not silently dropped.
+    assert f"quoting continues past {MAX_QUOTE_DEPTH} levels" in out
+
+
+def test_render_body_quote_depth_cap_still_redacts_dco_trailers():
+    """The guarantee the flattening exists to keep. Below the cap a
+    trailer address goes through `address_redactor`; past the cap it
+    must too, or a public page prints an address the same page
+    redacts three lines higher.
+
+    Uses an address the Message-ID linkifier does NOT swallow (no
+    dotted alphabetic TLD), because for a normal address the
+    linkifier's `[off-list ref]` substitution masks the difference
+    and the test would pass without the redactor running at all.
+    """
+    seen = []
+
+    def redactor(addr):
+        seen.append(addr)
+        return "<redacted>"
+
+    from mimir.rendering.body import MAX_QUOTE_DEPTH
+
+    shallow = ">> Signed-off-by: Alice <alice@localhost>\n"
+    assert "alice@localhost" not in str(render_body(shallow, {}, redactor))
+    assert seen == ["alice@localhost"]  # precondition: redactor ran
+
+    seen.clear()
+    deep = ">" * (MAX_QUOTE_DEPTH + 1) + " Signed-off-by: Alice <alice@localhost>\n"
+    out = str(render_body(deep, {}, redactor))
+    assert "Signed-off-by" in out  # precondition: the line rendered
+    assert seen == ["alice@localhost"]
+    assert "alice@localhost" not in out
+
+
+def test_render_body_normal_nesting_is_untouched_by_the_cap():
+    """The cap must be invisible at real depths. Deepest quoting
+    measured in production sampling is 7."""
+    body = ">" * 7 + " ordinary deep reply\n"
+    out = str(render_body(body))
+    assert "ordinary deep reply" in out
+    assert out.count("<blockquote>") == 7
+
+
+def test_render_body_quote_depth_cap_leaves_stack_headroom():
+    """Pins the cap to a value that leaves room for the caller,
+    without restating the literal.
+
+    The obvious assertion, `<blockquote>` count <= MAX_QUOTE_DEPTH,
+    moves with the constant and so passes for any value the
+    interpreter happens to survive: raising the cap to 256 leaves
+    every other test in this file green (verified by mutation). The
+    measured wall is around 480 to 497 levels depending on how much
+    stack the caller already used, so a later "let's be generous"
+    bump would put the page back on the 500 the cap exists to
+    remove, with a green suite the whole way.
+
+    Rendering at exactly the cap must therefore fit in a third of
+    the default recursion limit, leaving the rest for gunicorn,
+    Flask, Jinja and anything added later. The walk costs about 3
+    frames per quote level, so this holds while the cap stays well
+    under ~110.
+
+    Written by the reviewer that found the gap, not by the author of
+    the cap.
+    """
+    import sys
+
+    from mimir.rendering.body import MAX_QUOTE_DEPTH
+
+    budget = sys.getrecursionlimit() // 3
+    body = ">" * MAX_QUOTE_DEPTH + " payload\n"
+    old = sys.getrecursionlimit()
+    try:
+        sys.setrecursionlimit(budget)
+        out = str(render_body(body))
+    finally:
+        sys.setrecursionlimit(old)
+    assert "payload" in out
+
+
+# Output amplification. `MAX_QUOTE_DEPTH` bounds one block; a body
+# may hold unboundedly many, and each level costs ~92 bytes of
+# `<details>` boilerplate for the one `>` that asked for it. Guards
+# written by the reviewer that measured it (89x, 1.05 MB in -> 93 MB
+# out) before `MAX_QUOTE_LEVELS_PER_RENDER` existed.
+
+
+def _amplifier_body(target_bytes: int) -> str:
+    """Worst measured shape: independent single-line quote blocks at
+    one level below the cap, separated by blank lines so each is its
+    own block and each pays the full `<details>` chain."""
+    group = ">" * (MAX_QUOTE_DEPTH - 1) + "x\n\n"
+    n = max(1, target_bytes // len(group))
+    return group * n
+
+
+def test_amplifier_fixture_really_is_adversarial():
+    """Precondition for the bound below, asserted on the PARSE rather
+    than on rendered output.
+
+    The reviewer's original version asserted a `<details>` count
+    proportional to groups x depth, which is exactly what the
+    per-render budget now prevents, so it would have had to be
+    weakened to pass. Checking the block structure instead keeps the
+    precondition independent of the thing under test: many separate
+    quote blocks, each nested near the cap, is what makes the body
+    an amplifier at all.
+    """
+    from mimir.rendering.blocks import _quote_depth, parse_blocks
+
+    body = _amplifier_body(4096)
+    quotes = [b for b in parse_blocks(body) if b.kind == "quote"]
+    assert len(quotes) >= 50, f"only {len(quotes)} independent quote blocks"
+    depths = {_quote_depth(b.lines[0]) for b in quotes}
+    assert depths == {MAX_QUOTE_DEPTH - 1}, depths
+
+
+def test_render_body_output_is_bounded_by_a_small_multiple_of_input():
+    """`MAX_QUOTE_DEPTH` bounds recursion DEPTH, not total work. A body
+    may hold unboundedly many independent deeply-nested quote blocks,
+    and each level costs ~92 bytes of `<details>` boilerplate for one
+    input byte (`>`), so the rendered page is ~90x the body.
+
+    A 50 MB message is accepted by `parser.MAX_RAW_MESSAGE_BYTES`, so
+    the reachable worst case is multi-GB of HTML on a public,
+    unauthenticated, uncached route, which is the same denial of
+    service #581 set out to close.
+    """
+    body = _amplifier_body(64 * 1024)
+    out = str(render_body(body))
+    ratio = len(out) / len(body)
+    assert ratio <= 20, (
+        f"body {len(body)}B rendered to {len(out)}B ({ratio:.0f}x); "
+        "quote rendering amplifies output without bound"
+    )

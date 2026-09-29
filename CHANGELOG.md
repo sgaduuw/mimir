@@ -13,6 +13,31 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- A message whose body carries extremely deep quote nesting no longer
+  returns 500. Rendering a quote recurses once per level, so the depth
+  was the sender's to choose and the stack was the only limit
+  (`RecursionError` at roughly 497 levels, lower inside a request).
+  The message view is public and unauthenticated, and the body is
+  re-derived from the mirror on every read, so one crafted post made
+  its own page permanently unavailable. Quoting past
+  `MAX_QUOTE_DEPTH` (64) now renders flat, with a summary line
+  naming the depth in place of the markers, so no text is dropped.
+  The flattened lines keep DCO trailer redaction and linkification,
+  which required stripping the remaining `>` prefixes: the trailer
+  match is anchored at line start, so leaving them on would have
+  silently disabled redaction past the cap. Deepest quoting measured
+  across 1,000 messages from two inboxes on 2026-09-29 was 7.
+
+  A companion `MAX_QUOTE_LEVELS_PER_RENDER` (512) bounds the total
+  quote levels one message may render, across all its quote blocks.
+  The depth cap alone bounds a single block, and a body may hold
+  unboundedly many, so quote rendering still amplified a body by
+  about 89x into HTML: measured 1.05 MB in to 93 MB out, linearly,
+  which at the 50 MB message ceiling reached the gigabytes on a
+  public uncached page. Now about 3x, and a 4 MB adversarial body
+  renders in 1.2 s with a 46 MB peak instead of 9.6 s and 1.1 GB.
+  Worst observed in real mail is 44 total levels, p99 is 14.
+
 - Quoted patch hunks now keep their syntax highlighting past the first
   chunk. A reviewer who quotes a patch in pieces with commentary
   between them leaves every piece after the first with no `---` or
