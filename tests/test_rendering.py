@@ -12,6 +12,7 @@ import re
 from markupsafe import Markup
 
 from mimir.rendering import URL_OR_MSGID_RE, linkify, parse_blocks, render_body
+from mimir.rendering.body import MAX_QUOTE_DEPTH
 
 # linkify, escaping + URL handling
 
@@ -1459,3 +1460,60 @@ def test_render_body_quote_depth_cap_leaves_stack_headroom():
     finally:
         sys.setrecursionlimit(old)
     assert "payload" in out
+
+
+# Output amplification. `MAX_QUOTE_DEPTH` bounds one block; a body
+# may hold unboundedly many, and each level costs ~92 bytes of
+# `<details>` boilerplate for the one `>` that asked for it. Guards
+# written by the reviewer that measured it (89x, 1.05 MB in -> 93 MB
+# out) before `MAX_QUOTE_LEVELS_PER_RENDER` existed.
+
+
+def _amplifier_body(target_bytes: int) -> str:
+    """Worst measured shape: independent single-line quote blocks at
+    one level below the cap, separated by blank lines so each is its
+    own block and each pays the full `<details>` chain."""
+    group = ">" * (MAX_QUOTE_DEPTH - 1) + "x\n\n"
+    n = max(1, target_bytes // len(group))
+    return group * n
+
+
+def test_amplifier_fixture_really_is_adversarial():
+    """Precondition for the bound below, asserted on the PARSE rather
+    than on rendered output.
+
+    The reviewer's original version asserted a `<details>` count
+    proportional to groups x depth, which is exactly what the
+    per-render budget now prevents, so it would have had to be
+    weakened to pass. Checking the block structure instead keeps the
+    precondition independent of the thing under test: many separate
+    quote blocks, each nested near the cap, is what makes the body
+    an amplifier at all.
+    """
+    from mimir.rendering.blocks import _quote_depth, parse_blocks
+
+    body = _amplifier_body(4096)
+    quotes = [b for b in parse_blocks(body) if b.kind == "quote"]
+    assert len(quotes) >= 50, f"only {len(quotes)} independent quote blocks"
+    depths = {_quote_depth(b.lines[0]) for b in quotes}
+    assert depths == {MAX_QUOTE_DEPTH - 1}, depths
+
+
+def test_render_body_output_is_bounded_by_a_small_multiple_of_input():
+    """`MAX_QUOTE_DEPTH` bounds recursion DEPTH, not total work. A body
+    may hold unboundedly many independent deeply-nested quote blocks,
+    and each level costs ~92 bytes of `<details>` boilerplate for one
+    input byte (`>`), so the rendered page is ~90x the body.
+
+    A 50 MB message is accepted by `parser.MAX_RAW_MESSAGE_BYTES`, so
+    the reachable worst case is multi-GB of HTML on a public,
+    unauthenticated, uncached route, which is the same denial of
+    service #581 set out to close.
+    """
+    body = _amplifier_body(64 * 1024)
+    out = str(render_body(body))
+    ratio = len(out) / len(body)
+    assert ratio <= 20, (
+        f"body {len(body)}B rendered to {len(out)}B ({ratio:.0f}x); "
+        "quote rendering amplifies output without bound"
+    )
