@@ -152,9 +152,16 @@ def _render_block(
         # Anchors only at top level; nested (inside a quote block)
         # diffs would collide on `h-N` / `h-N-LM` with the primary
         # patch's anchors on the same page.
+        # A headerless block never gets anchors, structurally rather
+        # than by coincidence. It is a fragment synthesised from
+        # quoted text, so its hunk is not a real hunk of this
+        # message's patch and `h-1` would collide with one that is.
+        # Today `depth == 0` already excludes it (promotion only
+        # happens to quoted content); this states the rule rather
+        # than relying on the two staying aligned.
         return _render_diff_block(
             block.lines,
-            with_anchors=(depth == 0),
+            with_anchors=(depth == 0 and not block.headerless),
             headerless=block.headerless,
         )
 

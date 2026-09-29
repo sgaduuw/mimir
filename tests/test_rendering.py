@@ -1212,3 +1212,54 @@ def test_quoted_prose_containing_a_plus_line_is_not_a_diff():
 
     body = "> + one\n> this line is prose\n> + two\n"
     assert '<div class="highlight">' not in str(render_body(body))
+
+
+def test_render_body_headerless_run_keeps_its_whitespace_line_content():
+    """The widened blank-line branch escapes the line rather than
+    emitting an empty span, because inside a hunk the whitespace is
+    content. Asserted separately from the gutter-colour guard: a
+    mutant dropping the content passed that one."""
+    out = str(render_body("> +\tfirst();\n> \t\n> +\tsecond();\n> +\tthird();\n"))
+    hunk = out[out.index('class="hunk"') :]
+    assert "\t\n" in hunk or "\t<" in hunk, (
+        f"the tab-only line lost its content: {hunk[:400]!r}"
+    )
+
+
+def test_render_block_never_anchors_a_headerless_block():
+    """A promoted fragment is synthesised from quoted text, so its
+    hunk is not a hunk of this message's patch and `h-1` would
+    collide with one that is. Today `depth == 0` already excludes it,
+    which is exactly why this has to be asserted at the seam rather
+    than through `render_body`: the rule and the coincidence are
+    indistinguishable from outside."""
+    from mimir.rendering.blocks import _Block
+    from mimir.rendering.body import _render_block
+
+    block = _Block(kind="diff", lines=["+\tone();", "+\ttwo();"], headerless=True)
+    out = _render_block(block, {}, depth=0)
+    assert 'id="h-' not in out
+    # Precondition: the same block WITHOUT the flag does anchor at
+    # depth 0, so the assertion above is about `headerless` and not
+    # about diffs in general.
+    plain = _Block(kind="diff", lines=["@@ -1 +1 @@", "+\tone();"])
+    assert 'id="h-' in _render_block(plain, {}, depth=0)
+
+
+def test_render_body_hunk_quote_fold_is_first_level_only():
+    """`is_hunk_quote` gates on `depth == 0`, so the "quoted hunk"
+    summary with its jump-to-hunk link belongs to a hunk the sender
+    quoted directly. A hunk two levels down is somebody else's
+    quote of a quote; it gets the generic collapse instead, and
+    dropping the depth gate would give it the specialised one.
+    """
+    singly = "> --- a/x.c\n> +++ b/x.c\n> @@ -1 +1 @@\n> +new\n"
+    # Precondition: at the first level this IS a hunk quote, so the
+    # assertion below is about depth and not about the fold never
+    # firing.
+    assert str(render_body(singly)).count('class="hunk-quote"') == 1
+
+    doubly = ">> --- a/x.c\n>> +++ b/x.c\n>> @@ -1 +1 @@\n>> +new\n"
+    out = str(render_body(doubly))
+    assert out.count('class="hunk-quote"') == 0
+    assert '<div class="highlight">' in out  # the hunk still renders

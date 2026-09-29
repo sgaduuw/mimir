@@ -36,13 +36,16 @@ import re
 # re-joins to `"> > abc > def"` with a quote mark spliced into the
 # middle of a sentence.
 #
-# Per-mark rather than once at the end, so this agrees with
-# `blocks.QUOTE_PREFIX_RE` (`^((?:>\s?)+)`) about where the prefix of
-# a given line ends. They must: that module decides how deep a line
-# is quoted, and this one decides which lines may be joined, so a
-# disagreement means joining across a depth boundary the renderer
-# then draws.
-_PREFIX_RE = re.compile(r"^(?:> ?)+")
+# Deliberately the same shape as `blocks.QUOTE_PREFIX_RE`
+# (`^((?:>\s?)+)`), separator class included, and pinned as such by
+# `test_flowed_and_blocks_agree_on_where_a_quote_prefix_ends`. They
+# must agree: that module decides how deep a line is quoted and
+# draws the blockquotes, this one decides which lines may be joined,
+# so any line the two score differently is a line joined across a
+# depth boundary the renderer then draws. A literal space here
+# looked close enough and is not: `">\t> x"` is depth 2 there and
+# was depth 1 here.
+_PREFIX_RE = re.compile(r"^(?:>\s?)+")
 
 # Ends in a space and is therefore shaped like a soft break, but is
 # the signature delimiter. Every mail client keys on these exact
@@ -77,14 +80,26 @@ def unflow(text: str, *, delsp: bool = False) -> str:
             out.append(pending_prefix + "".join(pending))
             pending, pending_prefix = None, ""
 
-    # `split("\n")` rather than `splitlines()`: the latter also
-    # breaks on form feed, U+2028, U+0085 and friends, and since the
-    # output is rejoined with "\n" those characters would be
-    # REWRITTEN into newlines. A form feed is a real section
-    # separator in kernel sources, so a patch quoted in a flowed
-    # message would gain a line break mid-hunk and the following
-    # line would lose its gutter marker.
-    for raw in text.split("\n"):
+    # Split on the two line endings mail actually uses, and nothing
+    # else. `splitlines()` would also break on form feed, U+2028 and
+    # U+0085, and since the output is rejoined with "\n" it would
+    # REWRITE those characters into newlines.
+    #
+    # The honest ground for caring is that a decoder asked to undo
+    # flowing should not rewrite bytes it was not asked about. It is
+    # NOT that the page renders differently: `blocks.parse_blocks`
+    # calls `splitlines()` downstream and breaks on the same set, so
+    # the rendered HTML is byte-identical either way (measured
+    # 2026-09-29). An earlier version of this comment claimed the
+    # visible consequence, and that false rationale is what motivated
+    # a bare `split("\n")`, which then broke CRLF decoding outright.
+    #
+    # CRLF must be normalised, not merely split on: `get_content()`
+    # hands the wire form straight through, and a trailing "\r" makes
+    # every soft-break and signature-delimiter test below false, so
+    # bare `split("\n")` turned the whole decoder into a no-op on
+    # CRLF bodies.
+    for raw in text.replace("\r\n", "\n").split("\n"):
         line = raw.removeprefix(" ")  # §4.4 un-stuff
         match = _PREFIX_RE.match(line)
         prefix = match.group(0) if match else ""
