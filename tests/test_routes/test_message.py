@@ -8,6 +8,7 @@ identity contract)."""
 import re
 from datetime import UTC
 
+from mimir.rendering.body import MAX_QUOTE_DEPTH
 from tests.test_routes._helpers import (
     _data_attr_values,
     _ingest_one_article,
@@ -2796,3 +2797,20 @@ def test_message_page_survives_pathological_quote_nesting(client, tmp_path):
     resp = client.get(url)
     assert resp.status_code == 200
     assert b"the deeply quoted text" in resp.data
+
+
+def test_message_page_response_is_bounded_relative_to_the_body(client, tmp_path):
+    """Amplification asserted at the CONSUMER. A depth cap alone
+    bounds one quote block, not the message, so a body of many
+    independent deeply-nested blocks still rendered ~89x its own
+    size onto a public uncached page (measured 2026-09-29: a 64 KiB
+    body returned 5.8 MB). `MAX_QUOTE_LEVELS_PER_RENDER` is what
+    bounds it; this pins the bound where it is observable.
+    """
+    group = (">" * (MAX_QUOTE_DEPTH - 1) + "x\n\n").encode()
+    body = group * (64 * 1024 // len(group))
+    _, url = _ingest_one_article(tmp_path, "alpha", "qd-amp@example.com", body=body)
+    resp = client.get(url)
+    assert resp.status_code == 200
+    ratio = len(resp.data) / len(body)
+    assert ratio <= 20, f"{ratio:.0f}x amplification on a public page"
