@@ -621,11 +621,12 @@ class WarmGlobalRequest(_BrokerRequest):
     `targets` (Task 5 of the fast/slow tier split, spec §2)
     narrows the global aggregator set to a labelled subset,
     mirroring `WarmInboxRequest.targets`. None = run every
-    global aggregator (today's shape). The CLI's
-    `--tier fast` dispatches with `targets=["sitemap:index",
-    "sitemap:meta"]` so the per-minute scheduler tick only
-    refreshes the cheap sitemap-index aggregators; `--tier slow`
-    narrows to the heavy `most_active_subsystems_global` query.
+    global aggregator (today's shape). `--tier fast` dispatches
+    no global targets at all: the sitemap aggregators it used to
+    carry moved to the slow tier, whose hourly cadence is all a
+    date-grained `<lastmod>` can express. `--tier slow` covers
+    `sitemap:index`, `sitemap:meta`, `sitemap:maintainers` and the
+    heavy `most_active_subsystems_global` query.
 
     `priority` mirrors `WarmInboxRequest.priority`: 0 = fast,
     1 = slow (default).
