@@ -108,34 +108,6 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    via the html_data_attrs block above) carry the per-page context the
    controller needs. #}
 {% endif %}
-{# Badges row: activity chip + lifecycle pill (with tooltip).
-   Placed under the Subject heading and above the From block; the
-   eye reads "is this warm?" + "where is this on the path to
-   mainline?" before falling into the article meta. Replaces the
-   pre-2.5 `<aside class="patch-state">`.
-
-   Inner markup delegated to `_lifecycle_badges.html` (same partial
-   the listing templates use) so the badge primitive has a single
-   source of truth. The is_patch / lifecycle_status gating stays
-   here because the partial alone would render the activity chip
-   for any article with a lifecycle status, including non-patches. #}
-{% if patch_state and patch_state.is_patch and lifecycle_status %}
-<div class="msg-badges">
-  {%- with status = lifecycle_status %}
-  {%- include "_lifecycle_badges.html" %}
-  {%- endwith %}
-</div>
-{% endif %}
-{# Prose restatement of the badges above. The pills read well for a
-   human scanning the page but are opaque to a crawler; this line is
-   the same lifecycle facts as indexable text, which is what wins the
-   long-tail "did $series land" queries no other mirror answers.
-   Renders only when there's something to say (see `patch_synthesis`). #}
-{% set synthesis = patch_state|patch_synthesis %}
-{% if synthesis %}
-<p><small>{{ synthesis }}</small></p>
-{% endif %}
-{% include "_revisions_fold.html" %}
 {% include "_message_body.html" %}
 {# Related patches: other recent articles touching at least one
    file this patch touches. The reverse-lookup side of the
