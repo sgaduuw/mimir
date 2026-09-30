@@ -27,7 +27,7 @@ from mimir.extensions import SessionLocal
 from mimir.ingest import DEFAULT_WORKERS, ingest_epoch
 from mimir.models import ArticleList, IngestState
 from mimir.sync import sync_epochs
-from mimir.thread_roots import backfill_inbox
+from mimir.thread_roots import drive_passes
 
 logger = logging.getLogger(__name__)
 
@@ -188,9 +188,10 @@ def reindex_command(
     # plain form fails identically and an error naming it as the safe
     # alternative would be a lie.
     from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
 
     try:
-        get_active_writer()
+        writer = get_active_writer()
     except RuntimeError:
         raise click.ClickException(
             "reindex needs an active broker writer and this process has none, "
@@ -209,6 +210,7 @@ def reindex_command(
     with SessionLocal() as session:
         # Re-attach the detached Inbox bootstrap_inboxes returned.
         inbox = session.merge(inbox)
+        inbox_id = inbox.id
 
         if from_scratch:
             # Drop the per-inbox link rows. Articles themselves stay (they
@@ -275,8 +277,20 @@ def reindex_command(
                 # after a partial re-walk is safe and simply roots
                 # whatever did land.
                 session.rollback()
-                counts = backfill_inbox(session, inbox.id)
-                session.commit()
+
+                # One committed pass per WriteOp lets queued cache writes run.
+                def run_pass(fn):
+                    return (
+                        writer.submit(
+                            WriteOp(
+                                label=f"thread_roots:{fn.__name__}:{inbox_name}",
+                                fn=lambda conn: fn(conn, inbox_id),
+                            )
+                        ).result(timeout=600)
+                        or 0
+                    )
+
+                counts = drive_passes(run_pass)
                 click.echo(
                     f"thread roots rebuilt for {inbox_name}: "
                     f"seeded={counts['seeded']} propagated={counts['propagated']} "
