@@ -31,6 +31,7 @@ from mimir.maintainer_directory import maintainer_path
 from mimir.models import Article
 from mimir.rendering import render_body
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
+from mimir.trailers import REVIEW_TRAILER_ROLES
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _msg_url, _thread_view_url
 
@@ -349,14 +350,6 @@ def _relative_time_filter(then: datetime | None) -> str:
     return _relative_time(then)
 
 
-# Trailer roles that count as review feedback for the synthesis line.
-# Mirrors `_REVIEW_TRAILER_ROLES` in `mimir/subsystems_dashboard/triage.py`
-# (which `mimir/lifecycle_status.py` also mirrors): Signed-off-by is
-# authorship and Reported-by is bug attribution, neither is review.
-# Duplicated rather than shared, following the existing convention for
-# this tuple; three strings don't earn a shared module.
-_REVIEW_TRAILER_ROLES = ("Reviewed-by", "Acked-by", "Tested-by")
-
 # Linus's tree is the one that means "mainline". Mirrors the
 # `tree_name = 'linus'` literal in `mimir/lifecycle_status.py`'s bulk
 # SQL, which is what decides LANDED vs QUEUED on the badge this
@@ -394,7 +387,7 @@ def _patch_synthesis_filter(patch_state) -> str:
         else:
             clauses.append(f"one of {len(revisions)} revisions in this series")
 
-    reviewed = [t for t in patch_state.trailers if t.role in _REVIEW_TRAILER_ROLES]
+    reviewed = [t for t in patch_state.trailers if t.role in REVIEW_TRAILER_ROLES]
     reviews = sum(t.total for t in reviewed)
     maintainer_reviews = sum(t.maintainer_count for t in reviewed)
     if reviews:

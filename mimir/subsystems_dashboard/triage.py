@@ -33,6 +33,7 @@ from mimir.subsystems_dashboard._path_filter import (
     _subsystem_path_filter_exists_sql,
 )
 from mimir.threading import _coerce_dt
+from mimir.trailers import REVIEW_TRAILER_ROLES
 
 
 class PatchAttention(BaseModel):
@@ -53,14 +54,8 @@ class PatchAttention(BaseModel):
 cache.register("PatchAttention", PatchAttention)
 
 
-# Trailer roles that count as "engagement" for the needs-attention
-# match (≥1 of these and the patch qualifies, modulo the
-# maintainer-pickup exclusion). Mirrors the review-trailer set from
-# the patch-state card.
-_REVIEW_TRAILER_ROLES = ("Reviewed-by", "Acked-by", "Tested-by")
-
 # Trailer role that signals a maintainer pickup. Distinct from the
-# review-trailer set above: a maintainer's Reviewed-by is feedback,
+# shared review-trailer set: a maintainer's Reviewed-by is feedback,
 # but a maintainer's Acked-by is "I'll merge this." Exclude only on
 # Acked-by; a patch with just maintainer-Reviewed-by is still
 # arguably needs-attention until the maintainer Acks it.
@@ -127,7 +122,7 @@ def _trailer_summary(
             ArticleTrailer.article_id,
             ArticleTrailer.role,
         ).where(
-            ArticleTrailer.role.in_(_REVIEW_TRAILER_ROLES),
+            ArticleTrailer.role.in_(REVIEW_TRAILER_ROLES),
             ArticleTrailer.article_id.in_(article_ids),
         )
     ).all()
@@ -141,7 +136,7 @@ def _trailer_summary(
         # Stable order matches the trailer-canon order on the patch-
         # state card.
         pieces = []
-        for role in _REVIEW_TRAILER_ROLES:
+        for role in REVIEW_TRAILER_ROLES:
             n = counts.get(role, 0)
             if n:
                 pieces.append(f"{n} {role}")
@@ -191,7 +186,7 @@ def _candidate_query_needs_attention(
           AND EXISTS (
               SELECT 1 FROM article_trailers t
               WHERE t.article_id = a.id
-                AND t.role IN ('Reviewed-by', 'Acked-by', 'Tested-by')
+                AND t.role IN ({", ".join(repr(role) for role in REVIEW_TRAILER_ROLES)})
           )
           AND NOT EXISTS (
               SELECT 1 FROM mainline_commits mc

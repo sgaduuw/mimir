@@ -31,14 +31,15 @@ from mimir.store import MessageNotFound, read_message
 logger = logging.getLogger(__name__)
 
 
+# Review feedback excludes authorship and bug-report attribution.
+REVIEW_TRAILER_ROLES = ("Reviewed-by", "Acked-by", "Tested-by")
+
 # The roles we index. See module docstring for what's deliberately
 # excluded. Order is significant only insofar as the canonical-
 # casing dict iterates it; the regex alternation is order-agnostic
 # because each role is a literal alternative.
 INDEXED_TRAILER_ROLES = (
-    "Reviewed-by",
-    "Acked-by",
-    "Tested-by",
+    *REVIEW_TRAILER_ROLES,
     "Reported-by",
     "Suggested-by",
     "Co-developed-by",
@@ -230,6 +231,7 @@ def _process_one(session, article: Article, reprocess: bool) -> tuple[str, objec
 
 __all__ = [
     "INDEXED_TRAILER_ROLES",
+    "REVIEW_TRAILER_ROLES",
     "BackfillResult",
     "backfill_article_trailers",
     "extract_trailers",
