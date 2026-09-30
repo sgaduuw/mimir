@@ -103,10 +103,11 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 # Per-connection inactivity ceiling (seconds). A connection that
 # accepts a slot in the kernel queue but sends no bytes for this long
 # is closed so it can't pin a reader thread + selector indefinitely.
-# Legitimate persistent clients (gunicorn workers, scheduler-tasks)
-# send keepalive pings well inside the window; broker_ping CLI is
-# one-shot.
+# Queued/running requests are not idle. The window restarts when the
+# last response completes, so long operations need no keepalive.
 IDLE_TIMEOUT_SEC = 300
+# Bound response delivery separately from arbitrarily long handler execution.
+REPLY_TIMEOUT_SEC = 30
 
 # Reader-side priority extractor for warm RPCs. Sub-ms per line; the
 # warm queue is a `queue.PriorityQueue` and routing on the wire-side
@@ -149,6 +150,10 @@ class ClientConnection:
 
     sock: socket.socket
     send_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Keep idle checks independent of a potentially blocked socket send.
+    activity_lock: threading.Lock = field(default_factory=threading.Lock)
+    pending: int = 0
+    last_activity: float = field(default_factory=time.monotonic)
 
 
 # Linux exposes SO_PEERCRED (pid + uid + gid of the peer process) on
@@ -325,22 +330,29 @@ class _BrokerServer(socketserver.UnixStreamServer):
           grow `linebuf` until the broker process OOMs. Crossing the
           cap closes the connection on the offending peer.
         - **`IDLE_TIMEOUT_SEC` ceiling on inactivity.** A peer that
-          accepts a slot and then sends nothing would otherwise pin
-          this reader thread + its selector indefinitely. Beyond the
+          accepts a slot and has no outstanding requests would otherwise
+          pin this reader thread + its selector indefinitely. Beyond the
           ceiling the connection is closed.
 
         Both defenses log at WARNING so an operator can correlate the
         close with the upstream symptom (a stuck `cache.set` etc.)."""
+        # Set once, before sharing the socket with workers. recv follows a
+        # readability check; sendall gets a deadline even if this reader is busy.
+        sock.settimeout(REPLY_TIMEOUT_SEC)
         conn = ClientConnection(sock=sock)
         linebuf = bytearray()
         sel = selectors.DefaultSelector()
         sel.register(sock, selectors.EVENT_READ)
-        last_activity = time.monotonic()
         try:
             while not self.stop_event.is_set():
                 events = sel.select(timeout=SHUTDOWN_POLL_SEC)
                 if not events:
-                    if time.monotonic() - last_activity > IDLE_TIMEOUT_SEC:
+                    with conn.activity_lock:
+                        idle = (
+                            conn.pending == 0
+                            and time.monotonic() - conn.last_activity > IDLE_TIMEOUT_SEC
+                        )
+                    if idle:
                         logger.warning(
                             "broker: closing idle connection after %ds",
                             IDLE_TIMEOUT_SEC,
@@ -357,7 +369,8 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     return
                 if not chunk:
                     return  # Clean EOF from peer.
-                last_activity = time.monotonic()
+                with conn.activity_lock:
+                    conn.last_activity = time.monotonic()
                 linebuf.extend(chunk)
                 if len(linebuf) > MAX_REQUEST_BYTES:
                     logger.warning(
@@ -374,6 +387,9 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     del linebuf[: nl + 1]
                     op = classify_op(line)
                     enqueued_at = time.perf_counter()
+                    # Count before enqueueing: queue wait is active work too.
+                    with conn.activity_lock:
+                        conn.pending += 1
                     if op is not None and op in LONG_OPS:
                         self.long_queue.put((line, conn, enqueued_at))
                     elif op is not None and op in WARM_OPS:
@@ -512,20 +528,25 @@ class _BrokerServer(socketserver.UnixStreamServer):
                         )
 
                     payload = reply.model_dump_json().encode("utf-8") + b"\n"
-                    try:
-                        with conn.send_lock:
+                    with conn.send_lock:
+                        try:
                             conn.sock.sendall(payload)
-                    # PEP 758 canonical tuple-of-exceptions form, see
-                    # `_reader_loop` above. Audit #482, not a bug.
-                    except OSError, ConnectionError:
-                        # Client closed mid-flight or socket reset.
-                        # Drop the reply silently; the client treats
-                        # the missing reply as `BrokerUnavailable` and
-                        # retries.
-                        logger.debug(
-                            "broker [%s]: dropped reply on closed sock", worker_tag
-                        )
+                        # PEP 758 canonical tuple-of-exceptions form, see
+                        # `_reader_loop` above. Audit #482, not a bug.
+                        except OSError, ConnectionError:
+                            # A timed-out send may have written a partial frame.
+                            # End the connection rather than append another reply.
+                            try:
+                                conn.sock.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
+                            logger.debug(
+                                "broker [%s]: dropped reply on closed sock", worker_tag
+                            )
                 finally:
+                    with conn.activity_lock:
+                        conn.pending -= 1
+                        conn.last_activity = time.monotonic()
                     q.task_done()
             except Exception:
                 logger.exception(

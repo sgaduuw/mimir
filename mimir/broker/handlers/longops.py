@@ -33,6 +33,7 @@ from mimir.broker.protocol import (
     BackfillPatchSeriesRequest,
     BootstrapInboxesRequest,
     IngestInboxRequest,
+    ReindexRequest,
     Reply,
 )
 
@@ -95,6 +96,23 @@ def handle_ingest_inbox(req: IngestInboxRequest) -> Reply:
         ok=True,
         result={"results": [r.model_dump(mode="json") for r in results]},
     )
+
+
+def handle_reindex(req: ReindexRequest) -> Reply:
+    """Reindex on the long worker; all mutations use the single writer."""
+    from mimir.ingest.epoch import DEFAULT_WORKERS
+    from mimir.ingest.reindex import reindex_epoch
+
+    try:
+        result = reindex_epoch(
+            req.inbox_name,
+            req.epoch,
+            from_scratch=req.from_scratch,
+            workers=req.workers if req.workers is not None else DEFAULT_WORKERS,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        return Reply(rpc_id=req.rpc_id, ok=False, error=str(exc))
+    return Reply(rpc_id=req.rpc_id, ok=True, result=result)
 
 
 def _chunk_seconds() -> float:
