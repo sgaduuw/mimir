@@ -1642,11 +1642,6 @@ def test_reindex_from_scratch_rebuilds_even_when_the_rewalk_fails(
     _assert_invariant_for("alpha", {"rf1@x", "rf3@x"}, "reindex/failed-rewalk")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="#546: reindex holds the writer across rebuild passes; remove with the fix",
-)
 @pytest.mark.parametrize("fail_rewalk", [False, True])
 def test_reindex_rebuild_allows_other_writes_between_passes(
     client, tmp_path, monkeypatch, fail_rewalk
