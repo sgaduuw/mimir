@@ -1642,6 +1642,89 @@ def test_reindex_from_scratch_rebuilds_even_when_the_rewalk_fails(
     _assert_invariant_for("alpha", {"rf1@x", "rf3@x"}, "reindex/failed-rewalk")
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="#546: reindex holds the writer across rebuild passes; remove with the fix",
+)
+@pytest.mark.parametrize("fail_rewalk", [False, True])
+def test_reindex_rebuild_allows_other_writes_between_passes(
+    client, tmp_path, monkeypatch, fail_rewalk
+):
+    """Every rebuild pass releases the writer before the next pass starts."""
+    from click.testing import CliRunner
+    from sqlalchemy import update
+
+    import mimir.cli.ingest as cli_ingest
+    import mimir.thread_roots as roots
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+
+    seed_thread_shape(tmp_path, "alpha", [("fair1@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("fair2@x", "fair1@x")], epoch="1.git")
+    seed_thread_shape(tmp_path, "alpha", [("fair3@x", "fair2@x")], epoch="2.git")
+    seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("cycle1@x", "cycle2@x"), ("cycle2@x", "cycle1@x")],
+        epoch="3.git",
+    )
+    writer = get_active_writer()
+    probes = []
+    passes = []
+
+    def check_pass(fn):
+        def run(conn, inbox_id):
+            if probes:
+                assert probes[-1].done(), "queued write did not run between passes"
+                assert probes[-1].result() is not None, "seed pass was not committed"
+            count = fn(conn, inbox_id)
+            passes.append((fn.__name__, count))
+
+            def write_probe(c):
+                c.execute(
+                    update(Inbox).where(Inbox.id == inbox_id).values(name=Inbox.name)
+                )
+                return c.execute(
+                    select(ArticleList.thread_root_id)
+                    .join(Article, Article.id == ArticleList.article_id)
+                    .where(
+                        ArticleList.inbox_id == inbox_id,
+                        Article.message_id == "fair1@x",
+                    )
+                ).scalar_one()
+
+            probes.append(
+                writer.submit(WriteOp(label="test:interleaved-write", fn=write_probe))
+            )
+            return count
+
+        return run
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("simulated re-walk failure")
+
+    for name in ("seed_roots", "propagate", "break_cycle"):
+        monkeypatch.setattr(roots, name, check_pass(getattr(roots, name)))
+    if fail_rewalk:
+        monkeypatch.setattr(cli_ingest, "ingest_epoch", fail)
+    result = CliRunner().invoke(
+        cli_ingest.reindex_command, ["alpha", "1.git", "--from-scratch"]
+    )
+    assert probes, result.exception
+    # The terminal pass has no successor to check its probe; drain it explicitly.
+    last_root = probes[-1].result(timeout=5)
+    if fail_rewalk:
+        assert isinstance(result.exception, RuntimeError), result.exception
+        assert str(result.exception) == "simulated re-walk failure"
+    else:
+        assert result.exit_code == 0, result.exception
+    assert last_root is not None
+    assert any(name == "propagate" and count > 0 for name, count in passes)
+    assert any(name == "break_cycle" and count > 0 for name, count in passes)
+    assert _nulls_remaining("alpha") == 0
+
+
 def test_reindex_from_scratch_leaves_roots_alone_when_nothing_was_deleted(
     client, tmp_path
 ):
