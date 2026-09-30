@@ -17,9 +17,13 @@ index for hours that way. Freshness rides `<lastmod>` plus
 "SEO posture" before reintroducing a validator here.
 """
 
+import json
 import logging
+import zlib
+from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import groupby
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import func, select
@@ -340,31 +344,31 @@ def _sitemap_entries_for_roots(
     return entries, newest
 
 
-def _month_bounds(year: int, month: int) -> tuple[datetime, datetime]:
-    """Half-open `[start, end)` for one month, in UTC.
+def _archive_bounds(year: int, month: int | None) -> tuple[datetime, datetime]:
+    """Half-open `[start, end)` for a month or whole year, in UTC.
 
     A range predicate rather than `strftime(...) = '2024-06'` so the
     date index stays usable: wrapping the column in a function makes it
     unsargable, which is the same trap CONTEXT.md records for
     `LIKE 'prefix%' ESCAPE` on `article_files.path`.
     """
-    start = datetime(year, month, 1, tzinfo=UTC)
+    start = datetime(year, month or 1, 1, tzinfo=UTC)
     end = (
         datetime(year + 1, 1, 1, tzinfo=UTC)
-        if month == 12
+        if month is None or month == 12
         else datetime(year, month + 1, 1, tzinfo=UTC)
     )
     return start, end
 
 
-def _month_roots_query(inbox: Inbox, year: int, month: int):
-    """Thread roots in this inbox whose ROOT is dated in this month.
+def _archive_roots_query(inbox: Inbox, year: int, month: int | None):
+    """Thread roots whose own date falls in this inbox-month or inbox-year.
 
     Ordered deterministically, because pages are `LIMIT`/`OFFSET`
     slices of it and an unstable order would drop and duplicate URLs
     across page boundaries.
     """
-    start, end = _month_bounds(year, month)
+    start, end = _archive_bounds(year, month)
     return (
         select(Article.id, Article.date)
         .join(ArticleList, ArticleList.article_id == Article.id)
@@ -381,9 +385,9 @@ def _month_roots_query(inbox: Inbox, year: int, month: int):
 def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
     """`(year, month, root_count)` per month that has roots, oldest first.
 
-    Drives the index: each bucket contributes
-    `ceil(count / SITEMAP_URLS_PER_PAGE)` entries, so the index has to
-    know the count before it can name the pages. Nesting is not an
+    Drives the index: years fitting one root page use a year sitemap;
+    larger years contribute `ceil(count / SITEMAP_URLS_PER_PAGE)`
+    entries per month. The index must count before naming pages. Nesting is not an
     escape: GOOGLE rejects a nested index ("Incorrect sitemap index
     format: Nested sitemap indexes"), so the pages must be enumerated
     here.
@@ -674,23 +678,101 @@ def _month_root_ids(
         cached = cache.get(key)
         if cached is not None:
             return cached
-    ids = list(session.execute(_month_roots_query(inbox, year, month)).scalars().all())
+    ids = list(
+        session.execute(_archive_roots_query(inbox, year, month)).scalars().all()
+    )
     if ids:
         cache.set(key, ids, SITEMAP_TTL_SEC)
     return ids
 
 
-def month_sitemap_xml(
+def _archive_entries(session: Session, inbox: Inbox, page_ids: list[int], base: str):
+    rows = {
+        art_id: date
+        for art_id, date in session.execute(
+            select(Article.id, Article.date).where(Article.id.in_(page_ids))
+        ).all()
+    }
+    # Snapshot order, not query order: the slice is the contract.
+    roots = [(i, rows[i]) for i in page_ids if rows.get(i) is not None]
+    entries, newest = _sitemap_entries_for_roots(
+        roots,
+        _singleton_root_ids(session, inbox, page_ids),
+        _thread_last_activity(session, inbox, page_ids),
+        _thread_message_counts(session, inbox, page_ids),
+        unmaterialised_roots(session, inbox.id, page_ids),
+        inbox.name,
+        base,
+    )
+    return entries, newest
+
+
+def _year_sitemap_xml(
+    session: Session, inbox: Inbox, year: int, page: int, base: str, *, force: bool
+) -> SitemapPayload | None:
+    """Cache all yearly pages as one snapshot of expanded URLs.
+
+    Eligibility is only an index-size choice. Replies can arrive after that
+    check, so serving must bound actual URLs independently. Keep page bodies
+    together: independently refreshed pages could drop URLs between slices.
+    """
+    key = f"sitemap:yearpages:{inbox.name}:{year:04d}"
+    packed = None if force else cache.get(key)
+    pages = (
+        [
+            SitemapPayload(*pair)
+            for pair in json.loads(zlib.decompress(b64decode(packed)))
+        ]
+        if packed is not None
+        else None
+    )
+    if pages is None:
+        ids = list(session.scalars(_archive_roots_query(inbox, year, None)))
+        entries = []
+        # Bound SQL IN lists even if an originally small year grows.
+        for offset in range(0, len(ids), SITEMAP_URLS_PER_PAGE):
+            chunk, _ = _archive_entries(
+                session, inbox, ids[offset : offset + SITEMAP_URLS_PER_PAGE], base
+            )
+            entries.extend(chunk)
+        pages = []
+        for offset in range(0, len(entries), SITEMAP_MAX_URLS):
+            chunk = entries[offset : offset + SITEMAP_MAX_URLS]
+            pages.append(
+                SitemapPayload(
+                    body=_build_sitemap_xml(chunk),
+                    last_modified=max(
+                        (date for _, date in chunk if date), default=None
+                    ),
+                )
+            )
+        if pages:
+            # Cache the valid year even on a missing page: its key excludes
+            # the requested page, so repeated 404s cannot force a full rebuild.
+            # Whole-year XML can exceed the cache's 8 MiB value ceiling even
+            # when each page fits. Repeated XML/URL prefixes compress well.
+            packed = b64encode(
+                zlib.compress(
+                    json.dumps(
+                        [(payload.body, payload.last_modified) for payload in pages]
+                    ).encode()
+                )
+            ).decode("ascii")
+            cache.set(key, packed, SITEMAP_TTL_SEC)
+    return pages[page - 1] if page <= len(pages) else None
+
+
+def archive_sitemap_xml(
     session: Session,
     inbox: Inbox,
     year: int,
-    month: int,
+    month: int | None,
     page: int,
     base: str,
     *,
     force: bool = False,
 ) -> SitemapPayload | None:
-    """One page of one month's thread URLs, or None when there is no
+    """One page of a month or year's thread URLs, or None when there is no
     such page.
 
     This is W2: the flat per-inbox sitemap caps at
@@ -701,7 +783,8 @@ def month_sitemap_xml(
 
     None becomes a 404 at the route. A page beyond the end is honestly
     absent rather than a valid-looking empty document a crawler would
-    keep re-fetching, and nothing is cached for it.
+    keep re-fetching. No missing-page key is cached; a nonempty yearly
+    snapshot is retained so repeated misses can reuse the work.
 
     The index's page count and this bounds check are derived from
     separate cache entries with independent TTLs, so for at most one
@@ -710,6 +793,8 @@ def month_sitemap_xml(
     the alternative is a shared cache generation, which is a lot of
     machinery for a transient soft error on a sitemap.
     """
+    if month is None:
+        return _year_sitemap_xml(session, inbox, year, page, base, force=force)
     ids = _month_root_ids(session, inbox, year, month, force=force)
     if not ids:
         return None
@@ -719,23 +804,7 @@ def month_sitemap_xml(
     page_ids = ids[offset : offset + SITEMAP_URLS_PER_PAGE]
 
     def compute() -> SitemapPayload:
-        rows = {
-            art_id: date
-            for art_id, date in session.execute(
-                select(Article.id, Article.date).where(Article.id.in_(page_ids))
-            ).all()
-        }
-        # Snapshot order, not query order: the slice is the contract.
-        roots = [(i, rows[i]) for i in page_ids if rows.get(i) is not None]
-        entries, newest = _sitemap_entries_for_roots(
-            roots,
-            _singleton_root_ids(session, inbox, page_ids),
-            _thread_last_activity(session, inbox, page_ids),
-            _thread_message_counts(session, inbox, page_ids),
-            unmaterialised_roots(session, inbox.id, page_ids),
-            inbox.name,
-            base,
-        )
+        entries, newest = _archive_entries(session, inbox, page_ids, base)
         return SitemapPayload(body=_build_sitemap_xml(entries), last_modified=newest)
 
     return cache.get_or_compute(
@@ -745,6 +814,33 @@ def month_sitemap_xml(
         compute,
         force=force,
     )
+
+
+def _year_url_counts(session: Session, inbox: Inbox) -> dict[int, int]:
+    """Conservative expanded URL totals, with one inbox-scoped aggregate.
+
+    Group members before joining their roots' dates so this never scans the
+    global date index once per year. Unrankable threads may render fewer URLs;
+    overcounting only retains monthly discovery for those years.
+    """
+    counts = (
+        select(ArticleList.thread_root_id.label("root"), func.count().label("n"))
+        .where(
+            ArticleList.inbox_id == inbox.id, ArticleList.thread_root_id.is_not(None)
+        )
+        .group_by(ArticleList.thread_root_id)
+        .subquery()
+    )
+    year = func.strftime("%Y", Article.date)
+    cap = max(1, settings.thread_view_render_cap)
+    rows = session.execute(
+        select(year, func.sum((counts.c.n + cap - 1) // cap))
+        .select_from(counts)
+        .join(Article, Article.id == counts.c.root)
+        .where(Article.date.is_not(None))
+        .group_by(year)
+    ).all()
+    return {int(year): total for year, total in rows}
 
 
 def sitemap_index_xml(
@@ -779,34 +875,40 @@ def sitemap_index_xml(
                     per_inbox_latest.get(inbox.name),
                 )
             )
-            # Then every month, which is what actually reaches the
-            # historical tail. Enumerated per page because GOOGLE
-            # rejects a nested index (sitemaps.org itself permits one;
-            # see `_month_sitemap_pages`), so a bucket over the urlset
-            # cap cannot hide its pages behind one.
-            for year, month, count in _month_root_counts(session, inbox):
-                pages = max(1, -(-count // SITEMAP_URLS_PER_PAGE))
-                for page in range(1, pages + 1):
-                    suffix = "sitemap.xml" if page == 1 else f"sitemap-{page}.xml"
-                    # No `<lastmod>` on month entries, deliberately.
-                    # The honest value is the newest last-activity among
-                    # the month's threads, which needs a per-thread
-                    # aggregate over every root in the inbox on every
-                    # index build. The cheap substitutes are all
-                    # WRONG rather than merely coarse: the month's
-                    # newest ROOT date never moves once the month is
-                    # past, so it would tell a crawler "unchanged"
-                    # precisely when an old thread gains a reply. An
-                    # absent lastmod leaves the crawler on its own
-                    # schedule; a false one actively suppresses the
-                    # re-fetch. Same reasoning as the maintainers
-                    # urlset above.
+            # One grouped aggregate per inbox, not two queries per year.
+            # ponytail: this buys headroom, not an absolute index-size bound;
+            # use multiple top-level indexes if the 50k alarm is approached.
+            years = {
+                year: list(months)
+                for year, months in groupby(
+                    _month_root_counts(session, inbox), key=lambda row: row[0]
+                )
+            }
+            candidates = {
+                year
+                for year, months in years.items()
+                if 1 <= year <= 9998
+                and sum(count for _, _, count in months) <= SITEMAP_URLS_PER_PAGE
+            }
+            url_counts = _year_url_counts(session, inbox) if candidates else {}
+            for year, buckets in years.items():
+                if year in candidates and url_counts.get(year, 0) <= SITEMAP_MAX_URLS:
                     entries.append(
-                        (
-                            f"{base}/{inbox.name}/{year:04d}/{month:02d}/{suffix}",
-                            None,
-                        )
+                        (f"{base}/{inbox.name}/{year:04d}/sitemap.xml", None)
                     )
+                    continue
+                for _, month, count in buckets:
+                    pages = max(1, -(-count // SITEMAP_URLS_PER_PAGE))
+                    for page in range(1, pages + 1):
+                        suffix = "sitemap.xml" if page == 1 else f"sitemap-{page}.xml"
+                        # No lastmod: root dates miss replies to old threads;
+                        # computing honest activity would require a full scan.
+                        entries.append(
+                            (
+                                f"{base}/{inbox.name}/{year:04d}/{month:02d}/{suffix}",
+                                None,
+                            )
+                        )
         # Reuse global_latest as the maintainers urlset's lastmod: it's
         # free (already computed above) and a reasonable proxy for
         # "maintainer-relevant activity changed" without an extra
