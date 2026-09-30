@@ -231,3 +231,44 @@ def test_cache_delete_for_inbox_accepts_real_slugs():
     for name in good:
         req = CacheDeleteForInboxRequest(rpc_id=1, name=name)
         assert req.name == name
+
+
+def test_stalled_reply_releases_worker_for_other_clients(seeded_db, monkeypatch):
+    """A peer that stops reading must not pin the shared cache worker."""
+    from threading import Event
+
+    from mimir.broker.client import BrokerClient
+    from mimir.broker.protocol import Reply
+
+    original = broker_server.dispatch
+    replying = Event()
+
+    def large_reply(line):
+        if b"large_reply" in line:
+            replying.set()
+            return Reply(rpc_id=1, ok=True, result={"data": "x" * (4 * 1024 * 1024)})
+        return original(line)
+
+    monkeypatch.setattr(broker_server, "dispatch", large_reply)
+    monkeypatch.setattr(broker_server, "REPLY_TIMEOUT_SEC", 0.1)
+    sp = short_socket_path("stalled-reply")
+    with broker_running(sp) as server:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as slow:
+            slow.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+            slow.connect(str(sp))
+            slow.sendall(b'{"op":"large_reply","rpc_id":1}\n')
+            assert replying.wait(timeout=2)
+            client = BrokerClient(sp)
+            try:
+                assert client.ping(), "stalled response blocked another client's ping"
+                # A partial JSON frame cannot share a connection with later replies.
+                slow.settimeout(2)
+                partial = bytearray()
+                while chunk := slow.recv(65536):
+                    partial.extend(chunk)
+                # shutdown may discard buffered bytes; EOF must not follow a full frame.
+                assert b"\n" not in partial
+            finally:
+                slow.close()
+                client.close()
+                server.cache_queue.join()

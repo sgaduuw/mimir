@@ -50,6 +50,7 @@ from mimir.broker.handlers.longops import (
     handle_backfill_patch_series,
     handle_bootstrap_inboxes,
     handle_ingest_inbox,
+    handle_reindex,
 )
 from mimir.broker.handlers.maintenance import (
     handle_analyze,
@@ -96,6 +97,7 @@ from mimir.broker.protocol import (
     InboxUpdateRequest,
     IngestInboxRequest,
     PingRequest,
+    ReindexRequest,
     Reply,
     RobotsAddRequest,
     RobotsRemoveRequest,
@@ -119,6 +121,7 @@ LONG_OPS: frozenset[str] = frozenset(
     {
         "bootstrap_inboxes",
         "ingest_inbox",
+        "reindex",
         "backfill_article_files",
         "backfill_article_trailers",
         "backfill_patch_series",
@@ -173,6 +176,7 @@ _DISPATCH: dict[str, tuple[type, Callable]] = {
     "ping": (PingRequest, handle_ping),
     "bootstrap_inboxes": (BootstrapInboxesRequest, handle_bootstrap_inboxes),
     "ingest_inbox": (IngestInboxRequest, handle_ingest_inbox),
+    "reindex": (ReindexRequest, handle_reindex),
     "backfill_article_files": (
         BackfillArticleFilesRequest,
         handle_backfill_article_files,
