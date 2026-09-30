@@ -3,6 +3,11 @@ shape + the `reindex` command (state rewind, --from-scratch
 destructive mode, missing-epoch + malformed-shape
 ClickException branches)."""
 
+import os
+import subprocess
+import sys
+
+import pytest
 from click.testing import CliRunner
 from sqlalchemy import select
 
@@ -271,3 +276,223 @@ def test_ingest_command_limit_zero_is_no_op(seeded_db, tmp_path):
         f"`--limit 0` must not ingest any articles (the documented "
         f"dry-run shape); got {landed!r}"
     )
+
+
+@pytest.mark.parametrize("from_scratch", [False, True])
+@pytest.mark.parametrize("broker_available", [False, True])
+def test_reindex_from_separate_read_only_process(
+    seeded_db, tmp_path, from_scratch, broker_available
+):
+    """A deployed CLI has no writer context and must use the broker socket."""
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import IngestState
+
+    mirror = tmp_path / "alpha-mirror"
+    _build_pubinbox_repo(mirror / "2.git", [_rfc5322_msg("rpc-reindex@example.com")])
+    _repoint_inbox("alpha", mirror)
+    initial = CliRunner().invoke(ingest_command, ["--inbox", "alpha", "--workers", "1"])
+    assert initial.exit_code == 0, initial.output
+    with SessionLocal() as session:
+        inbox_id = session.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
+        before = session.get(IngestState, (inbox_id, "2.git")).last_commit_sha
+        roots = list(
+            session.execute(
+                select(ArticleList.article_id, ArticleList.thread_root_id).where(
+                    ArticleList.inbox_id == inbox_id
+                )
+            )
+        )
+    command = [
+        sys.executable,
+        "-c",
+        "from mimir.cli.ingest import reindex_command; reindex_command()",
+        "alpha",
+        "2.git",
+        "--workers",
+        "1",
+    ]
+    if from_scratch:
+        command.append("--from-scratch")
+    result = subprocess.run(
+        command,
+        env={
+            **os.environ,
+            "MIMIR_IS_BROKER": "false",
+            "BROKER_SOCKET_PATH": str(
+                settings.broker_socket_path
+                if broker_available
+                else tmp_path / "missing.sock"
+            ),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if broker_available:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert ("linked=1" if from_scratch else "dup_db=1") in result.stdout
+        if from_scratch:
+            assert "deleted 1 existing inbox-links" in result.stdout
+            assert "thread roots rebuilt for alpha" in result.stdout
+    else:
+        assert result.returncode != 0
+        assert "broker" in result.stderr.lower()
+    with SessionLocal() as session:
+        assert session.get(IngestState, (inbox_id, "2.git")).last_commit_sha == before
+        assert (
+            list(
+                session.execute(
+                    select(ArticleList.article_id, ArticleList.thread_root_id).where(
+                        ArticleList.inbox_id == inbox_id
+                    )
+                )
+            )
+            == roots
+        )
+
+
+@pytest.mark.parametrize("epoch", ["../0.git", "/0.git", "0.git/..", "0.git\n"])
+def test_reindex_rpc_rejects_unsafe_epoch(seeded_db, epoch):
+    """Raw RPC clients cannot bypass the CLI's path validation."""
+    import json
+
+    from mimir.broker.handlers import dispatch
+
+    reply = dispatch(
+        json.dumps(
+            {
+                "op": "reindex",
+                "rpc_id": 17,
+                "inbox_name": "alpha",
+                "epoch": epoch,
+                "from_scratch": True,
+            }
+        ).encode()
+    )
+    assert not reply.ok
+    assert reply.error == "InvalidRequest"
+    assert reply.rpc_id == 17
+
+
+def test_reindex_does_not_block_cache_rpc(seeded_db, tmp_path, monkeypatch):
+    """A slow re-walk belongs on the long worker, leaving cache RPCs usable."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    import mimir.ingest.reindex as service
+    from mimir.broker.client import get_broker_client
+
+    mirror = tmp_path / "alpha-mirror"
+    _build_pubinbox_repo(mirror / "2.git", [_rfc5322_msg("long-reindex@example.com")])
+    _repoint_inbox("alpha", mirror)
+    entered, release = Event(), Event()
+    original = service.ingest_epoch
+
+    def slow_walk(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=10), "test did not release the re-walk"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "ingest_epoch", slow_walk)
+    broker = get_broker_client()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(broker.reindex, "alpha", "2.git", workers=1)
+        try:
+            assert entered.wait(timeout=5), "re-walk never started"
+            assert broker.ping()
+        finally:
+            release.set()
+        assert future.result(timeout=10)["ingest"]["new"] == 1
+
+
+def test_reindex_connection_stays_open_until_all_replies_finish(
+    seeded_db, tmp_path, monkeypatch
+):
+    """Queued and running reindexes survive idle expiry, then the socket expires."""
+    import json
+    import socket
+    import time
+    from threading import Event
+
+    import mimir.broker.handlers as handlers
+    import mimir.broker.server as server
+    import mimir.ingest.reindex as service
+    from mimir.config import settings
+
+    mirror = tmp_path / "alpha-mirror"
+    _build_pubinbox_repo(mirror / "2.git", [_rfc5322_msg("idle-reindex@example.com")])
+    _repoint_inbox("alpha", mirror)
+    initial = CliRunner().invoke(ingest_command, ["--inbox", "alpha", "--workers", "1"])
+    assert initial.exit_code == 0, initial.output
+    original = service.ingest_epoch
+
+    def slow_walk(*args, **kwargs):
+        # Real elapsed time is the behavior under test: exceed several idle polls.
+        time.sleep(0.35)
+        return original(*args, **kwargs)
+
+    finished = {rpc_id: Event() for rpc_id in (2, 5)}
+    model, handle = handlers._DISPATCH["reindex"]
+
+    def tracked_reindex(req):
+        try:
+            return handle(req)
+        finally:
+            if req.rpc_id in finished:
+                finished[req.rpc_id].set()
+
+    monkeypatch.setitem(handlers._DISPATCH, "reindex", (model, tracked_reindex))
+    monkeypatch.setattr(service, "ingest_epoch", slow_walk)
+    monkeypatch.setattr(server, "IDLE_TIMEOUT_SEC", 0.1)
+    try:
+        with (
+            socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock,
+            socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as queued,
+        ):
+            sock.settimeout(3)
+            sock.connect(str(settings.broker_socket_path))
+            requests = [
+                {
+                    "op": "reindex",
+                    "rpc_id": n,
+                    "inbox_name": "alpha",
+                    "epoch": "2.git",
+                    "from_scratch": True,
+                    "workers": 1,
+                }
+                for n in (1, 2)
+            ] + [{"op": "ping", "rpc_id": 3}, {"op": "unknown", "rpc_id": 4}]
+            sock.sendall(b"".join(json.dumps(req).encode() + b"\n" for req in requests))
+            # This connection has only queued work while the first reindex runs.
+            queued.settimeout(3)
+            queued.connect(str(settings.broker_socket_path))
+            queued.sendall(json.dumps({**requests[0], "rpc_id": 5}).encode() + b"\n")
+            with sock.makefile("rb") as replies:
+                received = {}
+                for _ in requests:
+                    line = replies.readline()
+                    assert line, (
+                        "broker closed the socket with requests still outstanding"
+                    )
+                    reply = json.loads(line)
+                    received[reply["rpc_id"]] = reply
+                for rpc_id in (1, 2):
+                    assert received[rpc_id]["ok"], received[rpc_id]
+                    assert received[rpc_id]["result"]["ingest"]["linked"] == 1
+                assert received[3]["ok"]
+                assert received[4]["error"] == "UnknownOp"
+                assert replies.readline() == b"", (
+                    "completed requests kept the socket alive"
+                )
+            with queued.makefile("rb") as replies:
+                line = replies.readline()
+                assert line, "broker closed a connection waiting in the long queue"
+                reply = json.loads(line)
+                assert reply["ok"], reply
+                assert reply["result"]["ingest"]["linked"] == 1
+                assert replies.readline() == b""
+    finally:
+        # Drain queued work even when the idle-close assertion fails.
+        for done in finished.values():
+            assert done.wait(timeout=5), "queued reindex did not finish"
