@@ -13,6 +13,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- The sitemap index groups inbox-years with at most 20,000 thread roots
+  into yearly sitemaps when their expanded thread-page URLs also fit
+  the 50,000-URL limit, adding index headroom (#551). Other years retain
+  monthly pages. Existing monthly sitemap URLs keep working, and yearly
+  URLs support paging after growth.
+
 - A message whose body carries extremely deep quote nesting no longer
   returns 500. Rendering a quote recurses once per level, so the depth
   was the sender's to choose and the stack was the only limit

@@ -1880,3 +1880,297 @@ def test_every_thread_page_emitter_agrees_byte_for_byte(client, tmp_path, monkey
         f"/t/1 redirects to {collapse.headers['Location']}, "
         f"the sitemap advertises {page1}"
     )
+
+
+def test_sitemap_index_coarsens_small_years_and_preserves_months(
+    client, tmp_path, monkeypatch
+):
+    import xml.etree.ElementTree as ET
+    from datetime import datetime
+    from urllib.parse import urlsplit
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 2)
+    monkeypatch.setattr(sm.settings, "thread_view_render_cap", 1)
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("jan@x", None), ("reply@x", "jan@x"), ("dec@x", None)]
+    )
+    _set_article_date(seeded["jan@x"][0], datetime(2012, 1, 1, tzinfo=UTC))
+    _set_article_date(
+        seeded["dec@x"][0], datetime(2012, 12, 31, 23, 59, 59, tzinfo=UTC)
+    )
+    _set_article_date(seeded["reply@x"][0], datetime(2013, 1, 1, tzinfo=UTC))
+    adjacent = tmp_path / "adjacent"
+    adjacent.mkdir()
+    neighbors = seed_thread_shape(
+        adjacent, "alpha", [("before@x", None), ("after@x", None)]
+    )
+    _set_article_date(
+        neighbors["before@x"][0], datetime(2011, 12, 31, 23, 59, 59, tzinfo=UTC)
+    )
+    _set_article_date(neighbors["after@x"][0], datetime(2013, 1, 1, tzinfo=UTC))
+    other = tmp_path / "other"
+    other.mkdir()
+    beta = seed_thread_shape(other, "beta", [("beta@x", None)])
+    _set_article_date(beta["beta@x"][0], datetime(2012, 6, 1, tzinfo=UTC))
+    _clear_sitemap_cache()
+
+    def advertised():
+        root = ET.fromstring(client.get("/sitemap.xml").data)
+        ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+        return {
+            urlsplit(entry.find("s:loc", ns).text).path
+            for entry in root.findall("s:sitemap", ns)
+        }
+
+    paths = advertised()
+    assert "/alpha/2012/sitemap.xml" in paths
+    assert "/alpha/2012/01/sitemap.xml" not in paths
+    assert "/alpha/2012/12/sitemap.xml" not in paths
+    months = _locs(client, "/alpha/2012/01/sitemap.xml") + _locs(
+        client, "/alpha/2012/12/sitemap.xml"
+    )
+    year = _locs(client, "/alpha/2012/sitemap.xml")
+    assert len(year) == len(set(year)) == 3  # Two thread pages plus singleton.
+    assert set(year) == set(months)
+    response = client.get("/alpha/2012/sitemap.xml")
+    assert response.headers["Cache-Control"] == "public, max-age=300"
+    assert "Last-Modified" not in response.headers
+
+    # An imported root takes the year over the threshold. The index switches
+    # to months, while crawlers holding the old year URL can still fetch it.
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    grown = seed_thread_shape(extra, "alpha", [("extra@x", None)])
+    _set_article_date(grown["extra@x"][0], datetime(2012, 7, 1, tzinfo=UTC))
+    _clear_sitemap_cache()
+    paths = advertised()
+    assert "/alpha/2012/sitemap.xml" not in paths
+    assert {
+        "/alpha/2012/01/sitemap.xml",
+        "/alpha/2012/07/sitemap.xml",
+        "/alpha/2012/12/sitemap.xml",
+    } <= paths
+    pages = _locs(client, "/alpha/2012/sitemap.xml")
+    assert len(pages) == len(set(pages)) == 4
+    assert set(pages) == set(months + _locs(client, "/alpha/2012/07/sitemap.xml"))
+    assert client.get("/alpha/2012/sitemap-2.xml").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/alpha/0/sitemap.xml",
+        "/alpha/9999/sitemap.xml",
+        "/alpha/2012/sitemap-0.xml",
+        "/alpha/2012/sitemap-10001.xml",
+        "/alpha/999999999999999999999/sitemap.xml",
+        "/alpha/1800/sitemap.xml",
+        "/missing/2012/sitemap.xml",
+    ],
+)
+def test_year_sitemap_invalid_or_empty_does_not_cache(client, path):
+    from sqlalchemy import func, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    _clear_sitemap_cache()
+    assert client.get(path).status_code == 404
+    with SessionLocal() as session:
+        assert session.scalar(select(func.count()).select_from(CacheEntry)) == 0
+
+
+@pytest.mark.parametrize("url_limit", [5, 6])
+def test_year_coarsening_respects_expanded_thread_urls(
+    client, tmp_path, monkeypatch, url_limit
+):
+    import xml.etree.ElementTree as ET
+    from datetime import datetime
+    from urllib.parse import urlsplit
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 2)
+    monkeypatch.setattr(sm, "SITEMAP_MAX_URLS", url_limit)
+    monkeypatch.setattr(sm.settings, "thread_view_render_cap", 1)
+    for month in (1, 7):
+        mirror = tmp_path / str(month)
+        mirror.mkdir()
+        root, reply, last = (f"{month}-{part}@x" for part in range(3))
+        seeded = seed_thread_shape(
+            mirror, "alpha", [(root, None), (reply, root), (last, reply)]
+        )
+        _set_article_date(seeded[root][0], datetime(2012, month, 1, tzinfo=UTC))
+        # Count replies by their root's year, not their own year.
+        for mid in (reply, last):
+            _set_article_date(seeded[mid][0], datetime(2013, 1, 1, tzinfo=UTC))
+    _clear_sitemap_cache()
+    months = [f"/alpha/2012/{month:02d}/sitemap.xml" for month in (1, 7)]
+    expected = set()
+    for path in months:
+        urls = _locs(client, path)
+        assert len(urls) == 3 <= url_limit
+        expected.update(urls)
+    index = ET.fromstring(client.get("/sitemap.xml").data)
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    advertised = {
+        urlsplit(entry.find("s:loc", ns).text).path
+        for entry in index.findall("s:sitemap", ns)
+        if "/alpha/2012/" in entry.find("s:loc", ns).text
+    }
+    assert advertised == (
+        {"/alpha/2012/sitemap.xml"} if url_limit == 6 else set(months)
+    )
+    discovered = set()
+    for path in advertised:
+        urls = _locs(client, path)
+        assert len(urls) <= url_limit
+        discovered.update(urls)
+    assert discovered == expected
+
+
+def test_year_budget_check_does_not_overflow_at_maximum_article_year(client, tmp_path):
+    from datetime import datetime
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("far-future@x", None)])
+    _set_article_date(seeded["far-future@x"][0], datetime(9999, 1, 1, tzinfo=UTC))
+    _clear_sitemap_cache()
+    response = client.get("/sitemap.xml")
+    assert response.status_code == 200
+    assert "/alpha/9999/sitemap.xml" not in response.get_data(as_text=True)
+
+
+def test_year_sitemap_pages_bound_urls_after_reply_growth(
+    client, tmp_path, monkeypatch
+):
+    from datetime import UTC, datetime
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import _clear_sitemap_cache, seed_thread_shape
+    from tests.test_routes.test_sitemaps import _locs, _set_article_date
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 2)
+    monkeypatch.setattr(sm, "SITEMAP_MAX_URLS", 8)
+    monkeypatch.setattr(sm.settings, "thread_view_render_cap", 1)
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [
+            ("jan@x", None),
+            ("jan-r@x", "jan@x"),
+            ("jan-r2@x", "jan-r@x"),
+            ("jan-r3@x", "jan-r2@x"),
+            ("jul@x", None),
+            ("jul-r@x", "jul@x"),
+            ("jul-r2@x", "jul-r@x"),
+            ("jul-r3@x", "jul-r2@x"),
+        ],
+    )
+    for mid, (aid, _) in seeded.items():
+        _set_article_date(
+            aid, datetime(2012, 1 if mid.startswith("jan") else 7, 1, tzinfo=UTC)
+        )
+    _clear_sitemap_cache()
+    assert "/alpha/2012/sitemap.xml" in client.get("/sitemap.xml").get_data(
+        as_text=True
+    )
+    # A new reply arrives after eligibility is checked but before the year is fetched.
+    newer = tmp_path / "newer"
+    newer.mkdir()
+    added = seed_thread_shape(newer, "alpha", [("new-reply@x", "jan@x")])
+    _set_article_date(added["new-reply@x"][0], datetime(2013, 1, 1, tzinfo=UTC))
+    months = [
+        _locs(client, f"/alpha/2012/{month}/sitemap.xml") for month in ("01", "07")
+    ]
+    # Each small month fits this cache budget, but the combined XML does not.
+    monkeypatch.setattr(sm.cache, "MAX_CACHE_VALUE_BYTES", 1024)
+    year = _locs(client, "/alpha/2012/sitemap.xml")
+    assert all(len(urls) <= sm.SITEMAP_MAX_URLS for urls in months)
+    assert len(year) <= sm.SITEMAP_MAX_URLS
+    between = tmp_path / "between-pages"
+    between.mkdir()
+    seed_thread_shape(between, "alpha", [("between-pages@x", "jul@x")])
+    second = _locs(client, "/alpha/2012/sitemap-2.xml")
+    assert _locs(client, "/alpha/2012/sitemap.xml") == year
+    assert len(second) <= sm.SITEMAP_MAX_URLS
+    assert len(year + second) == len(set(year + second)) == 9
+    assert set(year + second) == set(months[0] + months[1])
+    assert client.get("/alpha/2012/sitemap-3.xml").status_code == 404
+
+
+def test_sitemap_index_batches_year_eligibility_per_inbox(client, tmp_path):
+    from datetime import datetime
+
+    from sqlalchemy import event
+
+    from mimir.extensions import engine
+    from tests.test_routes._helpers import seed_thread_shape
+
+    def index_selects():
+        queries = []
+
+        def record(conn, cursor, statement, parameters, context, executemany):
+            if (
+                statement.lstrip().upper().startswith("SELECT")
+                and "article_lists" in statement
+            ):
+                queries.append(statement)
+
+        _clear_sitemap_cache()
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            assert client.get("/sitemap.xml").status_code == 200
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+        return len(queries)
+
+    first = seed_thread_shape(tmp_path, "alpha", [("first-year@x", None)])
+    _set_article_date(first["first-year@x"][0], datetime(2000, 1, 1, tzinfo=UTC))
+    baseline = index_selects()
+    for year in range(2001, 2005):
+        folder = tmp_path / str(year)
+        folder.mkdir()
+        seeded = seed_thread_shape(folder, "alpha", [(f"{year}@x", None)])
+        _set_article_date(seeded[f"{year}@x"][0], datetime(year, 1, 1, tzinfo=UTC))
+    assert index_selects() == baseline, "adding years must not add per-year SQL queries"
+
+
+def test_missing_year_page_reuses_valid_year_snapshot(client, tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import _clear_sitemap_cache, seed_thread_shape
+    from tests.test_routes.test_sitemaps import _set_article_date
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 2)
+    monkeypatch.setattr(sm, "SITEMAP_MAX_URLS", 3)
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [(f"root-{i}@x", None) for i in range(6)]
+    )
+    for article_id, _ in seeded.values():
+        _set_article_date(article_id, datetime(2012, 7, 1, tzinfo=UTC))
+    _clear_sitemap_cache()
+    original = sm._archive_entries
+    expanded = []
+
+    def record(session, inbox, ids, base):
+        expanded.extend(ids)
+        return original(session, inbox, ids, base)
+
+    monkeypatch.setattr(sm, "_archive_entries", record)
+    for _ in range(2):
+        assert client.get("/alpha/2012/07/sitemap-10000.xml").status_code == 404
+    assert not expanded
+    assert client.get("/alpha/2012/sitemap-10000.xml").status_code == 404
+    assert len(expanded) == 6
+    expanded.clear()
+    for page in (10000, 9999):
+        assert client.get(f"/alpha/2012/sitemap-{page}.xml").status_code == 404
+    assert client.get("/alpha/2012/sitemap.xml").status_code == 200
+    assert not expanded, "Missing and valid pages must reuse the same yearly snapshot"
