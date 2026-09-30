@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.datetime_utils import aware_utc as _aware_utc
+from mimir.trailers import REVIEW_TRAILER_ROLES
 
 # Strip control bytes + surrogates before flowing reviewer names
 # into the lifecycle pill's `data-tooltip` attribute. Same shape as
@@ -88,17 +89,6 @@ cache.register("LifecycleStatusInfo", LifecycleStatusInfo)
 LIFECYCLE_STATUS_TTL_SEC = 300
 
 
-# Trailer roles that count as actionable review feedback. Mirrors
-# `_REVIEW_TRAILER_ROLES` in `mimir/subsystems_dashboard/triage.py`.
-# Signed-off-by (authorship) and Reported-by (bug-report attribution)
-# are deliberately excluded.
-#
-# NOTE: also hardcoded inline in `_BULK_SQL` below (SQLAlchemy's
-# text() can't interpolate Python tuples into raw IN clauses). When
-# adding a role, update both places.
-_REVIEW_ROLES = ("Reviewed-by", "Acked-by", "Tested-by")
-
-
 # Use a parameterised IN(...) via SQLAlchemy text() with expanding
 # bindparam. Keeps the query plan-pinned and dodges SQLite's limit
 # on positional params for very large lists. Exposed at module
@@ -123,7 +113,7 @@ _REVIEW_ROLES = ("Reviewed-by", "Acked-by", "Tested-by")
 # version so v10 > v9 (test_superseded_handles_double_digit_versions).
 # Adds sup_by_version + sup_by_date for the SUPERSEDED tooltip's
 # leading line.
-_BULK_SQL = text("""
+_BULK_SQL = text(f"""
 WITH RECURSIVE
 roots(leaf, message_id, thread_parent, depth) AS (
     SELECT id, message_id, thread_parent, 0
@@ -187,14 +177,14 @@ rc AS (
              ON LOWER(sm.address) = t.address_normalized
             AND sm.role IN ('M', 'R')
      WHERE t.article_id IN :ids
-       AND t.role IN ('Reviewed-by', 'Acked-by', 'Tested-by')
+       AND t.role IN ({", ".join(repr(role) for role in REVIEW_TRAILER_ROLES)})
      GROUP BY t.article_id
 ),
 at_review AS (
     SELECT t.article_id, 1 AS has_review
       FROM article_trailers t
      WHERE t.article_id IN :ids
-       AND t.role IN ('Reviewed-by', 'Acked-by', 'Tested-by')
+       AND t.role IN ({", ".join(repr(role) for role in REVIEW_TRAILER_ROLES)})
      GROUP BY t.article_id
 ),
 sup AS (
@@ -243,7 +233,7 @@ SELECT a.id,
 # emission order is stable + matches trailer insertion order
 # (article_trailers has no `created_at`; PK id ascends in insert
 # order). `_format_tooltip` re-orders maintainers-first at render.
-_REVIEWER_NAMES_SQL = text("""
+_REVIEWER_NAMES_SQL = text(f"""
 SELECT t.article_id,
        t.name,
        (sm.address IS NOT NULL) AS is_maintainer
@@ -252,7 +242,7 @@ SELECT t.article_id,
          ON LOWER(sm.address) = t.address_normalized
         AND sm.role IN ('M', 'R')
  WHERE t.article_id IN :ids
-   AND t.role IN ('Reviewed-by', 'Acked-by', 'Tested-by')
+   AND t.role IN ({", ".join(repr(role) for role in REVIEW_TRAILER_ROLES)})
  ORDER BY t.article_id, t.id ASC
 """).bindparams(bindparam("ids", expanding=True))
 

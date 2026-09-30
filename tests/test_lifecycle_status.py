@@ -4,6 +4,7 @@
 
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import select
 
 from mimir.lifecycle_status import (
@@ -138,12 +139,13 @@ def test_queued_when_only_non_linus_row(session):
     assert got[art.id].tree == "net-next"
 
 
-def test_reviewed_when_only_review_trailers(session):
+@pytest.mark.parametrize("role", ["Reviewed-by", "Acked-by", "Tested-by"])
+def test_reviewed_when_only_review_trailers(session, role):
     art = _seed_article(session, "reviewed@x")
     session.add(
         ArticleTrailer(
             article_id=art.id,
-            role="Reviewed-by",
+            role=role,
             name="Bob",
             address="b@x",
             address_normalized="b@x",
@@ -152,6 +154,8 @@ def test_reviewed_when_only_review_trailers(session):
     session.commit()
     got = lifecycle_status_for_articles(session, [art.id])
     assert got[art.id].state == LifecycleStatus.REVIEWED
+    assert got[art.id].count_suffix == ": 1 (0M)"
+    assert got[art.id].tooltip == "Bob"
 
 
 def test_signed_off_by_alone_does_not_count_as_reviewed(session):
