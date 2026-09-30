@@ -8,6 +8,8 @@ identity contract)."""
 import re
 from datetime import UTC
 
+import pytest
+
 from mimir.rendering.body import MAX_QUOTE_DEPTH
 from tests.test_routes._helpers import (
     _data_attr_values,
@@ -451,6 +453,8 @@ def test_message_page_htmx_request_returns_body_partial(client, tmp_path):
     assert "thread-context" not in body
     assert "thread-toolbar" not in body
     assert "thread-fold.js" not in body
+    assert 'class="msg-badges"' not in body
+    assert 'class="revisions-fold"' not in body
 
 
 def test_message_page_full_and_htmx_responses_share_article_content(
@@ -2212,12 +2216,13 @@ def test_message_page_no_patch_state_aside(client, tmp_path):
     assert '<aside class="patch-state"' not in body
 
 
-def test_message_page_revisions_fold_renders_when_multiple_versions(
+@pytest.mark.parametrize("headers", [{}, {"HX-Request": "true"}])
+def test_message_page_patch_metadata_is_inside_swap_target(
     client,
     tmp_path,
+    headers,
 ):
-    """When a patch has >= 2 revisions, a Revisions fold renders
-    with the count in the summary."""
+    """Full and HTMX renders replace all metadata with the selected message."""
     from sqlalchemy import update
 
     from mimir.extensions import SessionLocal
@@ -2259,9 +2264,36 @@ def test_message_page_revisions_fold_renders_when_multiple_versions(
             )
         )
         s.commit()
-    body = client.get(url).data.decode()
-    assert 'class="revisions-fold"' in body
-    assert 'class="revisions-count">(2)' in body
+    _seed_mainline_commit(
+        message_id="rev-v2@x",
+        commit_sha="aabbccddeeff" + "00" * 14,
+        tree_name="linus",
+    )
+    response = client.get(url, headers=headers)
+    assert response.status_code == 200
+    body = response.data.decode()
+    start = body.index('<article id="msg"')
+    end = body.index("</article>", start) + len("</article>")
+    article = body[start:end]
+    for marker in (
+        'class="msg-badges"',
+        'class="badge badge-lifecycle-landed"',
+        "of 2 in this series",
+        "landed in mainline as aabbccddeeff",
+        'class="revisions-fold"',
+        'class="revisions-count">(2)',
+    ):
+        assert marker in article, f"{marker} must be inside the HTMX swap target"
+        assert body.count(marker) == 1
+    assert article.index("<h1>") < article.index('class="msg-badges"')
+    assert article.index('class="msg-badges"') < article.index("<strong>From:</strong>")
+    assert "HX-Request" in response.headers["Vary"]
+    assert (
+        client.get(
+            url, headers={**headers, "If-None-Match": response.headers["ETag"]}
+        ).status_code
+        == 304
+    )
 
 
 def test_message_page_revisions_fold_absent_for_single_revision(
