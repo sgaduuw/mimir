@@ -130,6 +130,14 @@ class IngestInboxRequest(_BrokerRequest):
     workers: int | None = Field(default=None, ge=1)
 
 
+class ReindexRequest(_BrokerRequest):
+    op: Literal["reindex"] = "reindex"
+    inbox_name: str = Field(min_length=1, max_length=64)
+    epoch: str = Field(pattern=r"^[0-9]+\.git$")
+    from_scratch: bool = False
+    workers: int | None = Field(default=None, ge=1)
+
+
 class BootstrapInboxesRequest(_BrokerRequest):
     """Long op: reconcile `Settings.inboxes` env config into the
     `inboxes` table. Idempotent via `ON CONFLICT (name) DO NOTHING`.
