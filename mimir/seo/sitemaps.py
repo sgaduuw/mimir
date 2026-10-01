@@ -746,7 +746,7 @@ def _year_sitemap_xml(
     check, so serving must bound actual URLs independently. Keep page bodies
     together: independently refreshed pages could drop URLs between slices.
     """
-    key = f"sitemap:yearpages:{inbox.name}:{year:04d}"
+    key = f"sitemap:yearpages:{inbox.name}:{year:04d}:{max(1, settings.thread_view_render_cap)}"
     packed = None if force else cache.get(key)
     pages = (
         [
@@ -839,7 +839,7 @@ def archive_sitemap_xml(
 
     return cache.get_or_compute(
         session,
-        f"sitemap:month:{inbox.name}:{year:04d}-{month:02d}:{page}",
+        f"sitemap:month:{inbox.name}:{year:04d}-{month:02d}:{page}:{max(1, settings.thread_view_render_cap)}",
         SITEMAP_TTL_SEC,
         compute,
         force=force,
@@ -879,7 +879,7 @@ def sitemap_index_xml(
     """Cached body of `/sitemap.xml`. Lists `/meta-sitemap.xml`, one
     `/<inbox>/sitemap.xml` per configured inbox, and
     `/sitemap-maintainers.xml`. Same cache key as the route uses
-    (`sitemap:index`) so `warm-cache` can pre-populate it via
+    (`sitemap:index:<render-cap>`) so `warm-cache` can pre-populate it via
     `force=True`. The `last_modified` field of the returned
     `SitemapPayload` is the global-max article date (max across all
     per-inbox lastmods). It is NOT projected into a `Last-Modified`
@@ -951,7 +951,7 @@ def sitemap_index_xml(
 
     return cache.get_or_compute(
         session,
-        "sitemap:index",
+        f"sitemap:index:{max(1, settings.thread_view_render_cap)}",
         SITEMAP_TTL_SEC,
         compute,
         force=force,
@@ -1198,7 +1198,7 @@ def inbox_sitemap_xml(
 
     return cache.get_or_compute(
         session,
-        f"sitemap:inbox:{inbox.name}",
+        f"sitemap:inbox:{inbox.name}:{max(1, settings.thread_view_render_cap)}",
         SITEMAP_TTL_SEC,
         compute,
         force=force,
