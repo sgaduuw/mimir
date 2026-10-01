@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Maintainer sitemaps and page links now use the profile route's address
+  validation. Unsupported addresses remain visible as text but no longer
+  produce links to 404 pages (#565).
+
 ## [3.9.0] - 2026-10-01
 
 ### Fixed
