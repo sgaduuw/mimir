@@ -19,6 +19,9 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Sitemap caches follow changes to the thread render cap, so origin responses
+  stop advertising obsolete thread pages without waiting for cache expiry (#567).
+
 - Maintainer sitemaps and page links now use the profile route's address
   validation. Unsupported addresses remain visible as text but no longer
   produce links to 404 pages (#565).
