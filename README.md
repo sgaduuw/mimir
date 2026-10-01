@@ -514,6 +514,9 @@ mimir/
 alembic/                 migrations
 tests/                   pytest
 Inboxes/                 default mirror root (per-inbox subdirs; gitignored)
+AGENTS.md                conventions for AI coding agents working on this
+                         repo: layout, commands, the CHANGELOG and README
+                         rules, testing discipline, versioning
 ```
 
 ## Web UI
@@ -659,8 +662,11 @@ Routes:
   `/*/search`, and points at the sitemap. Rendered from the
   `robots_rules` table, see "Managing robots.txt".
 - `GET /sitemap.xml`, sitemap index pointing at `/meta-sitemap.xml`,
-  one `/<inbox>/sitemap.xml` per configured inbox, and
-  `/sitemap-maintainers.xml`. Responses are unconditional (no
+  one `/<inbox>/sitemap.xml` per configured inbox, every archive
+  bucket below (a year entry where the inbox-year is small enough,
+  the months otherwise), and `/sitemap-maintainers.xml`. Those
+  archive entries are nearly all of it, so the index is subject to
+  the same 50,000-entry cap as a urlset. Responses are unconditional (no
   `Last-Modified` / `ETag`, always 200): a date-based validator
   pinned stale structural versions in downstream caches. Freshness
   is carried by the per-URL `<lastmod>` inside the XML; edges cache
@@ -691,6 +697,16 @@ Routes:
   the most recent few thousand threads, so on a corpus of this size
   everything older was in no sitemap at all. The index enumerates every
   page, because Google rejects a nested sitemap index. Cached for 1 h.
+- `GET /<inbox>/<YYYY>/sitemap.xml`, a whole year of that inbox's
+  thread URLs in one urlset, paged the same way. The index advertises
+  this instead of the twelve month entries whenever an inbox-year
+  holds at most 20,000 thread roots, which is the same width a page
+  is sliced at, so a coarsened year never needs splitting. Most
+  inbox-years are small, so this is what keeps the index itself under
+  the 50,000-entry limit that applies to an index as well as to a
+  urlset. The month route keeps serving either way; coarsening
+  changes only what the index advertises, so a URL a crawler already
+  fetched does not start 404ing. Cached for 1 h.
 - `GET /sitemap-maintainers.xml`, one urlset listing every
   `/maintainers/<address>` profile page (one URL per MAINTAINERS
   `M:` maintainer). No per-URL `<lastmod>`. Cached for 1 h.

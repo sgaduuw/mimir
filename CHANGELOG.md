@@ -11,7 +11,26 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-10-01
+
 ### Fixed
+
+- `mimir reindex` works against a deployed instance again. It
+  resolved its writer through the broker context, which only
+  `serve()` ever sets, so a Click command run from `mimir-tasks` or
+  `podman exec` raised `RuntimeError("No active broker")` the moment
+  the re-walk started. Broken since the single-writer migration
+  rather than a regression, and invisible to the suite because
+  conftest installs a broker context session-wide. Now dispatched as
+  a broker RPC. (#547)
+- `mimir reindex --from-scratch` releases the single writer between
+  rebuild passes instead of holding it for the whole thread-root
+  rebuild, so concurrent cache writes drain between passes rather
+  than queueing behind the entire operation. (#546)
+- Patch badges, the revisions fold and the synthesis line now
+  refresh when navigating between messages inside a thread. They
+  lived outside the htmx-swapped region, so an intra-thread swap
+  left the previous message's patch metadata on screen. (#536)
 
 - The sitemap index groups inbox-years with at most 20,000 thread roots
   into yearly sitemaps when their expanded thread-page URLs also fit
@@ -58,6 +77,14 @@ changes, not internal refactors. Categories: **Added**,
   Known limit, since the shape is genuinely ambiguous: a bullet list
   whose items have indented continuation lines is indistinguishable
   from a hunk of deletions and context, and is rendered as a diff.
+
+### Removed
+
+- The unused systemd deployment path under `deploy/systemd/`.
+  Production runs podman quadlets from `ansible-eelco`; these units
+  documented an arrangement nothing used, and kept a second,
+  diverging description of the deploy alongside the real one.
+  (#558)
 
 ### Changed
 

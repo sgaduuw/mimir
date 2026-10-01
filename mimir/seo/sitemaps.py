@@ -444,14 +444,21 @@ def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
     a two-column equality between columns of one row is not sargable.
     Cost is the same either way.
 
-    Index size, counted on the SERVED document at
-    `https://ratatoskr.run/sitemap.xml` rather than derived from this
-    query, so it is what crawlers actually receive: **32,629 entries
-    (2.6 MiB) on 2026-09-29**, of which 32,420 are month buckets, 4
-    are extra pages from the width above, and the rest are the meta,
-    per-inbox and maintainers entries. 65% of the protocol's
-    50k-per-index limit. It was 32,093 buckets on 2026-07-28, so
-    ~+536 in two months.
+    Index size. The last figure counted on a SERVED document is
+    **32,629 entries (2.6 MiB) on 2026-09-29**, of which 32,420 were
+    month buckets: 65% of the protocol's 50k-per-index limit. That
+    is the PRE-COARSENING shape, measured against 3.8.1, and it is
+    what year bucketing exists to fix; it is kept because it is the
+    only figure here that was counted rather than modelled.
+
+    Modelled for the coarsened shape against the same production
+    data: ~3,330 entries, under 7% of the cap. **Modelled, not
+    measured** - it is derived from a root-count query, not from a
+    served document, and year bucketing has not been deployed yet.
+    Re-count `https://ratatoskr.run/sitemap.xml` after the release
+    carrying it reaches production, and replace this paragraph with
+    what the number turns out to be rather than scaling either of
+    the two above.
 
     Growth rate is the wrong thing to plan from. 205 inboxes x 258
     months is ~52,900 POSSIBLE buckets, already past the cap, so the
@@ -460,13 +467,15 @@ def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
     add hundreds of entries at once, which no per-year figure
     predicts.
 
-    Per-inbox SUB-INDEXES are not the fix, despite what an earlier
-    version of this docstring said. That is an index referencing an
-    index, which is the nesting GOOGLE rejects (see
+    Per-inbox SUB-INDEXES were never the fix, despite what an
+    earlier version of this docstring proposed. That is an index
+    referencing an index, which is the nesting GOOGLE rejects (see
     `_month_root_counts` above and CONTEXT.md "SEO posture"); it is
     the same shape already tried and rejected for the maintainers
-    layer. What the protocol does allow is more than one INDEPENDENT
-    index file, none referencing another. See #551.
+    layer. Year bucketing avoids the question entirely by shrinking
+    the flat index instead of structuring it. What the protocol does
+    allow, if the ceiling is ever approached again, is more than one
+    INDEPENDENT index file, none referencing another. See #551.
     """
     y = func.strftime("%Y", Article.date).label("y")
     m = func.strftime("%m", Article.date).label("m")
