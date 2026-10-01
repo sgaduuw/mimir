@@ -20,6 +20,7 @@ inbox directory, not a per-subsystem dashboard fan-out) and doesn't
 need a dependency on that package for one shared constant.
 """
 
+import re
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -41,6 +42,14 @@ from mimir.models import (
 MAINTAINER_DIRECTORY_CACHE_TTL_SEC = 3600
 
 
+_MAINTAINER_ADDR_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+")
+
+
+def is_addressable_maintainer_address(address: str) -> bool:
+    """Share the profile route's supported address syntax with link emitters."""
+    return _MAINTAINER_ADDR_RE.fullmatch(address) is not None
+
+
 def maintainer_path(address: str) -> str:
     """The site-relative URL for one maintainer's profile page.
 
@@ -51,6 +60,7 @@ def maintainer_path(address: str) -> str:
     canonical byte for byte rather than resolving to it via a redirect
     or a duplicate-URL signal.
 
+    Link emitters must first check `is_addressable_maintainer_address`.
     The address is lowercased: MAINTAINERS is not consistently cased for
     the same person across sections, and the route keys on the
     lowercased form.
