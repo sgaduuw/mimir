@@ -592,7 +592,6 @@ def _surrogate_str() -> str:
         "subject",
         "author",
         "body",
-        "body_content_type",
         "in_reply_to",
     ],
 )

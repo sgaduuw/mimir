@@ -84,7 +84,6 @@ class ParsedArticle(BaseModel):
     author: str | None = None
     date: datetime | None = None
     body: str | None = None
-    body_content_type: str | None = None
     in_reply_to: str | None = None
     references: list[str] = Field(default_factory=list)
     headers: dict[str, str] = Field(default_factory=dict)
@@ -95,7 +94,6 @@ class ParsedArticle(BaseModel):
         "subject",
         "author",
         "body",
-        "body_content_type",
         "in_reply_to",
         mode="after",
     )
@@ -323,7 +321,6 @@ def parse_message(raw: bytes) -> ParsedArticle:
 
     body_part = msg.get_body(preferencelist=("plain", "html"))
     body: str | None = None
-    body_content_type: str | None = None
     if body_part is not None:
         try:
             body = body_part.get_content()
@@ -344,7 +341,6 @@ def parse_message(raw: bytes) -> ParsedArticle:
                 body = payload.decode("latin-1", errors="replace")
             else:
                 body = None
-        body_content_type = body_part.get_content_type()
         # RFC 3676 decoding, same class of work as the charset and
         # transfer-encoding decoding above: `format=flowed` bodies
         # carry space-stuffing and soft line breaks that the
@@ -417,7 +413,6 @@ def parse_message(raw: bytes) -> ParsedArticle:
         author=_decode_rfc2047(_raw_header(msg, "From")),
         date=date,
         body=body,
-        body_content_type=body_content_type,
         in_reply_to=_normalize_msgid(_raw_header(msg, "In-Reply-To")),
         references=_split_references(_raw_header(msg, "References")),
         headers=headers,
