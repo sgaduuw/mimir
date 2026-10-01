@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-10-02
+
 ### Added
 
 - JSON access logs include fetch metadata, accepted content and language,
