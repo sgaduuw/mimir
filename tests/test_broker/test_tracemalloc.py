@@ -30,7 +30,11 @@ def test_snapshotter_disabled_when_interval_zero(tmp_path):
 def test_snapshotter_writes_files_at_interval(tmp_path):
     """interval=1s, 3s wait: at least 2 .pkl files land and load cleanly."""
     diag = tmp_path / "diag"
-    _maybe_start_tracemalloc_snapshotter(interval=1, diagnostics_dir=diag, frames=10)
+    stop_event = threading.Event()
+    thread = _maybe_start_tracemalloc_snapshotter(
+        interval=1, stop_event=stop_event, diagnostics_dir=diag, frames=10
+    )
+    assert thread is not None
     try:
         time.sleep(3.2)
         pkls = sorted(diag.glob("tracemalloc-*.pkl"))
@@ -43,7 +47,9 @@ def test_snapshotter_writes_files_at_interval(tmp_path):
         tmps = list(diag.glob("*.tmp"))
         assert tmps == []
     finally:
-        tracemalloc.stop()
+        stop_event.set()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 def test_snapshotter_aborts_when_diagnostics_dir_unwritable(tmp_path, caplog):
@@ -78,9 +84,11 @@ def test_snapshotter_survives_write_failure(tmp_path, caplog):
     # during the call itself. Closing the scope at function-exit would rely
     # on pytest's default propagation level, which is fragile.
     with caplog.at_level(logging.WARNING, logger="mimir.broker.server"):
-        _maybe_start_tracemalloc_snapshotter(
-            interval=1, diagnostics_dir=diag, frames=10
+        stop_event = threading.Event()
+        thread = _maybe_start_tracemalloc_snapshotter(
+            interval=1, stop_event=stop_event, diagnostics_dir=diag, frames=10
         )
+        assert thread is not None
         try:
             # First snapshot lands while writable
             time.sleep(1.5)
@@ -102,14 +110,20 @@ def test_snapshotter_survives_write_failure(tmp_path, caplog):
             assert len(after) > len(first)
         finally:
             diag.chmod(0o755)
-            tracemalloc.stop()
+            stop_event.set()
+            thread.join(timeout=5)
+            assert not thread.is_alive()
 
 
 def test_snapshotter_logs_top_25_summary(tmp_path, caplog):
     """One snapshot logs a 'tracemalloc top-25' summary at INFO."""
     caplog.set_level(logging.INFO)
     diag = tmp_path / "diag"
-    _maybe_start_tracemalloc_snapshotter(interval=1, diagnostics_dir=diag, frames=10)
+    stop_event = threading.Event()
+    thread = _maybe_start_tracemalloc_snapshotter(
+        interval=1, stop_event=stop_event, diagnostics_dir=diag, frames=10
+    )
+    assert thread is not None
     try:
         time.sleep(1.5)
         messages = [r.message for r in caplog.records]
@@ -119,7 +133,9 @@ def test_snapshotter_logs_top_25_summary(tmp_path, caplog):
         format_hits = [m for m in messages if "MiB" in m and ":" in m]
         assert format_hits, "expected at least one 'MiB ... file:lineno' line"
     finally:
-        tracemalloc.stop()
+        stop_event.set()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 def test_snapshotter_stops_when_stop_event_set(tmp_path):
