@@ -1568,20 +1568,7 @@ def test_find_incoherent_roots_ignores_self_parents(client, tmp_path):
 
 
 def test_reindex_from_scratch_refuses_when_it_cannot_rebuild(client, tmp_path):
-    """Never destroy in a context that cannot finish the job.
-
-    `ingest_epoch` resolves its writer from the broker context, which
-    only `serve()` sets, so a plain CLI process raises the moment the
-    re-walk starts. The destructive half runs and COMMITS before that,
-    so without a pre-check a `--from-scratch` in the wrong process
-    deletes an epoch's links, blanks the inbox's roots, and dies. And
-    nothing repairs it: the startup backfill is sentinel-gated, the
-    scheduler has no thread-roots pass, and `verify_thread_roots` only
-    samples non-NULL rows so it cannot see an all-NULL inbox.
-
-    The suite hides this by default because conftest installs a broker
-    context session-wide, so this clears it to get the production shape.
-    """
+    """Missing broker writer context must fail before deleting any links."""
     from click.testing import CliRunner
 
     from mimir.broker import _context
@@ -1603,7 +1590,7 @@ def test_reindex_from_scratch_refuses_when_it_cannot_rebuild(client, tmp_path):
         _context.set_active(pool, writer)
 
     assert result.exit_code != 0, result.output
-    assert "active broker writer" in result.output, result.output
+    assert "broker" in result.output, result.output
     assert _roots_by_inbox("alpha", mids) == before, (
         "refused the run but destroyed state on the way out"
     )
@@ -1622,7 +1609,7 @@ def test_reindex_from_scratch_rebuilds_even_when_the_rewalk_fails(
     """
     from click.testing import CliRunner
 
-    import mimir.cli.ingest as cli_ingest
+    import mimir.ingest.reindex as reindex_service
     from mimir.cli.ingest import reindex_command
 
     seed_thread_shape(tmp_path, "alpha", [("rf1@x", None)], epoch="0.git")
@@ -1632,7 +1619,7 @@ def test_reindex_from_scratch_rebuilds_even_when_the_rewalk_fails(
     def _boom(*_a, **_kw):
         raise RuntimeError("simulated mid-walk failure")
 
-    monkeypatch.setattr(cli_ingest, "ingest_epoch", _boom)
+    monkeypatch.setattr(reindex_service, "ingest_epoch", _boom)
     result = CliRunner().invoke(reindex_command, ["alpha", "1.git", "--from-scratch"])
 
     assert result.exit_code != 0
@@ -1640,6 +1627,154 @@ def test_reindex_from_scratch_rebuilds_even_when_the_rewalk_fails(
         "a failed re-walk left the inbox unrooted with nothing to repair it"
     )
     _assert_invariant_for("alpha", {"rf1@x", "rf3@x"}, "reindex/failed-rewalk")
+
+
+@pytest.mark.parametrize("fail_rewalk", [False, True])
+def test_reindex_rebuild_allows_other_writes_between_passes(
+    client, tmp_path, monkeypatch, fail_rewalk, caplog
+):
+    """Every rebuild pass releases the writer before the next pass starts."""
+    from click.testing import CliRunner
+    from sqlalchemy import update
+
+    import mimir.ingest.reindex as reindex_service
+    import mimir.thread_roots as roots
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+    from mimir.cli.ingest import reindex_command
+
+    seed_thread_shape(tmp_path, "alpha", [("fair1@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("fair2@x", "fair1@x")], epoch="1.git")
+    seed_thread_shape(tmp_path, "alpha", [("fair3@x", "fair2@x")], epoch="2.git")
+    seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("cycle1@x", "cycle2@x"), ("cycle2@x", "cycle1@x")],
+        epoch="3.git",
+    )
+    writer = get_active_writer()
+    probes = []
+    passes = []
+
+    def check_pass(fn):
+        def run(conn, inbox_id):
+            if probes:
+                assert probes[-1].done(), "queued write did not run between passes"
+                assert probes[-1].result() is not None, "seed pass was not committed"
+            count = fn(conn, inbox_id)
+            passes.append((fn.__name__, count))
+
+            def write_probe(c):
+                c.execute(
+                    update(Inbox).where(Inbox.id == inbox_id).values(name=Inbox.name)
+                )
+                return c.execute(
+                    select(ArticleList.thread_root_id)
+                    .join(Article, Article.id == ArticleList.article_id)
+                    .where(
+                        ArticleList.inbox_id == inbox_id,
+                        Article.message_id == "fair1@x",
+                    )
+                ).scalar_one()
+
+            probes.append(
+                writer.submit(WriteOp(label="test:interleaved-write", fn=write_probe))
+            )
+            return count
+
+        return run
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("simulated re-walk failure")
+
+    for name in ("seed_roots", "propagate", "break_cycle"):
+        monkeypatch.setattr(roots, name, check_pass(getattr(roots, name)))
+    if fail_rewalk:
+        monkeypatch.setattr(reindex_service, "ingest_epoch", fail)
+    result = CliRunner().invoke(reindex_command, ["alpha", "1.git", "--from-scratch"])
+    assert probes, result.exception
+    # The terminal pass has no successor to check its probe; drain it explicitly.
+    last_root = probes[-1].result(timeout=5)
+    if fail_rewalk:
+        assert result.exit_code != 0
+        assert "simulated re-walk failure" in caplog.text
+    else:
+        assert result.exit_code == 0, result.exception
+    assert last_root is not None
+    assert any(name == "propagate" and count > 0 for name, count in passes)
+    assert any(name == "break_cycle" and count > 0 for name, count in passes)
+    assert _nulls_remaining("alpha") == 0
+
+
+@pytest.mark.parametrize("fail_rewalk", [False, True])
+def test_reindex_waits_for_delayed_reset_before_repair(
+    client, tmp_path, monkeypatch, fail_rewalk, caplog
+):
+    """A queued reset must not commit after its handler abandons root repair."""
+    from threading import Event
+
+    from click.testing import CliRunner
+
+    import mimir.ingest.reindex as service
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+    from mimir.cli.ingest import reindex_command
+
+    seed_thread_shape(tmp_path, "alpha", [("delay1@x", None)], epoch="0.git")
+    seed_thread_shape(tmp_path, "alpha", [("delay2@x", "delay1@x")], epoch="1.git")
+    assert _nulls_remaining("alpha") == 0
+    writer = get_active_writer()
+    submit = writer.submit
+    release = Event()
+
+    def block(conn):
+        assert release.wait(timeout=10), "test did not release the writer"
+
+    def delayed_submit(op):
+        future = submit(op)
+        if op.label.startswith("reindex:reset:"):
+            real_result = future.result
+
+            def wait(timeout=None):
+                # Accelerate a finite wait while the real reset is queued.
+                # An unbounded wait instead observes the actual commit.
+                if timeout is None:
+                    release.set()
+                    return real_result(timeout=5)
+                try:
+                    return real_result(timeout=0)
+                finally:
+                    release.set()
+
+            monkeypatch.setattr(future, "result", wait)
+        return future
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("re-walk failed after delayed reset")
+
+    monkeypatch.setattr(writer, "submit", delayed_submit)
+    if fail_rewalk:
+        monkeypatch.setattr(service, "ingest_epoch", fail)
+    blocker = submit(WriteOp(label="test:delay-reset", fn=block))
+    try:
+        result = CliRunner().invoke(
+            reindex_command, ["alpha", "1.git", "--from-scratch", "--workers", "1"]
+        )
+    finally:
+        release.set()
+        blocker.result(timeout=5)
+        submit(WriteOp(label="test:drain-reset", fn=lambda conn: None)).result(
+            timeout=5
+        )
+
+    assert _nulls_remaining("alpha") == 0, "late reset committed without root repair"
+    survivors = {"delay1@x"} if fail_rewalk else {"delay1@x", "delay2@x"}
+    _assert_invariant_for("alpha", survivors, "reindex/delayed-reset")
+    if fail_rewalk:
+        assert result.exit_code != 0
+        assert "re-walk failed after delayed reset" in caplog.text
+    else:
+        assert result.exit_code == 0, result.output
 
 
 def test_reindex_from_scratch_leaves_roots_alone_when_nothing_was_deleted(
@@ -1652,18 +1787,19 @@ def test_reindex_from_scratch_leaves_roots_alone_when_nothing_was_deleted(
     root in the inbox on a typo.
     """
     from click.testing import CliRunner
-    from dulwich.repo import Repo
 
     from mimir.cli.ingest import reindex_command
+    from tests.test_cli._helpers import _build_pubinbox_repo, _rfc5322_msg
 
     seed_thread_shape(tmp_path, "alpha", [("nd1@x", None)], epoch="0.git")
     seed_thread_shape(tmp_path, "alpha", [("nd2@x", "nd1@x")], epoch="1.git")
     mids = {"nd1@x", "nd2@x"}
     before = _roots_by_inbox("alpha", mids)
 
-    Repo.init_bare(str(tmp_path / "9.git"), mkdir=True)
+    _build_pubinbox_repo(tmp_path / "9.git", [_rfc5322_msg("nd3@x")])
     result = CliRunner().invoke(reindex_command, ["alpha", "9.git", "--from-scratch"])
 
+    assert result.exit_code == 0, result.output
     assert "deleted 0 existing inbox-links" in result.output, result.output
     assert _roots_by_inbox("alpha", mids) == before, (
         "reset the inbox's roots even though nothing was deleted"

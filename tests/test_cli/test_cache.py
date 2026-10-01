@@ -343,6 +343,12 @@ def test_warm_cache_includes_atom_feed_sources(seeded_db, _active_broker_context
     set_tracked_authors("alpha", {"Examples": "example.com"})
     result = CliRunner().invoke(warm_cache_command, [])
     assert result.exit_code == 0
+    # CLI exit means "submitted", not "committed"; see `_drain_writer`.
+    # Missed by the #465 sweep and the most exposed test of the set,
+    # because the `author_recent:*` keys below are submitted late in
+    # the warm cycle, so they are the ones still queued when a loaded
+    # runner reaches the assertions (#583).
+    _drain_writer()
     # Feed-flavour and tracker rows must actually land in the cache
     # (the legacy per-target verbose echo went into broker logs).
     assert cache.get("recent_articles:alpha:50") is not None

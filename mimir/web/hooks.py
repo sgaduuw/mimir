@@ -99,12 +99,9 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.sitemap": "public, max-age=300",
     "web.meta_sitemap": "public, max-age=300",
     "web.inbox_sitemap": "public, max-age=300",
-    # The month sitemaps are ~32k URLs the index tells crawlers to
-    # fetch, and unlike the flat ones they are not warm-cache targets,
-    # so each is a cold compute at the origin. Omitting them here left
-    # every one of them with no edge shielding at all, on the same
-    # surface family as the 3.6.0 CDN incident.
-    "web.month_sitemap": "public, max-age=300",
+    # Archive month/year pages are computed on demand, so shield them
+    # at the edge just like the warmed sitemap surfaces.
+    "web.archive_sitemap": "public, max-age=300",
     "web.maintainers_sitemap": "public, max-age=300",
     # Maintainer profiles change only when MAINTAINERS is reparsed or
     # a new review trailer lands, and they were the one reader-facing

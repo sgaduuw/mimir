@@ -9,6 +9,7 @@ production cold-miss."""
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select, text
 
 from mimir.models import (
@@ -75,9 +76,10 @@ def _add_article(
 # needs_attention contract
 
 
-def test_needs_attention_includes_review_trailered_patch(seeded_db):
+@pytest.mark.parametrize("role", ["Reviewed-by", "Acked-by", "Tested-by"])
+def test_needs_attention_includes_review_trailered_patch(seeded_db, role):
     """The canonical needs-attention shape: patch in subsystem
-    paths, has a Reviewed-by, no mainline landing, no later
+    paths, has review feedback, no mainline landing, no later
     version, older than the threshold. Must surface."""
     with seeded_db() as s:
         sub = _add_subsystem(
@@ -92,12 +94,12 @@ def test_needs_attention_includes_review_trailered_patch(seeded_db):
             "needs-1@x",
             paths=["net/core/dev.c"],
             days_ago=20,
-            trailers=[("Reviewed-by", "rev@example.com")],
+            trailers=[(role, "rev@example.com")],
         )
         s.commit()
         result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
     assert [p.message_id for p in result] == ["needs-1@x"]
-    assert result[0].trailer_summary == "1 Reviewed-by"
+    assert result[0].trailer_summary == f"1 {role}"
 
 
 def test_needs_attention_excludes_too_recent(seeded_db):

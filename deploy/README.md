@@ -1,6 +1,6 @@
 # Deployment
 
-Examples for the three realistic mimir deployment shapes.
+Container deployment and reverse-proxy examples for mimir.
 
 ## Container (Docker / Compose)
 
@@ -98,9 +98,7 @@ contribution is the warm-cache pre-flight, which starts in the
 background and runs in parallel with the periodic loop: the loop's
 `update`, `update-mainline`, `analyze`, and `vacuum` ticks fire
 on cadence from t=0 instead of waiting up to ~2 h behind a
-fully-cold warm-cache pass. systemd deployments are unaffected,
-`mimir.service` runs its own `ExecStartPre=alembic upgrade head`
-and an `ExecStartPre=mimir bootstrap-inboxes`.
+fully-cold warm-cache pass.
 
 **Post-migrate ANALYZE**: under broker mode (see below) the
 broker container runs a bounded `ANALYZE` on first start, gated
@@ -175,69 +173,6 @@ podman exec mimir-broker rm /data/.broker_initial_analyze
 podman restart mimir-broker
 ```
 
-## systemd
-
-`deploy/systemd/` carries unit files for `/opt/mimir`:
-
-| Unit                          | Role                                  |
-| ----------------------------- | ------------------------------------- |
-| `mimir.service`               | Main web server (gunicorn).           |
-| `mimir-warm-cache.service`    | Refresh dashboard helpers.            |
-| `mimir-warm-cache.timer`      | Every minute.                         |
-| `mimir-analyze.service`       | Refresh SQLite query-planner stats.   |
-| `mimir-analyze.timer`         | Daily at 04:30.                       |
-| `mimir-vacuum.service`        | Compact DB + collapse WAL.            |
-| `mimir-vacuum.timer`          | Weekly Sunday 04:00.                  |
-
-Setup sketch:
-
-```sh
-sudo useradd --system --create-home --home-dir /opt/mimir mimir
-sudo -u mimir git clone https://github.com/sgaduuw/mimir /opt/mimir
-cd /opt/mimir
-sudo -u mimir python3.14 -m venv .venv
-sudo -u mimir .venv/bin/pip install uv
-sudo -u mimir .venv/bin/uv sync --no-dev
-
-# Drop your env file (SECRET_KEY at minimum)
-sudo -u mimir cp .env.example .env  # then edit
-
-# Install the units
-sudo cp deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now mimir.service
-sudo systemctl enable --now mimir-warm-cache.timer
-sudo systemctl enable --now mimir-analyze.timer
-sudo systemctl enable --now mimir-vacuum.timer
-```
-
-`mimir.service` includes the standard hardening flags (NoNewPrivileges,
-ProtectSystem=strict, etc). `ReadWritePaths=/opt/mimir` is what lets
-SQLite write back; if you move the DB elsewhere, add that path too.
-
-Broker mode isn't packaged for systemd; single-host compose is the
-canonical multi-process shape. A systemd broker would mean a fifth
-unit (`mimir-broker.service`) gating the others with
-`After=mimir-broker.service` and a Type=notify readiness signal.
-Possible, not shipped; ask if needed.
-
-VACUUM needs an exclusive lock for the post-VACUUM
-`wal_checkpoint(TRUNCATE)` to actually collapse the WAL. The unit
-does *not* stop `mimir.service` automatically, systemd refuses
-transactions that simultaneously stop and start the same unit. If
-you care about the WAL truncate landing fully, run vacuum during a
-brief planned window:
-
-```sh
-sudo systemctl stop mimir.service
-sudo systemctl start mimir-vacuum.service  # ~2 min on lkml-scale
-sudo systemctl start mimir.service
-```
-
-Or let the weekly timer fire as-is and accept that the WAL truncate
-is best-effort while the web is serving, the VACUUM rebuild
-itself still succeeds.
-
 ## Reverse proxy
 
 When the app sits behind a reverse proxy, set `TRUSTED_PROXY_HOPS` to
@@ -271,7 +206,7 @@ headers mimir reads.
 
 - Pre-built image push to a registry. Build locally; pin a tag if
   you want reproducibility across hosts.
-- Kubernetes manifests. systemd + Docker Compose covers the
+- Kubernetes manifests. Docker Compose covers the
   realistic single-host archive shape.
 - HTTPS certificate provisioning. Caddy automates this; the nginx
   example assumes Let's Encrypt or similar already provisioned a

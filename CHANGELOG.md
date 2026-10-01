@@ -11,6 +11,115 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-10-01
+
+### Fixed
+
+- `mimir reindex` works against a deployed instance again. It
+  resolved its writer through the broker context, which only
+  `serve()` ever sets, so a Click command run from `mimir-tasks` or
+  `podman exec` raised `RuntimeError("No active broker")` the moment
+  the re-walk started. Broken since the single-writer migration
+  rather than a regression, and invisible to the suite because
+  conftest installs a broker context session-wide. Now dispatched as
+  a broker RPC. (#547)
+- `mimir reindex --from-scratch` releases the single writer between
+  rebuild passes instead of holding it for the whole thread-root
+  rebuild, so concurrent cache writes drain between passes rather
+  than queueing behind the entire operation. (#546)
+- Patch badges, the revisions fold and the synthesis line now
+  refresh when navigating between messages inside a thread. They
+  lived outside the htmx-swapped region, so an intra-thread swap
+  left the previous message's patch metadata on screen. (#536)
+
+- The sitemap index groups inbox-years with at most 20,000 thread roots
+  into yearly sitemaps when their expanded thread-page URLs also fit
+  the 50,000-URL limit, adding index headroom (#551). Other years retain
+  monthly pages. Existing monthly sitemap URLs keep working, and yearly
+  URLs support paging after growth.
+
+- A message whose body carries extremely deep quote nesting no longer
+  returns 500. Rendering a quote recurses once per level, so the depth
+  was the sender's to choose and the stack was the only limit
+  (`RecursionError` at roughly 497 levels, lower inside a request).
+  The message view is public and unauthenticated, and the body is
+  re-derived from the mirror on every read, so one crafted post made
+  its own page permanently unavailable. Quoting past
+  `MAX_QUOTE_DEPTH` (64) now renders flat, with a summary line
+  naming the depth in place of the markers, so no text is dropped.
+  The flattened lines keep DCO trailer redaction and linkification,
+  which required stripping the remaining `>` prefixes: the trailer
+  match is anchored at line start, so leaving them on would have
+  silently disabled redaction past the cap. Deepest quoting measured
+  across 1,000 messages from two inboxes on 2026-09-29 was 7.
+
+  A companion `MAX_QUOTE_LEVELS_PER_RENDER` (512) bounds the total
+  quote levels one message may render, across all its quote blocks.
+  The depth cap alone bounds a single block, and a body may hold
+  unboundedly many, so quote rendering still amplified a body by
+  about 89x into HTML: measured 1.05 MB in to 93 MB out, linearly,
+  which at the 50 MB message ceiling reached the gigabytes on a
+  public uncached page. Now about 3x, and a 4 MB adversarial body
+  renders in 1.2 s with a 46 MB peak instead of 9.6 s and 1.1 GB.
+  Worst observed in real mail is 44 total levels, p99 is 14.
+
+- Quoted patch hunks now keep their syntax highlighting past the first
+  chunk. A reviewer who quotes a patch in pieces with commentary
+  between them leaves every piece after the first with no `---` or
+  `@@` to open a diff, so those pieces rendered as plain text. They
+  are now recognised by shape: three or more lines, all diff-shaped,
+  with an addition or deletion among them and an added or context
+  line, scoped to quoted content. A `- item` bullet list, uniformly
+  indented prose, and any run containing a prose line all stay prose.
+  Measured on the 400 most recent linux-wireless messages
+  (2026-09-28): 29 of them gain highlighting, none lose any.
+
+  Known limit, since the shape is genuinely ambiguous: a bullet list
+  whose items have indented continuation lines is indistinguishable
+  from a hunk of deletions and context, and is rendered as a diff.
+
+### Removed
+
+- The unused systemd deployment path under `deploy/systemd/`.
+  Production runs podman quadlets from `ansible-eelco`; these units
+  documented an arrangement nothing used, and kept a second,
+  diverging description of the deploy alongside the real one.
+  (#558)
+
+### Changed
+
+- `mimir warm-cache --tier` help no longer tells operators that
+  `fast` covers sitemaps. The sitemap surfaces moved to the slow
+  (hourly) tier, whose cadence is all their date-grained `<lastmod>`
+  can express, and `--tier fast` now dispatches no global targets at
+  all. The same stale claim was corrected in three other places.
+
+- A quoted patch hunk now renders an email address embedded in patch
+  content (a `MODULE_AUTHOR` line, a MAINTAINERS `M:` entry) verbatim,
+  where it previously showed `[off-list ref]`. That text was never a
+  redaction policy: it is the Message-ID linkifier failing to resolve
+  a `<local@domain>` token, and the same patch sent to the list rather
+  than quoted already rendered the address verbatim. Quoted and
+  unquoted hunks now agree. Measured at 4 of 400 recent
+  linux-wireless messages. DCO trailer redaction is unaffected and
+  cannot be reached this way; see CONTEXT.md "Redaction is a
+  display-time decision".
+- `text/plain; format=flowed` bodies (RFC 3676) are now decoded at
+  parse time: space-stuffing is removed and soft line breaks re-join.
+  Undecoded, a stuffed quote arrives as `' > text'`, which the quote
+  matcher (anchored at the start of the line) does not see at all, so
+  the whole message rendered as one literal text block with no quote
+  structure, no fold, and no diff detection inside the quoted hunks.
+  Flowed is ~8% of recent lkml and ~4% of recent linux-wireless
+  messages, though the stuffed variant that causes the visible damage
+  is much rarer.
+
+  Note for operators: `article_files` and `article_trailers` are
+  derived at ingest from the same parsed body, so those rows could in
+  principle differ for a flowed message re-ingested after this
+  release. Patches are effectively never sent flowed, so no backfill
+  is proposed.
+
 ## [3.8.1] - 2026-09-27
 
 ### Changed

@@ -6,6 +6,15 @@
 <article id="msg" data-article-id="{{ article.id }}">
   <header>
     <h1>{{ parsed.subject|clean_subject or '(no subject)' }}</h1>
+    {# Keep message-specific state inside #msg so thread navigation replaces
+       it with the body. Non-patches must not inherit the previous badges. #}
+    {% if patch_state and patch_state.is_patch and lifecycle_status %}
+    <div class="msg-badges">
+      {%- with status = lifecycle_status %}
+      {%- include "_lifecycle_badges.html" %}
+      {%- endwith %}
+    </div>
+    {% endif %}
     <p>
       <strong>From:</strong> {{ parsed.author|safe_from }}<br>
       <strong>Date:</strong> {{ article.date.strftime('%Y-%m-%d %H:%M:%S %z') if article.date else '?' }}
@@ -62,6 +71,12 @@
       {% endif %}
     </p>
   </header>
+
+  {% set synthesis = patch_state|patch_synthesis %}
+  {% if synthesis %}
+  <p><small>{{ synthesis }}</small></p>
+  {% endif %}
+  {% include "_revisions_fold.html" %}
 
   {% if related %}
   <h4>Possibly related <small><em>(same subject, not in this thread)</em></small></h4>
