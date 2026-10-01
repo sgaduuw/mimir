@@ -514,6 +514,9 @@ mimir/
 alembic/                 migrations
 tests/                   pytest
 Inboxes/                 default mirror root (per-inbox subdirs; gitignored)
+AGENTS.md                conventions for AI coding agents working on this
+                         repo: layout, commands, the CHANGELOG and README
+                         rules, testing discipline, versioning
 ```
 
 ## Web UI
