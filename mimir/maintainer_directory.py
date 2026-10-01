@@ -42,7 +42,7 @@ from mimir.models import (
 MAINTAINER_DIRECTORY_CACHE_TTL_SEC = 3600
 
 
-_MAINTAINER_ADDR_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+")
+_MAINTAINER_ADDR_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+$")
 
 
 def is_addressable_maintainer_address(address: str) -> bool:
