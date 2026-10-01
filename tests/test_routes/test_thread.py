@@ -557,7 +557,9 @@ def test_sitemap_lists_the_canonical_url_for_every_thread_shape(client, tmp_path
     from mimir import cache
 
     cache.delete_for_inbox("alpha")
-    cache.delete("sitemap:index")
+    from mimir.config import settings
+
+    cache.delete(f"sitemap:index:{max(1, settings.thread_view_render_cap)}")
 
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
