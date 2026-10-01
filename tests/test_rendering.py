@@ -12,6 +12,7 @@ import re
 from markupsafe import Markup
 
 from mimir.rendering import URL_OR_MSGID_RE, linkify, parse_blocks, render_body
+from mimir.rendering.body import MAX_QUOTE_DEPTH
 
 # linkify, escaping + URL handling
 
@@ -1001,3 +1002,518 @@ def test_render_body_diff_dev_null_target_path_falls_back_to_text():
     # SOURCE side, but our lexer choice keys on `+++` (the target).
     # `/dev/null` → TextLexer → no `k` keyword spans.
     assert 'class="k">' not in out
+
+
+# Quoted patch review. A reviewer quoting a patch in pieces with
+# commentary between them leaves every piece after the first with no
+# `@@` or `---` to open a diff, so the later pieces are recognised by
+# SHAPE instead (`blocks.looks_like_orphaned_diff`, applied to quoted
+# content only by `body._reclassify_orphaned_diffs`). Surfaced on
+# ratatoskr thread /linux-wireless/2026/08/17481479/t.
+
+HUNK = (
+    "> --- a/drivers/net/foo.c\n"
+    "> +++ b/drivers/net/foo.c\n"
+    "> @@ -1,3 +1,4 @@\n"
+    ">  static void foo(void)\n"
+    ">  {\n"
+    "> +\tint ret;\n"
+    "\n"
+    "COMMENTARY-MARKER\n"
+    "\n"
+)
+
+
+def _tail(out: str) -> str:
+    """Everything emitted after the commentary, i.e. the second quoted
+    chunk only. Slicing is what stops the first hunk's own spans
+    satisfying an assertion about the second chunk."""
+    assert "COMMENTARY-MARKER" in out
+    return out[out.index("COMMENTARY-MARKER") :]
+
+
+def test_render_body_interleaved_review_highlights_the_later_chunk():
+    out = str(render_body(HUNK + "> +\tret = bar();\n> +\tif (ret)\n>  }\n"))
+    tail = _tail(out)
+    assert '<div class="highlight">' in tail
+    assert "ret = bar();" in tail
+    # The point is COLOUR, not a wrapper. `_render_diff_block` only
+    # applies gutter classes to lines it has seen a hunk header open,
+    # so a promoted block that forgot `headerless=True` would render
+    # an empty `<div class="highlight">` around plain `diff-meta`
+    # text and still satisfy a count-the-wrappers assertion. An
+    # earlier version of this test did exactly that and passed while
+    # the feature was inert.
+    assert 'class="gi"' in tail
+
+
+def test_render_body_short_quoted_continuation_stays_prose():
+    """Under `MIN_ORPHANED_DIFF_LINES` the shape is not evidence
+    enough, so a two-line continuation is left as text. Pins the
+    threshold: with the constant at 1 or 2 this chunk becomes a diff.
+    """
+    tail = _tail(str(render_body(HUNK + "> +\tret = bar();\n>  }\n")))
+    assert "ret = bar();" in tail
+    assert '<div class="highlight">' not in tail
+
+
+def test_render_body_quoted_chunk_left_as_prose_still_linkifies():
+    """A chunk that is not promoted keeps everything the text path
+    gives it. Guards the direction of the promotion: widening it
+    silently costs URL and Message-ID links."""
+    chunk = ">  see https://example.com/patch for the reason\n>  and the rest\n"
+    tail = _tail(str(render_body(HUNK + chunk)))
+    assert '<a href="https://example.com/patch"' in tail
+
+
+def test_render_body_quoted_signature_after_a_hunk_still_redacts_trailers():
+    """A quoted signature block must keep going through `linkify`,
+    which is where `address_redactor` is consulted. Routing it to the
+    diff renderer instead silently drops DCO redaction on the message
+    page, which is a disclosure rather than a cosmetic bug.
+
+    Uses a real DCO trailer: `linkify` only redacts recognised
+    trailer roles, so a `Cc:` line proves nothing either way.
+    """
+    chunk = "> -- \n> John Doe\n> Signed-off-by: Someone <someone@example.com>\n"
+
+    def redactor(addr):
+        return "<redacted>"
+
+    standalone = str(render_body(chunk, address_redactor=redactor))
+    assert "someone@example.com" not in standalone  # precondition
+    assert "redacted" in standalone
+
+    tail = _tail(str(render_body(HUNK + chunk, address_redactor=redactor)))
+    assert "John Doe" in tail  # precondition: the chunk rendered at all
+    assert "someone@example.com" not in tail
+    assert "redacted" in tail
+
+
+def test_render_body_quoted_scissors_line_after_a_hunk_is_not_dropped():
+    """`parse_blocks` strips a trailing `---` off a diff block and
+    pops the block if that empties it. A quoted chunk of a lone
+    `---` (the standard patch-email separator) must not be able to
+    reach that path and vanish from the page."""
+    tail = _tail(str(render_body(HUNK + "> ---\n")))
+    assert "---" in tail
+
+
+def test_render_body_quoted_bullet_list_after_a_hunk_is_not_a_diff():
+    """The `not_bullet` guard has to hold in context, not just in
+    isolation: a nearby hunk must not change how this run is
+    classified. One predicate, consulted the same way everywhere."""
+    chunk = "> - the first thing\n> - the second thing\n> - the third thing\n"
+    out = str(render_body(HUNK + chunk))
+    assert "the second thing" in out
+    assert out.count('<div class="highlight">') == 1
+
+
+def test_render_body_quoted_indented_prose_after_a_hunk_is_not_a_diff():
+    """Same, for the `has_change` guard."""
+    chunk = (
+        ">   this paragraph is indented\n"
+        ">   across three lines with no\n"
+        ">   additions or deletions at all\n"
+    )
+    out = str(render_body(HUNK + chunk))
+    assert "additions or deletions at all" in out
+    assert out.count('<div class="highlight">') == 1
+
+
+def test_render_body_headerless_run_survives_a_whitespace_only_line():
+    """`looks_like_orphaned_diff` ignores blank lines when deciding,
+    but they stay in `block.lines`. A tab-only line must not close
+    the synthesised hunk, or every line after it silently loses its
+    gutter colour."""
+    body = "> +\tfirst();\n> \t\n> +\tsecond();\n> +\tthird();\n"
+    out = str(render_body(body))
+    assert out.count('class="gi"') == 3
+
+
+# Orphaned diff runs: a quoted hunk fragment with no marker anywhere
+# in the message (the reviewer quoted only the body of a hunk).
+
+
+def test_render_body_quoted_hunk_fragment_without_marker_is_highlighted():
+    body = (
+        "> +\twhile (off > HAL_LINK_DESC_ALIGN) {\n"
+        "> +\t\toff -= HAL_LINK_DESC_ALIGN;\n"
+        "> +\t\tmemset(&cmd, 0, sizeof(cmd));\n"
+        "\n"
+        "unnecessary cleanup\n"
+    )
+    out = str(render_body(body))
+    assert out.count('<div class="highlight">') == 1
+    assert out.count('class="gi"') == 3
+
+
+def test_render_body_quoted_bullet_list_is_not_a_diff():
+    """Three `- ` bullets are diff-shaped by prefix alone. The
+    reclassification requires an added line or a space-prefixed
+    context line, which a bullet list has neither of."""
+    body = "> - the first thing\n> - the second thing\n> - the third thing\n"
+    out = str(render_body(body))
+    assert '<div class="highlight">' not in out
+    assert "the second thing" in out
+
+
+def test_render_body_quoted_indented_prose_is_not_a_diff():
+    """All-space-prefixed lines with no add/delete line are indented
+    prose, not a hunk."""
+    body = (
+        ">   this paragraph is indented\n"
+        ">   across three lines with no\n"
+        ">   additions or deletions at all\n"
+    )
+    out = str(render_body(body))
+    assert '<div class="highlight">' not in out
+
+
+def test_render_body_unquoted_diff_shaped_run_is_not_reclassified():
+    """Reclassification is scoped to quoted content. At top level a
+    diff-shaped run with no marker is far more likely to be a list or
+    pasted prose, and the message's own patch always carries a
+    marker."""
+    body = "+ one\n+ two\n  three\n"
+    out = str(render_body(body))
+    assert '<div class="highlight">' not in out
+
+
+def test_looks_like_orphaned_diff_threshold_is_load_bearing():
+    """Pins `MIN_ORPHANED_DIFF_LINES` directly. Going through
+    `render_body` alone left the constant unguarded: a mutant setting
+    it to 1 survived the suite, which would promote a single quoted
+    `+foo` line to a diff."""
+    from mimir.rendering.blocks import MIN_ORPHANED_DIFF_LINES, looks_like_orphaned_diff
+
+    assert MIN_ORPHANED_DIFF_LINES == 3
+    run = ["+\tone();", "+\ttwo();", "+\tthree();"]
+    assert looks_like_orphaned_diff(run) is True
+    # One short, and the same shape is no longer evidence enough.
+    assert looks_like_orphaned_diff(run[:2]) is False
+    # Blank lines do not count toward the threshold.
+    assert looks_like_orphaned_diff([run[0], "", "", run[1]]) is False
+
+
+def test_quoted_prose_containing_a_plus_line_is_not_a_diff():
+    """The `all(DIFF_BODY_RE...)` check is the primary gate and was
+    the one condition no test exercised: a mutant deleting it
+    survived the suite. A quoted paragraph that happens to contain a
+    line starting with `+` or `-` still has prose lines in it, and
+    prose lines are what disqualify the run.
+    """
+    from mimir.rendering.blocks import looks_like_orphaned_diff
+
+    run = ["+ one", "this line is prose", "+ two"]
+    assert looks_like_orphaned_diff(run) is False
+    # Without the prose line the same run IS a hunk body, so the
+    # test is discriminating on that line and nothing else.
+    assert looks_like_orphaned_diff(["+ one", " ctx", "+ two"]) is True
+
+    body = "> + one\n> this line is prose\n> + two\n"
+    assert '<div class="highlight">' not in str(render_body(body))
+
+
+def test_render_body_headerless_run_keeps_its_whitespace_line_content():
+    """The widened blank-line branch escapes the line rather than
+    emitting an empty span, because inside a hunk the whitespace is
+    content. Asserted separately from the gutter-colour guard: a
+    mutant dropping the content passed that one."""
+    out = str(render_body("> +\tfirst();\n> \t\n> +\tsecond();\n> +\tthird();\n"))
+    hunk = out[out.index('class="hunk"') :]
+    assert "\t\n" in hunk or "\t<" in hunk, (
+        f"the tab-only line lost its content: {hunk[:400]!r}"
+    )
+
+
+def test_render_block_never_anchors_a_headerless_block():
+    """A promoted fragment is synthesised from quoted text, so its
+    hunk is not a hunk of this message's patch and `h-1` would
+    collide with one that is. Today `depth == 0` already excludes it,
+    which is exactly why this has to be asserted at the seam rather
+    than through `render_body`: the rule and the coincidence are
+    indistinguishable from outside."""
+    from mimir.rendering.blocks import _Block
+    from mimir.rendering.body import _render_block
+
+    block = _Block(kind="diff", lines=["+\tone();", "+\ttwo();"], headerless=True)
+    out = _render_block(block, {}, depth=0)
+    assert 'id="h-' not in out
+    # Precondition: the same block WITHOUT the flag does anchor at
+    # depth 0, so the assertion above is about `headerless` and not
+    # about diffs in general.
+    plain = _Block(kind="diff", lines=["@@ -1 +1 @@", "+\tone();"])
+    assert 'id="h-' in _render_block(plain, {}, depth=0)
+
+
+def test_render_body_hunk_quote_fold_is_first_level_only():
+    """`is_hunk_quote` gates on `depth == 0`, so the "quoted hunk"
+    summary with its jump-to-hunk link belongs to a hunk the sender
+    quoted directly. A hunk two levels down is somebody else's
+    quote of a quote; it gets the generic collapse instead, and
+    dropping the depth gate would give it the specialised one.
+    """
+    singly = "> --- a/x.c\n> +++ b/x.c\n> @@ -1 +1 @@\n> +new\n"
+    # Precondition: at the first level this IS a hunk quote, so the
+    # assertion below is about depth and not about the fold never
+    # firing.
+    assert str(render_body(singly)).count('class="hunk-quote"') == 1
+
+    doubly = ">> --- a/x.c\n>> +++ b/x.c\n>> @@ -1 +1 @@\n>> +new\n"
+    out = str(render_body(doubly))
+    assert out.count('class="hunk-quote"') == 0
+    assert '<div class="highlight">' in out  # the hunk still renders
+
+
+# Shape promotion moves a run from the `linkify` path to the diff
+# path, and `linkify` is the only place three policies are applied.
+# The boundary is pinned here in the direction it was DECIDED, so
+# widening or narrowing the promotion shows up as a failing test
+# rather than as a quiet change to what a public archive prints.
+#
+# Reduced from linux-wireless message f04ebb46: a reviewer quoting
+# the MAINTAINERS hunk of a new-driver series.
+QUOTED_MAINTAINERS_HUNK = (
+    "> +M:     Luka Gejak <luka.gejak@linux.dev>\n"
+    "> +L:     linux-wireless@vger.kernel.org\n"
+    "> +S:     Maintained\n"
+)
+
+
+def test_promoted_hunk_renders_an_embedded_address_like_an_unquoted_hunk():
+    """DECIDED 2026-09-29, see CONTEXT.md "Redaction is a display-time
+    decision". A quoted hunk renders an address embedded in patch
+    content verbatim, which is what the same patch already did
+    unquoted. The `[off-list ref]` text it used to show was not a
+    redaction policy: it is the Message-ID linkifier failing to
+    resolve a `<local@domain>` token, the "smear" that motivated
+    `_redact_trailer_address` in the first place.
+
+    Measured when this was decided: 4 of 400 recent linux-wireless
+    messages change this way.
+    """
+    out = str(render_body(QUOTED_MAINTAINERS_HUNK))
+    assert "Luka Gejak" in out  # precondition: the chunk rendered
+    assert "luka.gejak@linux.dev" in out
+    assert "off-list ref" not in out
+
+    # The unquoted spelling of the same content, for the comparison
+    # the decision rests on.
+    unquoted = "@@ -1 +1 @@\n+M:     Luka Gejak <luka.gejak@linux.dev>\n"
+    assert "luka.gejak@linux.dev" in str(render_body(unquoted))
+
+
+def test_dco_trailer_redaction_cannot_be_reached_by_promotion():
+    """The line that MUST hold: promotion may never move a
+    redactable trailer off the `linkify` path. It cannot, and
+    structurally rather than by luck: `_TRAILER_LINE_RE` is anchored
+    on a trailer key at line start, while every line of a promoted
+    run begins with a space, `+` or `-`. Asserted because that is an
+    invariant across two modules, which is exactly the kind that
+    drifts."""
+    from mimir.rendering.blocks import looks_like_orphaned_diff
+
+    trailer_run = [
+        "Signed-off-by: Someone <someone@example.com>",
+        "Reviewed-by: Other <other@example.com>",
+        "Tested-by: Third <third@example.com>",
+    ]
+    assert looks_like_orphaned_diff(trailer_run) is False
+
+    def redactor(addr):
+        return "<redacted>"
+
+    body = "> " + "\n> ".join(trailer_run) + "\n"
+    out = str(render_body(body, address_redactor=redactor))
+    assert "someone@example.com" not in out
+    assert "redacted" in out
+
+
+def test_promoted_hunk_does_not_linkify_urls_in_patch_content():
+    """The second policy the same seam costs, pinned in the decided
+    direction. A URL inside quoted patch content renders as text,
+    matching the unquoted hunk it is a copy of."""
+    chunk = (
+        "> +/* see https://example.com/patch for the reason */\n"
+        "> +\tint ret;\n"
+        ">  \tint other;\n"
+    )
+    out = str(render_body(chunk))
+    assert "example.com/patch" in out  # precondition: content present
+    assert 'href="https://example.com/patch"' not in out
+
+
+def test_render_body_survives_pathological_quote_nesting():
+    """`_render_block` recurses once per quote level, so before the
+    cap a body whose first line carried enough leading `>` exhausted
+    the interpreter stack: `RecursionError` at depth ~497, i.e. a
+    500 on a public unauthenticated route for as long as the message
+    stays archived, which is forever (#581).
+
+    Measured 2026-09-29 across 1,000 messages from two inboxes: the
+    deepest real quoting is 7, and nothing exceeds 8. The cap sits
+    far above that and far below the stack.
+    """
+    from mimir.rendering.body import MAX_QUOTE_DEPTH
+
+    body = ">" * 600 + " the deeply quoted text\n"
+    out = str(render_body(body))
+    # Degrades rather than raising: the content is still on the page.
+    assert "the deeply quoted text" in out
+    # And it stopped descending rather than nesting 600 blockquotes.
+    assert out.count("<blockquote>") <= MAX_QUOTE_DEPTH + 1
+
+
+def test_render_body_quote_depth_cap_preserves_the_undescended_text():
+    """At the cap the remaining lines render flat: the text is kept,
+    the still-undescended markers are stripped, and the depth the
+    reader loses is carried by the summary instead.
+
+    The markers have to go. `linkify` applies the DCO address
+    redactor only to lines `_TRAILER_LINE_RE` matches and that regex
+    is anchored at line start, so leaving them on means nothing past
+    the cap is ever redacted. See
+    `test_render_body_quote_depth_cap_still_redacts_dco_trailers`.
+    """
+    from mimir.rendering.body import MAX_QUOTE_DEPTH
+
+    marks = ">" * (MAX_QUOTE_DEPTH + 3)
+    out = str(render_body(f"{marks} inner text\n"))
+    assert "inner text" in out
+    # Depth is conveyed, not silently dropped.
+    assert f"quoting continues past {MAX_QUOTE_DEPTH} levels" in out
+
+
+def test_render_body_quote_depth_cap_still_redacts_dco_trailers():
+    """The guarantee the flattening exists to keep. Below the cap a
+    trailer address goes through `address_redactor`; past the cap it
+    must too, or a public page prints an address the same page
+    redacts three lines higher.
+
+    Uses an address the Message-ID linkifier does NOT swallow (no
+    dotted alphabetic TLD), because for a normal address the
+    linkifier's `[off-list ref]` substitution masks the difference
+    and the test would pass without the redactor running at all.
+    """
+    seen = []
+
+    def redactor(addr):
+        seen.append(addr)
+        return "<redacted>"
+
+    from mimir.rendering.body import MAX_QUOTE_DEPTH
+
+    shallow = ">> Signed-off-by: Alice <alice@localhost>\n"
+    assert "alice@localhost" not in str(render_body(shallow, {}, redactor))
+    assert seen == ["alice@localhost"]  # precondition: redactor ran
+
+    seen.clear()
+    deep = ">" * (MAX_QUOTE_DEPTH + 1) + " Signed-off-by: Alice <alice@localhost>\n"
+    out = str(render_body(deep, {}, redactor))
+    assert "Signed-off-by" in out  # precondition: the line rendered
+    assert seen == ["alice@localhost"]
+    assert "alice@localhost" not in out
+
+
+def test_render_body_normal_nesting_is_untouched_by_the_cap():
+    """The cap must be invisible at real depths. Deepest quoting
+    measured in production sampling is 7."""
+    body = ">" * 7 + " ordinary deep reply\n"
+    out = str(render_body(body))
+    assert "ordinary deep reply" in out
+    assert out.count("<blockquote>") == 7
+
+
+def test_render_body_quote_depth_cap_leaves_stack_headroom():
+    """Pins the cap to a value that leaves room for the caller,
+    without restating the literal.
+
+    The obvious assertion, `<blockquote>` count <= MAX_QUOTE_DEPTH,
+    moves with the constant and so passes for any value the
+    interpreter happens to survive: raising the cap to 256 leaves
+    every other test in this file green (verified by mutation). The
+    measured wall is around 480 to 497 levels depending on how much
+    stack the caller already used, so a later "let's be generous"
+    bump would put the page back on the 500 the cap exists to
+    remove, with a green suite the whole way.
+
+    Rendering at exactly the cap must therefore fit in a third of
+    the default recursion limit, leaving the rest for gunicorn,
+    Flask, Jinja and anything added later. The walk costs about 3
+    frames per quote level, so this holds while the cap stays well
+    under ~110.
+
+    Written by the reviewer that found the gap, not by the author of
+    the cap.
+    """
+    import sys
+
+    from mimir.rendering.body import MAX_QUOTE_DEPTH
+
+    budget = sys.getrecursionlimit() // 3
+    body = ">" * MAX_QUOTE_DEPTH + " payload\n"
+    old = sys.getrecursionlimit()
+    try:
+        sys.setrecursionlimit(budget)
+        out = str(render_body(body))
+    finally:
+        sys.setrecursionlimit(old)
+    assert "payload" in out
+
+
+# Output amplification. `MAX_QUOTE_DEPTH` bounds one block; a body
+# may hold unboundedly many, and each level costs ~92 bytes of
+# `<details>` boilerplate for the one `>` that asked for it. Guards
+# written by the reviewer that measured it (89x, 1.05 MB in -> 93 MB
+# out) before `MAX_QUOTE_LEVELS_PER_RENDER` existed.
+
+
+def _amplifier_body(target_bytes: int) -> str:
+    """Worst measured shape: independent single-line quote blocks at
+    one level below the cap, separated by blank lines so each is its
+    own block and each pays the full `<details>` chain."""
+    group = ">" * (MAX_QUOTE_DEPTH - 1) + "x\n\n"
+    n = max(1, target_bytes // len(group))
+    return group * n
+
+
+def test_amplifier_fixture_really_is_adversarial():
+    """Precondition for the bound below, asserted on the PARSE rather
+    than on rendered output.
+
+    The reviewer's original version asserted a `<details>` count
+    proportional to groups x depth, which is exactly what the
+    per-render budget now prevents, so it would have had to be
+    weakened to pass. Checking the block structure instead keeps the
+    precondition independent of the thing under test: many separate
+    quote blocks, each nested near the cap, is what makes the body
+    an amplifier at all.
+    """
+    from mimir.rendering.blocks import _quote_depth, parse_blocks
+
+    body = _amplifier_body(4096)
+    quotes = [b for b in parse_blocks(body) if b.kind == "quote"]
+    assert len(quotes) >= 50, f"only {len(quotes)} independent quote blocks"
+    depths = {_quote_depth(b.lines[0]) for b in quotes}
+    assert depths == {MAX_QUOTE_DEPTH - 1}, depths
+
+
+def test_render_body_output_is_bounded_by_a_small_multiple_of_input():
+    """`MAX_QUOTE_DEPTH` bounds recursion DEPTH, not total work. A body
+    may hold unboundedly many independent deeply-nested quote blocks,
+    and each level costs ~92 bytes of `<details>` boilerplate for one
+    input byte (`>`), so the rendered page is ~90x the body.
+
+    A 50 MB message is accepted by `parser.MAX_RAW_MESSAGE_BYTES`, so
+    the reachable worst case is multi-GB of HTML on a public,
+    unauthenticated, uncached route, which is the same denial of
+    service #581 set out to close.
+    """
+    body = _amplifier_body(64 * 1024)
+    out = str(render_body(body))
+    ratio = len(out) / len(body)
+    assert ratio <= 20, (
+        f"body {len(body)}B rendered to {len(out)}B ({ratio:.0f}x); "
+        "quote rendering amplifies output without bound"
+    )

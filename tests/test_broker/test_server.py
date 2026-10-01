@@ -812,7 +812,7 @@ def test_worker_loop_survives_handler_exception(seeded_db, monkeypatch, caplog):
         sock, peer = _socket.socketpair(_socket.AF_UNIX, _socket.SOCK_STREAM)
         try:
             with caplog.at_level(logging.ERROR, logger="mimir.broker.server"):
-                conn = ClientConnection(sock=sock)
+                conn = ClientConnection(sock=sock, pending=1)
                 server.cache_queue.put(
                     (b'{"rpc_id":1,"op":"ping"}', conn, _time.perf_counter())
                 )

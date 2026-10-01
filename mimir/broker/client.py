@@ -46,6 +46,7 @@ from mimir.broker.protocol import (
     InboxUpdateRequest,
     IngestInboxRequest,
     PingRequest,
+    ReindexRequest,
     Reply,
     RobotsAddRequest,
     RobotsRemoveRequest,
@@ -371,6 +372,28 @@ class BrokerClient:
             raise BrokerUnavailable(f"ingest_inbox: {reply.error}")
         raw = (reply.result or {}).get("results", [])
         return [IngestResult.model_validate(r) for r in raw]
+
+    def reindex(
+        self,
+        inbox_name: str,
+        epoch: str,
+        *,
+        from_scratch: bool = False,
+        workers: int | None = None,
+        timeout: float = 3600.0,
+    ) -> dict:
+        """Re-walk one epoch on the broker, using the long-op timeout."""
+        req = ReindexRequest(
+            rpc_id=0,
+            inbox_name=inbox_name,
+            epoch=epoch,
+            from_scratch=from_scratch,
+            workers=workers,
+        )
+        reply = self._rpc(req, timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"reindex: {reply.error}")
+        return reply.result or {}
 
     def backfill_article_files(
         self,

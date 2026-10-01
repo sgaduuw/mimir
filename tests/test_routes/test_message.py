@@ -8,6 +8,9 @@ identity contract)."""
 import re
 from datetime import UTC
 
+import pytest
+
+from mimir.rendering.body import MAX_QUOTE_DEPTH
 from tests.test_routes._helpers import (
     _data_attr_values,
     _ingest_one_article,
@@ -450,6 +453,8 @@ def test_message_page_htmx_request_returns_body_partial(client, tmp_path):
     assert "thread-context" not in body
     assert "thread-toolbar" not in body
     assert "thread-fold.js" not in body
+    assert 'class="msg-badges"' not in body
+    assert 'class="revisions-fold"' not in body
 
 
 def test_message_page_full_and_htmx_responses_share_article_content(
@@ -2211,12 +2216,13 @@ def test_message_page_no_patch_state_aside(client, tmp_path):
     assert '<aside class="patch-state"' not in body
 
 
-def test_message_page_revisions_fold_renders_when_multiple_versions(
+@pytest.mark.parametrize("headers", [{}, {"HX-Request": "true"}])
+def test_message_page_patch_metadata_is_inside_swap_target(
     client,
     tmp_path,
+    headers,
 ):
-    """When a patch has >= 2 revisions, a Revisions fold renders
-    with the count in the summary."""
+    """Full and HTMX renders replace all metadata with the selected message."""
     from sqlalchemy import update
 
     from mimir.extensions import SessionLocal
@@ -2258,9 +2264,36 @@ def test_message_page_revisions_fold_renders_when_multiple_versions(
             )
         )
         s.commit()
-    body = client.get(url).data.decode()
-    assert 'class="revisions-fold"' in body
-    assert 'class="revisions-count">(2)' in body
+    _seed_mainline_commit(
+        message_id="rev-v2@x",
+        commit_sha="aabbccddeeff" + "00" * 14,
+        tree_name="linus",
+    )
+    response = client.get(url, headers=headers)
+    assert response.status_code == 200
+    body = response.data.decode()
+    start = body.index('<article id="msg"')
+    end = body.index("</article>", start) + len("</article>")
+    article = body[start:end]
+    for marker in (
+        'class="msg-badges"',
+        'class="badge badge-lifecycle-landed"',
+        "of 2 in this series",
+        "landed in mainline as aabbccddeeff",
+        'class="revisions-fold"',
+        'class="revisions-count">(2)',
+    ):
+        assert marker in article, f"{marker} must be inside the HTMX swap target"
+        assert body.count(marker) == 1
+    assert article.index("<h1>") < article.index('class="msg-badges"')
+    assert article.index('class="msg-badges"') < article.index("<strong>From:</strong>")
+    assert "HX-Request" in response.headers["Vary"]
+    assert (
+        client.get(
+            url, headers={**headers, "If-None-Match": response.headers["ETag"]}
+        ).status_code
+        == 304
+    )
 
 
 def test_message_page_revisions_fold_absent_for_single_revision(
@@ -2774,3 +2807,42 @@ def test_message_json_ld_reply_count_only_emitted_from_canonical_inbox(
         "interactionStatistic"
     )
     assert "interactionStatistic" not in from_beta
+
+
+def test_message_page_survives_pathological_quote_nesting(client, tmp_path):
+    """The consumer-side claim for #581, asserted on the ROUTE and
+    not on `render_body`: an unbounded recursion in the renderer is
+    a 500 on a public unauthenticated page, and the page is what
+    had to stop breaking.
+
+    The message stays archived forever (the mirror is the source of
+    truth and the body is re-derived on every read), so a single
+    crafted post would have made its page permanently unavailable.
+    """
+    body = b">" * 600 + b" the deeply quoted text\n"
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "deep-quote-nesting@example.com",
+        body=body,
+    )
+    resp = client.get(url)
+    assert resp.status_code == 200
+    assert b"the deeply quoted text" in resp.data
+
+
+def test_message_page_response_is_bounded_relative_to_the_body(client, tmp_path):
+    """Amplification asserted at the CONSUMER. A depth cap alone
+    bounds one quote block, not the message, so a body of many
+    independent deeply-nested blocks still rendered ~89x its own
+    size onto a public uncached page (measured 2026-09-29: a 64 KiB
+    body returned 5.8 MB). `MAX_QUOTE_LEVELS_PER_RENDER` is what
+    bounds it; this pins the bound where it is observable.
+    """
+    group = (">" * (MAX_QUOTE_DEPTH - 1) + "x\n\n").encode()
+    body = group * (64 * 1024 // len(group))
+    _, url = _ingest_one_article(tmp_path, "alpha", "qd-amp@example.com", body=body)
+    resp = client.get(url)
+    assert resp.status_code == 200
+    ratio = len(resp.data) / len(body)
+    assert ratio <= 20, f"{ratio:.0f}x amplification on a public page"

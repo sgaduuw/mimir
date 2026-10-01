@@ -178,9 +178,12 @@ CLAUDE.md
 CONTEXT.md
 MEMORY.md
 
-# Claude tooling: gitignored _claude/ directory holds the
-# CLAUDE.md / CONTEXT.md / MEMORY.md trio plus AI-workflow state
-# (specs, plans, brainstorm sessions). The root CLAUDE.md is a
-# one-line stub pointing into _claude/. See ~/Projects/_claude/
-# CONTEXT.md "Why _claude/ and not the trio at root" for context.
+# Claude tooling. The repo-facing conventions live in the TRACKED
+# AGENTS.md at the root, shared with every agent and tool that
+# works this repo. What stays gitignored here is the rest: the
+# _claude/ directory (operator-facing CLAUDE.md, CONTEXT.md
+# rationale, MEMORY.md, plus AI-workflow state such as specs and
+# plans) and the root CLAUDE.md stub that imports AGENTS.md and
+# _claude/ together. See ~/Projects/_claude/CONTEXT.md "Why
+# _claude/ and not the trio at root" for the original layout.
 /_claude/

@@ -5,8 +5,8 @@ dispatch on.
 `parse_blocks` is the only entry point OUTSIDE this package (no module
 beyond `mimir/rendering/` imports this one, and `__init__` re-exports
 only `parse_blocks` from it). Within the package, `body.py` also takes
-`_Block` and `_strip_one_quote_level`, and `diff.py` takes
-`DIFF_TRAILER_LINE`. Its output is a list of
+`_Block`, `_strip_one_quote_level` and `looks_like_orphaned_diff`,
+and `diff.py` takes `DIFF_TRAILER_LINE`. Its output is a list of
 `_Block` dataclasses that the orchestrator in `body.py` walks
 recursively (quote blocks re-enter `parse_blocks` after one level
 of `>`-prefix stripping, which is how nested quotes render).
@@ -52,6 +52,17 @@ DIFF_HEADER_RE = re.compile(
 # rest of the message into the same block.
 DIFF_TRAILER_LINE = "-- "
 
+# A line that could be the body of a hunk already in progress:
+# context, addition, or deletion. A diff block is only ever OPENED
+# by a start marker (`DIFF_START_RE`), and a reviewer routinely
+# quotes a patch in pieces where only the first piece carries one,
+# so the later pieces have to be recognised by shape instead.
+DIFF_BODY_RE = re.compile(r"^[ +-]")
+# Shortest run of diff-body lines worth reclassifying on shape
+# alone. Two lines is common in ordinary prose; three all-diff-shaped
+# lines with an add or a delete among them is not.
+MIN_ORPHANED_DIFF_LINES = 3
+
 # Fenced-code-block detection. Markdown-style triple-backtick fence
 # with an optional info string identifying the language:
 #   ```          , opens a fence; language defaults to C (kernel
@@ -74,6 +85,12 @@ class _Block:
     # For `code` blocks: the info-string from the fence (`c`,
     # `python`, etc.; empty = default to C). Ignored for other kinds.
     info: str = ""
+    # For `diff` blocks promoted from quoted text by
+    # `body._reclassify_orphaned_diffs`: the run is a hunk BODY with
+    # no `@@` header, because the reviewer quoted a fragment. The
+    # renderer needs telling, since it only applies gutter colours
+    # to lines it has seen a hunk header open.
+    headerless: bool = False
 
 
 def _quote_depth(line: str) -> int:
@@ -83,6 +100,35 @@ def _quote_depth(line: str) -> int:
 
 def _strip_one_quote_level(line: str) -> str:
     return STRIP_ONE_LEVEL_RE.sub("", line, count=1)
+
+
+def looks_like_orphaned_diff(lines: list[str]) -> bool:
+    """Whether a run of TEXT lines is really the body of a hunk that
+    no start marker ever opened.
+
+    The case is a reviewer quoting a fragment of a patch, with the
+    `@@` header left out of the quote entirely, so there is nothing
+    for `DIFF_START_RE` to match anywhere in the message. Callers
+    apply this only to quoted content (see
+    `body._reclassify_orphaned_diffs`), where a diff-shaped run is
+    overwhelmingly a quoted patch; at top level the message's own
+    patch always carries its marker, so the same shape there is more
+    likely a list or pasted prose.
+
+    Two conditions past "every line is diff-shaped". `has_change`
+    rejects uniformly indented prose (all context, nothing added or
+    removed, i.e. not a diff at all). `not_bullet` rejects a
+    `- item` list, which is diff-shaped by prefix and has no
+    additions and no context lines.
+    """
+    body = [line for line in lines if line.strip()]
+    if len(body) < MIN_ORPHANED_DIFF_LINES:
+        return False
+    if not all(DIFF_BODY_RE.match(line) for line in body):
+        return False
+    has_change = any(line[0] in "+-" for line in body)
+    not_bullet = any(line[0] in "+ " for line in body)
+    return has_change and not_bullet
 
 
 def parse_blocks(text: str) -> list[_Block]:

@@ -185,13 +185,10 @@ uv run mimir reindex lkml 0.git                    # rewind state, re-walk; dedu
 uv run mimir reindex lkml 0.git --from-scratch     # also DELETE this inbox's links to that epoch first
 ```
 
-> **Local development only, currently.** `reindex` needs an active
-> broker writer, which only the broker's own `serve()` establishes, and
-> there is no `reindex` RPC to route it through. Against a deployed
-> instance it exits with an error naming
-> [#547](https://github.com/sgaduuw/mimir/issues/547) rather than
-> running partway. Use `mimir admin failures replay` to retry recorded
-> parse failures in the meantime.
+Reindex runs through the broker socket, including from `mimir-tasks` or
+`podman exec`. The broker must be running and have access to the inbox's
+mirror. With `--from-scratch`, it rebuilds thread roots after the re-walk,
+including when the re-walk fails. Use `-v` for the broker-log location.
 
 Output is one line per epoch, e.g.:
 
@@ -451,6 +448,8 @@ mimir/
                          register_cli(app) wires them onto Flask's cli.
   config.py              pydantic-settings Settings class + PROJECT_ROOT
   extensions.py          SQLAlchemy engine + WAL pragmas, sessionmaker, Base
+  flowed.py              RFC 3676 `format=flowed` decoding (un-stuffing +
+                         soft-break joining), applied by parser.py
   inboxes.py             Inbox lifecycle: bootstrap from env, mutate via admin,
                          expose via nav-name cache; shared validators.
   ingest/                Ingest pipeline split by flow: epoch (hot per-epoch
@@ -515,6 +514,9 @@ mimir/
 alembic/                 migrations
 tests/                   pytest
 Inboxes/                 default mirror root (per-inbox subdirs; gitignored)
+AGENTS.md                conventions for AI coding agents working on this
+                         repo: layout, commands, the CHANGELOG and README
+                         rules, testing discipline, versioning
 ```
 
 ## Web UI
@@ -660,8 +662,11 @@ Routes:
   `/*/search`, and points at the sitemap. Rendered from the
   `robots_rules` table, see "Managing robots.txt".
 - `GET /sitemap.xml`, sitemap index pointing at `/meta-sitemap.xml`,
-  one `/<inbox>/sitemap.xml` per configured inbox, and
-  `/sitemap-maintainers.xml`. Responses are unconditional (no
+  one `/<inbox>/sitemap.xml` per configured inbox, every archive
+  bucket below (a year entry where the inbox-year is small enough,
+  the months otherwise), and `/sitemap-maintainers.xml`. Those
+  archive entries are nearly all of it, so the index is subject to
+  the same 50,000-entry cap as a urlset. Responses are unconditional (no
   `Last-Modified` / `ETag`, always 200): a date-based validator
   pinned stale structural versions in downstream caches. Freshness
   is carried by the per-URL `<lastmod>` inside the XML; edges cache
@@ -692,6 +697,16 @@ Routes:
   the most recent few thousand threads, so on a corpus of this size
   everything older was in no sitemap at all. The index enumerates every
   page, because Google rejects a nested sitemap index. Cached for 1 h.
+- `GET /<inbox>/<YYYY>/sitemap.xml`, a whole year of that inbox's
+  thread URLs in one urlset, paged the same way. The index advertises
+  this instead of the twelve month entries whenever an inbox-year
+  holds at most 20,000 thread roots, which is the same width a page
+  is sliced at, so a coarsened year never needs splitting. Most
+  inbox-years are small, so this is what keeps the index itself under
+  the 50,000-entry limit that applies to an index as well as to a
+  urlset. The month route keeps serving either way; coarsening
+  changes only what the index advertises, so a URL a crawler already
+  fetched does not start 404ing. Cached for 1 h.
 - `GET /sitemap-maintainers.xml`, one urlset listing every
   `/maintainers/<address>` profile page (one URL per MAINTAINERS
   `M:` maintainer). No per-URL `<lastmod>`. Cached for 1 h.
@@ -867,7 +882,7 @@ Example crontab pair:
 ## Deployment
 
 For real-host deployment (everything above runs as `flask run` for
-dev), see `deploy/README.md`. Three shapes are covered:
+dev), see `deploy/README.md` for container and reverse-proxy examples:
 
 - **Container**, `Dockerfile` and `compose.yaml` at the repo root.
   Multi-stage build, non-root runtime, gunicorn behind a `${WORKERS}`
@@ -875,13 +890,6 @@ dev), see `deploy/README.md`. Three shapes are covered:
   first start, `/healthz` container healthcheck, `/data` (with
   `/data/db/` and `/data/Inboxes/` subpaths) as the single bind
   mount. `docker compose up --build` once `SECRET_KEY` is set.
-- **systemd**, `deploy/systemd/` carries the web-server unit plus
-  three timer/oneshot pairs replacing the cron lines for warm-cache
-  (every minute), analyze (daily), and vacuum (weekly). For the
-  weekly vacuum, the WAL truncate only lands fully when no other
-  process holds the DB; do `systemctl stop mimir.service` before
-  triggering it manually if that matters, or let the timer fire and
-  accept best-effort.
 - **Reverse proxy**, `deploy/caddy/Caddyfile.example` (5 lines,
   automatic HTTPS) and `deploy/nginx/mimir.conf.example` (full
   TLS site block with the `X-Forwarded-Proto` and `X-Request-Id`
