@@ -389,11 +389,11 @@ def _per_subsystem_warm_call(
     type=click.Choice(["fast", "slow", "all"]),
     default="all",
     help=(
-        "Which warm tier to refresh. 'fast' covers sitemaps + a "
-        "handful of cheap front-page helpers, suitable for a "
-        "per-minute scheduler tick. 'slow' covers subsystem "
-        "dashboards + per-tracker + the rest, suitable for a "
-        "per-hour tick. 'all' (the default) preserves today's "
+        "Which warm tier to refresh. 'fast' covers a handful of "
+        "cheap front-page helpers, suitable for a per-minute "
+        "scheduler tick. 'slow' covers the sitemap surfaces, "
+        "subsystem dashboards, per-tracker and the rest, suitable "
+        "for a per-hour tick. 'all' (the default) preserves today's "
         "single-tier behaviour for ad-hoc operator runs."
     ),
 )
