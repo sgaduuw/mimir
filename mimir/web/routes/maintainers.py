@@ -8,25 +8,17 @@ passed as `None` to `render_template`, which base.html already treats
 as falsy (no inbox nav links rendered, no atom-feed `<link>`).
 """
 
-import re
-
 from flask import abort, render_template
 
 from mimir.extensions import SessionLocal
 from mimir.maintainer_directory import (
     MaintainerProfile,
+    is_addressable_maintainer_address,
     maintainer_path,
     maintainer_profile,
 )
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _site_base
-
-# Deliberately mirrors search.py's `_REVIEWER_ADDR_RE` rather than
-# importing it: that symbol is private to the reviewer route, and
-# duplicating a one-line regex keeps this module independent of
-# search.py's internals rather than coupling two otherwise-unrelated
-# route modules over a private name.
-_MAINTAINER_ADDR_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+$")
 
 
 def _json_ld_maintainer(profile: MaintainerProfile, canonical_url: str) -> dict:
@@ -60,7 +52,7 @@ def maintainer_view(address: str):
     more round-trip for a case that's already cheap to normalize
     server-side.
     """
-    if not _MAINTAINER_ADDR_RE.fullmatch(address):
+    if not is_addressable_maintainer_address(address):
         abort(404)
     address_normalized = address.lower()
     with SessionLocal() as session:

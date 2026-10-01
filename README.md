@@ -709,12 +709,14 @@ Routes:
   fetched does not start 404ing. Cached for 1 h.
 - `GET /sitemap-maintainers.xml`, one urlset listing every
   `/maintainers/<address>` profile page (one URL per MAINTAINERS
-  `M:` maintainer). No per-URL `<lastmod>`. Cached for 1 h.
+  `M:` maintainer whose address the profile route supports). No per-URL
+  `<lastmod>`. Cached for 1 h.
 - `GET /maintainers/<address>`, global (cross-inbox) profile page
   for one MAINTAINERS `M:` maintainer: the subsystems they maintain
   plus links to every inbox with indexed review-trailer activity
   from them. Linked from every subsystem dashboard and from the
-  subsystem line on patch pages. 404 for a non-maintainer address. The address is
+  subsystem line on patch pages. Unsupported addresses stay visible as text
+  without a profile link. 404 for an unsupported or non-maintainer address. The address is
   lowercased to one canonical URL.
 - `GET /security.txt` and `GET /.well-known/security.txt`  
   RFC 9116 contact info. 404 unless `SECURITY_CONTACT` is set.
