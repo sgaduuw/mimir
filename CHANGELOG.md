@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- JSON access logs include fetch metadata, accepted content and language,
+  HTMX and prefetch headers, optional proxy-supplied country and ASN, and
+  known response body size to help investigate automated traffic (#604).
+
 ### Fixed
 
 - Maintainer sitemaps and page links now use the profile route's address

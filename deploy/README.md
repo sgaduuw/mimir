@@ -173,6 +173,46 @@ podman exec mimir-broker rm /data/.broker_initial_analyze
 podman restart mimir-broker
 ```
 
+## Access logs
+
+Mimir emits one JSON access record per request, including unmatched routes.
+Alongside timestamp, request ID, method, path, status, duration, client IP,
+user agent and referrer, it records:
+
+| Field | Source |
+| --- | --- |
+| `sec_fetch_mode` | `Sec-Fetch-Mode` |
+| `sec_fetch_site` | `Sec-Fetch-Site` |
+| `sec_fetch_dest` | `Sec-Fetch-Dest` |
+| `sec_fetch_user` | `Sec-Fetch-User` |
+| `accept` | `Accept` |
+| `accept_language` | `Accept-Language` |
+| `hx_request` | `HX-Request` |
+| `purpose` | `Purpose` |
+| `sec_purpose` | `Sec-Purpose` |
+| `country` | `CF-IPCountry` |
+| `asnum` | Custom `X-ASN` request header |
+| `response_bytes` | Known response body length before proxy compression |
+
+Header values are raw strings, with JSON escaping; absent headers are `null`.
+They are observations, not verified identities or automatic bot classifications.
+Country and ASN require upstream enrichment; mimir performs no IP lookup.
+Only treat them as IP metadata when a trusted proxy overwrites incoming values
+and direct access to the origin is restricted. `TRUSTED_PROXY_HOPS` configures
+forwarded IP handling; it does not authenticate these additional headers.
+
+Cloudflare can supply `CF-IPCountry` through
+[IP geolocation](https://developers.cloudflare.com/network/ip-geolocation/).
+`X-ASN` is this application's proxy contract, not a default Cloudflare header.
+A [request header transform](https://developers.cloudflare.com/rules/transform/request-header-modification/)
+can set it dynamically to `to_string(ip.src.asnum)`. Ensure intervening proxies
+forward both headers. Without that setup the corresponding fields remain `null`.
+
+`response_bytes` is `0` for HEAD and bodyless responses, and `null` when no
+content length is known. Logging does not read streamed bodies or measure
+bytes actually delivered, and downstream compression can change wire size.
+Requests served entirely by a CDN cache do not reach this access log.
+
 ## Reverse proxy
 
 When the app sits behind a reverse proxy, set `TRUSTED_PROXY_HOPS` to
