@@ -429,11 +429,12 @@ def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
     file twice before.
 
     The 1 h TTL means this is a once-hourly rebuild rather than
-    per-request, but note the rebuild lands in a `warm-cache --tier
-    fast` tick whose own docstring budgets "sub-100 ms each". A ~36 s
-    tick once an hour is tolerable and worth knowing about; splitting
-    the index into per-inbox pieces would fix both that and the entry
-    ceiling below.
+    per-request. It used to land in a `warm-cache --tier fast` tick,
+    whose own docstring budgets "sub-100 ms each"; sitemaps have
+    since moved to the slow (hourly) tier, which is the cadence a job
+    this size belongs on. The 35.7 s above has NOT been re-measured
+    since that move, and the corpus has grown; treat it as a floor
+    with a date, not a current figure.
 
     Both this and `_recent_thread_roots_query` lead on `inbox_id`; do
     not assert WHICH index the planner picks, because it is
@@ -443,13 +444,29 @@ def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
     a two-column equality between columns of one row is not sargable.
     Cost is the same either way.
 
-    The index runs to ~32k entries (~2.6 MiB), measured against prod:
-    32,093 (inbox, month) buckets on 2026-07-28. That is inside the
-    protocol's 50k-per-index and 50 MB limits, but 203 inboxes x 258
-    months is already 52,374 POSSIBLE buckets, so the ceiling is nearer
-    than a growth rate alone suggests: ~2,400 new entries a year, ~7
-    years of headroom, and nothing in code enforces the cap. Recorded
-    rather than solved; the fix is per-inbox sub-indexes.
+    Index size, counted on the SERVED document at
+    `https://ratatoskr.run/sitemap.xml` rather than derived from this
+    query, so it is what crawlers actually receive: **32,629 entries
+    (2.6 MiB) on 2026-09-29**, of which 32,420 are month buckets, 4
+    are extra pages from the width above, and the rest are the meta,
+    per-inbox and maintainers entries. 65% of the protocol's
+    50k-per-index limit. It was 32,093 buckets on 2026-07-28, so
+    ~+536 in two months.
+
+    Growth rate is the wrong thing to plan from. 205 inboxes x 258
+    months is ~52,900 POSSIBLE buckets, already past the cap, so the
+    ceiling is bounded by which buckets hold data rather than by
+    time: one `admin inbox add` for a historically imported list can
+    add hundreds of entries at once, which no per-year figure
+    predicts.
+
+    Per-inbox SUB-INDEXES are not the fix, despite what an earlier
+    version of this docstring said. That is an index referencing an
+    index, which is the nesting GOOGLE rejects (see
+    `_month_root_counts` above and CONTEXT.md "SEO posture"); it is
+    the same shape already tried and rejected for the maintainers
+    layer. What the protocol does allow is more than one INDEPENDENT
+    index file, none referencing another. See #551.
     """
     y = func.strftime("%Y", Article.date).label("y")
     m = func.strftime("%m", Article.date).label("m")
