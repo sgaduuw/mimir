@@ -17,6 +17,8 @@ orchestrator.
 """
 
 import html
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from markupsafe import Markup
 from pygments import highlight
@@ -151,11 +153,18 @@ class _QuoteBudget:
         self.remaining = remaining
 
 
+@dataclass(frozen=True)
+class _RenderContext:
+    msgid_urls: dict[str, str]
+    address_redactor: Callable[[str], str] | None = None
+    parent_url: str | None = None
+    lore_mirror_urls: dict[str, str] | None = None
+    budget: _QuoteBudget = field(default_factory=_QuoteBudget)
+
+
 def _flatten_quote(
     block: _Block,
-    msgid_urls: dict[str, str],
-    address_redactor,
-    lore_mirror_urls: dict[str, str] | None,
+    context: _RenderContext,
     reason: str,
 ) -> str:
     """Render a quote without descending into it.
@@ -181,40 +190,30 @@ def _flatten_quote(
     return (
         f"<details><summary><small><em>{reason}</em></small></summary>"
         '<blockquote><pre class="body-text-block">'
-        f"{linkify(flat, msgid_urls, address_redactor, lore_mirror_urls)}"
+        f"{linkify(flat, context.msgid_urls, context.address_redactor, context.lore_mirror_urls)}"
         "</pre></blockquote></details>"
     )
 
 
 def _render_block(
     block: _Block,
-    msgid_urls: dict[str, str],
-    address_redactor=None,
+    context: _RenderContext,
     depth: int = 0,
-    parent_url: str | None = None,
-    lore_mirror_urls: dict[str, str] | None = None,
-    budget: _QuoteBudget | None = None,
 ) -> str:
-    if budget is None:
-        budget = _QuoteBudget()
     if block.kind == "quote":
         if depth >= MAX_QUOTE_DEPTH:
             return _flatten_quote(
                 block,
-                msgid_urls,
-                address_redactor,
-                lore_mirror_urls,
+                context,
                 f"quoting continues past {MAX_QUOTE_DEPTH} levels",
             )
-        if budget.remaining <= 0:
+        if context.budget.remaining <= 0:
             return _flatten_quote(
                 block,
-                msgid_urls,
-                address_redactor,
-                lore_mirror_urls,
+                context,
                 "quoting not expanded further in this message",
             )
-        budget.remaining -= 1
+        context.budget.remaining -= 1
         stripped = [_strip_one_quote_level(line) for line in block.lines]
         inner = "\n".join(stripped)
         inner_blocks = parse_blocks(inner)
@@ -224,18 +223,7 @@ def _render_block(
         # `is_hunk_quote` test below so a promoted fragment folds as
         # the hunk it is.
         _reclassify_orphaned_diffs(inner_blocks)
-        inner_html = "".join(
-            _render_block(
-                b,
-                msgid_urls,
-                address_redactor,
-                depth + 1,
-                parent_url,
-                lore_mirror_urls,
-                budget,
-            )
-            for b in inner_blocks
-        )
+        inner_html = "".join(_render_block(b, context, depth + 1) for b in inner_blocks)
         # A first-level quote containing a diff is the patch-review
         # "quoted hunk" pattern: a reviewer pasting a chunk of the
         # parent patch to comment on it. Without folding, deep reviews
@@ -246,8 +234,12 @@ def _render_block(
         is_hunk_quote = depth == 0 and any(b.kind == "diff" for b in inner_blocks)
         if is_hunk_quote:
             jump = ""
-            if parent_url:
-                jump = ' <a href="' + html.escape(parent_url) + '">↗ jump to hunk</a>'
+            if context.parent_url:
+                jump = (
+                    ' <a href="'
+                    + html.escape(context.parent_url)
+                    + '">↗ jump to hunk</a>'
+                )
             return (
                 '<details class="hunk-quote"><summary>'
                 f"<small><em>quoted hunk</em>{jump}</small></summary>"
@@ -293,7 +285,7 @@ def _render_block(
     text = "\n".join(block.lines)
     return (
         '<pre class="body-text-block">'
-        f"{linkify(text, msgid_urls, address_redactor, lore_mirror_urls)}</pre>"
+        f"{linkify(text, context.msgid_urls, context.address_redactor, context.lore_mirror_urls)}</pre>"
     )
 
 
@@ -321,17 +313,10 @@ def render_body(
     """
     if not body:
         return Markup("")
-    budget = _QuoteBudget()
-    return Markup(
-        "".join(
-            _render_block(
-                b,
-                msgid_urls or {},
-                address_redactor,
-                parent_url=parent_url,
-                lore_mirror_urls=lore_mirror_urls,
-                budget=budget,
-            )
-            for b in parse_blocks(body)
-        )
+    context = _RenderContext(
+        msgid_urls=msgid_urls or {},
+        address_redactor=address_redactor,
+        parent_url=parent_url,
+        lore_mirror_urls=lore_mirror_urls,
     )
+    return Markup("".join(_render_block(b, context) for b in parse_blocks(body)))
