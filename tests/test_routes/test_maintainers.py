@@ -150,14 +150,6 @@ def test_maintainer_view_emits_profilepage_json_ld(client, session):
     assert payload["url"].endswith("/maintainers/kent@kernel.org")
 
 
-# The emitter/acceptor pair. `maintainer_path` (used by the two
-# template link sites AND by /sitemap-maintainers.xml) produces the
-# address; `maintainer_view` decides whether to serve it. Nothing in
-# the code forces the two to agree, so the agreement is pinned here
-# rather than asserted in prose. See CONTEXT.md "Emitter and acceptor
-# must share one validity rule".
-
-
 def test_message_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
     client, tmp_path
 ):
@@ -210,13 +202,8 @@ def test_message_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
 def test_every_url_the_maintainers_sitemap_advertises_resolves(client, session):
     """Every `<loc>` in `/sitemap-maintainers.xml` must be a page.
 
-    The sitemap builds its URLs with `maintainer_path` and applies no
-    addressability predicate (unlike subsystem names, which go through
-    `subsystems.is_addressable_subsystem_name`), while the route gates
-    on `_MAINTAINER_ADDR_RE`. Production carried 2,467 distinct
-    (role, address) pairs on 2026-08-03 and all of them satisfy that
-    regex, so the two agree today; this pins that they keep agreeing
-    for the address shapes MAINTAINERS actually contains.
+    Supported punctuation and mixed-case addresses survive URL encoding
+    and resolve through the real route.
     """
     from tests.test_routes._helpers import _clear_sitemap_cache
 
@@ -248,32 +235,81 @@ def test_every_url_the_maintainers_sitemap_advertises_resolves(client, session):
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "KNOWN GAP (latent, zero instances on production as of "
-        "2026-08-03): `maintainer_path` percent-encodes any address at "
-        "all, while `maintainer_view` rejects anything outside "
-        "`_MAINTAINER_ADDR_RE`. `maintainers._split_addr` stores "
-        "whatever sits between the last '<' and '>' of an `M:` line, so "
-        "one apostrophe or one non-ASCII character upstream publishes a "
-        "404 to every crawler via /sitemap-maintainers.xml. The fix is "
-        "a shared addressability predicate, the same shape as "
-        "`subsystems.is_addressable_subsystem_name`; remove this xfail "
-        "when it lands."
-    ),
-)
-def test_maintainer_path_never_emits_a_url_the_route_refuses(client, session):
-    """An apostrophe is legal in an email local part, legal in
-    MAINTAINERS, and accepted by mimir's parser. It should not be
-    possible to emit a link and a sitemap entry for an address the
-    route will not serve."""
-    from mimir.maintainer_directory import maintainer_path
+@pytest.mark.parametrize("surface", ["sitemap", "subsystem", "message"])
+def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface):
+    """Removing any emitter's validity gate publishes a seeded 404."""
+    from html.parser import HTMLParser
+    from urllib.parse import quote, urlsplit
+    from xml.etree import ElementTree
 
-    _add_subsystem(
-        session,
-        "APOSTROPHE",
-        "Maintained",
-        maintainers=[("M", "Sean O'Brien", "o'brien@example.com")],
+    from mimir.web.filters import _is_allowlisted_address_filter
+    from tests.test_routes._helpers import (
+        _clear_sitemap_cache,
+        _ingest_one_article,
+        _seed_subsystem,
     )
-    assert client.get(maintainer_path("o'brien@example.com")).status_code == 200
+
+    unsupported = [
+        "o'brien@kernel.org",
+        "jörg@kernel.org",
+        "JÖRGEN@kernel.org",
+        "slash/name@kernel.org",
+        "tab\tname@kernel.org",
+        "newline@kernel.org\n",
+        "",
+    ]
+    _seed_subsystem(
+        "SHAPES",
+        "Maintained",
+        files=["fs/shapes/"],
+        maintainers=[("M", "Valid Maintainer", "Mixed+tag%name@kernel.org")]
+        + [("M", f"Unsupported {i}", addr) for i, addr in enumerate(unsupported)],
+    )
+    with client.application.test_request_context("/"):
+        for addr in unsupported[:-1]:
+            assert _is_allowlisted_address_filter(addr), addr
+
+    if surface == "sitemap":
+        _clear_sitemap_cache()
+        response = client.get("/sitemap-maintainers.xml")
+        assert response.status_code == 200
+        urls = [
+            node.text
+            for node in ElementTree.fromstring(response.data).findall("{*}url/{*}loc")
+        ]
+    else:
+        url = "/alpha/subsystem/shapes/"
+        if surface == "message":
+            _, url = _ingest_one_article(
+                tmp_path,
+                "alpha",
+                "address-shapes@example.com",
+                body=b"diff --git a/fs/shapes/a.c b/fs/shapes/a.c\n@@ -1 +1 @@\n-x\n+y\n",
+            )
+        response = client.get(url)
+        assert response.status_code == 200
+
+        class Links(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.urls = []
+                self.text = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "a":
+                    self.urls.append(dict(attrs).get("href", ""))
+
+            def handle_data(self, data):
+                self.text.append(data)
+
+        parsed = Links()
+        parsed.feed(response.get_data(as_text=True))
+        urls = [url for url in parsed.urls if url.startswith("/maintainers/")]
+        for i in range(len(unsupported)):
+            assert f"Unsupported {i}" in "".join(parsed.text)
+
+    paths = [urlsplit(url).path for url in urls]
+    assert paths == ["/maintainers/mixed%2Btag%25name@kernel.org"]
+    assert client.get(paths[0]).status_code == 200
+    for addr in unsupported:
+        assert client.get("/maintainers/" + quote(addr, safe="@")).status_code == 404

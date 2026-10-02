@@ -10,6 +10,7 @@ from datetime import UTC
 
 import pytest
 
+from mimir.config import settings
 from mimir.rendering.body import MAX_QUOTE_DEPTH
 from tests.test_routes._helpers import (
     _data_attr_values,
@@ -19,6 +20,7 @@ from tests.test_routes._helpers import (
     _seed_subsystem,
     _seed_three_message_thread,
     _title_of,
+    seed_thread_shape,
 )
 
 
@@ -2160,6 +2162,59 @@ def test_message_page_hx_request_has_distinct_etag(client, tmp_path):
     full = client.get(url)
     partial = client.get(url, headers={"HX-Request": "true"})
     assert full.headers["ETag"] != partial.headers["ETag"]
+
+
+def test_message_page_etag_tracks_thread_render_cap(client, tmp_path, monkeypatch):
+    """The message page's canonical is
+    `thread_page_url(..., thread_page_of(..., cap))`, so the render cap
+    moves which thread page this message claims to live on. The ETag
+    has to carry the cap too, the way `thread.py` already does.
+
+    Without it the cap is the one input that can change the body while
+    every validator stays put: it is an operator env knob, so changing
+    it restarts the same image and `mimir.__version__` does not move.
+    This endpoint is `public, no-cache`, so the ETag is the only thing
+    between that change and every CDN edge plus every conditional-GET
+    crawler holding a page whose canonical names a thread page that no
+    longer holds the message (it 404s once the cap grows)."""
+
+    def _canonical_of(html):
+        m = re.search(r'<link rel="canonical" href="([^"]+)"', html)
+        assert m, "no canonical link in the rendered message page"
+        return m.group(1)
+
+    edges = [("etagcap0@x", None)] + [
+        (f"etagcap{i}@x", "etagcap0@x") for i in range(1, 4)
+    ]
+    seeded = seed_thread_shape(tmp_path, "alpha", edges)
+    _, last_url = seeded["etagcap3@x"]
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    first = client.get(last_url)
+    assert first.status_code == 200
+    etag = first.headers["ETag"]
+    canon_small_cap = _canonical_of(first.get_data(as_text=True))
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 4)
+    fresh = client.get(last_url)
+    assert fresh.status_code == 200
+    canon_big_cap = _canonical_of(fresh.get_data(as_text=True))
+
+    # Precondition: assert the fixture actually built the state under
+    # test. If the cap does not move this page's canonical, the test
+    # below passes for a reason that has nothing to do with the guard.
+    assert canon_small_cap != canon_big_cap, (
+        f"fixture did not exercise the cap: both canonicals are {canon_small_cap}"
+    )
+    assert canon_small_cap.endswith("/t/2"), canon_small_cap
+    assert canon_big_cap.endswith("/t"), canon_big_cap
+
+    revalidated = client.get(last_url, headers={"If-None-Match": etag})
+    assert revalidated.status_code != 304, (
+        "message page returned 304 for an ETag minted under a different "
+        f"thread_view_render_cap; the stale body canonicalises to "
+        f"{canon_small_cap} but the page now canonicalises to {canon_big_cap}"
+    )
 
 
 def test_message_page_card_omits_landings_block(client, tmp_path):

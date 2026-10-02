@@ -9,6 +9,7 @@ escaping behavior and the structural transformations.
 
 import re
 
+import pytest
 from markupsafe import Markup
 
 from mimir.rendering import URL_OR_MSGID_RE, linkify, parse_blocks, render_body
@@ -1235,16 +1236,16 @@ def test_render_block_never_anchors_a_headerless_block():
     than through `render_body`: the rule and the coincidence are
     indistinguishable from outside."""
     from mimir.rendering.blocks import _Block
-    from mimir.rendering.body import _render_block
+    from mimir.rendering.body import _render_block, _RenderContext
 
     block = _Block(kind="diff", lines=["+\tone();", "+\ttwo();"], headerless=True)
-    out = _render_block(block, {}, depth=0)
+    out = _render_block(block, _RenderContext({}), depth=0)
     assert 'id="h-' not in out
     # Precondition: the same block WITHOUT the flag does anchor at
     # depth 0, so the assertion above is about `headerless` and not
     # about diffs in general.
     plain = _Block(kind="diff", lines=["@@ -1 +1 @@", "+\tone();"])
-    assert 'id="h-' in _render_block(plain, {}, depth=0)
+    assert 'id="h-' in _render_block(plain, _RenderContext({}), depth=0)
 
 
 def test_render_body_hunk_quote_fold_is_first_level_only():
@@ -1517,3 +1518,32 @@ def test_render_body_output_is_bounded_by_a_small_multiple_of_input():
         f"body {len(body)}B rendered to {len(out)}B ({ratio:.0f}x); "
         "quote rendering amplifies output without bound"
     )
+
+
+@pytest.mark.parametrize("quote_depth", [1, MAX_QUOTE_DEPTH + 1])
+def test_render_options_survive_quote_recursion_and_flattening(quote_depth):
+    lines = [
+        "<ref@example.com>",
+        "https://lore.kernel.org/ref@example.com/",
+        "Signed-off-by: Alice <alice@localhost>",
+    ]
+    body = "\n".join(">" * quote_depth + " " + line for line in lines)
+    seen = []
+
+    def redact(address):
+        seen.append(address)
+        return "<hidden>"
+
+    output = str(
+        render_body(
+            body,
+            {"ref@example.com": "/reference"},
+            redact,
+            lore_mirror_urls={"ref@example.com": "/mirror"},
+        )
+    )
+    assert 'href="/reference"' in output
+    assert 'href="/mirror"' in output
+    assert "alice@localhost" not in output
+    assert "&lt;hidden&gt;" in output
+    assert seen == ["alice@localhost"]

@@ -24,7 +24,7 @@ from mimir.parser import (
 )
 from mimir.patches import MAX_TOUCHED_PATHS, extract_touched_paths
 from mimir.rendering.blocks import _Block
-from mimir.rendering.body import PYGMENTS_MAX_BLOCK_CHARS, _render_block
+from mimir.rendering.body import PYGMENTS_MAX_BLOCK_CHARS, _render_block, _RenderContext
 
 # ----- parser: multipart-count cap ----------------------------------------
 
@@ -104,7 +104,7 @@ def test_oversized_code_block_falls_back_to_text_lexer():
     line = "int main(void) { return 0; }"
     n_lines = (PYGMENTS_MAX_BLOCK_CHARS // len(line)) + 200
     block = _Block(kind="code", lines=[line] * n_lines, info="c")
-    html = _render_block(block, msgid_urls={})
+    html = _render_block(block, _RenderContext({}))
     # TextLexer fallback: no per-token class spans (no keyword `k`,
     # name-function `nf`, etc.).
     assert 'class="k"' not in html
@@ -120,7 +120,7 @@ def test_normal_code_block_keeps_syntax_highlighting():
         lines=["int main(void) { return 0; }"],
         info="c",
     )
-    html = _render_block(block, msgid_urls={})
+    html = _render_block(block, _RenderContext({}))
     # Below the threshold the CLexer's tokens land as class-named
     # spans.
     assert 'class="k"' in html or 'class="kt"' in html  # at least one keyword token

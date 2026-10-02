@@ -27,7 +27,10 @@ from pygments.util import ClassNotFound
 from mimir import maintainer_allowlist
 from mimir.config import settings
 from mimir.datetime_utils import aware_utc
-from mimir.maintainer_directory import maintainer_path
+from mimir.maintainer_directory import (
+    is_addressable_maintainer_address,
+    maintainer_path,
+)
 from mimir.models import Article
 from mimir.rendering import render_body
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
@@ -441,6 +444,12 @@ def _is_allowlisted_address_filter(address: str | None) -> bool:
     return _is_allowlisted(address)
 
 
+@bp_web.app_template_filter("is_addressable_maintainer")
+def _is_addressable_maintainer_filter(address: str | None) -> bool:
+    """Whether the profile route accepts this address's syntax."""
+    return is_addressable_maintainer_address(address or "")
+
+
 @bp_web.app_template_filter("maintainer_url")
 def _maintainer_url_filter(address: str | None) -> str:
     """Site-relative URL for a maintainer's profile page.
@@ -466,14 +475,8 @@ def _maintainer_url_filter(address: str | None) -> str:
     kernel tree has an empty MAINTAINERS-derived set and it fails closed
     for every non-`@kernel.org` maintainer.
 
-    Still open: `maintainer_path` percent-encodes ANY address, with no
-    addressability predicate, while the route gates on
-    `_MAINTAINER_ADDR_RE`. Subsystems got
-    `is_addressable_subsystem_name` for precisely this; maintainers did
-    not. Zero of 2,467 production addresses violate it today (measured
-    2026-08-04); an apostrophe upstream would publish a 404 into the
-    sitemap. Carried as a strict xfail in
-    `test_maintainer_path_never_emits_a_url_the_route_refuses`.
+    Callers also check `is_addressable_maintainer` before linking, so
+    unsupported addresses remain text rather than broken profile links.
     """
     return maintainer_path(address or "")
 

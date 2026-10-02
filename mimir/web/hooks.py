@@ -301,6 +301,25 @@ def _log_request(response):
                 # raw header is what we actually want to log.
                 "ua": request.headers.get("User-Agent"),
                 "referrer": request.referrer,
+                "sec_fetch_mode": request.headers.get("Sec-Fetch-Mode"),
+                "sec_fetch_site": request.headers.get("Sec-Fetch-Site"),
+                "sec_fetch_dest": request.headers.get("Sec-Fetch-Dest"),
+                "sec_fetch_user": request.headers.get("Sec-Fetch-User"),
+                "accept": request.headers.get("Accept"),
+                "accept_language": request.headers.get("Accept-Language"),
+                "hx_request": request.headers.get("HX-Request"),
+                "purpose": request.headers.get("Purpose"),
+                "sec_purpose": request.headers.get("Sec-Purpose"),
+                # Observed headers, not independently verified IP metadata.
+                "country": request.headers.get("CF-IPCountry"),
+                "asnum": request.headers.get("X-ASN"),
+                # Never consume a stream to calculate its size. HEAD and
+                # bodyless statuses transmit no body despite Content-Length.
+                "response_bytes": 0
+                if request.method == "HEAD"
+                or 100 <= response.status_code < 200
+                or response.status_code in (204, 304)
+                else response.content_length,
             }
         )
     )
