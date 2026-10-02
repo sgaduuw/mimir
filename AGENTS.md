@@ -10,6 +10,15 @@ Operator and deployment specifics (host access, container names,
 production paths, the post-deploy smoke) are **not** in the repo.
 If a task needs them, say so and ask; do not guess at them.
 
+This file says *what to do*. Its companion
+[`CONTEXT.md`](CONTEXT.md), beside it at the repo root, says *why*,
+at length: the
+architecture, the decisions that look odd until you know what they
+cost, and the defect classes this codebase keeps producing. It is
+tracked too, and it is worth reading before a non-trivial change.
+Where a rule here has a one-line justification, the full reasoning
+is usually there.
+
 ## What mimir is, in one paragraph
 
 A Flask app that indexes public-inbox v2 git mirrors of kernel
@@ -113,6 +122,79 @@ touch an unfamiliar package.
 - **KISS, and write lazy-first.** Do not add indirection until a
   second caller exists. Prefer the standard library to custom code
   and a native platform feature to a new dependency.
+
+## Whoever builds an identifier and whoever accepts it share one predicate
+
+This is the defect class that recurs here more than any other, so it
+is worth knowing before your first change rather than after.
+
+One module decides a URL (or a cache key, or a slug, or an ID) and
+another module decides whether to serve it. When those are parallel
+implementations rather than one shared function, they drift, and the
+drift is invisible until something starts producing at volume. A
+sitemap is the usual trigger: a crawler then walks the disagreement
+systematically instead of a reader stumbling into it once.
+
+Recorded instances, all real:
+
+- A path helper percent-encoded any subsystem name, while the route
+  rejected control bytes. Production carried three MAINTAINERS
+  section titles containing a TAB, so three inboxes were about to
+  publish dead URLs to crawlers.
+- A page took its canonical from Werkzeug's URL-DECODED
+  `request.path` while the sitemap emitted the percent-encoded form,
+  so nearly every page advertised one URL and self-nominated another.
+- A link gated on "is this address safe to display" when the question
+  that mattered was "does this page exist". Both predicates were
+  real and true; only one was relevant.
+
+**The test is to ask who else decides this is valid, and then make
+that one function.** A link, a sitemap entry, and the target page's
+own canonical must come out BYTE-identical, not equivalent after
+normalisation, because the normalisation is the crawler's to do and
+it is charged as a duplicate-URL signal.
+
+### A cache validator is the same pair, in time
+
+An ETag or `Last-Modified` is the emitter/acceptor rule aimed at the
+future: the code deciding a response and the code deciding whether a
+cached copy is still that response must agree on what the response
+depends on. So for any surface with a validator, **enumerate every
+input its rendered output depends on and check the validator carries
+all of them**, configuration knobs included.
+
+Config knobs are the ones that get missed, because an env change
+restarts the same image and `mimir.__version__` does not move, so
+nothing else in the validator shifts either. Both message and thread
+pages are `Cache-Control: public, no-cache`, which makes the ETag the
+only thing standing between a change and every CDN edge plus every
+conditional-GET crawler serving a body the data has contradicted.
+
+## Fix the class, not the reported instance
+
+A reported defect is a sample. Before you call it fixed, ask what
+else is in its category and check each one; a fix that closes the
+reported instance and leaves its siblings is the characteristic
+failure mode of fix-code, and it is not caught by testing, because
+what you wrote is locally correct.
+
+Two defects found in review of the 3.10.0 release were siblings of
+fixes made in that same release:
+
+- Sitemap caches were keyed by the thread render cap. The message
+  page's ETag depended on the same cap and was missed, so changing
+  the cap left caches and crawlers holding a page whose canonical
+  named a thread page that 404s.
+- Maintainer links were aligned with the maintainer route's
+  validation. Reviewer links in `subsystem.html` are still gated on a
+  different predicate than the reviewer route accepts.
+
+Same with prose. When you correct a claim, grep for every other copy
+of it: a stale claim about warm-cache tiers was corrected in four
+places in one release and a fifth copy survived. Use
+`grep -rn --exclude-dir=.git`, not `git grep`, because some
+documentation in this tree is deliberately untracked and `git grep`
+cannot see it.
 
 ## Never trust a scale figure in a doc, comment or docstring
 
