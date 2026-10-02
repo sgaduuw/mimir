@@ -548,38 +548,111 @@ def test_proxy_fix_off_keeps_connection_remote_addr(monkeypatch):
 # Access-log shape
 
 
-def test_access_log_records_user_agent(client):
-    """Regression: the structured access log captured `ua: null` for
-    every request because the falsy check on `request.user_agent`
-    depends on Werkzeug's UA parser recognising a browser, which
-    misfires on non-browser UAs (curl, wget) and even some browsers
-    in newer Werkzeug. Read the raw header instead."""
+@pytest.fixture
+def access_records():
     import json
     import logging
 
-    captured: list[str] = []
+    captured = []
 
-    class _Capture(logging.Handler):
+    class Capture(logging.Handler):
         def emit(self, record):
-            captured.append(record.getMessage())
+            captured.append(json.loads(record.getMessage()))
 
-    request_logger = logging.getLogger("mimir.request")
-    prior = (request_logger.level, request_logger.disabled)
-    # pytest's logging plugin marks unmanaged loggers as disabled
-    # between tests; flip it back so emit() reaches our handler.
-    request_logger.disabled = False
-    request_logger.setLevel(logging.INFO)
-    handler = _Capture()
-    request_logger.addHandler(handler)
+    logger = logging.getLogger("mimir.request")
+    prior = (logger.level, logger.disabled)
+    logger.disabled = False
+    logger.setLevel(logging.INFO)
+    handler = Capture()
+    logger.addHandler(handler)
     try:
-        client.get("/healthz", headers={"User-Agent": "probe-agent/1.0"})
+        yield captured
     finally:
-        request_logger.removeHandler(handler)
-        request_logger.level, request_logger.disabled = prior
+        logger.removeHandler(handler)
+        logger.level, logger.disabled = prior
 
-    assert captured, "no log line was emitted"
-    payload = json.loads(captured[-1])
-    assert payload["ua"] == "probe-agent/1.0"
+
+@pytest.mark.parametrize("with_headers", [False, True])
+@pytest.mark.parametrize(
+    "method,path",
+    [("GET", "/healthz"), ("HEAD", "/healthz"), ("GET", "/unknown-route/not-a-page/")],
+)
+def test_access_log_records_request_context(
+    client, access_records, with_headers, method, path
+):
+    headers = {
+        "User-Agent": "probe-agent/1.0",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-User": "?1",
+        "Accept": 'text/html; note="quoted\\value"',
+        "Accept-Language": "en-GB,en;q=0.9",
+        "HX-Request": "true",
+        "Purpose": "prefetch",
+        "Sec-Purpose": "prefetch;prerender",
+        "CF-IPCountry": "NL",
+        "X-ASN": "12345",
+    }
+    expected = {
+        "sec_fetch_mode": "navigate",
+        "sec_fetch_site": "same-origin",
+        "sec_fetch_dest": "document",
+        "sec_fetch_user": "?1",
+        "accept": 'text/html; note="quoted\\value"',
+        "accept_language": "en-GB,en;q=0.9",
+        "hx_request": "true",
+        "purpose": "prefetch",
+        "sec_purpose": "prefetch;prerender",
+        "country": "NL",
+        "asnum": "12345",
+    }
+    response = client.open(
+        path,
+        method=method,
+        headers=headers if with_headers else {"User-Agent": "probe-agent/1.0"},
+    )
+    assert len(access_records) == 1
+    record = access_records[0]
+    assert record["ua"] == "probe-agent/1.0"
+    assert response.status_code == (404 if "unknown-route" in path else 200)
+    for key, value in expected.items():
+        assert record[key] == (value if with_headers else None)
+    assert record["response_bytes"] == len(response.data)
+    assert record["status"] == response.status_code
+
+
+@pytest.mark.parametrize("status", [101, 204, 304])
+def test_access_log_bodyless_response_size(client, access_records, status):
+    from flask import Response
+
+    from mimir.web.hooks import _log_request
+
+    with client.application.test_request_context("/"):
+        response = Response("unsent", status=status)
+        _log_request(response)
+    assert access_records[0]["response_bytes"] == 0
+
+
+def test_access_log_does_not_consume_stream(client, access_records):
+    from flask import Response
+
+    from mimir.web.hooks import _log_request
+
+    consumed = []
+
+    def body():
+        consumed.append(True)
+        yield b"streamed body"
+
+    with client.application.test_request_context("/"):
+        response = Response(body())
+        assert response.is_streamed and response.content_length is None
+        assert _log_request(response) is response
+        assert consumed == []
+        assert access_records[0]["response_bytes"] is None
+        assert response.get_data() == b"streamed body"
+        assert consumed == [True]
 
 
 # Phase 3: render-side canonical surface

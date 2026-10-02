@@ -541,7 +541,9 @@ def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
         s.commit()
 
     cache.delete_for_inbox("alpha")
-    cache.delete("sitemap:index")
+    from mimir.config import settings
+
+    cache.delete(f"sitemap:index:{max(1, settings.thread_view_render_cap)}")
 
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
@@ -2174,3 +2176,66 @@ def test_missing_year_page_reuses_valid_year_snapshot(client, tmp_path, monkeypa
         assert client.get(f"/alpha/2012/sitemap-{page}.xml").status_code == 404
     assert client.get("/alpha/2012/sitemap.xml").status_code == 200
     assert not expanded, "Missing and valid pages must reuse the same yearly snapshot"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/alpha/sitemap.xml", "/alpha/2012/01/sitemap.xml", "/alpha/2012/sitemap.xml"],
+)
+def test_sitemap_cache_tracks_thread_render_cap(client, tmp_path, monkeypatch, path):
+    from datetime import datetime
+
+    from mimir.config import settings
+    from tests.test_routes._helpers import seed_thread_shape
+
+    edges = [("cap0@x", None)] + [(f"cap{i}@x", "cap0@x") for i in range(1, 5)]
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        edges,
+    )
+    for article_id, _ in seeded.values():
+        _set_article_date(article_id, datetime(2012, 1, 1, tzinfo=UTC))
+    root_url = f"http://localhost/alpha/2012/01/{seeded['cap0@x'][0]}/t"
+    _clear_sitemap_cache()
+    for cap, pages in [(2, 3), (3, 2), (1, 5)]:
+        monkeypatch.setattr(settings, "thread_view_render_cap", cap)
+        expected = {root_url} | {f"{root_url}/{page}" for page in range(2, pages + 1)}
+        advertised = {url for url in _locs(client, path) if url.startswith(root_url)}
+        assert advertised == expected
+        for url in advertised:
+            assert client.get(url).status_code == 200
+
+
+def test_sitemap_index_cache_tracks_thread_render_cap(client, tmp_path, monkeypatch):
+    import xml.etree.ElementTree as ET
+    from datetime import datetime
+
+    from mimir.seo import sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    edges = [("index-cap0@x", None)] + [
+        (f"index-cap{i}@x", "index-cap0@x") for i in range(1, 5)
+    ]
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        edges,
+    )
+    for article_id, _ in seeded.values():
+        _set_article_date(article_id, datetime(2012, 1, 1, tzinfo=UTC))
+    monkeypatch.setattr(sm, "SITEMAP_MAX_URLS", 2)
+    _clear_sitemap_cache()
+    for cap, bucket in [(2, "2012/01"), (3, "2012"), (1, "2012/01")]:
+        monkeypatch.setattr(sm.settings, "thread_view_render_cap", cap)
+        response = client.get("/sitemap.xml")
+        assert response.status_code == 200
+        locs = {
+            el.text
+            for el in ET.fromstring(response.data).iter(
+                "{http://www.sitemaps.org/schemas/sitemap/0.9}loc"
+            )
+        }
+        assert {url for url in locs if "/alpha/2012/" in url} == {
+            f"http://localhost/alpha/{bucket}/sitemap.xml"
+        }
