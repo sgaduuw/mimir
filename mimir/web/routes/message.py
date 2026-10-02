@@ -118,6 +118,14 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         #   need distinct ETags. Companion `Vary: HX-Request` header is
         #   applied in `web.hooks` so intermediate caches don't confuse
         #   the two responses for the same URL.
+        # - thread render cap: this page's canonical is
+        #   `thread_page_url(..., thread_page_of(..., cap))`, so the cap
+        #   decides which thread page the message claims to live on, and
+        #   a stale claim 404s once the cap grows. `thread.py` already
+        #   folds it in. It is the one input that moves the body while
+        #   every other input stands still: it is an operator env knob,
+        #   so changing it restarts the same image and the version
+        #   component below does not move either.
         # Cache-Control on this endpoint is `public, no-cache` (set in
         # `web.hooks._CACHE_CONTROL_BY_ENDPOINT`), so browsers always
         # revalidate; the 304 path skips the body fetch + render entirely.
@@ -129,6 +137,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         state_tag = render_state_tag(session, article.id, article.message_id)
         etag_input = (
             f"{article.id}|{mimir.__version__}|"
+            f"{max(1, settings.thread_view_render_cap)}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|"
             f"{state_tag}|{'hx' if hx_request else 'full'}"
         )

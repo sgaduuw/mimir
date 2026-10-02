@@ -19,10 +19,24 @@ changes, not internal refactors. Categories: **Added**,
   HTMX and prefetch headers, optional proxy-supplied country and ASN, and
   known response body size to help investigate automated traffic (#604).
 
+### Changed
+
+- SQLAlchemy moves from 2.0.54 to 2.1.1. It ships a C extension, so
+  confirm the broker is still running GIL-free after deploying this
+  release.
+
 ### Fixed
 
 - Sitemap caches follow changes to the thread render cap, so origin responses
   stop advertising obsolete thread pages without waiting for cache expiry (#567).
+
+- The message page's ETag now carries the thread render cap, which its
+  canonical URL already depended on. Changing the cap is an environment
+  edit on an unchanged image, so no other part of the validator moved:
+  caches and conditional-GET crawlers kept a page whose canonical named
+  a thread page that no longer held the message, and that URL 404s once
+  the cap grows. The thread view already folded the cap in; this makes
+  the two surfaces agree.
 
 - Maintainer sitemaps and page links now use the profile route's address
   validation. Unsupported addresses remain visible as text but no longer
