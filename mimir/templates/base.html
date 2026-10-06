@@ -18,6 +18,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {# History misses need full pages; HX-Request selects fragments in our routes. #}
+  <meta name="htmx-config" content='{"historyRestoreAsHxRequest":false}'>
   <meta name="generator" content="mimir {{ mimir_version }}">
   <meta name="theme-color" content="#ffc107">
   <link rel="icon" type="image/svg+xml" href="{{ url_for('web.favicon_svg') }}">
@@ -102,8 +104,8 @@
      `'unsafe-inline'`: every page goes through this sheet. #}
   <link rel="stylesheet"
         href="{{ url_for('static', filename='css/mimir.css') }}?v={{ mimir_version }}">
-  <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"
-          integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2"
+  <script src="https://unpkg.com/htmx.org@2.0.11/dist/htmx.min.js"
+          integrity="sha384-2OatzQy1H+Zd/IIrjr1TcuDGqLXeHhbooAyJY1KdQMKnr4LZ22k31GBLdYKHmVjg"
           crossorigin="anonymous" defer></script>
 </head>
 <body>

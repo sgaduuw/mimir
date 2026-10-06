@@ -123,6 +123,34 @@ def test_message_pages_canonicalise_to_the_thread_view(client, tmp_path):
     assert posting["@id"].endswith(reply_url)
 
 
+@pytest.mark.parametrize("inbox_name", ["alpha", "beta"])
+def test_flat_view_link_reaches_the_message_page(
+    client, tmp_path, monkeypatch, inbox_name
+):
+    """The real link follows canonical inbox and page selection, including replies."""
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = _seed_three_message_thread(tmp_path, "alpha")
+    _cross_post(seeded, ["root", "reply", "nested"])
+    root_url = seeded["root"][1]
+    destinations = [root_url + "/t", root_url + "/t", root_url + "/t/2"]
+    assert len(seeded) == len(destinations) == 3
+    for (article_id, url, _), destination in zip(
+        seeded.values(), destinations, strict=True
+    ):
+        response = client.get(url.replace("/alpha/", f"/{inbox_name}/"))
+        assert response.status_code == 200
+        link = re.search(
+            r'<a href="([^"]+)">flat view</a>', response.get_data(as_text=True)
+        )
+        assert link, "message page lost its flat-view link"
+        assert link.group(1) == destination
+        thread = client.get(destination)
+        assert thread.status_code == 200
+        assert f'id="m{article_id}"' in thread.get_data(as_text=True)
+
+
 def test_single_message_thread_does_not_canonicalise_to_its_thread_view(
     client,
     tmp_path,
