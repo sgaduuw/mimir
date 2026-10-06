@@ -23,6 +23,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Restore the message page’s flat-view link to the appropriate thread page (#628).
+
 - Thread controls and keyboard navigation keep working after browser Back/Forward
   restores a cached page, including the active-message marker (#623).
 

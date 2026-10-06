@@ -84,6 +84,20 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
             page.unroute(base + root_path)
             assert not errors, errors
 
+            later_id, later_path = messages[5]
+            flat_view = page.get_by_role("link", name="flat view", exact=True)
+            for article_id, path, destination in [
+                (later_id, later_path, root_path + "/t/2"),
+                (root_id, root_path, root_path + "/t"),
+                (later_id, later_path, root_path + "/t/2"),
+            ]:
+                page.locator(f'.thread-list a[href="{path}"]').click()
+                expect_message(article_id, path)
+                expect(flat_view).to_have_attribute("href", destination)
+            page.get_by_role("link", name="flat view", exact=True).click()
+            expect(page).to_have_url(base + root_path + "/t/2")
+            expect(page.locator(f"#m{later_id}")).to_be_visible()
+
             page.goto(base + "/alpha/")
             recent = page.locator("section").filter(
                 has=page.get_by_role("heading", name="Recent messages", exact=True)
@@ -94,7 +108,9 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
             expect(recent.locator(".recent-more-trigger")).to_have_count(0)
 
             thread_path = root_path + "/t"
-            page.goto(base + thread_path)
+            page.goto(base + root_path)
+            page.get_by_role("link", name="flat view", exact=True).click()
+            expect(page).to_have_url(base + thread_path)
             expect(page.locator(".thread-message")).to_have_count(5)
             page.locator(".thread-more a").click()
             expect(page.locator(".thread-message")).to_have_count(10)
@@ -110,7 +126,8 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
                 expect(plain.locator("#msg")).to_have_attribute(
                     "data-article-id", str(next_id)
                 )
-                plain.goto(base + thread_path)
+                plain.get_by_role("link", name="flat view", exact=True).click()
+                expect(plain).to_have_url(base + thread_path)
                 next_page = plain.locator(".thread-more a").get_attribute("href")
                 plain.locator(".thread-more a").click()
                 expect(plain).to_have_url(base + next_page)

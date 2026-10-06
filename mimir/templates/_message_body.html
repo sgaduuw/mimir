@@ -6,6 +6,8 @@
 <article id="msg" data-article-id="{{ article.id }}">
   <header>
     <h1>{{ parsed.subject|clean_subject or '(no subject)' }}</h1>
+    {# Swap this link with the message: replies can belong to different thread pages. #}
+    {% if thread_view_url %}<a href="{{ thread_view_url }}">flat view</a>{% endif %}
     {# Keep message-specific state inside #msg so thread navigation replaces
        it with the body. Non-patches must not inherit the previous badges. #}
     {% if patch_state and patch_state.is_patch and lifecycle_status %}
