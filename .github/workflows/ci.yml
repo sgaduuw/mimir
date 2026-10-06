@@ -43,9 +43,10 @@ jobs:
           python-version: '3.14'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
+          prune-cache: true
           cache-dependency-glob: uv.lock
 
       - name: Install dependencies
@@ -73,9 +74,10 @@ jobs:
           python-version: '3.14'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
+          prune-cache: true
           cache-dependency-glob: uv.lock
 
       - name: Install dependencies
@@ -114,9 +116,10 @@ jobs:
         # uv run pick the freethreaded interpreter setup-python just
         # provisioned, rather than uv's own default (which is a regular
         # GIL-enabled 3.14 build and would silently re-enable the GIL).
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
+          prune-cache: true
           cache-dependency-glob: uv.lock
           python-version: '3.14t'
 
