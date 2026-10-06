@@ -49,12 +49,47 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
                 )
             ) as response:
                 page.locator(f'.thread-list a[href="{next_path}"]').click()
-            assert response.value.status == 200
+            partial = response.value
+            assert partial.status == 200
+            assert "<!doctype html>" not in partial.text().lower()
+            assert "hx-request" in partial.headers["vary"].lower()
+            assert partial.headers["etag"]
             expect_message(next_id, next_path)
             page.go_back()
             expect_message(root_id, root_path)
             page.go_forward()
             expect_message(next_id, next_path)
+
+            # Force real cache misses in both directions, after checking cache hits.
+            for navigate, article_id, path in [
+                (page.go_back, root_id, root_path),
+                (page.go_forward, next_id, next_path),
+            ]:
+                cached = page.evaluate(
+                    "JSON.parse(sessionStorage.getItem('htmx-history-cache'))"
+                )
+                assert any(entry["url"] == path for entry in cached)
+                page.evaluate("sessionStorage.removeItem('htmx-history-cache')")
+                with page.expect_response(
+                    lambda r: (
+                        r.url == base + path
+                        and r.request.headers.get("hx-history-restore-request")
+                        == "true"
+                    )
+                ) as response:
+                    navigate()
+                restored = response.value
+                assert restored.status == 200
+                expect(page.locator("#msg")).to_have_attribute(
+                    "data-article-id", str(article_id)
+                )
+                expect(page.locator("main > nav")).to_be_visible()
+                expect_message(article_id, path)
+                assert "hx-request" not in restored.request.headers
+                assert "<!doctype html>" in restored.text().lower()
+                assert "hx-request" in restored.headers["vary"].lower()
+                if path == next_path:
+                    assert restored.headers["etag"] != partial.headers["etag"]
 
             page.locator('[data-fold-set="closed"]').click()
             expect(page.locator("html")).to_have_attribute("data-thread-fold", "closed")
