@@ -18,6 +18,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {# History misses need full pages; HX-Request selects fragments in our routes. #}
+  <meta name="htmx-config" content='{"historyRestoreAsHxRequest":false}'>
   <meta name="generator" content="mimir {{ mimir_version }}">
   <meta name="theme-color" content="#ffc107">
   <link rel="icon" type="image/svg+xml" href="{{ url_for('web.favicon_svg') }}">

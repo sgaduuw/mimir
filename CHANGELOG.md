@@ -23,6 +23,9 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Preserve page navigation and thread controls when browser history must reload
+  a page missing from the HTMX cache (#629).
+
 - Restore the message page’s flat-view link to the appropriate thread page (#628).
 
 - Thread controls and keyboard navigation keep working after browser Back/Forward
