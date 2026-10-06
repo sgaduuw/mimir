@@ -34,6 +34,15 @@ The explicit Ruff rules live in [pyproject.toml](../pyproject.toml). Format only
 touched files while working to keep unrelated changes out of a diff. For a
 regression, demonstrate that the test fails before the fix.
 
+The optional browser check uses Chromium and real CDN assets against a temporary
+local database and Git mirror. It covers HTMX swaps, keyboard navigation, history,
+load-more controls, failed requests, and links with JavaScript disabled:
+
+```sh
+uv run --frozen --with playwright playwright install chromium
+uv run --frozen --with playwright pytest -q tests/test_routes/test_browser_navigation.py
+```
+
 ## Data model
 
 Git mirrors hold the original RFC 5322 messages. SQLite stores message identity,
