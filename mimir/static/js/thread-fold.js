@@ -36,7 +36,9 @@
     html.setAttribute("data-thread-fold", mode);
   }
 
+  var afterSwap = null;
   function init() {
+    if (afterSwap) document.body.removeEventListener("htmx:afterSwap", afterSwap);
     var section = document.querySelector(".thread-context");
     if (!section) return;
     var rootIdNow = section.getAttribute("data-thread-root-id") || rootId;
@@ -104,7 +106,7 @@
     /* After an HTMX swap, flip the active marker to whichever <li>
      * matches the new article's id. Class-toggling only; no DOM
      * rewrites, so hx-get on every anchor stays intact. */
-    document.body.addEventListener("htmx:afterSwap", function () {
+    afterSwap = function () {
       var msg = document.getElementById("msg");
       if (!msg) return;
       var newId = msg.getAttribute("data-article-id");
@@ -113,8 +115,12 @@
         li.classList.toggle("is-active", li.getAttribute("data-article-id") === newId);
       });
       if (html.getAttribute("data-thread-fold") === "partial") scrollActiveIntoView();
-    });
+    };
+    document.body.addEventListener("htmx:afterSwap", afterSwap);
   }
+
+  // History restoration replaces the section and discards its DOM listeners.
+  document.addEventListener("htmx:historyRestore", init);
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);

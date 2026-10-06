@@ -173,17 +173,22 @@ Inboxes/
 # under PROJECT_ROOT/Mainline/. Pure runtime data, never tracked.
 Mainline/
 
-# Agent docs, kept locally, not in the public repo
+# Agent docs kept local. NOTE these are unanchored, so they match at
+# any depth: `CLAUDE.md` covers both the root stub and
+# `_claude/CLAUDE.md`. CONTEXT.md is deliberately absent from this
+# list, because it is tracked at the repo root next to AGENTS.md;
+# re-adding it here would silently untrack the rationale again.
 CLAUDE.md
-CONTEXT.md
 MEMORY.md
 
-# Claude tooling. The repo-facing conventions live in the TRACKED
-# AGENTS.md at the root, shared with every agent and tool that
-# works this repo. What stays gitignored here is the rest: the
-# _claude/ directory (operator-facing CLAUDE.md, CONTEXT.md
-# rationale, MEMORY.md, plus AI-workflow state such as specs and
-# plans) and the root CLAUDE.md stub that imports AGENTS.md and
-# _claude/ together. See ~/Projects/_claude/CONTEXT.md "Why
-# _claude/ and not the trio at root" for the original layout.
+# Claude tooling. Two docs are TRACKED and public, both at the repo
+# root beside each other, because conventions a contributor needs
+# are repo state and not workspace state: AGENTS.md (what to do)
+# and CONTEXT.md (why it is that way).
+#
+# Everything under _claude/ stays local: the operator-facing
+# CLAUDE.md (production access, container names, prod paths, the
+# post-deploy smoke, the deployment topology), MEMORY.md, and
+# AI-workflow state such as specs and plans. The root CLAUDE.md
+# stub is covered by the unanchored rule above.
 /_claude/

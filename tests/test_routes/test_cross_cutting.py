@@ -381,6 +381,15 @@ def test_csp_script_src_pins_specific_htmx_version(client):
         f"`{htmx_pin.pattern}`; full script-src was {script_src!r}"
     )
 
+    rendered_pins = re.findall(
+        r'<script\s+src="(https://unpkg\.com/htmx\.org@\d+\.\d+\.\d+/)'
+        r'dist/htmx\.min\.js"',
+        r.get_data(as_text=True),
+    )
+    assert rendered_pins == [s for s in script_src if htmx_pin.fullmatch(s)], (
+        "The rendered HTMX script must match the version allowed by CSP"
+    )
+
 
 def test_permissions_policy_denies_powerful_features(client):
     """mimir is a read-only archive; none of the powerful features
