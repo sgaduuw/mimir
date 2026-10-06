@@ -13,6 +13,9 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- Refresh SQLAlchemy to 2.1.3, Dulwich to 1.2.17, and compatible runtime
+  dependencies (#621).
+
 - Development and container runtimes use Python 3.14.8. The container uses
   Astral’s 20261003 free-threaded build (#620).
 
