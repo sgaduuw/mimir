@@ -11,6 +11,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Development and container runtimes use Python 3.14.8. The container uses
+  Astral’s 20261003 free-threaded build (#620).
+
 ## [3.10.0] - 2026-10-02
 
 ### Added
