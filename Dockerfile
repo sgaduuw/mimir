@@ -37,8 +37,8 @@
 # Operator must `chown -R 1001:1001 <host-data-dir>` before bringing
 # the container up (rootful podman / docker, no UID remapping).
 
-ARG PBS_RELEASE=20260510
-ARG PYTHON_VERSION=3.14.5
+ARG PBS_RELEASE=20261003
+ARG PYTHON_VERSION=3.14.8
 ARG PBS_ARCH=x86_64-unknown-linux-gnu
 ARG PBS_URL=https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/cpython-${PYTHON_VERSION}+${PBS_RELEASE}-${PBS_ARCH}-freethreaded-install_only.tar.gz
 
