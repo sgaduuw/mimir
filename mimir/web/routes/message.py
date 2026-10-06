@@ -504,12 +504,13 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                     page_no = thread_page_of(
                         session, target_inbox.id, root_article.id, article, cap
                     )
-                    canonical_url = base + thread_page_url(
+                    thread_view_url = thread_page_url(
                         root_article.id,
                         root_article.date,
                         target_inbox.name,
                         page_no,
                     )
+                    canonical_url = base + thread_view_url
 
         page_json_ld = (
             _json_ld_message(
