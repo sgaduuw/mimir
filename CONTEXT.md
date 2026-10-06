@@ -1484,7 +1484,7 @@ Full design + the rejected alternatives (fast-smoke-on-tag,
 keep-develop-gated, query-check-runs) are in
 `_claude/specs/2026-06-14-ci-flow-tier-c-design.md`. The release flow's
 Step 9 (tag -> `release.yml`) and Step 10 (direct-push back-merge)
-in CLAUDE.md follow from this.
+in the portfolio's `MIMIR-RELEASE-FLOW.md` follow from this.
 
 ## Production deployment posture
 
@@ -1898,39 +1898,14 @@ The motivation is project-portfolio consistency, not anything
 mimir-specific. All `~/Projects` projects past 1.0.0 use the same
 branching shape so the cadence and tooling carry across.
 
-Three things shape the day-to-day:
+The current gates and their rationale are described in
+[CI flow: PR-gate + tag-publish, loose develop](#ci-flow-pr-gate--tag-publish-loose-develop-tier-c-2026-06-14).
+That section owns the CI and branch-protection account; keeping a
+second copy here previously left contradictory release instructions.
 
-- **`develop` is the GitHub default branch.** PRs target `develop`;
-  `git clone` lands on `develop`. Both `main` and `develop` carry
-  the same branch-protection shape: required status checks (lint,
-  test, docker), no force-pushes, no deletions, no approval gate
-  (`required_approving_review_count = 0`). The practical difference
-  is convention, not policy: `main` holds tagged released code
-  only and is reached via a `release/X.Y.Z` PR; `develop` is the
-  working surface where feature PRs land.
-
-  Earlier versions of this doc described `develop` as
-  "unprotected"; that was either drift or a since-tightened
-  default. The required-CI gate on `develop` means a back-merge
-  PR (`release/X.Y.Z` → `develop`) won't merge until the PR-event
-  CI run completes, same shape as the merge to `main`.
-- **CI is gated to branches that matter.** Workflows trigger on
-  pushes/PRs to `develop`, `main`, `release/*`, `hotfix/*` (plus
-  tag pushes). Pushes to `feature/*` branches do not run CI; CI
-  fires when the feature branch is opened as a PR against
-  `develop` (or pushed onto `develop` after merge). This avoids
-  burning CI on every feature commit.
-- **GitHub PRs are one-target merges; release/hotfix branches need
-  two.** A `release/X.Y.Z` lands on both `main` (tagged) and
-  `develop`. The flow is: PR `release/X.Y.Z` → `main` (merged with
-  `gh pr merge --merge`, branch *not* deleted), tag on the main
-  merge commit, then a second PR `release/X.Y.Z` → `develop`. The
-  release branch gets deleted only after both merges have landed.
-  Hotfixes are symmetric, branching off `main`.
-
-Operational steps live in CLAUDE.md "Cutting a release". This
-section is just the *why* behind the dual-PR dance and the
-`develop`-as-default decision.
+The operational sequence lives in the portfolio's
+`MIMIR-RELEASE-FLOW.md`. The release branch reaches `main` through a
+PR and returns to `develop` through a direct back-merge.
 
 ## Emitter and acceptor must share one validity rule
 
