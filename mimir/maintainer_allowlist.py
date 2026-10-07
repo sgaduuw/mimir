@@ -36,7 +36,7 @@ about *personal* email visibility.
 
 import logging
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import func, select
 
 from mimir import cache
 from mimir.extensions import SessionLocal
@@ -76,6 +76,9 @@ def maintainer_addresses() -> frozenset[str]:
     return frozenset(cached)
 
 
+_ADDRESSES_QUERY = select(func.lower(SubsystemMaintainer.address)).distinct()
+
+
 def _compute_addresses() -> list[str]:
     """Single SELECT DISTINCT over `subsystem_maintainers.address`
     with LOWER() applied so the cached list is already case-folded.
@@ -86,9 +89,7 @@ def _compute_addresses() -> list[str]:
     diff-based invalidation).
     """
     with SessionLocal() as session:
-        rows = session.execute(
-            select(distinct(func.lower(SubsystemMaintainer.address)))
-        ).all()
+        rows = session.execute(_ADDRESSES_QUERY).all()
     return sorted(addr for (addr,) in rows if addr)
 
 
