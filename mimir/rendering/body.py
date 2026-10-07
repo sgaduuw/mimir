@@ -18,7 +18,7 @@ orchestrator.
 
 import html
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from markupsafe import Markup
 from pygments import highlight
@@ -139,27 +139,16 @@ def _reclassify_orphaned_diffs(blocks: list[_Block]) -> None:
             block.headerless = True
 
 
-class _QuoteBudget:
-    """Mutable per-render allowance of quote levels.
-
-    One instance per `render_body` call, threaded through the
-    recursion, because the thing being bounded is a property of the
-    whole message rather than of any one block.
-    """
-
-    __slots__ = ("remaining",)
-
-    def __init__(self, remaining: int = MAX_QUOTE_LEVELS_PER_RENDER) -> None:
-        self.remaining = remaining
-
-
-@dataclass(frozen=True)
+@dataclass(slots=True)
 class _RenderContext:
     msgid_urls: dict[str, str]
     address_redactor: Callable[[str], str] | None = None
     parent_url: str | None = None
     lore_mirror_urls: dict[str, str] | None = None
-    budget: _QuoteBudget = field(default_factory=_QuoteBudget)
+    # Quote levels left for this render. One context per `render_body`
+    # call, threaded through the recursion, because the bound is a
+    # property of the whole message rather than of any one block.
+    remaining: int = MAX_QUOTE_LEVELS_PER_RENDER
 
 
 def _flatten_quote(
@@ -207,13 +196,13 @@ def _render_block(
                 context,
                 f"quoting continues past {MAX_QUOTE_DEPTH} levels",
             )
-        if context.budget.remaining <= 0:
+        if context.remaining <= 0:
             return _flatten_quote(
                 block,
                 context,
                 "quoting not expanded further in this message",
             )
-        context.budget.remaining -= 1
+        context.remaining -= 1
         stripped = [_strip_one_quote_level(line) for line in block.lines]
         inner = "\n".join(stripped)
         inner_blocks = parse_blocks(inner)
