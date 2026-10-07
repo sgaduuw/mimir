@@ -23,12 +23,12 @@ from mimir.config import settings
 from mimir.models import Article, ArticleList, Inbox
 from mimir.threading import thread_page_of, unmaterialised_roots
 
-_REVIEWER_ADDR_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+")
+_REVIEWER_ADDR_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\Z")
 
 
 def is_addressable_reviewer_address(address: str | None) -> bool:
     """Whether the reviewer route supports this address's syntax."""
-    return _REVIEWER_ADDR_RE.fullmatch(address or "") is not None
+    return _REVIEWER_ADDR_RE.match(address or "") is not None
 
 
 def _get_inbox_or_404(session: Session, name: str) -> Inbox:

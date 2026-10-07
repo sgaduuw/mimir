@@ -585,6 +585,7 @@ def test_subsystem_reviewer_links_respect_route_syntax_and_redaction(client, ses
         ("Allowed+tag%Box@kernel.org", True, 200),
         ("apostrophe'name@kernel.org", True, 404),
         ("slash/name@kernel.org", True, 404),
+        ("newline@kernel.org\n", True, 404),
         ("Private@elsewhere.example", False, 200),
     ]
     for i, (address, _allowlisted, _status) in enumerate(cases):
