@@ -172,6 +172,8 @@ def _candidate_query_needs_attention(
     # cheap (LIMIT 20 instead of LIMIT 10) and beats a second SQL
     # round-trip to backfill.
     overfetch = max(limit * 2, limit + 5)
+    review_roles = {f"review_role_{i}": r for i, r in enumerate(REVIEW_TRAILER_ROLES)}
+    review_role_params = ", ".join(f":{name}" for name in review_roles)
     sql = f"""
         SELECT a.id AS article_id, a.message_id, a.subject,
                a.author, a.date AS art_date
@@ -186,7 +188,7 @@ def _candidate_query_needs_attention(
           AND EXISTS (
               SELECT 1 FROM article_trailers t
               WHERE t.article_id = a.id
-                AND t.role IN ({", ".join(repr(role) for role in REVIEW_TRAILER_ROLES)})
+                AND t.role IN ({review_role_params})
           )
           AND NOT EXISTS (
               SELECT 1 FROM mainline_commits mc
@@ -210,6 +212,7 @@ def _candidate_query_needs_attention(
             days=settings.subsystem_triage_max_age_days,
         ),
         "overfetch": overfetch,
+        **review_roles,
         **path_params,
     }
 
