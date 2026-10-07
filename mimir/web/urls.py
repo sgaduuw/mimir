@@ -441,7 +441,7 @@ def _advertised_urls_for(
                     ix_id,
                     root.id,
                     article,
-                    max(1, settings.thread_view_render_cap),
+                    settings.thread_view_render_cap,
                 )
             out[art_id] = base + thread_page_url(root.id, root.date, name, page_no)
         else:

@@ -284,7 +284,7 @@ def _sitemap_entries_for_roots(
     # `tests/test_import_graph.py` now pins.
     from mimir.web.urls import _msg_path, thread_page_url
 
-    cap = max(1, settings.thread_view_render_cap)
+    cap = settings.thread_view_render_cap
     entries: list[tuple[str, str | None]] = []
     newest: str | None = None
     for art_id, date in roots:
@@ -746,7 +746,7 @@ def _year_sitemap_xml(
     check, so serving must bound actual URLs independently. Keep page bodies
     together: independently refreshed pages could drop URLs between slices.
     """
-    key = f"sitemap:yearpages:{inbox.name}:{year:04d}:{max(1, settings.thread_view_render_cap)}"
+    key = f"sitemap:yearpages:{inbox.name}:{year:04d}:{settings.thread_view_render_cap}"
     packed = None if force else cache.get(key)
     pages = (
         [
@@ -839,7 +839,7 @@ def archive_sitemap_xml(
 
     return cache.get_or_compute(
         session,
-        f"sitemap:month:{inbox.name}:{year:04d}-{month:02d}:{page}:{max(1, settings.thread_view_render_cap)}",
+        f"sitemap:month:{inbox.name}:{year:04d}-{month:02d}:{page}:{settings.thread_view_render_cap}",
         SITEMAP_TTL_SEC,
         compute,
         force=force,
@@ -862,7 +862,7 @@ def _year_url_counts(session: Session, inbox: Inbox) -> dict[int, int]:
         .subquery()
     )
     year = func.strftime("%Y", Article.date)
-    cap = max(1, settings.thread_view_render_cap)
+    cap = settings.thread_view_render_cap
     rows = session.execute(
         select(year, func.sum((counts.c.n + cap - 1) // cap))
         .select_from(counts)
@@ -951,7 +951,7 @@ def sitemap_index_xml(
 
     return cache.get_or_compute(
         session,
-        f"sitemap:index:{max(1, settings.thread_view_render_cap)}",
+        f"sitemap:index:{settings.thread_view_render_cap}",
         SITEMAP_TTL_SEC,
         compute,
         force=force,
@@ -1198,7 +1198,7 @@ def inbox_sitemap_xml(
 
     return cache.get_or_compute(
         session,
-        f"sitemap:inbox:{inbox.name}:{max(1, settings.thread_view_render_cap)}",
+        f"sitemap:inbox:{inbox.name}:{settings.thread_view_render_cap}",
         SITEMAP_TTL_SEC,
         compute,
         force=force,
