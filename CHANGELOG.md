@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- `THREAD_VIEW_RENDER_CAP` below 1 now stops startup with a validation
+  error. It used to be raised to 1 silently, which showed one message per
+  thread page (#612).
+
 ### Removed
 
 - Drop the `asnum` access-log field. No proxy sets `X-ASN`, so the field

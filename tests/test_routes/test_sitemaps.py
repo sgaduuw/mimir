@@ -543,7 +543,7 @@ def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
     cache.delete_for_inbox("alpha")
     from mimir.config import settings
 
-    cache.delete(f"sitemap:index:{max(1, settings.thread_view_render_cap)}")
+    cache.delete(f"sitemap:index:{settings.thread_view_render_cap}")
 
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())

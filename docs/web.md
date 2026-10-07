@@ -15,7 +15,7 @@ be expensive on a cold archive.
 
 A message page shows headers, its thread tree, body, and attachments. Whole-thread
 views display messages in chronological order with `THREAD_VIEW_RENDER_CAP`
-messages per page (default 75). Replies link back to the thread root. Cross-posted
+messages per page (default 75, minimum 1). Replies link back to the thread root. Cross-posted
 lists may have different conversation membership, so thread views remain
 inbox-specific.
 
@@ -89,7 +89,7 @@ limits; otherwise it lists monthly buckets. Monthly routes remain available
 when the index advertises a year. See [sitemaps.py](../mimir/seo/sitemaps.py) for
 page-size and protocol bounds.
 
-Sitemap origin caches last one hour and include the effective thread render cap
+Sitemap origin caches last one hour and include the thread render cap
 where pagination depends on it. Responses have no ETag or Last-Modified
 validator and permit five minutes of downstream caching. Message and thread
 pages instead use ETags with revalidation.

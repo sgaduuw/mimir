@@ -408,10 +408,10 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
 
     ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
     expected_root = {
-        f"sitemap:index:{max(1, settings.thread_view_render_cap)}": f"{{{ns}}}sitemapindex",
+        f"sitemap:index:{settings.thread_view_render_cap}": f"{{{ns}}}sitemapindex",
         "sitemap:meta": f"{{{ns}}}urlset",
-        f"sitemap:inbox:alpha:{max(1, settings.thread_view_render_cap)}": f"{{{ns}}}urlset",
-        f"sitemap:inbox:beta:{max(1, settings.thread_view_render_cap)}": f"{{{ns}}}urlset",
+        f"sitemap:inbox:alpha:{settings.thread_view_render_cap}": f"{{{ns}}}urlset",
+        f"sitemap:inbox:beta:{settings.thread_view_render_cap}": f"{{{ns}}}urlset",
     }
     for key, expected_tag in expected_root.items():
         payload = cache.get(key)
@@ -441,7 +441,7 @@ def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
     from mimir.extensions import SessionLocal
     from mimir.seo import inbox_sitemap_xml
 
-    key = f"sitemap:inbox:alpha:{max(1, settings.thread_view_render_cap)}"
+    key = f"sitemap:inbox:alpha:{settings.thread_view_render_cap}"
     cache.set(key, "STALE", ttl=3600)
     assert cache.get(key) == "STALE"
     with SessionLocal() as s:
