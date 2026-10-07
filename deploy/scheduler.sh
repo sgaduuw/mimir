@@ -148,8 +148,8 @@ run() {
 # helpers plus `sitemap:index`. The index is the one sitemap that
 # must not be cold: after a `cache.NAMESPACE_VERSION` bump or
 # downtime past `SITEMAP_TTL_SEC`, a crawler would otherwise pay its
-# ~41 s rebuild on a web worker (#589). The slow tier stays off the
-# boot path; see the sentinel stamp below. Spec:
+# rebuild, about 10 s, on a web worker (#589, #640). The slow tier
+# stays off the boot path; see the sentinel stamp below. Spec:
 # `_claude/specs/2026-06-01-warm-cache-fast-slow-tier-split-design.md`
 # Risk #3.
 # shellcheck disable=SC2086  # SCHEDULER_VERBOSE is a flag string, intentionally unquoted to splat empty -> nothing.

@@ -13,6 +13,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- Build the sitemap index in about 10 s instead of 41 s, and the meta
+  sitemap almost instantly. The newest date per inbox now comes from the
+  inbox record, and one query per inbox counts both roots and thread pages
+  (#640).
+
 - Warm the sitemap index on the per-minute fast tier instead of the hourly
   slow tier. It takes about 41 s to build, and on the slow tier it could
   expire before being refreshed, so a crawler waited for the rebuild. It is
