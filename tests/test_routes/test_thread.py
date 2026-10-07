@@ -8,6 +8,7 @@ import pytest
 
 from mimir.models import Article
 from tests.test_routes._helpers import (
+    _clear_sitemap_cache,
     _ingest_one_article,
     _json_ld_blocks,
     _seed_three_message_thread,
@@ -566,12 +567,7 @@ def test_sitemap_lists_the_canonical_url_for_every_thread_shape(client, tmp_path
         "alpha",
         [("solo-sm@x", None), ("m1-sm@x", None), ("m2-sm@x", "m1-sm@x")],
     )
-    from mimir import cache
-
-    cache.delete_for_inbox("alpha")
-    from mimir.config import settings
-
-    cache.delete(f"sitemap:index:{settings.thread_view_render_cap}")
+    _clear_sitemap_cache()
 
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())

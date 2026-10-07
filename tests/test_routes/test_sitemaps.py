@@ -509,7 +509,6 @@ def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
 
     from sqlalchemy import select, update
 
-    from mimir import cache
     from mimir.extensions import SessionLocal
     from mimir.models import ArticleList, Inbox
     from mimir.thread_roots import seed_roots
@@ -540,10 +539,7 @@ def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
         seed_roots(s, alpha.id)
         s.commit()
 
-    cache.delete_for_inbox("alpha")
-    from mimir.config import settings
-
-    cache.delete(f"sitemap:index:{settings.thread_view_render_cap}")
+    _clear_sitemap_cache()
 
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())

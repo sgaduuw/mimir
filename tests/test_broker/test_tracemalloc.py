@@ -21,7 +21,7 @@ def test_snapshotter_disabled_when_interval_zero(tmp_path):
     assert not _live_threads_named("broker-tracemalloc")
     with patch("tracemalloc.start") as mock_start:
         _maybe_start_tracemalloc_snapshotter(
-            interval=0, diagnostics_dir=tmp_path / "diag"
+            interval=0, stop_event=threading.Event(), diagnostics_dir=tmp_path / "diag"
         )
     assert not mock_start.called
     assert not _live_threads_named("broker-tracemalloc")
@@ -64,7 +64,9 @@ def test_snapshotter_aborts_when_diagnostics_dir_unwritable(tmp_path, caplog):
     before = set(t.ident for t in _live_threads_named("broker-tracemalloc"))
     with caplog.at_level(logging.ERROR, logger="mimir.broker.server"):
         with patch("tracemalloc.start") as mock_start:
-            _maybe_start_tracemalloc_snapshotter(interval=10, diagnostics_dir=diag)
+            _maybe_start_tracemalloc_snapshotter(
+                interval=10, stop_event=threading.Event(), diagnostics_dir=diag
+            )
     after = _live_threads_named("broker-tracemalloc")
     assert not mock_start.called
     # No new thread should have been spawned by this call

@@ -1554,7 +1554,7 @@ def _log_tracemalloc_top_25(snap: tracemalloc.Snapshot) -> None:
 
 def _maybe_start_tracemalloc_snapshotter(
     interval: int,
-    stop_event: threading.Event | None = None,
+    stop_event: threading.Event,
     diagnostics_dir: Path = Path("/data/diagnostics"),
     frames: int = 25,
 ) -> threading.Thread | None:
@@ -1568,9 +1568,7 @@ def _maybe_start_tracemalloc_snapshotter(
     waits on it between iterations and exits as soon as it fires,
     so a clean shutdown breaks out of the loop instead of risking a
     mid-`pickle.dump` process exit that would leave `.pkl.tmp` files
-    orphaned under `diagnostics_dir` (audit #477). Callers without a
-    stop signal (existing unit tests) may pass None to get a fresh,
-    never-set event with today's daemon-thread semantics.
+    orphaned under `diagnostics_dir` (audit #477).
 
     See _claude/specs/2026-06-11-broker-tracemalloc-diagnostic-design.md.
     """
@@ -1581,8 +1579,6 @@ def _maybe_start_tracemalloc_snapshotter(
     except OSError as e:
         logger.error("broker: tracemalloc snapshotter disabled: %s", e)
         return None
-    if stop_event is None:
-        stop_event = threading.Event()
     tracemalloc.start(frames)
     logger.info(
         "broker: tracemalloc enabled (interval=%ds, frames=%d); snapshots -> %s",

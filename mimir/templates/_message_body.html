@@ -67,8 +67,8 @@
       {% for hit in subsystem_hits %}{{ subsystem_link(hit.name, current_inbox) }}{% if not loop.last %}, {% endif %}{% endfor %}
       {% if _maints %}
         &middot; <strong>Maintainer{{ '' if _maints|length == 1 else 's' }}:</strong>
-        {% for _name, _addr in _maints %}{% if _addr | is_addressable_maintainer and _addr | is_allowlisted_address %}<a
-          href="{{ _addr | maintainer_url }}">{{ _name }}</a>{% else %}{{ _name }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+        {% for _name, _addr in _maints %}{% set _url = _addr | maintainer_link_url %}{% if _url %}<a
+          href="{{ _url }}">{{ _name }}</a>{% else %}{{ _name }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
       {% endif %}
       {% endif %}
     </p>
