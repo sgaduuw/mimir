@@ -56,6 +56,19 @@ If you run outside Compose, arrange equivalent recurring commands with the broke
 running. See the [scheduler settings](../deploy/README.md#scheduled-tasks) rather
 than running a second scheduler alongside the container service.
 
+### Change the thread render cap
+
+`THREAD_VIEW_RENDER_CAP` sets messages per thread page, so it is part of the
+cache keys for the sitemap index and every per-inbox sitemap. A new value makes
+all of those miss at once, and `sitemap:index` alone takes tens of seconds to
+compute on a large archive. Without warming, the first `/sitemap.xml` request
+pays that cost.
+
+1. Set the same value on the web, broker, and task services, and restart them
+   together. Services with different values compute two sets of sitemap rows.
+2. Run `uv run mimir warm-cache --tier slow` straight away, so no reader or
+   crawler waits for the cold compute.
+
 ## Database maintenance
 
 ```sh
