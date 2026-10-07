@@ -433,12 +433,11 @@ def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
     file twice before.
 
     The 1 h TTL means this is a once-hourly rebuild rather than
-    per-request. It used to land in a `warm-cache --tier fast` tick,
-    whose own docstring budgets "sub-100 ms each"; sitemaps have
-    since moved to the slow (hourly) tier, which is the cadence a job
-    this size belongs on. The 35.7 s above has NOT been re-measured
-    since that move, and the corpus has grown; treat it as a floor
-    with a date, not a current figure.
+    per-request, done by the fast warm tier so it is refreshed before
+    it expires (#589). The whole `sitemap:index` build measured 41 s
+    in production on 2026-10-07 (3542 entries, three runs within 1 s
+    of each other). This helper's share of that was not measured
+    separately.
 
     Both this and `_recent_thread_roots_query` lead on `inbox_id`; do
     not assert WHICH index the planner picks, because it is

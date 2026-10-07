@@ -13,6 +13,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- Warm the sitemap index on the per-minute fast tier instead of the hourly
+  slow tier. It takes about 41 s to build, and on the slow tier it could
+  expire before being refreshed, so a crawler waited for the rebuild. It is
+  now also warmed within a minute of startup (#589).
+
 - `THREAD_VIEW_RENDER_CAP` below 1 now stops startup with a validation
   error. It used to be raised to 1 silently, which showed one message per
   thread page (#612).

@@ -622,23 +622,23 @@ def test_build_inbox_targets_concatenates_fast_then_slow(seeded_db):
     assert len(full) == len(fast) + len(slow)
 
 
-def test_sitemap_globals_are_slow_tier_not_fast(seeded_db):
-    """`sitemap:index` is the most expensive warm target there is
-    (~36 s across 203 inboxes, because it enumerates every
-    (inbox, month) bucket). It has no business on a per-minute tick
-    whose other targets are budgeted at 100 ms."""
+def test_sitemap_index_is_fast_tier_other_sitemap_globals_slow(seeded_db):
+    """`sitemap:index` takes ~41 s cold (measured in production
+    2026-10-07, 3542 entries). On the hourly slow tier it is warmed
+    last and can expire before the refresh window reaches it, so a
+    crawler pays the rebuild on a web worker (#589). The per-minute
+    fast tier refreshes it inside the window and warms it within a
+    minute of boot. The other sitemap globals stay slow."""
     from mimir.cli.cache import _build_fast_global_targets, _build_slow_global_targets
 
-    fast = [label for label, _fn in _build_fast_global_targets()]
-    assert fast == [], fast
+    base = "https://example.test"
+    fast = [label for label, _fn in _build_fast_global_targets(base)]
+    assert fast == ["sitemap:index"], fast
+    assert _build_fast_global_targets("") == []
 
-    slow = [
-        label
-        for label, _fn in _build_slow_global_targets(
-            sitemap_base="https://example.test"
-        )
-    ]
-    for key in ("sitemap:index", "sitemap:meta", "sitemap:maintainers"):
+    slow = [label for label, _fn in _build_slow_global_targets(sitemap_base=base)]
+    assert "sitemap:index" not in slow, slow
+    for key in ("sitemap:meta", "sitemap:maintainers"):
         assert key in slow, (key, slow)
     assert any("most_active_subsystems" in label for label in slow), slow
 
