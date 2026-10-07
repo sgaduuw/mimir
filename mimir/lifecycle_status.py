@@ -89,6 +89,11 @@ cache.register("LifecycleStatusInfo", LifecycleStatusInfo)
 LIFECYCLE_STATUS_TTL_SEC = 300
 
 
+_REVIEW_ROLES_PARAM = bindparam(
+    "review_roles", value=list(REVIEW_TRAILER_ROLES), expanding=True
+)
+
+
 # Use a parameterised IN(...) via SQLAlchemy text() with expanding
 # bindparam. Keeps the query plan-pinned and dodges SQLite's limit
 # on positional params for very large lists. Exposed at module
@@ -113,7 +118,7 @@ LIFECYCLE_STATUS_TTL_SEC = 300
 # version so v10 > v9 (test_superseded_handles_double_digit_versions).
 # Adds sup_by_version + sup_by_date for the SUPERSEDED tooltip's
 # leading line.
-_BULK_SQL = text(f"""
+_BULK_SQL = text("""
 WITH RECURSIVE
 roots(leaf, message_id, thread_parent, depth) AS (
     SELECT id, message_id, thread_parent, 0
@@ -177,14 +182,14 @@ rc AS (
              ON LOWER(sm.address) = t.address_normalized
             AND sm.role IN ('M', 'R')
      WHERE t.article_id IN :ids
-       AND t.role IN ({", ".join(repr(role) for role in REVIEW_TRAILER_ROLES)})
+       AND t.role IN :review_roles
      GROUP BY t.article_id
 ),
 at_review AS (
     SELECT t.article_id, 1 AS has_review
       FROM article_trailers t
      WHERE t.article_id IN :ids
-       AND t.role IN ({", ".join(repr(role) for role in REVIEW_TRAILER_ROLES)})
+       AND t.role IN :review_roles
      GROUP BY t.article_id
 ),
 sup AS (
@@ -224,7 +229,7 @@ SELECT a.id,
   LEFT JOIN rc ON rc.article_id = a.id
   LEFT JOIN thread_dates ON thread_dates.leaf = a.id
  WHERE a.id IN :ids
-""").bindparams(bindparam("ids", expanding=True))
+""").bindparams(bindparam("ids", expanding=True), _REVIEW_ROLES_PARAM)
 
 
 # Per-article reviewer names for the tooltip. Kept separate from
@@ -233,7 +238,7 @@ SELECT a.id,
 # emission order is stable + matches trailer insertion order
 # (article_trailers has no `created_at`; PK id ascends in insert
 # order). `_format_tooltip` re-orders maintainers-first at render.
-_REVIEWER_NAMES_SQL = text(f"""
+_REVIEWER_NAMES_SQL = text("""
 SELECT t.article_id,
        t.name,
        (sm.address IS NOT NULL) AS is_maintainer
@@ -242,9 +247,9 @@ SELECT t.article_id,
          ON LOWER(sm.address) = t.address_normalized
         AND sm.role IN ('M', 'R')
  WHERE t.article_id IN :ids
-   AND t.role IN ({", ".join(repr(role) for role in REVIEW_TRAILER_ROLES)})
+   AND t.role IN :review_roles
  ORDER BY t.article_id, t.id ASC
-""").bindparams(bindparam("ids", expanding=True))
+""").bindparams(bindparam("ids", expanding=True), _REVIEW_ROLES_PARAM)
 
 
 def _format_pill_label(state: LifecycleStatus, tree: str | None) -> str:
