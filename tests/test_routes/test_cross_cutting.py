@@ -601,7 +601,6 @@ def test_access_log_records_request_context(
         "Purpose": "prefetch",
         "Sec-Purpose": "prefetch;prerender",
         "CF-IPCountry": "NL",
-        "X-ASN": "12345",
     }
     expected = {
         "sec_fetch_mode": "navigate",
@@ -614,7 +613,6 @@ def test_access_log_records_request_context(
         "purpose": "prefetch",
         "sec_purpose": "prefetch;prerender",
         "country": "NL",
-        "asnum": "12345",
     }
     response = client.open(
         path,
