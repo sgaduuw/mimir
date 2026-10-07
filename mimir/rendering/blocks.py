@@ -120,6 +120,12 @@ def looks_like_orphaned_diff(lines: list[str]) -> bool:
     removed, i.e. not a diff at all). `not_bullet` rejects a
     `- item` list, which is diff-shaped by prefix and has no
     additions and no context lines.
+
+    Known limit: a bullet list whose items have indented
+    continuations also passes `not_bullet`, and renders as a diff.
+    It is ambiguous with a deletions-plus-context hunk by shape alone,
+    and requiring a `+` line was measured to break more real hunks
+    than it fixes. See #588 before tightening this.
     """
     body = [line for line in lines if line.strip()]
     if len(body) < MIN_ORPHANED_DIFF_LINES:
