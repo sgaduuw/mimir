@@ -449,41 +449,33 @@ def _is_allowlisted_address_filter(address: str | None) -> bool:
     return _is_allowlisted(address)
 
 
-@bp_web.app_template_filter("is_addressable_maintainer")
-def _is_addressable_maintainer_filter(address: str | None) -> bool:
-    """Whether the profile route accepts this address's syntax."""
-    return is_addressable_maintainer_address(address or "")
+@bp_web.app_template_filter("maintainer_link_url")
+def _maintainer_link_url_filter(address: str | None) -> str:
+    """Site-relative profile URL for a maintainer, or "" when the
+    address must stay plain text. One filter so both link sites apply
+    the same gate in the same order (#616).
 
-
-@bp_web.app_template_filter("maintainer_url")
-def _maintainer_url_filter(address: str | None) -> str:
-    """Site-relative URL for a maintainer's profile page.
-
-    Delegates to `maintainer_directory.maintainer_path` so a link
+    The URL comes from `maintainer_directory.maintainer_path`, so a link
     rendered in a template is byte-identical to the profile page's own
-    canonical and to its sitemap entry, rather than a near-miss that
-    resolves to them.
+    canonical and to its sitemap entry.
 
     What makes a link safe is the caller's `role == 'M'` filter, NOT
-    the allowlist gate. Both link sites (`subsystem.html`,
-    `_message_body.html`) filter on role, because
-    `/maintainers/<address>` serves `M:` only while the allowlist is
-    the union of `M:` and `R:`. An earlier version of this docstring
-    credited the gate alone ("the allowlist is built FROM these
-    addresses, so it passes by construction"), which is true and is
-    exactly why it was the wrong gate: every reviewer passed it and got
-    a 404 link. That was a shipped bug (MEMORY.md 2026-07-30).
+    the allowlist gate. `/maintainers/<address>` serves `M:` only while
+    the allowlist is the union of `M:` and `R:`, so every reviewer
+    passes the gate and would get a 404 link. That was a shipped bug
+    (MEMORY.md 2026-07-30).
 
     The gate is still applied, for the redaction question it does
-    answer: an address the page would redact should not be linked. Note
-    it is conditional rather than structural, since a deploy without the
+    answer: an address the page would redact should not be linked. It
+    is conditional rather than structural, since a deploy without the
     kernel tree has an empty MAINTAINERS-derived set and it fails closed
-    for every non-`@kernel.org` maintainer.
-
-    Callers also check `is_addressable_maintainer` before linking, so
-    unsupported addresses remain text rather than broken profile links.
+    for every non-`@kernel.org` maintainer. The syntax check keeps
+    unsupported addresses as text rather than broken profile links.
     """
-    return maintainer_path(address or "")
+    address = address or ""
+    if not (is_addressable_maintainer_address(address) and _is_allowlisted(address)):
+        return ""
+    return maintainer_path(address)
 
 
 @bp_web.app_template_filter("subsystem_url")

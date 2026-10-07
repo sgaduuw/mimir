@@ -28,8 +28,8 @@
        sitemap. #}
     {% for m in subsystem.maintainers %}
     <li><small><kbd>{{ m.role }}</kbd>
-      {{ m.name }}{% if m.name %} {% endif %}&lt;{% if m.role == 'M' and m.address | is_allowlisted_address and m.address | is_addressable_maintainer %}<a
-        href="{{ m.address | maintainer_url }}">{{ m.address }}</a>{% else %}{{ m.address }}{% endif %}&gt;</small></li>
+      {{ m.name }}{% if m.name %} {% endif %}&lt;{% set _url = m.address | maintainer_link_url if m.role == 'M' else '' %}{% if _url %}<a
+        href="{{ _url }}">{{ m.address }}</a>{% else %}{{ m.address }}{% endif %}&gt;</small></li>
     {% endfor %}
   </ul>
   {% endif %}
