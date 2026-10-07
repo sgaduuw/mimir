@@ -36,7 +36,11 @@ from mimir.rendering import render_body
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.trailers import REVIEW_TRAILER_ROLES
 from mimir.web._blueprint import bp_web
-from mimir.web.urls import _msg_url, _thread_view_url
+from mimir.web.urls import _msg_url, _thread_view_url, is_addressable_reviewer_address
+
+bp_web.add_app_template_filter(
+    is_addressable_reviewer_address, "is_addressable_reviewer"
+)
 
 
 def _relative_time(then: datetime, now: datetime | None = None) -> str:
@@ -433,8 +437,9 @@ def _is_allowlisted_address_filter(address: str | None) -> bool:
     OR MAINTAINERS-derived set).
 
     Used by templates to decide whether to render a clickable
-    reviewer link. The reviewer page itself (`/<inbox>/reviewer/<addr>`)
-    accepts any address, but mimir only generates outbound links for
+    reviewer link, alongside the `is_addressable_reviewer` syntax check.
+    The reviewer page accepts supported address syntax regardless of
+    the allowlist, but mimir only generates outbound links for
     allowlisted addresses, this keeps non-public addresses out of
     URL bars / browser history / scraper paths reached via mimir's
     own navigation, matching the redaction posture of `safe_from`.
