@@ -11,6 +11,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Removed
+
+- Drop the `asnum` access-log field. No proxy sets `X-ASN`, so the field
+  held `null` or a value the client sent, not IP metadata (#615).
+
 ### Fixed
 
 - Only render subsystem reviewer links for addresses accepted by the reviewer
