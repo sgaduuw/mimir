@@ -145,19 +145,11 @@ run() {
 # doesn't exist yet (sentinel_mtime returns 0, so now - 0 >=
 # UPDATE_EVERY is trivially true). One code path, no preamble drift.
 # Initial warm: fast tier only, i.e. the front-page critical
-# helpers. This comment used to say the cold-boot priority was
-# "sitemaps + front-page critical helpers"; sitemaps have since
-# moved to the slow tier, so the initial warm no longer covers
-# them and `--tier fast` dispatches no global targets at all.
-#
-# Mostly benign because the cache is DB-backed and survives a
-# restart, so a warm sitemap row is still warm on the other side.
-# The exposure is a deploy that bumps `cache.NAMESPACE_VERSION`, or
-# downtime past `SITEMAP_TTL_SEC`: then the index is cold and the
-# first crawler to ask pays the whole rebuild on the request path.
-# Whether the initial warm should also run the slow tier is
-# tracked separately; it is a scheduler question, not a sitemap
-# one. Spec:
+# helpers plus `sitemap:index`. The index is the one sitemap that
+# must not be cold: after a `cache.NAMESPACE_VERSION` bump or
+# downtime past `SITEMAP_TTL_SEC`, a crawler would otherwise pay its
+# ~41 s rebuild on a web worker (#589). The slow tier stays off the
+# boot path; see the sentinel stamp below. Spec:
 # `_claude/specs/2026-06-01-warm-cache-fast-slow-tier-split-design.md`
 # Risk #3.
 # shellcheck disable=SC2086  # SCHEDULER_VERBOSE is a flag string, intentionally unquoted to splat empty -> nothing.
