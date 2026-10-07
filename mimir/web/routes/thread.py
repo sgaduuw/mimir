@@ -195,7 +195,7 @@ def thread_view(
                         inbox.id,
                         root.id,
                         article,
-                        max(1, settings.thread_view_render_cap),
+                        settings.thread_view_render_cap,
                     )
                 return redirect(
                     thread_page_url(root.id, root.date, inbox.name, pg), code=301
@@ -228,7 +228,7 @@ def thread_view(
         # the JSON-LD builder (which needs a root), 500ing every thread
         # view. Clamp rather than validate: this is an ops knob and an
         # unusable value should degrade, not take the surface down.
-        cap = max(1, settings.thread_view_render_cap)
+        cap = settings.thread_view_render_cap
         offset = (page - 1) * cap
 
         if thread_rooted:

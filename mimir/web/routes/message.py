@@ -137,7 +137,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         state_tag = render_state_tag(session, article.id, article.message_id)
         etag_input = (
             f"{article.id}|{mimir.__version__}|"
-            f"{max(1, settings.thread_view_render_cap)}|"
+            f"{settings.thread_view_render_cap}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|"
             f"{state_tag}|{'hx' if hx_request else 'full'}"
         )
@@ -453,7 +453,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                             get_thread(session, target_inbox, target_root)
                         )
 
-            cap = max(1, settings.thread_view_render_cap)
+            cap = settings.thread_view_render_cap
             # By IDENTITY, not position. `get_thread`'s `sort_path` is
             # NULL for a dateless node and NULL sorts first, so
             # `target_thread[0]` is that node rather than the root, and

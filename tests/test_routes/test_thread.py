@@ -336,22 +336,6 @@ def test_thread_views_are_self_canonical_per_inbox(client, tmp_path):
     assert _canonical_of(client.get(beta_url).get_data(as_text=True)).endswith(beta_url)
 
 
-def test_thread_view_survives_a_render_cap_below_one(client, tmp_path, monkeypatch):
-    """`THREAD_VIEW_RENDER_CAP=0` rendered no messages and then hit an
-    IndexError building JSON-LD (which needs a root), 500ing every
-    thread view. An unusable ops value must degrade, not take the
-    surface down."""
-    from mimir.config import settings
-
-    monkeypatch.setattr(settings, "thread_view_render_cap", 0)
-    seeded = _seed_three_message_thread(tmp_path, "alpha")
-    _, root_url, _ = seeded["root"]
-
-    r = client.get(root_url + "/t")
-    assert r.status_code == 200
-    assert r.get_data(as_text=True).count('class="thread-message"') == 1
-
-
 @pytest.mark.parametrize(
     ("roles", "pin"),
     [
@@ -587,7 +571,7 @@ def test_sitemap_lists_the_canonical_url_for_every_thread_shape(client, tmp_path
     cache.delete_for_inbox("alpha")
     from mimir.config import settings
 
-    cache.delete(f"sitemap:index:{max(1, settings.thread_view_render_cap)}")
+    cache.delete(f"sitemap:index:{settings.thread_view_render_cap}")
 
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())

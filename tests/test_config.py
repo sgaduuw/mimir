@@ -46,6 +46,16 @@ def test_settings_accepts_exactly_min_length_secret_key():
         Settings(secret_key="a" * 15)
 
 
+def test_settings_rejects_render_cap_below_one():
+    """`thread_view_render_cap` decides thread page URLs, so a value
+    below 1 must fail at startup rather than be clamped at each of
+    its call sites (#612)."""
+    assert Settings(thread_view_render_cap=1).thread_view_render_cap == 1
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(thread_view_render_cap=0)
+    assert "thread_view_render_cap" in str(exc_info.value)
+
+
 def test_settings_trees_seeds_curated_defaults_on_fresh_deploy(monkeypatch):
     """When neither TREES__* nor legacy MAINLINE_TREE_URL/PATH is set,
     the validator seeds the full 7-tree curated default set."""
