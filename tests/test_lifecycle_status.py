@@ -610,6 +610,7 @@ def test_lifecycle_status_query_uses_index_seeks(session):
     from sqlalchemy import text
 
     from mimir.lifecycle_status import _BULK_SQL, _bulk_uncached
+    from mimir.trailers import REVIEW_TRAILER_ROLES
 
     # Seed enough rows that the planner has stats to work with.
     for i in range(50):
@@ -627,7 +628,10 @@ def test_lifecycle_status_query_uses_index_seeks(session):
     # into the raw SQL string (safe: ids are ints from our own DB, not
     # user input) so EXPLAIN sees the real query shape.
     ids_literal = "(" + ", ".join(str(i) for i in ids) + ")"
-    raw_sql = _BULK_SQL.text.replace(":ids", ids_literal)
+    roles_literal = "(" + ", ".join(f"'{r}'" for r in REVIEW_TRAILER_ROLES) + ")"
+    raw_sql = _BULK_SQL.text.replace(":ids", ids_literal).replace(
+        ":review_roles", roles_literal
+    )
     plan_rows = session.execute(text("EXPLAIN QUERY PLAN " + raw_sql)).all()
     plan_text = "\n".join(r[3] for r in plan_rows).lower()
 
