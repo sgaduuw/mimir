@@ -237,16 +237,18 @@ def _build_sitemap_index_xml(entries: list[tuple[str, str | None]]) -> str:
 
 
 def _per_inbox_latest_date(session) -> dict[str, str | None]:
-    """One round-trip: max(article.date) per inbox, as `YYYY-MM-DD`
-    strings (or None when the inbox is empty). Feeds the sitemap
-    index `<lastmod>` per sub-sitemap."""
-    rows = session.execute(
-        select(Inbox.name, func.max(Article.date))
-        .join(ArticleList, ArticleList.inbox_id == Inbox.id)
-        .join(Article, Article.id == ArticleList.article_id)
-        .where(Article.date.is_not(None))
-        .group_by(Inbox.id)
-    ).all()
+    """Newest article date per inbox, as `YYYY-MM-DD` strings (or None
+    when the inbox is empty). Feeds the sitemap index `<lastmod>` per
+    sub-sitemap.
+
+    Reads `Inbox.last_article_date`, which ingest raises to the newest
+    date of every article it adds or cross-links. It matched
+    `max(Article.date)` over each inbox's members for all 203
+    production inboxes on 2026-10-07, and costs nothing, where that
+    aggregate looked up every member's article and took 15 s (#640).
+    The column never decreases, so an article removed from an inbox
+    does not lower it."""
+    rows = session.execute(select(Inbox.name, Inbox.last_article_date)).all()
     return {name: (dt.strftime("%Y-%m-%d") if dt else None) for name, dt in rows}
 
 
@@ -386,8 +388,12 @@ def _archive_roots_query(inbox: Inbox, year: int, month: int | None):
     )
 
 
-def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
-    """`(year, month, root_count)` per month that has roots, oldest first.
+def _month_counts(session, inbox: Inbox) -> list[tuple[int, int, int, int]]:
+    """`(year, month, root_count, url_count)` per month that has dated
+    roots, oldest first. `url_count` is the thread pages those roots
+    expand to at the current render cap, a conservative total:
+    unrankable threads may render fewer URLs, and overcounting only
+    keeps monthly discovery for those years.
 
     Drives the index: years fitting one root page use a year sitemap;
     larger years contribute `ceil(count / SITEMAP_URLS_PER_PAGE)`
@@ -403,49 +409,13 @@ def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
     what the comment claimed and reasonably concluded the constraint
     was imaginary.
 
-    Cost, measured on a full-size corpus (17.3M articles / 28.4M
-    `article_lists` rows matching the production distribution):
-    **7.7 s for the largest inbox, 35.7 s for the whole 203-inbox
-    sweep**, min-of-3 and treat it as a floor, since the DB exceeds
-    page cache.
-
-    An earlier version of this docstring claimed 13.5 ms and ~3.4 s.
-    Both were measured on a 10x-scaled-down corpus and then reported as
-    production figures, and the pair was internally impossible before
-    anyone re-measured: 13.5 ms for the largest inbox cannot coexist
-    with 3.4 s for all 203, since the largest is a sixth of the rows.
-    Arithmetic alone falsified it.
-
-    Where the cost actually sits, which is the part worth knowing:
-
-        >= 1M rows      5 inboxes    16.2 s
-        100k-1M        55 inboxes    14.5 s
-        10k-100k      102 inboxes     4.9 s
-        < 10k          41 inboxes     0.2 s
-        ------------------------------------
-        non-huge      198 inboxes    19.6 s
-
-    The 198 non-huge inboxes cost MORE in aggregate than the 5 huge
-    ones, and the 55-inbox middle band alone carries 41% of the total.
-    Quoting only the largest and smallest, as the earlier version did,
-    skips the band that dominates. This is the standing "benchmark the
-    worst-shaped instance, not the biggest" rule, and it caught this
-    file twice before.
-
-    The 1 h TTL means this is a once-hourly rebuild rather than
-    per-request, done by the fast warm tier so it is refreshed before
-    it expires (#589). The whole `sitemap:index` build measured 41 s
-    in production on 2026-10-07 (3542 entries, three runs within 1 s
-    of each other). This helper's share of that was not measured
-    separately.
-
-    Both this and `_recent_thread_roots_query` lead on `inbox_id`; do
-    not assert WHICH index the planner picks, because it is
-    corpus-dependent (a small corpus chooses
-    `ix_article_lists_thread_root`, a production-sized one
-    `ix_article_lists_inbox_id`) and the sibling docstring already says
-    a two-column equality between columns of one row is not sargable.
-    Cost is the same either way.
+    Cost. One query per inbox groups members by `thread_root_id` on
+    the covering `ix_article_lists_thread_root`, then reads one date per
+    root. Measured in production on 2026-10-07 across 203 inboxes: 9.7 s,
+    against 17.5 s for root counts alone when every member's article was
+    read to find the roots, plus up to 9.7 s more for a second query
+    that produced the URL counts. Both forms gave identical root counts
+    for every inbox (#640).
 
     Index size. The last figure counted on a SERVED document is
     **32,629 entries (2.6 MiB) on 2026-09-29**, of which 32,420 were
@@ -454,14 +424,9 @@ def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
     what year bucketing exists to fix; it is kept because it is the
     only figure here that was counted rather than modelled.
 
-    Modelled for the coarsened shape against the same production
-    data: ~3,330 entries, under 7% of the cap. **Modelled, not
-    measured** - it is derived from a root-count query, not from a
-    served document, and year bucketing has not been deployed yet.
-    Re-count `https://ratatoskr.run/sitemap.xml` after the release
-    carrying it reaches production, and replace this paragraph with
-    what the number turns out to be rather than scaling either of
-    the two above.
+    With year bucketing deployed, the production index held 3,542
+    entries on 2026-10-07, 7% of the cap (modelled beforehand at
+    ~3,330).
 
     Growth rate is the wrong thing to plan from. 205 inboxes x 258
     months is ~52,900 POSSIBLE buckets, already past the cap, so the
@@ -473,27 +438,33 @@ def _month_root_counts(session, inbox: Inbox) -> list[tuple[int, int, int]]:
     Per-inbox SUB-INDEXES were never the fix, despite what an
     earlier version of this docstring proposed. That is an index
     referencing an index, which is the nesting GOOGLE rejects (see
-    `_month_root_counts` above and CONTEXT.md "SEO posture"); it is
+    `_month_counts` above and CONTEXT.md "SEO posture"); it is
     the same shape already tried and rejected for the maintainers
     layer. Year bucketing avoids the question entirely by shrinking
     the flat index instead of structuring it. What the protocol does
     allow, if the ceiling is ever approached again, is more than one
     INDEPENDENT index file, none referencing another. See #551.
     """
-    y = func.strftime("%Y", Article.date).label("y")
-    m = func.strftime("%m", Article.date).label("m")
-    rows = session.execute(
-        select(y, m, func.count())
-        .join(ArticleList, ArticleList.article_id == Article.id)
+    members = (
+        select(ArticleList.thread_root_id.label("root"), func.count().label("n"))
         .where(
-            ArticleList.inbox_id == inbox.id,
-            ArticleList.thread_root_id == Article.id,
-            Article.date.is_not(None),
+            ArticleList.inbox_id == inbox.id, ArticleList.thread_root_id.is_not(None)
         )
+        .group_by(ArticleList.thread_root_id)
+        .subquery()
+    )
+    cap = settings.thread_view_render_cap
+    y = func.strftime("%Y", Article.date)
+    m = func.strftime("%m", Article.date)
+    rows = session.execute(
+        select(y, m, func.count(), func.sum((members.c.n + cap - 1) // cap))
+        .select_from(members)
+        .join(Article, Article.id == members.c.root)
+        .where(Article.date.is_not(None))
         .group_by(y, m)
         .order_by(y, m)
     ).all()
-    return [(int(yy), int(mm), n) for yy, mm, n in rows]
+    return [(int(yy), int(mm), n, urls) for yy, mm, n, urls in rows]
 
 
 def _recent_thread_roots_query(inbox: Inbox):
@@ -845,33 +816,6 @@ def archive_sitemap_xml(
     )
 
 
-def _year_url_counts(session: Session, inbox: Inbox) -> dict[int, int]:
-    """Conservative expanded URL totals, with one inbox-scoped aggregate.
-
-    Group members before joining their roots' dates so this never scans the
-    global date index once per year. Unrankable threads may render fewer URLs;
-    overcounting only retains monthly discovery for those years.
-    """
-    counts = (
-        select(ArticleList.thread_root_id.label("root"), func.count().label("n"))
-        .where(
-            ArticleList.inbox_id == inbox.id, ArticleList.thread_root_id.is_not(None)
-        )
-        .group_by(ArticleList.thread_root_id)
-        .subquery()
-    )
-    year = func.strftime("%Y", Article.date)
-    cap = settings.thread_view_render_cap
-    rows = session.execute(
-        select(year, func.sum((counts.c.n + cap - 1) // cap))
-        .select_from(counts)
-        .join(Article, Article.id == counts.c.root)
-        .where(Article.date.is_not(None))
-        .group_by(year)
-    ).all()
-    return {int(year): total for year, total in rows}
-
-
 def sitemap_index_xml(
     session: Session, base: str, *, force: bool = False
 ) -> SitemapPayload:
@@ -910,23 +854,21 @@ def sitemap_index_xml(
             years = {
                 year: list(months)
                 for year, months in groupby(
-                    _month_root_counts(session, inbox), key=lambda row: row[0]
+                    _month_counts(session, inbox), key=lambda row: row[0]
                 )
             }
-            candidates = {
-                year
-                for year, months in years.items()
-                if 1 <= year <= 9998
-                and sum(count for _, _, count in months) <= SITEMAP_URLS_PER_PAGE
-            }
-            url_counts = _year_url_counts(session, inbox) if candidates else {}
             for year, buckets in years.items():
-                if year in candidates and url_counts.get(year, 0) <= SITEMAP_MAX_URLS:
+                if (
+                    1 <= year <= 9998
+                    and sum(count for _, _, count, _ in buckets)
+                    <= SITEMAP_URLS_PER_PAGE
+                    and sum(urls for _, _, _, urls in buckets) <= SITEMAP_MAX_URLS
+                ):
                     entries.append(
                         (f"{base}/{inbox.name}/{year:04d}/sitemap.xml", None)
                     )
                     continue
-                for _, month, count in buckets:
+                for _, month, count, _ in buckets:
                     pages = max(1, -(-count // SITEMAP_URLS_PER_PAGE))
                     for page in range(1, pages + 1):
                         suffix = "sitemap.xml" if page == 1 else f"sitemap-{page}.xml"

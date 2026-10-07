@@ -232,7 +232,7 @@ def _build_fast_global_targets(
     """Fast tier global warm targets: `sitemap:index` alone.
 
     It is the most expensive warm target there is (41 s cold in
-    production, 2026-10-07, 3542 entries), so it looks out of place
+    production on 2026-10-07, about 10 s after #640), so it looks out of place
     next to targets budgeted at 100 ms. It is here for freshness, not
     speed. The target calls `sitemap_index_xml` WITHOUT `force=True`,
     so a warm row costs nothing and the per-minute tick refreshes it
