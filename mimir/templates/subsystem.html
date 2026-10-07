@@ -88,7 +88,7 @@
          reviewer page. Non-allowlisted addresses render as <hidden>
          via safe_from with no outbound link, so mimir doesn't push
          them into URLs / browser history / scraper paths. #}
-      {% if r.address|is_allowlisted_address %}
+      {% if r.address|is_allowlisted_address and r.address_normalized|is_addressable_reviewer %}
       <strong><a href="/{{ inbox_name }}/reviewer/{{ r.address_normalized|urlencode }}">{{ _label|safe_from }}</a></strong>
       {% else %}
       <strong>{{ _label|safe_from }}</strong>

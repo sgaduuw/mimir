@@ -11,6 +11,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Only render subsystem reviewer links for addresses accepted by the reviewer
+  route (#611).
+
 ## [3.10.1] - 2026-10-06
 
 ### Changed
