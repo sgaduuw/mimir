@@ -13,6 +13,7 @@ to repeat per call.
 """
 
 import re
+from urllib.parse import urlencode
 
 from flask import abort, g, request
 from sqlalchemy import select
@@ -193,6 +194,46 @@ def _canonical_url_for(
     if inbox_name is None:
         return None
     return base + _msg_url(article, inbox_name)
+
+
+def _series_diff_url(
+    to_slot: list[Article],
+    series_key: str,
+    from_version: str,
+    to_version: str,
+    pos: int | None,
+    *,
+    fallback_inbox: str,
+    base: str = "",
+) -> str:
+    """The one spelling of an inter-revision diff URL: the revision
+    panel links to it and the diff page names it as its own canonical,
+    so the two are byte-identical (CONTEXT.md "Emitter and acceptor
+    must share one validity rule").
+
+    The diff renders under any inbox name, so the page needs one to
+    nominate. It is the canonical inbox of the lowest-id article in the
+    `to` slot (`to_slot`, every article at `(series_key, to_version,
+    pos)`), chosen by `_canonical_inbox_name` like every other page.
+    The slot, not the article being viewed, decides: a resend viewed
+    from the panel and the route must agree. `fallback_inbox` covers an
+    empty slot (a position still awaiting backfill). `pos` of None or 0
+    is the cover letter and is spelled `cover`.
+    """
+    inbox_name = None
+    if to_slot:
+        art = min(to_slot, key=lambda a: a.id)
+        inbox_name = _canonical_inbox_name(
+            art, [(al.inbox_id, al.inbox.name) for al in art.lists]
+        )
+    query = urlencode(
+        {
+            "from": from_version,
+            "to": to_version,
+            "pos": "cover" if pos in (None, 0) else str(pos),
+        }
+    )
+    return f"{base}/{inbox_name or fallback_inbox}/series/{series_key}/diff?{query}"
 
 
 def _canonical_inbox_names_for(
