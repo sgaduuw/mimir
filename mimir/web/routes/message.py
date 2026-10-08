@@ -115,6 +115,18 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # thread the view renders (see `dedupe_thread`).
         thread = dedupe_thread(get_thread(session, inbox, root_msgid))
 
+        # All inboxes this article is linked to. Used for both the
+        # cross-post hint (which excludes the current inbox) and the
+        # canonical URL (which picks one across the full set).
+        all_links: list[tuple[int, str]] = list(
+            session.execute(
+                select(Inbox.id, Inbox.name)
+                .join(ArticleList, ArticleList.inbox_id == Inbox.id)
+                .where(ArticleList.article_id == article.id)
+                .order_by(Inbox.name)
+            ).all()
+        )
+
         # Conditional-GET (ETag) for the message page. Inputs:
         # - article.id: invariant for the resource itself.
         # - mimir.__version__: invalidates every cached page on deploy so

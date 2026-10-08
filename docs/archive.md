@@ -105,12 +105,22 @@ links can break reply chains across epochs. The broker needs access to the mirro
 ```sh
 uv run mimir admin inbox update lkml --mirror-path /srv/mirrors/lkml/git
 uv run mimir admin inbox update old-name --rename new-name
+uv run mimir admin inbox update netdev --list-address netdev@vger.kernel.org
+uv run mimir admin inbox update netdev --list-address ''
 uv run mimir admin inbox trackers set lkml 'Linus=torvalds@'
 uv run mimir admin inbox trackers add lkml Greg 'gregkh@'
 uv run mimir admin inbox trackers remove lkml Greg
 uv run mimir admin inbox trackers clear lkml
 uv run mimir admin inbox remove old-name
 ```
+
+`--list-address` is stored lowercase and must be a bare address. It is refused
+when another inbox holds it. Canonical resolution only matches addresses on a
+known list host, so for any other host add it to `LIST_HOST_SUFFIX_OVERRIDES`
+(JSON array) or the command warns that the value never matches. `''` clears it
+and hands the inbox back to auto-detection, which can promote a cross-post
+address again. It does not recompute canonicals; run
+`uv run mimir admin canonicals backfill --reprocess` afterwards.
 
 Inbox edits live in SQLite and survive restarts. The `INBOXES` environment
 setting is a bootstrap source, not an override for existing rows.
