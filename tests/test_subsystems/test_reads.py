@@ -10,6 +10,7 @@ from sqlalchemy import select
 from mimir.models import (
     Article,
     ArticleFile,
+    ArticleList,
     Inbox,
 )
 from mimir.subsystems_dashboard import (
@@ -37,6 +38,40 @@ def test_recent_articles_in_subsystem_basic_match(seeded_db):
         out = recent_articles_in_subsystem(s, alpha, sub)
     msgids = {p.message_id for p in out}
     assert msgids == {"in1@x", "in2@x"}
+
+
+def test_recent_articles_in_subsystem_fallback_skips_demoted_inbox(
+    seeded_db, monkeypatch
+):
+    """#646: with no valid canonical, the entry's inbox must be the one
+    `fallback_canonical_name` picks (demoted names last), not plain
+    min(name), or the dashboard advertises a second URL for the article."""
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "canonical_demoted_inboxes", ["alpha"])
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        s.add(
+            Article(
+                message_id="demoted@x",
+                subject="s",
+                author="a@example",
+                date=datetime.now(UTC),
+                thread_parent=None,
+                subject_normalized="s",
+                canonical_inbox_id=None,
+                lists=[
+                    ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="a" * 40),
+                    ArticleList(inbox_id=beta.id, epoch="0.git", commit_sha="b" * 40),
+                ],
+                files=[ArticleFile(path="fs/bcachefs/x.c")],
+            )
+        )
+        s.commit()
+        out = recent_articles_in_subsystem(s, alpha, sub, force=True)
+    assert [(p.message_id, p.inbox_name) for p in out] == [("demoted@x", "beta")]
 
 
 def test_recent_articles_in_subsystem_is_cached(seeded_db):

@@ -218,6 +218,7 @@ def _inbox_to_dict(inbox) -> dict:
         "name": inbox.name,
         "mirror_path": inbox.mirror_path,
         "upstream_url": inbox.upstream_url,
+        "list_address": inbox.list_address,
         "tracked_authors": dict(inbox.tracked_authors or {}),
     }
 
@@ -256,6 +257,7 @@ def handle_inbox_update(req: InboxUpdateRequest) -> Reply:
             new_name=req.new_name,
             mirror_path=req.mirror_path,
             upstream_url=req.upstream_url,
+            list_address=req.list_address,
         )
     except (InboxNotFound, InboxValidationError) as exc:
         return _inbox_error_reply(req, exc)
