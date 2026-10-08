@@ -30,8 +30,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from mimir._backfill import walk_articles
-from mimir.models import Article, ArticleFile, Inbox
-from mimir.store import MessageNotFound, read_message
+from mimir.models import Article, ArticleFile
+from mimir.store import read_first_readable
 
 logger = logging.getLogger(__name__)
 
@@ -193,29 +193,13 @@ def _process_one(session, article: Article, reprocess: bool) -> tuple[str, objec
     if has_rows and not reprocess:
         return "skipped", None
 
-    # Pick the canonical inbox to re-read the body. For cross-posts
-    # this is the authoritative attribution; `article.lists[0]` is
-    # ordering-dependent on the SQLA loader and was non-deterministic
-    # for the same article across two backfills. canonical_inbox can
-    # be NULL (warm-up period, or all observations fell below the
-    # auto-promotion threshold), so fall back to the first lists
-    # entry only then.
-    inbox: Inbox | None = article.canonical_inbox
-    if inbox is None:
-        if not article.lists:
-            return "skipped", None
-        inbox = session.get(Inbox, article.lists[0].inbox_id)
-    if inbox is None:
-        return "skipped", None
-
+    # Re-read the body from the canonical inbox when the article is
+    # filed there, else from another inbox it is filed in.
+    # `canonical_inbox_id` can name an inbox with no row for the
+    # article (#662), and `read_message` only finds filed ones.
     try:
-        parsed = read_message(session, inbox, article.message_id)
-    except MessageNotFound, KeyError:
-        # Mirror unreachable on this host, or the recorded SHA isn't
-        # in the local repo (dulwich raises bare KeyError for that).
-        # Common in dev and after a partial-mirror rebuild; defer
-        # the work rather than fail loudly, a re-run from a host
-        # with the full mirror picks the article up.
+        read = read_first_readable(session, [article], article.canonical_inbox_id)
+    except KeyError:
         return "skipped", None
     except Exception as exc:
         logger.warning(
@@ -225,6 +209,14 @@ def _process_one(session, article: Article, reprocess: bool) -> tuple[str, objec
             exc,
         )
         return "failed", None
+    if read is None:
+        # No filed inbox's mirror has the blob on this host (missing
+        # epoch, or a recorded SHA that is not in the local repo).
+        # Common in dev and after a partial-mirror rebuild; defer the
+        # work rather than fail loudly, a re-run from a host with the
+        # full mirror picks the article up.
+        return "skipped", None
+    parsed = read[1]
 
     paths = extract_touched_paths(parsed.body)
     if not paths:

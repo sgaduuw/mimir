@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox
-from tests.test_routes._helpers import _ingest_series_pair
+from tests.test_routes._helpers import _ingest_series_pair, _seed_resends
 
 
 def test_series_diff_cover_letter_renders(client, tmp_path):
@@ -308,7 +308,7 @@ def _file_in_beta(tmp_path, message_ids):
     from sqlalchemy import select
 
     from mimir.extensions import SessionLocal
-    from mimir.models import Article, ArticleList, Inbox
+    from mimir.models import Article, Inbox
 
     with SessionLocal() as s:
         beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
@@ -534,113 +534,6 @@ def test_series_diff_one_canonical_across_inboxes(client, tmp_path):
     b = client.get(f"/beta/series/{key}/{q}")
     assert (a.status_code, b.status_code) == (200, 200)  # precondition
     assert _canonical(a.data.decode()) == _canonical(b.data.decode())
-
-
-def _seed_resends(inbox_names_per_article):
-    """Seed one article per entry, filed in the named inboxes (created
-    when missing), and return `(articles, inboxes_by_name)` detached
-    from their session. No mirror exists: the tests below stub
-    `read_message` and only watch what the reader asks for."""
-    from datetime import UTC, datetime
-
-    articles = []
-    with SessionLocal() as s:
-        names = {n for ns in inbox_names_per_article for n in ns}
-        for n in sorted(names):
-            if (
-                s.execute(select(Inbox).where(Inbox.name == n)).scalar_one_or_none()
-                is None
-            ):
-                s.add(
-                    Inbox(
-                        name=n,
-                        mirror_path=f"/tmp/{n}",
-                        upstream_url=f"https://example.com/{n}",
-                    )
-                )
-        s.flush()
-        by_name = {i.name: i for i in s.execute(select(Inbox)).scalars()}
-        for i, ns in enumerate(inbox_names_per_article):
-            art = Article(
-                message_id=f"resend-{i}@x",
-                subject="[PATCH 0/1] s",
-                author="Alice <a@example>",
-                date=datetime(2024, 6, 1, tzinfo=UTC),
-                thread_parent=None,
-                subject_normalized="[patch 0/1] s",
-                lists=[
-                    ArticleList(
-                        inbox_id=by_name[n].id, epoch="0.git", commit_sha="aa" * 20
-                    )
-                    for n in ns
-                ],
-            )
-            s.add(art)
-            articles.append(art)
-        s.commit()
-    return articles
-
-
-def test_read_first_readable_picks_lowest_article_id(monkeypatch):
-    """Resends share a slot; the pick must not depend on the order the
-    caller (or the database) hands them over."""
-    from mimir.web.routes import series_diff
-
-    monkeypatch.setattr(series_diff, "read_message", lambda s, ix, mid: mid)
-    _seed_resends([["alpha"], ["alpha"], ["alpha"]])
-    with SessionLocal() as s:
-        arts = list(
-            s.execute(
-                select(Article).where(Article.message_id.like("resend-%"))
-            ).scalars()
-        )
-        assert len(arts) == 3  # precondition
-        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        newest_first = sorted(arts, key=lambda a: a.id, reverse=True)
-        assert newest_first[0].id > newest_first[-1].id  # precondition: reversed
-        article, _ = series_diff._read_first_readable(s, newest_first, alpha)
-        assert article.id == min(a.id for a in arts)
-
-
-def test_read_first_readable_inbox_order(monkeypatch):
-    """The URL's inbox first, then the rest by name. The article's
-    `lists` come back in inbox-id order, and `aardvark` is created last
-    so that order (alpha, beta, aardvark) differs from name order."""
-    from mimir.models import Inbox as _Inbox  # noqa: F401
-    from mimir.store import MessageNotFound
-    from mimir.web.routes import series_diff
-
-    asked = []
-
-    def _always_missing(session, inbox, message_id):
-        asked.append(inbox.name)
-        raise MessageNotFound(message_id)
-
-    monkeypatch.setattr(series_diff, "read_message", _always_missing)
-    _seed_resends([["alpha", "beta", "aardvark"]])
-    with SessionLocal() as s:
-        art = s.execute(
-            select(Article).where(Article.message_id == "resend-0@x")
-        ).scalar_one()
-        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
-        zeta = Inbox(
-            name="zeta",
-            mirror_path="/tmp/zeta",
-            upstream_url="https://example.com/zeta",
-        )
-        s.add(zeta)
-        s.flush()
-        assert [al.inbox.name for al in art.lists] != [
-            "aardvark",
-            "alpha",
-            "beta",
-        ]  # precondition
-        assert series_diff._read_first_readable(s, [art], beta) is None
-        assert asked == ["beta", "aardvark", "alpha"]
-        asked.clear()
-        # URL inbox not among the article's: pure name order.
-        assert series_diff._read_first_readable(s, [art], zeta) is None
-        assert asked == ["aardvark", "alpha", "beta"]
 
 
 def test_series_diff_url_nominates_inbox_of_lowest_id_in_slot():
