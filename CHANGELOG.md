@@ -39,7 +39,7 @@ changes, not internal refactors. Categories: **Added**,
   thread page (#612).
 
 - Answer a message URL whose article exists but is filed under the wrong
-  list with a 301 to the article's canonical URL instead of a 404, so links
+  list with a 301 to its canonical message URL instead of a 404, so links
   already collected from the wrong-list bug consolidate. A wrong date or an
   unknown id still returns 404 (#648).
 
@@ -53,8 +53,9 @@ changes, not internal refactors. Categories: **Added**,
 - Only render subsystem reviewer links for addresses accepted by the reviewer
   route (#611).
 
-- Reviewer and subsystem dashboard pages no longer link a message under a
-  list that does not hold it, which returned 404 (#646).
+- Reviewer pages no longer link a message under a list that does not hold
+  it, which returned 404. Subsystem dashboards now link a cross-posted
+  message under the same list its page names as canonical (#646).
 
 - Message pages now revalidate when an article's canonical inbox or its
   list of inboxes changes, so caches and crawlers stop receiving a stale
