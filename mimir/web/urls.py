@@ -44,7 +44,9 @@ def _get_inbox_or_404(session: Session, name: str) -> Inbox:
 
 def _abort_404_if_url_date_mismatches(article: Article, year: int, month: int) -> None:
     """The URL date is part of the message's identity, not navigation
-    state, so a mismatched URL must 404 rather than redirect. Bumps
+    state, so a mismatched URL must 404 rather than redirect. The one
+    exception, a wrong inbox with the right date, lives in the message
+    route (#648). Bumps
     the contract from a "fuzzy lookup" to "exact identity match" so
     a URL is either fully resolvable or fully invalid, important for
     the age-at-a-glance property in browser history and shared links.

@@ -12,7 +12,7 @@ chrome.
 import hashlib
 import logging
 
-from flask import Response, abort, make_response, render_template, request
+from flask import Response, abort, make_response, redirect, render_template, request
 from sqlalchemy import select
 
 import mimir
@@ -73,29 +73,10 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         article = session.get(Article, article_id)
         if article is None:
             abort(404)
-        # Article must be linked to this inbox (cross-posts get one row per inbox).
-        linked = session.execute(
-            select(ArticleList.article_id).where(
-                ArticleList.article_id == article_id,
-                ArticleList.inbox_id == inbox.id,
-            )
-        ).scalar_one_or_none()
-        if linked is None:
-            abort(404)
-
+        # The date is part of the identity, so it is checked BEFORE the
+        # inbox: a wrong inbox with a wrong date stays a 404 rather
+        # than being redirected into a URL the caller never named.
         _abort_404_if_url_date_mismatches(article, year, month)
-
-        # Full thread context (replaces the v1 parent + immediate-replies
-        # view). Walk constrained to this article's inbox. Loaded BEFORE
-        # the body fetch so the ETag-revalidation block below has the
-        # freshness signal (max thread date) without the git-mirror blob
-        # read; on a 304 we skip both the body fetch and the render.
-        root_msgid = (
-            find_thread_root(session, inbox, article.message_id) or article.message_id
-        )
-        # Deduped so the consolidation gate below counts the same
-        # thread the view renders (see `dedupe_thread`).
-        thread = dedupe_thread(get_thread(session, inbox, root_msgid))
 
         # All inboxes this article is linked to. Used for both the
         # cross-post hint (which excludes the current inbox) and the
@@ -108,6 +89,31 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 .order_by(Inbox.name)
             ).all()
         )
+
+        # Exists, right date, wrong inbox (cross-posts get one row per
+        # inbox): 301 to the canonical message URL (#648). Built by
+        # `_canonical_url_for`, the same inbox predicate as the page's
+        # canonical tag, so the target is always an inbox the article is
+        # in. A self-canonical page's tag equals this Location; a
+        # threaded page's tag carries on to its thread page. No links at
+        # all is a corrupt row: 404.
+        if not any(ix_id == inbox.id for ix_id, _ in all_links):
+            target = _canonical_url_for(article, all_links)
+            if target is None:
+                abort(404)
+            return redirect(target, code=301)
+
+        # Full thread context (replaces the v1 parent + immediate-replies
+        # view). Walk constrained to this article's inbox. Loaded BEFORE
+        # the body fetch so the ETag-revalidation block below has the
+        # freshness signal (max thread date) without the git-mirror blob
+        # read; on a 304 we skip both the body fetch and the render.
+        root_msgid = (
+            find_thread_root(session, inbox, article.message_id) or article.message_id
+        )
+        # Deduped so the consolidation gate below counts the same
+        # thread the view renders (see `dedupe_thread`).
+        thread = dedupe_thread(get_thread(session, inbox, root_msgid))
 
         # Conditional-GET (ETag) for the message page. Inputs:
         # - article.id: invariant for the resource itself.

@@ -27,6 +27,11 @@ changes, not internal refactors. Categories: **Added**,
   error. It used to be raised to 1 silently, which showed one message per
   thread page (#612).
 
+- Answer a message URL whose article exists but is filed under the wrong
+  list with a 301 to the article's canonical URL instead of a 404, so links
+  already collected from the wrong-list bug consolidate. A wrong date or an
+  unknown id still returns 404 (#648).
+
 ### Removed
 
 - Drop the `asnum` access-log field. No proxy sets `X-ASN`, so the field
