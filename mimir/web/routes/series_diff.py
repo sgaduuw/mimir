@@ -65,7 +65,7 @@ def _resolve_via_index(
     a side is empty when its row hasn't been backfilled yet, in which
     case the caller falls back to the heuristic resolver. A side holds
     several candidates when the same slot was sent twice (a resend);
-    `_read_first_readable` picks among them.
+    `mimir.store.read_first_readable` picks among them.
 
     Two-row SELECT (one per version) over the
     `ix_articles_patch_series_key` index, then position filter, fast.
