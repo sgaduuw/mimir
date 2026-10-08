@@ -8,12 +8,14 @@ auto-promotion (the `_submit_promote_list_address` WriteOp
 gate), the kept-headers filter, and the tz-aware UTC normalisation for
 `-0000`-dated messages."""
 
+import logging
 from datetime import UTC, datetime
 
 import pytest
 from dulwich.repo import Repo
 from sqlalchemy import func, select
 
+from mimir._pending_backfill import _submit_promote_list_address_sweep
 from mimir.ingest import (
     MIN_PROMOTE_OBSERVATIONS,
     PROMOTE_DOMINANCE,
@@ -1215,7 +1217,92 @@ def test_promote_list_address_dominance_threshold_is_inclusive_at_min(
         )
 
 
-def test_promote_list_address_already_set_no_overwrite(seeded_db, writer):
+def _promote_one(writer, inbox_id):
+    _submit_promote_list_address(writer, inbox_id).result(timeout=10)
+
+
+def _promote_sweep(writer, inbox_id):
+    _submit_promote_list_address_sweep(writer).result(timeout=10)
+
+
+# Both promotion writers: per-inbox after ingest, and the backfill sweep.
+_BOTH_PROMOTERS = pytest.mark.parametrize(
+    "promote", [_promote_one, _promote_sweep], ids=["per-inbox", "sweep"]
+)
+
+
+@_BOTH_PROMOTERS
+def test_promote_list_address_skips_address_held_by_another_inbox(
+    seeded_db, writer, promote, caplog
+):
+    """A small inbox whose To/Cc tally is dominated by cross-posts to
+    another list must not take that list's address. Production on
+    2026-10-08 had netdev's address on batman and lkml's on five other
+    inboxes, pinning ~6.4M canonicals to inboxes that do not hold the
+    article (#644)."""
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        beta.list_address = "netdev@vger.kernel.org"
+        # Clears both gates on its own: count above the minimum and
+        # sole entry, so dominance is 1.0. Only the holder blocks it.
+        s.add(
+            InboxAddressObservation(
+                inbox_id=alpha.id,
+                address="netdev@vger.kernel.org",
+                count=MIN_PROMOTE_OBSERVATIONS * 2,
+                last_seen=datetime(2024, 1, 1),
+            )
+        )
+        s.commit()
+
+    caplog.set_level(logging.INFO, logger="mimir.ingest._pending")
+    promote(writer, alpha.id)
+
+    with seeded_db() as s:
+        held = dict(s.execute(select(Inbox.name, Inbox.list_address)).all())
+    assert held["alpha"] is None
+    assert held["beta"] == "netdev@vger.kernel.org"
+    assert (
+        "mimir.ingest._pending",
+        logging.INFO,
+        "promote_list_address: skip alpha, netdev@vger.kernel.org is held by beta",
+    ) in caplog.record_tuples
+
+
+def test_sweep_gives_a_shared_address_to_one_inbox_only(seeded_db, writer):
+    """Two NULL inboxes dominated by the same address: the sweep runs
+    in one transaction, so the first promotion counts as held for the
+    second."""
+    with seeded_db() as s:
+        inboxes = s.execute(select(Inbox)).scalars().all()
+        assert len(inboxes) >= 2
+        for ix in inboxes:
+            s.add(
+                InboxAddressObservation(
+                    inbox_id=ix.id,
+                    address="linux-kernel@vger.kernel.org",
+                    count=MIN_PROMOTE_OBSERVATIONS * 2,
+                    last_seen=datetime(2024, 1, 1),
+                )
+            )
+        s.commit()
+
+    _submit_promote_list_address_sweep(writer).result(timeout=10)
+
+    with seeded_db() as s:
+        holders = s.execute(
+            select(Inbox.name).where(
+                Inbox.list_address == "linux-kernel@vger.kernel.org"
+            )
+        ).all()
+    assert len(holders) == 1
+
+
+@_BOTH_PROMOTERS
+def test_promote_list_address_already_set_no_overwrite(seeded_db, writer, promote):
+    """Promotion only fills an empty `list_address`, so a value an
+    operator set is never overwritten, by either writer."""
     alpha = _alpha(seeded_db)
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
@@ -1230,7 +1317,7 @@ def test_promote_list_address_already_set_no_overwrite(seeded_db, writer):
         )
         s.commit()
 
-    _submit_promote_list_address(writer, alpha.id).result(timeout=10)
+    promote(writer, alpha.id)
 
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()

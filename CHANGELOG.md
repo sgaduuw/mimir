@@ -37,6 +37,14 @@ changes, not internal refactors. Categories: **Added**,
 - Only render subsystem reviewer links for addresses accepted by the reviewer
   route (#611).
 
+- List-address auto-promotion no longer gives an inbox an address another
+  inbox already holds. A small list whose mail is mostly cross-posted to a
+  bigger one used to take the bigger list's address, which pointed canonical
+  links at inboxes that do not hold the message. The list hosts of op-tee,
+  xen-devel, cip-dev, b.a.t.m.a.n and kernelnewbies are now recognised, so
+  a new install can promote those inboxes to their own address. An address
+  already set is kept; correct it by hand, see #645 (#647).
+
 ## [3.10.1] - 2026-10-06
 
 ### Changed

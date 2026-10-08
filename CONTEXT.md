@@ -1307,6 +1307,11 @@ data:
    leave the slot NULL indefinitely. Bootstraps without hardcoded
    name→address tables; new inboxes self-identify after a short
    warm-up. Operator can override via `admin inbox update`.
+   Promotion skips an address another inbox already holds, because a
+   small list's To/Cc is often dominated by cross-posts to a bigger
+   one (#647). The first inbox to promote an address keeps it, so on
+   a from-scratch ingest (alphabetical) cocci can take lkml's address
+   before lkml does; an operator corrects that with `--list-address`.
 3. **Per-article pinning.** With `Inbox.list_address` populated,
    `pick_canonical_inbox_id` walks the message's To/Cc addresses
    in order and returns the first inbox whose `list_address`
