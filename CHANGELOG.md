@@ -26,9 +26,9 @@ changes, not internal refactors. Categories: **Added**,
   the diff page links to each message at its canonical address. A resend
   with the same version as the current one no longer gets a "[diff vs
   current]" link, since that diff can never exist. The diff page now names
-  itself, query string included, as its canonical and `og:url`, and uses the
-  same address as the revision panel's link. It used to name the bare
-  `/series/<key>/diff`, which 404s. The 404 page now shows the reason a route
+  one canonical address, query string included, for its canonical and
+  `og:url`: the same address as the revision panel's link. It used to name
+  the bare `/series/<key>/diff`, which 404s. The 404 page now shows the reason a route
   gives, such as the revisions that do exist (#661).
 
 ## [3.11.0] - 2026-10-08
