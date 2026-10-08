@@ -25,8 +25,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from mimir._backfill import walk_articles
-from mimir.models import Article, ArticleTrailer, Inbox
-from mimir.store import MessageNotFound, read_message
+from mimir.models import Article, ArticleTrailer
+from mimir.store import read_first_readable
 
 logger = logging.getLogger(__name__)
 
@@ -195,17 +195,11 @@ def _process_one(session, article: Article, reprocess: bool) -> tuple[str, objec
     if has_rows and not reprocess:
         return "skipped", None
 
-    inbox: Inbox | None = article.canonical_inbox
-    if inbox is None:
-        if not article.lists:
-            return "skipped", None
-        inbox = session.get(Inbox, article.lists[0].inbox_id)
-    if inbox is None:
-        return "skipped", None
-
+    # Canonical inbox when the article is filed there, else another
+    # filed inbox (#662: the stored id can name one with no row).
     try:
-        parsed = read_message(session, inbox, article.message_id)
-    except MessageNotFound, KeyError:
+        read = read_first_readable(session, [article], article.canonical_inbox_id)
+    except KeyError:
         return "skipped", None
     except Exception as exc:
         logger.warning(
@@ -215,6 +209,9 @@ def _process_one(session, article: Article, reprocess: bool) -> tuple[str, objec
             exc,
         )
         return "failed", None
+    if read is None:
+        return "skipped", None
+    parsed = read[1]
 
     trailers = extract_trailers(parsed.body)
     if not trailers:

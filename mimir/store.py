@@ -68,6 +68,36 @@ def read_message(session: Session, inbox: Inbox, message_id: str) -> ParsedArtic
     return parse_message(raw)
 
 
+def read_first_readable(
+    session: Session,
+    candidates: Sequence[Article],
+    prefer_inbox_id: int | None,
+) -> tuple[Article, ParsedArticle] | None:
+    """Return `(article, parsed)` for the first candidate whose body
+    can be read from an inbox it is filed in, else None.
+
+    `read_message` is inbox-scoped, and the inbox a caller has in mind
+    (a URL's, an article's `canonical_inbox_id`) need not be one the
+    article is filed in (#661, #662). So try the article's own
+    `lists`: the preferred inbox first when it is among them, then the
+    rest by name. Candidates are tried lowest id first. None of the
+    three depends on the order the database returns rows in.
+
+    Needs `Article.lists` loaded for cheap use; the inbox of each link
+    resolves from the session's identity map after the first load."""
+    for article in sorted(candidates, key=lambda a: a.id):
+        links = sorted(
+            article.lists,
+            key=lambda al: (al.inbox_id != prefer_inbox_id, al.inbox.name),
+        )
+        for link in links:
+            try:
+                return article, read_message(session, link.inbox, article.message_id)
+            except MessageNotFound:
+                continue
+    return None
+
+
 def read_messages(
     session: Session, inbox: Inbox, message_ids: Sequence[str]
 ) -> dict[str, ParsedArticle]:

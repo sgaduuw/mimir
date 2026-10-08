@@ -186,8 +186,9 @@ fixes made in that same release:
   the cap left caches and crawlers holding a page whose canonical
   named a thread page that 404s.
 - Maintainer links were aligned with the maintainer route's
-  validation. Reviewer links in `subsystem.html` are still gated on a
-  different predicate than the reviewer route accepts.
+  validation. Reviewer links in `subsystem.html` stayed gated on a
+  different predicate than the reviewer route accepts, until #611 in
+  3.11.0.
 
 Same with prose. When you correct a claim, grep for every other copy
 of it: a stale claim about warm-cache tiers was corrected in four

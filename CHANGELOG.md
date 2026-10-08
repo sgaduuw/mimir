@@ -11,6 +11,26 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.11.1] - 2026-10-09
+
+### Fixed
+
+- `backfill-article-files` and `backfill-article-trailers` no longer skip an
+  article whose stored canonical inbox is not one it is filed in. They read it
+  from the canonical inbox when it is filed there, else from another inbox it
+  is filed in. Such articles were skipped on every run. They have no rows yet,
+  so a plain re-run picks them up; `--reprocess` is not needed (#662).
+
+- Series diff links no longer 404 when a revision was not sent to the list in
+  the URL. Each side is now read from an inbox the message is filed in, and
+  the diff page links to each message at its canonical address. A resend
+  with the same version as the current one no longer gets a "[diff vs
+  current]" link, since that diff can never exist. The diff page now names
+  one canonical address, query string included, for its canonical and
+  `og:url`: the same address as the revision panel's link. It used to name
+  the bare `/series/<key>/diff`, which 404s. The 404 page now shows the reason a route
+  gives, such as the revisions that do exist (#661).
+
 ## [3.11.0] - 2026-10-08
 
 ### Added
@@ -5096,7 +5116,9 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v3.10.1...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v3.11.1...HEAD
+[3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
+[3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
 [1.5.1]: https://github.com/sgaduuw/mimir/releases/tag/v1.5.1
 [1.5.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.5.0
