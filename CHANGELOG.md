@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.11.1] - 2026-10-09
+
 ### Fixed
 
 - `backfill-article-files` and `backfill-article-trailers` no longer skip an
@@ -5114,7 +5116,9 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v3.10.1...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v3.11.1...HEAD
+[3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
+[3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
 [1.5.1]: https://github.com/sgaduuw/mimir/releases/tag/v1.5.1
 [1.5.0]: https://github.com/sgaduuw/mimir/releases/tag/v1.5.0
