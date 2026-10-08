@@ -11,6 +11,7 @@ Underscore-prefixed module: internal to `mimir.ingest`; not part
 of the public surface.
 """
 
+import logging
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -30,6 +31,8 @@ from mimir.models import (
     IngestState,
     ParseFailure,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -519,57 +522,85 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
     )
 
 
-def _submit_promote_list_address(writer, inbox_id: int) -> WriteFuture:
-    """Phase 3b of the two-pool restructure.
+def _promote_list_address(conn, inbox_id: int) -> None:
+    """Promote an inbox's `list_address` from NULL to the modal address
+    in its observations tally, if that address clears the count +
+    dominance thresholds (MIN_PROMOTE_OBSERVATIONS / PROMOTE_DOMINANCE)
+    and no other inbox holds it. Shared by the per-inbox WriteOp below
+    and the backfill sweep, so both writers apply the same guards.
 
-    Compose a WriteOp that promotes an inbox's `list_address`: read the
-    observations tally, check for a clear modal winner that meets the
-    count + dominance thresholds (MIN_PROMOTE_OBSERVATIONS /
-    PROMOTE_DOMINANCE), and promote Inbox.list_address from NULL to that
-    address. The gate boundaries are pinned by the promotion tests in
+    A set `list_address` is never touched, so a value an operator
+    wrote stays authoritative. An address another inbox holds is never
+    taken: a small list's To/Cc is often dominated by cross-posts to a
+    bigger one, and promoting that address pinned millions of
+    canonicals to inboxes not holding the article (#644). The gate
+    boundaries are pinned by the promotion tests in
     tests/test_ingest/test_epoch.py.
+    """
+    from mimir.ingest.epoch import MIN_PROMOTE_OBSERVATIONS, PROMOTE_DOMINANCE
+
+    list_address = conn.execute(
+        select(Inbox.list_address).where(Inbox.id == inbox_id)
+    ).scalar_one_or_none()
+    if list_address is not None:
+        return
+
+    rows = conn.execute(
+        select(
+            InboxAddressObservation.address,
+            InboxAddressObservation.count,
+        )
+        .where(InboxAddressObservation.inbox_id == inbox_id)
+        .order_by(InboxAddressObservation.count.desc())
+        .limit(2)
+    ).all()
+    if not rows:
+        return
+
+    top_addr, top_count = rows[0]
+    if top_count < MIN_PROMOTE_OBSERVATIONS:
+        return
+
+    second_count = rows[1][1] if len(rows) > 1 else 0
+    if top_count / max(top_count + second_count, 1) < PROMOTE_DOMINANCE:
+        return
+
+    # ponytail: first inbox to promote an address keeps it. A
+    # from-scratch `update` ingests inboxes alphabetically, so cocci
+    # (whose inria.fr host is not recognised) takes linux-kernel@vger
+    # before lkml, and lkml stays NULL until an operator sets both with
+    # `admin inbox update --list-address`. Comparing per-inbox counts
+    # for the address would let the owner win.
+    holder = conn.execute(
+        select(Inbox.name).where(Inbox.list_address == top_addr).limit(1)
+    ).scalar_one_or_none()
+    if holder is not None:
+        logger.info(
+            "promote_list_address: skip %s, %s is held by %s",
+            conn.execute(select(Inbox.name).where(Inbox.id == inbox_id)).scalar_one(),
+            top_addr,
+            holder,
+        )
+        return
+
+    conn.execute(
+        update(Inbox).where(Inbox.id == inbox_id).values(list_address=top_addr)
+    )
+
+
+def _submit_promote_list_address(writer, inbox_id: int) -> WriteFuture:
+    """Phase 3b of the two-pool restructure: run `_promote_list_address`
+    for one inbox as a WriteOp.
 
     Returns the WriteFuture so callers can await .result() before the
     next operation. Sub-ms execution time in practice.
     """
-    # Import the constants from epoch.py where they live.
-    from mimir.ingest.epoch import MIN_PROMOTE_OBSERVATIONS, PROMOTE_DOMINANCE
-
-    def _fn(conn):
-        # Read the inbox row and observations to check the promotion
-        # threshold. Use scalar select of list_address to check if
-        # promotion is needed.
-        list_address = conn.execute(
-            select(Inbox.list_address).where(Inbox.id == inbox_id)
-        ).scalar_one_or_none()
-        if list_address is not None:
-            return
-
-        rows = conn.execute(
-            select(
-                InboxAddressObservation.address,
-                InboxAddressObservation.count,
-            )
-            .where(InboxAddressObservation.inbox_id == inbox_id)
-            .order_by(InboxAddressObservation.count.desc())
-            .limit(2)
-        ).all()
-        if not rows:
-            return
-
-        top_addr, top_count = rows[0]
-        if top_count < MIN_PROMOTE_OBSERVATIONS:
-            return
-
-        second_count = rows[1][1] if len(rows) > 1 else 0
-        if top_count / max(top_count + second_count, 1) < PROMOTE_DOMINANCE:
-            return
-
-        conn.execute(
-            update(Inbox).where(Inbox.id == inbox_id).values(list_address=top_addr)
+    return writer.submit(
+        WriteOp(
+            label=f"promote_list_address:{inbox_id}",
+            fn=lambda conn: _promote_list_address(conn, inbox_id),
         )
-
-    return writer.submit(WriteOp(label=f"promote_list_address:{inbox_id}", fn=_fn))
+    )
 
 
 def _submit_analyze(writer, inbox_name: str) -> WriteFuture:
