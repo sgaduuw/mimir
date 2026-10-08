@@ -312,6 +312,8 @@ class InboxUpdateRequest(_BrokerRequest):
     new_name: str | None = Field(default=None, min_length=1, max_length=64)
     mirror_path: str | None = Field(default=None, min_length=1, max_length=512)
     upstream_url: str | None = Field(default=None, min_length=1, max_length=512)
+    # "" clears to NULL, None leaves it alone.
+    list_address: str | None = Field(default=None, max_length=254)
 
     @field_validator("name", "new_name")
     @classmethod

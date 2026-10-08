@@ -12,7 +12,7 @@ chrome.
 import hashlib
 import logging
 
-from flask import Response, abort, make_response, render_template, request
+from flask import Response, abort, make_response, redirect, render_template, request
 from sqlalchemy import select
 
 import mimir
@@ -73,17 +73,35 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         article = session.get(Article, article_id)
         if article is None:
             abort(404)
-        # Article must be linked to this inbox (cross-posts get one row per inbox).
-        linked = session.execute(
-            select(ArticleList.article_id).where(
-                ArticleList.article_id == article_id,
-                ArticleList.inbox_id == inbox.id,
-            )
-        ).scalar_one_or_none()
-        if linked is None:
-            abort(404)
-
+        # The date is part of the identity, so it is checked BEFORE the
+        # inbox: a wrong inbox with a wrong date stays a 404 rather
+        # than being redirected into a URL the caller never named.
         _abort_404_if_url_date_mismatches(article, year, month)
+
+        # All inboxes this article is linked to. Used for both the
+        # cross-post hint (which excludes the current inbox) and the
+        # canonical URL (which picks one across the full set).
+        all_links: list[tuple[int, str]] = list(
+            session.execute(
+                select(Inbox.id, Inbox.name)
+                .join(ArticleList, ArticleList.inbox_id == Inbox.id)
+                .where(ArticleList.article_id == article.id)
+                .order_by(Inbox.name)
+            ).all()
+        )
+
+        # Exists, right date, wrong inbox (cross-posts get one row per
+        # inbox): 301 to the canonical message URL (#648). Built by
+        # `_canonical_url_for`, the same inbox predicate as the page's
+        # canonical tag, so the target is always an inbox the article is
+        # in. A self-canonical page's tag equals this Location; a
+        # threaded page's tag carries on to its thread page. No links at
+        # all is a corrupt row: 404.
+        if not any(ix_id == inbox.id for ix_id, _ in all_links):
+            target = _canonical_url_for(article, all_links)
+            if target is None:
+                abort(404)
+            return redirect(target, code=301)
 
         # Full thread context (replaces the v1 parent + immediate-replies
         # view). Walk constrained to this article's inbox. Loaded BEFORE
@@ -126,6 +144,17 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         #   every other input stands still: it is an operator env knob,
         #   so changing it restarts the same image and the version
         #   component below does not move either.
+        # - resolved canonical inbox name: `<link rel="canonical">` and
+        #   `og:url` follow `article.canonical_inbox_id` and the
+        #   article's inbox links, neither of which touches the thread.
+        #   A canonical recompute, a new cross-post link or a change to
+        #   the demoted-inbox setting moves the advertised canonical
+        #   while every other input stands still, so edges and
+        #   crawlers would keep 304-ing the old one. The resolved NAME
+        #   covers all three, which the raw id would not.
+        # - inbox link names: the "Also in:" line renders from them, so a
+        #   new cross-post that leaves the canonical in place still
+        #   changes the body.
         # Cache-Control on this endpoint is `public, no-cache` (set in
         # `web.hooks._CACHE_CONTROL_BY_ENDPOINT`), so browsers always
         # revalidate; the 304 path skips the body fetch + render entirely.
@@ -137,9 +166,11 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         state_tag = render_state_tag(session, article.id, article.message_id)
         etag_input = (
             f"{article.id}|{mimir.__version__}|"
-            f"{max(1, settings.thread_view_render_cap)}|"
+            f"{settings.thread_view_render_cap}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|"
-            f"{state_tag}|{'hx' if hx_request else 'full'}"
+            f"{state_tag}|{'hx' if hx_request else 'full'}|"
+            f"{_canonical_inbox_name(article, all_links) or ''}|"
+            f"{','.join(name for _, name in all_links)}"
         )
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
         if etag in request.if_none_match:
@@ -345,17 +376,6 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                     target_inbox = _canonical_inbox_name(art, links) or links[0][1]
                     lore_mirror_urls[art.message_id] = _msg_url(art, target_inbox)
 
-        # All inboxes this article is linked to. Used for both the
-        # cross-post hint (which excludes the current inbox) and the
-        # canonical URL (which picks one across the full set).
-        all_links: list[tuple[int, str]] = list(
-            session.execute(
-                select(Inbox.id, Inbox.name)
-                .join(ArticleList, ArticleList.inbox_id == Inbox.id)
-                .where(ArticleList.article_id == article.id)
-                .order_by(Inbox.name)
-            ).all()
-        )
         cross_post_inboxes = [n for ix_id, n in all_links if ix_id != inbox.id]
         base = _site_base()
         canonical_url = _canonical_url_for(article, all_links, base=base)
@@ -453,7 +473,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                             get_thread(session, target_inbox, target_root)
                         )
 
-            cap = max(1, settings.thread_view_render_cap)
+            cap = settings.thread_view_render_cap
             # By IDENTITY, not position. `get_thread`'s `sort_path` is
             # NULL for a dateless node and NULL sorts first, so
             # `target_thread[0]` is that node rather than the root, and

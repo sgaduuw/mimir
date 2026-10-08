@@ -310,9 +310,8 @@ def _log_request(response):
                 "hx_request": request.headers.get("HX-Request"),
                 "purpose": request.headers.get("Purpose"),
                 "sec_purpose": request.headers.get("Sec-Purpose"),
-                # Observed headers, not independently verified IP metadata.
+                # Observed header, not independently verified IP metadata.
                 "country": request.headers.get("CF-IPCountry"),
-                "asnum": request.headers.get("X-ASN"),
                 # Never consume a stream to calculate its size. HEAD and
                 # bodyless statuses transmit no body despite Content-Length.
                 "response_bytes": 0

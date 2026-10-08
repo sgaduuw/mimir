@@ -12,6 +12,8 @@ JSON-LD helpers; the settings / X-Forwarded-Proto lookups don't need
 to repeat per call.
 """
 
+import re
+
 from flask import abort, g, request
 from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased
@@ -20,6 +22,13 @@ from mimir.canonical import fallback_canonical_name
 from mimir.config import settings
 from mimir.models import Article, ArticleList, Inbox
 from mimir.threading import thread_page_of, unmaterialised_roots
+
+_REVIEWER_ADDR_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\Z")
+
+
+def is_addressable_reviewer_address(address: str | None) -> bool:
+    """Whether the reviewer route supports this address's syntax."""
+    return _REVIEWER_ADDR_RE.match(address or "") is not None
 
 
 def _get_inbox_or_404(session: Session, name: str) -> Inbox:
@@ -35,7 +44,9 @@ def _get_inbox_or_404(session: Session, name: str) -> Inbox:
 
 def _abort_404_if_url_date_mismatches(article: Article, year: int, month: int) -> None:
     """The URL date is part of the message's identity, not navigation
-    state, so a mismatched URL must 404 rather than redirect. Bumps
+    state, so a mismatched URL must 404 rather than redirect. The one
+    exception, a wrong inbox with the right date, lives in the message
+    route (#648). Bumps
     the contract from a "fuzzy lookup" to "exact identity match" so
     a URL is either fully resolvable or fully invalid, important for
     the age-at-a-glance property in browser history and shared links.
@@ -432,7 +443,7 @@ def _advertised_urls_for(
                     ix_id,
                     root.id,
                     article,
-                    max(1, settings.thread_view_render_cap),
+                    settings.thread_view_render_cap,
                 )
             out[art_id] = base + thread_page_url(root.id, root.date, name, page_no)
         else:

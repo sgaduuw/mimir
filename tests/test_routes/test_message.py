@@ -30,13 +30,11 @@ def test_message_url_four_tuple_identity_404s_on_mismatch(
 ):
     """`/<inbox>/<YYYY>/<MM>/<article_id>` is a 4-tuple identity:
     inbox + year + month + id must ALL match the article's storage
-    or the route 404s. CONTEXT.md (URL scheme) is explicit, "URLs
-    either resolve exactly or don't resolve at all", but the
-    in-range component tests only catch impossible values
-    (year 1990, month 0/13). The mismatched-but-plausible case
-    (right id, wrong year/month/inbox) is unpinned, and that's the
-    case a regression introducing a 301-to-canonical helper would
-    quietly break.
+    or the route 404s. The one exception is a wrong inbox with the
+    right date, which 301s to the canonical (#648, next tests). The
+    in-range component tests only catch impossible values (year
+    1990, month 0/13); this pins the plausible-but-wrong corners,
+    including a wrong inbox combined with a wrong date.
 
     Ingest a real article and then probe every mismatched corner."""
     art_id, real_url = _ingest_one_article(
@@ -62,14 +60,88 @@ def test_message_url_four_tuple_identity_404s_on_mismatch(
         f"/alpha/{other_year}/{real_month}/{real_id}",
         # Wrong month, right year + id.
         f"/alpha/{real_year}/{other_month}/{real_id}",
-        # Wrong inbox, right year + month + id (article isn't linked to beta).
-        f"/beta/{real_year}/{real_month}/{real_id}",
+        # Wrong inbox AND wrong date: the date is identity, so the
+        # inbox redirect must not launder it.
+        f"/beta/{other_year}/{real_month}/{real_id}",
+        # Unknown id, and unknown inbox, under a real-looking date.
+        f"/alpha/{real_year}/{real_month}/999999",
+        f"/nosuch/{real_year}/{real_month}/{real_id}",
     ):
         r = client.get(wrong, follow_redirects=False)
         assert r.status_code == 404, (
             f"expected 404 on mismatched URL {wrong!r}, got {r.status_code} "
             f"(location={r.headers.get('Location')!r})"
         )
+
+
+def test_message_wrong_inbox_redirects_to_canonical(client, tmp_path):
+    """An article that exists but is not linked to the requested inbox
+    301s to its canonical message URL (#648), so URLs already in crawler
+    queues from the misassigned-list-address bug consolidate instead of
+    404ing. For a self-canonical page the Location equals the path in
+    the page's own `<link rel="canonical">`; a threaded page's tag
+    carries on to its thread page (see the reply test below)."""
+    _, real_url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "wrong-inbox-redirect@example.com",
+    )
+    canonical = re.search(
+        r'<link rel="canonical" href="([^"]+)"', client.get(real_url).data.decode()
+    ).group(1)
+
+    _, year, month, art_id = real_url.strip("/").split("/")
+    r = client.get(f"/beta/{year}/{month}/{art_id}", follow_redirects=False)
+
+    assert r.status_code == 301
+    assert r.headers["Location"] == real_url
+    assert canonical.endswith(r.headers["Location"])
+    # Not pinned for long: the canonical can move (#644).
+    assert r.headers["Cache-Control"] == "public, no-cache"
+
+
+def test_wrong_inbox_redirect_skips_a_stored_canonical_it_is_not_in(client, tmp_path):
+    """The #644 shape: `canonical_inbox_id` names the very inbox being
+    requested, and the article has no row there. The redirect must
+    resolve through the members-only predicate, or it 301s to itself."""
+    from sqlalchemy import select as _sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, Inbox
+
+    art_id, alpha_url = _ingest_one_article(
+        tmp_path, "alpha", "stored-canonical-not-member@example.com"
+    )
+    with SessionLocal() as s:
+        beta = s.execute(_sa_select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        s.get(Article, art_id).canonical_inbox_id = beta.id
+        s.commit()
+
+    _, year, month, _ = alpha_url.strip("/").split("/")
+    r = client.get(f"/beta/{year}/{month}/{art_id}", follow_redirects=False)
+    assert r.status_code == 301
+    assert r.headers["Location"] == alpha_url
+    assert client.get(r.headers["Location"], follow_redirects=False).status_code == 200
+
+
+def test_wrong_inbox_redirect_on_a_reply_targets_the_message_not_the_thread_page(
+    client, tmp_path
+):
+    """A reply's page canonicalises to its thread page. The 301 names the
+    MESSAGE (the resource the caller asked for); the thread page is the
+    target page's own canonical, one hop on."""
+    msgs = _seed_three_message_thread(tmp_path, "alpha")
+    reply_id, reply_url, _ = msgs["reply"]
+    page_canonical = re.search(
+        r'<link rel="canonical" href="([^"]+)"', client.get(reply_url).data.decode()
+    ).group(1)
+    assert "/t" in page_canonical  # precondition: page is thread-canonical
+
+    _, year, month, _ = reply_url.strip("/").split("/")
+    r = client.get(f"/beta/{year}/{month}/{reply_id}", follow_redirects=False)
+    assert r.status_code == 301
+    assert r.headers["Location"] == reply_url
+    assert not page_canonical.endswith(r.headers["Location"])
 
 
 def test_message_subject_truncated_in_title(client, tmp_path):
@@ -2162,6 +2234,115 @@ def test_message_page_hx_request_has_distinct_etag(client, tmp_path):
     full = client.get(url)
     partial = client.get(url, headers={"HX-Request": "true"})
     assert full.headers["ETag"] != partial.headers["ETag"]
+
+
+def test_message_page_etag_changes_when_canonical_inbox_moves(client, tmp_path):
+    """The page's `<link rel="canonical">` follows
+    `articles.canonical_inbox_id` and the article's inbox links. A
+    recompute (or a new cross-post link) moves the canonical without
+    touching the thread, so the ETag has to carry the resolved
+    canonical or CDN edges and conditional-GET crawlers keep getting
+    304s for the old one."""
+    from sqlalchemy import select as _sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    art_id, alpha_url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "etag-canonical@example.com",
+        subject="cross-posted",
+    )
+    with SessionLocal() as s:
+        alpha = s.execute(_sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(_sa_select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        alpha_link = s.execute(
+            _sa_select(ArticleList).where(
+                ArticleList.article_id == art_id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one()
+        s.add(
+            ArticleList(
+                article_id=art_id,
+                inbox_id=beta.id,
+                epoch=alpha_link.epoch,
+                commit_sha=alpha_link.commit_sha,
+            )
+        )
+        s.get(Article, art_id).canonical_inbox_id = alpha.id
+        s.commit()
+        beta_id = beta.id
+
+    def _canonical(resp):
+        return re.search(
+            r'<link rel="canonical" href="([^"]+)"', resp.data.decode()
+        ).group(1)
+
+    first = client.get(alpha_url)
+    assert first.status_code == 200
+    assert "/alpha/" in _canonical(first)
+
+    with SessionLocal() as s:
+        s.get(Article, art_id).canonical_inbox_id = beta_id
+        s.commit()
+
+    second = client.get(alpha_url, headers={"If-None-Match": first.headers["ETag"]})
+    assert second.status_code == 200, "stale canonical served as 304"
+    assert "/beta/" in _canonical(second)
+
+
+def test_message_page_etag_changes_when_cross_post_link_added(client, tmp_path):
+    """The "Also in:" line renders from the article's inbox links, so a
+    new cross-post link moves the body even when the canonical stays
+    put. The ETag has to carry the link set, not only the resolved
+    canonical."""
+    from sqlalchemy import select as _sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    art_id, alpha_url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "etag-crosspost@example.com",
+        subject="cross-posted",
+    )
+    with SessionLocal() as s:
+        alpha = s.execute(_sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(_sa_select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        # Pin the canonical so the new link cannot move it: only the
+        # cross-post hint changes.
+        s.get(Article, art_id).canonical_inbox_id = alpha.id
+        alpha_link = s.execute(
+            _sa_select(ArticleList).where(
+                ArticleList.article_id == art_id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one()
+        s.commit()
+        beta_id = beta.id
+        epoch, commit_sha = alpha_link.epoch, alpha_link.commit_sha
+
+    first = client.get(alpha_url)
+    assert first.status_code == 200
+    assert "Also in:" not in first.data.decode()
+
+    with SessionLocal() as s:
+        s.add(
+            ArticleList(
+                article_id=art_id,
+                inbox_id=beta_id,
+                epoch=epoch,
+                commit_sha=commit_sha,
+            )
+        )
+        s.commit()
+
+    second = client.get(alpha_url, headers={"If-None-Match": first.headers["ETag"]})
+    assert second.status_code == 200, "stale cross-post hint served as 304"
+    assert "Also in:" in second.data.decode()
 
 
 def test_message_page_etag_tracks_thread_render_cap(client, tmp_path, monkeypatch):

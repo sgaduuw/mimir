@@ -36,7 +36,11 @@ from mimir.rendering import render_body
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.trailers import REVIEW_TRAILER_ROLES
 from mimir.web._blueprint import bp_web
-from mimir.web.urls import _msg_url, _thread_view_url
+from mimir.web.urls import _msg_url, _thread_view_url, is_addressable_reviewer_address
+
+bp_web.add_app_template_filter(
+    is_addressable_reviewer_address, "is_addressable_reviewer"
+)
 
 
 def _relative_time(then: datetime, now: datetime | None = None) -> str:
@@ -433,8 +437,9 @@ def _is_allowlisted_address_filter(address: str | None) -> bool:
     OR MAINTAINERS-derived set).
 
     Used by templates to decide whether to render a clickable
-    reviewer link. The reviewer page itself (`/<inbox>/reviewer/<addr>`)
-    accepts any address, but mimir only generates outbound links for
+    reviewer link, alongside the `is_addressable_reviewer` syntax check.
+    The reviewer page accepts supported address syntax regardless of
+    the allowlist, but mimir only generates outbound links for
     allowlisted addresses, this keeps non-public addresses out of
     URL bars / browser history / scraper paths reached via mimir's
     own navigation, matching the redaction posture of `safe_from`.
@@ -444,41 +449,33 @@ def _is_allowlisted_address_filter(address: str | None) -> bool:
     return _is_allowlisted(address)
 
 
-@bp_web.app_template_filter("is_addressable_maintainer")
-def _is_addressable_maintainer_filter(address: str | None) -> bool:
-    """Whether the profile route accepts this address's syntax."""
-    return is_addressable_maintainer_address(address or "")
+@bp_web.app_template_filter("maintainer_link_url")
+def _maintainer_link_url_filter(address: str | None) -> str:
+    """Site-relative profile URL for a maintainer, or "" when the
+    address must stay plain text. One filter so both link sites apply
+    the same gate in the same order (#616).
 
-
-@bp_web.app_template_filter("maintainer_url")
-def _maintainer_url_filter(address: str | None) -> str:
-    """Site-relative URL for a maintainer's profile page.
-
-    Delegates to `maintainer_directory.maintainer_path` so a link
+    The URL comes from `maintainer_directory.maintainer_path`, so a link
     rendered in a template is byte-identical to the profile page's own
-    canonical and to its sitemap entry, rather than a near-miss that
-    resolves to them.
+    canonical and to its sitemap entry.
 
     What makes a link safe is the caller's `role == 'M'` filter, NOT
-    the allowlist gate. Both link sites (`subsystem.html`,
-    `_message_body.html`) filter on role, because
-    `/maintainers/<address>` serves `M:` only while the allowlist is
-    the union of `M:` and `R:`. An earlier version of this docstring
-    credited the gate alone ("the allowlist is built FROM these
-    addresses, so it passes by construction"), which is true and is
-    exactly why it was the wrong gate: every reviewer passed it and got
-    a 404 link. That was a shipped bug (MEMORY.md 2026-07-30).
+    the allowlist gate. `/maintainers/<address>` serves `M:` only while
+    the allowlist is the union of `M:` and `R:`, so every reviewer
+    passes the gate and would get a 404 link. That was a shipped bug
+    (MEMORY.md 2026-07-30).
 
     The gate is still applied, for the redaction question it does
-    answer: an address the page would redact should not be linked. Note
-    it is conditional rather than structural, since a deploy without the
+    answer: an address the page would redact should not be linked. It
+    is conditional rather than structural, since a deploy without the
     kernel tree has an empty MAINTAINERS-derived set and it fails closed
-    for every non-`@kernel.org` maintainer.
-
-    Callers also check `is_addressable_maintainer` before linking, so
-    unsupported addresses remain text rather than broken profile links.
+    for every non-`@kernel.org` maintainer. The syntax check keeps
+    unsupported addresses as text rather than broken profile links.
     """
-    return maintainer_path(address or "")
+    address = address or ""
+    if not (is_addressable_maintainer_address(address) and _is_allowlisted(address)):
+        return ""
+    return maintainer_path(address)
 
 
 @bp_web.app_template_filter("subsystem_url")

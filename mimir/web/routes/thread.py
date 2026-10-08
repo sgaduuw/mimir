@@ -195,7 +195,7 @@ def thread_view(
                         inbox.id,
                         root.id,
                         article,
-                        max(1, settings.thread_view_render_cap),
+                        settings.thread_view_render_cap,
                     )
                 return redirect(
                     thread_page_url(root.id, root.date, inbox.name, pg), code=301
@@ -224,11 +224,9 @@ def thread_view(
         # one that does.
         membership_source = "idx" if thread_rooted else "cte"
 
-        # A cap below 1 would render no messages and then IndexError in
-        # the JSON-LD builder (which needs a root), 500ing every thread
-        # view. Clamp rather than validate: this is an ops knob and an
-        # unusable value should degrade, not take the surface down.
-        cap = max(1, settings.thread_view_render_cap)
+        # At least 1: `Settings` refuses a smaller cap at startup (#612),
+        # since 0 would render no root and 500 every thread view.
+        cap = settings.thread_view_render_cap
         offset = (page - 1) * cap
 
         if thread_rooted:

@@ -11,6 +11,64 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.11.0] - 2026-10-08
+
+### Added
+
+- `mimir admin inbox update NAME --list-address ADDR` sets an inbox's list
+  address and refuses one another inbox already holds. It warns when the host
+  is not a known list host, since such an address never matches. `''` clears
+  it and hands the inbox back to auto-detection, which can promote a
+  cross-post address again. Run `admin canonicals backfill --reprocess`
+  afterwards to recompute canonicals (#645).
+
+### Changed
+
+- Build the sitemap index in about 10 s instead of 41 s, and the meta
+  sitemap almost instantly. The newest date per inbox now comes from the
+  inbox record, and one query per inbox counts both roots and thread pages
+  (#640).
+
+- Warm the sitemap index on the per-minute fast tier instead of the hourly
+  slow tier. On the slow tier it could expire before being refreshed, so a
+  crawler waited for the rebuild. It is now also warmed within a minute of
+  startup (#589).
+
+- `THREAD_VIEW_RENDER_CAP` below 1 now stops startup with a validation
+  error. It used to be raised to 1 silently, which showed one message per
+  thread page (#612).
+
+- Answer a message URL whose article exists but is filed under the wrong
+  list with a 301 to its canonical message URL instead of a 404, so links
+  already collected from the wrong-list bug consolidate. A wrong date or an
+  unknown id still returns 404 (#648).
+
+### Removed
+
+- Drop the `asnum` access-log field. No proxy sets `X-ASN`, so the field
+  held `null` or a value the client sent, not IP metadata (#615).
+
+### Fixed
+
+- Only render subsystem reviewer links for addresses accepted by the reviewer
+  route (#611).
+
+- Reviewer pages no longer link a message under a list that does not hold
+  it, which returned 404. Subsystem dashboards now link a cross-posted
+  message under the same list its page names as canonical (#646).
+
+- Message pages now revalidate when an article's canonical inbox or its
+  list of inboxes changes, so caches and crawlers stop receiving a stale
+  canonical or "Also in:" line (#645).
+
+- List-address auto-promotion no longer gives an inbox an address another
+  inbox already holds. A small list whose mail is mostly cross-posted to a
+  bigger one used to take the bigger list's address, which pointed canonical
+  links at inboxes that do not hold the message. The list hosts of op-tee,
+  xen-devel, cip-dev, b.a.t.m.a.n and kernelnewbies are now recognised, so
+  a new install can promote those inboxes to their own address. An address
+  already set is kept; correct it by hand, see #645 (#647).
+
 ## [3.10.1] - 2026-10-06
 
 ### Changed

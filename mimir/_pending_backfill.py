@@ -22,6 +22,7 @@ from sqlalchemy import insert as sa_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mimir.broker.writes import WriteFuture, WriteOp
+from mimir.ingest._pending import _promote_list_address
 from mimir.models import (
     Article,
     ArticleFile,
@@ -282,17 +283,11 @@ def _submit_canonical_batch(writer, payloads: list[_CanonicalPending]) -> WriteF
 def _submit_promote_list_address_sweep(writer) -> WriteFuture:
     """Compose the periodic promotion-sweep WriteOp for `backfill_canonicals`.
 
-    Iterates every Inbox with `list_address IS NULL` and applies the
-    same promotion check (top-two ratio + minimum-observation threshold)
-    that Phase 3b's `_submit_promote_list_address(writer, inbox_id)`
-    runs for a single inbox.
-
-    No refactor of `mimir/canonical.py` is needed; this closure is
-    Phase 3b's `_submit_promote_list_address` closure body looped
-    over every NULL-list_address inbox in one transaction. Same
-    constants imported from the same place.
+    Runs `_promote_list_address`, the same check the per-inbox ingest
+    WriteOp uses, for every Inbox with `list_address IS NULL`, in one
+    transaction, so an address promoted earlier in the sweep counts as
+    held for the inboxes after it.
     """
-    from mimir.ingest.epoch import MIN_PROMOTE_OBSERVATIONS, PROMOTE_DOMINANCE
 
     def _fn(conn):
         candidate_ids = (
@@ -301,25 +296,6 @@ def _submit_promote_list_address_sweep(writer) -> WriteFuture:
             .all()
         )
         for inbox_id in candidate_ids:
-            rows = conn.execute(
-                select(
-                    InboxAddressObservation.address,
-                    InboxAddressObservation.count,
-                )
-                .where(InboxAddressObservation.inbox_id == inbox_id)
-                .order_by(InboxAddressObservation.count.desc())
-                .limit(2)
-            ).all()
-            if not rows:
-                continue
-            top_addr, top_count = rows[0]
-            if top_count < MIN_PROMOTE_OBSERVATIONS:
-                continue
-            second_count = rows[1][1] if len(rows) > 1 else 0
-            if top_count / max(top_count + second_count, 1) < PROMOTE_DOMINANCE:
-                continue
-            conn.execute(
-                update(Inbox).where(Inbox.id == inbox_id).values(list_address=top_addr)
-            )
+            _promote_list_address(conn, inbox_id)
 
     return writer.submit(WriteOp(label="backfill:canonicals:promote_sweep", fn=_fn))

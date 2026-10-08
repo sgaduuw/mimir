@@ -657,8 +657,12 @@ class Settings(BaseSettings):
     # entirely about blob fetches while 93% of the response was a
     # recursive thread walk that no longer happens.
     #
-    # Override via THREAD_VIEW_RENDER_CAP.
-    thread_view_render_cap: int = 75
+    # Override via THREAD_VIEW_RENDER_CAP. Must be at least 1; startup
+    # fails otherwise, so callers can use the value unclamped. The sitemap
+    # index and per-inbox sitemap keys include it, so a change misses them all:
+    # set it on all three services together and run
+    # `mimir warm-cache --tier slow` (docs/operations.md).
+    thread_view_render_cap: int = Field(default=75, ge=1)
 
     # Hard upper bound on age of "related patches" surfaced on a
     # message page (1.36.3). The `recent_patches_touching` helper
