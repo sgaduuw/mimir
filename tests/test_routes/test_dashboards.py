@@ -1329,3 +1329,42 @@ def test_subsystem_dashboard_does_not_500_on_case_colliding_section_names(
         assert again.get_data() == r.get_data(), (
             "the chosen section flips between renders"
         )
+
+
+def test_reviewer_page_links_a_linked_inbox_when_canonical_is_not_linked(
+    client, tmp_path
+):
+    """#646: an article whose stored canonical is an inbox it is NOT
+    linked to must be linked from the reviewer page under an inbox that
+    holds it. The reviewer query used to take the stored canonical
+    without a membership check, so crawlers followed a 404."""
+    import re
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleTrailer, Inbox
+
+    article_id, _ = _ingest_one_article(tmp_path, "alpha", "unlinked-canon@x")
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        article = s.get(Article, article_id)
+        # Precondition the bug needs: canonical points outside the links.
+        assert beta.id not in {link.inbox_id for link in article.lists}
+        article.canonical_inbox_id = beta.id
+        s.add(
+            ArticleTrailer(
+                article_id=article_id,
+                role="Reviewed-by",
+                name="R",
+                address="r@kernel.org",
+                address_normalized="r@kernel.org",
+            )
+        )
+        s.commit()
+
+    html = client.get("/alpha/reviewer/r%40kernel.org").get_data(as_text=True)
+    links = re.findall(rf'href="(/[^/"]+/\d+/\d+/{article_id})"', html)
+    assert len(links) == 1
+    assert links[0].startswith("/alpha/")
+    assert client.get(links[0]).status_code == 200
