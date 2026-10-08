@@ -162,6 +162,24 @@ def test_inbox_update_via_broker_mutates_only_supplied_fields(seeded_db):
     assert row.mirror_path  # whatever the seeded value was, non-empty
 
 
+def test_inbox_update_list_address_via_broker(seeded_db):
+    """list_address travels the same broker path as upstream_url: set
+    (normalised), refuse a duplicate, clear with an empty string."""
+    sp = short_socket_path("inbox-update-la")
+    with broker_running(sp):
+        c = BrokerClient(sp)
+        try:
+            payload = c.inbox_update("alpha", list_address="Alpha@Lists.Example.ORG")
+            assert payload["list_address"] == "alpha@lists.example.org"
+            with pytest.raises(BrokerUnavailable) as ei:
+                c.inbox_update("beta", list_address="alpha@lists.example.org")
+            assert "InvalidInbox:" in str(ei.value)
+            payload = c.inbox_update("alpha", list_address="")
+            assert payload["list_address"] is None
+        finally:
+            c.close()
+
+
 def test_inbox_update_unknown_returns_not_found(seeded_db):
     sp = short_socket_path("inbox-update-404")
     with broker_running(sp):
@@ -367,6 +385,29 @@ def test_cli_admin_inbox_update_dispatches_via_broker(seeded_db, monkeypatch):
             _client_mod.reset_broker_client()
     assert result.exit_code == 0, result.output
     assert "updated inbox 'alpha'" in result.output
+
+
+def test_cli_admin_inbox_update_list_address_dispatches_via_broker(
+    seeded_db, monkeypatch
+):
+    from mimir.inboxes import get_inbox
+
+    sp = short_socket_path("cli-inbox-update-la")
+    with broker_running(sp):
+        monkeypatch.setattr(settings, "broker_socket_path", sp)
+        from mimir.broker import client as _client_mod
+
+        _client_mod.reset_broker_client()
+        try:
+            result = CliRunner().invoke(
+                admin_inbox_update_command,
+                ["alpha", "--list-address", "Alpha@Lists.Example.org"],
+            )
+        finally:
+            _client_mod.reset_broker_client()
+    assert result.exit_code == 0, result.output
+    assert "list_address: alpha@lists.example.org" in result.output
+    assert get_inbox("alpha").list_address == "alpha@lists.example.org"
 
 
 def test_cli_admin_inbox_remove_dispatches_via_broker(seeded_db, monkeypatch):

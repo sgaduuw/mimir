@@ -92,6 +92,7 @@ def admin_inbox_show_command(name: str) -> None:
     click.echo(f"name:         {inbox.name}")
     click.echo(f"mirror_path:  {inbox.mirror_path}")
     click.echo(f"upstream_url: {inbox.upstream_url}")
+    click.echo(f"list_address: {inbox.list_address}")
 
     with SessionLocal() as session:
         states = (
@@ -174,6 +175,15 @@ def admin_inbox_add_command(
 @click.option("--mirror-path", default=None, help="New filesystem path.")
 @click.option("--upstream-url", default=None, help="New upstream URL.")
 @click.option(
+    "--list-address",
+    default=None,
+    help="List address used to resolve canonical inboxes. Refused if "
+    "another inbox holds it. '' clears it and hands the inbox back to "
+    "auto-detection, which can promote a cross-post address again. "
+    "Does not recompute canonicals, run "
+    "`admin canonicals backfill --reprocess` afterwards.",
+)
+@click.option(
     "--rename",
     "new_name",
     default=None,
@@ -183,16 +193,31 @@ def admin_inbox_update_command(
     name: str,
     mirror_path: str | None,
     upstream_url: str | None,
+    list_address: str | None,
     new_name: str | None,
 ) -> None:
     """Modify an existing inbox. Only the supplied fields are touched."""
-    if mirror_path is None and upstream_url is None and new_name is None:
+    if (
+        mirror_path is None
+        and upstream_url is None
+        and list_address is None
+        and new_name is None
+    ):
         raise click.ClickException(
             "nothing to update, pass at least one of "
-            "--mirror-path / --upstream-url / --rename"
+            "--mirror-path / --upstream-url / --list-address / --rename"
         )
 
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.canonical import is_list_address
+
+    if list_address and not is_list_address(list_address.strip().lower()):
+        click.echo(
+            f"warning: {list_address.strip()!r} is not on a known list host, so "
+            "canonical resolution will never match it. Add its host to "
+            "LIST_HOST_SUFFIX_OVERRIDES (JSON array).",
+            err=True,
+        )
 
     try:
         inbox_dict = get_broker_client().inbox_update(
@@ -200,12 +225,14 @@ def admin_inbox_update_command(
             new_name=new_name,
             mirror_path=mirror_path,
             upstream_url=upstream_url,
+            list_address=list_address,
         )
     except BrokerUnavailable as exc:
         raise _inbox_click_error(exc)
     click.echo(f"updated inbox {inbox_dict['name']!r}")
     click.echo(f"  mirror_path:  {inbox_dict['mirror_path']}")
     click.echo(f"  upstream_url: {inbox_dict['upstream_url']}")
+    click.echo(f"  list_address: {inbox_dict.get('list_address')}")
 
 
 @admin_inbox_group.command("remove")

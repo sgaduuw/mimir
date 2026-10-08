@@ -731,16 +731,18 @@ class BrokerClient:
         new_name: str | None = None,
         mirror_path: str | None = None,
         upstream_url: str | None = None,
+        list_address: str | None = None,
         timeout: float = 60.0,
     ) -> dict:
         """Modify one inbox via the broker. Only non-None fields are
-        applied server-side."""
+        applied server-side; `list_address=""` clears it."""
         req = InboxUpdateRequest(
             rpc_id=0,
             name=name,
             new_name=new_name,
             mirror_path=mirror_path,
             upstream_url=upstream_url,
+            list_address=list_address,
         )
         reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
