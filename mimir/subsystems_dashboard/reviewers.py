@@ -75,8 +75,9 @@ class ReviewEntry:
     Tested-by) shows as two entries; that's accurate to the source
     trailer block and useful for the per-reviewer page reading.
 
-    `inbox_name` is the canonical inbox for the article (resolved
-    via Article.canonical_inbox or falling back to any linked inbox);
+    `inbox_name` is the canonical inbox for the article (the stored
+    canonical when linked, else the fallback in
+    `mimir.canonical.fallback_canonical_name`);
     used to construct the message URL. The reviewer page itself is
     inbox-scoped, but cross-posted articles still get the right
     canonical link.
@@ -134,38 +135,22 @@ def articles_reviewed_by(
     """
 
     def compute() -> list[ReviewEntry]:
-        # Earlier shape JOINed against a MATERIALIZE'd derived table
-        # that computed MIN(inbox.name) per article across the *entire*
-        # archive just to provide a fallback name when canonical_inbox_id
-        # was NULL. That scanned millions of rows on a cold miss before
-        # producing any output (verified via EXPLAIN QUERY PLAN).
-        #
-        # Replace the materialised view with a correlated subquery in
-        # the COALESCE: it fires per result row, bounded by LIMIT, and
-        # only matters when canon.name is NULL (which the cache miss
-        # tells us is the minority case once the canonical backfill has
-        # run). Each firing is a tight index lookup keyed on
-        # article_lists.article_id (composite PK prefix). Preserves the
-        # same alphabetical-first fallback the rest of the codebase
-        # uses (see `_canonical_inbox_name` in mimir.web.urls). Plan
-        # pinned in test_articles_reviewed_by_plan_drops_materialize.
+        # Deferred: `mimir.web` imports this package at load time.
+        from mimir.web.urls import _canonical_inbox_names_for
+
+        # The URL's inbox comes from `_canonical_inbox_names_for`, the
+        # rule the message page uses for its rel=canonical, which only
+        # ever names a linked inbox (#646). Resolving it in SQL with
+        # COALESCE(canon.name, ...) skipped the membership check and
+        # emitted URLs that 404.
         rows = session.execute(
             text(
                 """
                 SELECT a.id AS article_id, a.message_id, a.subject,
-                       a.date AS art_date, t.role,
-                       COALESCE(
-                           canon.name,
-                           (SELECT MIN(i.name)
-                            FROM article_lists al2
-                            JOIN inboxes i ON i.id = al2.inbox_id
-                            WHERE al2.article_id = a.id)
-                       ) AS inbox_name
+                       a.date AS art_date, t.role
                 FROM article_trailers t
                 JOIN articles a ON a.id = t.article_id
                 JOIN article_lists al ON al.article_id = a.id
-                LEFT JOIN inboxes canon
-                    ON canon.id = a.canonical_inbox_id
                 WHERE al.inbox_id = :inbox_id
                   AND t.address_normalized = :addr
                 ORDER BY a.date DESC
@@ -178,6 +163,7 @@ def articles_reviewed_by(
                 "limit": limit,
             },
         ).all()
+        inbox_names = _canonical_inbox_names_for(session, [r.article_id for r in rows])
         return [
             ReviewEntry(
                 article_id=r.article_id,
@@ -185,9 +171,10 @@ def articles_reviewed_by(
                 subject=r.subject,
                 date=_coerce_dt(r.art_date) if r.art_date else None,
                 role=r.role,
-                inbox_name=r.inbox_name,
+                inbox_name=inbox_names[r.article_id],
             )
             for r in rows
+            if r.article_id in inbox_names
         ]
 
     return cache.get_or_compute(
