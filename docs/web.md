@@ -39,7 +39,7 @@ cache-warming pass. Maintainer profiles collect activity across inboxes.
 All entries below are GET routes. `<inbox>` is its configured name; `<id>` is
 an indexed article ID. Message dates in URLs must match the indexed date.
 A message URL under a list the message is not filed in redirects (301) to
-its canonical URL; a wrong date still returns 404.
+its canonical message URL; a wrong date or an unknown list still returns 404.
 
 | Path | Purpose |
 | --- | --- |
