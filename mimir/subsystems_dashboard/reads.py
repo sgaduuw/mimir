@@ -15,6 +15,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
+from mimir.canonical import fallback_canonical_name
 from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume
 from mimir.models import (
     ArticleList,
@@ -104,14 +105,7 @@ def recent_articles_in_subsystem(
         out: list[RelatedPatch] = []
         for r in rows:
             link_set = links_by_article.get(r.article_id, [])
-            canon_name: str | None = None
-            if r.canonical_inbox_id is not None:
-                for ix_id, name in link_set:
-                    if ix_id == r.canonical_inbox_id:
-                        canon_name = name
-                        break
-            if canon_name is None and link_set:
-                canon_name = min(name for _, name in link_set)
+            canon_name = fallback_canonical_name(r.canonical_inbox_id, link_set)
             if canon_name is None:
                 continue
             out.append(

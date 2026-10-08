@@ -37,6 +37,9 @@ changes, not internal refactors. Categories: **Added**,
 - Only render subsystem reviewer links for addresses accepted by the reviewer
   route (#611).
 
+- Reviewer and subsystem dashboard pages no longer link a message under a
+  list that does not hold it, which returned 404 (#646).
+
 - Message pages now revalidate when an article's canonical inbox or its
   list of inboxes changes, so caches and crawlers stop receiving a stale
   canonical or "Also in:" line (#645).
