@@ -1926,7 +1926,7 @@ agree. It is invisible while the link is incidental and becomes real
 the moment a sitemap advertises it, because then crawlers walk the
 disagreement systematically rather than a reader stumbling on it.
 
-Three instances, all live at once:
+Four instances, the first three live at once:
 
 - `subsystems.subsystem_path` percent-encoded any name at all, while
   `subsystem_dashboard` rejected C0 controls and 404'd. Production
@@ -1945,6 +1945,14 @@ Three instances, all live at once:
   only. The gate answered a real question ("is this address safe to
   display") that was not the question that mattered ("does this page
   exist").
+- The series diff page (#661, 3.11.1) set no canonical, so it fell
+  back to `default_canonical_url`, which also drops the query string.
+  Every diff page nominated the bare `/<inbox>/series/<key>/diff`,
+  which 404s, and Search Console listed those bare URLs as 404s. The
+  page is linked, not sitemapped, so "sitemapped routes" was too
+  narrow: any route whose identity includes query parameters must pass
+  an explicit canonical. `_series_diff_url` builds both the revision
+  panel's link and the page's canonical.
 
 The rule that falls out: **whenever code emits a URL for another
 route to serve, the validity predicate and the URL builder are shared
