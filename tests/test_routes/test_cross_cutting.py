@@ -856,3 +856,44 @@ def test_site_base_url_override_forces_scheme(monkeypatch):
 
 
 # Year browse decade grouping (issue #4).
+
+
+# --- 404 page: abort description vs generic text -----------------------------
+
+_GENERIC_404 = "The page you requested isn&#39;t in this archive."
+
+
+def test_404_without_description_keeps_generic_text(client):
+    """An unmatched URL and a route's bare `abort(404)` both carry
+    Werkzeug's default description. Neither may replace the generic
+    text with the "If you entered the URL manually" boilerplate."""
+    for path in (
+        "/no/such/route/at/all/x/y/z",  # no rule matches
+        "/no-such-inbox/series/deadbeef/diff?from=v1&to=v2&pos=0",  # bare abort
+    ):
+        resp = client.get(path)
+        assert resp.status_code == 404, path
+        text = resp.data.decode()
+        assert _GENERIC_404 in text, path
+        assert "entered the URL manually" not in text, path
+
+
+def test_404_shows_abort_description_escaped():
+    """A route's `abort(404, description=...)` reaches the page, and
+    markup in it is escaped."""
+    from flask import abort
+
+    from mimir import create_app
+
+    app = create_app()
+
+    @app.route("/_boom")
+    def _boom():
+        abort(404, description="Available: <b>v1</b>")
+
+    resp = app.test_client().get("/_boom")
+    assert resp.status_code == 404
+    text = resp.data.decode()
+    assert "Available: &lt;b&gt;v1&lt;/b&gt;" in text
+    assert "<b>v1</b>" not in text
+    assert _GENERIC_404 not in text
