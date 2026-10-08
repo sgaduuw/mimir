@@ -28,7 +28,7 @@ from sqlalchemy import select
 
 from mimir import cache
 from mimir.extensions import SessionLocal
-from mimir.models import Article, Inbox
+from mimir.models import Article
 from mimir.patch_revisions import (
     AMBIGUOUS_MATCH,
     RevisionDiff,
@@ -36,7 +36,7 @@ from mimir.patch_revisions import (
     match_revision_position,
     resolve_series_patches,
 )
-from mimir.store import MessageNotFound, read_message
+from mimir.store import read_first_readable
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import (
     _canonical_url_for,
@@ -92,28 +92,6 @@ def _message_url(article: Article) -> str:
     panel builds it, so the link and the page it points at agree."""
     links = [(al.inbox_id, al.inbox.name) for al in article.lists]
     return _canonical_url_for(article, links) or ""
-
-
-def _read_first_readable(session, candidates: list[Article], url_inbox: Inbox):
-    """Return `(article, parsed)` for the first candidate whose body
-    can be read from an inbox it is filed in, else None.
-
-    `read_message` is inbox-scoped, and a series changes its Cc list
-    between revisions, so a revision need not be filed in the inbox
-    the URL names (#661). The URL's inbox is tried first, then the
-    rest by name. Candidates are tried lowest id first. None of the
-    three depends on the order the database returns rows in."""
-    for article in sorted(candidates, key=lambda a: a.id):
-        links = sorted(
-            article.lists,
-            key=lambda al: (al.inbox_id != url_inbox.id, al.inbox.name),
-        )
-        for link in links:
-            try:
-                return article, read_message(session, link.inbox, article.message_id)
-            except MessageNotFound:
-                continue
-    return None
 
 
 @bp_web.route("/<inbox_name>/series/<series_key>/diff")
@@ -242,8 +220,8 @@ def series_diff(inbox_name: str, series_key: str):
                 v1_in_series, v2_in_series = match  # type: ignore[misc]
                 v1_candidates = [v1_in_series.article]
                 v2_candidates = [v2_in_series.article]
-            v1_read = _read_first_readable(session, v1_candidates, inbox)
-            v2_read = _read_first_readable(session, v2_candidates, inbox)
+            v1_read = read_first_readable(session, v1_candidates, inbox.id)
+            v2_read = read_first_readable(session, v2_candidates, inbox.id)
             if v1_read is None or v2_read is None:
                 # No candidate's blob is reachable from any inbox it
                 # is filed in. The canonical archive bytes are

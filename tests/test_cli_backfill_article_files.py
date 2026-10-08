@@ -187,16 +187,14 @@ def test_backfill_skips_articles_with_unreachable_mirror(seeded_db):
 def test_backfill_prefers_canonical_inbox_for_crossposts(
     seeded_db, tmp_path, broker_active
 ):
-    """A cross-posted article has multiple ArticleList rows; the old
-    behaviour picked `article.lists[0]` whose order depends on the
-    SQLA loader. The fix is to read the canonical_inbox first and
-    fall back to lists[0] only when canonical is NULL.
+    """A cross-posted article has multiple ArticleList rows, and only
+    the canonical inbox's mirror holds the blob. Build the message in
+    beta's mirror, point alpha at a bogus SHA, set canonical_inbox_id=
+    beta and file it in both: the backfill must index the file.
 
-    Build the message in beta's mirror, point alpha at a non-mirror
-    path, set canonical_inbox_id=beta, and add ArticleList rows for
-    both. If canonical_inbox is preferred the backfill indexes the
-    file; if it falls back to lists[0] (which might be alpha first)
-    the read fails and the article skips."""
+    This passes whichever inbox is asked first, because the reader
+    falls through to the next filed inbox. The order itself is pinned
+    by `tests/test_cli_backfill_canonical_first.py`."""
     from sqlalchemy import select
 
     from mimir.extensions import SessionLocal
@@ -248,3 +246,48 @@ def test_backfill_prefers_canonical_inbox_for_crossposts(
             ).scalars()
         ]
     assert files == ["fs/foo/a.c"]
+
+
+def test_backfill_reads_article_whose_canonical_inbox_is_not_filed(
+    seeded_db, tmp_path, broker_active
+):
+    """#662: `canonical_inbox_id` can name an inbox the article is not
+    filed in. The body must be read from a filed inbox instead of the
+    article being skipped on every run."""
+    from mimir.models import ArticleList
+
+    _ingest_articles_without_files(seeded_db, tmp_path, _PATCH_BODY)
+    with seeded_db() as s:
+        gamma = Inbox(
+            name="gamma", mirror_path="/nonexistent", upstream_url="https://x/g"
+        )
+        s.add(gamma)
+        s.flush()
+        art = s.execute(
+            select(Article).where(Article.message_id == "m0@example.com")
+        ).scalar_one()
+        art.canonical_inbox_id = gamma.id
+        s.commit()
+        # Precondition: gamma names the article but holds no row for it.
+        filed = {
+            al.inbox_id
+            for al in s.execute(
+                select(ArticleList).where(ArticleList.article_id == art.id)
+            ).scalars()
+        }
+        assert filed and gamma.id not in filed
+
+    result = backfill_article_files(limit=1)
+    assert result.examined == 1
+    assert result.skipped == 0
+    assert result.indexed == 1
+    with seeded_db() as s:
+        rows = {
+            (a.message_id, f.path)
+            for a, f in s.execute(
+                select(Article, ArticleFile).join(
+                    ArticleFile, ArticleFile.article_id == Article.id
+                )
+            ).all()
+        }
+    assert rows == {("m0@example.com", "fs/foo/a.c")}
