@@ -1266,7 +1266,12 @@ URL scheme: `/<inbox_name>/<YYYY>/<MM>/<article_id>` (e.g.
 
 List, year, month, and article-id are all part of the URL identity:
 mismatches return 404 rather than redirect, so a URL either resolves
-exactly or doesn't resolve at all.
+exactly or doesn't resolve at all. One exception (#648): when the
+article exists and the date matches but the list is wrong, the message
+route answers 301 to the article's canonical message URL, so links
+collected from the misassigned-list-address bug (#644) consolidate
+instead of 404ing. A wrong date, an unknown id and an unknown list
+stay 404, including a wrong list combined with a wrong date.
 
 Cross-archive Message-ID linkification (in body text) requires the
 view to resolve referenced Message-IDs via a single bulk SELECT before
@@ -1307,6 +1312,11 @@ data:
    leave the slot NULL indefinitely. Bootstraps without hardcoded
    name→address tables; new inboxes self-identify after a short
    warm-up. Operator can override via `admin inbox update`.
+   Promotion skips an address another inbox already holds, because a
+   small list's To/Cc is often dominated by cross-posts to a bigger
+   one (#647). The first inbox to promote an address keeps it, so on
+   a from-scratch ingest (alphabetical) cocci can take lkml's address
+   before lkml does; an operator corrects that with `--list-address`.
 3. **Per-article pinning.** With `Inbox.list_address` populated,
    `pick_canonical_inbox_id` walks the message's To/Cc addresses
    in order and returns the first inbox whose `list_address`

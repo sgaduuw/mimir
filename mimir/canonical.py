@@ -57,11 +57,23 @@ LIST_HOST_SUFFIXES: frozenset[str] = frozenset(
         # ffmpeg
         "ffmpeg.org",
         # virtualization (libvirt, qemu, etc.)
+        # ponytail: admits personal @redhat.com addresses into the tally; a
+        # drop would move canonicals of unlisted older redhat.com lists.
+        # Fix a bad promotion with `admin inbox update --list-address`.
         "redhat.com",
         # bitcoin, crypto-adjacent lists sometimes mirrored
         "lists.linux.it",
         # debian lists
         "lists.debian.org",
+        # Own hosts of archived lists that were missing, so their
+        # inboxes' tallies held only cross-post addresses (#647).
+        # Each checked against the list's listinfo page, 2026-10-08.
+        "lists.trustedfirmware.org",  # op-tee
+        "lists.xenproject.org",  # xen-devel
+        "lists.cip-project.org",  # cip-dev
+        "lists.open-mesh.org",  # b.a.t.m.a.n
+        # Bare domain: the list has no lists. subdomain to match on.
+        "kernelnewbies.org",
     }
 )
 

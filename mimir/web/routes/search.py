@@ -6,7 +6,6 @@ author-feed clamping in `feeds.py`; that module imports them from
 here.
 """
 
-import re
 from urllib.parse import quote
 
 from flask import abort, render_template, request
@@ -20,7 +19,11 @@ from mimir.subsystems_dashboard import (
     articles_reviewed_by,
 )
 from mimir.web._blueprint import bp_web
-from mimir.web.urls import _get_inbox_or_404, _site_base
+from mimir.web.urls import (
+    _get_inbox_or_404,
+    _site_base,
+    is_addressable_reviewer_address,
+)
 
 # Search input bounds. The query string flows into a cache key, so a
 # soft length cap keeps the cache bounded and makes DoS-via-arbitrary-
@@ -32,13 +35,6 @@ SEARCH_RESULT_CAP = 100
 
 
 AUTHOR_VIEW_LIMIT = 100
-
-
-# Conservative pattern for the URL-side address: the same shape the
-# trailer extractor accepts (mimir/trailers.py _TRAILER_NAME_ADDR_RE).
-# Anything outside this falls to 404, defends against hostile bytes
-# reaching the SQL parameter and keeps the canonical URL well-formed.
-_REVIEWER_ADDR_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+$")
 
 
 @bp_web.route("/<inbox_name>/search")
@@ -146,7 +142,7 @@ def reviewer_view(inbox_name: str, address: str):
     who already knows them, matching the existing posture that
     redaction is friction, not a privacy guarantee.
     """
-    if not _REVIEWER_ADDR_RE.match(address):
+    if not is_addressable_reviewer_address(address):
         abort(404)
     address_normalized = address.lower()
     with SessionLocal() as session:

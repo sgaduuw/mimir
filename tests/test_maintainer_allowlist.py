@@ -4,7 +4,10 @@ allowlist. The redaction-filter wiring (`_safe_from_filter`,
 exercised through the web tier in `tests/test_routes.py`; this
 file pins the helper itself + the cache invalidation hook."""
 
+import warnings
+
 from sqlalchemy import select
+from sqlalchemy.exc import SAWarning
 
 from mimir import cache, maintainer_allowlist
 from mimir.extensions import SessionLocal
@@ -78,6 +81,23 @@ def test_deduplicates_addresses_appearing_in_multiple_subsystems(seeded_db):
     maintainer_allowlist.invalidate()
     out = maintainer_allowlist.maintainer_addresses()
     assert sum(1 for a in out if a == "same@example.com") == 1
+
+
+def test_compute_addresses_distinct_without_sawarning(seeded_db):
+    """The query deduplicates in SQL, not via the frozenset, and
+    uses a form SQLAlchemy 2.1 does not warn about (#613). A
+    column-level distinct() warns today and may change behaviour in
+    a later release, which would change who is shown unredacted."""
+    with seeded_db() as s:
+        _add_maintainer(s, "SUB-A", "M", "Same", "Same@example.com")
+        _add_maintainer(s, "SUB-B", "R", "Same", "same@example.com")
+        s.commit()
+    # compile() bypasses the engine's compiled cache, which would hide
+    # the warning once any earlier test had run the query.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SAWarning)
+        maintainer_allowlist._ADDRESSES_QUERY.compile()
+    assert maintainer_allowlist._compute_addresses() == ["same@example.com"]
 
 
 def test_invalidate_drops_cached_set(seeded_db):

@@ -208,18 +208,10 @@ def test_articles_reviewed_by_plan_drops_materialize(seeded_db):
             text(
                 """
                 EXPLAIN QUERY PLAN
-                SELECT a.id, a.message_id, a.subject, a.date, t.role,
-                       COALESCE(
-                           canon.name,
-                           (SELECT MIN(i.name)
-                            FROM article_lists al2
-                            JOIN inboxes i ON i.id = al2.inbox_id
-                            WHERE al2.article_id = a.id)
-                       ) AS inbox_name
+                SELECT a.id, a.message_id, a.subject, a.date, t.role
                 FROM article_trailers t
                 JOIN articles a ON a.id = t.article_id
                 JOIN article_lists al ON al.article_id = a.id
-                LEFT JOIN inboxes canon ON canon.id = a.canonical_inbox_id
                 WHERE al.inbox_id = :inbox_id
                   AND t.address_normalized = :addr
                 ORDER BY a.date DESC LIMIT :limit
@@ -603,3 +595,52 @@ def test_every_production_caller_keys_articles_reviewed_by_on_a_lowercased_addre
             "second cache entry for one person, and it caches an empty "
             "result because the SQL matches address_normalized"
         )
+
+
+def test_articles_reviewed_by_survives_link_deleted_between_queries(
+    seeded_db, monkeypatch
+):
+    """#646: the listing resolves inbox names in a second statement, so a
+    link deleted in between (a from-scratch reindex of the inbox) must
+    drop the row, not raise KeyError on a cache miss."""
+    from sqlalchemy import delete
+
+    import mimir.web.urls as urls
+
+    real = urls._canonical_inbox_names_for
+
+    def reindex_then_resolve(session, article_ids):
+        # The row matched the first SELECT; its only link is gone by
+        # the second.
+        session.execute(
+            delete(ArticleList).where(ArticleList.article_id.in_(article_ids))
+        )
+        return real(session, article_ids)
+
+    monkeypatch.setattr(urls, "_canonical_inbox_names_for", reindex_then_resolve)
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        s.add(
+            Article(
+                message_id="race@x",
+                subject="s",
+                author="a@example",
+                date=datetime.now(UTC),
+                thread_parent=None,
+                subject_normalized="s",
+                lists=[
+                    ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="a" * 40)
+                ],
+                trailers=[
+                    ArticleTrailer(
+                        role="Reviewed-by",
+                        name="R",
+                        address="r@kernel.org",
+                        address_normalized="r@kernel.org",
+                    )
+                ],
+            )
+        )
+        s.commit()
+        out = articles_reviewed_by(s, alpha, "r@kernel.org", force=True)
+    assert out == []

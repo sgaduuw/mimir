@@ -34,6 +34,7 @@ import logging
 import re
 import shutil
 import threading
+from email.utils import parseaddr
 from pathlib import Path
 
 from sqlalchemy import delete, exists, func, select
@@ -312,22 +313,51 @@ def create_inbox(name: str, mirror_path: str, upstream_url: str) -> Inbox:
     return inbox
 
 
+def _check_list_address_free(conn, list_address: str, inbox_id: int) -> None:
+    """Refuse a `list_address` another inbox already holds. Canonical
+    resolution maps one address to one inbox, so a duplicate pins
+    cross-posts to the wrong list (#644). `conn` is a Connection or a
+    Session; both expose `execute`."""
+    holder = conn.execute(
+        select(Inbox.name).where(
+            Inbox.list_address == list_address, Inbox.id != inbox_id
+        )
+    ).scalar()
+    if holder is not None:
+        raise InboxValidationError(
+            f"list_address {list_address!r} is already held by {holder!r}"
+        )
+
+
 def update_inbox(
     name: str,
     *,
     new_name: str | None = None,
     mirror_path: str | None = None,
     upstream_url: str | None = None,
+    list_address: str | None = None,
 ) -> Inbox:
     """Modify an existing inbox. Only the fields passed in are
-    touched. Raises InboxNotFound / InboxValidationError as
-    appropriate."""
+    touched. `list_address=""` clears it to NULL; any other value is
+    stored stripped and lowercased, as `extract_list_addresses` and the
+    observation tally store them. Raises InboxNotFound /
+    InboxValidationError as appropriate."""
     if new_name is not None:
         new_name = validate_name(new_name)
     if mirror_path is not None:
         mirror_path = validate_mirror_path(mirror_path)
     if upstream_url is not None:
         upstream_url = validate_upstream_url(upstream_url)
+    # "" is the clear sentinel (stored as NULL), so only None means
+    # "leave alone".
+    if list_address is not None:
+        list_address = list_address.strip().lower()
+        if list_address and (
+            "@" not in list_address or parseaddr(list_address)[1] != list_address
+        ):
+            raise InboxValidationError(
+                f"list_address: {list_address!r} is not a bare address"
+            )
 
     try:
         from mimir.broker._context import get_active_writer
@@ -370,6 +400,10 @@ def update_inbox(
                 values["mirror_path"] = mirror_path
             if upstream_url is not None:
                 values["upstream_url"] = upstream_url
+            if list_address is not None:
+                if list_address:
+                    _check_list_address_free(conn, list_address, row.id)
+                values["list_address"] = list_address or None
 
             if values:
                 conn.execute(
@@ -414,6 +448,10 @@ def update_inbox(
             inbox.mirror_path = mirror_path
         if upstream_url is not None:
             inbox.upstream_url = upstream_url
+        if list_address is not None:
+            if list_address:
+                _check_list_address_free(session, list_address, inbox.id)
+            inbox.list_address = list_address or None
         session.commit()
         session.refresh(inbox)
         _publish_names(session)

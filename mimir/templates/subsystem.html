@@ -28,8 +28,8 @@
        sitemap. #}
     {% for m in subsystem.maintainers %}
     <li><small><kbd>{{ m.role }}</kbd>
-      {{ m.name }}{% if m.name %} {% endif %}&lt;{% if m.role == 'M' and m.address | is_allowlisted_address and m.address | is_addressable_maintainer %}<a
-        href="{{ m.address | maintainer_url }}">{{ m.address }}</a>{% else %}{{ m.address }}{% endif %}&gt;</small></li>
+      {{ m.name }}{% if m.name %} {% endif %}&lt;{% set _url = m.address | maintainer_link_url if m.role == 'M' else '' %}{% if _url %}<a
+        href="{{ _url }}">{{ m.address }}</a>{% else %}{{ m.address }}{% endif %}&gt;</small></li>
     {% endfor %}
   </ul>
   {% endif %}
@@ -88,7 +88,7 @@
          reviewer page. Non-allowlisted addresses render as <hidden>
          via safe_from with no outbound link, so mimir doesn't push
          them into URLs / browser history / scraper paths. #}
-      {% if r.address|is_allowlisted_address %}
+      {% if r.address|is_allowlisted_address and r.address_normalized|is_addressable_reviewer %}
       <strong><a href="/{{ inbox_name }}/reviewer/{{ r.address_normalized|urlencode }}">{{ _label|safe_from }}</a></strong>
       {% else %}
       <strong>{{ _label|safe_from }}</strong>

@@ -567,6 +567,56 @@ def test_subsystem_dashboard_no_link_for_non_allowlisted_reviewer(
     assert "/alpha/reviewer/" not in text
 
 
+def test_subsystem_reviewer_links_respect_route_syntax_and_redaction(client, session):
+    import re
+    from urllib.parse import quote
+
+    from mimir.models import ArticleTrailer
+    from mimir.web.filters import _is_allowlisted_address_filter
+    from tests.test_subsystems._helpers import _add_patch_article
+
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    article_id = _add_patch_article(
+        session, "reviewer-links@example.com", ["fs/bcachefs/super.c"]
+    )
+    # Seed the rendering boundary directly: today's trailer parser excludes
+    # apostrophes and slashes, but the link emitter must enforce its own contract.
+    cases = [
+        ("Allowed+tag%Box@kernel.org", True, 200),
+        ("apostrophe'name@kernel.org", True, 404),
+        ("slash/name@kernel.org", True, 404),
+        ("newline@kernel.org\n", True, 404),
+        ("Private@elsewhere.example", False, 200),
+    ]
+    for i, (address, _allowlisted, _status) in enumerate(cases):
+        session.add(
+            ArticleTrailer(
+                article_id=article_id,
+                role="Reviewed-by",
+                name=f"Reviewer {i}",
+                address=address,
+                address_normalized=address.lower(),
+            )
+        )
+    session.commit()
+
+    for address, allowlisted, status in cases:
+        with client.application.test_request_context():
+            assert _is_allowlisted_address_filter(address) is allowlisted
+        path = "/alpha/reviewer/" + quote(address.lower(), safe="")
+        assert client.get(path).status_code == status
+
+    response = client.get("/alpha/subsystem/bcachefs/")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Active reviewers" in html
+    for i in range(len(cases)):
+        assert f"Reviewer {i}" in html
+    links = re.findall(r'href="(/alpha/reviewer/[^"]*)"', html)
+    assert links == ["/alpha/reviewer/allowed%2Btag%25box%40kernel.org"]
+    assert client.get(links[0]).status_code == 200
+
+
 def test_subsystem_dashboard_404_on_unknown_subsystem(client):
     """404 on an unknown subsystem name. URL is already lowercase
     so the redirect doesn't intercept; the lookup misses and 404
@@ -1279,3 +1329,42 @@ def test_subsystem_dashboard_does_not_500_on_case_colliding_section_names(
         assert again.get_data() == r.get_data(), (
             "the chosen section flips between renders"
         )
+
+
+def test_reviewer_page_links_a_linked_inbox_when_canonical_is_not_linked(
+    client, tmp_path
+):
+    """#646: an article whose stored canonical is an inbox it is NOT
+    linked to must be linked from the reviewer page under an inbox that
+    holds it. The reviewer query used to take the stored canonical
+    without a membership check, so crawlers followed a 404."""
+    import re
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleTrailer, Inbox
+
+    article_id, _ = _ingest_one_article(tmp_path, "alpha", "unlinked-canon@x")
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        article = s.get(Article, article_id)
+        # Precondition the bug needs: canonical points outside the links.
+        assert beta.id not in {link.inbox_id for link in article.lists}
+        article.canonical_inbox_id = beta.id
+        s.add(
+            ArticleTrailer(
+                article_id=article_id,
+                role="Reviewed-by",
+                name="R",
+                address="r@kernel.org",
+                address_normalized="r@kernel.org",
+            )
+        )
+        s.commit()
+
+    html = client.get("/alpha/reviewer/r%40kernel.org").get_data(as_text=True)
+    links = re.findall(rf'href="(/[^/"]+/\d+/\d+/{article_id})"', html)
+    assert len(links) == 1
+    assert links[0].startswith("/alpha/")
+    assert client.get(links[0]).status_code == 200

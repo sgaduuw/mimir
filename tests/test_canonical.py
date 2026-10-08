@@ -1,6 +1,8 @@
 """Pure-logic tests for `mimir.canonical`. Hits the heuristic, the
 header-extraction, and the canonical-pick, no DB."""
 
+import pytest
+
 from mimir.canonical import (
     LIST_HOST_SUFFIXES,
     extract_list_addresses,
@@ -35,6 +37,24 @@ def test_is_list_address_bare_kernel_org_rejected():
     # in the off-list-parent hint UI, hence the explicit pin.
     assert is_list_address("cve@kernel.org") is False
     assert is_list_address("gregkh@kernel.org") is False
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        # Checked against each list's own listinfo page, 2026-10-08.
+        "op-tee@lists.trustedfirmware.org",
+        "xen-devel@lists.xenproject.org",
+        "cip-dev@lists.cip-project.org",
+        "kernelnewbies@kernelnewbies.org",
+        # Host from the Mailman 3 list id b.a.t.m.a.n.lists.open-mesh.org.
+        "b.a.t.m.a.n@lists.open-mesh.org",
+    ],
+)
+def test_is_list_address_affected_lists_own_hosts(address):
+    # Without its own host, an inbox's tally only holds cross-post
+    # addresses, so promotion can only pick another list's (#647).
+    assert is_list_address(address) is True
 
 
 def test_is_list_address_subdomain_match_accepted():

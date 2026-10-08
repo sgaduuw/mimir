@@ -423,6 +423,62 @@ def test_admin_inbox_remove_keep_orphans_preserves_articles(seeded_db):
     assert "art3@example.com" in ids
 
 
+def test_admin_inbox_update_list_address_duplicate_refused_no_write(seeded_db):
+    """A list_address another inbox already holds is a clear error,
+    non-zero exit, and nothing is written (#645)."""
+    runner = CliRunner()
+    first = runner.invoke(
+        admin_inbox_update_command, ["alpha", "--list-address", "x@lists.example.org"]
+    )
+    assert first.exit_code == 0, first.output
+    result = runner.invoke(
+        admin_inbox_update_command, ["beta", "--list-address", "X@lists.example.org"]
+    )
+    assert result.exit_code != 0
+    assert "already held by 'alpha'" in result.output
+    assert get_inbox("beta").list_address is None
+
+
+def test_admin_inbox_update_list_address_empty_clears(seeded_db):
+    runner = CliRunner()
+    runner.invoke(
+        admin_inbox_update_command, ["alpha", "--list-address", "x@lists.example.org"]
+    )
+    result = runner.invoke(admin_inbox_update_command, ["alpha", "--list-address", ""])
+    assert result.exit_code == 0, result.output
+    assert get_inbox("alpha").list_address is None
+
+
+def test_admin_inbox_update_list_address_non_bare_refused_no_write(seeded_db):
+    result = CliRunner().invoke(
+        admin_inbox_update_command,
+        ["alpha", "--list-address", "Alpha <alpha@lists.example.org>"],
+    )
+    assert result.exit_code != 0
+    assert "not a bare address" in result.output
+    assert get_inbox("alpha").list_address is None
+
+
+def test_admin_inbox_update_list_address_warns_off_list_host(seeded_db):
+    """A host outside the list-host suffixes is stored but never matches
+    in canonical resolution; the operator is told how to fix that."""
+    result = CliRunner().invoke(
+        admin_inbox_update_command, ["alpha", "--list-address", "a@inria.fr"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "LIST_HOST_SUFFIX_OVERRIDES" in result.output
+    assert get_inbox("alpha").list_address == "a@inria.fr"
+
+
+def test_admin_inbox_update_list_address_no_warning_on_list_host(seeded_db):
+    result = CliRunner().invoke(
+        admin_inbox_update_command,
+        ["alpha", "--list-address", "alpha@vger.kernel.org"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "LIST_HOST_SUFFIX_OVERRIDES" not in result.output
+
+
 # Structural / wire-up assertions.
 #
 # The shape of `register_cli` is load-bearing, Flask only exposes the

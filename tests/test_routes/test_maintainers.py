@@ -235,10 +235,26 @@ def test_every_url_the_maintainers_sitemap_advertises_resolves(client, session):
         )
 
 
+def test_maintainer_link_url_requires_the_allowlist(monkeypatch):
+    """An address the page would redact gets no profile link. Seeded
+    maintainers are always allowlisted, so route tests cannot reach
+    this; it bites on a deploy whose MAINTAINERS-derived set is empty."""
+    from mimir import maintainer_allowlist
+    from mimir.web.filters import _maintainer_link_url_filter
+
+    address = "kent@example.com"
+    monkeypatch.setattr(maintainer_allowlist, "maintainer_addresses", frozenset)
+    assert _maintainer_link_url_filter(address) == ""
+
+    monkeypatch.setattr(
+        maintainer_allowlist, "maintainer_addresses", lambda: frozenset({address})
+    )
+    assert _maintainer_link_url_filter(address) == "/maintainers/kent@example.com"
+
+
 @pytest.mark.parametrize("surface", ["sitemap", "subsystem", "message"])
 def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface):
     """Removing any emitter's validity gate publishes a seeded 404."""
-    from html.parser import HTMLParser
     from urllib.parse import quote, urlsplit
     from xml.etree import ElementTree
 
@@ -289,24 +305,10 @@ def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface)
         response = client.get(url)
         assert response.status_code == 200
 
-        class Links(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.urls = []
-                self.text = []
-
-            def handle_starttag(self, tag, attrs):
-                if tag == "a":
-                    self.urls.append(dict(attrs).get("href", ""))
-
-            def handle_data(self, data):
-                self.text.append(data)
-
-        parsed = Links()
-        parsed.feed(response.get_data(as_text=True))
-        urls = [url for url in parsed.urls if url.startswith("/maintainers/")]
+        html = response.get_data(as_text=True)
+        urls = re.findall(r'href="(/maintainers/[^"]*)"', html)
         for i in range(len(unsupported)):
-            assert f"Unsupported {i}" in "".join(parsed.text)
+            assert f"Unsupported {i}" in html
 
     paths = [urlsplit(url).path for url in urls]
     assert paths == ["/maintainers/mixed%2Btag%25name@kernel.org"]

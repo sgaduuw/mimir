@@ -129,22 +129,23 @@ user agent and referrer, it records:
 | `purpose` | `Purpose` |
 | `sec_purpose` | `Sec-Purpose` |
 | `country` | `CF-IPCountry` |
-| `asnum` | Custom `X-ASN` request header |
 | `response_bytes` | Known response body length before proxy compression |
 
 Header values are raw strings, with JSON escaping; absent headers are `null`.
 They are observations, not verified identities or automatic bot classifications.
-Country and ASN require upstream enrichment; mimir performs no IP lookup.
+Country requires upstream enrichment; mimir performs no IP lookup.
 Only treat them as IP metadata when a trusted proxy overwrites incoming values
 and direct access to the origin is restricted. `TRUSTED_PROXY_HOPS` configures
 forwarded IP handling; it does not authenticate these additional headers.
 
+Each request can add up to about 8 KB per logged header to its access
+record, so a client can make single lines large. Cap the container log
+size on the host, for example Docker's `json-file` driver with
+`max-size` and `max-file`, or the equivalent for your log driver.
+
 Cloudflare can supply `CF-IPCountry` through
 [IP geolocation](https://developers.cloudflare.com/network/ip-geolocation/).
-`X-ASN` is this application's proxy contract, not a default Cloudflare header.
-A [request header transform](https://developers.cloudflare.com/rules/transform/request-header-modification/)
-can set it dynamically to `to_string(ip.src.asnum)`. Ensure intervening proxies
-forward both headers. Without that setup the corresponding fields remain `null`.
+Ensure intervening proxies forward it. Without that setup `country` remains `null`.
 
 `response_bytes` is `0` for HEAD and bodyless responses, and `null` when no
 content length is known. Logging does not read streamed bodies or measure
@@ -156,7 +157,7 @@ Requests served entirely by a CDN cache do not reach this access log.
 `TRUSTED_PROXY_HOPS` controls forwarded client address, scheme, and host handling.
 Count only trusted proxies in front of the app. Restrict direct access to the
 origin when relying on proxy headers; an exposed origin lets callers supply them.
-This setting does not authenticate country or ASN headers.
+This setting does not authenticate the country header.
 
 ### Caddy
 
