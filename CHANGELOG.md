@@ -11,6 +11,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- `mimir admin inbox update NAME --list-address ADDR` sets an inbox's list
+  address and refuses one another inbox already holds. It warns when the host
+  is not a known list host, since such an address never matches. `''` clears
+  it and hands the inbox back to auto-detection, which can promote a
+  cross-post address again. Run `admin canonicals backfill --reprocess`
+  afterwards to recompute canonicals (#645).
+
 ### Changed
 
 - Build the sitemap index in about 10 s instead of 41 s, and the meta
