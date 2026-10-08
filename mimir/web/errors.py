@@ -28,6 +28,7 @@ content="noindex">` so crawlers don't index typo URLs.
 """
 
 from flask import render_template
+from werkzeug.exceptions import NotFound
 
 from mimir.web._blueprint import bp_web
 
@@ -51,7 +52,14 @@ def _render_error(status: int, title: str, detail: str) -> tuple:
 
 
 @bp_web.app_errorhandler(404)
-def _not_found(_e):
+def _not_found(e):
+    # A route's `abort(404, description=...)` says why (for example the
+    # revisions that do exist). Werkzeug fills in its own boilerplate
+    # when none is given, so that default counts as "no description".
+    # The template autoescapes it.
+    description = getattr(e, "description", None)
+    if description and description != NotFound.description:
+        return _render_error(404, "Not found", description)
     return _render_error(
         404,
         "Not found",

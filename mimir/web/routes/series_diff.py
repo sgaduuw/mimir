@@ -36,9 +36,14 @@ from mimir.patch_revisions import (
     match_revision_position,
     resolve_series_patches,
 )
-from mimir.store import MessageNotFound, read_message
+from mimir.store import read_first_readable
 from mimir.web._blueprint import bp_web
-from mimir.web.urls import _get_inbox_or_404, _msg_url
+from mimir.web.urls import (
+    _canonical_url_for,
+    _get_inbox_or_404,
+    _series_diff_url,
+    _site_base,
+)
 
 # Long TTL: source emails are immutable in the public-inbox mirror
 # (see CONTEXT.md "Append-only upstreams"), so a computed diff
@@ -54,11 +59,13 @@ def _resolve_via_index(
     from_version: str,
     to_version: str,
     pos: int,
-) -> tuple[Article | None, Article | None]:
-    """Indexed lookup for the two articles at `(series_key, version,
-    pos)` for both sides. Returns `(from_article, to_article)`;
-    either side may be None when its row hasn't been backfilled yet,
-    in which case the caller falls back to the heuristic resolver.
+) -> tuple[list[Article], list[Article]]:
+    """Indexed lookup for the articles at `(series_key, version,
+    pos)` for both sides. Returns `(from_candidates, to_candidates)`;
+    a side is empty when its row hasn't been backfilled yet, in which
+    case the caller falls back to the heuristic resolver. A side holds
+    several candidates when the same slot was sent twice (a resend);
+    `mimir.store.read_first_readable` picks among them.
 
     Two-row SELECT (one per version) over the
     `ix_articles_patch_series_key` index, then position filter, fast.
@@ -74,15 +81,17 @@ def _resolve_via_index(
         .scalars()
         .all()
     )
-    from_a = next(
-        (a for a in rows if a.patch_series_version == from_version),
-        None,
+    return (
+        [a for a in rows if a.patch_series_version == from_version],
+        [a for a in rows if a.patch_series_version == to_version],
     )
-    to_a = next(
-        (a for a in rows if a.patch_series_version == to_version),
-        None,
-    )
-    return from_a, to_a
+
+
+def _message_url(article: Article) -> str:
+    """The article's canonical message URL, built as the revision
+    panel builds it, so the link and the page it points at agree."""
+    links = [(al.inbox_id, al.inbox.name) for al in article.lists]
+    return _canonical_url_for(article, links) or ""
 
 
 @bp_web.route("/<inbox_name>/series/<series_key>/diff")
@@ -162,20 +171,25 @@ def series_diff(inbox_name: str, series_key: str):
 
         # Cache lookup: the diff between two specific (cover, cover,
         # position) triples is content-addressed by their identities,
-        # so the cache key is inbox-scoped per-series.
+        # so the cache key is inbox-scoped per-series. The inbox stays
+        # in the key because the body read depends on it: each list
+        # archives its own copy (some append a footer), and the
+        # heuristic fallback walks thread children in the URL's inbox.
         cache_key = (
             f"revision_diff:{inbox.name}:{series_key}:{from_version}:{to_version}:{pos}"
         )
 
+        from_slot, to_slot = _resolve_via_index(
+            session,
+            series_key,
+            from_version,
+            to_version,
+            pos,
+        )
+
         def _compute() -> RevisionDiff:
-            v1_article, v2_article = _resolve_via_index(
-                session,
-                series_key,
-                from_version,
-                to_version,
-                pos,
-            )
-            if v1_article is None or v2_article is None:
+            v1_candidates, v2_candidates = from_slot, to_slot
+            if not v1_candidates or not v2_candidates:
                 # Indexed lookup didn't find one or both sides
                 # (in-series patch awaiting backfill, or partial
                 # ingest). Fall back to the heuristic resolver from
@@ -204,15 +218,15 @@ def series_diff(inbox_name: str, series_key: str):
                         ),
                     )
                 v1_in_series, v2_in_series = match  # type: ignore[misc]
-                v1_article = v1_in_series.article
-                v2_article = v2_in_series.article
-            try:
-                v1_parsed = read_message(session, inbox, v1_article.message_id)
-                v2_parsed = read_message(session, inbox, v2_article.message_id)
-            except MessageNotFound:
-                # One of the blobs is gone from the mirror. The
-                # canonical archive bytes are inaccessible; we can't
-                # produce a faithful diff. 404 is the right shape.
+                v1_candidates = [v1_in_series.article]
+                v2_candidates = [v2_in_series.article]
+            v1_read = read_first_readable(session, v1_candidates, inbox.id)
+            v2_read = read_first_readable(session, v2_candidates, inbox.id)
+            if v1_read is None or v2_read is None:
+                # No candidate's blob is reachable from any inbox it
+                # is filed in. The canonical archive bytes are
+                # inaccessible; we can't produce a faithful diff. 404
+                # is the right shape.
                 abort(
                     404,
                     description=(
@@ -220,6 +234,7 @@ def series_diff(inbox_name: str, series_key: str):
                         "render the diff."
                     ),
                 )
+            (v1_article, v1_parsed), (v2_article, v2_parsed) = v1_read, v2_read
             return compute_revision_diff(
                 v1_parsed.body,
                 v2_parsed.body,
@@ -227,8 +242,8 @@ def series_diff(inbox_name: str, series_key: str):
                 to_article_id=v2_article.id,
                 from_version=from_version,
                 to_version=to_version,
-                from_url=_msg_url(v1_article, inbox.name),
-                to_url=_msg_url(v2_article, inbox.name),
+                from_url=_message_url(v1_article),
+                to_url=_message_url(v2_article),
                 position=pos,
             )
 
@@ -238,9 +253,25 @@ def series_diff(inbox_name: str, series_key: str):
             REVISION_DIFF_CACHE_TTL_SEC,
             _compute,
         )
+        # Not cached with the diff: the nominated inbox follows
+        # `canonical_inbox_id` and `canonical_demoted_inboxes`, which
+        # can change inside the 24h the diff lives.
+        # When either slot is empty the body came from the heuristic,
+        # which walks the URL's inbox only, so that inbox is the one
+        # known to serve the diff.
+        canonical_url = _series_diff_url(
+            to_slot if from_slot else [],
+            series_key,
+            from_version,
+            to_version,
+            pos,
+            fallback_inbox=inbox.name,
+            base=_site_base(),
+        )
 
     return render_template(
         "series_diff.html",
+        canonical_url=canonical_url,
         inbox_name=inbox.name,
         current_inbox=inbox.name,
         series_key=series_key,
