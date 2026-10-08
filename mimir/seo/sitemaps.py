@@ -421,8 +421,8 @@ def _month_counts(session, inbox: Inbox) -> list[tuple[int, int, int, int]]:
     **32,629 entries (2.6 MiB) on 2026-09-29**, of which 32,420 were
     month buckets: 65% of the protocol's 50k-per-index limit. That
     is the PRE-COARSENING shape, measured against 3.8.1, and it is
-    what year bucketing exists to fix; it is kept because it is the
-    only figure here that was counted rather than modelled.
+    what year bucketing exists to fix; it is kept as the baseline the
+    served count below is compared against.
 
     With year bucketing deployed, the production index held 3,542
     entries on 2026-10-07, 7% of the cap (modelled beforehand at
