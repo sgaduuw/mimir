@@ -2164,6 +2164,115 @@ def test_message_page_hx_request_has_distinct_etag(client, tmp_path):
     assert full.headers["ETag"] != partial.headers["ETag"]
 
 
+def test_message_page_etag_changes_when_canonical_inbox_moves(client, tmp_path):
+    """The page's `<link rel="canonical">` follows
+    `articles.canonical_inbox_id` and the article's inbox links. A
+    recompute (or a new cross-post link) moves the canonical without
+    touching the thread, so the ETag has to carry the resolved
+    canonical or CDN edges and conditional-GET crawlers keep getting
+    304s for the old one."""
+    from sqlalchemy import select as _sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    art_id, alpha_url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "etag-canonical@example.com",
+        subject="cross-posted",
+    )
+    with SessionLocal() as s:
+        alpha = s.execute(_sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(_sa_select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        alpha_link = s.execute(
+            _sa_select(ArticleList).where(
+                ArticleList.article_id == art_id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one()
+        s.add(
+            ArticleList(
+                article_id=art_id,
+                inbox_id=beta.id,
+                epoch=alpha_link.epoch,
+                commit_sha=alpha_link.commit_sha,
+            )
+        )
+        s.get(Article, art_id).canonical_inbox_id = alpha.id
+        s.commit()
+        beta_id = beta.id
+
+    def _canonical(resp):
+        return re.search(
+            r'<link rel="canonical" href="([^"]+)"', resp.data.decode()
+        ).group(1)
+
+    first = client.get(alpha_url)
+    assert first.status_code == 200
+    assert "/alpha/" in _canonical(first)
+
+    with SessionLocal() as s:
+        s.get(Article, art_id).canonical_inbox_id = beta_id
+        s.commit()
+
+    second = client.get(alpha_url, headers={"If-None-Match": first.headers["ETag"]})
+    assert second.status_code == 200, "stale canonical served as 304"
+    assert "/beta/" in _canonical(second)
+
+
+def test_message_page_etag_changes_when_cross_post_link_added(client, tmp_path):
+    """The "Also in:" line renders from the article's inbox links, so a
+    new cross-post link moves the body even when the canonical stays
+    put. The ETag has to carry the link set, not only the resolved
+    canonical."""
+    from sqlalchemy import select as _sa_select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    art_id, alpha_url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "etag-crosspost@example.com",
+        subject="cross-posted",
+    )
+    with SessionLocal() as s:
+        alpha = s.execute(_sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(_sa_select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        # Pin the canonical so the new link cannot move it: only the
+        # cross-post hint changes.
+        s.get(Article, art_id).canonical_inbox_id = alpha.id
+        alpha_link = s.execute(
+            _sa_select(ArticleList).where(
+                ArticleList.article_id == art_id,
+                ArticleList.inbox_id == alpha.id,
+            )
+        ).scalar_one()
+        s.commit()
+        beta_id = beta.id
+        epoch, commit_sha = alpha_link.epoch, alpha_link.commit_sha
+
+    first = client.get(alpha_url)
+    assert first.status_code == 200
+    assert "Also in:" not in first.data.decode()
+
+    with SessionLocal() as s:
+        s.add(
+            ArticleList(
+                article_id=art_id,
+                inbox_id=beta_id,
+                epoch=epoch,
+                commit_sha=commit_sha,
+            )
+        )
+        s.commit()
+
+    second = client.get(alpha_url, headers={"If-None-Match": first.headers["ETag"]})
+    assert second.status_code == 200, "stale cross-post hint served as 304"
+    assert "Also in:" in second.data.decode()
+
+
 def test_message_page_etag_tracks_thread_render_cap(client, tmp_path, monkeypatch):
     """The message page's canonical is
     `thread_page_url(..., thread_page_of(..., cap))`, so the render cap
