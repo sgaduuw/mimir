@@ -13,6 +13,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- `backfill-article-files` and `backfill-article-trailers` no longer skip an
+  article whose stored canonical inbox is not one it is filed in. They read it
+  from the canonical inbox when it is filed there, else from another inbox it
+  is filed in. Such articles were skipped on every run. They have no rows yet,
+  so a plain re-run picks them up; `--reprocess` is not needed (#662).
+
 - Series diff links no longer 404 when a revision was not sent to the list in
   the URL. Each side is now read from an inbox the message is filed in, and
   the diff page links to each message at its canonical address. A resend

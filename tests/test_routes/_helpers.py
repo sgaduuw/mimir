@@ -824,3 +824,54 @@ def build_thread(
             seeded[key] = (art_id, url)
 
     return seeded
+
+
+def _seed_resends(inbox_names_per_article):
+    """Seed one article per entry, filed in the named inboxes (created
+    when missing), and return the list of Articles (expired once the
+    session closes, so read ids from a fresh query). No mirror
+    exists: the tests using this stub
+    `read_message` and only watch what the reader asks for."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    articles = []
+    with SessionLocal() as s:
+        names = {n for ns in inbox_names_per_article for n in ns}
+        for n in sorted(names):
+            if (
+                s.execute(select(Inbox).where(Inbox.name == n)).scalar_one_or_none()
+                is None
+            ):
+                s.add(
+                    Inbox(
+                        name=n,
+                        mirror_path=f"/tmp/{n}",
+                        upstream_url=f"https://example.com/{n}",
+                    )
+                )
+        s.flush()
+        by_name = {i.name: i for i in s.execute(select(Inbox)).scalars()}
+        for i, ns in enumerate(inbox_names_per_article):
+            art = Article(
+                message_id=f"resend-{i}@x",
+                subject="[PATCH 0/1] s",
+                author="Alice <a@example>",
+                date=datetime(2024, 6, 1, tzinfo=UTC),
+                thread_parent=None,
+                subject_normalized="[patch 0/1] s",
+                lists=[
+                    ArticleList(
+                        inbox_id=by_name[n].id, epoch="0.git", commit_sha="aa" * 20
+                    )
+                    for n in ns
+                ],
+            )
+            s.add(art)
+            articles.append(art)
+        s.commit()
+    return articles

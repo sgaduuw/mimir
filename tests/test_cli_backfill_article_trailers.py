@@ -132,3 +132,51 @@ def test_backfill_skips_articles_with_unreachable_mirror(seeded_db):
     result = backfill_article_trailers()
     assert result.failed == 0
     assert result.skipped > 0
+
+
+def test_backfill_reads_article_whose_canonical_inbox_is_not_filed(
+    seeded_db, tmp_path, broker_active
+):
+    """#662: `canonical_inbox_id` can name an inbox the article is not
+    filed in. The body must be read from a filed inbox instead of the
+    article being skipped on every run."""
+    from mimir.models import ArticleList
+
+    _ingest_articles_without_trailers(seeded_db, tmp_path, _TRAILER_BODY)
+    with seeded_db() as s:
+        gamma = Inbox(
+            name="gamma", mirror_path="/nonexistent", upstream_url="https://x/g"
+        )
+        s.add(gamma)
+        s.flush()
+        art = s.execute(
+            select(Article).where(Article.message_id == "m0@example.com")
+        ).scalar_one()
+        art.canonical_inbox_id = gamma.id
+        s.commit()
+        # Precondition: gamma names the article but holds no row for it.
+        filed = {
+            al.inbox_id
+            for al in s.execute(
+                select(ArticleList).where(ArticleList.article_id == art.id)
+            ).scalars()
+        }
+        assert filed and gamma.id not in filed
+
+    result = backfill_article_trailers(limit=1)
+    assert result.examined == 1
+    assert result.skipped == 0
+    assert result.indexed == 1
+    with seeded_db() as s:
+        rows = {
+            (a.message_id, t.role, t.address_normalized)
+            for a, t in s.execute(
+                select(Article, ArticleTrailer).join(
+                    ArticleTrailer, ArticleTrailer.article_id == Article.id
+                )
+            ).all()
+        }
+    assert rows == {
+        ("m0@example.com", "Acked-by", "bob@kernel.org"),
+        ("m0@example.com", "Reviewed-by", "alice@example.com"),
+    }
