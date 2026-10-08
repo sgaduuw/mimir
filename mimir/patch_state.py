@@ -48,7 +48,7 @@ from mimir.models import (
 from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import parse_cover_letter
 from mimir.trailers import INDEXED_TRAILER_ROLES
-from mimir.web.urls import _canonical_url_for
+from mimir.web.urls import _canonical_url_for, _series_diff_url
 
 
 @dataclass
@@ -279,18 +279,28 @@ def _series_timeline(
     # but a partially-rolled-out deploy could observe the NULL state
     # briefly.
     pos = article.patch_series_position
-    pos_param = "cover" if pos in (None, 0) else str(pos)
+    to_slot = [r for r in revisions if r.patch_series_version == current_version]
     out: list[StateSeriesEntry] = []
     for rev in revisions:
         link_set = [(al.inbox_id, al.inbox.name) for al in rev.lists]
         url = _canonical_url_for(rev, link_set, base="") or ""
         is_current = rev.id == article.id
         diff_url: str | None = None
-        if not is_current and rev.patch_series_version and current_version:
-            diff_url = (
-                f"/{inbox_name}/series/{article.patch_series_key}"
-                f"/diff?from={rev.patch_series_version}"
-                f"&to={current_version}&pos={pos_param}"
+        # A resend shares the current version string, and the route
+        # 404s on `from == to`, so it gets no link (#661).
+        if (
+            not is_current
+            and rev.patch_series_version
+            and current_version
+            and rev.patch_series_version != current_version
+        ):
+            diff_url = _series_diff_url(
+                to_slot,
+                article.patch_series_key,
+                rev.patch_series_version,
+                current_version,
+                pos,
+                fallback_inbox=inbox_name,
             )
         out.append(
             StateSeriesEntry(
