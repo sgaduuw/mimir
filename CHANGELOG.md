@@ -37,6 +37,9 @@ changes, not internal refactors. Categories: **Added**,
 - Only render subsystem reviewer links for addresses accepted by the reviewer
   route (#611).
 
+- Reviewer and subsystem dashboard pages no longer link a message under a
+  list that does not hold it, which returned 404 (#646).
+
 ## [3.10.1] - 2026-10-06
 
 ### Changed
