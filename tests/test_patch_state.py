@@ -366,6 +366,50 @@ def test_patch_state_series_timeline_with_diff_links(seeded_db):
     assert "pos=cover" in v1_entry.diff_url
 
 
+def test_patch_state_series_timeline_no_diff_for_same_version(seeded_db):
+    """#661: a resend carries the same version string as the current
+    revision. The route 404s on `from == to`, so no link is built."""
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+        def _cover(msgid, version, day):
+            return Article(
+                message_id=msgid,
+                subject=f"[PATCH {version} 0/2] common series title",
+                author="Author <a@example.com>",
+                date=datetime(2024, 6, day, tzinfo=UTC),
+                thread_parent=None,
+                subject_normalized=f"[patch {version} 0/2] common series title",
+                patch_series_key="resendkey",
+                patch_series_version=version,
+                patch_series_position=0,
+                lists=[
+                    ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="bb" * 20)
+                ],
+            )
+
+        v1 = _cover("rs-v1@x", "v1", 1)
+        v2 = _cover("rs-v2@x", "v2", 10)
+        v2_resend = _cover("rs-v2b@x", "v2", 11)
+        s.add_all([v1, v2, v2_resend])
+        s.commit()
+        state = patch_state_for_article(
+            s,
+            v2_resend,
+            thread_dates=[v2_resend.date],
+            subsystem_ids=[],
+            inbox_name="alpha",
+            force=True,
+        )
+    by_id = {e.article_id: e for e in state.series}
+    # Precondition: all three revisions are on the timeline, and the
+    # one that must keep its link (v1) has it.
+    assert len(by_id) == 3
+    assert by_id[v1.id].diff_url is not None
+    assert by_id[v2.id].version == "v2"
+    assert by_id[v2.id].diff_url is None
+
+
 def test_patch_state_series_timeline_renders_on_in_series_patch(seeded_db):
     """#212: series row renders on `[PATCH N/M]` pages too, not
     just covers. Same-position filter narrows to revisions of THIS

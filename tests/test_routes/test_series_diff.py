@@ -3,6 +3,13 @@ patch-series diff route (`pos=cover` and per-position links,
 indexed-primary resolution + heuristic fallback for awaiting-
 backfill cases)."""
 
+import html as html_lib
+import re
+
+from sqlalchemy import select
+
+from mimir.extensions import SessionLocal
+from mimir.models import Article, ArticleList, Inbox
 from tests.test_routes._helpers import _ingest_series_pair
 
 
@@ -143,6 +150,9 @@ def test_series_diff_unknown_version_404(client, tmp_path):
     )
     resp = client.get(f"/alpha/series/{series_key}/diff?from=v1&to=v9&pos=cover")
     assert resp.status_code == 404
+    available = re.search(r'Available: ([^<">]*)[<"]', resp.data.decode())
+    assert available is not None
+    assert available.group(1) == "v1"
 
 
 def test_series_diff_self_diff_404(client, tmp_path):
@@ -288,6 +298,432 @@ def test_series_diff_uses_indexed_lookup_without_thread_parent(
     body = resp.data.decode()
     assert "v1 patch body" in body
     assert "v2 patch body updated" in body
+
+
+def _file_in_beta(tmp_path, message_ids):
+    """Link the named articles into `beta` too, pointing at the blobs
+    `alpha` already holds (same epoch repos, so `beta.mirror_path` is
+    `tmp_path` as well). Models a revision that was Cc'd to a second
+    list without ingesting it twice."""
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        beta.mirror_path = str(tmp_path)
+        for mid in message_ids:
+            art = s.execute(
+                select(Article).where(Article.message_id == mid)
+            ).scalar_one()
+            (alpha_link,) = art.lists
+            s.add(
+                ArticleList(
+                    article_id=art.id,
+                    inbox_id=beta.id,
+                    epoch=alpha_link.epoch,
+                    commit_sha=alpha_link.commit_sha,
+                )
+            )
+        s.commit()
+
+
+def _cross_list_series(tmp_path):
+    """v1 filed only in alpha; v2 in alpha and beta. Returns the series
+    key. Asserts the shape the tests exist for."""
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path,
+        "alpha",
+        v1_messages=[("v1-cv@x", "[PATCH 0/1] series", None, b"v1 cover\n", author)],
+        v2_messages=[("v2-cv@x", "[PATCH v2 0/1] series", None, b"v2 cover\n", author)],
+    )
+    _file_in_beta(tmp_path, ["v2-cv@x"])
+    with SessionLocal() as s:
+        homes = {
+            mid: {
+                al.inbox.name
+                for al in s.execute(select(Article).where(Article.message_id == mid))
+                .scalar_one()
+                .lists
+            }
+            for mid in ("v1-cv@x", "v2-cv@x")
+        }
+    assert homes == {"v1-cv@x": {"alpha"}, "v2-cv@x": {"alpha", "beta"}}
+    return series_key
+
+
+def test_series_diff_reads_side_filed_in_another_inbox(client, tmp_path):
+    """#661: the diff linked from beta's v2 page compares against v1,
+    which beta never received. Both sides must still be read."""
+    series_key = _cross_list_series(tmp_path)
+    resp = client.get(f"/beta/series/{series_key}/diff?from=v1&to=v2&pos=cover")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "v1 cover" in body
+    assert "v2 cover" in body
+
+
+def _canonical_of(art):
+    from mimir.web.urls import _canonical_url_for
+
+    return _canonical_url_for(art, [(al.inbox_id, al.inbox.name) for al in art.lists])
+
+
+def test_series_diff_message_links_use_canonical_helper(client, tmp_path):
+    """#661: `from_url`/`to_url` come from `_canonical_url_for`, not
+    the URL's inbox. Both revisions are filed in alpha and beta, so
+    the diff renders from either and the two builders can disagree
+    without any 404 to hide it: beta's URL must still link to alpha,
+    the canonical inbox."""
+    from mimir.web.urls import _msg_url
+
+    series_key = _cross_list_series(tmp_path)
+    _file_in_beta(tmp_path, ["v1-cv@x"])
+    resp = client.get(f"/beta/series/{series_key}/diff?from=v1&to=v2&pos=cover")
+    assert resp.status_code == 200
+    hrefs = re.findall(r'<a href="([^"]+)">message</a>', resp.data.decode())
+    assert len(hrefs) == 2
+    expected = []
+    with SessionLocal() as s:
+        for mid in ("v1-cv@x", "v2-cv@x"):
+            art = s.execute(
+                select(Article).where(Article.message_id == mid)
+            ).scalar_one()
+            assert {al.inbox.name for al in art.lists} == {"alpha", "beta"}
+            expected.append(_canonical_of(art))
+            # Precondition: the URL-inbox builder would disagree.
+            assert _msg_url(art, "beta") != expected[-1]
+    assert hrefs == expected
+
+
+def _two_mirrors(tmp_path, first):
+    """One series whose messages are archived in BOTH inboxes from
+    separate mirrors, the beta copies carrying a list footer, as
+    mailman does. `first` is the inbox ingested first, which decides
+    the order of each article's `lists` rows. Returns the series key."""
+    footer = b"___\nbeta mailing list footer\n"
+    author = "Alice <a@example>"
+    key = None
+    for name in (first, "beta" if first == "alpha" else "alpha"):
+        tail = footer if name == "beta" else b""
+        (tmp_path / name).mkdir()
+        key = _ingest_series_pair(
+            tmp_path / name,
+            name,
+            v1_messages=[
+                ("v1-cv@x", "[PATCH 0/1] s", None, b"v1 cover\n" + tail, author)
+            ],
+            v2_messages=[
+                ("v2-cv@x", "[PATCH v2 0/1] s", None, b"v2 cover\n" + tail, author)
+            ],
+        )
+    with SessionLocal() as s:
+        for mid in ("v1-cv@x", "v2-cv@x"):
+            art = s.execute(
+                select(Article).where(Article.message_id == mid)
+            ).scalar_one()
+            # Precondition: one article, filed in both, in `first`'s order.
+            order = [al.inbox.name for al in art.lists]
+            assert sorted(order) == ["alpha", "beta"]
+    return key
+
+
+def test_series_diff_body_independent_of_first_requesting_inbox(client, tmp_path):
+    """Each list archives its own copy of a message, and the body the
+    diff shows depends on which inbox it was read from. The cached diff
+    is keyed per inbox, so beta's footer must not reach /alpha/."""
+    key = _two_mirrors(tmp_path, "alpha")
+    q = "diff?from=v1&to=v2&pos=cover"
+    alone = client.get(f"/alpha/series/{key}/{q}")
+    assert alone.status_code == 200
+    assert "beta mailing list footer" not in alone.data.decode()  # precondition
+    from tests.test_routes._helpers import _clear_sitemap_cache
+
+    _clear_sitemap_cache()  # drops every cache row, not only sitemaps
+    beta = client.get(f"/beta/series/{key}/{q}")
+    assert "beta mailing list footer" in beta.data.decode()  # precondition
+    after = client.get(f"/alpha/series/{key}/{q}")
+    assert after.status_code == 200
+    assert "beta mailing list footer" not in after.data.decode()
+
+
+def test_series_diff_heuristic_result_not_shared_across_inboxes(client, tmp_path):
+    """The heuristic fallback walks thread children in the URL's inbox.
+    alpha holds two v2 copies of patch 1 (the matcher cannot pick,
+    strict 404); beta holds one. A beta request must not change what
+    alpha answers."""
+    author = "Alice <a@example>"
+    key = _ingest_series_pair(
+        tmp_path,
+        "alpha",
+        v1_messages=[
+            ("v1-cv@x", "[PATCH 0/1] s", None, b"v1 cover\n", author),
+            ("v1-p1@x", "[PATCH 1/1] foo: bar", "v1-cv@x", b"v1 p1\n", author),
+        ],
+        v2_messages=[
+            ("v2-cv@x", "[PATCH v2 0/1] s", None, b"v2 cover\n", author),
+            ("v2-p1@x", "[PATCH v2 1/1] foo: bar", "v2-cv@x", b"v2 p1\n", author),
+            ("v2-p1b@x", "[PATCH v2 1/1] foo: bar", "v2-cv@x", b"v2 p1b\n", author),
+        ],
+    )
+    _file_in_beta(tmp_path, ["v1-cv@x", "v1-p1@x", "v2-cv@x", "v2-p1@x"])
+    # Force the heuristic: v2's in-series rows are "awaiting backfill".
+    with SessionLocal() as s:
+        for mid in ("v2-p1@x", "v2-p1b@x"):
+            art = s.execute(
+                select(Article).where(Article.message_id == mid)
+            ).scalar_one()
+            art.patch_series_position = None
+        s.commit()
+    q = "diff?from=v1&to=v2&pos=1"
+    assert client.get(f"/alpha/series/{key}/{q}").status_code == 404  # precondition
+    assert client.get(f"/beta/series/{key}/{q}").status_code == 200
+    assert client.get(f"/alpha/series/{key}/{q}").status_code == 404
+
+
+def _canonical(html):
+    m = re.search(r'<link rel="canonical" href="([^"]*)">', html)
+    assert m is not None, "page nominates no canonical"
+    return html_lib.unescape(m.group(1))
+
+
+def test_series_diff_canonical_is_the_panel_link_and_resolves(client, tmp_path):
+    """#661 item 5: the diff page names itself, query string included,
+    byte-identically to the link the revision panel publishes, and that
+    URL serves the page. Without a `canonical_url` the page fell back to
+    the bare request path, which 404s."""
+    key = _cross_list_series(tmp_path)
+    q = "from=v1&to=v2&pos=cover"
+    # The panel on the current (v2) page, viewed from beta.
+    with SessionLocal() as s:
+        v2 = s.execute(
+            select(Article).where(Article.message_id == "v2-cv@x")
+        ).scalar_one()
+        beta_url = f"/beta/{v2.date.year}/{v2.date.month:02d}/{v2.id}"
+    page = client.get(beta_url)
+    assert page.status_code == 200
+    fold = page.data.decode().split('class="revisions-fold"')[1].split("</details>")[0]
+    (panel_href,) = re.findall(r'href="([^"]*/diff\?[^"]*)"', fold)
+    panel_href = html_lib.unescape(panel_href)
+    resp = client.get(f"/beta/series/{key}/diff?{q}")
+    assert resp.status_code == 200  # precondition
+    html = resp.data.decode()
+    canonical = _canonical(html)
+    assert "?" in canonical  # precondition: not the bare path
+    # Absolute canonical vs the panel's relative link: same bytes after the host.
+    assert canonical.endswith(panel_href)
+    og = re.search(r'og:url" content="([^"]*)"', html).group(1)
+    assert html_lib.unescape(og) == canonical
+    path = re.sub(r"^https?://[^/]+", "", canonical)
+    assert client.get(path).status_code == 200
+
+
+def test_series_diff_one_canonical_across_inboxes(client, tmp_path):
+    """The same diff renders under every inbox either side is filed in.
+    Those pages must nominate one canonical."""
+    key = _cross_list_series(tmp_path)
+    q = "diff?from=v1&to=v2&pos=cover"
+    a = client.get(f"/alpha/series/{key}/{q}")
+    b = client.get(f"/beta/series/{key}/{q}")
+    assert (a.status_code, b.status_code) == (200, 200)  # precondition
+    assert _canonical(a.data.decode()) == _canonical(b.data.decode())
+
+
+def _seed_resends(inbox_names_per_article):
+    """Seed one article per entry, filed in the named inboxes (created
+    when missing), and return `(articles, inboxes_by_name)` detached
+    from their session. No mirror exists: the tests below stub
+    `read_message` and only watch what the reader asks for."""
+    from datetime import UTC, datetime
+
+    articles = []
+    with SessionLocal() as s:
+        names = {n for ns in inbox_names_per_article for n in ns}
+        for n in sorted(names):
+            if (
+                s.execute(select(Inbox).where(Inbox.name == n)).scalar_one_or_none()
+                is None
+            ):
+                s.add(
+                    Inbox(
+                        name=n,
+                        mirror_path=f"/tmp/{n}",
+                        upstream_url=f"https://example.com/{n}",
+                    )
+                )
+        s.flush()
+        by_name = {i.name: i for i in s.execute(select(Inbox)).scalars()}
+        for i, ns in enumerate(inbox_names_per_article):
+            art = Article(
+                message_id=f"resend-{i}@x",
+                subject="[PATCH 0/1] s",
+                author="Alice <a@example>",
+                date=datetime(2024, 6, 1, tzinfo=UTC),
+                thread_parent=None,
+                subject_normalized="[patch 0/1] s",
+                lists=[
+                    ArticleList(
+                        inbox_id=by_name[n].id, epoch="0.git", commit_sha="aa" * 20
+                    )
+                    for n in ns
+                ],
+            )
+            s.add(art)
+            articles.append(art)
+        s.commit()
+    return articles
+
+
+def test_read_first_readable_picks_lowest_article_id(monkeypatch):
+    """Resends share a slot; the pick must not depend on the order the
+    caller (or the database) hands them over."""
+    from mimir.web.routes import series_diff
+
+    monkeypatch.setattr(series_diff, "read_message", lambda s, ix, mid: mid)
+    _seed_resends([["alpha"], ["alpha"], ["alpha"]])
+    with SessionLocal() as s:
+        arts = list(
+            s.execute(
+                select(Article).where(Article.message_id.like("resend-%"))
+            ).scalars()
+        )
+        assert len(arts) == 3  # precondition
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        newest_first = sorted(arts, key=lambda a: a.id, reverse=True)
+        assert newest_first[0].id > newest_first[-1].id  # precondition: reversed
+        article, _ = series_diff._read_first_readable(s, newest_first, alpha)
+        assert article.id == min(a.id for a in arts)
+
+
+def test_read_first_readable_inbox_order(monkeypatch):
+    """The URL's inbox first, then the rest by name. The article's
+    `lists` come back in inbox-id order, and `aardvark` is created last
+    so that order (alpha, beta, aardvark) differs from name order."""
+    from mimir.models import Inbox as _Inbox  # noqa: F401
+    from mimir.store import MessageNotFound
+    from mimir.web.routes import series_diff
+
+    asked = []
+
+    def _always_missing(session, inbox, message_id):
+        asked.append(inbox.name)
+        raise MessageNotFound(message_id)
+
+    monkeypatch.setattr(series_diff, "read_message", _always_missing)
+    _seed_resends([["alpha", "beta", "aardvark"]])
+    with SessionLocal() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == "resend-0@x")
+        ).scalar_one()
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        zeta = Inbox(
+            name="zeta",
+            mirror_path="/tmp/zeta",
+            upstream_url="https://example.com/zeta",
+        )
+        s.add(zeta)
+        s.flush()
+        assert [al.inbox.name for al in art.lists] != [
+            "aardvark",
+            "alpha",
+            "beta",
+        ]  # precondition
+        assert series_diff._read_first_readable(s, [art], beta) is None
+        assert asked == ["beta", "aardvark", "alpha"]
+        asked.clear()
+        # URL inbox not among the article's: pure name order.
+        assert series_diff._read_first_readable(s, [art], zeta) is None
+        assert asked == ["aardvark", "alpha", "beta"]
+
+
+def test_series_diff_url_nominates_inbox_of_lowest_id_in_slot():
+    """The panel and the route hand the helper the `to` slot in
+    different orders; the nominated inbox must not follow that order.
+    The lower-id article lives in beta only, the other in alpha only."""
+    from mimir.web.urls import _series_diff_url
+
+    _seed_resends([["beta"], ["alpha"]])
+    with SessionLocal() as s:
+        low, high = sorted(
+            s.execute(
+                select(Article).where(Article.message_id.like("resend-%"))
+            ).scalars(),
+            key=lambda a: a.id,
+        )
+        assert {al.inbox.name for al in low.lists} == {"beta"}  # precondition
+        assert {al.inbox.name for al in high.lists} == {"alpha"}
+        urls = {
+            _series_diff_url(
+                slot, "k", "v1", "v2", 0, fallback_inbox="zeta", base="https://x"
+            )
+            for slot in ([high, low], [low, high])
+        }
+    assert urls == {"https://x/beta/series/k/diff?from=v1&to=v2&pos=cover"}
+
+
+def test_series_diff_canonical_serves_when_heuristic_path_used(client, tmp_path):
+    """v1's patch awaits backfill, so the body comes from the heuristic,
+    which walks children in the URL's inbox only. The page must nominate
+    that inbox, not the to-side's canonical one (beta), where v1 was
+    never sent."""
+    author = "Alice <a@example>"
+    key = _ingest_series_pair(
+        tmp_path,
+        "alpha",
+        v1_messages=[
+            ("v1-cv@x", "[PATCH 0/1] s", None, b"v1 cover\n", author),
+            ("v1-p1@x", "[PATCH 1/1] foo: bar", "v1-cv@x", b"v1 p1\n", author),
+        ],
+        v2_messages=[
+            ("v2-cv@x", "[PATCH v2 0/1] s", None, b"v2 cover\n", author),
+            ("v2-p1@x", "[PATCH v2 1/1] foo: bar", "v2-cv@x", b"v2 p1\n", author),
+        ],
+    )
+    _file_in_beta(tmp_path, ["v2-cv@x", "v2-p1@x"])
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        for mid, canon, pos in (("v2-p1@x", beta.id, 1), ("v1-p1@x", None, None)):
+            art = s.execute(
+                select(Article).where(Article.message_id == mid)
+            ).scalar_one()
+            art.canonical_inbox_id = canon or art.canonical_inbox_id
+            art.patch_series_position = pos  # v1: awaiting backfill
+        s.commit()
+    resp = client.get(f"/alpha/series/{key}/diff?from=v1&to=v2&pos=1")
+    assert resp.status_code == 200  # precondition: renders where v1 lives
+    canonical = _canonical(resp.data.decode())
+    assert canonical.startswith("http://localhost/alpha/")  # beta would 404
+    assert client.get(re.sub(r"^https?://[^/]+", "", canonical)).status_code == 200
+
+
+def test_series_diff_canonical_ignores_unfiled_canonical_inbox(client, tmp_path):
+    """`canonical_inbox_id` can name an inbox the article is not filed
+    in. The nominated inbox must be a filed one."""
+    key = _cross_list_series(tmp_path)
+    with SessionLocal() as s:
+        gamma = Inbox(
+            name="gamma", mirror_path="/nonexistent", upstream_url="https://x/g"
+        )
+        s.add(gamma)
+        s.flush()
+        v2 = s.execute(
+            select(Article).where(Article.message_id == "v2-cv@x")
+        ).scalar_one()
+        v2.canonical_inbox_id = gamma.id
+        s.commit()
+        assert "gamma" not in {al.inbox.name for al in v2.lists}  # precondition
+    resp = client.get(f"/beta/series/{key}/diff?from=v1&to=v2&pos=cover")
+    assert resp.status_code == 200
+    canonical = _canonical(resp.data.decode())
+    assert "/gamma/" not in canonical
+    assert client.get(re.sub(r"^https?://[^/]+", "", canonical)).status_code == 200
 
 
 # --- Message-page ETag / conditional revalidation -----------------------------
