@@ -97,6 +97,18 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # thread the view renders (see `dedupe_thread`).
         thread = dedupe_thread(get_thread(session, inbox, root_msgid))
 
+        # All inboxes this article is linked to. Used for both the
+        # cross-post hint (which excludes the current inbox) and the
+        # canonical URL (which picks one across the full set).
+        all_links: list[tuple[int, str]] = list(
+            session.execute(
+                select(Inbox.id, Inbox.name)
+                .join(ArticleList, ArticleList.inbox_id == Inbox.id)
+                .where(ArticleList.article_id == article.id)
+                .order_by(Inbox.name)
+            ).all()
+        )
+
         # Conditional-GET (ETag) for the message page. Inputs:
         # - article.id: invariant for the resource itself.
         # - mimir.__version__: invalidates every cached page on deploy so
@@ -126,6 +138,17 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         #   every other input stands still: it is an operator env knob,
         #   so changing it restarts the same image and the version
         #   component below does not move either.
+        # - resolved canonical inbox name: `<link rel="canonical">` and
+        #   `og:url` follow `article.canonical_inbox_id` and the
+        #   article's inbox links, neither of which touches the thread.
+        #   A canonical recompute, a new cross-post link or a change to
+        #   the demoted-inbox setting moves the advertised canonical
+        #   while every other input stands still, so edges and
+        #   crawlers would keep 304-ing the old one. The resolved NAME
+        #   covers all three, which the raw id would not.
+        # - inbox link names: the "Also in:" line renders from them, so a
+        #   new cross-post that leaves the canonical in place still
+        #   changes the body.
         # Cache-Control on this endpoint is `public, no-cache` (set in
         # `web.hooks._CACHE_CONTROL_BY_ENDPOINT`), so browsers always
         # revalidate; the 304 path skips the body fetch + render entirely.
@@ -139,7 +162,9 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             f"{article.id}|{mimir.__version__}|"
             f"{settings.thread_view_render_cap}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|"
-            f"{state_tag}|{'hx' if hx_request else 'full'}"
+            f"{state_tag}|{'hx' if hx_request else 'full'}|"
+            f"{_canonical_inbox_name(article, all_links) or ''}|"
+            f"{','.join(name for _, name in all_links)}"
         )
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
         if etag in request.if_none_match:
@@ -345,17 +370,6 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                     target_inbox = _canonical_inbox_name(art, links) or links[0][1]
                     lore_mirror_urls[art.message_id] = _msg_url(art, target_inbox)
 
-        # All inboxes this article is linked to. Used for both the
-        # cross-post hint (which excludes the current inbox) and the
-        # canonical URL (which picks one across the full set).
-        all_links: list[tuple[int, str]] = list(
-            session.execute(
-                select(Inbox.id, Inbox.name)
-                .join(ArticleList, ArticleList.inbox_id == Inbox.id)
-                .where(ArticleList.article_id == article.id)
-                .order_by(Inbox.name)
-            ).all()
-        )
         cross_post_inboxes = [n for ix_id, n in all_links if ix_id != inbox.id]
         base = _site_base()
         canonical_url = _canonical_url_for(article, all_links, base=base)
