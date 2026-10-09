@@ -11,6 +11,21 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Patches that reach Linus's tree through a subsystem tree (net-next, tip,
+  mm, pci, bpf-next) or linux-next now show as landed. The subsystem tree
+  recorded the commit first and the Linus walk's row for the same commit was
+  dropped, so the pill stayed "queued" after the merge. A migration adds
+  `tree_name` to the `mainline_commits` key so each tree keeps its own row;
+  it rebuilds the table at broker startup, copying every row (about 326,000
+  on production, 2026-10-10; copy time unmeasured). Run
+  `update-mainline --rewalk` once after deploying to recover the missing
+  Linus rows. linux-next's daily walk now skips commits already in Linus's
+  tree, like the subsystem trees, instead of walking its whole history. The
+  tree a queued pill names no longer flips between a subsystem tree and
+  linux-next when both hold the commit (#673).
+
 ## [3.12.0] - 2026-10-09
 
 ### Added

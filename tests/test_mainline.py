@@ -92,7 +92,7 @@ def test_extract_dedupes_same_msgid_across_link_variants():
     """Real commits sometimes carry the same Message-ID under both
     the `/r/` and `/all/` slug, or duplicate a Link trailer in a
     cherry-pick. Without dedup these collide on the
-    `(commit_sha, message_id)` UNIQUE constraint and abort the
+    `(commit_sha, message_id, tree_name)` primary key and abort the
     batch (observed against linux.git commit 9e8e8912b05f, 1.15.0
     deploy)."""
     msg = (
@@ -528,7 +528,7 @@ def test_walk_commits_rebases_false_keeps_other_tree_rows(
         )
 
     with seeded_db() as s:
-        survived = s.get(MainlineCommit, (other_sha, "other@example.com"))
+        survived = s.get(MainlineCommit, (other_sha, "other@example.com", "linus"))
         assert survived is not None
 
 
@@ -617,14 +617,46 @@ def test_walk_commits_exclude_from_skips_commits_reachable_from_ref(
     assert mids == {"c3@x", "c4@x"}
 
 
-def test_walk_commits_rebases_true_ignores_exclude_from(
+def test_linus_records_a_commit_a_subsystem_tree_recorded_first(
     seeded_db, tmp_path, writer_thread
 ):
-    """rebases=True trees keep their full DELETE-and-rewalk semantics
-    even when exclude_from is supplied. Applying the shortcut on a
-    daily linux-next rebase would erase intermediate-tree
-    mainline_commits rows for patches that transition into Linus that
-    day, losing the per-tree timeline event on the patch page."""
+    """#673. A patch is normally applied in a subsystem tree before
+    Linus merges it, with the same SHA. When the key was
+    `(commit_sha, message_id)`, the subsystem tree's row took the key
+    and the Linus insert was ignored, so the patch never showed as
+    LANDED. Each tree keeps its own row now."""
+    from mimir.lifecycle_status import (
+        LifecycleStatus,
+        lifecycle_status_for_articles,
+    )
+    from tests.test_lifecycle_status import _seed_article
+
+    tree_path = _make_fake_tree(
+        tmp_path,
+        commits=[("c1\n\nLink: https://lore.kernel.org/r/c1@x\n", b"a.c")],
+    )
+    with seeded_db() as s:
+        art_id = _seed_article(s, "c1@x").id
+    for tree_name in ("net-next", "linus"):
+        with seeded_db() as s:
+            walk_commits(s, tree_path, tree_name=tree_name, writer=writer_thread)
+
+    with seeded_db() as s:
+        trees = s.scalars(
+            select(MainlineCommit.tree_name).where(MainlineCommit.message_id == "c1@x")
+        ).all()
+        assert sorted(trees) == ["linus", "net-next"]
+        got = lifecycle_status_for_articles(s, [art_id])
+    assert got[art_id].state == LifecycleStatus.LANDED
+
+
+def test_walk_commits_rebases_true_applies_exclude_from(
+    seeded_db, tmp_path, writer_thread
+):
+    """rebases=True trees skip commits Linus already has, like every
+    other non-Linus tree. Without this, linux-next walked its whole
+    history daily and, once each tree kept its own rows (#673), stored
+    a row for nearly every linked commit in Linus's tree."""
     from dulwich.repo import Repo
 
     from mimir.models import MainlineCommit
@@ -636,7 +668,8 @@ def test_walk_commits_rebases_true_ignores_exclude_from(
             ("c2\n\nLink: https://lore.kernel.org/r/c2@x\n", b"a.c"),
         ],
     )
-    head = Repo(str(tree_path)).head()
+    repo = Repo(str(tree_path))
+    c1_sha = next(iter(repo.get_walker(include=[repo.head()], reverse=True))).commit.id
 
     with seeded_db() as s:
         walk_commits(
@@ -644,7 +677,7 @@ def test_walk_commits_rebases_true_ignores_exclude_from(
             tree_path,
             tree_name="rebase-tree",
             rebases=True,
-            exclude_from=head,
+            exclude_from=c1_sha,
             writer=writer_thread,
         )
 
@@ -655,8 +688,7 @@ def test_walk_commits_rebases_true_ignores_exclude_from(
                 select(MainlineCommit).where(MainlineCommit.tree_name == "rebase-tree")
             ).scalars()
         }
-    # All commits walked: exclude_from is ignored when rebases=True.
-    assert mids == {"c1@x", "c2@x"}
+    assert mids == {"c2@x"}
 
 
 @pytest.mark.allow_tree_clone
@@ -732,7 +764,7 @@ def test_walk_commits_full_rewalk_is_idempotent_via_on_conflict(
     writer_thread,
 ):
     """A full rewalk over an already-populated table must not
-    crash on the `(commit_sha, message_id)` UNIQUE constraint
+    crash on the `(commit_sha, message_id, tree_name)` primary key
     the INSERT runs with `ON CONFLICT DO NOTHING`. Hit on the
     1.15.0 / 1.15.1 production runs against linux.git, where
     dulwich's reverse-walker re-emitted some commits across batch
