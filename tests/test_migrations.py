@@ -22,10 +22,13 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 PREV_REVISION = "e3aa78c72a8d"
 THREAD_ROOT_REVISION = "1072ad1fae96"
+TREE_KEY_REVISION = "13b7f3111e00"
 
 
-def _alembic(db_path: Path, target: str) -> subprocess.CompletedProcess:
-    """Run a real `alembic upgrade` against a throwaway database.
+def _alembic(
+    db_path: Path, target: str, command: str = "upgrade"
+) -> subprocess.CompletedProcess:
+    """Run a real `alembic upgrade` (or `downgrade`) against a throwaway database.
 
     A subprocess with `DATABASE_URL` overridden, never the ambient
     session: `alembic downgrade`/`upgrade` against the default URL would
@@ -42,7 +45,7 @@ def _alembic(db_path: Path, target: str) -> subprocess.CompletedProcess:
     so the test does not depend on either source existing.
     """
     return subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", target],
+        [sys.executable, "-m", "alembic", command, target],
         cwd=REPO,
         capture_output=True,
         text=True,
@@ -262,5 +265,139 @@ def test_migration_completes_when_indexes_were_recreated_by_hand(staged_db):
     try:
         assert conn.execute("SELECT COUNT(*) FROM article_lists").fetchone()[0] == 200
         assert _indexes(conn) == EXPECTED_INDEXES
+    finally:
+        conn.close()
+
+
+# mainline_commits key rebuild (#673).
+
+_MC_ROWS = [
+    # Same commit recorded by a subsystem tree and by Linus: the case the
+    # old key could not hold. Inserted subsystem-first, as in production.
+    ("a" * 40, "m1@x", "net-next", "2026-01-01 00:00:00"),
+    ("b" * 40, "m2@x", "tip", "2026-01-02 00:00:00"),
+]
+
+
+def _mc_rows(conn: sqlite3.Connection) -> list[tuple]:
+    return sorted(
+        conn.execute("SELECT commit_sha, message_id, tree_name FROM mainline_commits")
+    )
+
+
+def _mc_indexes(conn: sqlite3.Connection) -> set[str]:
+    return {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND tbl_name='mainline_commits' AND name NOT LIKE 'sqlite_%'"
+        )
+    }
+
+
+MC_INDEXES = {"ix_mainline_commits_message_id", "ix_mainline_commits_tree_name"}
+
+
+@pytest.fixture
+def mc_db(tmp_path):
+    """A throwaway database one revision below the key rebuild, with rows."""
+    db = tmp_path / "mc.db"
+    result = _alembic(db, THREAD_ROOT_REVISION)
+    assert result.returncode == 0, result.stderr[-2000:]
+    conn = sqlite3.connect(db)
+    try:
+        conn.executemany("INSERT INTO mainline_commits VALUES (?,?,?,?)", _MC_ROWS)
+        conn.commit()
+    finally:
+        conn.close()
+    return db
+
+
+def _linus_row_for_m1(db: Path) -> sqlite3.IntegrityError | None:
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "INSERT INTO mainline_commits VALUES (?,?,?,?)",
+            ("a" * 40, "m1@x", "linus", "2026-02-01 00:00:00"),
+        )
+        conn.commit()
+        return None
+    except sqlite3.IntegrityError as exc:
+        return exc
+    finally:
+        conn.close()
+
+
+def test_tree_key_upgrade_keeps_rows_and_admits_a_second_tree(mc_db):
+    # Precondition: the old key refuses the Linus row for an owned commit.
+    assert _linus_row_for_m1(mc_db) is not None
+
+    result = _alembic(mc_db, TREE_KEY_REVISION)
+    assert result.returncode == 0, result.stderr[-2000:]
+
+    assert _linus_row_for_m1(mc_db) is None
+    conn = sqlite3.connect(mc_db)
+    try:
+        assert _mc_rows(conn) == [
+            ("a" * 40, "m1@x", "linus"),
+            ("a" * 40, "m1@x", "net-next"),
+            ("b" * 40, "m2@x", "tip"),
+        ]
+        assert _mc_indexes(conn) == MC_INDEXES
+    finally:
+        conn.close()
+
+
+def test_tree_key_downgrade_keeps_the_linus_row(mc_db):
+    assert _alembic(mc_db, TREE_KEY_REVISION).returncode == 0
+    assert _linus_row_for_m1(mc_db) is None
+
+    result = _alembic(mc_db, THREAD_ROOT_REVISION, command="downgrade")
+    assert result.returncode == 0, result.stderr[-2000:]
+
+    conn = sqlite3.connect(mc_db)
+    try:
+        assert _mc_rows(conn) == [
+            ("a" * 40, "m1@x", "linus"),
+            ("b" * 40, "m2@x", "tip"),
+        ]
+        assert _mc_indexes(conn) == MC_INDEXES
+    finally:
+        conn.close()
+
+
+def test_tree_key_rebuild_clears_debris_but_never_the_only_copy(mc_db):
+    conn = sqlite3.connect(mc_db)
+    try:
+        conn.execute("CREATE TABLE _mainline_commits_rebuild (x INTEGER)")
+        conn.commit()
+    finally:
+        conn.close()
+    result = _alembic(mc_db, TREE_KEY_REVISION)
+    assert result.returncode == 0, result.stderr[-2000:]
+    conn = sqlite3.connect(mc_db)
+    try:
+        assert len(_mc_rows(conn)) == 2
+        assert not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='_mainline_commits_rebuild'"
+        ).fetchone()
+
+        # Scratch holds the only copy: the migration must refuse.
+        conn.execute("ALTER TABLE mainline_commits RENAME TO _mainline_commits_rebuild")
+        conn.execute(
+            "UPDATE alembic_version SET version_num = ?", (THREAD_ROOT_REVISION,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    result = _alembic(mc_db, TREE_KEY_REVISION)
+    assert result.returncode != 0
+    assert "ONLY copy of the data" in result.stderr
+    conn = sqlite3.connect(mc_db)
+    try:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM _mainline_commits_rebuild").fetchone()[0]
+            == 2
+        )
     finally:
         conn.close()
