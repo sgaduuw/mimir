@@ -1,5 +1,5 @@
 """`update-mainline`: sync Linus's `linux.git` and (re)build the
-MAINTAINERS-derived schema + the lore `Link:`-trailer index.
+MAINTAINERS-derived schema + the commit-trailer index.
 
 Thin click wrapper that dispatches through the broker. The heavy
 lifting (clone/fetch, MAINTAINERS reparse, Link-trailer walk)
@@ -35,6 +35,12 @@ from mimir.cli._common import _configure_logging
     help="Re-parse MAINTAINERS and replace subsystems even if the file is unchanged.",
 )
 @click.option(
+    "--rewalk",
+    is_flag=True,
+    help="Walk each tree's full history again, ignoring the cursor and the "
+    "walk interval. Run once after a trailer-pattern fix; existing rows are kept.",
+)
+@click.option(
     "-v",
     "--verbose",
     count=True,
@@ -45,6 +51,7 @@ def update_mainline_command(
     skip_maintainers: bool,
     skip_commits: bool,
     force: bool,
+    rewalk: bool,
     verbose: int,
 ) -> None:
     """Sync the mainline kernel tree (Linus's `linux.git`) and load
@@ -62,8 +69,8 @@ def update_mainline_command(
        or to rebuild a triple that was emptied out-of-band). `--skip-maintainers` disables this
        pass entirely for the tick.
 
-    2. Commit Link-trailer walk: scan every commit since the last
-       walker cursor for `Link: https://lore.kernel.org/.../<msgid>`
+    2. Commit trailer walk: scan every commit since the last walker
+       cursor for `Link:` (lore or patch.msgid.link) and `Message-ID:`
        trailers, insert into `mainline_commits`. Resumable; the
        second cursor on `MainlineState` advances monotonically.
        First run walks the full history (slow); subsequent ticks
@@ -83,6 +90,7 @@ def update_mainline_command(
             skip_maintainers=skip_maintainers,
             skip_commits=skip_commits,
             force=force,
+            rewalk=rewalk,
         )
     except BrokerUnavailable as exc:
         # update_mainline() catches per-tree exceptions; FileNotFoundError
@@ -121,7 +129,7 @@ def _echo_update_mainline_outcome(payload: dict) -> None:
     if payload.get("commits_ran") and payload.get("commits_seen"):
         click.echo(
             f"update-mainline: walked {payload['commits_seen']} commits "
-            f"({payload.get('commits_linked', 0)} with lore Link:, "
+            f"({payload.get('commits_linked', 0)} naming a patch, "
             f"{payload.get('rows_inserted', 0)} rows indexed)"
         )
     # Surface per-tree failures so the operator learns which tree

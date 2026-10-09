@@ -117,6 +117,33 @@ def test_extract_dedupe_preserves_order_of_distinct_msgids():
     assert extract_message_ids(msg) == ["a@x", "b@x", "c@x"]
 
 
+def test_extract_patch_msgid_link():
+    """b4's default trailer since 2024 (#668): most b4-applied commits
+    carry only this form."""
+    msg = b"Fix.\n\nLink: https://patch.msgid.link/20251001-x-v1-1-abc@kernel.org\n"
+    assert extract_message_ids(msg) == ["20251001-x-v1-1-abc@kernel.org"]
+
+
+def test_extract_dedupes_patch_msgid_link_against_lore_form():
+    msg = (
+        b"Link: https://lore.kernel.org/r/same@x\n"
+        b"Link: https://patch.msgid.link/same@x\n"
+    )
+    assert extract_message_ids(msg) == ["same@x"]
+
+
+def test_extract_message_id_trailer():
+    """`git am --message-id` writes the posted patch's Message-ID as a
+    trailer; same claim as a `Link:`, so same row (#668)."""
+    msg = b"Fix.\n\nMessage-ID: <abc@x>\nSigned-off-by: X <x@y>\n"
+    assert extract_message_ids(msg) == ["abc@x"]
+
+
+def test_extract_message_id_trailer_dedupes_and_keeps_order():
+    msg = b"Link: https://lore.kernel.org/r/a@x\nMessage-Id: <b@x>\nMessage-ID: <a@x>\n"
+    assert extract_message_ids(msg) == ["a@x", "b@x"]
+
+
 def test_extract_handles_non_decodable_bytes_via_surrogateescape():
     """A stray non-UTF-8 byte must not crash the extractor, those
     appear occasionally in older commits with contributor names
@@ -316,6 +343,32 @@ def test_walk_commits_rewalks_when_cursor_missing(seeded_db, tmp_path, writer_th
     # Walker re-walks from the beginning despite the stale cursor.
     assert result.commits_seen == 1
     assert result.rows_inserted == 1
+
+
+def test_walk_commits_rewalk_reads_history_behind_the_cursor(
+    seeded_db, tmp_path, writer_thread
+):
+    """A trailer-pattern fix only reaches commits walked after it, so
+    `rewalk` ignores the cursor and reads the whole history again
+    (#668). Rows already present are absorbed by ON CONFLICT."""
+    repo_path = tmp_path / "tree.git"
+    repo = _bare_repo(repo_path)
+    c1 = _build_commit(repo, b"old\n\nLink: https://lore.kernel.org/r/m1@x\n")
+    _build_commit(repo, b"newer\n\nLink: https://lore.kernel.org/r/m2@x\n", parent=c1)
+    with seeded_db() as s:
+        walk_commits(s, repo_path, writer=writer_thread)
+
+    with seeded_db() as s:
+        plain = walk_commits(s, repo_path, writer=writer_thread)
+    assert plain.commits_seen == 0  # precondition: the cursor is at HEAD
+
+    with seeded_db() as s:
+        again = walk_commits(s, repo_path, writer=writer_thread, rewalk=True)
+    assert again.commits_seen == 2
+    with seeded_db() as s:
+        assert s.get(MainlineState, "linus").commits_walked_to_sha == (
+            repo.head().decode("ascii")
+        )
 
 
 def _make_fake_tree(tmp_path, commits):

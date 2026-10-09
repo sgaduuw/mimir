@@ -24,7 +24,8 @@ bytes without going through the HTML pipeline.
 
 import html
 import re
-from urllib.parse import unquote, urlsplit
+
+from mimir.msgid_url import msgid_from_url
 
 URL_OR_MSGID_RE = re.compile(
     r'(?P<url>https?://[^\s<>"\'\]\)]+)'
@@ -59,36 +60,6 @@ _TRAILER_LINE_RE = re.compile(
 # default `_render_line` path (which always escapes) instead of going
 # through the redactor branch at all.
 _EMAIL_ANGLE_RE = re.compile(r"<([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+)>")
-
-
-def _extract_lore_msgid(url: str) -> str | None:
-    """Return the Message-ID embedded in a `lore.kernel.org` URL, or
-    `None` if `url` isn't a lore link or has no msgid-shaped path
-    segment.
-
-    Recognises every lore URL shape we've seen in the wild:
-
-        https://lore.kernel.org/<msgid>
-        https://lore.kernel.org/<slug>/<msgid>(/T/|/raw|/t.mbox.gz|/...)?
-        ...with or without trailing slash, query, anchor.
-
-    The Message-ID is the first path segment containing `@`; everything
-    after (e.g. `T/`, `raw`, `t.mbox.gz`) is ignored. Percent-encoded
-    msgids are unquoted before return, so the result is comparable
-    against the normalised value stored in `articles.message_id`.
-    """
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return None
-    if parts.scheme not in ("http", "https"):
-        return None
-    if parts.netloc.lower() != "lore.kernel.org":
-        return None
-    for segment in parts.path.split("/"):
-        if "@" in segment:
-            return unquote(segment)
-    return None
 
 
 def linkify(
@@ -148,7 +119,7 @@ def _local_mirror_suffix(url: str, lore_mirror_urls: dict[str, str]) -> str:
     text path and the trailer path stay in sync."""
     if not lore_mirror_urls:
         return ""
-    mid = _extract_lore_msgid(url)
+    mid = msgid_from_url(url)
     if mid is None:
         return ""
     mirror = lore_mirror_urls.get(mid)
