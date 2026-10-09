@@ -11,6 +11,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Nine more list hosts count as mailing-list hosts, so the inboxes for
+  intel-wired-lan, cocci, u-boot, buildroot, dpdk-dev, linux-f2fs-devel,
+  linux-m68k, openvpn-devel and the OpenEmbedded and Yocto lists can be picked
+  as canonical. Deployments that already list these hosts in
+  `LIST_HOST_SUFFIX_OVERRIDES` can drop them (#645).
+
 ## [3.11.1] - 2026-10-09
 
 ### Fixed
