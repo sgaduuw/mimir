@@ -2293,6 +2293,95 @@ def test_message_page_etag_changes_when_canonical_inbox_moves(client, tmp_path):
     assert "/beta/" in _canonical(second)
 
 
+def _canonical_href(resp) -> str:
+    return re.search(r'<link rel="canonical" href="([^"]+)"', resp.data.decode()).group(
+        1
+    )
+
+
+def test_message_page_etag_follows_target_inbox_thread_canonical(client, tmp_path):
+    """#656 case 1: the canonical is built from the CANONICAL inbox's
+    copy of the thread, while the thread date in the ETag comes from the
+    requested inbox. A change only in the target inbox's thread (here the
+    root gets filed there, so the reply stops being a singleton) moves
+    the canonical to the thread page and leaves the requested inbox's
+    thread untouched."""
+    from sqlalchemy import delete, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, CacheEntry, Inbox
+
+    msgs = _seed_three_message_thread(tmp_path, "alpha")
+    root_id, _, _ = msgs["root"]
+    reply_id, reply_url, _ = msgs["reply"]
+
+    def _link_to_beta(s, article_id, beta_id, alpha_id, thread_root_id):
+        alpha_link = s.execute(
+            select(ArticleList).where(
+                ArticleList.article_id == article_id,
+                ArticleList.inbox_id == alpha_id,
+            )
+        ).scalar_one()
+        s.add(
+            ArticleList(
+                article_id=article_id,
+                inbox_id=beta_id,
+                epoch=alpha_link.epoch,
+                commit_sha=alpha_link.commit_sha,
+                thread_root_id=thread_root_id,
+            )
+        )
+
+    with SessionLocal() as s:
+        alpha_id = s.execute(select(Inbox.id).where(Inbox.name == "alpha")).scalar_one()
+        beta_id = s.execute(select(Inbox.id).where(Inbox.name == "beta")).scalar_one()
+        _link_to_beta(s, reply_id, beta_id, alpha_id, root_id)
+        s.get(Article, reply_id).canonical_inbox_id = beta_id
+        s.commit()
+
+    first = client.get(reply_url)
+    assert first.status_code == 200
+    # Precondition: a singleton in beta, so the message URL, not a page.
+    assert "/beta/" in _canonical_href(first)
+    assert "/t" not in _canonical_href(first)
+
+    with SessionLocal() as s:
+        _link_to_beta(s, root_id, beta_id, alpha_id, root_id)
+        s.execute(delete(CacheEntry))
+        s.commit()
+
+    second = client.get(reply_url, headers={"If-None-Match": first.headers["ETag"]})
+    assert second.status_code == 200, "stale canonical served as 304"
+    assert "/beta/" in _canonical_href(second)
+    assert "/t" in _canonical_href(second)
+
+
+def test_message_page_etag_follows_thread_materialisation(client, tmp_path):
+    """#656 case 2: a repair (or a reindex) of `thread_root_id` flips
+    `thread_is_materialised`, which switches the canonical between the
+    message and its thread page without moving any thread date."""
+    from sqlalchemy import delete, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, CacheEntry
+
+    msgs = _seed_three_message_thread(tmp_path, "alpha")
+    _, reply_url, _ = msgs["reply"]
+
+    first = client.get(reply_url)
+    assert first.status_code == 200
+    assert "/t" in _canonical_href(first)  # precondition: thread-canonical
+
+    with SessionLocal() as s:
+        s.execute(update(ArticleList).values(thread_root_id=None))
+        s.execute(delete(CacheEntry))
+        s.commit()
+
+    second = client.get(reply_url, headers={"If-None-Match": first.headers["ETag"]})
+    assert second.status_code == 200, "stale canonical served as 304"
+    assert "/t" not in _canonical_href(second)
+
+
 def test_message_page_etag_changes_when_cross_post_link_added(client, tmp_path):
     """The "Also in:" line renders from the article's inbox links, so a
     new cross-post link moves the body even when the canonical stays

@@ -74,6 +74,20 @@ LIST_HOST_SUFFIXES: frozenset[str] = frozenset(
         "lists.open-mesh.org",  # b.a.t.m.a.n
         # Bare domain: the list has no lists. subdomain to match on.
         "kernelnewbies.org",
+        # More archived lists whose own host was missing, so their
+        # inboxes could never be picked as canonical (#645). Each
+        # checked against MAINTAINERS or the list's own site, 2026-10-09.
+        "lists.osuosl.org",  # intel-wired-lan
+        "lists.sourceforge.net",  # linux-f2fs-devel, openvpn-devel
+        "lists.linux-m68k.org",  # linux-m68k
+        "lists.openembedded.org",  # openembedded-*, bitbake-devel
+        "lists.yoctoproject.org",  # yocto, docs, meta-ti, meta-arago
+        "lists.denx.de",  # u-boot
+        # Bare domains, as for kernelnewbies.org: these lists have no
+        # list subdomain. Personal addresses there pass the filter too.
+        "inria.fr",  # cocci
+        "buildroot.org",  # buildroot
+        "dpdk.org",  # dev@dpdk.org
     }
 )
 

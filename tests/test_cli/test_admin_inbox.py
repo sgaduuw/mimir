@@ -463,11 +463,11 @@ def test_admin_inbox_update_list_address_warns_off_list_host(seeded_db):
     """A host outside the list-host suffixes is stored but never matches
     in canonical resolution; the operator is told how to fix that."""
     result = CliRunner().invoke(
-        admin_inbox_update_command, ["alpha", "--list-address", "a@inria.fr"]
+        admin_inbox_update_command, ["alpha", "--list-address", "a@example.org"]
     )
     assert result.exit_code == 0, result.output
     assert "LIST_HOST_SUFFIX_OVERRIDES" in result.output
-    assert get_inbox("alpha").list_address == "a@inria.fr"
+    assert get_inbox("alpha").list_address == "a@example.org"
 
 
 def test_admin_inbox_update_list_address_no_warning_on_list_host(seeded_db):
