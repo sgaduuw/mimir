@@ -4,8 +4,8 @@ tree's two derived surfaces.
 Two sub-areas, one concern (the mainline tree, end to end):
 
 - **Walker.** `extract_message_ids` + `walk_commits` scan commit
-  messages for `Link: https://lore.kernel.org/.../<msgid>` trailers
-  and write them to `mainline_commits` so a patch page can render
+  messages for `Link:` and `Message-ID:` trailers naming a posted
+  patch and write them to `mainline_commits` so a patch page can render
   "Applied as `<sha>` on <date>".
 - **Orchestration.** `update_mainline` is the operator-facing entry
   point: optionally `git fetch`, reload MAINTAINERS, walk for
@@ -49,33 +49,28 @@ from mimir.models import (
     SubsystemMaintainer,
     SubsystemPath,
 )
+from mimir.msgid_url import msgid_from_url
 
 logger = logging.getLogger(__name__)
 
 
-# `Link: https://lore.kernel.org/(slug/)?<msgid>(/)?`
-#
-# Variations seen in real Linus-tree commits:
+# A commit names the posted patch it came from in one of two trailers:
 #   Link: https://lore.kernel.org/r/aNU-FkJEcA3T4aDB@intel.com
-#   Link: https://lore.kernel.org/175852292275...@devnote2
 #   Link: https://lore.kernel.org/all/175824455687...@devnote2/
-#
-# The optional slug is `r`, `all`, `lkml`, `linux-fsdevel`, etc.
-# We accept any `[a-z][a-z0-9-]*` segment before the msgid; the
-# msgid itself is `<localpart>@<domainpart>` with no whitespace
-# or path separators in either half.
-_LINK_RE = re.compile(
-    r"^Link:\s+https?://lore\.kernel\.org/"
-    r"(?:[a-z][a-z0-9-]*/)?"
-    r"([^/\s]+@[^/\s]+?)"
-    r"/?\s*$",
-    re.MULTILINE,
+#   Link: https://patch.msgid.link/<msgid>     (b4's default since 2024)
+#   Message-ID: <msgid>                        (`git am --message-id`)
+# A `Link:` URL is resolved by `msgid_from_url`, the same function the
+# body linkifier uses, so the two cannot disagree on a host (#668).
+# Other `Link:` targets (GitHub issues, bugzilla) resolve to None.
+_TRAILER_RE = re.compile(
+    r"^(?:Link:\s+(?P<url>\S+)|Message-ID:\s*<?(?P<msgid>[^<>\s]+@[^<>\s]+?)>?)\s*$",
+    re.MULTILINE | re.IGNORECASE,
 )
 
 
 def extract_message_ids(commit_message: bytes) -> list[str]:
-    """Return every `lore.kernel.org` msgid referenced by `Link:`
-    trailers in this commit message, in source-file order, deduped.
+    """Return every msgid this commit message names in a `Link:` or
+    `Message-ID:` trailer, in source-file order, deduped.
     Returns `[]` when no trailers match. Decoding is UTF-8 with
     surrogate-escape so a non-decodable byte in a commit message
     doesn't crash the walker.
@@ -90,9 +85,9 @@ def extract_message_ids(commit_message: bytes) -> list[str]:
     text = commit_message.decode("utf-8", errors="surrogateescape")
     seen: set[str] = set()
     out: list[str] = []
-    for m in _LINK_RE.finditer(text):
-        mid = m.group(1)
-        if mid in seen:
+    for m in _TRAILER_RE.finditer(text):
+        mid = m["msgid"] or msgid_from_url(m["url"])
+        if mid is None or mid in seen:
             continue
         seen.add(mid)
         out.append(mid)
@@ -120,6 +115,7 @@ def walk_commits(
     branch: str = "HEAD",
     rebases: bool = False,
     exclude_from: bytes | None = None,
+    rewalk: bool = False,
 ) -> WalkResult:
     """Walk new commits on `tree_path`, extract `Link:` trailers,
     insert `mainline_commits` rows.
@@ -246,7 +242,9 @@ def walk_commits(
             # SHA no longer exists (force-push, shallow re-clone), re-walk
             # from scratch: we'd rather re-insert against ON CONFLICT than
             # crash and stall the tree.
-            since = state.commits_walked_to_sha
+            # `rewalk` reads past the cursor once, for a trailer-pattern
+            # fix that must reach commits already walked (#668).
+            since = None if rewalk else state.commits_walked_to_sha
             if since:
                 try:
                     repo[since.encode()]
@@ -889,6 +887,7 @@ def update_mainline(
     skip_maintainers: bool = False,
     skip_commits: bool = False,
     force: bool = False,
+    rewalk: bool = False,
 ) -> UpdateMainlineResult:
     """Sync every configured tree and refresh derived surfaces.
 
@@ -948,7 +947,8 @@ def update_mainline(
             state = session.get(MainlineState, slug)
             last = state.last_walked_at if state else None
         if (
-            last is not None
+            not rewalk
+            and last is not None
             and (now - aware_utc(last)).total_seconds() < tree.walk_every_seconds
         ):
             tr.skipped = True
@@ -995,6 +995,7 @@ def update_mainline(
                         branch=tree.branch,
                         rebases=tree.rebases,
                         exclude_from=linus_head if slug != "linus" else None,
+                        rewalk=rewalk,
                     )
                 tr.commits_seen = walk.commits_seen
                 tr.commits_linked = walk.linked

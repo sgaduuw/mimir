@@ -27,10 +27,10 @@ from mimir.models import (
     ArticleList,
     Inbox,
 )
+from mimir.msgid_url import msgid_from_url
 from mimir.patch_state import patch_state_for_article
 from mimir.related import is_bot_sender, related_discussions
 from mimir.rendering import URL_OR_MSGID_RE
-from mimir.rendering.linkify import _extract_lore_msgid
 from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import recent_patches_touching, subsystems_for_article
@@ -476,7 +476,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 if not m.group("url"):
                     continue
                 url = m.group("url").rstrip(".,;:!?")
-                mid = _extract_lore_msgid(url)
+                mid = msgid_from_url(url)
                 if mid:
                     lore_msgids.add(mid)
                 if len(lore_msgids) >= MSGID_LINKIFY_CAP:

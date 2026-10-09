@@ -11,7 +11,22 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- `update-mainline --rewalk` walks each tree's full history again, ignoring
+  the cursor and the walk interval. Run it once after deploying the trailer fix
+  below; existing rows are kept. Its cost on a full Linus tree is unmeasured
+  (#668).
+
 ### Fixed
+
+- The tree walker now recognises `Link: https://patch.msgid.link/<msgid>`
+  trailers, b4's default since 2024, and `Message-ID:` trailers from
+  `git am --message-id`. On Linus's tree since 2025-10-01 that is about 41,500
+  `patch.msgid.link` and 1,500 `Message-ID:` trailers missed, against 12,000
+  lore links recognised, so most applied patches never showed as queued or
+  landed. Commits already walked need `update-mainline --rewalk`. Message bodies
+  quoting a `patch.msgid.link` URL now get a `(local)` link too (#668).
 
 - A message page's ETag now changes whenever its `rel=canonical` does. It
   missed two cases: a change in the other inbox's copy of the thread when the
