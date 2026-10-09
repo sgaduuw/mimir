@@ -216,7 +216,13 @@ def _mainline_landings(
         session.execute(
             select(MainlineCommit)
             .where(MainlineCommit.message_id == article.message_id)
-            .order_by(MainlineCommit.committed_at.asc())
+            .order_by(
+                MainlineCommit.committed_at.asc(),
+                # Same tiebreak as lifecycle_status's `mc` CTE, so the
+                # summary sentence names the tree the pill names.
+                MainlineCommit.tree_name == "linux-next",
+                MainlineCommit.tree_name,
+            )
         )
         .scalars()
         .all()

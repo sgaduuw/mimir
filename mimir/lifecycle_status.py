@@ -118,6 +118,14 @@ _REVIEW_ROLES_PARAM = bindparam(
 # version so v10 > v9 (test_superseded_handles_double_digit_versions).
 # Adds sup_by_version + sup_by_date for the SUPERSEDED tooltip's
 # leading line.
+#
+# The `mc` CTE's "earliest other tree" orders by committed_at, then
+# prefers a subsystem tree over linux-next, then the name. A subsystem
+# tree's commit reaches linux-next with the same sha and committed_at,
+# so committed_at alone ties and the pill would follow the physical row
+# order that linux-next's daily rebuild rewrites, while the page
+# validator (row count, max date) stays put (#673).
+# `patch_state._mainline_landings` uses the same order.
 _BULK_SQL = text("""
 WITH RECURSIVE
 roots(leaf, message_id, thread_parent, depth) AS (
@@ -161,13 +169,16 @@ mc AS (
            MAX(CASE WHEN c.tree_name = 'linus' THEN c.committed_at END) AS linus_committed_at,
            (SELECT cc.tree_name FROM mainline_commits cc
               WHERE cc.message_id = a.message_id AND cc.tree_name != 'linus'
-              ORDER BY cc.committed_at ASC LIMIT 1) AS earliest_other_tree,
+              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name
+              LIMIT 1) AS earliest_other_tree,
            (SELECT cc.commit_sha FROM mainline_commits cc
               WHERE cc.message_id = a.message_id AND cc.tree_name != 'linus'
-              ORDER BY cc.committed_at ASC LIMIT 1) AS earliest_other_sha,
+              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name
+              LIMIT 1) AS earliest_other_sha,
            (SELECT cc.committed_at FROM mainline_commits cc
               WHERE cc.message_id = a.message_id AND cc.tree_name != 'linus'
-              ORDER BY cc.committed_at ASC LIMIT 1) AS earliest_other_at
+              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name
+              LIMIT 1) AS earliest_other_at
       FROM articles a
       LEFT JOIN mainline_commits c ON c.message_id = a.message_id
      WHERE a.id IN :ids

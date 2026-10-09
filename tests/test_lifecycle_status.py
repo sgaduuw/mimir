@@ -651,3 +651,42 @@ def test_lifecycle_status_query_uses_index_seeks(session):
     assert "search" in plan_text or "using index" in plan_text, (
         f"expected at least one index seek in the plan; got:\n{plan_text}"
     )
+
+
+def test_queued_tree_tie_survives_a_linux_next_rebuild(session):
+    """#673. A subsystem tree's commit reaches linux-next with the same
+    sha and committed_at. With committed_at as the only order, the pill
+    followed physical row order, which linux-next's daily DELETE and
+    reinsert rewrites, while the page validator stayed put. The subsystem
+    tree wins the tie, in the pill and in the summary sentence alike."""
+    from sqlalchemy import delete
+
+    from mimir.patch_state import _mainline_landings
+
+    art = _seed_article(session, "tie@x")
+    at = datetime(2026, 9, 1, 12, tzinfo=UTC)
+
+    def add(tree):
+        session.add(
+            MainlineCommit(
+                commit_sha="c" * 40, message_id="tie@x", tree_name=tree, committed_at=at
+            )
+        )
+        session.commit()
+
+    # linux-next recorded it first, then net-next: the order a rebuild
+    # cannot change, and the one that picked linux-next before the fix.
+    add("linux-next")
+    add("net-next")
+    for _ in range(2):
+        session.expire_all()
+        got = lifecycle_status_for_articles(session, [art.id])[art.id]
+        assert got.state == LifecycleStatus.QUEUED
+        assert got.tree == "net-next"
+        assert _mainline_landings(session, art)[0].tree_name == "net-next"
+        # linux-next's daily rebuild: delete its rows, reinsert the same.
+        session.execute(
+            delete(MainlineCommit).where(MainlineCommit.tree_name == "linux-next")
+        )
+        session.commit()
+        add("linux-next")

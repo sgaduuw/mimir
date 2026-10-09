@@ -345,10 +345,13 @@ in lockstep with the mainline pull:
 
 - **`mainline_state`**, single-row cursor (`commits_walked_to_sha`)
   for the `update-mainline` `Link:` trailer walker.
-- **`mainline_commits`**, one row per commit whose message
+- **`mainline_commits`**, one row per tree per commit whose message
   names a posted patch (a lore or patch.msgid.link `Link:`, or a
   `Message-ID:` trailer),
-  enabling the "applied as <sha>" backlink on patch views.
+  enabling the "applied as <sha>" backlink on patch views. The
+  tree is part of the key: a patch applied in a subsystem tree and
+  later merged by Linus has the same SHA in both, and lifecycle
+  needs the Linus row to call it landed (#673).
 
 **Operational tallies (2 tables)**, populated by ingest, consumed
 by ingest:
@@ -499,7 +502,8 @@ and dispatches batched WriteOps through `_context.get_active_writer()`.
 - Each accumulated batch is submitted via
   `_submit_mainline_batch(writer, tree_name, rows)`, which wraps
   `sqlite_insert(MainlineCommit).values(rows).on_conflict_do_nothing(
-  index_elements=["commit_sha", "message_id"])`. The caller waits
+  index_elements=["commit_sha", "message_id", "tree_name"])`
+  (`tree_name` joined the key in #673). The caller waits
   on `.result(timeout=60)` before composing the next batch.
 - For `rebases=True` trees (e.g. `linux-next`, `mm`), the pre-walk
   DELETE that purges stale rows is also a WriteOp now
@@ -2286,8 +2290,10 @@ bootstrapping a `trees` table from `Settings.trees`, same as
 daily) would invalidate the SHA cursor every tick. The
 `rebases=True` branch in `walk_commits` `DELETE`s the tree's
 existing rows and re-walks from scratch each tick; the
-`INSERT OR IGNORE` constraint dedups intra-walk. Cost: ~one
-day of commits walked fully daily for -next. Cheaper than the
+`INSERT OR IGNORE` constraint dedups intra-walk. Like every
+non-Linus tree it excludes commits reachable from Linus's HEAD, so
+the daily walk covers only what linux-next holds beyond Linus
+(#673; before that it walked the whole history). Cheaper than the
 always-full-walk alternative that would also burn Linus's tick
 budget for zero new commits 99% of the time.
 
