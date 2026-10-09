@@ -425,13 +425,18 @@ class MainlineCommit(Base):
     mainline-tree commit message.
 
     Composite PK so a commit can carry multiple `Link:` trailers
-    (rare but legal, a fix referencing two prior reports, say).
+    (rare but legal, a fix referencing two prior reports, say), and
+    so each tree keeps its own row for the same commit. A patch is
+    normally applied in a subsystem tree, then merged into Linus's
+    tree with the same SHA; without `tree_name` in the key the first
+    tree to record it owned the row and the Linus insert was ignored,
+    so the patch never showed as landed (#673).
     `message_id` is indexed because the patch-page lookup is "given
     this article's message_id, do we have any commits that applied
     it?", the read of record.
 
-    `tree_name` is indexed so the future stable / next surfaces can
-    filter cheaply. For now there's one tree (`linus`).
+    `tree_name` is also indexed on its own for the per-tree reads
+    and the linux-next delete, which do not lead with `commit_sha`.
 
     `committed_at` is the commit's commit-time in UTC, what we
     render as "Applied as <sha> on <date>" on the patch page.
@@ -445,7 +450,7 @@ class MainlineCommit(Base):
         primary_key=True,
         index=True,
     )
-    tree_name: Mapped[str] = mapped_column(String, index=True)
+    tree_name: Mapped[str] = mapped_column(String, primary_key=True, index=True)
     committed_at: Mapped[datetime] = mapped_column()
 
 
