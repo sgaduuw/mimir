@@ -226,6 +226,7 @@ class UpdateMainlineRequest(_BrokerRequest):
     skip_maintainers: bool = False
     skip_commits: bool = False
     force: bool = False
+    rewalk: bool = False
 
 
 class BackfillThreadRootsRequest(_BrokerRequest):

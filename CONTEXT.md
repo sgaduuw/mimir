@@ -346,7 +346,8 @@ in lockstep with the mainline pull:
 - **`mainline_state`**, single-row cursor (`commits_walked_to_sha`)
   for the `update-mainline` `Link:` trailer walker.
 - **`mainline_commits`**, one row per commit whose message
-  contains a `Link:` trailer pointing back at a lore Message-ID,
+  names a posted patch (a lore or patch.msgid.link `Link:`, or a
+  `Message-ID:` trailer),
   enabling the "applied as <sha>" backlink on patch views.
 
 **Operational tallies (2 tables)**, populated by ingest, consumed

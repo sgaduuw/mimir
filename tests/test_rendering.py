@@ -104,6 +104,16 @@ def test_linkify_lore_url_appends_local_when_in_archive():
     assert '(<a href="/lkml/2024/01/123">local</a>)' in out
 
 
+def test_linkify_patch_msgid_link_appends_local_when_in_archive():
+    """`patch.msgid.link` names a Message-ID exactly as a lore URL
+    does, so it gets the same `(local)` link (#668)."""
+    out = linkify(
+        "Applied: https://patch.msgid.link/abc@example.com",
+        lore_mirror_urls={"abc@example.com": "/lkml/2024/01/123"},
+    )
+    assert '(<a href="/lkml/2024/01/123">local</a>)' in out
+
+
 def test_linkify_lore_url_not_in_archive_unchanged():
     """A lore URL whose msgid isn't in `lore_mirror_urls` renders as
     the bare external anchor, no `(local)` suffix."""
