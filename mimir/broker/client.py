@@ -613,6 +613,7 @@ class BrokerClient:
         skip_maintainers: bool = False,
         skip_commits: bool = False,
         force: bool = False,
+        rewalk: bool = False,
         timeout: float = 600.0,
     ) -> dict:
         """Phase 2.3 long op: refresh the mainline tree + reload
@@ -631,6 +632,7 @@ class BrokerClient:
             skip_maintainers=skip_maintainers,
             skip_commits=skip_commits,
             force=force,
+            rewalk=rewalk,
         )
         reply = self._rpc(req, timeout=timeout)
         if not reply.ok:

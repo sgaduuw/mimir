@@ -69,6 +69,7 @@ def handle_update_mainline(req: UpdateMainlineRequest) -> Reply:
         skip_maintainers=req.skip_maintainers,
         skip_commits=req.skip_commits,
         force=req.force,
+        rewalk=req.rewalk,
     )
     return Reply(rpc_id=req.rpc_id, ok=True, result=result.model_dump(mode="json"))
 

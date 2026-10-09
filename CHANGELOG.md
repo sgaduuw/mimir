@@ -11,6 +11,45 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.12.0] - 2026-10-09
+
+### Added
+
+- `update-mainline --rewalk` walks each tree again from the start, ignoring
+  the cursor and the walk interval; subsystem trees still skip commits already
+  in Linus's tree, as on their first walk. Run it once after deploying the
+  trailer fix below; existing rows are kept. Its cost on a full Linus tree is
+  unmeasured. Past the CLI's 600 s RPC timeout the command exits with
+  `rpc timed out` while the broker keeps walking: judge completion from the
+  broker log rather than rerunning (#668).
+
+### Fixed
+
+- The tree walker now recognises `Link: https://patch.msgid.link/<msgid>`
+  trailers, b4's default since 2024, and `Message-ID:` trailers from
+  `git am --message-id` (in the final trailer paragraph only, so a quoted mail
+  header in the body is not taken for one). On Linus's tree since 2025-10-01 that is about 41,500
+  `patch.msgid.link` and 1,500 `Message-ID:` trailers missed, against 12,000
+  lore links recognised, so most applied patches never showed as queued or
+  landed. Commits already walked need `update-mainline --rewalk`. Message bodies
+  quoting a `patch.msgid.link` URL now get a `(local)` link too (#668).
+
+- A message page's ETag now changes whenever its `rel=canonical` does. It
+  missed two cases: a change in the other inbox's copy of the thread when the
+  canonical points there, and a `thread_root_id` repair that switches the
+  canonical between the message and its thread page. Edges and crawlers kept
+  getting 304s for the old canonical. A 304 now costs the canonical lookup a
+  full render already did (#656).
+
+- Nine more list hosts count as mailing-list hosts, so the inboxes for
+  intel-wired-lan, cocci, u-boot, buildroot, dpdk-dev, linux-f2fs-devel,
+  linux-m68k, openvpn-devel and the OpenEmbedded and Yocto lists can be picked
+  as canonical. Set each inbox's address with
+  `admin inbox update --list-address`, then run
+  `admin canonicals backfill --reprocess`: articles already pinned keep their
+  canonical until then. Deployments that already list these hosts in
+  `LIST_HOST_SUFFIX_OVERRIDES` can drop them (#645).
+
 ## [3.11.1] - 2026-10-09
 
 ### Fixed

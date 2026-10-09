@@ -138,12 +138,16 @@ uv run mimir update-mainline
 uv run mimir update-mainline --skip-fetch
 uv run mimir update-mainline --force
 uv run mimir update-mainline --skip-commits
+uv run mimir update-mainline --rewalk
 ```
 
 This refreshes MAINTAINERS-derived subsystem ownership and walks tracked trees
-for `Link:` trailers connecting commits to archived patches. An unchanged
+for `Link:` and `Message-ID:` trailers connecting commits to archived patches. An unchanged
 MAINTAINERS blob skips its reload; `--force` reloads it after a parser fix or
 an out-of-band table reset. `--skip-commits` skips the commit walk.
+`--rewalk` walks every tree again from the start, ignoring the cursor and the
+walk interval (subsystem trees still skip commits already in Linus's tree); run
+it once after a change to which trailers are recognised.
 
 The default tree set includes Linus, linux-next, and subsystem trees. To replace
 it with your own set, configure `TREES__<name>__*` in the broker environment:
