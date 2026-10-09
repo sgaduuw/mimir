@@ -37,7 +37,7 @@ from mimir.cli._common import _configure_logging
 @click.option(
     "--rewalk",
     is_flag=True,
-    help="Walk each tree's full history again, ignoring the cursor and the "
+    help="Walk each tree again from the start, ignoring the cursor and the "
     "walk interval. Run once after a trailer-pattern fix; existing rows are kept.",
 )
 @click.option(

@@ -144,6 +144,19 @@ def test_extract_message_id_trailer_dedupes_and_keeps_order():
     assert extract_message_ids(msg) == ["a@x", "b@x"]
 
 
+def test_extract_message_id_only_in_trailer_block():
+    """A body that quotes a bug report's headers is not a claim about
+    the patch: only the final paragraph is the trailer block."""
+    msg = (
+        b"Fix the crash from this report:\n\n"
+        b"From: Reporter <r@x>\n"
+        b"Message-ID: <report-123@example.com>\n\n"
+        b"Signed-off-by: A <a@x>\n"
+        b"Message-ID: <patch-1@kernel.org>\n"
+    )
+    assert extract_message_ids(msg) == ["patch-1@kernel.org"]
+
+
 def test_extract_handles_non_decodable_bytes_via_surrogateescape():
     """A stray non-UTF-8 byte must not crash the extractor, those
     appear occasionally in older commits with contributor names
