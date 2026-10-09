@@ -83,9 +83,16 @@ def extract_message_ids(commit_message: bytes) -> list[str]:
     `(commit_sha, message_id)` constraint, aborting the whole
     batch, observed against linux.git commit 9e8e8912b05f."""
     text = commit_message.decode("utf-8", errors="surrogateescape")
+    # A bare `Message-ID:` is only a claim inside the trailer block (the
+    # final paragraph); higher up it is a quoted mail header, e.g. a
+    # bug report pasted into the body. `Link:` keeps matching anywhere,
+    # as it always has.
+    trailer_block_start = text.rstrip().rfind("\n\n")
     seen: set[str] = set()
     out: list[str] = []
     for m in _TRAILER_RE.finditer(text):
+        if m["msgid"] and m.start() < trailer_block_start:
+            continue
         mid = m["msgid"] or msgid_from_url(m["url"])
         if mid is None or mid in seen:
             continue
