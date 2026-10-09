@@ -13,6 +13,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- A message page's ETag now changes whenever its `rel=canonical` does. It
+  missed two cases: a change in the other inbox's copy of the thread when the
+  canonical points there, and a `thread_root_id` repair that switches the
+  canonical between the message and its thread page. Edges and crawlers kept
+  getting 304s for the old canonical. A 304 now costs the canonical lookup a
+  full render already did (#656).
+
 - Nine more list hosts count as mailing-list hosts, so the inboxes for
   intel-wired-lan, cocci, u-boot, buildroot, dpdk-dev, linux-f2fs-devel,
   linux-m68k, openvpn-devel and the OpenEmbedded and Yocto lists can be picked
