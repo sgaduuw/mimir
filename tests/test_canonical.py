@@ -49,6 +49,16 @@ def test_is_list_address_bare_kernel_org_rejected():
         "kernelnewbies@kernelnewbies.org",
         # Host from the Mailman 3 list id b.a.t.m.a.n.lists.open-mesh.org.
         "b.a.t.m.a.n@lists.open-mesh.org",
+        # Checked against MAINTAINERS or the list's own site, 2026-10-09.
+        "intel-wired-lan@lists.osuosl.org",
+        "linux-f2fs-devel@lists.sourceforge.net",
+        "linux-m68k@lists.linux-m68k.org",
+        "openembedded-core@lists.openembedded.org",
+        "yocto@lists.yoctoproject.org",
+        "u-boot@lists.denx.de",
+        "cocci@inria.fr",
+        "buildroot@buildroot.org",
+        "dev@dpdk.org",
     ],
 )
 def test_is_list_address_affected_lists_own_hosts(address):
