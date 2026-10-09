@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.12.0] - 2026-10-09
+
 ### Added
 
 - `update-mainline --rewalk` walks each tree's full history again, ignoring
