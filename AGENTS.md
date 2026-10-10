@@ -171,12 +171,14 @@ only thing standing between a change and every CDN edge plus every
 conditional-GET crawler serving a body the data has contradicted.
 
 The other half: **anything the page renders from a cache must be keyed
-by the validator's input (`_validators.state_cache_key`) or not cached
-at all.** A cache keyed by article id outlives the ETag it is served
-under, and once its row expires the body changes under an unchanged
-ETag, pinning the stale content everywhere it was kept. When testing
-this, prime caches with a normal request rather than clearing them;
-a test that clears the cache cannot see one the validator cannot see.
+by the page's ETag (the whole ETag, not the part that seems relevant)
+or not cached at all.** A cache keyed by article id outlives the ETag it
+is served under, and once its row expires the body changes under an
+unchanged ETag, pinning the stale content everywhere it was kept. When
+testing this, prime caches with a normal request rather than clearing
+them, and assert the change is visible in the body; a test that clears
+the cache cannot see one the validator cannot see. CONTEXT.md "What the
+page ETags version" lists the documented exceptions.
 
 ## Fix the class, not the reported instance
 

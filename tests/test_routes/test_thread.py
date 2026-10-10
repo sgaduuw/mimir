@@ -851,6 +851,31 @@ def _mutate_second_commit_same_tree(seeded):
         s.commit()
 
 
+def _mutate_rebased_same_date(seeded):
+    """linux-next rebuilds its row under a NEW sha with the SAME
+    committer date (a rebase that keeps committer dates). Tree list and
+    dates are unchanged; the tooltip and the "Queued in linux-next as
+    <sha>" sentence show the new sha, so the validator must carry it."""
+    from datetime import datetime
+
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+
+    with SessionLocal() as s:
+        s.execute(delete(MainlineCommit).where(MainlineCommit.message_id == "root@x"))
+        s.add(
+            MainlineCommit(
+                commit_sha="9" * 40,
+                message_id="root@x",
+                tree_name="linux-next",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+
+
 def _mutate_review_trailer(seeded):
     """A `Reviewed-by:` arrives on a REPLY and is attributed to the
     root, moving the roll-up count in the lifecycle pill. Re-ingest of
@@ -950,6 +975,7 @@ _RENDER_STATE_CASES = [
         _prepare_first_landing,
         _mutate_queued_to_landed_via_next,
     ),
+    ("rebased_same_date", _prepare_first_landing, _mutate_rebased_same_date),
     (
         "second_commit_same_tree",
         _prepare_linus_landing,

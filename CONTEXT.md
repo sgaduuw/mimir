@@ -2097,16 +2097,30 @@ cache row expired the body changed under an ETag that did not, so every
 cache that kept that response held the stale pill and "Queued in
 linux-next" sentence for good. Nothing invalidated either cache on a
 landing write. The rule: **a rendered input served from a cache must be
-keyed by the validator's own input, or bypassed**, otherwise the cache
-outlives the validator it is served under. `_validators.state_cache_key`
-exists for this, and both caches use it. Keyed rather than bypassed
-because the pill's compute walks the whole thread (about 120 ms on the
-12,342-message thread, measured 2026-10-10). The guard that catches the
-class is `test_body_under_new_etag_matches_a_cold_render`: it primes the
-caches with an ordinary request instead of clearing them, which is the
-only way to see a cache the validator cannot. Time-relative output (the
-activity chip, days since the last reply) is the stated exception: no
-validator can carry `now()`, so it ages within the cache TTL.
+keyed by the page's ETag, or bypassed**, otherwise the cache outlives the
+validator it is served under. Both caches now take the ETag as their key
+suffix. Keyed rather than bypassed because the pill's compute walks the
+whole thread (about 120 ms on the 12,342-message thread, measured
+2026-10-10).
+
+The first attempt keyed them by `render_state_tag`, the derived-state
+part of the ETag, and the next review showed why that is not enough: the
+activity chip also reads the thread's newest reply, which the ETag
+carries and that tag does not, so a reply moved the ETag and not the
+key. Key by the whole ETag, not by the part that seems relevant; the
+cost is one cache entry per page variant (full and htmx, each thread
+page), which is the price of the guarantee.
+
+The guard that catches the class is
+`test_body_under_new_etag_matches_a_cold_render`: it primes the caches
+with an ordinary request instead of clearing them, which is the only way
+to see a cache the validator cannot, and it asserts the change is
+visible in the body so a case cannot pass by construction. Known
+exceptions: time-relative output (the activity chip ages within the TTL;
+no validator can carry `now()`), a reply that lands only in another
+inbox (#676, a strict xfail), and the related-patches and
+related-discussions lists, which are cached by id and are not validator
+inputs at all, by the same choice as before 3.13.0.
 
 ## Version source of truth
 
