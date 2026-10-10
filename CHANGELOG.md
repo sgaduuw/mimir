@@ -26,16 +26,29 @@ changes, not internal refactors. Categories: **Added**,
   skips commits already in Linus's tree, like the subsystem trees, instead
   of walking its whole history. The tree a queued pill names no longer flips
   between a subsystem tree and linux-next when both hold the commit (#673).
+- Message and thread pages no longer keep a stale lifecycle pill behind a
+  304. Their ETag counted landing rows and took the newest date, which
+  stays the same when a patch moves from linux-next to Linus's tree, and the
+  pill came from a 5-minute cache the ETag did not see, so a cache could
+  hold an old pill under a current validator for good. The ETag now names
+  the trees holding the patch, and both pages compute the pill uncached
+  (median 0.3 ms, p90 1.3 ms, measured on production 2026-10-10).
 
 ### Upgrade notes
 
 - The deploy restarts the broker, which ends any running
   `admin canonicals backfill --reprocess`; that command cannot resume and
   starts again from the newest article. Let it finish first.
-- Rolling back to 3.12.x needs `alembic downgrade 1072ad1fae96` before the
-  old image starts: the 3.12 walker's insert names the old two-column key
-  and fails against the new table. The downgrade keeps one row per commit,
-  preferring Linus's.
+- Run `update-mainline --rewalk` straight after the deploy, before
+  linux-next's next daily walk. Patches that linux-next recorded before
+  Linus did were stored only under linux-next; that walk now skips
+  commits Linus has and drops those rows, and until the rewalk restores
+  the Linus rows those patches show as pending and appear in triage.
+- Rolling back to 3.12.x needs `alembic downgrade 1072ad1fae96`, run from
+  the 3.13.0 image (the 3.12 image does not know the new revision and its
+  broker refuses to start), before the old image starts. Without it the
+  3.12 walker's insert also fails, because it names the old two-column
+  key. The downgrade keeps one row per commit, preferring Linus's.
 
 ## [3.12.0] - 2026-10-09
 
