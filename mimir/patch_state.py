@@ -216,7 +216,13 @@ def _mainline_landings(
         session.execute(
             select(MainlineCommit)
             .where(MainlineCommit.message_id == article.message_id)
-            .order_by(MainlineCommit.committed_at.asc())
+            .order_by(
+                MainlineCommit.committed_at.asc(),
+                # Same tiebreak as lifecycle_status's `mc` CTE, so the
+                # summary sentence names the tree the pill names.
+                MainlineCommit.tree_name == "linux-next",
+                MainlineCommit.tree_name,
+            )
         )
         .scalars()
         .all()
@@ -367,12 +373,20 @@ def patch_state_for_article(
     thread_dates: Iterable[datetime | None],
     subsystem_ids: Iterable[int],
     inbox_name: str,
+    state_key: str,
     force: bool = False,
 ) -> PatchState:
     """Compute the state card for `article` on `inbox_name`. The
     route is expected to have already loaded the article's thread
     (for `thread_dates`) and subsystem hits (for `subsystem_ids`)
     so we don't re-query those here.
+
+    `state_key` is the digest of the page ETag's content part (the ETag
+    without its page and full/htmx fields), and keys the cache, so a
+    cached card is reused only while that content is unchanged.
+    Required: both callers serve this card under an ETag, and a card
+    cached by article id alone outlived the validator and pinned
+    "Queued in linux-next" under the ETag of a landed patch.
 
     Returns `PatchState(is_patch=False, ...)` (with empty rows) for
     non-patch articles; the template skips the whole card when
@@ -411,7 +425,7 @@ def patch_state_for_article(
     # rendering the same cross-posted article see the same card.
     return cache.get_or_compute(
         session,
-        f"patch_state:{article.id}",
+        f"patch_state:{article.id}:{state_key}",
         PATCH_STATE_CACHE_TTL_SEC,
         compute,
         force=force,

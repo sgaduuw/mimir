@@ -129,6 +129,7 @@ def test_patch_state_for_non_patch_returns_empty(seeded_db):
             thread_dates=[art.date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
             force=True,
         )
     assert state.is_patch is False
@@ -162,6 +163,7 @@ def test_patch_state_trailer_roll_up_groups_by_role(seeded_db):
             thread_dates=[art.date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
             force=True,
         )
     assert state.is_patch is True
@@ -217,6 +219,7 @@ def test_patch_state_trailer_marks_maintainer_attestations(seeded_db):
             thread_dates=[art.date],
             subsystem_ids=[sub.id],
             inbox_name="alpha",
+            state_key="t",
             force=True,
         )
     rev = next(t for t in state.trailers if t.role == "Reviewed-by")
@@ -239,6 +242,7 @@ def test_patch_state_no_trailers_no_subsystems_skips_row(seeded_db):
             thread_dates=[art.date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
             force=True,
         )
     assert state.trailers == []
@@ -264,6 +268,7 @@ def test_patch_state_surfaces_mainline_landing(seeded_db):
             thread_dates=[art.date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
             force=True,
         )
     assert len(state.mainline_landings) == 1
@@ -286,6 +291,7 @@ def test_patch_state_landing_row_empty_when_not_landed(seeded_db):
             thread_dates=[art.date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
             force=True,
         )
     assert state.mainline_landings == []
@@ -350,6 +356,7 @@ def test_patch_state_series_timeline_with_diff_links(seeded_db):
             thread_dates=[v2.date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
             force=True,
         )
     versions = [e.version for e in state.series]
@@ -399,6 +406,7 @@ def test_patch_state_series_timeline_no_diff_for_same_version(seeded_db):
             thread_dates=[v2_resend.date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
             force=True,
         )
     by_id = {e.article_id: e for e in state.series}
@@ -455,6 +463,7 @@ def test_patch_state_series_timeline_renders_on_in_series_patch(seeded_db):
             thread_dates=[v2_1of3.date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
             force=True,
         )
     # Two entries: v1 and v2 of position 1/3. The 2/3 siblings are
@@ -496,6 +505,7 @@ def test_patch_state_series_empty_for_solo_revision(seeded_db):
             thread_dates=[v1.date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
             force=True,
         )
     assert state.series == []
@@ -513,6 +523,7 @@ def test_patch_state_activity_no_replies(seeded_db):
             thread_dates=[art.date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
             force=True,
         )
     assert state.days_since_last_reply is None
@@ -537,6 +548,7 @@ def test_patch_state_activity_computes_days_since_last_reply(seeded_db):
             thread_dates=[post_date, reply_date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
             force=True,
         )
     # Allow ±1 day slack for timing variance crossing midnight UTC
@@ -561,6 +573,7 @@ def test_patch_state_is_cached(seeded_db):
             thread_dates=[art.date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
         )
         second = patch_state_for_article(
             s,
@@ -568,6 +581,7 @@ def test_patch_state_is_cached(seeded_db):
             thread_dates=[art.date],
             subsystem_ids=[],
             inbox_name="alpha",
+            state_key="t",
         )
     # Same shape; cache round-trip didn't lose information.
     assert first.is_patch == second.is_patch

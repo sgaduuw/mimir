@@ -79,8 +79,8 @@ def extract_message_ids(commit_message: bytes) -> list[str]:
     (e.g. one Link with the `/r/` slug and another with `/all/`, or
     a stable-cherry-pick that copies the original trailer alongside
     an Upstream: line that's itself a Link). Without dedup those
-    duplicates land as parallel insert rows and trip the UNIQUE
-    `(commit_sha, message_id)` constraint, aborting the whole
+    duplicates land as parallel insert rows and trip the
+    `(commit_sha, message_id, tree_name)` primary key, aborting the whole
     batch, observed against linux.git commit 9e8e8912b05f."""
     text = commit_message.decode("utf-8", errors="surrogateescape")
     # A bare `Message-ID:` is only a claim inside the trailer block (the
@@ -156,7 +156,7 @@ def walk_commits(
     to HEAD with a warning log.
 
     `exclude_from` (bytes SHA of another tree's HEAD): when set AND
-    `rebases=False` AND the SHA is reachable in this repo's
+    the SHA is reachable in this repo's
     objectstore (typically via `--reference linus.git`'s alternates),
     the walker also excludes commits reachable from this SHA. The
     intended use is `linus_head`, so non-Linus trees walk only
@@ -164,11 +164,12 @@ def walk_commits(
     Pure perf win on first walks; on subsequent cursor-based walks
     the combined exclude is at least as tight as the cursor alone.
 
-    Not applied for `rebases=True` trees: the daily DELETE+rewalk
-    would erase intermediate-tree rows for patches that transition
-    into Linus that same day, losing per-tree timeline info on the
-    patch page. linux-next's daily O(history) walk is the cost of
-    preserving the journey for newly-landed patches.
+    Applied to `rebases=True` trees too. Their rows for commits Linus
+    already has are deleted at the next rebuild, which nothing reads:
+    the Linus row decides LANDED, and the per-tree timeline that once
+    showed them was dropped in 2.5. Without it linux-next walked its
+    whole history daily and, once each tree kept its own rows (#673),
+    stored a row for nearly every linked commit in Linus's tree.
 
     Known trade-off (rebases=False): a patch picked up by Linus first
     and back-merged into a subsystem tree later (e.g. a backport
@@ -228,8 +229,6 @@ def walk_commits(
             # SHAs don't accumulate. The full walk that follows re-inserts
             # the live history; ON CONFLICT DO NOTHING absorbs any
             # intra-walk duplicates from merge-graph re-emissions.
-            # `exclude_from` intentionally NOT applied here; see the
-            # docstring for the per-tree-timeline rationale.
             #
             # Phase 3: the DELETE becomes a WriteOp dispatched through
             # the writer, matching every other write in this function.
@@ -262,22 +261,23 @@ def walk_commits(
                         since,
                         tree_path,
                     )
-            # Additional shortcut: skip commits reachable from another
-            # tree's head when supplied (typically `linus_head` so non-
-            # Linus trees walk only divergent commits). KeyError means
-            # this repo's objectstore doesn't have the SHA, e.g. no
-            # --reference linus.git on clone; falling back to a full
-            # walk is the right safety net (slower, still correct).
-            if exclude_from is not None:
-                try:
-                    repo[exclude_from]
-                    exclude.append(exclude_from)
-                except KeyError:
-                    logger.debug(
-                        "mainline: exclude_from %s not in %s; walking full history",
-                        exclude_from.decode("ascii", errors="replace"),
-                        tree_path,
-                    )
+
+        # Additional shortcut: skip commits reachable from another
+        # tree's head when supplied (typically `linus_head` so non-
+        # Linus trees walk only divergent commits). KeyError means
+        # this repo's objectstore doesn't have the SHA, e.g. no
+        # --reference linus.git on clone; falling back to a full
+        # walk is the right safety net (slower, still correct).
+        if exclude_from is not None:
+            try:
+                repo[exclude_from]
+                exclude.append(exclude_from)
+            except KeyError:
+                logger.debug(
+                    "mainline: exclude_from %s not in %s; walking full history",
+                    exclude_from.decode("ascii", errors="replace"),
+                    tree_path,
+                )
 
         # dulwich's reverse=True walker emits oldest-first, which is what
         # we want: advance the SHA cursor monotonically so the next tick
@@ -303,10 +303,10 @@ def walk_commits(
             nonlocal pending_rows
             if not pending_rows:
                 return
-            # _submit_mainline_batch handles the INSERT OR IGNORE for the
-            # three dup scenarios described in the helper's docstring. Wait
-            # on the future so we don't compose the next batch until this
-            # one has committed: preserves the resume-from-cursor invariant
+            # _submit_mainline_batch ignores rows this tree already holds
+            # (see its insert's comment). Wait on the future so we don't
+            # compose the next batch until this one has committed: that
+            # preserves the resume-from-cursor invariant
             # (last_seen_sha_for_cursor only advances after this batch is
             # durable).
             _submit_mainline_batch(writer, tree_name, pending_rows).result(timeout=60)
@@ -480,16 +480,16 @@ def _submit_mainline_batch(writer, tree_name: str, batch: list[dict]) -> WriteFu
         return f
 
     def _fn(conn):
-        # Mirror the inline path's SQL exactly so rows written here
-        # are indistinguishable from rows written by the existing
-        # walk_commits flush() closure (which we're displacing per
-        # Phase 3). Composite PK is (commit_sha, message_id);
-        # on_conflict_do_nothing handles the three dup scenarios
-        # documented in the inline path's comment.
+        # The key includes `tree_name`, so the conflict only absorbs a
+        # commit this same tree already recorded (a re-walk, or a merge
+        # graph emitting it twice). Another tree's row for the same
+        # commit is a separate row, never a conflict (#673).
         stmt = (
             sqlite_insert(MainlineCommit)
             .values(batch)
-            .on_conflict_do_nothing(index_elements=["commit_sha", "message_id"])
+            .on_conflict_do_nothing(
+                index_elements=["commit_sha", "message_id", "tree_name"]
+            )
         )
         conn.execute(stmt)
 
@@ -514,7 +514,7 @@ def _submit_mainline_cursor_update(
     last batch and the cursor leaves the next tick re-walking
     the just-inserted commits, which is idempotent because
     mainline_commits uses on_conflict_do_nothing on the
-    (commit_sha, message_id) PK.
+    (commit_sha, message_id, tree_name) PK.
 
     UPSERT: works whether MainlineState has a row for this tree
     yet or not. tree_name is the PK; on conflict, only
