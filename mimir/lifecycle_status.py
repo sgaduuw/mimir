@@ -481,7 +481,7 @@ def lifecycle_status_for_articles(
     session: Session,
     article_ids: list[int],
     *,
-    cached: bool = True,
+    state_key: str | None = None,
 ) -> dict[int, LifecycleStatusInfo]:
     """Bulk lifecycle-status fetch for a listing of articles.
 
@@ -492,30 +492,29 @@ def lifecycle_status_for_articles(
     -> empty dict. Missing IDs (e.g. articles not in the corpus)
     are absent from the result.
 
-    `cached=False` is for the pages that carry an ETag (message and
-    thread). Their validator reads the source rows live, so a pill
-    served from this cache can be older than the validator minted
-    beside it, and once the row expires the body changes under an ETag
-    that did not: the stale pill is pinned in every cache that kept it.
-    Computing the pill from the same live rows makes the body and its
-    validator agree by construction. Measured 2026-10-10 on production
-    for 200 articles: median 0.3 ms, p90 1.3 ms, max 14.2 ms.
+    `state_key` is for the pages that carry an ETag (message and
+    thread), which pass `_validators.state_cache_key` of the state
+    their validator was minted from. A pill cached under the bare id
+    can be older than that validator, and once the row expired the body
+    changed under an ETag that did not, pinning the stale pill in every
+    cache that kept it. Keyed by the validator's own input, a cached
+    pill is reused exactly while the ETag says the page is unchanged.
+    Cached rather than computed live because the live compute walks the
+    whole thread: about 120 ms per call on the 12,342-message syzbot
+    thread (production, 2026-10-10).
     """
     if not article_ids:
         return {}
-    if not cached:
-        return _bulk_uncached(session, article_ids)
-    keys = [f"lifecycle_status:{a}" for a in article_ids]
-    cached = cache.get_many(keys)
-    out: dict[int, LifecycleStatusInfo] = {
-        int(k.split(":")[1]): v for k, v in cached.items()
-    }
+    suffix = f":{state_key}" if state_key else ""
+    key_to_id = {f"lifecycle_status:{a}{suffix}": a for a in article_ids}
+    hits = cache.get_many(list(key_to_id))
+    out: dict[int, LifecycleStatusInfo] = {key_to_id[k]: v for k, v in hits.items()}
     missing_ids = [a for a in article_ids if a not in out]
     if missing_ids:
         computed = _bulk_uncached(session, missing_ids)
         for article_id, info in computed.items():
             cache.set(
-                f"lifecycle_status:{article_id}",
+                f"lifecycle_status:{article_id}{suffix}",
                 info,
                 ttl=LIFECYCLE_STATUS_TTL_SEC,
             )
