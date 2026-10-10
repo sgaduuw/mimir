@@ -170,6 +170,14 @@ pages are `Cache-Control: public, no-cache`, which makes the ETag the
 only thing standing between a change and every CDN edge plus every
 conditional-GET crawler serving a body the data has contradicted.
 
+The other half: **anything the page renders from a cache must be keyed
+by the validator's input (`_validators.state_cache_key`) or not cached
+at all.** A cache keyed by article id outlives the ETag it is served
+under, and once its row expires the body changes under an unchanged
+ETag, pinning the stale content everywhere it was kept. When testing
+this, prime caches with a normal request rather than clearing them;
+a test that clears the cache cannot see one the validator cannot see.
+
 ## Fix the class, not the reported instance
 
 A reported defect is a sample. Before you call it fixed, ask what
