@@ -26,20 +26,6 @@ from mimir.models import (
 )
 
 
-def state_cache_key(state_tag: str) -> str:
-    """Cache-key suffix for derived state rendered under a validator.
-
-    The pill and the patch-state card are cached, and a cache the
-    validator cannot see pins whatever it held once the row expires:
-    the body changes under an ETag that did not. Keying those caches by
-    this digest of `render_state_tag` makes "the cached copy is still
-    valid" and "the page is unchanged" the same predicate. Time-relative
-    parts (the activity chip, "N days since the last reply") still age
-    within the cache TTL; no validator can carry `now()`.
-    """
-    return hashlib.blake2s(state_tag.encode(), digest_size=8).hexdigest()
-
-
 def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     """Everything a page renders ABOUT `article_id` that no message
     carries and no thread-shape signal covers.
@@ -63,19 +49,27 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     on every request to both surfaces, including the 304s, which is the
     crawler path.
     """
-    # The trees holding the article, not just how many rows. Since
-    # #673 one commit has a row per tree, and the lifecycle pill is
-    # decided by WHICH trees: {linux-next} reads queued and {linus}
-    # reads landed, at the same count and the same committed_at, which
-    # is exactly the step linux-next's daily rebuild takes once Linus
-    # merges. A count-and-max tag gave both the same ETag.
+    # The landing rows themselves, not a summary of them. Since #673
+    # one commit has a row per tree, and the page renders WHICH tree
+    # (the pill), which sha and which date (tooltip and the "Queued in
+    # X as <sha> on <date>" sentence, from the earliest non-Linus row).
+    # A count-and-max tag missed {linux-next} -> {linus} at one sha and
+    # date, and a tree list plus max still missed a rebased row below
+    # the max. Same argument as `files_tag`: the truthful input is the
+    # values. A handful of rows per article.
     landing_rows = session.execute(
-        select(MainlineCommit.tree_name, MainlineCommit.committed_at).where(
-            MainlineCommit.message_id == message_id
-        )
+        select(
+            MainlineCommit.tree_name,
+            MainlineCommit.commit_sha,
+            MainlineCommit.committed_at,
+        ).where(MainlineCommit.message_id == message_id)
     ).all()
-    landings_tag = ",".join(sorted(r.tree_name for r in landing_rows))
-    landed_max = max((r.committed_at for r in landing_rows), default=None)
+    landings_tag = ";".join(
+        sorted(
+            f"{r.tree_name},{r.commit_sha},{r.committed_at.isoformat()}"
+            for r in landing_rows
+        )
+    )
     trailers = session.scalar(
         select(func.count(ArticleTrailer.id)).where(
             ArticleTrailer.article_id == article_id
@@ -132,6 +126,5 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
         ).one()
         series_tag = f"{count}|{newest or ''}"
     return (
-        f"{landings_tag}|{landed_max or ''}|{trailers or 0}|"
-        f"{rules_version or ''}|{series_tag}|{files_tag}"
+        f"{landings_tag}|{trailers or 0}|{rules_version or ''}|{series_tag}|{files_tag}"
     )

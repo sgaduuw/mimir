@@ -59,7 +59,7 @@ from mimir.threading import (
 )
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import thread_summary_from
-from mimir.web.routes._validators import render_state_tag, state_cache_key
+from mimir.web.routes._validators import render_state_tag
 from mimir.web.urls import (
     _abort_404_if_url_date_mismatches,
     _get_inbox_or_404,
@@ -237,8 +237,8 @@ def thread_view(
             # over the whole thread (54.6 ms on the 12,342-message
             # syzbot thread, and NOT inbox-scoped), so the request as a
             # whole does still walk it. A 5-minute cache keyed by the
-            # page's validator input amortises that; the sentence is
-            # about membership, not about the request.
+            # page's ETag amortises that; the sentence is about
+            # membership, not about the request.
             # That is the point of the change, so do not "simplify" this
             # by fetching everything and slicing in Python.
             agg = thread_aggregates(session, inbox, article.id)
@@ -387,12 +387,12 @@ def thread_view(
                 thread_dates=[thread_max_date],
                 subsystem_ids=[h.id for h in subsystem_hits],
                 inbox_name=inbox.name,
-                state_key=state_cache_key(state_tag),
+                state_key=etag,
             )
-            # Keyed by the validator's input, as on the message page, so
-            # a cached pill cannot outlive the ETag it is served under.
+            # Keyed by this page's ETag, as on the message page: a cached
+            # pill is reused only while the ETag says the page is unchanged.
             root_lifecycle = lifecycle_status_for_articles(
-                session, [root_node.id], state_key=state_cache_key(state_tag)
+                session, [root_node.id], state_key=etag
             ).get(root_node.id)
 
         # Self-canonical, deliberately. Cross-inbox thread

@@ -1136,9 +1136,18 @@ def test_etag_page_does_not_render_a_cached_landing_sentence(client, tmp_path, s
     )
 
 
+# Cases whose change this fixture's page does not render (no subsystem
+# or maintainer reviewer to show it), so a warm-versus-cold comparison
+# passes them by construction. Making them render is #678.
+_BODY_INVISIBLE_CASES = {"maintainers_reparse", "article_files_rewrite"}
+_RENDERED_STATE_CASES = [
+    c for c in _RENDER_STATE_CASES if c[0] not in _BODY_INVISIBLE_CASES
+]
+
+
 @pytest.mark.parametrize("surface", ["message", "thread"])
 @pytest.mark.parametrize(
-    "case", _RENDER_STATE_CASES, ids=[c[0] for c in _RENDER_STATE_CASES]
+    "case", _RENDERED_STATE_CASES, ids=[c[0] for c in _RENDERED_STATE_CASES]
 )
 def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, case):
     """For every derived-state change, the page served under the new
@@ -1162,7 +1171,8 @@ def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, ca
         s.commit()
     if prepare is not None:
         prepare(seeded)
-    assert client.get(url).status_code == 200  # prime, do not clear
+    primed = client.get(url)  # prime, do not clear
+    assert primed.status_code == 200
     mutate(seeded)
     warm = client.get(url)
     with SessionLocal() as s:
@@ -1174,8 +1184,169 @@ def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, ca
     def norm(h: str) -> str:
         return re.sub(r'nonce="[^"]*"', 'nonce=""', h)
 
+    # Precondition: the change is visible in the body, or warm == cold
+    # holds by construction and guards nothing.
+    assert norm(primed.get_data(as_text=True)) != norm(cold.get_data(as_text=True)), (
+        f"{surface}: {_label} does not change the rendered page"
+    )
     assert norm(warm.get_data(as_text=True)) == norm(cold.get_data(as_text=True)), (
         f"{surface}: warm body differs from cold under one ETag on {_label}"
+    )
+
+
+def _activity(html: str) -> str:
+    m = re.search(r'class="badge badge-activity-([a-z]+)"', html)
+    return m.group(1) if m else ""
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_reply_does_not_leave_a_cached_activity_chip_under_the_new_etag(
+    client, tmp_path, surface
+):
+    """A reply moves both pages' ETags through the thread's newest date,
+    and the activity chip with them. A pill cached under a narrower key
+    than the ETag kept the pre-reply chip under the new ETag, then
+    flipped to HOT under that same ETag once the row expired."""
+    from datetime import datetime
+
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    root_id, root_url = seeded["root@x"]
+    reply_id, _ = seeded["reply@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    first = client.get(url)
+    assert _activity(first.get_data(as_text=True)) in {"stale", "dormant"}
+
+    with SessionLocal() as s:
+        s.get(Article, reply_id).date = datetime.now(UTC)
+        s.commit()
+
+    warm = client.get(url)
+    assert warm.headers["ETag"] != first.headers["ETag"]  # precondition
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        s.commit()
+    cold = client.get(url)
+    assert cold.headers["ETag"] == warm.headers["ETag"]  # precondition
+    assert _activity(cold.get_data(as_text=True)) == "hot"  # precondition
+    assert _activity(warm.get_data(as_text=True)) == "hot", (
+        f"{surface}: cached pre-reply chip served under the post-reply ETag"
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="#676: the chip walks the thread across inboxes, the ETag does not",
+)
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_off_inbox_reply_moves_the_etag_if_it_moves_the_chip(client, tmp_path, surface):
+    """A reply that lands only in ANOTHER inbox moves the chip and no
+    validator input. Known gap, independent of caching (#676)."""
+    from datetime import datetime
+
+    from sqlalchemy import delete, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, CacheEntry, Inbox
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("root@x", None)])
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    first = client.get(url)
+    assert _activity(first.get_data(as_text=True)) == "dormant"  # precondition
+
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        other = Article(
+            message_id="offlist-reply@x",
+            thread_parent="root@x",
+            subject="Re: [PATCH] foo: bar",
+            author="c@d.example",
+            date=datetime.now(UTC),
+        )
+        s.add(other)
+        s.flush()
+        s.add(
+            ArticleList(
+                article_id=other.id, inbox_id=beta.id, epoch=0, commit_sha="b" * 40
+            )
+        )
+        s.execute(delete(CacheEntry))
+        s.commit()
+
+    second = client.get(url)
+    assert _activity(second.get_data(as_text=True)) != "dormant"  # precondition
+    assert second.headers["ETag"] != first.headers["ETag"]
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_rebased_subsystem_row_below_the_max_moves_the_etag(client, tmp_path, surface):
+    """Queued in mm (older) and linux-next (newer); mm rebases to a new
+    sha still older than linux-next's row. The tree list and the newest
+    date stay put while the tooltip and the "Queued in mm as <sha>"
+    sentence change, so the validator tags the rows themselves."""
+    from datetime import datetime
+
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry, MainlineCommit
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("root@x", None)])
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.add(
+            MainlineCommit(
+                commit_sha="1" * 40,
+                message_id="root@x",
+                tree_name="mm",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.add(
+            MainlineCommit(
+                commit_sha="2" * 40,
+                message_id="root@x",
+                tree_name="linux-next",
+                committed_at=datetime(2024, 7, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+    first = client.get(url)
+    assert "111111111111" in first.get_data(as_text=True)  # precondition
+    with SessionLocal() as s:
+        s.execute(delete(MainlineCommit).where(MainlineCommit.tree_name == "mm"))
+        s.add(
+            MainlineCommit(
+                commit_sha="3" * 40,
+                message_id="root@x",
+                tree_name="mm",
+                committed_at=datetime(2024, 6, 15, tzinfo=UTC),
+            )
+        )
+        s.execute(delete(CacheEntry))
+        s.commit()
+    second = client.get(url)
+    assert "333333333333" in second.get_data(as_text=True)  # precondition
+    assert second.headers["ETag"] != first.headers["ETag"], (
+        f"{surface}: body moved, ETag did not"
     )
 
 
