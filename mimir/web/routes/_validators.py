@@ -49,12 +49,27 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     on every request to both surfaces, including the 304s, which is the
     crawler path.
     """
-    landings = session.execute(
+    # The landing rows themselves, not a summary of them. Since #673
+    # one commit has a row per tree, and the page renders WHICH tree
+    # (the pill), which sha and which date (tooltip and the "Queued in
+    # X as <sha> on <date>" sentence, from the earliest non-Linus row).
+    # A count-and-max tag missed {linux-next} -> {linus} at one sha and
+    # date, and a tree list plus max still missed a rebased row below
+    # the max. Same argument as `files_tag`: the truthful input is the
+    # values. A handful of rows per article.
+    landing_rows = session.execute(
         select(
-            func.count(MainlineCommit.commit_sha),
-            func.max(MainlineCommit.committed_at),
+            MainlineCommit.tree_name,
+            MainlineCommit.commit_sha,
+            MainlineCommit.committed_at,
         ).where(MainlineCommit.message_id == message_id)
-    ).one()
+    ).all()
+    landings_tag = ";".join(
+        sorted(
+            f"{r.tree_name},{r.commit_sha},{r.committed_at.isoformat()}"
+            for r in landing_rows
+        )
+    )
     trailers = session.scalar(
         select(func.count(ArticleTrailer.id)).where(
             ArticleTrailer.article_id == article_id
@@ -111,6 +126,5 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
         ).one()
         series_tag = f"{count}|{newest or ''}"
     return (
-        f"{landings[0]}|{landings[1] or ''}|{trailers or 0}|"
-        f"{rules_version or ''}|{series_tag}|{files_tag}"
+        f"{landings_tag}|{trailers or 0}|{rules_version or ''}|{series_tag}|{files_tag}"
     )
