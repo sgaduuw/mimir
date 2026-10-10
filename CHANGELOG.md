@@ -37,8 +37,9 @@ changes, not internal refactors. Categories: **Added**,
   page number and the full/htmx choice), so a cached pill or card is reused
   only while the page content is unchanged, and every page of a thread
   shares one entry. They stay cached because computing them on
-  every request walks the whole thread: about 120 ms per page on the
-  largest thread (12,342 messages, measured on production 2026-10-10). Two
+  every request walks the whole thread: about 120 ms per uncached compute
+  on the largest thread (12,342 messages, measured on production
+  2026-10-10). Two
   known exceptions remain: the activity chip is relative to the current time
   and ages within the 5-minute cache, and a reply that lands only in another
   list still moves the chip without moving the ETag (#676).
