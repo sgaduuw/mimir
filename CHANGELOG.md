@@ -9,7 +9,7 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
-## [Unreleased]
+## [3.13.0] - 2026-10-10
 
 ### Fixed
 
@@ -18,13 +18,24 @@ changes, not internal refactors. Categories: **Added**,
   recorded the commit first and the Linus walk's row for the same commit was
   dropped, so the pill stayed "queued" after the merge. A migration adds
   `tree_name` to the `mainline_commits` key so each tree keeps its own row;
-  it rebuilds the table at broker startup, copying every row (about 326,000
-  on production, 2026-10-10; copy time unmeasured). Run
+  it rebuilds the table at broker startup, copying every row (325,761 on
+  production, 2026-10-10; copy time unmeasured). Run
   `update-mainline --rewalk` once after deploying to recover the missing
-  Linus rows. linux-next's daily walk now skips commits already in Linus's
-  tree, like the subsystem trees, instead of walking its whole history. The
-  tree a queued pill names no longer flips between a subsystem tree and
-  linux-next when both hold the commit (#673).
+  Linus rows; on production on 2026-10-09 the Linus tree's part of a rewalk
+  (1,484,900 commits) took about 13 minutes. linux-next's daily walk now
+  skips commits already in Linus's tree, like the subsystem trees, instead
+  of walking its whole history. The tree a queued pill names no longer flips
+  between a subsystem tree and linux-next when both hold the commit (#673).
+
+### Upgrade notes
+
+- The deploy restarts the broker, which ends any running
+  `admin canonicals backfill --reprocess`; that command cannot resume and
+  starts again from the newest article. Let it finish first.
+- Rolling back to 3.12.x needs `alembic downgrade 1072ad1fae96` before the
+  old image starts: the 3.12 walker's insert names the old two-column key
+  and fails against the new table. The downgrade keeps one row per commit,
+  preferring Linus's.
 
 ## [3.12.0] - 2026-10-09
 
