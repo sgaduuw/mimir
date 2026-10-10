@@ -493,19 +493,22 @@ def lifecycle_status_for_articles(
     are absent from the result.
 
     `state_key` is for the pages that carry an ETag (message and
-    thread), which pass `_validators.state_cache_key` of the state
-    their validator was minted from. A pill cached under the bare id
-    can be older than that validator, and once the row expired the body
+    thread), which pass that ETag. A pill cached under the bare id can
+    be older than the validator, and once the row expired the body
     changed under an ETag that did not, pinning the stale pill in every
-    cache that kept it. Keyed by the validator's own input, a cached
-    pill is reused exactly while the ETag says the page is unchanged.
-    Cached rather than computed live because the live compute walks the
-    whole thread: about 120 ms per call on the 12,342-message syzbot
-    thread (production, 2026-10-10).
+    cache that kept it. Keyed by the ETag, a cached pill is reused only
+    while the ETag is. Two things still move the pill under an
+    unchanged ETag: time (the activity chip's buckets are relative to
+    now and age within the TTL), and a reply that lands only in ANOTHER
+    inbox, because `descendants` walks the thread across inboxes while
+    the pages' ETags carry their own inbox's reply date. Cached rather
+    than computed live because the live compute walks the whole thread:
+    about 120 ms per call on the 12,342-message syzbot thread
+    (production, 2026-10-10).
     """
     if not article_ids:
         return {}
-    suffix = f":{state_key}" if state_key else ""
+    suffix = f":{state_key}" if state_key is not None else ""
     key_to_id = {f"lifecycle_status:{a}{suffix}": a for a in article_ids}
     hits = cache.get_many(list(key_to_id))
     out: dict[int, LifecycleStatusInfo] = {key_to_id[k]: v for k, v in hits.items()}
