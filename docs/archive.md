@@ -146,8 +146,9 @@ for `Link:` and `Message-ID:` trailers connecting commits to archived patches. A
 MAINTAINERS blob skips its reload; `--force` reloads it after a parser fix or
 an out-of-band table reset. `--skip-commits` skips the commit walk.
 `--rewalk` walks every tree again from the start, ignoring the cursor and the
-walk interval (subsystem trees still skip commits already in Linus's tree); run
-it once after a change to which trailers are recognised.
+walk interval (every tree other than Linus's still skips commits already in
+Linus's tree); run it once after an upgrade whose release notes ask for it,
+such as a change to which trailers are recognised or to how rows are keyed.
 
 The default tree set includes Linus, linux-next, and subsystem trees. To replace
 it with your own set, configure `TREES__<name>__*` in the broker environment:

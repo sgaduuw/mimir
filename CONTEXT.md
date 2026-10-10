@@ -2089,6 +2089,46 @@ rule in time rather than in space: the thing that decides a response
 and the thing that decides whether a cached copy is still that
 response must agree on what the response depends on.
 
+**Covering the inputs is half of it; 3.13.0 found the other half.** The
+validator read the landing rows live, but the page took its lifecycle
+pill and its patch-state card from 5-minute caches keyed by article id.
+A response could then pair a new ETag with an old pill, and when the
+cache row expired the body changed under an ETag that did not, so every
+cache that kept that response held the stale pill and "Queued in
+linux-next" sentence for good. Nothing invalidated either cache on a
+landing write. The rule: **a rendered input served from a cache must be
+keyed by the page's ETag content, or bypassed**, otherwise the cache
+outlives the validator it is served under. Both routes build the ETag as
+a content part plus the fields that only choose a representation (thread
+page number, full or htmx), and both caches key by the content part's
+digest. That is not a hand-picked subset: the ETag is that string plus
+the representation fields, so the two cannot drift. Keyed rather than bypassed because the pill's compute walks the
+whole thread (about 120 ms on the 12,342-message thread, measured
+2026-10-10).
+
+The first attempt keyed them by `render_state_tag`, the derived-state
+part of the ETag, and the next review showed why that is not enough: the
+activity chip also reads the thread's newest reply, which the ETag
+carries and that tag does not, so a reply moved the ETag and not the
+key. Key by the ETag's content, not by the part that seems relevant.
+Keying by the whole ETag was the next attempt and was correct but gave
+every thread page and every representation its own entry, so a crawler
+walking the pages of a long thread paid the whole-thread walk on each.
+
+The guard that catches the class is
+`test_body_under_new_etag_matches_a_cold_render`: it primes the caches
+with an ordinary request instead of clearing them, which is the only way
+to see a cache the validator cannot, and it asserts the change is
+visible in the body so a case cannot pass by construction. Two matrix
+cases (`maintainers_reparse`, `article_files_rewrite`) are left out of
+it because the fixture page does not render them, so those inputs have
+validator coverage but no warm-versus-cold coverage until #678. Known
+exceptions: time-relative output (the activity chip ages within the TTL;
+no validator can carry `now()`), a reply that lands only in another
+inbox (#676, a strict xfail), and the related-patches and
+related-discussions lists, which are cached by id and are not validator
+inputs at all, by the same choice as before 3.13.0.
+
 ## Version source of truth
 
 `pyproject.toml`'s `version` field. Read at runtime via
