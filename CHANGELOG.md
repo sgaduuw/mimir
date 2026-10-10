@@ -26,13 +26,19 @@ changes, not internal refactors. Categories: **Added**,
   skips commits already in Linus's tree, like the subsystem trees, instead
   of walking its whole history. The tree a queued pill names no longer flips
   between a subsystem tree and linux-next when both hold the commit (#673).
-- Message and thread pages no longer keep a stale lifecycle pill behind a
-  304. Their ETag counted landing rows and took the newest date, which
-  stays the same when a patch moves from linux-next to Linus's tree, and the
-  pill came from a 5-minute cache the ETag did not see, so a cache could
-  hold an old pill under a current validator for good. The ETag now names
-  the trees holding the patch, and both pages compute the pill uncached
-  (median 0.3 ms, p90 1.3 ms, measured on production 2026-10-10).
+- Message and thread pages no longer keep a stale lifecycle pill or patch
+  card ("Queued in linux-next" when the patch has landed, an old revisions
+  fold) behind a 304. Their ETag counted landing rows and took the newest
+  date, which stays the same when a patch moves from linux-next to Linus's
+  tree, and the pill and card came from 5-minute caches the ETag did not
+  see, so a cache could hold old content under a current validator for
+  good. The ETag now names the trees holding the patch, and both caches are
+  keyed by the ETag's own input, so a cached pill or card is reused only
+  while the page is unchanged. They stay cached because computing them on
+  every request walks the whole thread: about 120 ms per page on the
+  largest thread (12,342 messages, measured on production 2026-10-10). The
+  activity chip and "days since the last reply" are relative to the current
+  time and still age within the 5-minute cache.
 
 ### Upgrade notes
 

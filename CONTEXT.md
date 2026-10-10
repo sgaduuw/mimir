@@ -2089,6 +2089,25 @@ rule in time rather than in space: the thing that decides a response
 and the thing that decides whether a cached copy is still that
 response must agree on what the response depends on.
 
+**Covering the inputs is half of it; 3.13.0 found the other half.** The
+validator read the landing rows live, but the page took its lifecycle
+pill and its patch-state card from 5-minute caches keyed by article id.
+A response could then pair a new ETag with an old pill, and when the
+cache row expired the body changed under an ETag that did not, so every
+cache that kept that response held the stale pill and "Queued in
+linux-next" sentence for good. Nothing invalidated either cache on a
+landing write. The rule: **a rendered input served from a cache must be
+keyed by the validator's own input, or bypassed**, otherwise the cache
+outlives the validator it is served under. `_validators.state_cache_key`
+exists for this, and both caches use it. Keyed rather than bypassed
+because the pill's compute walks the whole thread (about 120 ms on the
+12,342-message thread, measured 2026-10-10). The guard that catches the
+class is `test_body_under_new_etag_matches_a_cold_render`: it primes the
+caches with an ordinary request instead of clearing them, which is the
+only way to see a cache the validator cannot. Time-relative output (the
+activity chip, days since the last reply) is the stated exception: no
+validator can carry `now()`, so it ages within the cache TTL.
+
 ## Version source of truth
 
 `pyproject.toml`'s `version` field. Read at runtime via
