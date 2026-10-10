@@ -381,13 +381,12 @@ def patch_state_for_article(
     (for `thread_dates`) and subsystem hits (for `subsystem_ids`)
     so we don't re-query those here.
 
-    `state_key` is the ETag of the page rendering the card, and keys
-    the cache, so a cached card is reused only while that ETag is.
+    `state_key` is the digest of the page ETag's content part (the ETag
+    without its page and full/htmx fields), and keys the cache, so a
+    cached card is reused only while that content is unchanged.
     Required: both callers serve this card under an ETag, and a card
     cached by article id alone outlived the validator and pinned
-    "Queued in linux-next" under the ETag of a landed patch. Not keyed
-    by a narrower derived-state tag: the ETag also covers the thread's
-    reply date, which feeds the activity chip beside this card.
+    "Queued in linux-next" under the ETag of a landed patch.
 
     Returns `PatchState(is_patch=False, ...)` (with empty rows) for
     non-patch articles; the template skips the whole card when

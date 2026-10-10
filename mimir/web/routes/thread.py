@@ -237,8 +237,9 @@ def thread_view(
             # over the whole thread (54.6 ms on the 12,342-message
             # syzbot thread, and NOT inbox-scoped), so the request as a
             # whole does still walk it. A 5-minute cache keyed by the
-            # page's ETag amortises that; the sentence is about
-            # membership, not about the request.
+            # ETag's content part (shared by every page of the thread)
+            # amortises that; the sentence is about membership, not
+            # about the request.
             # That is the point of the change, so do not "simplify" this
             # by fetching everything and slicing in Python.
             agg = thread_aggregates(session, inbox, article.id)
@@ -327,11 +328,18 @@ def thread_view(
         # edge and every crawler holding a validator that pins the
         # exact "did $series land" text this release made canonical.
         state_tag = render_state_tag(session, article.id, root_msgid)
-        etag_input = (
-            f"thread|{article.id}|{mimir.__version__}|{cap}|{page}|"
-            f"{'hx' if hx_request else 'full'}|{membership_source}|{total_count}|"
+        # Split so the ETag is the content part plus the representation
+        # (which page, full or htmx). The root's pill and card depend on
+        # the content part alone, so their caches key by it: one entry
+        # and one whole-thread walk per state, shared by every page of
+        # the thread, instead of one per page variant.
+        content_input = (
+            f"thread|{article.id}|{mimir.__version__}|{cap}|{membership_source}|"
+            f"{total_count}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|{state_tag}"
         )
+        content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
+        etag_input = f"{content_input}|{page}|{'hx' if hx_request else 'full'}"
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
         if etag in request.if_none_match:
             response = Response(status=304)
@@ -387,12 +395,12 @@ def thread_view(
                 thread_dates=[thread_max_date],
                 subsystem_ids=[h.id for h in subsystem_hits],
                 inbox_name=inbox.name,
-                state_key=etag,
+                state_key=content_key,
             )
-            # Keyed by this page's ETag, as on the message page: a cached
-            # pill is reused only while the ETag says the page is unchanged.
+            # Keyed by the ETag's content part, as on the message page: a
+            # cached pill is reused only while that part is unchanged.
             root_lifecycle = lifecycle_status_for_articles(
-                session, [root_node.id], state_key=etag
+                session, [root_node.id], state_key=content_key
             ).get(root_node.id)
 
         # Self-canonical, deliberately. Cross-inbox thread

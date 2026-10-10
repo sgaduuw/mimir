@@ -33,8 +33,10 @@ changes, not internal refactors. Categories: **Added**,
   tree, and the pill and card came from 5-minute caches the ETag did not
   see, so a cache could hold old content under a current validator for
   good. The ETag now carries every landing row (tree, commit and date), and
-  both caches are keyed by the page's ETag, so a cached pill or card is
-  reused only while that ETag is. They stay cached because computing them on
+  both caches are keyed by the ETag's content part (the ETag without the
+  page number and the full/htmx choice), so a cached pill or card is reused
+  only while the page content is unchanged, and every page of a thread
+  shares one entry. They stay cached because computing them on
   every request walks the whole thread: about 120 ms per page on the
   largest thread (12,342 messages, measured on production 2026-10-10). Two
   known exceptions remain: the activity chip is relative to the current time

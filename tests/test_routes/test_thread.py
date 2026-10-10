@@ -1272,6 +1272,7 @@ def test_reply_does_not_leave_a_cached_activity_chip_under_the_new_etag(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="#676: the chip walks the thread across inboxes, the ETag does not",
 )
 @pytest.mark.parametrize("surface", ["message", "thread"])
@@ -1315,7 +1316,10 @@ def test_off_inbox_reply_moves_the_etag_if_it_moves_the_chip(client, tmp_path, s
         s.commit()
 
     second = client.get(url)
-    assert _activity(second.get_data(as_text=True)) != "dormant"  # precondition
+    # Precondition outside the xfail's reach: a fixture that renders no
+    # chip must error, not pass as the known gap.
+    if _activity(second.get_data(as_text=True)) != "hot":
+        raise RuntimeError("fixture: the off-inbox reply did not move the chip")
     assert second.headers["ETag"] != first.headers["ETag"]
 
 
@@ -1808,3 +1812,44 @@ def test_no_source_comment_still_claims_the_overflow_containment_gate(client, tm
         "removed; the README and CHANGELOG were updated for the same "
         "change and these were not:\n  " + "\n  ".join(offenders)
     )
+
+
+@pytest.mark.parametrize("variant", ["pages", "hx"])
+def test_thread_pages_share_one_pill_compute(client, tmp_path, monkeypatch, variant):
+    """The pill and card caches exist because the pill walks the whole
+    thread (about 120 ms on the largest one). Keyed by the full ETag,
+    every page of a thread and both representations missed separately, so
+    a crawler walking a long thread's pages paid the walk on each. They
+    key by the ETag's content part, which every page of one thread shares."""
+    from mimir import lifecycle_status
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 1)
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("root@x", None), ("r1@x", "root@x"), ("r2@x", "root@x")],
+    )
+    root_id, root_url = seeded["root@x"]
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    calls = []
+    real = lifecycle_status._bulk_uncached
+
+    def counting(session, ids):
+        calls.append(list(ids))
+        return real(session, ids)
+
+    monkeypatch.setattr(lifecycle_status, "_bulk_uncached", counting)
+    if variant == "pages":
+        urls = [(root_url + "/t", {}), (root_url + "/t/2", {}), (root_url + "/t/3", {})]
+    else:
+        urls = [(root_url + "/t", {}), (root_url + "/t", {"HX-Request": "true"})]
+    for url, headers in urls:
+        assert client.get(url, headers=headers).status_code == 200, url
+    walks = [c for c in calls if c == [root_id]]
+    assert walks, "precondition: the pill rendered at all"
+    assert len(walks) == 1, f"{variant}: walk ran {len(walks)} times for {len(urls)}"
