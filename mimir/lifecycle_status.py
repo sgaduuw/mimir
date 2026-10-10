@@ -493,18 +493,21 @@ def lifecycle_status_for_articles(
     are absent from the result.
 
     `state_key` is for the pages that carry an ETag (message and
-    thread), which pass that ETag. A pill cached under the bare id can
-    be older than the validator, and once the row expired the body
-    changed under an ETag that did not, pinning the stale pill in every
-    cache that kept it. Keyed by the ETag, a cached pill is reused only
-    while the ETag is. Two things still move the pill under an
+    thread), which pass the digest of the ETag's content part (the ETag
+    minus its page and full/htmx fields). A pill cached under the bare
+    id can be older than the validator, and once the row expired the
+    body changed under an ETag that did not, pinning the stale pill in
+    every cache that kept it. Keyed by the content part, a cached pill
+    is reused only while the page content is unchanged, and every page
+    of a thread shares one entry. Two things still move the pill under an
     unchanged ETag: time (the activity chip's buckets are relative to
     now and age within the TTL), and a reply that lands only in ANOTHER
     inbox, because `descendants` walks the thread across inboxes while
     the pages' ETags carry their own inbox's reply date. Cached rather
     than computed live because the live compute walks the whole thread:
-    about 120 ms per call on the 12,342-message syzbot thread
-    (production, 2026-10-10).
+    about 120 ms per `_bulk_uncached` call on the 12,342-message syzbot
+    thread (production, 2026-10-10; the 54.6 ms quoted in the thread
+    route is the `descendants` CTE alone, measured earlier).
     """
     if not article_ids:
         return {}

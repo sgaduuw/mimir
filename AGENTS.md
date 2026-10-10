@@ -171,8 +171,8 @@ only thing standing between a change and every CDN edge plus every
 conditional-GET crawler serving a body the data has contradicted.
 
 The other half: **anything the page renders from a cache must be keyed
-by the page's ETag (the whole ETag, not the part that seems relevant)
-or not cached at all.** A cache keyed by article id outlives the ETag it
+by the page's ETag content (the ETag minus the fields that only choose a
+representation, never a hand-picked part) or not cached at all.** A cache keyed by article id outlives the ETag it
 is served under, and once its row expires the body changes under an
 unchanged ETag, pinning the stale content everywhere it was kept. When
 testing this, prime caches with a normal request rather than clearing
