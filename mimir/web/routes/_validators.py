@@ -26,6 +26,20 @@ from mimir.models import (
 )
 
 
+def state_cache_key(state_tag: str) -> str:
+    """Cache-key suffix for derived state rendered under a validator.
+
+    The pill and the patch-state card are cached, and a cache the
+    validator cannot see pins whatever it held once the row expires:
+    the body changes under an ETag that did not. Keying those caches by
+    this digest of `render_state_tag` makes "the cached copy is still
+    valid" and "the page is unchanged" the same predicate. Time-relative
+    parts (the activity chip, "N days since the last reply") still age
+    within the cache TTL; no validator can carry `now()`.
+    """
+    return hashlib.blake2s(state_tag.encode(), digest_size=8).hexdigest()
+
+
 def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     """Everything a page renders ABOUT `article_id` that no message
     carries and no thread-shape signal covers.

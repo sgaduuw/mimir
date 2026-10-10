@@ -811,6 +811,46 @@ def _mutate_queued_to_landed_via_next(seeded):
         s.commit()
 
 
+def _prepare_linus_landing(seeded):
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+
+    with SessionLocal() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha="a" * 40,
+                message_id="root@x",
+                tree_name="linus",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+
+
+def _mutate_second_commit_same_tree(seeded):
+    """A second Linus commit names the same patch, OLDER than the first,
+    so the newest date stays put and the tree SET stays {linus}: only the
+    duplicate in the tree list moves. The tooltip and the landing
+    sentence change, so the validator must keep duplicates, not a set."""
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+
+    with SessionLocal() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha="f" * 40,
+                message_id="root@x",
+                tree_name="linus",
+                committed_at=datetime(2024, 5, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+
+
 def _mutate_review_trailer(seeded):
     """A `Reviewed-by:` arrives on a REPLY and is attributed to the
     root, moving the roll-up count in the lifecycle pill. Re-ingest of
@@ -909,6 +949,11 @@ _RENDER_STATE_CASES = [
         "queued_to_landed_via_next",
         _prepare_first_landing,
         _mutate_queued_to_landed_via_next,
+    ),
+    (
+        "second_commit_same_tree",
+        _prepare_linus_landing,
+        _mutate_second_commit_same_tree,
     ),
     ("maintainers_reparse", _prepare_rules_version, _mutate_rules_version),
     ("review_trailer", None, _mutate_review_trailer),
@@ -1028,6 +1073,110 @@ def test_etag_page_does_not_render_a_cached_pill(client, tmp_path, surface):
     html = client.get(url).get_data(as_text=True)
     assert "IN LINUX-NEXT" not in html, f"{surface} rendered the cached queued pill"
     assert "LANDED" in html
+
+
+def _synthesis(html: str) -> str:
+    """The landing sentence of the patch-state card, or ""."""
+    m = re.search(r"((?:Queued in|Landed in mainline as)[^<]*)", html)
+    return m.group(1) if m else ""
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_etag_page_does_not_render_a_cached_landing_sentence(client, tmp_path, surface):
+    """The patch-state card was cached by article id, out of the
+    validator's sight: after a landing the page carried a new ETag and a
+    LANDED pill beside "Queued in linux-next", and once the card expired
+    the body changed under an unchanged ETag, pinning the stale sentence.
+    Primed with an ordinary 200, as production primes it."""
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.add(
+            MainlineCommit(
+                commit_sha="c" * 40,
+                message_id="root@x",
+                tree_name="linux-next",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+    first = client.get(url)
+    assert re.match(
+        r"Queued in \S+ as c{12}\b", _synthesis(first.get_data(as_text=True))
+    )
+    with SessionLocal() as s:
+        s.query(MainlineCommit).filter_by(
+            message_id="root@x", tree_name="linux-next"
+        ).delete()
+        s.add(
+            MainlineCommit(
+                commit_sha="c" * 40,
+                message_id="root@x",
+                tree_name="linus",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+    second = client.get(url)
+    assert second.headers["ETag"] != first.headers["ETag"]  # precondition
+    html = second.get_data(as_text=True)
+    assert re.search(r"\bLANDED\b", html)  # precondition: pill is current
+    assert re.match(r"Landed in mainline as c{12}\b", _synthesis(html)), _synthesis(
+        html
+    )
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize(
+    "case", _RENDER_STATE_CASES, ids=[c[0] for c in _RENDER_STATE_CASES]
+)
+def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, case):
+    """For every derived-state change, the page served under the new
+    ETag with caches WARM must equal a cold render under that ETag.
+    The matrix above clears the cache, so it can only see the
+    validator; this one sees a cache the validator cannot."""
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+    from tests.test_routes._helpers import seed_thread_shape
+
+    _label, prepare, mutate = case
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    if prepare is not None:
+        prepare(seeded)
+    assert client.get(url).status_code == 200  # prime, do not clear
+    mutate(seeded)
+    warm = client.get(url)
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        s.commit()
+    cold = client.get(url)
+    assert warm.headers["ETag"] == cold.headers["ETag"]  # precondition
+
+    def norm(h: str) -> str:
+        return re.sub(r'nonce="[^"]*"', 'nonce=""', h)
+
+    assert norm(warm.get_data(as_text=True)) == norm(cold.get_data(as_text=True)), (
+        f"{surface}: warm body differs from cold under one ETag on {_label}"
+    )
 
 
 def test_single_message_rule_agrees_between_message_page_and_thread_view(

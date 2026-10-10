@@ -43,7 +43,7 @@ from mimir.threading import (
 )
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _thread_summary
-from mimir.web.routes._validators import render_state_tag
+from mimir.web.routes._validators import render_state_tag, state_cache_key
 from mimir.web.urls import (
     _abort_404_if_url_date_mismatches,
     _canonical_inbox_name,
@@ -591,12 +591,13 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             thread_dates=[n.date for n in thread],
             subsystem_ids=[s.id for s in subsystem_hits],
             inbox_name=inbox.name,
+            state_key=state_cache_key(state_tag),
         )
 
-        # Uncached: the ETag above read the landing rows live, and a
-        # cached pill could be older than it (see `cached=False`).
+        # Keyed by the validator's input, like the card above, so a
+        # cached pill cannot outlive the ETag it is served under.
         lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, [article.id], cached=False
+            session, [article.id], state_key=state_cache_key(state_tag)
         )
         lifecycle_status = lifecycle_status_by_id.get(article.id)
 
