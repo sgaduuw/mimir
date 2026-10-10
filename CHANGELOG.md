@@ -9,7 +9,56 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
-## [Unreleased]
+## [3.13.0] - 2026-10-10
+
+### Fixed
+
+- Patches that reach Linus's tree through a subsystem tree (net-next, tip,
+  mm, pci, bpf-next) or linux-next now show as landed. The subsystem tree
+  recorded the commit first and the Linus walk's row for the same commit was
+  dropped, so the pill stayed "queued" after the merge. A migration adds
+  `tree_name` to the `mainline_commits` key so each tree keeps its own row;
+  it rebuilds the table at broker startup, copying every row (325,761 on
+  production, 2026-10-10; copy time unmeasured). Run
+  `update-mainline --rewalk` once after deploying to recover the missing
+  Linus rows; on production on 2026-10-09 the Linus tree's part of a rewalk
+  (1,484,900 commits) took about 13 minutes. linux-next's daily walk now
+  skips commits already in Linus's tree, like the subsystem trees, instead
+  of walking its whole history. The tree a queued pill names no longer flips
+  between a subsystem tree and linux-next when both hold the commit (#673).
+- Message and thread pages no longer keep a stale lifecycle pill or patch
+  card ("Queued in linux-next" when the patch has landed, an old revisions
+  fold) behind a 304. Their ETag counted landing rows and took the newest
+  date, which stays the same when a patch moves from linux-next to Linus's
+  tree, and the pill and card came from 5-minute caches the ETag did not
+  see, so a cache could hold old content under a current validator for
+  good. The ETag now carries every landing row (tree, commit and date), and
+  both caches are keyed by the ETag's content part (the ETag without the
+  page number and the full/htmx choice), so a cached pill or card is reused
+  only while the page content is unchanged, and every page of a thread
+  shares one entry. They stay cached because computing them on
+  every request walks the whole thread: about 120 ms per uncached compute
+  on the largest thread (12,342 messages, measured on production
+  2026-10-10). Two
+  known exceptions remain: the activity chip is relative to the current time
+  and ages within the 5-minute cache, and a reply that lands only in another
+  list still moves the chip without moving the ETag (#676).
+
+### Upgrade notes
+
+- The deploy restarts the broker, which ends any running
+  `admin canonicals backfill --reprocess`; that command cannot resume and
+  starts again from the newest article. Let it finish first.
+- Run `update-mainline --rewalk` straight after the deploy, before
+  linux-next's next daily walk. Patches that linux-next recorded before
+  Linus did were stored only under linux-next; that walk now skips
+  commits Linus has and drops those rows, and until the rewalk restores
+  the Linus rows those patches show as pending and appear in triage.
+- Rolling back to 3.12.x needs `alembic downgrade 1072ad1fae96`, run from
+  the 3.13.0 image (the 3.12 image does not know the new revision and its
+  broker refuses to start), before the old image starts. Without it the
+  3.12 walker's insert also fails, because it names the old two-column
+  key. The downgrade keeps one row per commit, preferring Linus's.
 
 ## [3.12.0] - 2026-10-09
 

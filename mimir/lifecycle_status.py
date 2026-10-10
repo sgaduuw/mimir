@@ -118,6 +118,14 @@ _REVIEW_ROLES_PARAM = bindparam(
 # version so v10 > v9 (test_superseded_handles_double_digit_versions).
 # Adds sup_by_version + sup_by_date for the SUPERSEDED tooltip's
 # leading line.
+#
+# The `mc` CTE's "earliest other tree" orders by committed_at, then
+# prefers a subsystem tree over linux-next, then the name. A subsystem
+# tree's commit reaches linux-next with the same sha and committed_at,
+# so committed_at alone ties and the pill would follow the physical row
+# order that linux-next's daily rebuild rewrites, while the page
+# validator (row count, max date) stays put (#673).
+# `patch_state._mainline_landings` uses the same order.
 _BULK_SQL = text("""
 WITH RECURSIVE
 roots(leaf, message_id, thread_parent, depth) AS (
@@ -161,13 +169,16 @@ mc AS (
            MAX(CASE WHEN c.tree_name = 'linus' THEN c.committed_at END) AS linus_committed_at,
            (SELECT cc.tree_name FROM mainline_commits cc
               WHERE cc.message_id = a.message_id AND cc.tree_name != 'linus'
-              ORDER BY cc.committed_at ASC LIMIT 1) AS earliest_other_tree,
+              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name
+              LIMIT 1) AS earliest_other_tree,
            (SELECT cc.commit_sha FROM mainline_commits cc
               WHERE cc.message_id = a.message_id AND cc.tree_name != 'linus'
-              ORDER BY cc.committed_at ASC LIMIT 1) AS earliest_other_sha,
+              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name
+              LIMIT 1) AS earliest_other_sha,
            (SELECT cc.committed_at FROM mainline_commits cc
               WHERE cc.message_id = a.message_id AND cc.tree_name != 'linus'
-              ORDER BY cc.committed_at ASC LIMIT 1) AS earliest_other_at
+              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name
+              LIMIT 1) AS earliest_other_at
       FROM articles a
       LEFT JOIN mainline_commits c ON c.message_id = a.message_id
      WHERE a.id IN :ids
@@ -469,6 +480,8 @@ def _bulk_uncached(
 def lifecycle_status_for_articles(
     session: Session,
     article_ids: list[int],
+    *,
+    state_key: str | None = None,
 ) -> dict[int, LifecycleStatusInfo]:
     """Bulk lifecycle-status fetch for a listing of articles.
 
@@ -478,20 +491,36 @@ def lifecycle_status_for_articles(
     via one combined SQL call in `_bulk_uncached`. Empty input
     -> empty dict. Missing IDs (e.g. articles not in the corpus)
     are absent from the result.
+
+    `state_key` is for the pages that carry an ETag (message and
+    thread), which pass the digest of the ETag's content part (the ETag
+    minus its page and full/htmx fields). A pill cached under the bare
+    id can be older than the validator, and once the row expired the
+    body changed under an ETag that did not, pinning the stale pill in
+    every cache that kept it. Keyed by the content part, a cached pill
+    is reused only while the page content is unchanged, and every page
+    of a thread shares one entry. Two things still move the pill under an
+    unchanged ETag: time (the activity chip's buckets are relative to
+    now and age within the TTL), and a reply that lands only in ANOTHER
+    inbox, because `descendants` walks the thread across inboxes while
+    the pages' ETags carry their own inbox's reply date. Cached rather
+    than computed live because the live compute walks the whole thread:
+    about 120 ms per `_bulk_uncached` call on the 12,342-message syzbot
+    thread (production, 2026-10-10; the 54.6 ms quoted in the thread
+    route is the `descendants` CTE alone, measured earlier).
     """
     if not article_ids:
         return {}
-    keys = [f"lifecycle_status:{a}" for a in article_ids]
-    cached = cache.get_many(keys)
-    out: dict[int, LifecycleStatusInfo] = {
-        int(k.split(":")[1]): v for k, v in cached.items()
-    }
+    suffix = f":{state_key}" if state_key is not None else ""
+    key_to_id = {f"lifecycle_status:{a}{suffix}": a for a in article_ids}
+    hits = cache.get_many(list(key_to_id))
+    out: dict[int, LifecycleStatusInfo] = {key_to_id[k]: v for k, v in hits.items()}
     missing_ids = [a for a in article_ids if a not in out]
     if missing_ids:
         computed = _bulk_uncached(session, missing_ids)
         for article_id, info in computed.items():
             cache.set(
-                f"lifecycle_status:{article_id}",
+                f"lifecycle_status:{article_id}{suffix}",
                 info,
                 ttl=LIFECYCLE_STATUS_TTL_SEC,
             )

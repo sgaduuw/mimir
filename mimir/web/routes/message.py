@@ -298,14 +298,20 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             default=article.date,
         )
         state_tag = render_state_tag(session, article.id, article.message_id)
-        etag_input = (
+        # Split so the ETag is the content part plus the representation
+        # (full or htmx); the pill and card caches key by the content
+        # part, so both representations share one entry. Same shape as
+        # the thread view.
+        content_input = (
             f"{article.id}|{mimir.__version__}|"
             f"{settings.thread_view_render_cap}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|"
-            f"{state_tag}|{'hx' if hx_request else 'full'}|"
+            f"{state_tag}|"
             f"{canonical_url or ''}|"
             f"{','.join(name for _, name in all_links)}"
         )
+        content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
+        etag_input = f"{content_input}|{'hx' if hx_request else 'full'}"
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
         if etag in request.if_none_match:
             response = Response(status=304)
@@ -591,9 +597,14 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             thread_dates=[n.date for n in thread],
             subsystem_ids=[s.id for s in subsystem_hits],
             inbox_name=inbox.name,
+            state_key=content_key,
         )
 
-        lifecycle_status_by_id = lifecycle_status_for_articles(session, [article.id])
+        # Keyed by the ETag's content part, like the card above: a cached
+        # pill is reused only while that part is unchanged.
+        lifecycle_status_by_id = lifecycle_status_for_articles(
+            session, [article.id], state_key=content_key
+        )
         lifecycle_status = lifecycle_status_by_id.get(article.id)
 
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").

@@ -30,7 +30,7 @@ def _row(commit_sha: str, message_id: str, tree_name: str = "linus"):
 
 def test_submit_mainline_batch_inserts_rows_via_writer(seeded_db):
     """_submit_mainline_batch composes a WriteOp wrapping the
-    INSERT OR IGNORE for a batch of (commit_sha, message_id) pairs,
+    INSERT OR IGNORE for a batch of (commit_sha, message_id, tree_name) rows,
     submits it to the writer, and the rows appear after the writer
     drains."""
     writer = WriterThread.from_settings()
@@ -222,7 +222,7 @@ def test_mid_walk_cursor_failure_leaves_cursor_at_old_position(
     """Phase 3 contract: a crash between batch N and the cursor
     submission leaves the cursor at its old position, so the next
     tick re-walks from there. on_conflict_do_nothing on
-    (commit_sha, message_id) makes that replay a no-op for the
+    (commit_sha, message_id, tree_name) makes that replay a no-op for the
     batches that committed pre-crash.
 
     The test injects a failing _submit_mainline_cursor_update,

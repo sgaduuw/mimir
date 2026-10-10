@@ -779,6 +779,103 @@ def _mutate_relanded_in_rebasing_tree(seeded):
         s.commit()
 
 
+def _mutate_queued_to_landed_via_next(seeded):
+    """Linus merges a commit linux-next already carried, then
+    linux-next's daily rebuild drops its row because it now skips
+    commits Linus has (#673). Same SHA, same committed_at, one row
+    before and one after: the pill goes from "in linux-next" to
+    LANDED while a count-and-max tag stays identical, so a client
+    holding the queued page got a 304 for a landed patch."""
+    from datetime import datetime
+
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+
+    with SessionLocal() as s:
+        s.execute(
+            delete(MainlineCommit).where(
+                MainlineCommit.message_id == "root@x",
+                MainlineCommit.tree_name == "linux-next",
+            )
+        )
+        s.add(
+            MainlineCommit(
+                commit_sha="c" * 40,
+                message_id="root@x",
+                tree_name="linus",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+
+
+def _prepare_linus_landing(seeded):
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+
+    with SessionLocal() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha="a" * 40,
+                message_id="root@x",
+                tree_name="linus",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+
+
+def _mutate_second_commit_same_tree(seeded):
+    """A second Linus commit names the same patch, OLDER than the first,
+    so the newest date stays put and the tree SET stays {linus}: only the
+    duplicate in the tree list moves. The tooltip and the landing
+    sentence change, so the validator must keep duplicates, not a set."""
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+
+    with SessionLocal() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha="f" * 40,
+                message_id="root@x",
+                tree_name="linus",
+                committed_at=datetime(2024, 5, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+
+
+def _mutate_rebased_same_date(seeded):
+    """linux-next rebuilds its row under a NEW sha with the SAME
+    committer date (a rebase that keeps committer dates). Tree list and
+    dates are unchanged; the tooltip and the "Queued in linux-next as
+    <sha>" sentence show the new sha, so the validator must carry it."""
+    from datetime import datetime
+
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+
+    with SessionLocal() as s:
+        s.execute(delete(MainlineCommit).where(MainlineCommit.message_id == "root@x"))
+        s.add(
+            MainlineCommit(
+                commit_sha="9" * 40,
+                message_id="root@x",
+                tree_name="linux-next",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+
+
 def _mutate_review_trailer(seeded):
     """A `Reviewed-by:` arrives on a REPLY and is attributed to the
     root, moving the roll-up count in the lifecycle pill. Re-ingest of
@@ -873,6 +970,17 @@ _RENDER_STATE_CASES = [
         _prepare_first_landing,
         _mutate_relanded_in_rebasing_tree,
     ),
+    (
+        "queued_to_landed_via_next",
+        _prepare_first_landing,
+        _mutate_queued_to_landed_via_next,
+    ),
+    ("rebased_same_date", _prepare_first_landing, _mutate_rebased_same_date),
+    (
+        "second_commit_same_tree",
+        _prepare_linus_landing,
+        _mutate_second_commit_same_tree,
+    ),
     ("maintainers_reparse", _prepare_rules_version, _mutate_rules_version),
     ("review_trailer", None, _mutate_review_trailer),
     ("article_files_rewrite", _prepare_article_file, _mutate_article_file),
@@ -920,10 +1028,10 @@ def test_render_state_moves_the_etag_on_both_surfaces(client, tmp_path, surface,
     assert before.status_code == 200, f"{surface} did not render"
 
     mutate(seeded)
-    # Both pages read cached derived state (lifecycle is keyed per
-    # ARTICLE, so an inbox-scoped purge would miss it). Production
-    # invalidates explicitly on each of these writes; the ETag itself
-    # is computed from direct reads either way.
+    # Cleared so this test asks only whether the VALIDATOR moves. Do not
+    # read it as "production invalidates on these writes": it does not
+    # for landings, which is why both pages compute the lifecycle pill
+    # uncached (pinned by `test_etag_page_does_not_render_a_cached_pill`).
     with SessionLocal() as s:
         s.execute(delete(CacheEntry))
         s.commit()
@@ -932,6 +1040,343 @@ def test_render_state_moves_the_etag_on_both_surfaces(client, tmp_path, surface,
     assert after.status_code == 200
     assert before.headers["ETag"] != after.headers["ETag"], (
         f"{surface} page ETag did not move on {_label}"
+    )
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_etag_page_does_not_render_a_cached_pill(client, tmp_path, surface):
+    """The body must show the state the validator was minted from.
+
+    The ETag reads the landing rows live. When the page took its pill
+    from the 5-minute cache, a response could carry the NEW validator
+    beside the OLD pill; when the cache row expired the body changed
+    under an ETag that did not, and every cache holding that response
+    kept the stale pill for good. Nothing invalidates the pill when a
+    landing row is written, so the cache here is primed the way a
+    listing page primes it in production, not cleared.
+    """
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from mimir.lifecycle_status import lifecycle_status_for_articles
+    from mimir.models import MainlineCommit
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        # Pills render only on patches, keyed off a `[PATCH ...]` subject.
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.add(
+            MainlineCommit(
+                commit_sha="c" * 40,
+                message_id="root@x",
+                tree_name="linux-next",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+        primed = lifecycle_status_for_articles(s, [root_id])[root_id]
+    assert primed.pill_label == "IN LINUX-NEXT", primed.pill_label  # precondition
+
+    with SessionLocal() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha="c" * 40,
+                message_id="root@x",
+                tree_name="linus",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+        # Precondition: the cache still holds the queued pill.
+        still = lifecycle_status_for_articles(s, [root_id])[root_id]
+    assert still.pill_label == "IN LINUX-NEXT", still.pill_label
+
+    html = client.get(url).get_data(as_text=True)
+    assert "IN LINUX-NEXT" not in html, f"{surface} rendered the cached queued pill"
+    assert "LANDED" in html
+
+
+def _synthesis(html: str) -> str:
+    """The landing sentence of the patch-state card, or ""."""
+    m = re.search(r"((?:Queued in|Landed in mainline as)[^<]*)", html)
+    return m.group(1) if m else ""
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_etag_page_does_not_render_a_cached_landing_sentence(client, tmp_path, surface):
+    """The patch-state card was cached by article id, out of the
+    validator's sight: after a landing the page carried a new ETag and a
+    LANDED pill beside "Queued in linux-next", and once the card expired
+    the body changed under an unchanged ETag, pinning the stale sentence.
+    Primed with an ordinary 200, as production primes it."""
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.add(
+            MainlineCommit(
+                commit_sha="c" * 40,
+                message_id="root@x",
+                tree_name="linux-next",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+    first = client.get(url)
+    assert re.match(
+        r"Queued in \S+ as c{12}\b", _synthesis(first.get_data(as_text=True))
+    )
+    with SessionLocal() as s:
+        s.query(MainlineCommit).filter_by(
+            message_id="root@x", tree_name="linux-next"
+        ).delete()
+        s.add(
+            MainlineCommit(
+                commit_sha="c" * 40,
+                message_id="root@x",
+                tree_name="linus",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+    second = client.get(url)
+    assert second.headers["ETag"] != first.headers["ETag"]  # precondition
+    html = second.get_data(as_text=True)
+    assert re.search(r"\bLANDED\b", html)  # precondition: pill is current
+    assert re.match(r"Landed in mainline as c{12}\b", _synthesis(html)), _synthesis(
+        html
+    )
+
+
+# Cases whose change this fixture's page does not render (no subsystem
+# or maintainer reviewer to show it), so a warm-versus-cold comparison
+# passes them by construction. Making them render is #678.
+_BODY_INVISIBLE_CASES = {"maintainers_reparse", "article_files_rewrite"}
+_RENDERED_STATE_CASES = [
+    c for c in _RENDER_STATE_CASES if c[0] not in _BODY_INVISIBLE_CASES
+]
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize(
+    "case", _RENDERED_STATE_CASES, ids=[c[0] for c in _RENDERED_STATE_CASES]
+)
+def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, case):
+    """For every derived-state change, the page served under the new
+    ETag with caches WARM must equal a cold render under that ETag.
+    The matrix above clears the cache, so it can only see the
+    validator; this one sees a cache the validator cannot."""
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+    from tests.test_routes._helpers import seed_thread_shape
+
+    _label, prepare, mutate = case
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    if prepare is not None:
+        prepare(seeded)
+    primed = client.get(url)  # prime, do not clear
+    assert primed.status_code == 200
+    mutate(seeded)
+    warm = client.get(url)
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        s.commit()
+    cold = client.get(url)
+    assert warm.headers["ETag"] == cold.headers["ETag"]  # precondition
+
+    def norm(h: str) -> str:
+        return re.sub(r'nonce="[^"]*"', 'nonce=""', h)
+
+    # Precondition: the change is visible in the body, or warm == cold
+    # holds by construction and guards nothing.
+    assert norm(primed.get_data(as_text=True)) != norm(cold.get_data(as_text=True)), (
+        f"{surface}: {_label} does not change the rendered page"
+    )
+    assert norm(warm.get_data(as_text=True)) == norm(cold.get_data(as_text=True)), (
+        f"{surface}: warm body differs from cold under one ETag on {_label}"
+    )
+
+
+def _activity(html: str) -> str:
+    m = re.search(r'class="badge badge-activity-([a-z]+)"', html)
+    return m.group(1) if m else ""
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_reply_does_not_leave_a_cached_activity_chip_under_the_new_etag(
+    client, tmp_path, surface
+):
+    """A reply moves both pages' ETags through the thread's newest date,
+    and the activity chip with them. A pill cached under a narrower key
+    than the ETag kept the pre-reply chip under the new ETag, then
+    flipped to HOT under that same ETag once the row expired."""
+    from datetime import datetime
+
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    root_id, root_url = seeded["root@x"]
+    reply_id, _ = seeded["reply@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    first = client.get(url)
+    assert _activity(first.get_data(as_text=True)) in {"stale", "dormant"}
+
+    with SessionLocal() as s:
+        s.get(Article, reply_id).date = datetime.now(UTC)
+        s.commit()
+
+    warm = client.get(url)
+    assert warm.headers["ETag"] != first.headers["ETag"]  # precondition
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        s.commit()
+    cold = client.get(url)
+    assert cold.headers["ETag"] == warm.headers["ETag"]  # precondition
+    assert _activity(cold.get_data(as_text=True)) == "hot"  # precondition
+    assert _activity(warm.get_data(as_text=True)) == "hot", (
+        f"{surface}: cached pre-reply chip served under the post-reply ETag"
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="#676: the chip walks the thread across inboxes, the ETag does not",
+)
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_off_inbox_reply_moves_the_etag_if_it_moves_the_chip(client, tmp_path, surface):
+    """A reply that lands only in ANOTHER inbox moves the chip and no
+    validator input. Known gap, independent of caching (#676)."""
+    from datetime import datetime
+
+    from sqlalchemy import delete, select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, CacheEntry, Inbox
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("root@x", None)])
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    first = client.get(url)
+    assert _activity(first.get_data(as_text=True)) == "dormant"  # precondition
+
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        other = Article(
+            message_id="offlist-reply@x",
+            thread_parent="root@x",
+            subject="Re: [PATCH] foo: bar",
+            author="c@d.example",
+            date=datetime.now(UTC),
+        )
+        s.add(other)
+        s.flush()
+        s.add(
+            ArticleList(
+                article_id=other.id, inbox_id=beta.id, epoch=0, commit_sha="b" * 40
+            )
+        )
+        s.execute(delete(CacheEntry))
+        s.commit()
+
+    second = client.get(url)
+    # Precondition outside the xfail's reach: a fixture that renders no
+    # chip must error, not pass as the known gap.
+    if _activity(second.get_data(as_text=True)) != "hot":
+        raise RuntimeError("fixture: the off-inbox reply did not move the chip")
+    assert second.headers["ETag"] != first.headers["ETag"]
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_rebased_subsystem_row_below_the_max_moves_the_etag(client, tmp_path, surface):
+    """Queued in mm (older) and linux-next (newer); mm rebases to a new
+    sha still older than linux-next's row. The tree list and the newest
+    date stay put while the tooltip and the "Queued in mm as <sha>"
+    sentence change, so the validator tags the rows themselves."""
+    from datetime import datetime
+
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry, MainlineCommit
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("root@x", None)])
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.add(
+            MainlineCommit(
+                commit_sha="1" * 40,
+                message_id="root@x",
+                tree_name="mm",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.add(
+            MainlineCommit(
+                commit_sha="2" * 40,
+                message_id="root@x",
+                tree_name="linux-next",
+                committed_at=datetime(2024, 7, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+    first = client.get(url)
+    assert "111111111111" in first.get_data(as_text=True)  # precondition
+    with SessionLocal() as s:
+        s.execute(delete(MainlineCommit).where(MainlineCommit.tree_name == "mm"))
+        s.add(
+            MainlineCommit(
+                commit_sha="3" * 40,
+                message_id="root@x",
+                tree_name="mm",
+                committed_at=datetime(2024, 6, 15, tzinfo=UTC),
+            )
+        )
+        s.execute(delete(CacheEntry))
+        s.commit()
+    second = client.get(url)
+    assert "333333333333" in second.get_data(as_text=True)  # precondition
+    assert second.headers["ETag"] != first.headers["ETag"], (
+        f"{surface}: body moved, ETag did not"
     )
 
 
@@ -1367,3 +1812,44 @@ def test_no_source_comment_still_claims_the_overflow_containment_gate(client, tm
         "removed; the README and CHANGELOG were updated for the same "
         "change and these were not:\n  " + "\n  ".join(offenders)
     )
+
+
+@pytest.mark.parametrize("variant", ["pages", "hx"])
+def test_thread_pages_share_one_pill_compute(client, tmp_path, monkeypatch, variant):
+    """The pill and card caches exist because the pill walks the whole
+    thread (about 120 ms on the largest one). Keyed by the full ETag,
+    every page of a thread and both representations missed separately, so
+    a crawler walking a long thread's pages paid the walk on each. They
+    key by the ETag's content part, which every page of one thread shares."""
+    from mimir import lifecycle_status
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 1)
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("root@x", None), ("r1@x", "root@x"), ("r2@x", "root@x")],
+    )
+    root_id, root_url = seeded["root@x"]
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    calls = []
+    real = lifecycle_status._bulk_uncached
+
+    def counting(session, ids):
+        calls.append(list(ids))
+        return real(session, ids)
+
+    monkeypatch.setattr(lifecycle_status, "_bulk_uncached", counting)
+    if variant == "pages":
+        urls = [(root_url + "/t", {}), (root_url + "/t/2", {}), (root_url + "/t/3", {})]
+    else:
+        urls = [(root_url + "/t", {}), (root_url + "/t", {"HX-Request": "true"})]
+    for url, headers in urls:
+        assert client.get(url, headers=headers).status_code == 200, url
+    walks = [c for c in calls if c == [root_id]]
+    assert walks, "precondition: the pill rendered at all"
+    assert len(walks) == 1, f"{variant}: walk ran {len(walks)} times for {len(urls)}"
