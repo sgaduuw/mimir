@@ -49,12 +49,19 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     on every request to both surfaces, including the 304s, which is the
     crawler path.
     """
-    landings = session.execute(
-        select(
-            func.count(MainlineCommit.commit_sha),
-            func.max(MainlineCommit.committed_at),
-        ).where(MainlineCommit.message_id == message_id)
-    ).one()
+    # The trees holding the article, not just how many rows. Since
+    # #673 one commit has a row per tree, and the lifecycle pill is
+    # decided by WHICH trees: {linux-next} reads queued and {linus}
+    # reads landed, at the same count and the same committed_at, which
+    # is exactly the step linux-next's daily rebuild takes once Linus
+    # merges. A count-and-max tag gave both the same ETag.
+    landing_rows = session.execute(
+        select(MainlineCommit.tree_name, MainlineCommit.committed_at).where(
+            MainlineCommit.message_id == message_id
+        )
+    ).all()
+    landings_tag = ",".join(sorted(r.tree_name for r in landing_rows))
+    landed_max = max((r.committed_at for r in landing_rows), default=None)
     trailers = session.scalar(
         select(func.count(ArticleTrailer.id)).where(
             ArticleTrailer.article_id == article_id
@@ -111,6 +118,6 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
         ).one()
         series_tag = f"{count}|{newest or ''}"
     return (
-        f"{landings[0]}|{landings[1] or ''}|{trailers or 0}|"
+        f"{landings_tag}|{landed_max or ''}|{trailers or 0}|"
         f"{rules_version or ''}|{series_tag}|{files_tag}"
     )
