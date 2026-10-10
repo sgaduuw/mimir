@@ -779,6 +779,38 @@ def _mutate_relanded_in_rebasing_tree(seeded):
         s.commit()
 
 
+def _mutate_queued_to_landed_via_next(seeded):
+    """Linus merges a commit linux-next already carried, then
+    linux-next's daily rebuild drops its row because it now skips
+    commits Linus has (#673). Same SHA, same committed_at, one row
+    before and one after: the pill goes from "in linux-next" to
+    LANDED while a count-and-max tag stays identical, so a client
+    holding the queued page got a 304 for a landed patch."""
+    from datetime import datetime
+
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import MainlineCommit
+
+    with SessionLocal() as s:
+        s.execute(
+            delete(MainlineCommit).where(
+                MainlineCommit.message_id == "root@x",
+                MainlineCommit.tree_name == "linux-next",
+            )
+        )
+        s.add(
+            MainlineCommit(
+                commit_sha="c" * 40,
+                message_id="root@x",
+                tree_name="linus",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+
+
 def _mutate_review_trailer(seeded):
     """A `Reviewed-by:` arrives on a REPLY and is attributed to the
     root, moving the roll-up count in the lifecycle pill. Re-ingest of
@@ -873,6 +905,11 @@ _RENDER_STATE_CASES = [
         _prepare_first_landing,
         _mutate_relanded_in_rebasing_tree,
     ),
+    (
+        "queued_to_landed_via_next",
+        _prepare_first_landing,
+        _mutate_queued_to_landed_via_next,
+    ),
     ("maintainers_reparse", _prepare_rules_version, _mutate_rules_version),
     ("review_trailer", None, _mutate_review_trailer),
     ("article_files_rewrite", _prepare_article_file, _mutate_article_file),
@@ -920,10 +957,10 @@ def test_render_state_moves_the_etag_on_both_surfaces(client, tmp_path, surface,
     assert before.status_code == 200, f"{surface} did not render"
 
     mutate(seeded)
-    # Both pages read cached derived state (lifecycle is keyed per
-    # ARTICLE, so an inbox-scoped purge would miss it). Production
-    # invalidates explicitly on each of these writes; the ETag itself
-    # is computed from direct reads either way.
+    # Cleared so this test asks only whether the VALIDATOR moves. Do not
+    # read it as "production invalidates on these writes": it does not
+    # for landings, which is why both pages compute the lifecycle pill
+    # uncached (pinned by `test_etag_page_does_not_render_a_cached_pill`).
     with SessionLocal() as s:
         s.execute(delete(CacheEntry))
         s.commit()
@@ -933,6 +970,64 @@ def test_render_state_moves_the_etag_on_both_surfaces(client, tmp_path, surface,
     assert before.headers["ETag"] != after.headers["ETag"], (
         f"{surface} page ETag did not move on {_label}"
     )
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_etag_page_does_not_render_a_cached_pill(client, tmp_path, surface):
+    """The body must show the state the validator was minted from.
+
+    The ETag reads the landing rows live. When the page took its pill
+    from the 5-minute cache, a response could carry the NEW validator
+    beside the OLD pill; when the cache row expired the body changed
+    under an ETag that did not, and every cache holding that response
+    kept the stale pill for good. Nothing invalidates the pill when a
+    landing row is written, so the cache here is primed the way a
+    listing page primes it in production, not cleared.
+    """
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from mimir.lifecycle_status import lifecycle_status_for_articles
+    from mimir.models import MainlineCommit
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        # Pills render only on patches, keyed off a `[PATCH ...]` subject.
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.add(
+            MainlineCommit(
+                commit_sha="c" * 40,
+                message_id="root@x",
+                tree_name="linux-next",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+        primed = lifecycle_status_for_articles(s, [root_id])[root_id]
+    assert primed.pill_label == "IN LINUX-NEXT", primed.pill_label  # precondition
+
+    with SessionLocal() as s:
+        s.add(
+            MainlineCommit(
+                commit_sha="c" * 40,
+                message_id="root@x",
+                tree_name="linus",
+                committed_at=datetime(2024, 6, 1, tzinfo=UTC),
+            )
+        )
+        s.commit()
+        # Precondition: the cache still holds the queued pill.
+        still = lifecycle_status_for_articles(s, [root_id])[root_id]
+    assert still.pill_label == "IN LINUX-NEXT", still.pill_label
+
+    html = client.get(url).get_data(as_text=True)
+    assert "IN LINUX-NEXT" not in html, f"{surface} rendered the cached queued pill"
+    assert "LANDED" in html
 
 
 def test_single_message_rule_agrees_between_message_page_and_thread_view(

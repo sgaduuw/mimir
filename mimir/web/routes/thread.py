@@ -236,8 +236,9 @@ def thread_view(
             # below still runs a recursive `WITH RECURSIVE descendants`
             # over the whole thread (54.6 ms on the 12,342-message
             # syzbot thread, and NOT inbox-scoped), so the request as a
-            # whole does still walk it. A 5-minute per-article cache
-            # amortises that; the sentence is about membership, not
+            # whole does still walk it. Since 3.13.0 that call is
+            # uncached on this route, so every 200 pays it (a 304 does
+            # not reach it); the sentence is about membership, not
             # about the request.
             # That is the point of the change, so do not "simplify" this
             # by fetching everything and slicing in Python.
@@ -388,9 +389,11 @@ def thread_view(
                 subsystem_ids=[h.id for h in subsystem_hits],
                 inbox_name=inbox.name,
             )
-            root_lifecycle = lifecycle_status_for_articles(session, [root_node.id]).get(
-                root_node.id
-            )
+            # Uncached for the same reason as the message page: the
+            # ETag read the landing rows live (see `cached=False`).
+            root_lifecycle = lifecycle_status_for_articles(
+                session, [root_node.id], cached=False
+            ).get(root_node.id)
 
         # Self-canonical, deliberately. Cross-inbox thread
         # consolidation was tried and reverted: `get_thread` is
