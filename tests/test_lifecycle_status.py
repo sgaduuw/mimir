@@ -768,3 +768,38 @@ def test_landed_tooltip_pairs_sha_with_its_own_date(session):
     session.commit()
     tip = lifecycle_status_for_articles(session, [art.id])[art.id].tooltip
     assert tip == f"{'f' * 12} · 2026-05-01 00:00"
+
+
+def _tied_commits(session, message_id, tree_name):
+    """Two commits in one tree at one committer date, the higher sha
+    inserted first so insertion order and sha order disagree."""
+    art = _seed_article(session, message_id)
+    at = datetime(2026, 5, 1, tzinfo=UTC)
+    for sha in ("f" * 40, "a" * 40):
+        session.add(
+            MainlineCommit(
+                commit_sha=sha,
+                message_id=message_id,
+                tree_name=tree_name,
+                committed_at=at,
+            )
+        )
+        session.commit()
+    return art
+
+
+@pytest.mark.parametrize("tree_name", ["linus", "net-next"])
+def test_tied_commits_tooltip_matches_card(session, tree_name):
+    """The pill's tooltip and the card's sentence name the same commit
+    when one tree carries two at one committer date."""
+    from mimir.patch_state import _mainline_landings
+
+    art = _tied_commits(session, f"tie-{tree_name}@x", tree_name)
+    card = next(
+        c
+        for c in _mainline_landings(session, art)
+        if (c.tree_name == "linus") == (tree_name == "linus")
+    )
+    tip = lifecycle_status_for_articles(session, [art.id])[art.id].tooltip
+    assert card.commit_sha == "a" * 40  # precondition: the tie is broken by sha
+    assert tip.split(" · ")[0] == card.commit_sha[:12]
