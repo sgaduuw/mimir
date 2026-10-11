@@ -132,18 +132,20 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
             Article.id == article_id
         )
     ).one_or_none()
+    # The revisions' values, not a count and a text max: the pill ranks
+    # by revision number, and `backfill-patch-series --reprocess` can
+    # renumber a version in place at the same count.
     series_tag = ""
     if series is not None and series[0]:
-        count, newest = session.execute(
-            select(
-                func.count(Article.id),
-                func.max(Article.patch_series_version),
-            ).where(
+        revisions = session.execute(
+            select(Article.id, Article.patch_series_version)
+            .where(
                 Article.patch_series_key == series[0],
                 func.coalesce(Article.patch_series_position, 0) == (series[1] or 0),
             )
-        ).one()
-        series_tag = f"{count}|{newest or ''}"
+            .order_by(Article.id)
+        ).all()
+        series_tag = _digest(repr(tuple(r)) for r in revisions)
     return (
         f"{landings_tag}|{trailers_tag}|{rules_version or ''}|{series_tag}|{files_tag}"
     )
