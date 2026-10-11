@@ -31,9 +31,6 @@ changes, not internal refactors. Categories: **Added**,
   tooltip at the same revision count.
 - The QUEUED tooltip and the "Queued in" sentence name the same commit when
   one tree holds two at the same time.
-- The revisions fold lists every revision the SUPERSEDED pill counts. A cover
-  stored without a position (before the #212 backfill) used to get an empty
-  fold.
 - A subsystem's needs-attention list now uses the same "superseded" rule as
   the pill: same patch position and a higher revision. Before, any later post
   with the same series key counted, so in a multi-patch series every patch
