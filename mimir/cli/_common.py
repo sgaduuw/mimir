@@ -141,9 +141,11 @@ def _broker_backfill_loop(
     `broker_backfill_chunk_seconds` budget); the loop continues while
     `partial=True` is returned. The broker keeps the run's cursor, so
     every chunk, and the next invocation after an interruption,
-    continues where the last committed batch stopped. `restart` goes
-    on the first RPC only: it discards an unfinished run. `extra`
-    carries per-backfill extras (e.g. `inbox_filter` for canonicals).
+    continues where the last committed batch stopped. Only the first
+    RPC carries `start`, so only it may start a run: "restart" when
+    `restart` is set, which discards an unfinished run, else "resume".
+    `extra` carries per-backfill extras (e.g. `inbox_filter` for
+    canonicals).
 
     Cross-chunk `--limit` semantics: each iteration subtracts the
     chunk's `examined` from the remaining cap and stops once it
@@ -154,14 +156,15 @@ def _broker_backfill_loop(
     extra = extra or {}
     aggregated = None
     remaining = limit
+    start = "restart" if restart else "resume"
     while True:
         chunk, run = call(
             limit=remaining,
             reprocess=reprocess,
-            restart=restart,
+            start=start,
             **extra,
         )
-        restart = False
+        start = None
         if aggregated is None:
             aggregated = chunk
             if run["cursor"] is not None:
@@ -180,10 +183,16 @@ def _broker_backfill_loop(
                 return aggregated, run
 
 
-def _echo_run_summary(run: dict) -> None:
+def _echo_run_summary(run: dict | None) -> None:
     """The line after a backfill's per-session counters: the counters
-    cover this session only, so say which run they belong to and how
-    far that run has got across every session."""
+    cover this session only, so say which run they belong to, how far
+    that run has got across every session, and whether it is finished
+    or still open for the next session to resume. `run` is None only
+    when the run's row was deleted under this session."""
+    if run is None:
+        return
+    state = "finished" if run["finished"] else "open"
     click.echo(
-        f"run started {run['started_at']} UTC: {run['examined']} examined in total"
+        f"run started {run['started_at']} UTC: "
+        f"{run['examined']} examined in total, {state}"
     )

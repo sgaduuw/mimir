@@ -888,8 +888,8 @@ the oldest, 17.7M ids, October 2026).
 - **The cursor commits with its batch.** `backfill_runs.advance` runs
   as the final statement of each batch's WriteOp (the `after` hook on
   `_submit_*_batch`), the Phase 3a/3b pattern. A failed batch rolls
-  back its cursor too; redoing it is harmless because the writes are
-  idempotent. The canonicals walk also flushes mid-batch around its
+  back whole, cursor included, so redoing it applies it once. The
+  canonicals walk also flushes mid-batch around its
   promotion sweep, and those flushes carry the cursor as well.
   Pinned by `test_failed_batch_leaves_cursor_at_last_committed_batch`
   and `test_cursor_is_written_inside_each_batch_writeop`.
@@ -900,16 +900,22 @@ the oldest, 17.7M ids, October 2026).
 - **Finished, unfinished, restarted.** Running out of rows marks the
   run finished, and a finished run is never resumed. Reaching
   `--limit` leaves it unfinished, so the next session continues it.
-  `--restart` deletes the unfinished run (deleted, not marked
-  finished, so `finished_at` always means the walk reached the
-  oldest article).
+  Only a session's first RPC (`start` set) may start a run, so a
+  session whose run another session finished ends instead of walking
+  a new one. `--restart` deletes the unfinished run (deleted, not
+  marked finished, so `finished_at` always means the walk reached
+  the oldest article). Run ids use AUTOINCREMENT, so a chunk of a
+  deleted run still in flight cannot write to its replacement.
 - **Concurrency is not refused.** Two CLIs on one key join the same
-  run. With the default single long worker their chunks serialise;
-  with more, a batch may run twice (idempotent) and `advance` takes
-  `MIN` so the cursor never moves back up.
+  run. With the default single long worker their chunks serialise.
+  With more, chunks of one run can overlap and process the same
+  articles twice, and not every backfill's writes are idempotent:
+  canonical observation counts add up, and trailer inserts without
+  `--reprocess` are plain inserts. `advance` takes `MIN` so the
+  cursor never moves back up.
 - **Counts.** CLI counters cover the session. The run row keeps
   `examined` across sessions, and the CLI prints it with the run's
-  start time.
+  start time and whether the run is finished or still open.
 
 ## Threading via recursive CTE
 

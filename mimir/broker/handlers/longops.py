@@ -135,13 +135,22 @@ def _run_backfill_chunk(req, name: str, backfill, **params) -> Reply:
     build the run key and drive the walk. The Reply carries the chunk's
     `BackfillResult` whole as `counters`, `partial` mirrored out so the
     CLI can branch without re-parsing the counters, and `run`: when the
-    run started, the cursor this chunk started from, and the examined
-    count across the whole run including this chunk."""
+    run started, the cursor this chunk started from, the examined count
+    across the whole run, and whether the run is finished.
+
+    A follow-up chunk whose run another session finished walks nothing
+    and returns `partial=False`, which ends this session."""
     from mimir import backfill_runs
 
     run = backfill_runs.resolve(
-        name, backfill_runs.params_key(**params), restart=req.restart
+        name, backfill_runs.params_key(**params), start=req.start
     )
+    if run is None or run.finished:
+        return Reply(
+            rpc_id=req.rpc_id,
+            ok=True,
+            result={"counters": {}, "partial": False, "run": _run_info(run, run)},
+        )
     result = backfill(limit=req.limit, max_seconds=_chunk_seconds(), run=run, **params)
     return Reply(
         rpc_id=req.rpc_id,
@@ -149,13 +158,22 @@ def _run_backfill_chunk(req, name: str, backfill, **params) -> Reply:
         result={
             "counters": result.model_dump(mode="json"),
             "partial": bool(result.partial),
-            "run": {
-                "started_at": run.started_at.isoformat(sep=" ", timespec="seconds"),
-                "cursor": run.cursor,
-                "examined": run.examined + result.examined,
-            },
+            # Read back, so the totals include other sessions' chunks;
+            # a run deleted by `--restart` meanwhile reports as it was.
+            "run": _run_info(run, backfill_runs.get(run.id) or run),
         },
     )
+
+
+def _run_info(before, now) -> dict | None:
+    if before is None:
+        return None
+    return {
+        "started_at": before.started_at.isoformat(sep=" ", timespec="seconds"),
+        "cursor": before.cursor,
+        "examined": now.examined,
+        "finished": now.finished,
+    }
 
 
 def handle_backfill_article_files(req: BackfillArticleFilesRequest) -> Reply:

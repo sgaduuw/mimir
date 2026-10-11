@@ -23,6 +23,7 @@ import threading
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
+from typing import Literal
 
 from mimir.broker.protocol import (
     AnalyzeRequest,
@@ -411,7 +412,7 @@ class BrokerClient:
         *,
         limit: int | None = None,
         reprocess: bool = False,
-        restart: bool = False,
+        start: Literal["resume", "restart"] | None = None,
         timeout: float = 3600.0,
     ):
         """Phase 2.2 chunked backfill RPC. One call advances by at
@@ -420,6 +421,8 @@ class BrokerClient:
         `(BackfillResult, run)`, see `_backfill`. The CLI loops on
         `partial=True` aggregating per-chunk counters via
         `BackfillResult.merge`; the broker keeps the run's cursor.
+        `start` goes on a session's first RPC only; see the backfill
+        requests in `mimir.broker.protocol`.
 
         Default `timeout=3600 s` ceiling per RPC. The handler aims
         to return well under the chunk seconds setting, so 1 hour
@@ -429,7 +432,7 @@ class BrokerClient:
         from mimir.patches import BackfillResult
 
         req = BackfillArticleFilesRequest(
-            rpc_id=0, limit=limit, reprocess=reprocess, restart=restart
+            rpc_id=0, limit=limit, reprocess=reprocess, start=start
         )
         return self._backfill(req, BackfillResult, timeout)
 
@@ -438,7 +441,7 @@ class BrokerClient:
         *,
         limit: int | None = None,
         reprocess: bool = False,
-        restart: bool = False,
+        start: Literal["resume", "restart"] | None = None,
         timeout: float = 3600.0,
     ):
         """Phase 2.2 chunked backfill RPC; see
@@ -446,7 +449,7 @@ class BrokerClient:
         from mimir.trailers import BackfillResult
 
         req = BackfillArticleTrailersRequest(
-            rpc_id=0, limit=limit, reprocess=reprocess, restart=restart
+            rpc_id=0, limit=limit, reprocess=reprocess, start=start
         )
         return self._backfill(req, BackfillResult, timeout)
 
@@ -455,7 +458,7 @@ class BrokerClient:
         *,
         limit: int | None = None,
         reprocess: bool = False,
-        restart: bool = False,
+        start: Literal["resume", "restart"] | None = None,
         timeout: float = 3600.0,
     ):
         """Phase 2.2 chunked backfill RPC; see
@@ -463,7 +466,7 @@ class BrokerClient:
         from mimir.patch_series import BackfillResult
 
         req = BackfillPatchSeriesRequest(
-            rpc_id=0, limit=limit, reprocess=reprocess, restart=restart
+            rpc_id=0, limit=limit, reprocess=reprocess, start=start
         )
         return self._backfill(req, BackfillResult, timeout)
 
@@ -473,7 +476,7 @@ class BrokerClient:
         inbox_filter: str | None = None,
         limit: int | None = None,
         reprocess: bool = False,
-        restart: bool = False,
+        start: Literal["resume", "restart"] | None = None,
         timeout: float = 3600.0,
     ):
         """Phase 2.2 chunked backfill RPC for
@@ -486,7 +489,7 @@ class BrokerClient:
             inbox_filter=inbox_filter,
             limit=limit,
             reprocess=reprocess,
-            restart=restart,
+            start=start,
         )
         return self._backfill(req, BackfillResult, timeout)
 

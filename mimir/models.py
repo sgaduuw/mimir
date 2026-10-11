@@ -231,6 +231,12 @@ class BackfillRun(Base):
             unique=True,
             sqlite_where=text("finished_at IS NULL"),
         ),
+        # Never reuse an id. `--restart` deletes the newest row and
+        # inserts another, which a plain INTEGER PRIMARY KEY would give
+        # the same id, so a chunk of the discarded run still in flight
+        # (more than one long worker) could advance or finish the new
+        # one.
+        {"sqlite_autoincrement": True},
     )
 
 
