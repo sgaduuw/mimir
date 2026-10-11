@@ -129,39 +129,61 @@ def _broker_backfill_loop(
     *,
     limit: int | None,
     reprocess: bool,
+    restart: bool = False,
     extra: dict | None = None,
 ):
     """Run a chunked backfill RPC loop against the broker, summing
-    per-chunk counters into one `BackfillResult`.
+    per-chunk counters into one `BackfillResult`. Returns
+    `(result, run)` where `run` is the last chunk's run info.
 
     `call` is a bound `BrokerClient.backfill_*` method. Each RPC
     advances by at most one chunk (the broker's
     `broker_backfill_chunk_seconds` budget); the loop continues while
-    `partial=True` is returned, supplying `continuation=` so the
-    handler resumes at `Article.id < continuation`. `extra` carries
-    per-backfill extras (e.g. `inbox_filter` for canonicals).
+    `partial=True` is returned. The broker keeps the run's cursor, so
+    every chunk, and the next invocation after an interruption,
+    continues where the last committed batch stopped. `restart` goes
+    on the first RPC only: it discards an unfinished run. `extra`
+    carries per-backfill extras (e.g. `inbox_filter` for canonicals).
 
     Cross-chunk `--limit` semantics: each iteration subtracts the
     chunk's `examined` from the remaining cap and stops once it
     reaches zero. The per-RPC `limit` is the remaining budget so the
-    handler short-circuits at the right total.
+    handler short-circuits at the right total. The cap is per session:
+    a run stopped by it stays unfinished and the next session resumes.
     """
     extra = extra or {}
     aggregated = None
     remaining = limit
-    continuation = None
     while True:
-        chunk = call(
+        chunk, run = call(
             limit=remaining,
             reprocess=reprocess,
-            continuation=continuation,
+            restart=restart,
             **extra,
         )
-        aggregated = chunk if aggregated is None else aggregated.merge(chunk)
+        restart = False
+        if aggregated is None:
+            aggregated = chunk
+            if run["cursor"] is not None:
+                click.echo(
+                    f"resuming run started {run['started_at']} UTC "
+                    f"at id {run['cursor']}",
+                    err=True,
+                )
+        else:
+            aggregated = aggregated.merge(chunk)
         if not chunk.partial:
-            return aggregated
+            return aggregated, run
         if remaining is not None:
             remaining -= chunk.examined
             if remaining <= 0:
-                return aggregated
-        continuation = chunk.continuation
+                return aggregated, run
+
+
+def _echo_run_summary(run: dict) -> None:
+    """The line after a backfill's per-session counters: the counters
+    cover this session only, so say which run they belong to and how
+    far that run has got across every session."""
+    click.echo(
+        f"run started {run['started_at']} UTC: {run['examined']} examined in total"
+    )

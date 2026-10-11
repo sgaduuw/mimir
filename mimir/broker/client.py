@@ -395,20 +395,31 @@ class BrokerClient:
             raise BrokerUnavailable(f"reindex: {reply.error}")
         return reply.result or {}
 
+    def _backfill(self, req, result_cls, timeout: float):
+        """Send one backfill chunk RPC. Returns `(result, run)`: the
+        chunk's typed `BackfillResult`, and the run info dict described
+        on `protocol.Reply.result` (start time, the cursor the chunk
+        started from, examined across the whole run)."""
+        reply = self._rpc(req, timeout=timeout)
+        if not reply.ok:
+            raise BrokerUnavailable(f"{req.op}: {reply.error}")
+        result = reply.result or {}
+        return result_cls.model_validate(result.get("counters", {})), result.get("run")
+
     def backfill_article_files(
         self,
         *,
         limit: int | None = None,
         reprocess: bool = False,
-        continuation: int | None = None,
+        restart: bool = False,
         timeout: float = 3600.0,
     ):
         """Phase 2.2 chunked backfill RPC. One call advances by at
         most one broker chunk (`Settings.broker_backfill_chunk_seconds`
-        seconds of walker time, default 10 s). Returns a
-        `mimir.patches.BackfillResult` with `partial` + `continuation`
-        set; the CLI loops on `partial=True` aggregating per-chunk
-        counters via `BackfillResult.merge`.
+        seconds of walker time, default 10 s) and returns
+        `(BackfillResult, run)`, see `_backfill`. The CLI loops on
+        `partial=True` aggregating per-chunk counters via
+        `BackfillResult.merge`; the broker keeps the run's cursor.
 
         Default `timeout=3600 s` ceiling per RPC. The handler aims
         to return well under the chunk seconds setting, so 1 hour
@@ -418,23 +429,16 @@ class BrokerClient:
         from mimir.patches import BackfillResult
 
         req = BackfillArticleFilesRequest(
-            rpc_id=0,
-            limit=limit,
-            reprocess=reprocess,
-            continuation=continuation,
+            rpc_id=0, limit=limit, reprocess=reprocess, restart=restart
         )
-        reply = self._rpc(req, timeout=timeout)
-        if not reply.ok:
-            raise BrokerUnavailable(f"backfill_article_files: {reply.error}")
-        counters = (reply.result or {}).get("counters", {})
-        return BackfillResult.model_validate(counters)
+        return self._backfill(req, BackfillResult, timeout)
 
     def backfill_article_trailers(
         self,
         *,
         limit: int | None = None,
         reprocess: bool = False,
-        continuation: int | None = None,
+        restart: bool = False,
         timeout: float = 3600.0,
     ):
         """Phase 2.2 chunked backfill RPC; see
@@ -442,23 +446,16 @@ class BrokerClient:
         from mimir.trailers import BackfillResult
 
         req = BackfillArticleTrailersRequest(
-            rpc_id=0,
-            limit=limit,
-            reprocess=reprocess,
-            continuation=continuation,
+            rpc_id=0, limit=limit, reprocess=reprocess, restart=restart
         )
-        reply = self._rpc(req, timeout=timeout)
-        if not reply.ok:
-            raise BrokerUnavailable(f"backfill_article_trailers: {reply.error}")
-        counters = (reply.result or {}).get("counters", {})
-        return BackfillResult.model_validate(counters)
+        return self._backfill(req, BackfillResult, timeout)
 
     def backfill_patch_series(
         self,
         *,
         limit: int | None = None,
         reprocess: bool = False,
-        continuation: int | None = None,
+        restart: bool = False,
         timeout: float = 3600.0,
     ):
         """Phase 2.2 chunked backfill RPC; see
@@ -466,16 +463,9 @@ class BrokerClient:
         from mimir.patch_series import BackfillResult
 
         req = BackfillPatchSeriesRequest(
-            rpc_id=0,
-            limit=limit,
-            reprocess=reprocess,
-            continuation=continuation,
+            rpc_id=0, limit=limit, reprocess=reprocess, restart=restart
         )
-        reply = self._rpc(req, timeout=timeout)
-        if not reply.ok:
-            raise BrokerUnavailable(f"backfill_patch_series: {reply.error}")
-        counters = (reply.result or {}).get("counters", {})
-        return BackfillResult.model_validate(counters)
+        return self._backfill(req, BackfillResult, timeout)
 
     def backfill_canonicals(
         self,
@@ -483,7 +473,7 @@ class BrokerClient:
         inbox_filter: str | None = None,
         limit: int | None = None,
         reprocess: bool = False,
-        continuation: int | None = None,
+        restart: bool = False,
         timeout: float = 3600.0,
     ):
         """Phase 2.2 chunked backfill RPC for
@@ -496,13 +486,9 @@ class BrokerClient:
             inbox_filter=inbox_filter,
             limit=limit,
             reprocess=reprocess,
-            continuation=continuation,
+            restart=restart,
         )
-        reply = self._rpc(req, timeout=timeout)
-        if not reply.ok:
-            raise BrokerUnavailable(f"backfill_canonicals: {reply.error}")
-        counters = (reply.result or {}).get("counters", {})
-        return BackfillResult.model_validate(counters)
+        return self._backfill(req, BackfillResult, timeout)
 
     def warm_inbox(
         self,

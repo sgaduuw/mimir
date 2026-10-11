@@ -149,40 +149,42 @@ class BootstrapInboxesRequest(_BrokerRequest):
 
 
 # Phase 2.2 long ops: the four backfills. Each shares the same RPC
-# shape (limit + reprocess + continuation) because each one's CLI
-# loop wants the same thing: feed the broker a chunk budget, get
-# back per-chunk counters + a continuation pointer, repeat until
-# done. `continuation` carries the last `Article.id` the prior chunk
-# processed; the handler resumes at `Article.id < continuation` on
-# the next call. `None` means "start at the newest article."
+# shape (limit + reprocess + restart) because each one's CLI loop
+# wants the same thing: ask the broker for a chunk, get back
+# per-chunk counters, repeat until done.
 #
 # A backfill RPC handler runs for at most `Settings.broker_backfill_
-# chunk_seconds` (default 10 s) before returning `partial=True,
-# continuation=<last id>`. Between chunks the broker's long-op
-# worker is free, queued cache writes and other long ops get to
-# run, then the CLI fires the next chunk. Multi-hour backfills no
-# longer monopolise the long worker.
+# chunk_seconds` (default 10 s) before returning `partial=True`.
+# Between chunks the broker's long-op worker is free, queued cache
+# writes and other long ops get to run, then the CLI fires the next
+# chunk. Multi-hour backfills no longer monopolise the long worker.
+#
+# The broker owns the cursor (#680): each chunk resumes the unfinished
+# run for its backfill and parameters (`mimir.backfill_runs`), so the
+# request carries no position. `restart=True` discards that run and
+# starts a new one at the newest article; the CLI sends it on its first
+# RPC only. `limit` caps this request, not the run.
 
 
 class BackfillArticleFilesRequest(_BrokerRequest):
     op: Literal["backfill_article_files"] = "backfill_article_files"
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    continuation: int | None = Field(default=None, ge=0)
+    restart: bool = False
 
 
 class BackfillArticleTrailersRequest(_BrokerRequest):
     op: Literal["backfill_article_trailers"] = "backfill_article_trailers"
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    continuation: int | None = Field(default=None, ge=0)
+    restart: bool = False
 
 
 class BackfillPatchSeriesRequest(_BrokerRequest):
     op: Literal["backfill_patch_series"] = "backfill_patch_series"
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    continuation: int | None = Field(default=None, ge=0)
+    restart: bool = False
 
 
 class BackfillCanonicalsRequest(_BrokerRequest):
@@ -195,7 +197,7 @@ class BackfillCanonicalsRequest(_BrokerRequest):
     inbox_filter: str | None = Field(default=None, min_length=1, max_length=64)
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    continuation: int | None = Field(default=None, ge=0)
+    restart: bool = False
 
 
 # Phase 2.3 long ops: the three periodic maintenance writers
@@ -236,7 +238,7 @@ class BackfillThreadRootsRequest(_BrokerRequest):
 
     A write, so it runs on the broker like every other backfill. Unlike
     the per-article walkers it is a handful of bulk UPDATE passes
-    rather than a blob-reading walk, so it needs no chunk/continuation
+    rather than a blob-reading walk, so it needs no chunk/resume
     protocol: each pass is a single statement the writer commits
     whole."""
 
@@ -706,6 +708,9 @@ class Reply(BaseModel):
     #   - `ingest_inbox` (Phase 2.1): `{"results": [<IngestResult>, ...]}`
     #   - `backfill_*` (Phase 2.2):
     #       `{"counters": <BackfillResult>, "partial": bool,
-    #         "continuation": <int | None>}`
+    #         "run": {"started_at": str, "cursor": <int | None>,
+    #                 "examined": int}}`
+    #     where `run.cursor` is where this chunk started and
+    #     `run.examined` counts the whole run.
     # Stays `None` for ops that don't return a value.
     result: dict[str, Any] | None = None
