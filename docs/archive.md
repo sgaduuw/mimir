@@ -120,7 +120,8 @@ known list host, so for any other host add it to `LIST_HOST_SUFFIX_OVERRIDES`
 (JSON array) or the command warns that the value never matches. `''` clears it
 and hands the inbox back to auto-detection, which can promote a cross-post
 address again. It does not recompute canonicals; run
-`uv run mimir admin canonicals backfill --reprocess` afterwards.
+`uv run mimir admin canonicals backfill --reprocess --restart` afterwards, so an
+unfinished earlier run does not skip the articles above its cursor.
 
 Inbox edits live in SQLite and survive restarts. The `INBOXES` environment
 setting is a bootstrap source, not an override for existing rows.
@@ -178,6 +179,20 @@ uv run mimir backfill-thread-roots --verify
 The first three accept `--reprocess` to revisit already processed articles.
 File and trailer extraction read message bodies from the mirrors; patch-series
 extraction uses indexed headers. Use `--help` for per-command options.
+
+These three, and `admin canonicals backfill`, resume an interrupted run. The
+broker stores each run's position, so after a deploy, a dropped session or a
+killed command, run the same command again and it continues from the last
+committed batch. It prints `resuming run started <time> at id N` when it does.
+A run belongs to one command with one set of `--reprocess` and `--inbox`
+values; a different `--inbox` starts its own run. `--limit` caps one session
+only: the run stays open, and the next invocation continues it. A run that
+reaches the oldest article is finished, and the next invocation starts a new
+one at the newest article. Pass `--restart` to discard an unfinished run and
+start again at the newest article. The summary counts this session; the line
+after it gives the run's start time, its total examined count, and whether the
+run is `finished` or still `open`. After changing an inbox's `--list-address`,
+use `--restart`: a resumed run only revisits articles below its cursor.
 
 Thread roots are maintained by ingest, reindex, and failure replay. The broker
 also fills missing roots at startup, so a manual backfill is normally unnecessary.

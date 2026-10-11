@@ -14,7 +14,7 @@ def test_admin_canonicals_backfill_runs_and_prints_summary(seeded_db):
     # Seeded DB has 4 articles, but none with list-shaped To/Cc -- so
     # examined>0, resolved=0, unresolved>0. We only pin the line
     # shape; counts depend on dashboard helpers and bootstrap state.
-    assert "backfill complete:" in result.output
+    assert "this session:" in result.output
     assert "examined=" in result.output
     assert "resolved=" in result.output
 

@@ -15,6 +15,7 @@ import click
 from mimir.cli._common import (
     _broker_backfill_loop,
     _configure_logging,
+    _echo_run_summary,
     _verbose_broker_hint,
 )
 from mimir.cli.admin import admin_group
@@ -54,6 +55,12 @@ def admin_canonicals_group() -> None:
     "bootstrap region).",
 )
 @click.option(
+    "--restart",
+    is_flag=True,
+    help="Discard an unfinished run of this backfill and start again "
+    "from the newest article. Without it, an interrupted run resumes.",
+)
+@click.option(
     "-v",
     "--verbose",
     count=True,
@@ -64,6 +71,7 @@ def admin_canonicals_backfill_command(
     inbox_filter: str | None,
     limit: int | None,
     reprocess: bool,
+    restart: bool,
     verbose: int,
 ) -> None:
     """Walk historical articles, recording per-inbox address
@@ -75,16 +83,18 @@ def admin_canonicals_backfill_command(
 
     client = get_broker_client()
     try:
-        result = _broker_backfill_loop(
+        result, run = _broker_backfill_loop(
             client.backfill_canonicals,
             limit=limit,
             reprocess=reprocess,
+            restart=restart,
             extra={"inbox_filter": inbox_filter},
         )
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker backfill_canonicals failed: {exc}")
     click.echo(
-        f"backfill complete: examined={result.examined} "
+        f"this session: examined={result.examined} "
         f"resolved={result.resolved} unresolved={result.unresolved} "
         f"skipped={result.skipped}"
     )
+    _echo_run_summary(run)

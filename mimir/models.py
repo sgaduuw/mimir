@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mimir.extensions import Base
@@ -196,6 +196,48 @@ class IngestState(Base):
     last_commit_sha: Mapped[str | None] = mapped_column(String)
 
     inbox: Mapped[Inbox] = relationship(back_populates="ingest_states")
+
+
+class BackfillRun(Base):
+    """One run of a chunked backfill, so an interrupted run resumes
+    where it stopped. Owned by `mimir.backfill_runs`.
+
+    `cursor` is the lowest article id whose batch has committed (NULL
+    until the first batch does); the walk continues at `id < cursor`.
+    It is written in the same WriteOp as that batch, the pattern
+    `IngestState.last_commit_sha` uses. `examined` counts across every
+    session of the run. A run with `finished_at` set walked to the
+    oldest article and is never resumed.
+    """
+
+    __tablename__ = "backfill_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    params_key: Mapped[str] = mapped_column(String)
+    cursor: Mapped[int | None] = mapped_column(nullable=True)
+    examined: Mapped[int] = mapped_column(default=0)
+    started_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        # At most one unfinished run per backfill and parameter set;
+        # finished runs accumulate as history.
+        Index(
+            "ux_backfill_runs_unfinished",
+            "name",
+            "params_key",
+            unique=True,
+            sqlite_where=text("finished_at IS NULL"),
+        ),
+        # Never reuse an id. `--restart` deletes the newest row and
+        # inserts another, which a plain INTEGER PRIMARY KEY would give
+        # the same id, so a chunk of the discarded run still in flight
+        # (more than one long worker) could advance or finish the new
+        # one.
+        {"sqlite_autoincrement": True},
+    )
 
 
 class CacheEntry(Base):

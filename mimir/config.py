@@ -332,8 +332,8 @@ class Settings(BaseSettings):
     # Backfill chunk budget (seconds) for broker-mode cooperative
     # scheduling (Phase 2.2). When a backfill RPC handler runs inside
     # the broker, it walks for at most this long before committing
-    # and returning `partial=True, continuation=<cursor>` so the CLI
-    # loop can issue a follow-up RPC. Between two chunk-RPCs the
+    # and returning `partial=True` so the CLI loop can issue a
+    # follow-up RPC, which resumes below the run's persisted cursor. Between two chunk-RPCs the
     # broker's long worker is free; queued cache writes and other
     # long ops (a scheduler `update` tick) get serviced naturally
     # before the next chunk arrives. Tuneable: shorter dial = more

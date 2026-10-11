@@ -3,18 +3,18 @@
 Each of the four backfills routes through the broker as a chain of
 chunked RPCs: the handler runs for at most
 `Settings.broker_backfill_chunk_seconds` (default 10 s) before
-returning `partial=True, continuation=<last id>`; the CLI loops with
-a follow-up RPC until `partial=False`. This file covers:
+returning `partial=True`; the CLI loops with a follow-up RPC until
+`partial=False`. The broker keeps the run's cursor; resuming across
+sessions is covered in `tests/test_backfill_runs.py`. This file covers:
 
-- `walk_articles` time-budget mechanics (partial/continuation
-  surface, single chunk inside the budget completes, exceeding the
-  budget bails at the next batch boundary).
+- `walk_articles` time-budget mechanics (partial surface, single
+  chunk inside the budget completes, exceeding the budget bails at
+  the next batch boundary, the walk starts below the run's cursor).
 - The `BackfillResult.merge` shape on each of the four backfill
-  flavours (counter sums; carry-forward of `other`'s partial /
-  continuation).
+  flavours (counter sums; carry-forward of `other`'s partial).
 - The broker handler returns `Reply.result = {counters, partial,
-  continuation}` and the `BrokerClient.backfill_*` methods
-  reconstruct a typed `BackfillResult` from it.
+  run}` and the `BrokerClient.backfill_*` methods reconstruct a
+  typed `BackfillResult` from it.
 - The `_broker_backfill_loop` helper aggregates a multi-chunk
   result and converges on `partial=False` at the natural end.
 
@@ -86,8 +86,8 @@ def _seed_extra_articles(n: int) -> list[int]:
 
 def test_walk_articles_returns_partial_when_deadline_expires(seeded_db, broker_active):
     """`max_seconds=0` makes the deadline fire at the first batch
-    boundary; the walker returns `(partial=True, continuation=<last
-    id processed>)` after committing what it touched. Use
+    boundary; the walker returns `partial=True` after committing what
+    it touched. Use
     `batch_size=2` so the seeded 4-article corpus splits into two
     batches and we can prove the walker stopped at the FIRST
     boundary (not after processing everything).
@@ -105,12 +105,12 @@ def test_walk_articles_returns_partial_when_deadline_expires(seeded_db, broker_a
     def process(session, article, reprocess):
         return ("no_diff", None)
 
-    def flush_batch(writer, payloads):
+    def flush_batch(writer, payloads, after=None):
         f = Future()
         f.set_result(None)
         return f
 
-    partial, cont = walk_articles(
+    partial = walk_articles(
         result,
         process,
         flush_batch,
@@ -119,7 +119,6 @@ def test_walk_articles_returns_partial_when_deadline_expires(seeded_db, broker_a
         max_seconds=0.0,
     )
     assert partial is True
-    assert cont is not None
     # We processed exactly one batch (2 articles) and bailed.
     assert result.examined == 2
 
@@ -128,7 +127,7 @@ def test_walk_articles_returns_full_completion_without_deadline(
     seeded_db, broker_active
 ):
     """No `max_seconds` set: the walker runs to natural end and
-    returns `(partial=False, continuation=None)`.
+    returns `partial=False`.
 
     Phase 3c: `process_one` returns a `(bucket, payload)` tuple;
     `flush_batch` is required."""
@@ -139,12 +138,12 @@ def test_walk_articles_returns_full_completion_without_deadline(
 
     result = BackfillResult()
 
-    def flush_batch(writer, payloads):
+    def flush_batch(writer, payloads, after=None):
         f = Future()
         f.set_result(None)
         return f
 
-    partial, cont = walk_articles(
+    partial = walk_articles(
         result,
         lambda _s, _a, _r: ("no_diff", None),
         flush_batch,
@@ -152,53 +151,50 @@ def test_walk_articles_returns_full_completion_without_deadline(
         label="test_walk_full",
     )
     assert partial is False
-    assert cont is None
     assert result.examined == 4  # all seeded articles
 
 
-def test_walk_articles_resumes_from_start_cursor(seeded_db, broker_active):
-    """`start_cursor=N` makes the walker pick up at `Article.id < N`
-    on its first batch. Pair with `max_seconds=0` to confirm chunked
-    resume reaches every article across two chunks.
-
-    Phase 3c: `process_one` returns a `(bucket, payload)` tuple;
-    `flush_batch` is required."""
+def test_walk_articles_starts_below_the_run_cursor(seeded_db, broker_active):
+    """A run's cursor is the lowest id already processed, so the walk
+    starts at `Article.id < cursor`. Seeded ids are consecutive; a
+    cursor of `min_id + 1` leaves exactly the oldest article."""
     from concurrent.futures import Future
+    from datetime import datetime
 
     from mimir._backfill import walk_articles
+    from mimir.backfill_runs import Run
     from mimir.patches import BackfillResult
 
-    def flush_batch(writer, payloads):
+    def flush_batch(writer, payloads, after=None):
         f = Future()
         f.set_result(None)
         return f
 
-    # Chunk 1: deadline=0 forces a one-batch bail.
-    result1 = BackfillResult()
-    p1, c1 = walk_articles(
-        result1,
-        lambda _s, _a, _r: ("no_diff", None),
-        flush_batch,
-        batch_size=2,
-        label="test_resume_1",
-        max_seconds=0.0,
-    )
-    assert p1 is True and c1 is not None
+    with SessionLocal() as s:
+        min_id = s.execute(select(Article.id).order_by(Article.id)).scalars().first()
+    seen: list[int] = []
 
-    # Chunk 2: continue from where chunk 1 stopped. No deadline this
-    # time, so we run to the end. Across the two chunks every
-    # seeded article is examined exactly once.
-    result2 = BackfillResult()
-    p2, c2 = walk_articles(
-        result2,
-        lambda _s, _a, _r: ("no_diff", None),
+    def process(_s, article, _r):
+        seen.append(article.id)
+        return ("no_diff", None)
+
+    result = BackfillResult()
+    partial = walk_articles(
+        result,
+        process,
         flush_batch,
         batch_size=2,
-        label="test_resume_2",
-        start_cursor=c1,
+        label="test_resume",
+        run=Run(
+            id=0,
+            started_at=datetime(2026, 1, 1),
+            cursor=min_id + 1,
+            examined=0,
+            finished=False,
+        ),
     )
-    assert p2 is False and c2 is None
-    assert result1.examined + result2.examined == 4
+    assert partial is False
+    assert seen == [min_id]
 
 
 # ----- BackfillResult.merge ---------------------------------------------
@@ -215,7 +211,6 @@ def test_patches_backfill_result_merge_sums_counters():
         skipped=4,
         failed=1,
         partial=True,
-        continuation=99,
     )
     m = a.merge(b)
     assert m.examined == 30
@@ -223,10 +218,8 @@ def test_patches_backfill_result_merge_sums_counters():
     assert m.no_diff == 8
     assert m.skipped == 5
     assert m.failed == 2
-    # partial / continuation carry the LATEST chunk's values forward,
-    # not summed.
+    # partial carries the LATEST chunk's value forward, not summed.
     assert m.partial is True
-    assert m.continuation == 99
 
 
 def test_trailers_backfill_result_merge_sums_counters():
@@ -239,7 +232,6 @@ def test_trailers_backfill_result_merge_sums_counters():
         no_trailers=10,
         skipped=2,
         partial=False,
-        continuation=None,
     )
     m = a.merge(b)
     assert m.examined == 30
@@ -247,7 +239,6 @@ def test_trailers_backfill_result_merge_sums_counters():
     assert m.no_trailers == 14
     assert m.skipped == 3
     assert m.partial is False
-    assert m.continuation is None
 
 
 def test_patch_series_backfill_result_merge_sums_counters():
@@ -269,7 +260,6 @@ def test_patch_series_backfill_result_merge_sums_counters():
         not_cover=1,
         skipped=0,
         partial=True,
-        continuation=42,
     )
     m = a.merge(b)
     assert m.examined == 10
@@ -277,7 +267,6 @@ def test_patch_series_backfill_result_merge_sums_counters():
     assert m.in_series_indexed == 3
     assert m.in_series_orphan == 1
     assert m.not_cover == 3
-    assert m.continuation == 42
     assert m.partial is True
 
 
@@ -291,7 +280,6 @@ def test_canonicals_backfill_result_merge_sums_counters():
         unresolved=10,
         skipped=2,
         partial=False,
-        continuation=None,
     )
     m = a.merge(b)
     assert m.examined == 30
@@ -299,46 +287,32 @@ def test_canonicals_backfill_result_merge_sums_counters():
     assert m.unresolved == 15
     assert m.skipped == 3
     assert m.partial is False
-    assert m.continuation is None
 
 
 # ----- broker handlers ---------------------------------------------------
 
 
-def test_dispatch_backfill_patch_series_returns_counters_partial_continuation(
+def test_dispatch_backfill_patch_series_returns_counters_partial_run(
     seeded_db,
 ):
     """The patch-series backfill handler runs the full seeded corpus
     cheaply (no blob fetch). Reply.result must carry the three
     keys the CLI loop reads."""
-    reply = dispatch(_line(BackfillPatchSeriesRequest(rpc_id=1, limit=4)))
+    reply = dispatch(
+        _line(BackfillPatchSeriesRequest(rpc_id=1, limit=4, start="resume"))
+    )
     assert reply.ok is True, reply.error
     assert reply.result is not None
-    assert "counters" in reply.result
-    assert "partial" in reply.result
-    assert "continuation" in reply.result
     counters = reply.result["counters"]
     assert counters["examined"] == 4
     # Natural completion at limit=4 (==corpus): partial False.
     assert reply.result["partial"] is False
-    assert reply.result["continuation"] is None
-
-
-def test_dispatch_backfill_patch_series_passes_continuation_through(seeded_db):
-    """`start_cursor=<id>` makes the handler skip articles with id
-    >= cursor. Seeded ids are 1..4; resume at cursor=2 examines
-    only id=1."""
-    with SessionLocal() as s:
-        min_id = s.execute(select(Article.id).order_by(Article.id)).scalars().first()
-    reply = dispatch(
-        _line(
-            BackfillPatchSeriesRequest(rpc_id=1, continuation=min_id + 1),
-        )
-    )
-    assert reply.ok is True
-    counters = reply.result["counters"]
-    # cursor=min_id+1 → only the id=min_id row matches.
-    assert counters["examined"] == 1
+    run = reply.result["run"]
+    # A fresh run: no cursor before this chunk, and its examined count
+    # is this chunk's.
+    assert run["cursor"] is None
+    assert run["examined"] == 4
+    assert run["started_at"]
 
 
 def test_dispatch_backfill_article_files_reply_shape(seeded_db):
@@ -348,7 +322,9 @@ def test_dispatch_backfill_article_files_reply_shape(seeded_db):
     reply shape is well-formed and the handler doesn't crash on
     unreachable mirrors (the existing `_process_one` catches
     `MessageNotFound` / `KeyError` and reports `skipped`)."""
-    reply = dispatch(_line(BackfillArticleFilesRequest(rpc_id=1, limit=4)))
+    reply = dispatch(
+        _line(BackfillArticleFilesRequest(rpc_id=1, limit=4, start="resume"))
+    )
     assert reply.ok is True, reply.error
     assert reply.result is not None
     counters = reply.result["counters"]
@@ -361,7 +337,9 @@ def test_dispatch_backfill_article_files_reply_shape(seeded_db):
 
 
 def test_dispatch_backfill_article_trailers_reply_shape(seeded_db):
-    reply = dispatch(_line(BackfillArticleTrailersRequest(rpc_id=1, limit=4)))
+    reply = dispatch(
+        _line(BackfillArticleTrailersRequest(rpc_id=1, limit=4, start="resume"))
+    )
     assert reply.ok is True, reply.error
     counters = reply.result["counters"]
     assert counters["examined"] == 4
@@ -373,7 +351,7 @@ def test_dispatch_backfill_canonicals_reply_shape(seeded_db):
     articles have no canonical_inbox set yet, so the default
     (non-reprocess) path scans all 4. They all end up `skipped`
     because the mirror isn't real."""
-    reply = dispatch(_line(BackfillCanonicalsRequest(rpc_id=1)))
+    reply = dispatch(_line(BackfillCanonicalsRequest(rpc_id=1, start="resume")))
     assert reply.ok is True, reply.error
     counters = reply.result["counters"]
     assert counters["examined"] == 4
@@ -384,7 +362,9 @@ def test_dispatch_backfill_canonicals_with_inbox_filter(seeded_db):
     """`inbox_filter='alpha'` restricts the walk to articles linked
     to alpha. The seeded fixture has 3 articles linked to alpha
     (art1, art3 via cross-post, art4); art2 is beta-only."""
-    reply = dispatch(_line(BackfillCanonicalsRequest(rpc_id=1, inbox_filter="alpha")))
+    reply = dispatch(
+        _line(BackfillCanonicalsRequest(rpc_id=1, inbox_filter="alpha", start="resume"))
+    )
     assert reply.ok is True, reply.error
     counters = reply.result["counters"]
     assert counters["examined"] == 3
@@ -395,10 +375,9 @@ def test_dispatch_backfill_canonicals_with_inbox_filter(seeded_db):
 
 def test_broker_client_backfill_returns_typed_result(seeded_db):
     """`BrokerClient.backfill_patch_series` reconstructs a typed
-    `BackfillResult` from the broker reply, with `partial` /
-    `continuation` populated. End-to-end via a real broker on a
-    tmp socket so the framing + JSONL + reply-shape round-trip is
-    exercised."""
+    `BackfillResult` from the broker reply, plus the run info.
+    End-to-end via a real broker on a tmp socket so the framing +
+    JSONL + reply-shape round-trip is exercised."""
     from mimir.broker.client import BrokerClient
     from mimir.patch_series import BackfillResult
     from tests.test_broker._helpers import broker_running, short_socket_path
@@ -407,13 +386,13 @@ def test_broker_client_backfill_returns_typed_result(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = c.backfill_patch_series(limit=4)
+            result, run = c.backfill_patch_series(limit=4, start="resume")
         finally:
             c.close()
     assert isinstance(result, BackfillResult)
     assert result.examined == 4
     assert result.partial is False
-    assert result.continuation is None
+    assert run["examined"] == 4
 
 
 def test_broker_client_backfill_canonicals_inbox_filter(seeded_db):
@@ -426,7 +405,7 @@ def test_broker_client_backfill_canonicals_inbox_filter(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = c.backfill_canonicals(inbox_filter="alpha")
+            result, _run = c.backfill_canonicals(inbox_filter="alpha", start="resume")
         finally:
             c.close()
     assert result.examined == 3  # 3 alpha-linked seeded articles
@@ -435,38 +414,45 @@ def test_broker_client_backfill_canonicals_inbox_filter(seeded_db):
 # ----- _broker_backfill_loop convergence --------------------------------
 
 
+_RUN = {
+    "started_at": "2026-10-11 00:00:00",
+    "cursor": None,
+    "examined": 0,
+    "finished": False,
+}
+
+
 def test_broker_backfill_loop_converges_across_chunks(seeded_db):
     """Stub a `client.backfill_*`-shaped call that returns partial
     chunks N-2 times before a final partial=False chunk. The loop
-    must aggregate counter sums and stop on partial=False."""
+    must aggregate counter sums, stop on partial=False, and send
+    `start` on the first RPC only."""
     from mimir.cli._common import _broker_backfill_loop
     from mimir.patches import BackfillResult
 
     # Pre-canned chunks: two partials then a finisher.
     chunks = [
-        BackfillResult(examined=2, indexed=1, partial=True, continuation=99),
-        BackfillResult(examined=2, indexed=1, partial=True, continuation=42),
-        BackfillResult(examined=1, indexed=0, partial=False, continuation=None),
+        BackfillResult(examined=2, indexed=1, partial=True),
+        BackfillResult(examined=2, indexed=1, partial=True),
+        BackfillResult(examined=1, indexed=0, partial=False),
     ]
     calls: list[dict] = []
 
-    def fake_call(*, limit, reprocess, continuation):
-        calls.append(
-            {"limit": limit, "reprocess": reprocess, "continuation": continuation}
-        )
-        return chunks.pop(0)
+    def fake_call(*, limit, reprocess, start):
+        calls.append({"limit": limit, "reprocess": reprocess, "start": start})
+        return chunks.pop(0), {**_RUN, "examined": 9}
 
-    result = _broker_backfill_loop(
+    result, run = _broker_backfill_loop(
         fake_call,
         limit=None,
         reprocess=False,
+        restart=True,
     )
     assert result.examined == 5  # 2 + 2 + 1
     assert result.indexed == 2  # 1 + 1 + 0
     assert result.partial is False
-    assert result.continuation is None
-    # Three RPCs: continuation None → 99 → 42.
-    assert [c["continuation"] for c in calls] == [None, 99, 42]
+    assert run["examined"] == 9
+    assert [c["start"] for c in calls] == ["restart", None, None]
 
 
 def test_broker_backfill_loop_respects_limit_across_chunks(seeded_db):
@@ -483,17 +469,17 @@ def test_broker_backfill_loop_respects_limit_across_chunks(seeded_db):
     from mimir.patches import BackfillResult
 
     chunks = [
-        BackfillResult(examined=2, indexed=1, partial=True, continuation=99),
-        BackfillResult(examined=2, indexed=1, partial=True, continuation=42),
-        BackfillResult(examined=1, indexed=0, partial=True, continuation=7),
+        BackfillResult(examined=2, indexed=1, partial=True),
+        BackfillResult(examined=2, indexed=1, partial=True),
+        BackfillResult(examined=1, indexed=0, partial=True),
     ]
     seen_limits: list[int | None] = []
 
-    def fake_call(*, limit, reprocess, continuation):
+    def fake_call(*, limit, reprocess, start):
         seen_limits.append(limit)
-        return chunks.pop(0)
+        return chunks.pop(0), _RUN
 
-    result = _broker_backfill_loop(
+    result, _run = _broker_backfill_loop(
         fake_call,
         limit=5,
         reprocess=False,
@@ -513,11 +499,11 @@ def test_broker_backfill_loop_passes_extra_kwargs(seeded_db):
 
     seen_extras: list[dict] = []
 
-    def fake_call(*, limit, reprocess, continuation, inbox_filter):
+    def fake_call(*, limit, reprocess, start, inbox_filter):
         seen_extras.append({"inbox_filter": inbox_filter})
-        return BackfillResult(examined=1, resolved=1)
+        return BackfillResult(examined=1, resolved=1), _RUN
 
-    result = _broker_backfill_loop(
+    result, _run = _broker_backfill_loop(
         fake_call,
         limit=None,
         reprocess=False,
@@ -533,7 +519,7 @@ def test_broker_backfill_loop_passes_extra_kwargs(seeded_db):
 def test_chunked_resume_via_broker_covers_full_corpus(seeded_db, monkeypatch):
     """Plant a backfill_patch_series RPC chain with a tiny chunk
     budget (1 ms) so the broker handler returns partial=True after
-    each batch; the CLI loop resumes via continuation. Pin: across
+    each batch; each chunk resumes below the run's cursor. Pin: across
     the chain, every seeded article gets `examined` exactly once.
 
     Uses `_broker_backfill_loop` directly against a real broker so
@@ -560,7 +546,7 @@ def test_chunked_resume_via_broker_covers_full_corpus(seeded_db, monkeypatch):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = _broker_backfill_loop(
+            result, run = _broker_backfill_loop(
                 c.backfill_patch_series,
                 limit=None,
                 reprocess=False,
@@ -572,4 +558,4 @@ def test_chunked_resume_via_broker_covers_full_corpus(seeded_db, monkeypatch):
     # multi-chunk walk; converged on a clean finish.
     assert result.examined == 10
     assert result.partial is False
-    assert result.continuation is None
+    assert run["examined"] == 10
