@@ -28,6 +28,7 @@ from mimir.models import (
     Subsystem,
     SubsystemMaintainer,
 )
+from mimir.patch_series import newer_revision_sql
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
 from mimir.subsystems_dashboard._path_filter import (
     _subsystem_path_filter_exists_sql,
@@ -196,10 +197,7 @@ def _candidate_query_needs_attention(
           )
           AND NOT EXISTS (
               SELECT 1 FROM articles later
-              WHERE later.patch_series_key = a.patch_series_key
-                AND a.patch_series_key IS NOT NULL
-                AND later.id != a.id
-                AND later.date > a.date
+              WHERE {newer_revision_sql("a", "later")}
           )
         ORDER BY a.date ASC
         LIMIT :overfetch

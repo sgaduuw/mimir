@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.datetime_utils import aware_utc as _aware_utc
+from mimir.patch_series import newer_revision_sql, version_number_sql
 from mimir.trailers import REVIEW_TRAILER_ROLES
 
 # Strip control bytes + surrogates before flowing reviewer names
@@ -114,10 +115,11 @@ _REVIEW_ROLES_PARAM = bindparam(
 # from rc so the state derivation doesn't pay the COUNT cost when
 # rc is None).
 #
-# `sup` keeps the existing CAST-to-INTEGER comparison for patch_series_
-# version so v10 > v9 (test_superseded_handles_double_digit_versions).
-# Adds sup_by_version + sup_by_date for the SUPERSEDED tooltip's
-# leading line.
+# `sup` compares revision numbers, not strings, so v10 > v9, and takes
+# the newest revision's own version and date for the SUPERSEDED
+# tooltip, so the two always describe one real posting. The Linus sha
+# and date in `mc` come from one row for the same reason: the earliest,
+# which is the landing the card's sentence names.
 #
 # The `mc` CTE's "earliest other tree" orders by committed_at, then
 # prefers a subsystem tree over linux-next, then the name. A subsystem
@@ -126,7 +128,10 @@ _REVIEW_ROLES_PARAM = bindparam(
 # order that linux-next's daily rebuild rewrites, while the page
 # validator (row count, max date) stays put (#673).
 # `patch_state._mainline_landings` uses the same order.
-_BULK_SQL = text("""
+_V2 = version_number_sql("a2.patch_series_version")
+_NEWER = newer_revision_sql("a1", "a2")
+
+_BULK_SQL = text(f"""
 WITH RECURSIVE
 roots(leaf, message_id, thread_parent, depth) AS (
     SELECT id, message_id, thread_parent, 0
@@ -165,19 +170,28 @@ thread_dates AS (
 mc AS (
     SELECT a.id AS article_id,
            SUM(CASE WHEN c.tree_name = 'linus' THEN 1 ELSE 0 END) AS in_linus,
-           MAX(CASE WHEN c.tree_name = 'linus' THEN c.commit_sha END) AS linus_sha,
-           MAX(CASE WHEN c.tree_name = 'linus' THEN c.committed_at END) AS linus_committed_at,
+           (SELECT cc.commit_sha FROM mainline_commits cc
+              WHERE cc.message_id = a.message_id AND cc.tree_name = 'linus'
+              ORDER BY cc.committed_at ASC, cc.commit_sha
+              LIMIT 1) AS linus_sha,
+           (SELECT cc.committed_at FROM mainline_commits cc
+              WHERE cc.message_id = a.message_id AND cc.tree_name = 'linus'
+              ORDER BY cc.committed_at ASC, cc.commit_sha
+              LIMIT 1) AS linus_committed_at,
            (SELECT cc.tree_name FROM mainline_commits cc
               WHERE cc.message_id = a.message_id AND cc.tree_name != 'linus'
-              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name
+              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name,
+                       cc.commit_sha
               LIMIT 1) AS earliest_other_tree,
            (SELECT cc.commit_sha FROM mainline_commits cc
               WHERE cc.message_id = a.message_id AND cc.tree_name != 'linus'
-              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name
+              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name,
+                       cc.commit_sha
               LIMIT 1) AS earliest_other_sha,
            (SELECT cc.committed_at FROM mainline_commits cc
               WHERE cc.message_id = a.message_id AND cc.tree_name != 'linus'
-              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name
+              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name,
+                       cc.commit_sha
               LIMIT 1) AS earliest_other_at
       FROM articles a
       LEFT JOIN mainline_commits c ON c.message_id = a.message_id
@@ -203,20 +217,20 @@ at_review AS (
        AND t.role IN :review_roles
      GROUP BY t.article_id
 ),
-sup AS (
+newer AS (
     SELECT a1.id AS leaf,
-           MAX(a2.patch_series_version) AS sup_by_version,
-           MAX(a2.date) AS sup_by_date
+           a2.patch_series_version AS sup_by_version,
+           a2.date AS sup_by_date,
+           ROW_NUMBER() OVER (
+               PARTITION BY a1.id
+               ORDER BY {_V2} DESC, a2.date DESC
+           ) AS rn
       FROM articles a1
-      JOIN articles a2
-        ON a1.patch_series_key IS NOT NULL
-       AND a1.patch_series_key = a2.patch_series_key
-       AND COALESCE(a1.patch_series_position, 0) =
-           COALESCE(a2.patch_series_position, 0)
-       AND CAST(a2.patch_series_version AS INTEGER) >
-           CAST(a1.patch_series_version AS INTEGER)
+      JOIN articles a2 ON {_NEWER}
      WHERE a1.id IN :ids
-     GROUP BY a1.id
+),
+sup AS (
+    SELECT leaf, sup_by_version, sup_by_date FROM newer WHERE rn = 1
 )
 SELECT a.id,
        a.date AS article_date,
@@ -299,7 +313,7 @@ def _format_tooltip(
       - LANDED: `<linus_sha[:12]> · <linus_at YYYY-MM-DD HH:MM>`
       - QUEUED: `<earliest_other_sha[:12]> · <earliest_other_at>`
       - REVIEWED: (none; names start on line 1)
-      - SUPERSEDED: `Superseded by v<N> posted <date YYYY-MM-DD>`
+      - SUPERSEDED: `Superseded by vN posted <date YYYY-MM-DD>`
       - PENDING: returns None
     """
     if state == LifecycleStatus.PENDING:
@@ -317,7 +331,7 @@ def _format_tooltip(
     elif state == LifecycleStatus.SUPERSEDED:
         if superseded_by_version and superseded_by_posted_at:
             lines.append(
-                f"Superseded by v{superseded_by_version} "
+                f"Superseded by {superseded_by_version} "
                 f"posted {superseded_by_posted_at.strftime('%Y-%m-%d')}"
             )
         else:

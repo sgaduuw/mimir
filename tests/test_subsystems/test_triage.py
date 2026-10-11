@@ -42,6 +42,7 @@ def _add_article(
     thread_parent=None,
     patch_series_key=None,
     patch_series_version=None,
+    patch_series_position=None,
 ):
     """Create one article with the bits the triage queries care
     about. `trailers` is a list of (role, address) tuples."""
@@ -56,6 +57,7 @@ def _add_article(
         canonical_inbox_id=inbox.id,
         patch_series_key=patch_series_key,
         patch_series_version=patch_series_version,
+        patch_series_position=patch_series_position,
         lists=[ArticleList(inbox_id=inbox.id, epoch="0.git", commit_sha="f" * 40)],
         files=[ArticleFile(path=p) for p in paths],
         trailers=[
@@ -172,8 +174,8 @@ def test_needs_attention_excludes_landed_in_mainline(seeded_db):
 def test_needs_attention_excludes_superseded(seeded_db):
     """When a later revision of the same patch series has been
     posted, the older revision is superseded and shouldn't surface.
-    Same-key, later date is the supersession signal (date-ordered,
-    not version-string-ordered, sidesteps v10 < v2 lex issues)."""
+    The signal is the lifecycle pill's: same key and position, higher
+    revision number (`patch_series.newer_revision_sql`)."""
     with seeded_db() as s:
         sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
         s.commit()
@@ -481,3 +483,74 @@ def test_quiet_excludes_patch_whose_only_trailer_is_not_a_review_role(seeded_db)
         "the quiet list excludes a patch carrying ANY trailer row, not "
         "just the review-role subset"
     )
+
+
+def test_needs_attention_keeps_earlier_patches_of_one_series(seeded_db):
+    """Since #212 every patch of a series carries the series key, so a
+    later patch of the SAME posting is not a newer revision. The
+    lifecycle pill's predicate decides: same position, higher version."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        for msgid, position, days_ago in (("p1@x", 1, 21), ("p2@x", 2, 20)):
+            _add_article(
+                s,
+                msgid,
+                paths=["net/core/dev.c"],
+                days_ago=days_ago,
+                patch_series_key="key2",
+                patch_series_version="v1",
+                patch_series_position=position,
+                trailers=[("Reviewed-by", "rev@example.com")],
+            )
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert sorted(p.message_id for p in result) == ["p1@x", "p2@x"]
+
+
+def test_needs_attention_superseded_by_version_not_date(seeded_db):
+    """The revision number decides, not the date: v10 supersedes a v9
+    posted after it."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        for msgid, version, days_ago in (("v10@x", "v10", 21), ("v9@x", "v9", 20)):
+            _add_article(
+                s,
+                msgid,
+                paths=["net/core/dev.c"],
+                days_ago=days_ago,
+                patch_series_key="key3",
+                patch_series_version=version,
+                patch_series_position=1,
+                trailers=[("Reviewed-by", "rev@example.com")],
+            )
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [p.message_id for p in result] == ["v10@x"]
+
+
+def test_needs_attention_keeps_a_patch_the_next_revision_dropped(seeded_db):
+    """v1 had three patches and v2 has two: v1's 3/3 has no newer
+    revision at its position, so it stays."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        for msgid, version, position, days_ago in (
+            ("v1-3@x", "v1", 3, 22),
+            ("v2-1@x", "v2", 1, 21),
+            ("v2-2@x", "v2", 2, 20),
+        ):
+            _add_article(
+                s,
+                msgid,
+                paths=["net/core/dev.c"],
+                days_ago=days_ago,
+                patch_series_key="key4",
+                patch_series_version=version,
+                patch_series_position=position,
+                trailers=[("Reviewed-by", "rev@example.com")],
+            )
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert sorted(p.message_id for p in result) == ["v1-3@x", "v2-1@x", "v2-2@x"]
