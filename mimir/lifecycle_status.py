@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.datetime_utils import aware_utc as _aware_utc
-from mimir.patch_series import version_number_sql
+from mimir.patch_series import newer_revision_sql, version_number_sql
 from mimir.trailers import REVIEW_TRAILER_ROLES
 
 # Strip control bytes + surrogates before flowing reviewer names
@@ -128,8 +128,8 @@ _REVIEW_ROLES_PARAM = bindparam(
 # order that linux-next's daily rebuild rewrites, while the page
 # validator (row count, max date) stays put (#673).
 # `patch_state._mainline_landings` uses the same order.
-_V1 = version_number_sql("a1.patch_series_version")
 _V2 = version_number_sql("a2.patch_series_version")
+_NEWER = newer_revision_sql("a1", "a2")
 
 _BULK_SQL = text(f"""
 WITH RECURSIVE
@@ -180,15 +180,18 @@ mc AS (
               LIMIT 1) AS linus_committed_at,
            (SELECT cc.tree_name FROM mainline_commits cc
               WHERE cc.message_id = a.message_id AND cc.tree_name != 'linus'
-              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name
+              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name,
+                       cc.commit_sha
               LIMIT 1) AS earliest_other_tree,
            (SELECT cc.commit_sha FROM mainline_commits cc
               WHERE cc.message_id = a.message_id AND cc.tree_name != 'linus'
-              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name
+              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name,
+                       cc.commit_sha
               LIMIT 1) AS earliest_other_sha,
            (SELECT cc.committed_at FROM mainline_commits cc
               WHERE cc.message_id = a.message_id AND cc.tree_name != 'linus'
-              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name
+              ORDER BY cc.committed_at ASC, cc.tree_name = 'linux-next', cc.tree_name,
+                       cc.commit_sha
               LIMIT 1) AS earliest_other_at
       FROM articles a
       LEFT JOIN mainline_commits c ON c.message_id = a.message_id
@@ -223,12 +226,7 @@ newer AS (
                ORDER BY {_V2} DESC, a2.date DESC
            ) AS rn
       FROM articles a1
-      JOIN articles a2
-        ON a1.patch_series_key IS NOT NULL
-       AND a1.patch_series_key = a2.patch_series_key
-       AND COALESCE(a1.patch_series_position, 0) =
-           COALESCE(a2.patch_series_position, 0)
-       AND {_V2} > {_V1}
+      JOIN articles a2 ON {_NEWER}
      WHERE a1.id IN :ids
 ),
 sup AS (

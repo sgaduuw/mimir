@@ -67,6 +67,23 @@ def version_number_sql(column: str) -> str:
     )
 
 
+def newer_revision_sql(older: str, newer: str) -> str:
+    """SQL condition: the article aliased `newer` is a later revision
+    of the patch aliased `older`. Same series key, same position (NULL
+    is 0, a cover before the #212 backfill), higher revision number.
+    Since #212 every patch of a series carries the key, so a key match
+    alone also matches the other patches of the same posting. One
+    predicate for the lifecycle pill and the triage lists."""
+    return (
+        f"{older}.patch_series_key IS NOT NULL"
+        f" AND {newer}.patch_series_key = {older}.patch_series_key"
+        f" AND COALESCE({newer}.patch_series_position, 0)"
+        f" = COALESCE({older}.patch_series_position, 0)"
+        f" AND {version_number_sql(newer + '.patch_series_version')}"
+        f" > {version_number_sql(older + '.patch_series_version')}"
+    )
+
+
 # Bracket must literally contain the word "PATCH", there are
 # `[GIT PULL]` and `[ANNOUNCE]` subjects that carry `0/N` for
 # unrelated reasons; the PATCH token disambiguates.

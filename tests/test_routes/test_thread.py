@@ -1950,3 +1950,87 @@ def test_thread_pages_share_one_pill_compute(client, tmp_path, monkeypatch, vari
     walks = [c for c in calls if c == [root_id]]
     assert walks, "precondition: the pill rendered at all"
     assert len(walks) == 1, f"{variant}: walk ran {len(walks)} times for {len(urls)}"
+
+
+def _set_versions(seeded, versions):
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        for mid, version in versions.items():
+            a = s.get(Article, seeded[mid][0])
+            a.patch_series_key = "serieskey"
+            a.patch_series_version = version
+            a.patch_series_position = 0
+        s.commit()
+
+
+def _get(client, url):
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        s.commit()
+    r = client.get(url)
+    assert r.status_code == 200
+    return r
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_newest_revision_renumbered_in_place_moves_the_etag(client, tmp_path, surface):
+    """Root v1 is superseded by v9 and v10; a reprocess renumbers v10 to
+    v11. Count stays 3 and text max stays "v9"; the tooltip changes."""
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("root@x", None), ("nine@x", "root@x"), ("ten@x", "root@x")],
+    )
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    _set_versions(seeded, {"root@x": "v1", "nine@x": "v9", "ten@x": "v10"})
+    before = _get(client, url)
+    assert re.search(r"Superseded by v10 posted", before.get_data(as_text=True))
+
+    _set_versions(seeded, {"ten@x": "v11"})
+    after = _get(client, url)
+    # Precondition: the change is visible in the body.
+    assert re.search(r"Superseded by v11 posted", after.get_data(as_text=True))
+    assert before.headers["ETag"] != after.headers["ETag"], (
+        f"{surface}: tooltip moved v10 -> v11 under an unchanged ETag"
+    )
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_superseded_flip_in_place_moves_the_etag(client, tmp_path, surface):
+    """Root v10 with a sibling v2 is current. A reprocess renumbers the
+    root to v1, so v2 now supersedes it. Count stays 2 and text max of
+    {"v10", "v2"} and {"v1", "v2"} is "v2" both times; the pill flips."""
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("other@x", "root@x")]
+    )
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    _set_versions(seeded, {"root@x": "v10", "other@x": "v2"})
+    before = _get(client, url)
+    assert not re.search(r"\bSUPERSEDED\b", before.get_data(as_text=True))
+
+    _set_versions(seeded, {"root@x": "v1"})
+    after = _get(client, url)
+    assert re.search(r"\bSUPERSEDED\b", after.get_data(as_text=True))
+    assert before.headers["ETag"] != after.headers["ETag"], (
+        f"{surface}: pill flipped to SUPERSEDED under an unchanged ETag"
+    )
