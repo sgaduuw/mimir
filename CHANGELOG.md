@@ -11,6 +11,16 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- The SUPERSEDED pill now shows when a newer revision of a patch exists. It
+  never showed before: versions are stored as `v2`, and the query read them
+  as 0. `rfc` and `resend` count as revision 1 (#677).
+- The SUPERSEDED tooltip names the newest revision with that revision's own
+  date, and the LANDED tooltip shows one real Linus commit (the earliest, as
+  the card does). Each used to take its two values from different rows when
+  there were several (#678).
+
 ## [3.14.0] - 2026-10-11
 
 ### Added
