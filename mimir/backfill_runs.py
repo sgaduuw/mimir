@@ -16,8 +16,9 @@ command is the recovery.
   new run from the newest article. A run stopped by `--limit` stays
   unfinished, so the next session continues it.
 - Only a session's first chunk may start a run (`start` set). A later
-  chunk whose run another session finished meanwhile gets that run
-  back finished, and the session ends instead of walking a new run.
+  chunk joins whatever run is unfinished for the key (another
+  session's, if one started meanwhile) and ends the session only when
+  there is none, getting the key's latest finished run back.
 - `start="restart"` deletes the unfinished run before starting a new
   one. Deleted, not marked finished, so a finished row always means a
   walk that reached the oldest article.
