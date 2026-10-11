@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.14.1] - 2026-10-11
+
 ### Fixed
 
 - The SUPERSEDED pill now shows when a newer revision of a patch exists. It
