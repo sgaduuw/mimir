@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-10-11
+
 ### Added
 
 - `admin canonicals backfill`, `backfill-article-files`,
