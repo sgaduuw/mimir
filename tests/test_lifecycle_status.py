@@ -80,14 +80,14 @@ def test_superseded_when_higher_version_exists(session):
         "v1@x",
         patch_series_key="series-a",
         patch_series_position=1,
-        patch_series_version="1",
+        patch_series_version="v1",
     )
     v2 = _seed_article(
         session,
         "v2@x",
         patch_series_key="series-a",
         patch_series_position=1,
-        patch_series_version="2",
+        patch_series_version="v2",
     )
     got = lifecycle_status_for_articles(session, [v1.id, v2.id])
     assert got[v1.id].state == LifecycleStatus.SUPERSEDED
@@ -101,14 +101,14 @@ def test_landed_outranks_superseded(session):
         "v1L@x",
         patch_series_key="series-b",
         patch_series_position=1,
-        patch_series_version="1",
+        patch_series_version="v1",
     )
     _seed_article(
         session,
         "v2L@x",
         patch_series_key="series-b",
         patch_series_position=1,
-        patch_series_version="2",
+        patch_series_version="v2",
     )
     session.add(
         MainlineCommit(
@@ -223,14 +223,14 @@ def test_superseded_handles_double_digit_versions(session):
         "v9@x",
         patch_series_key="series-z",
         patch_series_position=1,
-        patch_series_version="9",
+        patch_series_version="v9",
     )
     v10 = _seed_article(
         session,
         "v10@x",
         patch_series_key="series-z",
         patch_series_position=1,
-        patch_series_version="10",
+        patch_series_version="v10",
     )
     got = lifecycle_status_for_articles(session, [v9.id, v10.id])
     assert got[v9.id].state == LifecycleStatus.SUPERSEDED
@@ -426,7 +426,7 @@ def test_format_tooltip_superseded_uses_supersede_note():
         linus_committed_at=None,
         earliest_other_sha=None,
         earliest_other_at=None,
-        superseded_by_version="4",
+        superseded_by_version="v4",
         superseded_by_posted_at=datetime(2026, 5, 18, tzinfo=UTC),
         reviewers=[("Alice", True), ("Bob", False)],
     )
@@ -690,3 +690,81 @@ def test_queued_tree_tie_survives_a_linux_next_rebuild(session):
         )
         session.commit()
         add("linux-next")
+
+
+def test_rfc_is_superseded_by_v2(session):
+    """`rfc` and `resend` count as revision 1, the implicit first
+    version `parse_cover_letter` falls back to."""
+    rfc = _seed_article(
+        session,
+        "rfc@x",
+        patch_series_key="series-rfc",
+        patch_series_position=1,
+        patch_series_version="rfc",
+    )
+    v2 = _seed_article(
+        session,
+        "rfc-v2@x",
+        patch_series_key="series-rfc",
+        patch_series_position=1,
+        patch_series_version="v2",
+    )
+    got = lifecycle_status_for_articles(session, [rfc.id, v2.id])
+    assert got[rfc.id].state == LifecycleStatus.SUPERSEDED
+    assert got[v2.id].state == LifecycleStatus.PENDING
+
+
+def test_superseded_tooltip_pairs_version_with_its_own_date(session):
+    """The tooltip names the newest revision and that revision's
+    date. A v3 resend posted after v4 must not lend v4 its date."""
+    v1 = _seed_article(
+        session,
+        "pair-v1@x",
+        patch_series_key="series-pair",
+        patch_series_position=1,
+        patch_series_version="v1",
+        date=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    _seed_article(
+        session,
+        "pair-v4@x",
+        patch_series_key="series-pair",
+        patch_series_position=1,
+        patch_series_version="v4",
+        date=datetime(2026, 5, 10, tzinfo=UTC),
+    )
+    _seed_article(
+        session,
+        "pair-v3@x",
+        patch_series_key="series-pair",
+        patch_series_position=1,
+        patch_series_version="v3",
+        date=datetime(2026, 5, 20, tzinfo=UTC),
+    )
+    tip = lifecycle_status_for_articles(session, [v1.id])[v1.id].tooltip
+    assert tip == "Superseded by v4 posted 2026-05-10"
+
+
+def test_landed_tooltip_pairs_sha_with_its_own_date(session):
+    """Two Linus rows: the tooltip shows one real commit, the earliest,
+    which is the one the card's sentence names."""
+    art = _seed_article(session, "twice@x")
+    session.add_all(
+        [
+            MainlineCommit(
+                commit_sha="f" * 40,
+                message_id="twice@x",
+                tree_name="linus",
+                committed_at=datetime(2026, 5, 1, tzinfo=UTC),
+            ),
+            MainlineCommit(
+                commit_sha="a" * 40,
+                message_id="twice@x",
+                tree_name="linus",
+                committed_at=datetime(2026, 6, 1, tzinfo=UTC),
+            ),
+        ]
+    )
+    session.commit()
+    tip = lifecycle_status_for_articles(session, [art.id])[art.id].tooltip
+    assert tip == f"{'f' * 12} · 2026-05-01 00:00"
