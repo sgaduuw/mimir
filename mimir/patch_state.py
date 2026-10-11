@@ -222,6 +222,9 @@ def _mainline_landings(
                 # summary sentence names the tree the pill names.
                 MainlineCommit.tree_name == "linux-next",
                 MainlineCommit.tree_name,
+                # Two Linus commits at one time: the pill's tooltip
+                # breaks the tie on sha too.
+                MainlineCommit.commit_sha,
             )
         )
         .scalars()
