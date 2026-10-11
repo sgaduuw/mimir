@@ -301,7 +301,9 @@ def test_killed_cli_resumes_after_the_last_chunk(
     monkeypatch.setattr(settings, "broker_backfill_chunk_seconds", 0)
 
     reply = dispatch(
-        BackfillPatchSeriesRequest(rpc_id=1, reprocess=True).model_dump_json().encode()
+        BackfillPatchSeriesRequest(rpc_id=1, reprocess=True, start="resume")
+        .model_dump_json()
+        .encode()
     )
     assert reply.ok is True, reply.error
     assert reply.result["partial"] is True
@@ -388,7 +390,7 @@ def test_limit_leaves_the_run_unfinished_and_the_next_session_continues(
     assert resumed.exit_code == 0, resumed.output
     assert _resumed_at(resumed.output) == ids[2]
     assert _examined(resumed.output) == _N - 3
-    assert re.search(r"\b7 examined in total\b", resumed.output), resumed.output
+    assert _run_line(resumed.output) == (_N, "finished")
     assert [r[2:] for r in _runs(seeded_db)] == [(ids[-1], _N, True)]
 
 
@@ -399,7 +401,9 @@ def test_advance_never_moves_the_cursor_back_up(seeded_db, broker_active):
     from mimir.broker._context import get_active_writer
     from mimir.broker.writes import WriteOp
 
-    run = backfill_runs.resolve("b", backfill_runs.params_key(reprocess=True))
+    run = backfill_runs.resolve(
+        "b", backfill_runs.params_key(reprocess=True), start="resume"
+    )
     assert run.cursor is None
     writer = get_active_writer()
     for cursor in (5, 9):
@@ -452,3 +456,139 @@ def test_batches_without_writes_still_advance_the_run(
     assert result.exit_code == 0, result.output
     assert re.search(r"\bskipped=7\b", result.output), result.output
     assert [r[2:] for r in _runs(seeded_db)] == [(ids[-1], _N, True)]
+
+
+def test_a_discarded_run_cannot_move_or_finish_its_replacement(
+    seeded_db, broker_active
+):
+    """With more than one long worker, a chunk of a run can still be in
+    flight when another session restarts it. That chunk's `advance` and
+    `finish` name the old run's id, which must not be the new run's."""
+    from mimir import backfill_runs
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+
+    key = backfill_runs.params_key(reprocess=True)
+    old = backfill_runs.resolve("b", key, start="resume")
+    new = backfill_runs.resolve("b", key, start="restart")
+    assert [r[2:] for r in _runs(seeded_db)] == [(None, 0, False)]
+
+    get_active_writer().submit(
+        WriteOp(label="test", fn=backfill_runs.advance(old.id, 5, 3))
+    ).result(timeout=10)
+    backfill_runs.finish(old.id)
+
+    assert new.id != old.id
+    assert [r[2:] for r in _runs(seeded_db)] == [(None, 0, False)]
+
+
+def test_canonicals_limit_leaves_the_run_unfinished_at_the_last_examined_id(
+    seeded_db, tmp_path, broker_active, monkeypatch
+):
+    """The canonicals walk has its own loop, so `--limit` needs its own
+    pin: the cursor is the last examined id, not the one that tripped
+    the limit, and the run stays open."""
+    ids = _corpus(seeded_db, tmp_path)
+    _small_batches(monkeypatch)
+    limited = _invoke(admin_canonicals_backfill_command, "--reprocess", "--limit", "3")
+    assert limited.exit_code == 0, limited.output
+    assert _examined(limited.output) == 3
+    assert [r[2:] for r in _runs(seeded_db)] == [(ids[2], 3, False)]
+
+    resumed = _invoke(admin_canonicals_backfill_command, "--reprocess")
+    assert resumed.exit_code == 0, resumed.output
+    assert _resumed_at(resumed.output) == ids[2]
+    assert _examined(resumed.output) == _N - 3
+    assert [r[2:] for r in _runs(seeded_db)] == [(ids[-1], _N, True)]
+
+
+def test_a_session_that_joined_a_run_stops_when_the_run_finishes(
+    seeded_db, tmp_path, broker_active, monkeypatch
+):
+    """Two sessions on one key share a run. When session A walks it to
+    the oldest article while B waits between chunks, B's next chunk ends
+    B's session; it does not start a new run at the newest article."""
+    from mimir.cli._common import _broker_backfill_loop
+    from mimir.patch_series import BackfillResult
+
+    ids = _corpus(seeded_db, tmp_path)
+    _small_batches(monkeypatch)
+    monkeypatch.setattr(settings, "broker_backfill_chunk_seconds", 0)
+
+    def chunk(**kwargs) -> dict:
+        req = BackfillPatchSeriesRequest(rpc_id=1, **kwargs)
+        reply = dispatch(req.model_dump_json().encode())
+        assert reply.ok is True, reply.error
+        return reply.result
+
+    calls = {"b": 0, "a": 0}
+
+    def session_b(**kwargs):
+        calls["b"] += 1
+        if calls["b"] == 2:
+            # Session A joins and finishes the run while B waits.
+            while True:
+                calls["a"] += 1
+                start = "resume" if calls["a"] == 1 else None
+                if not chunk(reprocess=True, start=start)["partial"]:
+                    break
+        r = chunk(**kwargs)
+        return BackfillResult.model_validate(r["counters"]), r["run"]
+
+    result, run = _broker_backfill_loop(session_b, limit=None, reprocess=True)
+
+    assert calls["b"] == 2
+    assert calls["a"] >= 1
+    assert result.examined == 2
+    assert [r[2:] for r in _runs(seeded_db)] == [(ids[-1], _N, True)]
+
+
+def _run_line(output: str) -> tuple[int, str]:
+    """The run summary line: examined in total, and finished or open."""
+    m = re.search(
+        r"^run started .+ UTC: (\d+) examined in total, (\w+)$", output, re.MULTILINE
+    )
+    assert m is not None, output
+    return int(m.group(1)), m.group(2)
+
+
+def test_summary_says_whether_the_run_finished(
+    seeded_db, tmp_path, broker_active, monkeypatch
+):
+    """Exactly the remaining articles as `--limit` is the edge a
+    CLI-side guess gets wrong: the session stopped at its cap and the
+    run finished too."""
+    _corpus(seeded_db, tmp_path)
+    _small_batches(monkeypatch)
+    limited = _invoke(backfill_patch_series_command, "--reprocess", "--limit", "3")
+    assert _run_line(limited.output) == (3, "open")
+
+    rest = _invoke(backfill_patch_series_command, "--reprocess", "--limit", "4")
+    assert _examined(rest.output) == _N - 3
+    assert _run_line(rest.output) == (_N, "finished")
+
+
+def test_a_model_built_schema_never_reuses_a_run_id(tmp_path):
+    """`init-db` builds the schema from the models, not the migrations,
+    so the model must carry AUTOINCREMENT too."""
+    from datetime import datetime
+
+    from sqlalchemy import create_engine, insert
+
+    from mimir.models import BackfillRun
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'models.db'}")
+    BackfillRun.__table__.create(engine)
+    row = {
+        "name": "b",
+        "params_key": "{}",
+        "examined": 0,
+        "started_at": datetime(2026, 10, 11),
+        "updated_at": datetime(2026, 10, 11),
+    }
+    with engine.begin() as conn:
+        first = conn.execute(insert(BackfillRun).values(**row)).inserted_primary_key[0]
+        conn.execute(delete(BackfillRun))
+        second = conn.execute(insert(BackfillRun).values(**row)).inserted_primary_key[0]
+    engine.dispose()
+    assert (first, second) == (1, 2)

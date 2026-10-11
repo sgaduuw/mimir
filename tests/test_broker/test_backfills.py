@@ -185,7 +185,13 @@ def test_walk_articles_starts_below_the_run_cursor(seeded_db, broker_active):
         flush_batch,
         batch_size=2,
         label="test_resume",
-        run=Run(id=0, started_at=datetime(2026, 1, 1), cursor=min_id + 1, examined=0),
+        run=Run(
+            id=0,
+            started_at=datetime(2026, 1, 1),
+            cursor=min_id + 1,
+            examined=0,
+            finished=False,
+        ),
     )
     assert partial is False
     assert seen == [min_id]
@@ -292,7 +298,9 @@ def test_dispatch_backfill_patch_series_returns_counters_partial_run(
     """The patch-series backfill handler runs the full seeded corpus
     cheaply (no blob fetch). Reply.result must carry the three
     keys the CLI loop reads."""
-    reply = dispatch(_line(BackfillPatchSeriesRequest(rpc_id=1, limit=4)))
+    reply = dispatch(
+        _line(BackfillPatchSeriesRequest(rpc_id=1, limit=4, start="resume"))
+    )
     assert reply.ok is True, reply.error
     assert reply.result is not None
     counters = reply.result["counters"]
@@ -314,7 +322,9 @@ def test_dispatch_backfill_article_files_reply_shape(seeded_db):
     reply shape is well-formed and the handler doesn't crash on
     unreachable mirrors (the existing `_process_one` catches
     `MessageNotFound` / `KeyError` and reports `skipped`)."""
-    reply = dispatch(_line(BackfillArticleFilesRequest(rpc_id=1, limit=4)))
+    reply = dispatch(
+        _line(BackfillArticleFilesRequest(rpc_id=1, limit=4, start="resume"))
+    )
     assert reply.ok is True, reply.error
     assert reply.result is not None
     counters = reply.result["counters"]
@@ -327,7 +337,9 @@ def test_dispatch_backfill_article_files_reply_shape(seeded_db):
 
 
 def test_dispatch_backfill_article_trailers_reply_shape(seeded_db):
-    reply = dispatch(_line(BackfillArticleTrailersRequest(rpc_id=1, limit=4)))
+    reply = dispatch(
+        _line(BackfillArticleTrailersRequest(rpc_id=1, limit=4, start="resume"))
+    )
     assert reply.ok is True, reply.error
     counters = reply.result["counters"]
     assert counters["examined"] == 4
@@ -339,7 +351,7 @@ def test_dispatch_backfill_canonicals_reply_shape(seeded_db):
     articles have no canonical_inbox set yet, so the default
     (non-reprocess) path scans all 4. They all end up `skipped`
     because the mirror isn't real."""
-    reply = dispatch(_line(BackfillCanonicalsRequest(rpc_id=1)))
+    reply = dispatch(_line(BackfillCanonicalsRequest(rpc_id=1, start="resume")))
     assert reply.ok is True, reply.error
     counters = reply.result["counters"]
     assert counters["examined"] == 4
@@ -350,7 +362,9 @@ def test_dispatch_backfill_canonicals_with_inbox_filter(seeded_db):
     """`inbox_filter='alpha'` restricts the walk to articles linked
     to alpha. The seeded fixture has 3 articles linked to alpha
     (art1, art3 via cross-post, art4); art2 is beta-only."""
-    reply = dispatch(_line(BackfillCanonicalsRequest(rpc_id=1, inbox_filter="alpha")))
+    reply = dispatch(
+        _line(BackfillCanonicalsRequest(rpc_id=1, inbox_filter="alpha", start="resume"))
+    )
     assert reply.ok is True, reply.error
     counters = reply.result["counters"]
     assert counters["examined"] == 3
@@ -372,7 +386,7 @@ def test_broker_client_backfill_returns_typed_result(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result, run = c.backfill_patch_series(limit=4)
+            result, run = c.backfill_patch_series(limit=4, start="resume")
         finally:
             c.close()
     assert isinstance(result, BackfillResult)
@@ -391,7 +405,7 @@ def test_broker_client_backfill_canonicals_inbox_filter(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result, _run = c.backfill_canonicals(inbox_filter="alpha")
+            result, _run = c.backfill_canonicals(inbox_filter="alpha", start="resume")
         finally:
             c.close()
     assert result.examined == 3  # 3 alpha-linked seeded articles
@@ -400,14 +414,19 @@ def test_broker_client_backfill_canonicals_inbox_filter(seeded_db):
 # ----- _broker_backfill_loop convergence --------------------------------
 
 
-_RUN = {"started_at": "2026-10-11 00:00:00", "cursor": None, "examined": 0}
+_RUN = {
+    "started_at": "2026-10-11 00:00:00",
+    "cursor": None,
+    "examined": 0,
+    "finished": False,
+}
 
 
 def test_broker_backfill_loop_converges_across_chunks(seeded_db):
     """Stub a `client.backfill_*`-shaped call that returns partial
     chunks N-2 times before a final partial=False chunk. The loop
     must aggregate counter sums, stop on partial=False, and send
-    `restart` on the first RPC only."""
+    `start` on the first RPC only."""
     from mimir.cli._common import _broker_backfill_loop
     from mimir.patches import BackfillResult
 
@@ -419,8 +438,8 @@ def test_broker_backfill_loop_converges_across_chunks(seeded_db):
     ]
     calls: list[dict] = []
 
-    def fake_call(*, limit, reprocess, restart):
-        calls.append({"limit": limit, "reprocess": reprocess, "restart": restart})
+    def fake_call(*, limit, reprocess, start):
+        calls.append({"limit": limit, "reprocess": reprocess, "start": start})
         return chunks.pop(0), {**_RUN, "examined": 9}
 
     result, run = _broker_backfill_loop(
@@ -433,7 +452,7 @@ def test_broker_backfill_loop_converges_across_chunks(seeded_db):
     assert result.indexed == 2  # 1 + 1 + 0
     assert result.partial is False
     assert run["examined"] == 9
-    assert [c["restart"] for c in calls] == [True, False, False]
+    assert [c["start"] for c in calls] == ["restart", None, None]
 
 
 def test_broker_backfill_loop_respects_limit_across_chunks(seeded_db):
@@ -456,7 +475,7 @@ def test_broker_backfill_loop_respects_limit_across_chunks(seeded_db):
     ]
     seen_limits: list[int | None] = []
 
-    def fake_call(*, limit, reprocess, restart):
+    def fake_call(*, limit, reprocess, start):
         seen_limits.append(limit)
         return chunks.pop(0), _RUN
 
@@ -480,7 +499,7 @@ def test_broker_backfill_loop_passes_extra_kwargs(seeded_db):
 
     seen_extras: list[dict] = []
 
-    def fake_call(*, limit, reprocess, restart, inbox_filter):
+    def fake_call(*, limit, reprocess, start, inbox_filter):
         seen_extras.append({"inbox_filter": inbox_filter})
         return BackfillResult(examined=1, resolved=1), _RUN
 

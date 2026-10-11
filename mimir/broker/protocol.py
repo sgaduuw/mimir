@@ -149,7 +149,7 @@ class BootstrapInboxesRequest(_BrokerRequest):
 
 
 # Phase 2.2 long ops: the four backfills. Each shares the same RPC
-# shape (limit + reprocess + restart) because each one's CLI loop
+# shape (limit + reprocess + start) because each one's CLI loop
 # wants the same thing: ask the broker for a chunk, get back
 # per-chunk counters, repeat until done.
 #
@@ -161,30 +161,33 @@ class BootstrapInboxesRequest(_BrokerRequest):
 #
 # The broker owns the cursor (#680): each chunk resumes the unfinished
 # run for its backfill and parameters (`mimir.backfill_runs`), so the
-# request carries no position. `restart=True` discards that run and
-# starts a new one at the newest article; the CLI sends it on its first
-# RPC only. `limit` caps this request, not the run.
+# request carries no position. `start` is set on a CLI session's first
+# RPC only: "resume" starts a run when there is none, "restart" discards
+# the unfinished run and starts a new one at the newest article. Later
+# RPCs leave it None and never start a run, so a session whose run
+# another session finished ends there. `limit` caps this request, not
+# the run.
 
 
 class BackfillArticleFilesRequest(_BrokerRequest):
     op: Literal["backfill_article_files"] = "backfill_article_files"
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    restart: bool = False
+    start: Literal["resume", "restart"] | None = None
 
 
 class BackfillArticleTrailersRequest(_BrokerRequest):
     op: Literal["backfill_article_trailers"] = "backfill_article_trailers"
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    restart: bool = False
+    start: Literal["resume", "restart"] | None = None
 
 
 class BackfillPatchSeriesRequest(_BrokerRequest):
     op: Literal["backfill_patch_series"] = "backfill_patch_series"
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    restart: bool = False
+    start: Literal["resume", "restart"] | None = None
 
 
 class BackfillCanonicalsRequest(_BrokerRequest):
@@ -197,7 +200,7 @@ class BackfillCanonicalsRequest(_BrokerRequest):
     inbox_filter: str | None = Field(default=None, min_length=1, max_length=64)
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    restart: bool = False
+    start: Literal["resume", "restart"] | None = None
 
 
 # Phase 2.3 long ops: the three periodic maintenance writers
@@ -709,7 +712,7 @@ class Reply(BaseModel):
     #   - `backfill_*` (Phase 2.2):
     #       `{"counters": <BackfillResult>, "partial": bool,
     #         "run": {"started_at": str, "cursor": <int | None>,
-    #                 "examined": int}}`
+    #                 "examined": int, "finished": bool} | None}`
     #     where `run.cursor` is where this chunk started and
     #     `run.examined` counts the whole run.
     # Stays `None` for ops that don't return a value.

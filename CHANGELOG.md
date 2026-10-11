@@ -27,8 +27,10 @@ changes, not internal refactors. Categories: **Added**,
   stays open and the next invocation continues it. A run that reaches the
   oldest article is finished and never resumed. New `--restart` flag on all
   four commands discards an unfinished run and starts again at the newest
-  article. The summary now labels its counts as this session's and adds the
-  run's start time and its examined count across all sessions (#680).
+  article; use it after changing an inbox's `--list-address`. The summary now
+  labels its counts as this session's and adds the run's start time, its
+  examined count across all sessions, and whether the run is finished or still
+  open (#680).
 
 ## [3.13.0] - 2026-10-10
 

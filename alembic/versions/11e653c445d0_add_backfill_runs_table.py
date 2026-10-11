@@ -34,6 +34,8 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.Column("finished_at", sa.DateTime(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
+        # Ids are never reused; see `BackfillRun` in mimir/models.py.
+        sqlite_autoincrement=True,
     )
     op.create_index(
         "ux_backfill_runs_unfinished",
