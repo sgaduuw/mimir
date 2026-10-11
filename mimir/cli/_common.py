@@ -187,8 +187,9 @@ def _echo_run_summary(run: dict | None) -> None:
     """The line after a backfill's per-session counters: the counters
     cover this session only, so say which run they belong to, how far
     that run has got across every session, and whether it is finished
-    or still open for the next session to resume. `run` is None only
-    when the run's row was deleted under this session."""
+    or still open for the next session to resume. A run deleted under
+    this session reports its snapshot from before the chunk. `run` is
+    None only if a follow-up chunk found no run at all for the key."""
     if run is None:
         return
     state = "finished" if run["finished"] else "open"
