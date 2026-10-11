@@ -20,6 +20,10 @@ changes, not internal refactors. Categories: **Added**,
   date, and the LANDED tooltip shows one real Linus commit (the earliest, as
   the card does). Each used to take its two values from different rows when
   there were several (#678).
+- Message and thread pages now get a new ETag when a reviewer's name or
+  address is rewritten in place (for example by `backfill-article-trailers
+  --reprocess`), and when a tree's `TREES__<name>__DISPLAY_NAME` changes.
+  Before, caches kept the old tooltip or "Queued in" label (#678).
 
 ## [3.14.0] - 2026-10-11
 

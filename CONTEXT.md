@@ -2105,7 +2105,8 @@ a body the data has already contradicted.
 
 `web/routes/_validators.py::render_state_tag` is the shared input
 covering the DERIVED state both surfaces render and neither an article
-id nor a thread's shape can express: landing state, review roll-up,
+id nor a thread's shape can express: landing state (with each tree's
+display label), review roll-up (the trailer values, not their count),
 subsystem attribution (rules version AND the article's touched paths,
 since the attribution is the product of both), and
 revision/supersedance. It is shared precisely so the two surfaces
