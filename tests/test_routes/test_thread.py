@@ -2034,3 +2034,30 @@ def test_superseded_flip_in_place_moves_the_etag(client, tmp_path, surface):
     assert before.headers["ETag"] != after.headers["ETag"], (
         f"{surface}: pill flipped to SUPERSEDED under an unchanged ETag"
     )
+
+
+@pytest.mark.parametrize("v1_position", [None, 0])
+def test_fold_diff_link_resolves_for_a_null_position_cover(
+    client, tmp_path, v1_position
+):
+    """Every [diff vs current] link the revisions fold emits must
+    resolve. The fold treats a NULL position as 0, so the diff route
+    must too."""
+    import html as htmllib
+
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("v1@x", None), ("v2@x", None)])
+    with SessionLocal() as s:
+        for mid, version, position in (("v1@x", "v1", v1_position), ("v2@x", "v2", 0)):
+            a = s.get(Article, seeded[mid][0])
+            a.subject = f"[PATCH {version} 0/1] foo: bar"
+            a.patch_series_key = "nullposkey"
+            a.patch_series_version = version
+            a.patch_series_position = position
+        s.commit()
+    page = client.get(seeded["v1@x"][1]).get_data(as_text=True)
+    links = re.findall(r'href="([^"]*/series/[^"]*)"', page)
+    assert len(links) == 1, links  # precondition: the fold links v2
+    assert client.get(htmllib.unescape(links[0])).status_code == 200

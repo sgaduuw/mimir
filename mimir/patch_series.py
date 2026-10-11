@@ -73,7 +73,7 @@ def newer_revision_sql(older: str, newer: str) -> str:
     is 0, a cover before the #212 backfill), higher revision number.
     Since #212 every patch of a series carries the key, so a key match
     alone also matches the other patches of the same posting. One
-    predicate for the lifecycle pill and the triage lists."""
+    predicate for the lifecycle pill and the needs-attention list."""
     return (
         f"{older}.patch_series_key IS NOT NULL"
         f" AND {newer}.patch_series_key = {older}.patch_series_key"

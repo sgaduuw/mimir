@@ -509,7 +509,8 @@ def test_needs_attention_keeps_earlier_patches_of_one_series(seeded_db):
 
 
 def test_needs_attention_superseded_by_version_not_date(seeded_db):
-    """v10 supersedes v9 even when v9 was posted later (a resend)."""
+    """The revision number decides, not the date: v10 supersedes a v9
+    posted after it."""
     with seeded_db() as s:
         sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
         s.commit()
