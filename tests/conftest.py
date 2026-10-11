@@ -263,6 +263,7 @@ def _reset_db():
         ArticleFile,
         ArticleList,
         ArticleTrailer,
+        BackfillRun,
         CacheEntry,
         Inbox,
         InboxAddressObservation,
@@ -284,6 +285,7 @@ def _reset_db():
         s.execute(delete(ArticleList))
         s.execute(delete(Article))
         s.execute(delete(ParseFailure))
+        s.execute(delete(BackfillRun))
         s.execute(delete(InboxAddressObservation))
         s.execute(delete(Inbox))
         s.execute(delete(CacheEntry))

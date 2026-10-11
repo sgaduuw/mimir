@@ -28,6 +28,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mimir import backfill_runs
+from mimir.backfill_runs import Run
 from mimir.canonical import extract_list_addresses, pick_canonical_inbox_id
 from mimir.config import settings
 from mimir.datetime_utils import aware_utc
@@ -47,27 +49,25 @@ class BackfillResult(BaseModel):
     `canonical_inbox_id` was set or updated; unresolved = parsed cleanly
     but no list address matched; skipped = blob couldn't be read).
 
-    `partial` + `continuation` carry the cooperative-scheduling handoff
-    between broker chunks (Phase 2.2). Direct (non-broker) callers
-    always see `partial=False, continuation=None`."""
+    `partial` marks a broker chunk that stopped on its time budget
+    (Phase 2.2); the broker keeps the run's cursor (`mimir.backfill_runs`).
+    Direct (non-broker) callers always see `partial=False`."""
 
     examined: int = 0
     resolved: int = 0
     unresolved: int = 0
     skipped: int = 0
     partial: bool = False
-    continuation: int | None = None
 
     def merge(self, other: BackfillResult) -> BackfillResult:
         """Sum counters with `other`, carrying `other`'s
-        `partial`/`continuation` forward."""
+        `partial` forward."""
         return BackfillResult(
             examined=self.examined + other.examined,
             resolved=self.resolved + other.resolved,
             unresolved=self.unresolved + other.unresolved,
             skipped=self.skipped + other.skipped,
             partial=other.partial,
-            continuation=other.continuation,
         )
 
 
@@ -80,7 +80,7 @@ def backfill_canonicals(
     progress: callable = None,  # type: ignore[valid-type]
     *,
     max_seconds: float | None = None,
-    start_cursor: int | None = None,
+    run: Run | None = None,
 ) -> BackfillResult:
     """Walk historical articles newest-first (id-desc), record per-
     inbox address observations and resolve `canonical_inbox_id` from
@@ -101,11 +101,13 @@ def backfill_canonicals(
     walk to articles linked to a single inbox. `--limit` caps the
     session for "do an hour's worth tonight."
 
-    `max_seconds` + `start_cursor` enable broker-side cooperative
-    scheduling (Phase 2.2). When `max_seconds` is set, the call returns
-    `partial=True, continuation=<last Article.id>` after the deadline
-    elapses; the broker handler relays that to its caller which loops
-    with a follow-up RPC carrying `start_cursor=<last>`. Direct
+    `max_seconds` + `run` enable broker-side cooperative scheduling
+    (Phase 2.2). The walk starts below the run's cursor
+    (`mimir.backfill_runs`), every flush (including the ones around the
+    promotion sweep) ends with `backfill_runs.advance`, and running out
+    of rows finishes the run; reaching `limit` does not. When
+    `max_seconds` is set, the call returns `partial=True` after the
+    deadline elapses and the CLI loops with a follow-up RPC. Direct
     callers leave both None and get the historical full-walk behaviour.
     """
     from mimir._pending_backfill import (
@@ -126,7 +128,11 @@ def backfill_canonicals(
     deadline: float | None = (
         time.monotonic() + max_seconds if max_seconds is not None else None
     )
-    last_processed: int | None = None
+    # The lowest id processed so far; the walk continues below it.
+    cursor: int | None = run.cursor if run is not None else None
+    # Articles processed since the last flush, which that flush's
+    # cursor write covers.
+    unflushed = 0
 
     def refresh_address_map(session: Session) -> None:
         nonlocal address_to_inbox_id, demoted_inbox_ids
@@ -155,20 +161,26 @@ def backfill_canonicals(
         return ix
 
     def flush_batch_to_writer() -> None:
-        nonlocal batch_payloads
-        if batch_payloads:
-            _submit_canonical_batch(writer, batch_payloads).result(timeout=120)
-            batch_payloads = []
+        nonlocal batch_payloads, unflushed
+        after = None
+        if run is not None and unflushed:
+            after = backfill_runs.advance(run.id, cursor, unflushed)
+        if batch_payloads or after is not None:
+            _submit_canonical_batch(writer, batch_payloads, after=after).result(
+                timeout=120
+            )
+        batch_payloads = []
+        unflushed = 0
 
     with pool.session() as session:
         refresh_address_map(session)
 
         # Batched id-cursor pagination. id-desc rather than date-desc
-        # so the continuation cursor is a single integer; production
+        # so the run's cursor is a single integer; production
         # ingest-order is date-monotonic so this approximates the
         # "newest first" semantic within rounding error.
-        cursor: int | None = start_cursor
         examined_total = 0
+        exhausted = False
 
         while True:
             q = select(Article).order_by(Article.id.desc()).limit(_BATCH)
@@ -184,16 +196,18 @@ def backfill_canonicals(
                 q = q.where(Article.id < cursor)
             batch = list(session.execute(q).scalars())
             if not batch:
+                exhausted = True
                 break
 
             limit_reached = False
             for article in batch:
-                cursor = article.id
                 examined_total += 1
                 if limit is not None and examined_total > limit:
                     limit_reached = True
                     break
                 out.examined += 1
+                unflushed += 1
+                cursor = article.id
 
                 # Pick a linked inbox to read the blob from. Cross-posts
                 # have one ArticleList row per inbox, all pointing at
@@ -231,7 +245,6 @@ def backfill_canonicals(
                         continue
                 if parsed is None:
                     out.skipped += 1
-                    last_processed = article.id
                     continue
 
                 list_addrs = extract_list_addresses(parsed.headers)
@@ -262,7 +275,6 @@ def backfill_canonicals(
                         observation_deltas=obs_deltas,
                     )
                 )
-                last_processed = article.id
 
                 # Periodic promotion sweep (every `promote_every` articles).
                 if out.examined % promote_every == 0:
@@ -287,11 +299,12 @@ def backfill_canonicals(
             # commits so partial progress is always persisted.
             if deadline is not None and time.monotonic() >= deadline:
                 out.partial = True
-                out.continuation = last_processed
                 return out
 
         # Walk completed naturally. Final promotion sweep + final batch flush.
         flush_batch_to_writer()
         _submit_promote_list_address_sweep(writer).result(timeout=60)
+        if exhausted and run is not None:
+            backfill_runs.finish(run.id)
 
     return out

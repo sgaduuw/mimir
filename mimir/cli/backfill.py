@@ -14,6 +14,10 @@ per-batch `--verbose` progress flows via the broker's own log
 the walking. The chunk seconds dial is
 `BROKER_BACKFILL_CHUNK_SECONDS` (default 10 s); shorter dials
 yield finer interleaving with queued cache writes / ingest ticks.
+
+Runs are resumable: the broker keeps each run's cursor, so after a
+broker restart or a killed CLI the same command continues where the
+run stopped (`--restart` starts over). See `mimir.backfill_runs`.
 """
 
 import click
@@ -21,6 +25,7 @@ import click
 from mimir.cli._common import (
     _broker_backfill_loop,
     _configure_logging,
+    _echo_run_summary,
     _verbose_broker_hint,
 )
 
@@ -39,6 +44,12 @@ from mimir.cli._common import (
     "existing rows first). Use after an extractor change.",
 )
 @click.option(
+    "--restart",
+    is_flag=True,
+    help="Discard an unfinished run of this backfill and start again "
+    "from the newest article. Without it, an interrupted run resumes.",
+)
+@click.option(
     "-v",
     "--verbose",
     count=True,
@@ -48,6 +59,7 @@ from mimir.cli._common import (
 def backfill_article_files_command(
     limit: int | None,
     reprocess: bool,
+    restart: bool,
     verbose: int,
 ) -> None:
     """One-shot walker that fills `article_files` for articles
@@ -58,18 +70,20 @@ def backfill_article_files_command(
 
     client = get_broker_client()
     try:
-        result = _broker_backfill_loop(
+        result, run = _broker_backfill_loop(
             client.backfill_article_files,
             limit=limit,
             reprocess=reprocess,
+            restart=restart,
         )
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker backfill_article_files failed: {exc}")
     click.echo(
-        f"backfill complete: examined={result.examined} "
+        f"this session: examined={result.examined} "
         f"indexed={result.indexed} no_diff={result.no_diff} "
         f"skipped={result.skipped} failed={result.failed}"
     )
+    _echo_run_summary(run)
 
 
 @click.command("backfill-article-trailers")
@@ -86,6 +100,12 @@ def backfill_article_files_command(
     "existing rows first). Use after an extractor change.",
 )
 @click.option(
+    "--restart",
+    is_flag=True,
+    help="Discard an unfinished run of this backfill and start again "
+    "from the newest article. Without it, an interrupted run resumes.",
+)
+@click.option(
     "-v",
     "--verbose",
     count=True,
@@ -95,6 +115,7 @@ def backfill_article_files_command(
 def backfill_article_trailers_command(
     limit: int | None,
     reprocess: bool,
+    restart: bool,
     verbose: int,
 ) -> None:
     """One-shot walker that fills `article_trailers` for articles
@@ -105,18 +126,20 @@ def backfill_article_trailers_command(
 
     client = get_broker_client()
     try:
-        result = _broker_backfill_loop(
+        result, run = _broker_backfill_loop(
             client.backfill_article_trailers,
             limit=limit,
             reprocess=reprocess,
+            restart=restart,
         )
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker backfill_article_trailers failed: {exc}")
     click.echo(
-        f"backfill complete: examined={result.examined} "
+        f"this session: examined={result.examined} "
         f"indexed={result.indexed} no_trailers={result.no_trailers} "
         f"skipped={result.skipped} failed={result.failed}"
     )
+    _echo_run_summary(run)
 
 
 @click.command("backfill-patch-series")
@@ -133,6 +156,12 @@ def backfill_article_trailers_command(
     "stale rows that no longer parse as cover letters).",
 )
 @click.option(
+    "--restart",
+    is_flag=True,
+    help="Discard an unfinished run of this backfill and start again "
+    "from the newest article. Without it, an interrupted run resumes.",
+)
+@click.option(
     "-v",
     "--verbose",
     count=True,
@@ -142,6 +171,7 @@ def backfill_article_trailers_command(
 def backfill_patch_series_command(
     limit: int | None,
     reprocess: bool,
+    restart: bool,
     verbose: int,
 ) -> None:
     """One-shot walker that fills `patch_series_key` and
@@ -153,20 +183,22 @@ def backfill_patch_series_command(
 
     client = get_broker_client()
     try:
-        result = _broker_backfill_loop(
+        result, run = _broker_backfill_loop(
             client.backfill_patch_series,
             limit=limit,
             reprocess=reprocess,
+            restart=restart,
         )
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker backfill_patch_series failed: {exc}")
     click.echo(
-        f"backfill complete: examined={result.examined} "
+        f"this session: examined={result.examined} "
         f"indexed={result.indexed} "
         f"in_series_indexed={result.in_series_indexed} "
         f"in_series_orphan={result.in_series_orphan} "
         f"not_cover={result.not_cover} skipped={result.skipped}"
     )
+    _echo_run_summary(run)
 
 
 @click.command("backfill-thread-roots")

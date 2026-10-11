@@ -11,10 +11,12 @@ commit batch, not the whole op.
 The Phase 2.2 backfill handlers add **cooperative scheduling** on
 top of that: each backfill RPC runs at most
 `Settings.broker_backfill_chunk_seconds` (default 10 s) before
-committing what it processed and returning `partial=True,
-continuation=<last id>` to the caller. The CLI loops with a follow-
-up RPC, and between two chunks the long worker is free to service
-queued cache writes / other long ops. Without this, a multi-hour
+committing what it processed and returning `partial=True` to the
+caller. The CLI loops with a follow-up RPC, and between two chunks
+the long worker is free to service queued cache writes / other long
+ops. The broker owns the walk's cursor: each chunk resolves its run
+in `backfill_runs` and starts below the run's cursor, so a killed CLI
+or a broker restart loses at most the batch in flight (#680). Without this, a multi-hour
 `backfill_canonicals --reprocess` would block every queued
 scheduler `update` tick behind it.
 
@@ -125,51 +127,74 @@ def _chunk_seconds() -> float:
     return float(settings.broker_backfill_chunk_seconds)
 
 
-def _backfill_reply(req, result) -> Reply:
-    """Shared shape for the four backfill handlers' Reply: the
-    `BackfillResult` model is serialised whole as `counters`, and
-    `partial`/`continuation` are mirrored out so the CLI can branch
-    on them without re-parsing the counters dict. The CLI also
-    reconstructs the typed `BackfillResult` from `counters` to feed
-    its `merge()` chain."""
+def _run_backfill_chunk(req, name: str, backfill, **params) -> Reply:
+    """Run one chunk of backfill `name` within its run, and build the
+    Reply shared by the four backfill handlers.
+
+    `params` are the arguments that define the run, so the same values
+    build the run key and drive the walk. The Reply carries the chunk's
+    `BackfillResult` whole as `counters`, `partial` mirrored out so the
+    CLI can branch without re-parsing the counters, and `run`: when the
+    run started, the cursor this chunk started from, the examined count
+    across the whole run, and whether the run is finished.
+
+    A follow-up chunk whose run another session finished walks nothing
+    and returns `partial=False`, which ends this session."""
+    from mimir import backfill_runs
+
+    run = backfill_runs.resolve(
+        name, backfill_runs.params_key(**params), start=req.start
+    )
+    if run is None or run.finished:
+        return Reply(
+            rpc_id=req.rpc_id,
+            ok=True,
+            result={"counters": {}, "partial": False, "run": _run_info(run, run)},
+        )
+    result = backfill(limit=req.limit, max_seconds=_chunk_seconds(), run=run, **params)
     return Reply(
         rpc_id=req.rpc_id,
         ok=True,
         result={
             "counters": result.model_dump(mode="json"),
             "partial": bool(result.partial),
-            "continuation": result.continuation,
+            # Read back, so the totals include other sessions' chunks;
+            # a run deleted by `--restart` meanwhile reports as it was.
+            "run": _run_info(run, backfill_runs.get(run.id) or run),
         },
     )
 
 
+def _run_info(before, now) -> dict | None:
+    if before is None:
+        return None
+    return {
+        "started_at": before.started_at.isoformat(sep=" ", timespec="seconds"),
+        "cursor": before.cursor,
+        "examined": now.examined,
+        "finished": now.finished,
+    }
+
+
 def handle_backfill_article_files(req: BackfillArticleFilesRequest) -> Reply:
-    """Phase 2.2 chunked backfill of `article_files`. Delegates to
-    `mimir.patches.backfill_article_files` with the broker's time
-    budget; that helper wraps its work in
-    `write_transaction("backfill_article_files")` already."""
+    """Phase 2.2 chunked backfill of `article_files`."""
     from mimir.patches import backfill_article_files
 
-    result = backfill_article_files(
-        limit=req.limit,
-        reprocess=req.reprocess,
-        max_seconds=_chunk_seconds(),
-        start_cursor=req.continuation,
+    return _run_backfill_chunk(
+        req, "backfill_article_files", backfill_article_files, reprocess=req.reprocess
     )
-    return _backfill_reply(req, result)
 
 
 def handle_backfill_article_trailers(req: BackfillArticleTrailersRequest) -> Reply:
     """Phase 2.2 chunked backfill of `article_trailers`."""
     from mimir.trailers import backfill_article_trailers
 
-    result = backfill_article_trailers(
-        limit=req.limit,
+    return _run_backfill_chunk(
+        req,
+        "backfill_article_trailers",
+        backfill_article_trailers,
         reprocess=req.reprocess,
-        max_seconds=_chunk_seconds(),
-        start_cursor=req.continuation,
     )
-    return _backfill_reply(req, result)
 
 
 def handle_backfill_patch_series(req: BackfillPatchSeriesRequest) -> Reply:
@@ -179,13 +204,9 @@ def handle_backfill_patch_series(req: BackfillPatchSeriesRequest) -> Reply:
     scheduling on `--reprocess` runs over the full corpus."""
     from mimir.patch_series import backfill_patch_series
 
-    result = backfill_patch_series(
-        limit=req.limit,
-        reprocess=req.reprocess,
-        max_seconds=_chunk_seconds(),
-        start_cursor=req.continuation,
+    return _run_backfill_chunk(
+        req, "backfill_patch_series", backfill_patch_series, reprocess=req.reprocess
     )
-    return _backfill_reply(req, result)
 
 
 def handle_backfill_canonicals(req: BackfillCanonicalsRequest) -> Reply:
@@ -196,11 +217,10 @@ def handle_backfill_canonicals(req: BackfillCanonicalsRequest) -> Reply:
     `--reprocess` runs from blocking ingest ticks."""
     from mimir.ingest.backfill import backfill_canonicals
 
-    result = backfill_canonicals(
-        inbox_filter=req.inbox_filter,
-        limit=req.limit,
+    return _run_backfill_chunk(
+        req,
+        "backfill_canonicals",
+        backfill_canonicals,
         reprocess=req.reprocess,
-        max_seconds=_chunk_seconds(),
-        start_cursor=req.continuation,
+        inbox_filter=req.inbox_filter,
     )
-    return _backfill_reply(req, result)

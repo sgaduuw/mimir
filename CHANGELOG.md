@@ -9,6 +9,29 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
+## [Unreleased]
+
+### Added
+
+- `admin canonicals backfill`, `backfill-article-files`,
+  `backfill-article-trailers` and `backfill-patch-series` now resume an
+  interrupted run where it stopped, instead of starting again at the newest
+  article. A broker restart (every deploy), a dropped SSH session or a killed
+  CLI used to cost a `--reprocess` run all its progress, and a full
+  `--reprocess` takes most of two days. The broker keeps each run's cursor in
+  a new `backfill_runs` table (migration at broker startup, new empty table),
+  written in the same transaction as each batch. Re-run the same command to
+  continue; it prints `resuming run started <time> at id N`. A run is keyed
+  by the command plus `--reprocess` and `--inbox`, so a different `--inbox`
+  starts its own run. `--limit` still caps one session: a run stopped by it
+  stays open and the next invocation continues it. A run that reaches the
+  oldest article is finished and never resumed. New `--restart` flag on all
+  four commands discards an unfinished run and starts again at the newest
+  article; use it after changing an inbox's `--list-address`. The summary now
+  labels its counts as this session's and adds the run's start time, its
+  examined count across all sessions, and whether the run is finished or still
+  open (#680).
+
 ## [3.13.0] - 2026-10-10
 
 ### Fixed
