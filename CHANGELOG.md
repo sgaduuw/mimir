@@ -23,7 +23,7 @@ changes, not internal refactors. Categories: **Added**,
   `--reprocess` takes most of two days. The broker keeps each run's cursor in
   a new `backfill_runs` table (migration at broker startup, new empty table),
   written in the same transaction as each batch. Re-run the same command to
-  continue; it prints `resuming run started <time> at id N`. A run is keyed
+  continue; it prints `resuming run started <time> UTC at id N`. A run is keyed
   by the command plus `--reprocess` and `--inbox`, so a different `--inbox`
   starts its own run. `--limit` still caps one session: a run stopped by it
   stays open and the next invocation continues it. A run that reaches the
@@ -32,7 +32,8 @@ changes, not internal refactors. Categories: **Added**,
   article; use it after changing an inbox's `--list-address`. The summary now
   labels its counts as this session's and adds the run's start time, its
   examined count across all sessions, and whether the run is finished or still
-  open (#680).
+  open; it starts `this session:` where it used to start `backfill complete:`,
+  so update any script matching the old prefix (#680).
 
 ## [3.13.0] - 2026-10-10
 
