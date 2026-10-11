@@ -9,10 +9,17 @@ WriterThread. The closure consumes raw SQLAlchemy Core (not an ORM
 session) because the writer thread has no ORM session lifecycle to
 share with the read pool.
 
+`after(conn)`, when given, runs as the closure's FINAL statement, in
+the same transaction as the batch: the backfills pass
+`mimir.backfill_runs.advance` so a run's cursor commits with the rows
+it covers. With `after` set an empty batch still submits, because a
+batch whose articles produced no writes still moves the cursor.
+
 Underscore-prefixed; not part of the public ingest / patches /
 trailers / patch_series surfaces.
 """
 
+from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,6 +27,7 @@ from datetime import datetime
 from sqlalchemy import delete, func, select, update
 from sqlalchemy import insert as sa_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.engine import Connection
 
 from mimir.broker.writes import WriteFuture, WriteOp
 from mimir.ingest._pending import _promote_list_address
@@ -30,6 +38,9 @@ from mimir.models import (
     Inbox,
     InboxAddressObservation,
 )
+
+# A statement run at the end of a batch's WriteOp.
+After = Callable[[Connection], None]
 
 
 @dataclass
@@ -112,7 +123,7 @@ class _CanonicalPending:
 
 
 def _submit_article_files_batch(
-    writer, payloads: list[_ArticleFilesPending]
+    writer, payloads: list[_ArticleFilesPending], after: After | None = None
 ) -> WriteFuture:
     """Compose the per-batch composite WriteOp for `backfill_article_files`.
 
@@ -121,9 +132,10 @@ def _submit_article_files_batch(
     - then issue `INSERT INTO article_files (article_id, path) VALUES (?, ?)
       ON CONFLICT (article_id, path) DO NOTHING` for each path.
 
-    Empty payload list returns a pre-resolved future without queueing.
+    Empty payload list returns a pre-resolved future without queueing,
+    unless `after` is set (see the module docstring).
     """
-    if not payloads:
+    if not payloads and after is None:
         f: Future = Future()
         f.set_result(None)
         return f
@@ -141,11 +153,14 @@ def _submit_article_files_batch(
                     .on_conflict_do_nothing(index_elements=["article_id", "path"])
                 )
 
+        if after is not None:
+            after(conn)
+
     return writer.submit(WriteOp(label="backfill:article_files:batch", fn=_fn))
 
 
 def _submit_article_trailers_batch(
-    writer, payloads: list[_ArticleTrailersPending]
+    writer, payloads: list[_ArticleTrailersPending], after: After | None = None
 ) -> WriteFuture:
     """Compose the per-batch composite WriteOp for
     `backfill_article_trailers`.
@@ -156,7 +171,7 @@ def _submit_article_trailers_batch(
     autoincrement `id` PK with no natural UNIQUE on
     (article_id, address, role), so the INSERT is a plain VALUES.
     """
-    if not payloads:
+    if not payloads and after is None:
         f: Future = Future()
         f.set_result(None)
         return f
@@ -180,11 +195,14 @@ def _submit_article_trailers_batch(
                     )
                 )
 
+        if after is not None:
+            after(conn)
+
     return writer.submit(WriteOp(label="backfill:article_trailers:batch", fn=_fn))
 
 
 def _submit_patch_series_batch(
-    writer, payloads: list[_PatchSeriesPending]
+    writer, payloads: list[_PatchSeriesPending], after: After | None = None
 ) -> WriteFuture:
     """Compose the per-batch composite WriteOp for `backfill_patch_series`.
 
@@ -208,7 +226,7 @@ def _submit_patch_series_batch(
     NULL values overwrite previously-set values (used by the
     orphan-clear / not-a-cover paths).
     """
-    if not payloads:
+    if not payloads and after is None:
         f: Future = Future()
         f.set_result(None)
         return f
@@ -225,10 +243,15 @@ def _submit_patch_series_batch(
                 )
             )
 
+        if after is not None:
+            after(conn)
+
     return writer.submit(WriteOp(label="backfill:patch_series:batch", fn=_fn))
 
 
-def _submit_canonical_batch(writer, payloads: list[_CanonicalPending]) -> WriteFuture:
+def _submit_canonical_batch(
+    writer, payloads: list[_CanonicalPending], after: After | None = None
+) -> WriteFuture:
     """Compose the per-batch composite WriteOp for `backfill_canonicals`.
 
     Per payload:
@@ -239,7 +262,7 @@ def _submit_canonical_batch(writer, payloads: list[_CanonicalPending]) -> WriteF
        count = inbox_address_observations.count + excluded.count,
        last_seen = MAX(inbox_address_observations.last_seen, excluded.last_seen)`
     """
-    if not payloads:
+    if not payloads and after is None:
         f: Future = Future()
         f.set_result(None)
         return f
@@ -276,6 +299,9 @@ def _submit_canonical_batch(writer, payloads: list[_CanonicalPending]) -> WriteF
                             },
                         )
                     )
+
+        if after is not None:
+            after(conn)
 
     return writer.submit(WriteOp(label="backfill:canonicals:batch", fn=_fn))
 

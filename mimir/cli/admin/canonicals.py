@@ -15,6 +15,7 @@ import click
 from mimir.cli._common import (
     _broker_backfill_loop,
     _configure_logging,
+    _echo_run_summary,
     _verbose_broker_hint,
 )
 from mimir.cli.admin import admin_group
@@ -28,7 +29,8 @@ def admin_canonicals_group() -> None:
     `articles.canonical_inbox_id` from the original To/Cc headers,
     emitting <link rel="canonical"> targets for cross-posts. Use after
     initial deployment of canonical resolution, or after editing an
-    `Inbox.list_address` to repoint canonicals.
+    `Inbox.list_address` to repoint canonicals (with `--reprocess
+    --restart`, so an open run does not resume below its old cursor).
     """
 
 
@@ -50,8 +52,14 @@ def admin_canonicals_group() -> None:
     "--reprocess",
     is_flag=True,
     help="Re-examine articles whose canonical_inbox_id is already set "
-    "(use after editing list_address or to clean up the early-pass "
-    "bootstrap region).",
+    "(use with --restart after editing list_address, or to clean up "
+    "the early-pass bootstrap region).",
+)
+@click.option(
+    "--restart",
+    is_flag=True,
+    help="Discard an unfinished run of this backfill and start again "
+    "from the newest article. Without it, an interrupted run resumes.",
 )
 @click.option(
     "-v",
@@ -64,6 +72,7 @@ def admin_canonicals_backfill_command(
     inbox_filter: str | None,
     limit: int | None,
     reprocess: bool,
+    restart: bool,
     verbose: int,
 ) -> None:
     """Walk historical articles, recording per-inbox address
@@ -75,16 +84,18 @@ def admin_canonicals_backfill_command(
 
     client = get_broker_client()
     try:
-        result = _broker_backfill_loop(
+        result, run = _broker_backfill_loop(
             client.backfill_canonicals,
             limit=limit,
             reprocess=reprocess,
+            restart=restart,
             extra={"inbox_filter": inbox_filter},
         )
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker backfill_canonicals failed: {exc}")
     click.echo(
-        f"backfill complete: examined={result.examined} "
+        f"this session: examined={result.examined} "
         f"resolved={result.resolved} unresolved={result.unresolved} "
         f"skipped={result.skipped}"
     )
+    _echo_run_summary(run)

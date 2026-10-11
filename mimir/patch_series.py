@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from mimir._backfill import walk_articles
+from mimir.backfill_runs import Run
 from mimir.models import Article
 from mimir.patch_revisions import parse_in_series_patch_subject
 
@@ -150,9 +151,9 @@ def series_key(title: str, author: str | None) -> str:
 class BackfillResult(BaseModel):
     """Outcome counters for `backfill_patch_series`.
 
-    `partial` + `continuation` carry the cooperative-scheduling
-    handoff between broker chunks (Phase 2.2). Direct (non-broker)
-    callers always see `partial=False, continuation=None`.
+    `partial` marks a broker chunk that stopped on its time budget
+    (Phase 2.2); the broker keeps the run's cursor (`mimir.backfill_runs`).
+    Direct (non-broker) callers always see `partial=False`.
     """
 
     examined: int = 0
@@ -162,11 +163,10 @@ class BackfillResult(BaseModel):
     not_cover: int = 0  # non-series-shaped subject (prose, replies, solo [PATCH])
     skipped: int = 0  # already fully resolved (idempotent re-run)
     partial: bool = False
-    continuation: int | None = None
 
     def merge(self, other: BackfillResult) -> BackfillResult:
         """Sum counters with `other`, carrying `other`'s
-        `partial`/`continuation` forward."""
+        `partial` forward."""
         return BackfillResult(
             examined=self.examined + other.examined,
             indexed=self.indexed + other.indexed,
@@ -175,7 +175,6 @@ class BackfillResult(BaseModel):
             not_cover=self.not_cover + other.not_cover,
             skipped=self.skipped + other.skipped,
             partial=other.partial,
-            continuation=other.continuation,
         )
 
 
@@ -293,7 +292,7 @@ def backfill_patch_series(
     progress: Callable[[BackfillResult], None] | None = None,
     *,
     max_seconds: float | None = None,
-    start_cursor: int | None = None,
+    run: Run | None = None,
 ) -> BackfillResult:
     """Walk articles, parse subjects for cover-letter / in-series
     shape, write `patch_series_key` + `patch_series_version` +
@@ -315,14 +314,14 @@ def backfill_patch_series(
     In-series detection is a #212 addition; pre-#212 runs only
     keyed cover letters.
 
-    `max_seconds` + `start_cursor` enable broker-side cooperative
+    `max_seconds` + `run` enable broker-side cooperative
     scheduling (Phase 2.2); see `mimir.patches.backfill_article_files`
     for the chunk/resume contract. Direct callers leave both None.
     """
     from mimir._pending_backfill import _submit_patch_series_batch
 
     result = BackfillResult()
-    partial, continuation = walk_articles(
+    result.partial = walk_articles(
         result,
         _process_one,
         _submit_patch_series_batch,
@@ -332,10 +331,8 @@ def backfill_patch_series(
         preload_lists=False,
         label="backfill_patch_series",
         max_seconds=max_seconds,
-        start_cursor=start_cursor,
+        run=run,
     )
-    result.partial = partial
-    result.continuation = continuation
     return result
 
 
