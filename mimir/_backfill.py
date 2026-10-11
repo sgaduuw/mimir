@@ -7,7 +7,7 @@ cursor pagination over `articles` newest-first, in batches of
 The per-helper specifics are which `BackfillResult` shape is returned,
 what `_process_one(session, article, reprocess)` returns (a (bucket,
 pending_payload) tuple where pending_payload is consumed by the caller-
-supplied `flush_batch(writer, payloads)` helper), and whether
+supplied `flush_batch(writer, payloads, after=...)` helper), and whether
 `Article.lists` needs preloading (only the two body-re-reading
 helpers do).
 
@@ -26,13 +26,15 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from mimir import backfill_runs
+from mimir.backfill_runs import Run
 from mimir.models import Article
 
 
 def walk_articles(
     result: Any,
     process_one: Callable[[Session, Article, bool], tuple[str, Any]],
-    flush_batch: Callable[[Any, list[Any]], Any],
+    flush_batch: Callable[..., Any],
     *,
     limit: int | None = None,
     reprocess: bool = False,
@@ -41,8 +43,8 @@ def walk_articles(
     batch_size: int = 1000,
     label: str = "walk_articles",
     max_seconds: float | None = None,
-    start_cursor: int | None = None,
-) -> tuple[bool, int | None]:
+    run: Run | None = None,
+) -> bool:
     """Walk every Article newest-first, calling `process_one` per row
     and dispatching one composite WriteOp per batch via `flush_batch`.
 
@@ -52,9 +54,9 @@ def walk_articles(
     accumulate per batch; payloads of `None` are skipped (used by
     backfills for buckets that produce no write).
 
-    `flush_batch(writer, payloads)` returns a `WriteFuture`. The walker
-    awaits `.result()` before composing the next batch and before
-    checking the time budget.
+    `flush_batch(writer, payloads, after=...)` returns a `WriteFuture`.
+    The walker awaits `.result()` before composing the next batch and
+    before checking the time budget.
 
     `preload_lists=True` eager-loads `Article.lists` via selectinload
     (needed by the body-re-reading helpers, `patches` and `trailers`);
@@ -71,10 +73,14 @@ def walk_articles(
     `max_seconds`: when not None, time-bound this chunk. Deadline
     checked at batch boundaries (after `flush_batch(...).result()`)
     so partial progress is always persisted before returning.
-    Returns `(partial=True, continuation=<last id processed>)` if the
-    deadline elapses before the walk completes.
+    Returns True (partial) if the deadline elapses before the walk
+    completes, False when it ran out of rows or reached `limit`.
 
-    `start_cursor`: when not None, resume from `Article.id < start_cursor`.
+    `run`: the `mimir.backfill_runs.Run` this chunk belongs to. The
+    walk starts below its cursor, each batch's WriteOp ends with
+    `backfill_runs.advance`, and running out of rows finishes the run.
+    Reaching `limit` does not. None (direct callers) walks the whole
+    table without persisting anything.
 
     Phase 3c: reads run on a query_only session from
     `_context.get_active_pool()`; writes go through
@@ -86,13 +92,13 @@ def walk_articles(
     writer = get_active_writer()
 
     examined_total = 0
-    last_processed: int | None = None
     deadline: float | None = (
         time.monotonic() + max_seconds if max_seconds is not None else None
     )
 
     with pool.session() as session:
-        cursor: int | None = start_cursor
+        # The lowest id processed so far; the walk continues below it.
+        cursor: int | None = run.cursor if run is not None else None
         while True:
             q = select(Article).order_by(Article.id.desc()).limit(batch_size)
             if preload_lists:
@@ -101,24 +107,30 @@ def walk_articles(
                 q = q.where(Article.id < cursor)
             batch = list(session.execute(q).scalars())
             if not batch:
-                return False, None
+                if run is not None:
+                    backfill_runs.finish(run.id)
+                return False
 
             batch_payloads: list[Any] = []
+            batch_examined = 0
             limit_reached = False
             for article in batch:
-                cursor = article.id
                 examined_total += 1
                 if limit is not None and examined_total > limit:
                     limit_reached = True
                     break
                 result.examined += 1
+                batch_examined += 1
                 bucket, payload = process_one(session, article, reprocess)
                 setattr(result, bucket, getattr(result, bucket) + 1)
                 if payload is not None:
                     batch_payloads.append(payload)
-                last_processed = article.id
+                cursor = article.id
 
-            flush_batch(writer, batch_payloads).result(timeout=120)
+            after = None
+            if run is not None and batch_examined:
+                after = backfill_runs.advance(run.id, cursor, batch_examined)
+            flush_batch(writer, batch_payloads, after=after).result(timeout=120)
             # Release the read snapshot so the next batch's SELECT sees
             # the writes that just committed via the writer thread.
             session.commit()
@@ -126,9 +138,9 @@ def walk_articles(
             if progress is not None:
                 progress(result)
             if limit_reached:
-                return False, None
+                return False
             if deadline is not None and time.monotonic() >= deadline:
                 # Time budget elapsed. Everything we processed is
-                # committed; report the last id we touched so the
-                # follow-up chunk resumes at `Article.id < last_processed`.
-                return True, last_processed
+                # committed, cursor included, so the follow-up chunk
+                # resumes below it.
+                return True

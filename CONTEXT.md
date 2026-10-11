@@ -639,9 +639,12 @@ awaited via `.result()` before composing the next batch).
 - Idempotency is by predicate (`WHERE canonical_inbox_id IS NULL`,
   `WHERE NOT EXISTS (SELECT 1 FROM article_files WHERE article_id =
   ...)`, `WHERE patch_series_position IS NULL`), not by cursor, so
-  the Phase 3a/3b "cursor as final WriteOp" invariant does not
-  apply. Per-batch atomicity (the entire closure rolls back on
-  closure failure) is pinned by
+  the Phase 3a/3b "cursor as final WriteOp" invariant did not
+  apply. Superseded for resume by "Resumable backfills (#680)"
+  below: predicates do not help `--reprocess`, where every row
+  qualifies, so each batch's WriteOp now ends with a run cursor.
+  Per-batch atomicity (the entire closure rolls back on closure
+  failure) is pinned by
   `test_batch_closure_failure_rolls_back_entire_batch`.
 
 Writer-lock hold per batch drops from one continuous transaction per
@@ -864,6 +867,56 @@ exclusive-lock contract, then removing `write_transaction()` + the
 BEGIN-IMMEDIATE event listener + the `_direct_*` helpers, and
 collapsing the cache worker thread into the unified writer path.
 The purge timer is already migrated (no longer a residual).
+
+### Resumable backfills (#680)
+
+The four chunked backfills (`backfill-article-files`,
+`backfill-article-trailers`, `backfill-patch-series`,
+`admin canonicals backfill`) persist their position in
+`backfill_runs`, owned by `mimir/backfill_runs.py`. Before this the
+walk cursor lived only in the CLI process: each chunk returned a
+`continuation` id and the CLI sent it back. A deploy (broker restart)
+or a dropped SSH session sent a `--reprocess` run back to the newest
+article, and a full `--reprocess` takes most of two days (#680
+measured about 620k ids/hour on newer ids and 130k to 220k/hour on
+the oldest, 17.7M ids, October 2026).
+
+- **The broker owns the cursor.** Each chunk's handler resolves the
+  unfinished run for `(name, params_key)` and starts below its cursor.
+  The request carries no position. Re-running the same command is the
+  recovery, including right after a deploy.
+- **The cursor commits with its batch.** `backfill_runs.advance` runs
+  as the final statement of each batch's WriteOp (the `after` hook on
+  `_submit_*_batch`), the Phase 3a/3b pattern. A failed batch rolls
+  back whole, cursor included, so redoing it applies it once. The
+  canonicals walk also flushes mid-batch around its
+  promotion sweep, and those flushes carry the cursor as well.
+  Pinned by `test_failed_batch_leaves_cursor_at_last_committed_batch`
+  and `test_cursor_is_written_inside_each_batch_writeop`.
+- **One key builder.** `backfill_runs.params_key` builds the key from
+  the parameters that define the walk (`reprocess`, `inbox_filter`),
+  and the handler passes the same values to the key and to the walk.
+  `--limit` is not in the key: it caps a session, not a run.
+- **Finished, unfinished, restarted.** Running out of rows marks the
+  run finished, and a finished run is never resumed. Reaching
+  `--limit` leaves it unfinished, so the next session continues it.
+  Only a session's first RPC (`start` set) may start a run. A later
+  RPC joins whatever run is unfinished for the key, and ends the
+  session only when there is none, so a session never starts a new
+  full walk on its own after another session finishes its run. `--restart` deletes the unfinished run (deleted, not
+  marked finished, so `finished_at` always means the walk reached
+  the oldest article). Run ids use AUTOINCREMENT, so a chunk of a
+  deleted run still in flight cannot write to its replacement.
+- **Concurrency is not refused.** Two CLIs on one key join the same
+  run. With the default single long worker their chunks serialise.
+  With more, chunks of one run can overlap and process the same
+  articles twice, and not every backfill's writes are idempotent:
+  canonical observation counts add up, and trailer inserts without
+  `--reprocess` are plain inserts. `advance` takes `MIN` so the
+  cursor never moves back up.
+- **Counts.** CLI counters cover the session. The run row keeps
+  `examined` across sessions, and the CLI prints it with the run's
+  start time and whether the run is finished or still open.
 
 ## Threading via recursive CTE
 
