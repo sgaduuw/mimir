@@ -54,6 +54,19 @@ _ZERO_OF_N_RE = re.compile(r"\b0+\s*/\s*\d+\b")
 # version is implicit).
 _VERSION_RE = re.compile(r"\b(v\d+|RFC|RESEND)\b", re.IGNORECASE)
 
+
+def version_number_sql(column: str) -> str:
+    """SQL expression for the revision number of a stored version, as
+    `parse_cover_letter` writes it: `vN` is N, `rfc` and `resend` are 1
+    (the implicit first version), NULL stays NULL. Lives here, beside
+    the parser, so the format and its reader change together (#677:
+    `CAST('v2' AS INTEGER)` is 0 in SQLite)."""
+    return (
+        f"CASE WHEN {column} LIKE 'v%' THEN CAST(SUBSTR({column}, 2) AS INTEGER)"
+        f" WHEN {column} IS NOT NULL THEN 1 END"
+    )
+
+
 # Bracket must literally contain the word "PATCH", there are
 # `[GIT PULL]` and `[ANNOUNCE]` subjects that carry `0/N` for
 # unrelated reasons; the PATCH token disambiguates.

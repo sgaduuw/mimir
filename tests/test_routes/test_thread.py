@@ -959,6 +959,25 @@ def _mutate_series(seeded):
         s.commit()
 
 
+def test_newer_revision_renders_the_superseded_pill(client, tmp_path):
+    """Stored versions are `vN`, which SQLite casts to 0, so for a
+    while no page ever showed SUPERSEDED (#677)."""
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    with SessionLocal() as s:
+        s.get(Article, seeded["root@x"][0]).subject = "[PATCH] foo: bar"
+        s.commit()
+    _prepare_series(seeded)
+    _mutate_series(seeded)
+    html = client.get(seeded["root@x"][1]).get_data(as_text=True)
+    assert "Superseded by v2 posted" in html
+    assert re.search(r"\bSUPERSEDED\b", html)
+
+
 # Each case is (label, prepare | None, mutate). Every mutation changes
 # something both surfaces RENDER while touching nothing else either
 # ETag covers.
