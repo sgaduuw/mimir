@@ -11,6 +11,31 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.14.1] - 2026-10-11
+
+### Fixed
+
+- The SUPERSEDED pill now shows when a newer revision of a patch exists. It
+  never showed before: versions are stored as `v2`, and the query read them
+  as 0. `rfc` and `resend` count as revision 1 (#677).
+- The SUPERSEDED tooltip names the newest revision with that revision's own
+  date, and the LANDED tooltip shows one real Linus commit (the earliest, as
+  the card does). Each used to take its two values from different rows when
+  there were several (#678).
+- Message and thread pages now get a new ETag when a reviewer's name or
+  address is rewritten in place (for example by `backfill-article-trailers
+  --reprocess`), and when a tree's `TREES__<name>__DISPLAY_NAME` changes.
+  Before, caches kept the old tooltip or "Queued in" label (#678).
+- The page ETag also moves when `backfill-patch-series --reprocess` renumbers
+  a revision in place, which can flip the SUPERSEDED pill or change its
+  tooltip at the same revision count.
+- The QUEUED tooltip and the "Queued in" sentence name the same commit when
+  one tree holds two at the same time.
+- A subsystem's needs-attention list now uses the same "superseded" rule as
+  the pill: same patch position and a higher revision. Before, any later post
+  with the same series key counted, so in a multi-patch series every patch
+  but the last posted dropped off the list.
+
 ## [3.14.0] - 2026-10-11
 
 ### Added

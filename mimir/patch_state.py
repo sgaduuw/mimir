@@ -33,7 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
@@ -222,6 +222,9 @@ def _mainline_landings(
                 # summary sentence names the tree the pill names.
                 MainlineCommit.tree_name == "linux-next",
                 MainlineCommit.tree_name,
+                # Two commits in one tree at one time: the pill's
+                # tooltip breaks the tie on sha too.
+                MainlineCommit.commit_sha,
             )
         )
         .scalars()
@@ -268,8 +271,11 @@ def _series_timeline(
             .options(selectinload(Article.lists).selectinload(ArticleList.inbox))
             .where(
                 Article.patch_series_key == article.patch_series_key,
-                # Same-position filter, see docstring.
-                Article.patch_series_position == article.patch_series_position,
+                # Same-position filter, see docstring. NULL is 0, as in
+                # `patch_series.newer_revision_sql`, so the fold lists
+                # what the pill counts.
+                func.coalesce(Article.patch_series_position, 0)
+                == (article.patch_series_position or 0),
             )
             .order_by(Article.date.asc().nulls_last())
         ).scalars()

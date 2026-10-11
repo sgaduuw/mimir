@@ -664,10 +664,12 @@ def test_thread_view_opens_the_epoch_repo_once_for_the_whole_render(
 
 def _prepare_rules_version(seeded):
     from mimir.extensions import SessionLocal
-    from mimir.models import MainlineState
+    from mimir.models import ArticleFile, MainlineState
 
+    root_id, _url = seeded["root@x"]
     with SessionLocal() as s:
         s.add(MainlineState(tree_name="linus", last_commit_sha="a" * 40))
+        s.add(ArticleFile(article_id=root_id, path="drivers/net/x.c"))
         s.commit()
 
 
@@ -680,10 +682,16 @@ def _mutate_rules_version(seeded):
     before the 304."""
     from mimir.extensions import SessionLocal
     from mimir.models import MainlineState
+    from mimir.subsystems import invalidate_rules_snapshot
+    from tests.test_routes._helpers import _seed_subsystem
 
+    # The reload adds a subsystem claiming the article's file, and
+    # drops the rules snapshot as `load_maintainers` does.
+    _seed_subsystem("NETWORKING DRIVERS", "Maintained", ["drivers/net/"])
     with SessionLocal() as s:
         s.get(MainlineState, "linus").last_commit_sha = "b" * 40
         s.commit()
+    invalidate_rules_snapshot()
 
 
 def _mutate_mainline_landing(seeded):
@@ -898,10 +906,31 @@ def _mutate_review_trailer(seeded):
         s.commit()
 
 
+def _prepare_review_trailer(seeded):
+    _mutate_review_trailer(seeded)
+
+
+def _mutate_trailer_in_place(seeded):
+    """`backfill-article-trailers --reprocess` after a parser fix
+    rewrites a reviewer's name in place. The row count stays put, and
+    the pill tooltip shows the new name."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleTrailer
+
+    root_id, _url = seeded["root@x"]
+    with SessionLocal() as s:
+        s.query(ArticleTrailer).filter_by(
+            article_id=root_id
+        ).one().name = "Rita Eviewer"
+        s.commit()
+
+
 def _prepare_article_file(seeded):
     from mimir.extensions import SessionLocal
     from mimir.models import ArticleFile
+    from tests.test_routes._helpers import _seed_subsystem
 
+    _seed_subsystem("NETWORKING DRIVERS", "Maintained", ["drivers/net/"])
     root_id, _url = seeded["root@x"]
     with SessionLocal() as s:
         s.add(ArticleFile(article_id=root_id, path="drivers/net/before.c"))
@@ -959,6 +988,25 @@ def _mutate_series(seeded):
         s.commit()
 
 
+def test_newer_revision_renders_the_superseded_pill(client, tmp_path):
+    """Stored versions are `vN`, which SQLite casts to 0, so for a
+    while no page ever showed SUPERSEDED (#677)."""
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    with SessionLocal() as s:
+        s.get(Article, seeded["root@x"][0]).subject = "[PATCH] foo: bar"
+        s.commit()
+    _prepare_series(seeded)
+    _mutate_series(seeded)
+    html = client.get(seeded["root@x"][1]).get_data(as_text=True)
+    assert "Superseded by v2 posted" in html
+    assert re.search(r"\bSUPERSEDED\b", html)
+
+
 # Each case is (label, prepare | None, mutate). Every mutation changes
 # something both surfaces RENDER while touching nothing else either
 # ETag covers.
@@ -984,6 +1032,7 @@ _RENDER_STATE_CASES = [
     ("maintainers_reparse", _prepare_rules_version, _mutate_rules_version),
     ("review_trailer", None, _mutate_review_trailer),
     ("article_files_rewrite", _prepare_article_file, _mutate_article_file),
+    ("trailer_rewrite", _prepare_review_trailer, _mutate_trailer_in_place),
     ("newer_revision", _prepare_series, _mutate_series),
 ]
 
@@ -1101,6 +1150,63 @@ def test_etag_page_does_not_render_a_cached_pill(client, tmp_path, surface):
     assert "LANDED" in html
 
 
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_tree_display_name_moves_the_etag(client, tmp_path, monkeypatch, surface):
+    """`TREES__<name>__DISPLAY_NAME` feeds "Queued in <label>". A
+    restart with a new label keeps the version, so only the validator
+    can tell a cache the sentence changed."""
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    _prepare_first_landing(seeded)
+    before = client.get(url)
+    monkeypatch.setattr(settings.trees["linux-next"], "display_name", "next tree")
+    after = client.get(url)
+    assert before.headers["ETag"] != after.headers["ETag"]
+    assert "Queued in next tree" in after.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_repeat_request_reuses_the_cached_pill(client, tmp_path, monkeypatch, surface):
+    """The pill is cached because computing it walks the whole thread
+    (about 120 ms on the largest one). A second request under the same
+    ETag must take it from the cache, not compute it again."""
+    from mimir import lifecycle_status
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
+    )
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    computed = []
+    real = lifecycle_status._bulk_uncached
+    monkeypatch.setattr(
+        lifecycle_status,
+        "_bulk_uncached",
+        lambda session, ids: computed.append(ids) or real(session, ids),
+    )
+    first = client.get(url)
+    assert computed, "precondition: the first request computes the pill"
+    computed.clear()
+    second = client.get(url)
+    assert second.headers["ETag"] == first.headers["ETag"]  # precondition
+    assert computed == [], f"{surface} recomputed the pill under an unchanged ETag"
+
+
 def _synthesis(html: str) -> str:
     """The landing sentence of the patch-state card, or ""."""
     m = re.search(r"((?:Queued in|Landed in mainline as)[^<]*)", html)
@@ -1162,18 +1268,9 @@ def test_etag_page_does_not_render_a_cached_landing_sentence(client, tmp_path, s
     )
 
 
-# Cases whose change this fixture's page does not render (no subsystem
-# or maintainer reviewer to show it), so a warm-versus-cold comparison
-# passes them by construction. Making them render is #678.
-_BODY_INVISIBLE_CASES = {"maintainers_reparse", "article_files_rewrite"}
-_RENDERED_STATE_CASES = [
-    c for c in _RENDER_STATE_CASES if c[0] not in _BODY_INVISIBLE_CASES
-]
-
-
 @pytest.mark.parametrize("surface", ["message", "thread"])
 @pytest.mark.parametrize(
-    "case", _RENDERED_STATE_CASES, ids=[c[0] for c in _RENDERED_STATE_CASES]
+    "case", _RENDER_STATE_CASES, ids=[c[0] for c in _RENDER_STATE_CASES]
 )
 def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, case):
     """For every derived-state change, the page served under the new
@@ -1853,3 +1950,114 @@ def test_thread_pages_share_one_pill_compute(client, tmp_path, monkeypatch, vari
     walks = [c for c in calls if c == [root_id]]
     assert walks, "precondition: the pill rendered at all"
     assert len(walks) == 1, f"{variant}: walk ran {len(walks)} times for {len(urls)}"
+
+
+def _set_versions(seeded, versions):
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        for mid, version in versions.items():
+            a = s.get(Article, seeded[mid][0])
+            a.patch_series_key = "serieskey"
+            a.patch_series_version = version
+            a.patch_series_position = 0
+        s.commit()
+
+
+def _get(client, url):
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    with SessionLocal() as s:
+        s.execute(delete(CacheEntry))
+        s.commit()
+    r = client.get(url)
+    assert r.status_code == 200
+    return r
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_newest_revision_renumbered_in_place_moves_the_etag(client, tmp_path, surface):
+    """Root v1 is superseded by v9 and v10; a reprocess renumbers v10 to
+    v11. Count stays 3 and text max stays "v9"; the tooltip changes."""
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("root@x", None), ("nine@x", "root@x"), ("ten@x", "root@x")],
+    )
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    _set_versions(seeded, {"root@x": "v1", "nine@x": "v9", "ten@x": "v10"})
+    before = _get(client, url)
+    assert re.search(r"Superseded by v10 posted", before.get_data(as_text=True))
+
+    _set_versions(seeded, {"ten@x": "v11"})
+    after = _get(client, url)
+    # Precondition: the change is visible in the body.
+    assert re.search(r"Superseded by v11 posted", after.get_data(as_text=True))
+    assert before.headers["ETag"] != after.headers["ETag"], (
+        f"{surface}: tooltip moved v10 -> v11 under an unchanged ETag"
+    )
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_superseded_flip_in_place_moves_the_etag(client, tmp_path, surface):
+    """Root v10 with a sibling v2 is current. A reprocess renumbers the
+    root to v1, so v2 now supersedes it. Count stays 2 and text max of
+    {"v10", "v2"} and {"v1", "v2"} is "v2" both times; the pill flips."""
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("root@x", None), ("other@x", "root@x")]
+    )
+    root_id, root_url = seeded["root@x"]
+    url = root_url if surface == "message" else root_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, root_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    _set_versions(seeded, {"root@x": "v10", "other@x": "v2"})
+    before = _get(client, url)
+    assert not re.search(r"\bSUPERSEDED\b", before.get_data(as_text=True))
+
+    _set_versions(seeded, {"root@x": "v1"})
+    after = _get(client, url)
+    assert re.search(r"\bSUPERSEDED\b", after.get_data(as_text=True))
+    assert before.headers["ETag"] != after.headers["ETag"], (
+        f"{surface}: pill flipped to SUPERSEDED under an unchanged ETag"
+    )
+
+
+@pytest.mark.parametrize("v1_position", [None, 0])
+def test_fold_diff_link_resolves_for_a_null_position_cover(
+    client, tmp_path, v1_position
+):
+    """Every [diff vs current] link the revisions fold emits must
+    resolve. The fold treats a NULL position as 0, so the diff route
+    must too."""
+    import html as htmllib
+
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("v1@x", None), ("v2@x", None)])
+    with SessionLocal() as s:
+        for mid, version, position in (("v1@x", "v1", v1_position), ("v2@x", "v2", 0)):
+            a = s.get(Article, seeded[mid][0])
+            a.subject = f"[PATCH {version} 0/1] foo: bar"
+            a.patch_series_key = "nullposkey"
+            a.patch_series_version = version
+            a.patch_series_position = position
+        s.commit()
+    page = client.get(seeded["v1@x"][1]).get_data(as_text=True)
+    links = re.findall(r'href="([^"]*/series/[^"]*)"', page)
+    assert len(links) == 1, links  # precondition: the fold links v2
+    assert client.get(htmllib.unescape(links[0])).status_code == 200

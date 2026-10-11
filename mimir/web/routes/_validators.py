@@ -24,6 +24,13 @@ from mimir.models import (
     MainlineCommit,
     MainlineState,
 )
+from mimir.patch_state import _resolve_tree_label
+
+
+def _digest(values) -> str:
+    """Short digest of NUL-joined strings, so {"ab"} and {"a", "b"}
+    cannot collide."""
+    return hashlib.blake2s("\0".join(values).encode(), digest_size=4).hexdigest()
 
 
 def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
@@ -56,7 +63,9 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     # A count-and-max tag missed {linux-next} -> {linus} at one sha and
     # date, and a tree list plus max still missed a rebased row below
     # the max. Same argument as `files_tag`: the truthful input is the
-    # values. A handful of rows per article.
+    # values. A handful of rows per article. The label is the one the
+    # page prints ("Queued in <label>"): `TREES__<name>__DISPLAY_NAME`
+    # changes on a restart that keeps the version.
     landing_rows = session.execute(
         select(
             MainlineCommit.tree_name,
@@ -66,15 +75,25 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     ).all()
     landings_tag = ";".join(
         sorted(
-            f"{r.tree_name},{r.commit_sha},{r.committed_at.isoformat()}"
+            f"{r.tree_name},{_resolve_tree_label(r.tree_name)},"
+            f"{r.commit_sha},{r.committed_at.isoformat()}"
             for r in landing_rows
         )
     )
-    trailers = session.scalar(
-        select(func.count(ArticleTrailer.id)).where(
-            ArticleTrailer.article_id == article_id
+    # Trailer values, not a count: `backfill-article-trailers
+    # --reprocess` can rewrite a name or address at the same count, and
+    # the pill shows names (tooltip) and maintainer matches by address.
+    # In id order, which is the tooltip's order.
+    trailer_rows = session.execute(
+        select(
+            ArticleTrailer.role,
+            ArticleTrailer.name,
+            ArticleTrailer.address_normalized,
         )
-    )
+        .where(ArticleTrailer.article_id == article_id)
+        .order_by(ArticleTrailer.id)
+    ).all()
+    trailers_tag = _digest(repr(tuple(r)) for r in trailer_rows)
     # `MainlineState.last_commit_sha` is the object id of the
     # MAINTAINERS BLOB at the last load, so it versions the whole
     # subsystem-RULE snapshot in one scalar instead of re-deriving this
@@ -100,7 +119,7 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
         .where(ArticleFile.article_id == article_id)
         .order_by(ArticleFile.path)
     ).all()
-    files_tag = hashlib.blake2s("\0".join(paths).encode(), digest_size=4).hexdigest()
+    files_tag = _digest(paths)
     # Supersedance and the revision count come from SIBLING articles
     # sharing this patch's series key, so they live in none of the reads
     # above. Posting a v2 flips this article's badge to SUPERSEDED and
@@ -113,18 +132,20 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
             Article.id == article_id
         )
     ).one_or_none()
+    # The revisions' values, not a count and a text max: the pill ranks
+    # by revision number, and `backfill-patch-series --reprocess` can
+    # renumber a version in place at the same count.
     series_tag = ""
     if series is not None and series[0]:
-        count, newest = session.execute(
-            select(
-                func.count(Article.id),
-                func.max(Article.patch_series_version),
-            ).where(
+        revisions = session.execute(
+            select(Article.id, Article.patch_series_version)
+            .where(
                 Article.patch_series_key == series[0],
                 func.coalesce(Article.patch_series_position, 0) == (series[1] or 0),
             )
-        ).one()
-        series_tag = f"{count}|{newest or ''}"
+            .order_by(Article.id)
+        ).all()
+        series_tag = _digest(repr(tuple(r)) for r in revisions)
     return (
-        f"{landings_tag}|{trailers or 0}|{rules_version or ''}|{series_tag}|{files_tag}"
+        f"{landings_tag}|{trailers_tag}|{rules_version or ''}|{series_tag}|{files_tag}"
     )
