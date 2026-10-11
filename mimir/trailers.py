@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from mimir._backfill import walk_articles
+from mimir.backfill_runs import Run
 from mimir.models import Article, ArticleTrailer
 from mimir.store import read_first_readable
 
@@ -101,9 +102,9 @@ class BackfillResult(BaseModel):
     that already have rows (idempotent re-runs) plus mirror-
     unreachable cases.
 
-    `partial` + `continuation` carry the cooperative-scheduling
-    handoff between broker chunks (Phase 2.2). Direct (non-broker)
-    callers always see `partial=False, continuation=None`.
+    `partial` marks a broker chunk that stopped on its time budget
+    (Phase 2.2); the broker keeps the run's cursor (`mimir.backfill_runs`).
+    Direct (non-broker) callers always see `partial=False`.
     """
 
     examined: int = 0
@@ -112,11 +113,10 @@ class BackfillResult(BaseModel):
     skipped: int = 0  # already had rows, or unreadable
     failed: int = 0  # parse error reading the blob
     partial: bool = False
-    continuation: int | None = None
 
     def merge(self, other: BackfillResult) -> BackfillResult:
         """Sum counters with `other`, carrying `other`'s
-        `partial`/`continuation` forward."""
+        `partial` forward."""
         return BackfillResult(
             examined=self.examined + other.examined,
             indexed=self.indexed + other.indexed,
@@ -124,7 +124,6 @@ class BackfillResult(BaseModel):
             skipped=self.skipped + other.skipped,
             failed=self.failed + other.failed,
             partial=other.partial,
-            continuation=other.continuation,
         )
 
 
@@ -134,7 +133,7 @@ def backfill_article_trailers(
     progress: Callable[[BackfillResult], None] | None = None,
     *,
     max_seconds: float | None = None,
-    start_cursor: int | None = None,
+    run: Run | None = None,
 ) -> BackfillResult:
     """Walk articles, extract trailers, insert ArticleTrailer rows.
     Idempotent: articles with existing rows are skipped unless
@@ -146,13 +145,13 @@ def backfill_article_trailers(
     subsystem reviewer surfaces (slices 2+3) gain visible coverage
     fastest from the recent end.
 
-    `max_seconds` + `start_cursor` enable broker-side cooperative
+    `max_seconds` + `run` enable broker-side cooperative
     scheduling (Phase 2.2); see `mimir.patches.backfill_article_files`
     for the chunk/resume contract. Direct callers leave both None."""
     from mimir._pending_backfill import _submit_article_trailers_batch
 
     result = BackfillResult()
-    partial, continuation = walk_articles(
+    result.partial = walk_articles(
         result,
         _process_one,
         _submit_article_trailers_batch,
@@ -161,10 +160,8 @@ def backfill_article_trailers(
         progress=progress,
         label="backfill_article_trailers",
         max_seconds=max_seconds,
-        start_cursor=start_cursor,
+        run=run,
     )
-    result.partial = partial
-    result.continuation = continuation
     return result
 
 

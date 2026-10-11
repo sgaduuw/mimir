@@ -23,6 +23,7 @@ REPO = Path(__file__).resolve().parent.parent
 PREV_REVISION = "e3aa78c72a8d"
 THREAD_ROOT_REVISION = "1072ad1fae96"
 TREE_KEY_REVISION = "13b7f3111e00"
+BACKFILL_RUNS_REVISION = "11e653c445d0"
 
 
 def _alembic(
@@ -399,5 +400,50 @@ def test_tree_key_rebuild_clears_debris_but_never_the_only_copy(mc_db):
             conn.execute("SELECT COUNT(*) FROM _mainline_commits_rebuild").fetchone()[0]
             == 2
         )
+    finally:
+        conn.close()
+
+
+def _unfinished_run(db: Path, finished_at: str | None) -> sqlite3.IntegrityError | None:
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "INSERT INTO backfill_runs(name, params_key, examined, started_at, "
+            "updated_at, finished_at) VALUES ('b', '{}', 0, ?, ?, ?)",
+            ("2026-10-11 00:00:00", "2026-10-11 00:00:00", finished_at),
+        )
+        conn.commit()
+        return None
+    except sqlite3.IntegrityError as exc:
+        return exc
+    finally:
+        conn.close()
+
+
+def test_backfill_runs_upgrade_allows_one_unfinished_run_per_key(tmp_path):
+    db = tmp_path / "br.db"
+    assert _alembic(db, TREE_KEY_REVISION).returncode == 0
+    result = _alembic(db, BACKFILL_RUNS_REVISION)
+    assert result.returncode == 0, result.stderr[-2000:]
+
+    # Any number of finished runs, but only one unfinished run per key.
+    assert _unfinished_run(db, "2026-10-11 01:00:00") is None
+    assert _unfinished_run(db, "2026-10-11 02:00:00") is None
+    assert _unfinished_run(db, None) is None
+    assert _unfinished_run(db, None) is not None
+
+
+def test_backfill_runs_downgrade_drops_the_table(tmp_path):
+    db = tmp_path / "br.db"
+    assert _alembic(db, BACKFILL_RUNS_REVISION).returncode == 0
+
+    result = _alembic(db, TREE_KEY_REVISION, command="downgrade")
+    assert result.returncode == 0, result.stderr[-2000:]
+
+    conn = sqlite3.connect(db)
+    try:
+        assert not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name LIKE '%backfill_runs%'"
+        ).fetchone()
     finally:
         conn.close()
