@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.14.1] - 2026-10-11
+
 ### Fixed
 
 - The SUPERSEDED pill now shows when a newer revision of a patch exists. It
@@ -24,6 +26,15 @@ changes, not internal refactors. Categories: **Added**,
   address is rewritten in place (for example by `backfill-article-trailers
   --reprocess`), and when a tree's `TREES__<name>__DISPLAY_NAME` changes.
   Before, caches kept the old tooltip or "Queued in" label (#678).
+- The page ETag also moves when `backfill-patch-series --reprocess` renumbers
+  a revision in place, which can flip the SUPERSEDED pill or change its
+  tooltip at the same revision count.
+- The QUEUED tooltip and the "Queued in" sentence name the same commit when
+  one tree holds two at the same time.
+- A subsystem's needs-attention list now uses the same "superseded" rule as
+  the pill: same patch position and a higher revision. Before, any later post
+  with the same series key counted, so in a multi-patch series every patch
+  but the last posted dropped off the list.
 
 ## [3.14.0] - 2026-10-11
 

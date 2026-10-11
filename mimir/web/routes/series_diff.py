@@ -24,7 +24,7 @@ Per-issue-210 design choices:
 """
 
 from flask import abort, render_template, request
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from mimir import cache
 from mimir.extensions import SessionLocal
@@ -75,7 +75,8 @@ def _resolve_via_index(
             select(Article).where(
                 Article.patch_series_key == series_key,
                 Article.patch_series_version.in_([from_version, to_version]),
-                Article.patch_series_position == pos,
+                # NULL is 0, as in the revisions fold that links here.
+                func.coalesce(Article.patch_series_position, 0) == pos,
             )
         )
         .scalars()
@@ -138,7 +139,7 @@ def series_diff(inbox_name: str, series_key: str):
                 select(Article).where(
                     Article.patch_series_key == series_key,
                     Article.patch_series_version.in_([from_version, to_version]),
-                    Article.patch_series_position == 0,
+                    func.coalesce(Article.patch_series_position, 0) == 0,
                 )
             )
             .scalars()

@@ -665,3 +665,41 @@ def test_activity_heat_buckets(days, expected):
     from mimir.patch_state import _activity_heat
 
     assert _activity_heat(days) == expected
+
+
+def test_series_timeline_treats_null_position_as_zero(seeded_db):
+    """The pill treats a NULL position as 0 (a cover before the #212
+    backfill), so the revisions fold must too, or a SUPERSEDED pill
+    sits over an empty fold."""
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+
+        def _cover(msgid, version, position, day):
+            return Article(
+                message_id=msgid,
+                subject=f"[PATCH {version} 0/2] title",
+                author="Author <a@example.com>",
+                date=datetime(2024, 6, day, tzinfo=UTC),
+                subject_normalized=f"[patch {version} 0/2] title",
+                patch_series_key="nullposkey",
+                patch_series_version=version,
+                patch_series_position=position,
+                lists=[
+                    ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="dd" * 20)
+                ],
+            )
+
+        v1 = _cover("nullpos-v1@x", "v1", None, 1)
+        v2 = _cover("nullpos-v2@x", "v2", 0, 15)
+        s.add_all([v1, v2])
+        s.commit()
+        state = patch_state_for_article(
+            s,
+            v1,
+            thread_dates=[v1.date],
+            subsystem_ids=[],
+            inbox_name="alpha",
+            state_key="t",
+            force=True,
+        )
+    assert [e.version for e in state.series] == ["v1", "v2"]
