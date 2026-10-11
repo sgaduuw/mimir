@@ -29,7 +29,8 @@ def admin_canonicals_group() -> None:
     `articles.canonical_inbox_id` from the original To/Cc headers,
     emitting <link rel="canonical"> targets for cross-posts. Use after
     initial deployment of canonical resolution, or after editing an
-    `Inbox.list_address` to repoint canonicals.
+    `Inbox.list_address` to repoint canonicals (with `--reprocess
+    --restart`, so an open run does not resume below its old cursor).
     """
 
 
@@ -51,8 +52,8 @@ def admin_canonicals_group() -> None:
     "--reprocess",
     is_flag=True,
     help="Re-examine articles whose canonical_inbox_id is already set "
-    "(use after editing list_address or to clean up the early-pass "
-    "bootstrap region).",
+    "(use with --restart after editing list_address, or to clean up "
+    "the early-pass bootstrap region).",
 )
 @click.option(
     "--restart",

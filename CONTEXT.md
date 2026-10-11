@@ -900,9 +900,10 @@ the oldest, 17.7M ids, October 2026).
 - **Finished, unfinished, restarted.** Running out of rows marks the
   run finished, and a finished run is never resumed. Reaching
   `--limit` leaves it unfinished, so the next session continues it.
-  Only a session's first RPC (`start` set) may start a run, so a
-  session whose run another session finished ends instead of walking
-  a new one. `--restart` deletes the unfinished run (deleted, not
+  Only a session's first RPC (`start` set) may start a run. A later
+  RPC joins whatever run is unfinished for the key, and ends the
+  session only when there is none, so a session never starts a new
+  full walk on its own after another session finishes its run. `--restart` deletes the unfinished run (deleted, not
   marked finished, so `finished_at` always means the walk reached
   the oldest article). Run ids use AUTOINCREMENT, so a chunk of a
   deleted run still in flight cannot write to its replacement.
