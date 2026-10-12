@@ -428,6 +428,29 @@ def resolve_tree_path(tree: TreeConfig) -> Path:
     return PROJECT_ROOT / tree.path
 
 
+def _follow_configured_url(tree: TreeConfig, tree_path: Path) -> None:
+    """Point an existing mirror at the URL in config. A mirror fetches
+    from the remote recorded at clone time, so without this a changed
+    `url` is silently ignored on every host that already has the mirror
+    (#713). Only rewrites the remote when it differs."""
+    current = subprocess.run(
+        ["git", "-C", str(tree_path), "config", "--get", "remote.origin.url"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if current != tree.url:
+        logger.warning(
+            "mainline: %s fetched from %s; config says %s, switching",
+            tree_path,
+            current or "(no remote)",
+            tree.url,
+        )
+        subprocess.run(
+            ["git", "-C", str(tree_path), "remote", "set-url", "origin", tree.url],
+            check=True,
+        )
+
+
 def _ensure_tree(
     tree: TreeConfig,
     *,
@@ -463,6 +486,7 @@ def _ensure_tree(
         return tree_path
 
     if not skip_fetch:
+        _follow_configured_url(tree, tree_path)
         logger.debug("mainline: fetching %s", tree_path)
         subprocess.run(
             ["git", "-C", str(tree_path), "fetch", "--quiet", "--prune"],
