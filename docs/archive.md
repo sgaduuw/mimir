@@ -180,7 +180,10 @@ uv run mimir backfill-thread-roots --verify
 
 The first three accept `--reprocess` to revisit already processed articles.
 File and trailer extraction read message bodies from the mirrors; patch-series
-extraction uses indexed headers. Use `--help` for per-command options.
+extraction uses indexed headers. `backfill-patch-series` also rewrites a
+stored subject that still carries header folding (a line break), in every
+mode, and reports how many as `subjects_unfolded`. Use `--help` for
+per-command options.
 
 These three, and `admin canonicals backfill`, resume an interrupted run. The
 broker stores each run's position, so after a deploy, a dropped session or a

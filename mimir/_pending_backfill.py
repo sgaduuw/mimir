@@ -98,6 +98,9 @@ class _PatchSeriesPending:
     patch_series_key: str | None
     patch_series_version: str | None
     patch_series_position: int | None
+    # The unfolded subject, when the stored one was folded (#710);
+    # None leaves the subject untouched.
+    subject: str | None = None
 
 
 @dataclass
@@ -240,6 +243,7 @@ def _submit_patch_series_batch(
                     patch_series_key=p.patch_series_key,
                     patch_series_version=p.patch_series_version,
                     patch_series_position=p.patch_series_position,
+                    **({"subject": p.subject} if p.subject is not None else {}),
                 )
             )
 
