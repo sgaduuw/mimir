@@ -11,6 +11,16 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Lifecycle pills no longer show "pending" for patches that are only in
+  linux-next while its daily rebuild runs. The rebuild used to delete all of
+  linux-next's rows before walking it again, so readers saw an almost empty
+  tree for the length of the walk. It now applies the difference in one
+  transaction at the end: readers see the previous set or the new one, a walk
+  that fails part-way changes nothing, and an unchanged tree writes no rows
+  (#671).
+
 ## [3.16.0] - 2026-10-12
 
 ### Changed

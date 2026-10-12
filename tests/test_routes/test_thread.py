@@ -763,8 +763,8 @@ def _mutate_second_landing(seeded):
 
 
 def _mutate_relanded_in_rebasing_tree(seeded):
-    """A rebasing tree (`linux-next`, `rebases=True`) DELETEs its rows
-    and re-walks daily, so the same message reappears under a new
+    """A rebasing tree (`linux-next`, `rebases=True`) is re-walked daily
+    and its rows replaced, so the same message reappears under a new
     commit sha with a new committer date at UNCHANGED count. This is
     the case that moves only the max, and the only one that pins it."""
     from datetime import datetime
