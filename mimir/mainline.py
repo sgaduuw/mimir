@@ -401,6 +401,20 @@ class UpdateMainlineResult(BaseModel):
     trees: dict[str, TreeWalkResult] = Field(default_factory=dict)
 
 
+def resolve_tree_path(tree: TreeConfig) -> Path:
+    """A tree's mirror path, made absolute against the project root.
+    Shared by the walker and the readers of a mirror (the merge-window
+    page reads Linus's tags), so both open the same directory."""
+    if tree.path.is_absolute():
+        return tree.path
+    # Late import: `PROJECT_ROOT` is a config-module constant but
+    # importing it at module load creates a circular dependency with
+    # the `Settings` instance.
+    from mimir.config import PROJECT_ROOT
+
+    return PROJECT_ROOT / tree.path
+
+
 def _ensure_tree(
     tree: TreeConfig,
     *,
@@ -421,14 +435,7 @@ def _ensure_tree(
     option for the operator who wants to re-run MAINTAINERS / Link-
     trailer passes against current HEAD without a network round-trip.
     """
-    tree_path = tree.path
-    if not tree_path.is_absolute():
-        # Late import: `PROJECT_ROOT` is a config-module constant but
-        # importing it at module load creates a circular dependency with
-        # the `Settings` instance.
-        from mimir.config import PROJECT_ROOT
-
-        tree_path = PROJECT_ROOT / tree_path
+    tree_path = resolve_tree_path(tree)
 
     if not tree_path.exists():
         tree_path.parent.mkdir(parents=True, exist_ok=True)

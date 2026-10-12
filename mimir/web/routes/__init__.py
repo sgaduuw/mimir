@@ -12,6 +12,7 @@ from mimir.web.routes import (
     feeds,  # noqa: F401
     health,  # noqa: F401
     maintainers,  # noqa: F401
+    merge_window,  # noqa: F401
     message_id,  # noqa: F401
     search,  # noqa: F401
     series_diff,  # noqa: F401
