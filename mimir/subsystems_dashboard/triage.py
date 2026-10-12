@@ -17,12 +17,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.config import settings
 from mimir.models import (
+    Article,
     ArticleTrailer,
     Inbox,
     Subsystem,
@@ -50,6 +51,11 @@ class PatchAttention(BaseModel):
     date: datetime | None
     inbox_name: str
     trailer_summary: str = ""
+    # The posting's other patches (same series key and version, other
+    # positions), shown as "+N more in this series". A posting is one
+    # row, not one per patch, so a long series cannot fill the list
+    # (#686).
+    series_more: int = 0
 
 
 cache.register("PatchAttention", PatchAttention)
@@ -145,6 +151,14 @@ def _trailer_summary(
     return out
 
 
+def _page_size(limit: int) -> int:
+    """Candidates fetched per round trip. Over 2x the list size, so
+    the maintainer-Ack drop and the per-series fold (#686) usually
+    fill the list from one page; `_run_triage` fetches more pages
+    when they do not."""
+    return max(limit * 2, limit + 5)
+
+
 def _candidate_query_needs_attention(
     inbox: Inbox,
     subsystem: Subsystem,
@@ -156,7 +170,7 @@ def _candidate_query_needs_attention(
     subsystem has no matchable paths.
 
     Shape: walk `ix_articles_date` ASC over a bounded date range,
-    predicate-test per article, stop at `overfetch` matches.
+    predicate-test per article, stop at a page of matches.
     EXISTS-shaped path filter so the planner doesn't materialise
     the full subsystem's article_id set before LIMIT. The
     bounded date range (`min_date <= a.date <= cutoff_date`) is
@@ -168,18 +182,15 @@ def _candidate_query_needs_attention(
     if path_filter is None:
         return None
     path_predicate, path_params = path_filter
-    # Over-fetch by 2x so the maintainer-Ack post-filter can drop
-    # some without starving the rendered list. A constant 2x is
-    # cheap (LIMIT 20 instead of LIMIT 10) and beats a second SQL
-    # round-trip to backfill.
-    overfetch = max(limit * 2, limit + 5)
     review_roles = {f"review_role_{i}": r for i, r in enumerate(REVIEW_TRAILER_ROLES)}
     review_role_params = ", ".join(f":{name}" for name in review_roles)
     sql = f"""
         SELECT a.id AS article_id, a.message_id, a.subject,
-               a.author, a.date AS art_date
+               a.author, a.date AS art_date,
+               a.patch_series_key, a.patch_series_version
         FROM articles a
         WHERE a.date BETWEEN :min_date AND :cutoff_date
+          AND NOT (a.date = :min_date AND a.id <= :after_id)
           AND EXISTS (
               SELECT 1 FROM article_lists al
               WHERE al.article_id = a.id
@@ -199,8 +210,8 @@ def _candidate_query_needs_attention(
               SELECT 1 FROM articles later
               WHERE {newer_revision_sql("a", "later")}
           )
-        ORDER BY a.date ASC
-        LIMIT :overfetch
+        ORDER BY a.date ASC, a.id ASC
+        LIMIT :page
     """
     return sql, {
         "inbox_id": inbox.id,
@@ -209,7 +220,8 @@ def _candidate_query_needs_attention(
         - timedelta(
             days=settings.subsystem_triage_max_age_days,
         ),
-        "overfetch": overfetch,
+        "page": _page_size(limit),
+        "after_id": 0,
         **review_roles,
         **path_params,
     }
@@ -222,7 +234,8 @@ def _candidate_query_quiet(
     limit: int,
 ) -> tuple[str, dict] | None:
     """SQL for the quiet list. Patches with no engagement: no
-    trailers AND no replies. Returns `(sql, params)` or `None`.
+    trailers AND no replies, and no newer revision (the pill's
+    superseded rule, #688). Returns `(sql, params)` or `None`.
     Same walk-date-ASC + per-row EXISTS shape as
     `_candidate_query_needs_attention`."""
     path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="qt")
@@ -231,9 +244,11 @@ def _candidate_query_quiet(
     path_predicate, path_params = path_filter
     sql = f"""
         SELECT a.id AS article_id, a.message_id, a.subject,
-               a.author, a.date AS art_date
+               a.author, a.date AS art_date,
+               a.patch_series_key, a.patch_series_version
         FROM articles a
         WHERE a.date BETWEEN :min_date AND :cutoff_date
+          AND NOT (a.date = :min_date AND a.id <= :after_id)
           AND EXISTS (
               SELECT 1 FROM article_lists al
               WHERE al.article_id = a.id
@@ -248,8 +263,12 @@ def _candidate_query_quiet(
               SELECT 1 FROM articles child
               WHERE child.thread_parent = a.message_id
           )
-        ORDER BY a.date ASC
-        LIMIT :limit
+          AND NOT EXISTS (
+              SELECT 1 FROM articles later
+              WHERE {newer_revision_sql("a", "later")}
+          )
+        ORDER BY a.date ASC, a.id ASC
+        LIMIT :page
     """
     return sql, {
         "inbox_id": inbox.id,
@@ -258,7 +277,8 @@ def _candidate_query_quiet(
         - timedelta(
             days=settings.subsystem_triage_max_age_days,
         ),
-        "limit": limit,
+        "page": _page_size(limit),
+        "after_id": 0,
         **path_params,
     }
 
@@ -278,33 +298,40 @@ def _run_triage(
     include_trailer_summary: bool,
 ) -> list[PatchAttention]:
     """Shared post-processing across the two triage queries: run
-    the candidate SELECT, optionally drop maintainer-Acked rows,
-    optionally annotate with trailer summary, build PatchAttention
-    rows truncated to `limit`."""
+    the candidate SELECT a page at a time, optionally drop
+    maintainer-Acked rows, optionally annotate with trailer summary,
+    and fold every patch of one posting (series key and version) into
+    its oldest row (#686), until `limit` rows are built or the
+    candidates run out."""
     built = build_query(inbox, subsystem, cutoff_date, limit)
     if built is None:
         return []
     sql, params = built
-    rows = session.execute(text(sql), params).all()
-    if not rows:
-        return []
-    candidate_ids = [r.article_id for r in rows]
-
-    drop_ids: set[int] = set()
-    if drop_maintainer_acked:
-        drop_ids = _filter_maintainer_acked(session, candidate_ids)
-
-    summaries: dict[int, str] = {}
-    if include_trailer_summary:
-        kept_ids = [aid for aid in candidate_ids if aid not in drop_ids]
-        summaries = _trailer_summary(session, kept_ids)
-
     out: list[PatchAttention] = []
-    for r in rows:
-        if r.article_id in drop_ids:
-            continue
-        out.append(
-            PatchAttention(
+    by_series: dict[tuple[str, str | None], PatchAttention] = {}
+    while True:
+        rows = session.execute(text(sql), params).all()
+        candidate_ids = [r.article_id for r in rows]
+        drop_ids: set[int] = set()
+        if drop_maintainer_acked:
+            drop_ids = _filter_maintainer_acked(session, candidate_ids)
+        summaries: dict[int, str] = {}
+        if include_trailer_summary:
+            kept_ids = [aid for aid in candidate_ids if aid not in drop_ids]
+            summaries = _trailer_summary(session, kept_ids)
+        for r in rows:
+            if r.article_id in drop_ids:
+                continue
+            series = (
+                (r.patch_series_key, r.patch_series_version)
+                if r.patch_series_key
+                else None
+            )
+            if series in by_series:
+                continue
+            if len(out) >= limit:
+                continue
+            row = PatchAttention(
                 article_id=r.article_id,
                 message_id=r.message_id,
                 subject=r.subject,
@@ -313,9 +340,36 @@ def _run_triage(
                 inbox_name=inbox.name,
                 trailer_summary=summaries.get(r.article_id, ""),
             )
-        )
-        if len(out) >= limit:
+            out.append(row)
+            if series is not None:
+                by_series[series] = row
+        if len(out) >= limit or len(rows) < params["page"]:
             break
+        # Keyset, not OFFSET: the next page starts in the date index
+        # where this one ended, so k pages cost k walks, not k^2/2.
+        params = {
+            **params,
+            "min_date": rows[-1].art_date,
+            "after_id": rows[-1].article_id,
+        }
+    # Counted, not tallied while paging: the list can fill before a
+    # posting's later patches are fetched. Every other patch of the
+    # posting counts, listed or not. Positions, not rows: the cover
+    # (position 0) is not a patch, and a `RESEND` of the same version
+    # stores every patch twice.
+    if by_series:
+        posting = tuple_(Article.patch_series_key, Article.patch_series_version)
+        counts = session.execute(
+            select(
+                Article.patch_series_key,
+                Article.patch_series_version,
+                func.count(Article.patch_series_position.distinct()),
+            )
+            .where(posting.in_(list(by_series)), Article.patch_series_position > 0)
+            .group_by(Article.patch_series_key, Article.patch_series_version)
+        ).all()
+        for key, version, n in counts:
+            by_series[(key, version)].series_more = max(n - 1, 0)
     return out
 
 
