@@ -102,9 +102,13 @@ def _curated_default_trees() -> dict[str, TreeConfig]:
             path=Path("Mainline/tip.git"),
             walk_every_seconds=3600,
         ),
+        # The tree linux-next pulls (`Next/Trees`: pci/pci.git#next). The
+        # old helgaas/pci.git HEAD is `main`, which holds nothing beyond
+        # Linus, so it produced no rows at all (#713).
         "pci": TreeConfig(
-            url="https://git.kernel.org/pub/scm/linux/kernel/git/helgaas/pci.git",
+            url="https://git.kernel.org/pub/scm/linux/kernel/git/pci/pci.git",
             path=Path("Mainline/pci.git"),
+            branch="next",
             walk_every_seconds=3600,
         ),
         "mm": TreeConfig(
