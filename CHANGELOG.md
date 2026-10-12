@@ -23,14 +23,18 @@ changes, not internal refactors. Categories: **Added**,
 ### Added
 
 - `/merge-window`: the patches in linux-next that Linus's tree does not have
-  yet, grouped by mailing list and linked to their threads, with the tag
-  Linus's tree is at. A series shows once, by its cover letter. Only commits
-  with a `Link:` trailer are counted; queued messages not archived here are
-  counted, not listed. Linked from the front page and listed in
-  `/meta-sitemap.xml` (#672). It says whether the merge window is open (after
-  a release tag) or when it opens (at an rc tag), folds each list after 20
-  rows behind "Show all", and says how many commits in linux-next link their
-  mailing-list patch, from the walk that built the list (#703). That count
+  yet, linked to their threads, with the tag Linus's tree is at. Grouped by
+  kernel subsystem: each patch appears once, under the most specific
+  MAINTAINERS subsystem it touches, with its list and the other subsystems it
+  touches on the row; subsystems with 25 or more queued patches get their own
+  section (with a stable anchor), the rest are under "Smaller subsystems". A
+  series shows once, by its cover letter. Only commits with a `Link:` trailer
+  are counted; queued messages not archived here are counted, not listed.
+  Linked from the front page and listed in `/meta-sitemap.xml` (#672). It
+  says whether the merge window is open (after a release tag) or when it
+  opens (at an rc tag), folds each section after 20 rows behind "Show all",
+  and says how many commits in linux-next link their mailing-list patch, from
+  the walk that built the list (#703). That count
   is stored on `mainline_state` (migration at broker startup, two new nullable
   columns) and appears after the next linux-next walk.
 
