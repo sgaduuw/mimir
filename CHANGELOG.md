@@ -11,6 +11,54 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.17.0] - 2026-10-12
+
+### Added
+
+- `/merge-window`: the patches in linux-next that Linus's tree does not have
+  yet, linked to their threads, with the tag Linus's tree is at. Grouped by
+  kernel subsystem: each patch appears once, under the most specific
+  MAINTAINERS subsystem it touches, with its list and the other subsystems it
+  touches on the row; subsystems with 25 or more queued patches get their own
+  section (with a stable anchor), the rest are under "Smaller subsystems". A
+  series shows once, by its cover letter. Only commits with a `Link:` trailer
+  are counted; queued messages not archived here are counted, not listed.
+  Linked from the front page and listed in `/meta-sitemap.xml` (#672). It
+  says whether the merge window is open (after a release tag) or when it
+  opens (at an rc tag), folds each section after 20 rows behind "Show all",
+  and says how many commits in linux-next link their mailing-list patch, from
+  the walk that built the list (#703). That count is stored on
+  `mainline_state` (migration at broker startup, two new nullable columns)
+  and appears after the next linux-next walk.
+
+### Changed
+
+- Resolving a patch's subsystems (the subsystem line on every patch's message
+  and thread page) indexes the MAINTAINERS rules by directory and keeps the
+  index per process until the rules change, instead of decoding and walking
+  all ~10k rules per call. Same results; locally about 65 times faster on a
+  production-sized rule set (median 23 ms to 0.35 ms), and production measured
+  75 ms per patch before (#705).
+
+### Fixed
+
+- The curated `pci` tree now follows what linux-next pulls,
+  `pci/pci.git` branch `next`. It used `helgaas/pci.git` at HEAD (`main`),
+  which holds nothing beyond Linus's tree, so it never produced a row and
+  patches queued in pci never showed "also in pci" (#713). Rows fill in at the
+  next pci walk after deploy.
+- Changing a tree's URL in config now reaches a mirror that already exists:
+  before fetching, mimir points the mirror at the configured URL (logged as a
+  warning). Before, the mirror kept fetching from the URL it was cloned from
+  (#713).
+- Lifecycle pills no longer show "pending" for patches that are only in
+  linux-next while its daily rebuild runs. The rebuild used to delete all of
+  linux-next's rows before walking it again, so readers saw an almost empty
+  tree for the length of the walk. It now applies the difference in one
+  transaction at the end: readers see the previous set or the new one, a walk
+  that fails part-way changes nothing, and an unchanged tree writes no rows
+  (#671).
+
 ## [3.16.0] - 2026-10-12
 
 ### Changed

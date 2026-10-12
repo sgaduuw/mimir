@@ -398,3 +398,227 @@ def test_recent_patches_touching_uses_date_index_no_full_scan(seeded_db):
 # `recent_articles_in_subsystem` integration, slice 1 of the
 # per-subsystem dashboard. Filters by inbox + by the subsystem's
 # include/exclude globs.
+
+
+# Indexed matching (#705): same answers as the brute-force rule walk,
+# without decoding and walking ~10k rules per call.
+
+
+def _reference(rules, paths):
+    """The pre-#705 algorithm, kept as the oracle: a subsystem matches
+    when some path matches one of its F: rules and none of its X:."""
+    from collections import defaultdict
+
+    from mimir.subsystems import path_matches_glob
+
+    inc, exc = defaultdict(list), defaultdict(list)
+    for name, glob, is_exclude in rules:
+        (exc if is_exclude else inc)[name].append(glob)
+    return sorted(
+        name
+        for name, globs in inc.items()
+        if any(
+            any(path_matches_glob(p, g) for g in globs)
+            and not any(path_matches_glob(p, x) for x in exc.get(name, ()))
+            for p in paths
+        )
+    )
+
+
+_TRICKY_RULES = [
+    ("THE REST", "*", False),
+    ("THE REST", "*/", False),
+    ("NETWORKING [GENERAL]", "net/", False),
+    ("NETWORKING [GENERAL]", "include/net/", False),
+    ("NETWORKING DRIVERS", "drivers/net/", False),
+    ("NETWORKING DRIVERS", "drivers/net/wireless/", True),
+    ("MLX5", "drivers/net/ethernet/mellanox/mlx5/core/", False),
+    ("WIRELESS", "drivers/net/wireless/", False),
+    ("DT BINDINGS", "Documentation/devicetree/bindings/*", False),
+    ("WILDCARD FIRST", "*/qcom/*", False),
+    ("EXACT FILE", "MAINTAINERS", False),
+    ("CHARCLASS", "arch/[ax]86/kernel/", False),
+]
+_TRICKY_PATHS = [
+    ["drivers/net/ethernet/mellanox/mlx5/core/en.c", "include/net/x.h"],
+    ["drivers/net/wireless/ath/a.c"],
+    ["net/core/dev.c"],
+    ["Documentation/devicetree/bindings/net/x.yaml"],
+    ["arch/arm64/boot/dts/qcom/x.dts"],
+    ["MAINTAINERS"],
+    ["drivers/net"],
+    ["arch/x86/kernel/a.c", "scripts/checkpatch.pl"],
+    ["netfilter/foo.c"],
+]
+
+
+def _seed_rules(s, rules):
+    by_name = {}
+    for name, glob, is_exclude in rules:
+        by_name.setdefault(name, ([], []))[1 if is_exclude else 0].append(glob)
+    for name, (files, excludes) in by_name.items():
+        _add_subsystem(s, name, "Maintained", files=files, excludes=excludes)
+
+
+def test_indexed_match_agrees_with_the_rule_walk_on_tricky_shapes(seeded_db):
+    with seeded_db() as s:
+        _seed_rules(s, _TRICKY_RULES)
+        ids = [
+            _add_patch_article(s, f"tricky{n}@x", paths)
+            for n, paths in enumerate(_TRICKY_PATHS)
+        ]
+        s.commit()
+        got = [sorted(h.name for h in subsystems_for_article(s, i)) for i in ids]
+    want = [_reference(_TRICKY_RULES, paths) for paths in _TRICKY_PATHS]
+    assert any(len(w) > 2 for w in want)  # precondition: real overlap exercised
+    assert got == want
+
+
+def test_indexed_match_agrees_with_the_rule_walk_on_random_rules(seeded_db):
+    """Randomised: 2,000 rule-and-path combinations from a small path
+    vocabulary, so prefixes, wildcards and exclusions collide often."""
+    import random
+
+    rng = random.Random(705)
+    parts = ["drivers", "net", "gpu", "qcom", "x", "core", "include"]
+
+    def path(depth):
+        return "/".join(rng.choice(parts) for _ in range(depth))
+
+    rules = []
+    for n in range(60):
+        name = f"SUB {n}"
+        for _ in range(rng.randint(1, 4)):
+            shape = rng.choice(["dir", "file", "star", "lead", "q"])
+            p = path(rng.randint(1, 3))
+            glob = {
+                "dir": p + "/",
+                "file": p + ".c",
+                "star": p + "/*",
+                "lead": "*/" + p.split("/")[-1] + "*",
+                "q": p + "?.c",
+            }[shape]
+            rules.append((name, glob, rng.random() < 0.15))
+    paths = [
+        [path(rng.randint(1, 4)) + rng.choice(["", ".c", "x.c"])] for _ in range(200)
+    ]
+    with seeded_db() as s:
+        _seed_rules(s, rules)
+        ids = [_add_patch_article(s, f"rand{n}@x", p) for n, p in enumerate(paths)]
+        s.commit()
+        got = [sorted(h.name for h in subsystems_for_article(s, i)) for i in ids]
+    want = [_reference(rules, p) for p in paths]
+    assert sum(1 for w in want if w) > 50  # precondition: most paths match something
+    assert got == want
+
+
+def test_rules_index_is_built_once_per_rules_version(seeded_db, monkeypatch):
+    """The index lives per process, keyed by the rules version
+    (`mainline_state.last_commit_sha` for linus, which every MAINTAINERS
+    rebuild changes) and valid only while the cached snapshot is. A new
+    version, an invalidated snapshot, or no version rebuilds it."""
+    from mimir import subsystems
+    from mimir.models import MainlineState
+
+    builds = []
+    real_build = subsystems._RulesIndex.build
+
+    def counting(snap):
+        builds.append(1)
+        return real_build(snap)
+
+    monkeypatch.setattr(subsystems._RulesIndex, "build", staticmethod(counting))
+    with seeded_db() as s:
+        _add_subsystem(s, "NET", "Maintained", files=["net/"])
+        art = _add_patch_article(s, "idx@x", ["net/a.c"])
+        s.add(MainlineState(tree_name="linus", last_commit_sha="a" * 40))
+        s.commit()
+
+        for _ in range(3):
+            subsystems_for_article(s, art)
+        assert len(builds) == 1
+
+        s.get(MainlineState, "linus").last_commit_sha = "b" * 40
+        s.commit()
+        subsystems_for_article(s, art)
+        assert len(builds) == 2
+
+        subsystems.invalidate_rules_snapshot()
+        subsystems_for_article(s, art)
+        assert len(builds) == 3
+
+        s.get(MainlineState, "linus").last_commit_sha = None
+        s.commit()
+        subsystems_for_article(s, art)
+        subsystems_for_article(s, art)
+        assert len(builds) == 5
+
+
+def _names(s, art):
+    return sorted(h.name for h in subsystems_for_article(s, art))
+
+
+def test_index_does_not_outlive_a_reload_seen_mid_invalidation(seeded_db):
+    """A MAINTAINERS reload commits rules and version together, then
+    drops the cached snapshot in a later write. A reader in between sees
+    the new version with the old snapshot; its index must not survive
+    once the reload finishes (found in the 3.17.0 release review)."""
+    from mimir import subsystems
+    from mimir.models import MainlineState
+
+    with seeded_db() as s:
+        _add_subsystem(s, "NET", "Maintained", files=["net/"])
+        art = _add_patch_article(s, "reload@x", ["drivers/x/a.c"])
+        s.add(MainlineState(tree_name="linus", last_commit_sha="a" * 40))
+        s.commit()
+
+        # This process builds and keeps its index at version a.
+        assert _names(s, art) == []
+
+        # The reload's first write: new rules and new version, one commit.
+        _add_subsystem(s, "DRV", "Maintained", files=["drivers/x/"])
+        s.get(MainlineState, "linus").last_commit_sha = "b" * 40
+        s.commit()
+
+        # A request here, before the invalidation lands, rebuilds from the
+        # still-cached old snapshot. (Wrong for this one request; the
+        # pre-3.17 code had the same one-request window.)
+        _names(s, art)
+
+        # The reload's second write.
+        subsystems.invalidate_rules_snapshot()
+
+        # Another process (its own empty memo) serves a request and
+        # recomputes the snapshot row from the new rules.
+        mine = getattr(subsystems, "_index", None)
+        subsystems._index = None
+        assert _names(s, art) == ["DRV"]  # precondition: new rules visible
+        subsystems._index = mine
+
+        # The reload is complete. This process must see the new rules too.
+        assert _names(s, art) == ["DRV"]
+
+
+def test_a_stale_snapshot_written_back_after_a_reload_is_not_used(seeded_db):
+    """A slow reader that computed the snapshot from the old rules can
+    write it back after the reload's delete. Its version is older than
+    the rules', so it is recomputed rather than matched against."""
+    from mimir import cache, subsystems
+    from mimir.models import MainlineState
+
+    with seeded_db() as s:
+        _add_subsystem(s, "NET", "Maintained", files=["net/"])
+        art = _add_patch_article(s, "late@x", ["drivers/x/a.c"])
+        s.add(MainlineState(tree_name="linus", last_commit_sha="a" * 40))
+        s.commit()
+        old = subsystems._compute_rules_snapshot()
+        assert old.version == "a" * 40  # precondition
+
+        _add_subsystem(s, "DRV", "Maintained", files=["drivers/x/"])
+        s.get(MainlineState, "linus").last_commit_sha = "b" * 40
+        s.commit()
+        subsystems.invalidate_rules_snapshot()
+        cache.set(subsystems._RULES_CACHE_KEY, old, ttl=3600)  # the late write
+        subsystems._index = None
+
+        assert _names(s, art) == ["DRV"]

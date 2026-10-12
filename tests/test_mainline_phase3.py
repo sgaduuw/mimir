@@ -428,34 +428,19 @@ def test_update_mainline_uses_writer_thread_via_active_context(
         pool.close()
 
 
-def test_walk_commits_rebases_dispatches_delete_then_batches_then_cursor(
-    seeded_db, tmp_path
-):
+def test_walk_commits_rebases_dispatches_rebuild_then_cursor(seeded_db, tmp_path):
     """`rebases=True` trees (linux-next, mm/mm-stable, etc.) must
-    dispatch WriteOps in this exact sequence:
+    dispatch exactly two WriteOps, in this order:
 
-      1. `mainline:<tree>:delete-rebases` (pre-walk DELETE)
-      2. one or more `mainline:<tree>:batch` (per-batch composite inserts)
-      3. `mainline:<tree>:cursor-update` (FINAL WriteOp; advances
-         MainlineState.commits_walked_to_sha or last_walked_at)
+      1. `mainline:<tree>:rebuild`: the whole walk applied by
+         difference in one transaction (#671), so readers never see a
+         partial tree and a failed walk changes nothing;
+      2. `mainline:<tree>:cursor`: the FINAL WriteOp, as for every
+         tree, so a crash before it leaves the cursor where it was.
 
-    CONTEXT.md "Phase 3" pins this shape: the cursor as the FINAL
-    WriteOp inside the per-tree closure preserves resume-from-cursor
-    semantics on a crash, and the DELETE-first invariant means a
-    force-pushed tree's stale rows get cleared before the re-walk
-    inserts new ones.
-
-    A regression that reordered (e.g. ran DELETE inside the batch
-    composite, or submitted cursor-update before the last batch
-    completed) would silently break crash-recovery: a mid-walk crash
-    after the cursor advanced but before the batches committed would
-    leave the cursor at HEAD while half the rows are missing, and
-    the next tick would skip the missing range.
-
-    The existing `test_mid_walk_cursor_failure_leaves_cursor_at_old_position`
-    pins the cursor-failure CONSEQUENCE (cursor stays at old position);
-    this test pins the SUBMIT SEQUENCE itself by recording every
-    `writer.submit()` call's label.
+    This test pins the SUBMIT SEQUENCE by recording every
+    `writer.submit()` call's label; the rows assertion pins that the
+    one rebuild carried the whole walk.
     """
     import sqlalchemy as sa
     from dulwich.objects import Commit, Tree
@@ -485,8 +470,8 @@ def test_walk_commits_rebases_dispatches_delete_then_batches_then_cursor(
         repo.refs[b"HEAD"] = commit.id
         return commit.id
 
-    # 3 Link-trailered commits; batch_size=2 → 2 batches (commits 1+2,
-    # commit 3). Plus 1 delete + 1 cursor → 4 labels total.
+    # 3 Link-trailered commits; batch_size=2 would have given 2 batches
+    # in the old shape. Now: 1 rebuild + 1 cursor, whatever batch_size.
     prev = None
     for i in range(1, 4):
         prev = _build(
@@ -530,34 +515,22 @@ def test_walk_commits_rebases_dispatches_delete_then_batches_then_cursor(
             if label.startswith(f"mainline:{tree_name}:")
         ]
 
-        assert tree_labels, (
-            f"no mainline:{tree_name}:* WriteOps captured; the rebases=True "
-            f"walk should have submitted at least DELETE + batches + cursor"
-        )
-
-        # Strict ordering: DELETE first, then batches, then cursor LAST.
-        assert tree_labels[0] == f"mainline:{tree_name}:delete-rebases", (
-            f"first WriteOp must be the rebases DELETE; got "
-            f"{tree_labels[0]!r}. A regression that ran DELETE inside the "
-            f"per-batch closure would surface here."
-        )
-        assert tree_labels[-1] == f"mainline:{tree_name}:cursor", (
-            f"last WriteOp must be the cursor update (Phase 3 invariant: "
-            f"cursor is the FINAL WriteOp so crash-replay leaves the "
-            f"cursor at its old position). Got {tree_labels[-1]!r}."
-        )
-        # Everything in between must be per-batch composites.
-        middle = tree_labels[1:-1]
-        assert middle, (
-            f"expected one or more :batch WriteOps between DELETE and "
-            f"cursor-update; got middle={middle!r} from full sequence "
-            f"{tree_labels!r}"
-        )
-        for label in middle:
-            assert ":batch" in label, (
-                f"unexpected label {label!r} in the middle of the sequence; "
-                f"expected only :batch entries. Full sequence: {tree_labels!r}"
+        # One rebuild, then the cursor LAST. No pre-walk DELETE and no
+        # per-batch inserts: either exposes a partial tree to readers
+        # between commits (#671).
+        assert tree_labels == [
+            f"mainline:{tree_name}:rebuild",
+            f"mainline:{tree_name}:cursor",
+        ], tree_labels
+        with seeded_db() as session:
+            mids = set(
+                session.execute(
+                    sa.select(MainlineCommit.message_id).where(
+                        MainlineCommit.tree_name == tree_name
+                    )
+                ).scalars()
             )
+        assert mids == {"m1@test", "m2@test", "m3@test"}
 
         # Cleanup so the synthetic tree_name doesn't pollute subsequent tests.
         engine = create_engine(settings.database_url, future=True)

@@ -45,6 +45,7 @@ from mimir.models import (
     ArticleFile,
     ArticleList,
     Inbox,
+    MainlineState,
     Subsystem,
     SubsystemPath,
 )
@@ -143,6 +144,10 @@ class _RulesSnapshot(BaseModel):
 
     rules: list[_SubsystemRule] = []
     subsystems: dict[int, _SubsystemSnap] = {}
+    # The rules version these rows were read at (linus
+    # `last_commit_sha`), read BEFORE the rules so a reload landing in
+    # between can only make it look older than it is, never newer.
+    version: str | None = None
 
 
 cache.register("_SubsystemRule", _SubsystemRule)
@@ -158,6 +163,11 @@ def _compute_rules_snapshot() -> _RulesSnapshot:
     from mimir.extensions import SessionLocal
 
     with SessionLocal() as session:
+        version = session.scalar(
+            select(MainlineState.last_commit_sha).where(
+                MainlineState.tree_name == "linus"
+            )
+        )
         subs = (
             session.execute(
                 select(Subsystem).options(selectinload(Subsystem.maintainers))
@@ -189,7 +199,7 @@ def _compute_rules_snapshot() -> _RulesSnapshot:
         )
         for sub_id, glob, is_exclude in rule_rows
     ]
-    return _RulesSnapshot(rules=rules, subsystems=sub_map)
+    return _RulesSnapshot(rules=rules, subsystems=sub_map, version=version)
 
 
 def _rules_snapshot(session: Session) -> _RulesSnapshot:
@@ -231,6 +241,130 @@ def path_matches_glob(path: str, glob: str) -> bool:
     return path == glob
 
 
+def _fixed_prefix(glob: str) -> str:
+    """The glob up to its first wildcard: what every match starts with."""
+    cut = min((i for i in map(glob.find, "*?[") if i != -1), default=len(glob))
+    return glob[:cut]
+
+
+class _RulesIndex:
+    """The rules snapshot arranged for matching (#705). Each F: rule is
+    filed under the directory part of its fixed prefix (`drivers/net/`
+    for `drivers/net/ethernet/*`), so a file is tested only against the
+    rules filed under its own parent directories, plus `""` (rules that
+    start with a wildcard) and the path itself as a directory (a `dir/`
+    rule also matches `dir`). Matching is still `path_matches_glob`.
+    Measured on production 2026-10-12: 9,540 patches in 0.43 s, against
+    a median 75 ms per patch for the rule walk this replaces."""
+
+    def __init__(self, by_dir, excludes, subsystems):
+        self.by_dir = by_dir
+        self.excludes = excludes
+        self.subsystems = subsystems
+
+    @staticmethod
+    def build(snap: _RulesSnapshot) -> _RulesIndex:
+        by_dir: dict[str, list[tuple[int, str, int]]] = defaultdict(list)
+        excludes: dict[int, list[str]] = defaultdict(list)
+        for rule in snap.rules:
+            if rule.is_exclude:
+                excludes[rule.subsystem_id].append(rule.glob)
+            else:
+                prefix = _fixed_prefix(rule.glob)
+                key = prefix[: prefix.rfind("/") + 1]
+                by_dir[key].append((rule.subsystem_id, rule.glob, len(prefix)))
+        return _RulesIndex(dict(by_dir), dict(excludes), snap.subsystems)
+
+    def match(self, paths: list[str]) -> dict[int, int]:
+        """`{subsystem_id: specificity}` for the subsystems these paths
+        match: F: matches and none of that subsystem's X: rules do, per
+        path, as before. Specificity is the fixed-prefix length of the
+        best matching F: rule (the most specific subsystem wins #703's
+        primary grouping)."""
+        best: dict[int, int] = {}
+        for path in paths:
+            keys = [""]
+            keys += [path[: i + 1] for i, ch in enumerate(path) if ch == "/"]
+            keys.append(path + "/")
+            for key in keys:
+                for sub_id, glob, spec in self.by_dir.get(key, ()):
+                    if spec <= best.get(sub_id, -1):
+                        continue
+                    if path_matches_glob(path, glob) and not any(
+                        path_matches_glob(path, x)
+                        for x in self.excludes.get(sub_id, ())
+                    ):
+                        best[sub_id] = spec
+        return best
+
+
+# Process-local: the index for the current rules, keyed by the rules
+# version. Decoding the cached snapshot alone cost ~16 ms per call
+# (laptop, ~10k rules), so the built index is kept between calls. It is
+# reused only while the version is unchanged AND the snapshot's cache
+# row is alive, so every way the snapshot is dropped (a MAINTAINERS
+# reload, expiry, the test reset) drops the index with it.
+_index: tuple[str, _RulesIndex] | None = None
+
+
+def _rules_index(session: Session) -> _RulesIndex:
+    """The current rules index. `mainline_state.last_commit_sha` for
+    linus is the rules version: written in the same transaction as the
+    rules, and changed by every rebuild including `--force`
+    (`mainline._next_rules_cursor`). With no version (no load yet,
+    tests seeding rules directly) nothing is kept."""
+    global _index
+    version = session.scalar(
+        select(MainlineState.last_commit_sha).where(MainlineState.tree_name == "linus")
+    )
+    memo = _index
+    if (
+        memo is not None
+        and version is not None
+        and memo[0] == version
+        and cache.alive(session, _RULES_CACHE_KEY)
+    ):
+        return memo[1]
+    snap = _rules_snapshot(session)
+    if snap.version != version:
+        # Cached before the current rules (a reload between its commit
+        # and its invalidation, or a late write from a reader): rebuild.
+        snap = cache.get_or_compute(
+            session,
+            _RULES_CACHE_KEY,
+            _RULES_CACHE_TTL_SEC,
+            _compute_rules_snapshot,
+            force=True,
+        )
+    built = _RulesIndex.build(snap)
+    _index = (snap.version, built) if snap.version is not None else None
+    return built
+
+
+# The MAINTAINERS catch-all: matches every path, so it is never a
+# patch's primary subsystem (#703).
+CATCH_ALL_SUBSYSTEM = "THE REST"
+
+
+def ranked_subsystems(session: Session, groups: list[list[str]]) -> list[list[str]]:
+    """For each group of paths, the names of the subsystems it matches,
+    most specific first (the longest fixed prefix of a matching F: rule,
+    then name), without the catch-all. The first is the group's primary
+    subsystem, which `/merge-window` groups by (#703). Same matching as
+    `subsystems_for_article`; batched so the index is looked up once."""
+    index = _rules_index(session)
+    out = []
+    for paths in groups:
+        best = {
+            index.subsystems[sid].name: spec
+            for sid, spec in index.match(paths).items()
+            if sid in index.subsystems
+            and index.subsystems[sid].name != CATCH_ALL_SUBSYSTEM
+        }
+        out.append(sorted(best, key=lambda name: (-best[name], name)))
+    return out
+
+
 class SubsystemHit(BaseModel):
     """Compact summary of one subsystem match. Just the fields the
     patch-page header needs, avoids carrying the entire SQLA row
@@ -253,21 +387,14 @@ def subsystems_for_article(
 ) -> list[SubsystemHit]:
     """Resolve the subsystem(s) for an article via its touched files.
 
-    Walks every (path, subsystem_path) pair: matches by glob, drops
-    subsystems whose `X:` entries also match the path. Returns one
-    `SubsystemHit` per unique matched subsystem, sorted by name for
-    a stable header order.
+    A subsystem matches when a touched file matches one of its `F:`
+    rules and none of its `X:` rules. Returns one `SubsystemHit` per
+    matched subsystem, sorted by name for a stable header order.
 
-    O(paths × globs) Python loop. For ~10 paths × ~10k globs that's
-    100k comparisons, fast in practice. If a future deploy with
-    much-larger MAINTAINERS makes this hot, the next move is a
-    directory-prefix trie over the `F:` rules.
-
-    The rule set itself (every SubsystemPath + cascaded maintainers,
-    ~15k rows on the kernel tree) is fetched once from the
-    cross-process cache, not per call, the data only changes when
-    `update-mainline` reloads MAINTAINERS. The per-article query
-    against `article_files` still hits the DB.
+    Matching goes through `_rules_index` (#705): the rules snapshot
+    from the cross-process cache, arranged by directory and kept per
+    process until the rules change. The per-article query against
+    `article_files` still hits the DB.
     """
     paths = [
         row.path
@@ -278,30 +405,10 @@ def subsystems_for_article(
     if not paths:
         return []
 
-    snap = _rules_snapshot(session)
-    # Group cached rules by subsystem so we can evaluate include AND
-    # exclude together per subsystem.
-    includes_by_sub: dict[int, list[str]] = defaultdict(list)
-    excludes_by_sub: dict[int, list[str]] = defaultdict(list)
-    for rule in snap.rules:
-        if rule.is_exclude:
-            excludes_by_sub[rule.subsystem_id].append(rule.glob)
-        else:
-            includes_by_sub[rule.subsystem_id].append(rule.glob)
-
-    matched_ids: set[int] = set()
-    for sub_id, includes in includes_by_sub.items():
-        excludes = excludes_by_sub.get(sub_id, [])
-        for path in paths:
-            if any(path_matches_glob(path, glob) for glob in includes) and not any(
-                path_matches_glob(path, glob) for glob in excludes
-            ):
-                matched_ids.add(sub_id)
-                break  # one matching path is enough for this subsystem
-
+    index = _rules_index(session)
     hits = []
-    for sub_id in matched_ids:
-        snap_sub = snap.subsystems.get(sub_id)
+    for sub_id in index.match(paths):
+        snap_sub = index.subsystems.get(sub_id)
         if snap_sub is None:
             # Rule references a subsystem that's no longer in the
             # snapshot. Can happen briefly if the cached rules
@@ -438,10 +545,12 @@ def recent_patches_touching(
 
 
 __all__ = [
+    "CATCH_ALL_SUBSYSTEM",
     "SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC",
     "RelatedPatch",
     "SubsystemHit",
     "path_matches_glob",
+    "ranked_subsystems",
     "recent_patches_touching",
     "subsystems_for_article",
 ]

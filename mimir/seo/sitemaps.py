@@ -902,18 +902,40 @@ def sitemap_index_xml(
 def meta_sitemap_xml(
     session: Session, base: str, *, force: bool = False
 ) -> SitemapPayload:
-    """Cached body of `/meta-sitemap.xml`. One-URL urlset covering `/`
-    with the global-max article date as lastmod. The `last_modified`
+    """Cached body of `/meta-sitemap.xml`. Urlset covering `/`, with the
+    global-max article date as lastmod, and `/merge-window`, with the
+    last linux-next walk. The `last_modified`
     field carries the same global-max date so the route's
     body's `<lastmod>` stays truthful. It does not reach an HTTP
     `Last-Modified` header; sitemap routes set no validator at all (see
     the module docstring)."""
 
     def compute() -> SitemapPayload:
+        # Late import: `mimir.merge_window` reaches the web layer's URL
+        # helpers, which import this module's package at load time.
+        from mimir.merge_window import MERGE_WINDOW_PATH, QUEUED_TREE
+        from mimir.models import MainlineState
+
         per_inbox_latest = _per_inbox_latest_date(session)
         global_latest = max((d for d in per_inbox_latest.values() if d), default=None)
+        # `/merge-window` changes when linux-next is walked.
+        queued_walked_at = session.scalar(
+            select(MainlineState.last_walked_at).where(
+                MainlineState.tree_name == QUEUED_TREE
+            )
+        )
         return SitemapPayload(
-            body=_build_sitemap_xml([(base + "/", global_latest)]),
+            body=_build_sitemap_xml(
+                [
+                    (base + "/", global_latest),
+                    (
+                        base + MERGE_WINDOW_PATH,
+                        queued_walked_at.strftime("%Y-%m-%d")
+                        if queued_walked_at
+                        else None,
+                    ),
+                ]
+            ),
             last_modified=global_latest,
         )
 

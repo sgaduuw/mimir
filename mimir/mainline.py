@@ -25,12 +25,13 @@ import subprocess
 from collections.abc import Callable
 from concurrent.futures import Future
 from datetime import UTC, datetime
+from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dulwich.repo import Repo
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, insert, select, tuple_
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -141,9 +142,11 @@ def walk_commits(
     ReadSessionPool; it is used for reads only (MainlineState fetch,
     branch-ref resolution) and must not be committed for writes here.
 
-    When `rebases=True`: a WriteOp deletes the tree's existing rows
-    first, then the full walk re-inserts; INSERT-OR-IGNORE absorbs
-    intra-walk duplicates.
+    When `rebases=True`: the full walk collects the tree's rows in
+    memory, then one WriteOp applies the difference against the live
+    rows (`_submit_mainline_rebuild`). Readers see the previous set
+    until that commit and the new set after it, never a partial tree,
+    and a walk that raises first changes nothing (#671).
 
     When `rebases=False` (default): incremental SHA-cursor walk. The
     cursor on `MainlineState.commits_walked_to_sha` is advanced past
@@ -224,25 +227,10 @@ def walk_commits(
             return WalkResult()
 
         exclude: list[bytes] = []
-        if rebases:
-            # Force-pushed tree: wipe the tree's existing rows so stale
-            # SHAs don't accumulate. The full walk that follows re-inserts
-            # the live history; ON CONFLICT DO NOTHING absorbs any
-            # intra-walk duplicates from merge-graph re-emissions.
-            #
-            # Phase 3: the DELETE becomes a WriteOp dispatched through
-            # the writer, matching every other write in this function.
-            def _delete_existing(conn, tn=tree_name):
-                conn.execute(
-                    delete(MainlineCommit).where(MainlineCommit.tree_name == tn)
-                )
-
-            writer.submit(
-                WriteOp(
-                    label=f"mainline:{tree_name}:delete-rebases", fn=_delete_existing
-                ),
-            ).result(timeout=60)
-        else:
+        # A force-pushed tree is walked in full every time and its rows
+        # are replaced in one step after the walk (see the docstring), so
+        # it has no cursor to resume from.
+        if not rebases:
             # Incremental cursor walk. Skip commits already recorded in
             # the prior run by excluding the last-seen SHA. If the cursor
             # SHA no longer exists (force-push, shallow re-clone), re-walk
@@ -288,6 +276,14 @@ def walk_commits(
             last_walked_sha=None if rebases else state.commits_walked_to_sha
         )
         pending_rows: list[dict] = []
+        # rebases=True: every row of the walk, keyed like the table's PK
+        # within one tree; merge-graph re-emissions collapse here.
+        walked_rows: dict[tuple[str, str], dict] = {}
+        # rebases=True: non-merge commits walked, and how many link a
+        # message, for /merge-window's coverage line (#703). Merges are
+        # left out to match `git rev-list --no-merges`.
+        non_merge_seen = 0
+        non_merge_linked = 0
         # Tracks the SHA of the last commit processed; updated per commit
         # in the main loop and used for the post-walk cursor WriteOp.
         last_seen_sha_for_cursor: str | None = result.last_walked_sha
@@ -319,6 +315,9 @@ def walk_commits(
             last_seen_sha_for_cursor = sha
 
             msgids = extract_message_ids(commit.message)
+            if len(commit.parents) < 2:
+                non_merge_seen += 1
+                non_merge_linked += bool(msgids)
             if msgids:
                 result.linked += 1
                 committed_at = datetime.fromtimestamp(
@@ -326,14 +325,16 @@ def walk_commits(
                     tz=UTC,
                 )
                 for mid in msgids:
-                    pending_rows.append(
-                        {
-                            "commit_sha": sha,
-                            "message_id": mid,
-                            "tree_name": tree_name,
-                            "committed_at": committed_at,
-                        }
-                    )
+                    row = {
+                        "commit_sha": sha,
+                        "message_id": mid,
+                        "tree_name": tree_name,
+                        "committed_at": committed_at,
+                    }
+                    if rebases:
+                        walked_rows.setdefault((sha, mid), row)
+                    else:
+                        pending_rows.append(row)
                     result.rows_inserted += 1
 
             if result.commits_seen % batch_size == 0:
@@ -347,8 +348,15 @@ def walk_commits(
                 )
 
         # Tail flush: submit any remaining rows that didn't fill a complete
-        # batch.
+        # batch. A rebasing tree applies its whole walk in one WriteOp.
         flush()
+        if rebases:
+            _submit_mainline_rebuild(
+                writer,
+                tree_name,
+                walked_rows,
+                walked=(non_merge_seen, non_merge_linked),
+            ).result(timeout=300)
 
         # Cursor update: submit the final WriteOp advancing
         # MainlineState.commits_walked_to_sha to the last commit seen. This
@@ -406,6 +414,43 @@ class UpdateMainlineResult(BaseModel):
     trees: dict[str, TreeWalkResult] = Field(default_factory=dict)
 
 
+def resolve_tree_path(tree: TreeConfig) -> Path:
+    """A tree's mirror path, made absolute against the project root.
+    Shared by the walker and the readers of a mirror (the merge-window
+    page reads Linus's tags), so both open the same directory."""
+    if tree.path.is_absolute():
+        return tree.path
+    # Late import: `PROJECT_ROOT` is a config-module constant but
+    # importing it at module load creates a circular dependency with
+    # the `Settings` instance.
+    from mimir.config import PROJECT_ROOT
+
+    return PROJECT_ROOT / tree.path
+
+
+def _follow_configured_url(tree: TreeConfig, tree_path: Path) -> None:
+    """Point an existing mirror at the URL in config. A mirror fetches
+    from the remote recorded at clone time, so without this a changed
+    `url` is silently ignored on every host that already has the mirror
+    (#713). Only rewrites the remote when it differs."""
+    current = subprocess.run(
+        ["git", "-C", str(tree_path), "config", "--get", "remote.origin.url"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if current != tree.url:
+        logger.warning(
+            "mainline: %s fetched from %s; config says %s, switching",
+            tree_path,
+            current or "(no remote)",
+            tree.url,
+        )
+        subprocess.run(
+            ["git", "-C", str(tree_path), "remote", "set-url", "origin", tree.url],
+            check=True,
+        )
+
+
 def _ensure_tree(
     tree: TreeConfig,
     *,
@@ -426,14 +471,7 @@ def _ensure_tree(
     option for the operator who wants to re-run MAINTAINERS / Link-
     trailer passes against current HEAD without a network round-trip.
     """
-    tree_path = tree.path
-    if not tree_path.is_absolute():
-        # Late import: `PROJECT_ROOT` is a config-module constant but
-        # importing it at module load creates a circular dependency with
-        # the `Settings` instance.
-        from mimir.config import PROJECT_ROOT
-
-        tree_path = PROJECT_ROOT / tree_path
+    tree_path = resolve_tree_path(tree)
 
     if not tree_path.exists():
         tree_path.parent.mkdir(parents=True, exist_ok=True)
@@ -448,6 +486,7 @@ def _ensure_tree(
         return tree_path
 
     if not skip_fetch:
+        _follow_configured_url(tree, tree_path)
         logger.debug("mainline: fetching %s", tree_path)
         subprocess.run(
             ["git", "-C", str(tree_path), "fetch", "--quiet", "--prune"],
@@ -495,6 +534,70 @@ def _submit_mainline_batch(writer, tree_name: str, batch: list[dict]) -> WriteFu
 
     return writer.submit(
         WriteOp(label=f"mainline:{tree_name}:batch", fn=_fn),
+    )
+
+
+def _submit_mainline_rebuild(
+    writer,
+    tree_name: str,
+    rows: dict[tuple[str, str], dict],
+    *,
+    walked: tuple[int, int],
+) -> WriteFuture:
+    """Replace a rebasing tree's rows with `rows` in one WriteOp, by
+    difference: delete the live keys the walk no longer has, insert
+    the walked keys the table lacks. The live set is read inside the
+    WriteOp, on the writer's connection, so the comparison and the
+    change are one transaction. Readers see the old set or the new
+    one, and an unchanged tree writes nothing (#671).
+
+    `walked` is (non-merge commits, of which linked) for the same walk,
+    stored on `mainline_state` in this transaction so the coverage
+    figure and the rows never describe different walks (#703).
+
+    ponytail: one transaction sized by the day's difference; on a
+    first walk or after a `--reference` loss it is the whole tree.
+    Measure the writer hold time before splitting it."""
+
+    def _fn(conn):
+        key = tuple_(MainlineCommit.commit_sha, MainlineCommit.message_id)
+        live = set(
+            conn.execute(
+                select(MainlineCommit.commit_sha, MainlineCommit.message_id).where(
+                    MainlineCommit.tree_name == tree_name
+                )
+            ).tuples()
+        )
+        gone = sorted(live - rows.keys())
+        new = [rows[k] for k in sorted(rows.keys() - live)]
+        # Chunked to stay under SQLite's bound-parameter limit; all in
+        # this one transaction.
+        for chunk in batched(gone, 500):
+            conn.execute(
+                delete(MainlineCommit).where(
+                    MainlineCommit.tree_name == tree_name, key.in_(chunk)
+                )
+            )
+        for chunk in batched(new, 500):
+            conn.execute(
+                sqlite_insert(MainlineCommit)
+                .values(list(chunk))
+                .on_conflict_do_nothing(
+                    index_elements=["commit_sha", "message_id", "tree_name"]
+                )
+            )
+        seen, linked = walked
+        conn.execute(
+            sqlite_insert(MainlineState)
+            .values(tree_name=tree_name, walked_commits=seen, walked_linked=linked)
+            .on_conflict_do_update(
+                index_elements=["tree_name"],
+                set_={"walked_commits": seen, "walked_linked": linked},
+            )
+        )
+
+    return writer.submit(
+        WriteOp(label=f"mainline:{tree_name}:rebuild", fn=_fn),
     )
 
 
@@ -901,7 +1004,7 @@ def update_mainline(
     Iterates `Settings.trees`; per-tree decisions:
       - cadence gate: skip if `now - last_walked_at < walk_every_seconds`
       - linus only: load_maintainers() runs (MAINTAINERS is Linus-only)
-      - walker dispatch: rebases=True triggers DELETE+rewalk
+      - walker dispatch: rebases=True triggers a full walk applied by difference
       - failure isolation: log + record per-tree, continue
 
     Per-tree cadence: skip the tree on ticks that arrive sooner than
