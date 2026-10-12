@@ -84,6 +84,7 @@ All MIME parsing goes through `mimir.parser.parse_message`.
 | [mimir/thread_roots.py](../mimir/thread_roots.py) | Materialized roots and verification |
 | [mimir/subsystems_dashboard](../mimir/subsystems_dashboard) | Subsystem activity, reviewers, and triage |
 | [tests](../tests) | Parser, renderer, routes, ingest, and broker regression checks |
+| [tools](../tools) | Read-only production measurements, run in the tasks container (not in the image) |
 
 ## Contribution workflow
 
