@@ -445,3 +445,29 @@ def test_socket_eof_fails_all_pending(seeded_db):
                 c.close()
             except Exception:
                 pass
+
+
+def test_demux_ends_cleanly_when_the_socket_file_closes_under_it(tmp_path):
+    """`close()` can shut the socket file while the reader thread is in
+    `readline()`, which then raises ValueError ("I/O operation on closed
+    file"), not OSError. The reader must end as it does on OSError:
+    pending requests failed, no exception escaping the thread (#699)."""
+    from concurrent.futures import Future
+
+    class _ClosedFile:
+        def readline(self):
+            raise ValueError("I/O operation on closed file.")
+
+        def close(self):
+            pass
+
+    c = BrokerClient(tmp_path / "unused.sock")
+    c._rfile = _ClosedFile()
+    pending = Future()
+    with c._pending_lock:
+        c._pending[1] = pending
+
+    c._demux_loop()  # must return, not raise
+
+    assert pending.done()
+    assert isinstance(pending.exception(), BrokerUnavailable)
