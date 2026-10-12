@@ -27,6 +27,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- The curated `pci` tree now follows what linux-next pulls,
+  `pci/pci.git` branch `next`. It used `helgaas/pci.git` at HEAD (`main`),
+  which holds nothing beyond Linus's tree, so it never produced a row and
+  patches queued in pci never showed "also in pci" (#713). Rows fill in at the
+  next pci walk after deploy.
+- Changing a tree's URL in config now reaches a mirror that already exists:
+  before fetching, mimir points the mirror at the configured URL (logged as a
+  warning). Before, the mirror kept fetching from the URL it was cloned from
+  (#713).
 - Lifecycle pills no longer show "pending" for patches that are only in
   linux-next while its daily rebuild runs. The rebuild used to delete all of
   linux-next's rows before walking it again, so readers saw an almost empty
