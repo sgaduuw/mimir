@@ -266,6 +266,16 @@ def _set_broker_handler_active(active: bool) -> None:
     _HANDLER_TLS.active = active
 
 
+def alive(session: Session, key: str) -> bool:
+    """Whether `key` holds an unexpired entry, without reading or
+    decoding the value. For process-local derivations of a cached value
+    that must die with it (`subsystems._rules_index`)."""
+    expires_at = session.scalar(
+        select(CacheEntry.expires_at).where(CacheEntry.key == _ns(key))
+    )
+    return expires_at is not None and expires_at >= _now()
+
+
 def get(key: str) -> Any:
     nskey = _ns(key)
     now = _now()
