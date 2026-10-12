@@ -459,6 +459,13 @@ class MainlineState(Base):
         DateTime,
         nullable=True,
     )
+    # A rebasing tree's last rebuild: non-merge commits it walked (for
+    # linux-next, everything beyond Linus's HEAD) and how many of them
+    # link a message. Written in the rebuild's own transaction, so they
+    # always describe the rows /merge-window shows (#703). NULL until
+    # the first rebuild after the migration, and for non-rebasing trees.
+    walked_commits: Mapped[int | None] = mapped_column(nullable=True)
+    walked_linked: Mapped[int | None] = mapped_column(nullable=True)
 
 
 class MainlineCommit(Base):
