@@ -40,7 +40,7 @@ services:
       # fails with SQLITE_FULL once temp space runs out. Set on the
       # broker only since the broker is the sole VACUUM caller.
       SQLITE_TMPDIR: /data/db
-      # Keep the GIL disabled under the 3.14t free-threading build.
+      # Keep the GIL disabled under the 3.15t free-threading build.
       # CPython auto-re-enables the GIL when any C extension without
       # a Py_GIL_DISABLED declaration is imported (SQLAlchemy's
       # cyextension.collections is one such module). Setting PYTHON_GIL=0
@@ -61,7 +61,7 @@ services:
       # proactively under MIMALLOC_PURGE_DELAY (ms). 200ms is more eager
       # than the default 1000ms without thrashing mid-cycle.
       #
-      # CPython 3.14t already uses a vendored mimalloc internally for
+      # CPython 3.15t already uses a vendored mimalloc internally for
       # Python object allocation; this LD_PRELOAD swaps glibc malloc for
       # C-level allocations too (dulwich's C bits, OpenSSL, libuv, etc.).
       # Net: one allocator across the broker's whole address space.
