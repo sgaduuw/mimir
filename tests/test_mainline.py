@@ -453,9 +453,8 @@ def _make_fake_tree_with_branches(tmp_path, branches):
 def test_walk_commits_rebases_true_clears_old_rows_for_tree(
     seeded_db, tmp_path, writer_thread
 ):
-    """rebases=True walker DELETEs existing rows for this tree before
-    walking. Stale SHAs from a prior force-pushed history don't
-    accumulate."""
+    """rebases=True walker drops rows the tree no longer holds. Stale
+    SHAs from a prior force-pushed history don't accumulate."""
     from mimir.models import MainlineCommit
 
     with seeded_db() as s:
@@ -1340,3 +1339,167 @@ def test_the_clone_guard_survives_update_mainlines_per_tree_except(
             skip_maintainers=True,
             skip_commits=True,
         )
+
+
+# Rebuild by difference (#671): a rebasing tree's rows change in one
+# step, so a reader never sees a partial tree.
+
+
+def _tree_keys(seeded_db, tree_name):
+    with seeded_db() as s:
+        return set(
+            s.execute(
+                select(MainlineCommit.commit_sha, MainlineCommit.message_id).where(
+                    MainlineCommit.tree_name == tree_name
+                )
+            ).tuples()
+        )
+
+
+def _seed_rows(seeded_db, tree_name, keys):
+    with seeded_db() as s:
+        for sha, mid in keys:
+            s.add(
+                MainlineCommit(
+                    commit_sha=sha,
+                    message_id=mid,
+                    tree_name=tree_name,
+                    committed_at=datetime(2026, 1, 1, tzinfo=UTC),
+                )
+            )
+        s.commit()
+
+
+def _rebuild_fixture(tmp_path):
+    """A linux-next with three linked commits, and its first commit's
+    sha (kept across the rebuild)."""
+    tree_path = _make_fake_tree(
+        tmp_path,
+        commits=[
+            (f"c{n}\n\nLink: https://lore.kernel.org/r/c{n}@x\n", b"a.c")
+            for n in (1, 2, 3)
+        ],
+    )
+    repo = Repo(str(tree_path))
+    first = next(iter(repo.get_walker(include=[repo.head()], reverse=True)))
+    return tree_path, first.commit.id.decode("ascii")
+
+
+def test_rebuild_reader_sees_only_the_old_or_the_new_set(
+    seeded_db, tmp_path, writer_thread
+):
+    """After every write the walk makes, the tree holds either the
+    complete previous set or the complete new one. The old shape
+    deleted everything first, so readers saw an empty linux-next for
+    the length of the walk and lifecycle pills fell back to pending."""
+    tree_path, c1_sha = _rebuild_fixture(tmp_path)
+    old = {(c1_sha, "c1@x"), ("a" * 40, "gone@x")}
+    _seed_rows(seeded_db, "linux-next", old)
+
+    seen = []
+    real_submit = writer_thread.submit
+
+    def _observing_submit(op):
+        future = real_submit(op)
+        future.result(timeout=60)
+        seen.append(_tree_keys(seeded_db, "linux-next"))
+        return future
+
+    writer_thread.submit = _observing_submit
+    try:
+        with seeded_db() as s:
+            walk_commits(
+                s,
+                tree_path,
+                tree_name="linux-next",
+                rebases=True,
+                batch_size=1,
+                writer=writer_thread,
+            )
+    finally:
+        writer_thread.submit = real_submit
+
+    new = _tree_keys(seeded_db, "linux-next")
+    assert {mid for _, mid in new} == {"c1@x", "c2@x", "c3@x"}  # precondition
+    assert len(seen) >= 2, seen  # precondition: several writes observed
+    assert all(state in (old, new) for state in seen), seen
+
+
+def test_rebuild_that_fails_midway_leaves_rows_unchanged(
+    seeded_db, tmp_path, writer_thread, monkeypatch
+):
+    """A walk that raises before it finishes changes nothing."""
+    from mimir import mainline
+
+    tree_path, c1_sha = _rebuild_fixture(tmp_path)
+    old = {(c1_sha, "c1@x"), ("a" * 40, "gone@x")}
+    _seed_rows(seeded_db, "linux-next", old)
+
+    real_extract = mainline.extract_message_ids
+    calls = []
+
+    def _fail_on_second(message):
+        calls.append(message)
+        if len(calls) == 2:
+            raise RuntimeError("walk interrupted")
+        return real_extract(message)
+
+    monkeypatch.setattr(mainline, "extract_message_ids", _fail_on_second)
+    with seeded_db() as s, pytest.raises(RuntimeError, match="walk interrupted"):
+        walk_commits(
+            s,
+            tree_path,
+            tree_name="linux-next",
+            rebases=True,
+            batch_size=1,
+            writer=writer_thread,
+        )
+    assert len(calls) == 2  # precondition: it failed mid-walk
+    assert _tree_keys(seeded_db, "linux-next") == old
+
+
+def test_rebuild_with_no_changes_writes_no_rows(seeded_db, tmp_path, writer_thread):
+    """Re-walking an unchanged tree inserts and deletes nothing: the
+    daily write volume is the day's changes, not the whole tree."""
+    from sqlalchemy import text
+
+    tree_path, _ = _rebuild_fixture(tmp_path)
+
+    def walk():
+        with seeded_db() as s:
+            walk_commits(
+                s,
+                tree_path,
+                tree_name="linux-next",
+                rebases=True,
+                writer=writer_thread,
+            )
+
+    walk()
+    with seeded_db() as s:
+        s.execute(text("CREATE TABLE IF NOT EXISTS _mc_writes (op TEXT)"))
+        s.execute(
+            text(
+                "CREATE TRIGGER _mc_ins AFTER INSERT ON mainline_commits "
+                "BEGIN INSERT INTO _mc_writes VALUES ('insert'); END"
+            )
+        )
+        s.execute(
+            text(
+                "CREATE TRIGGER _mc_del AFTER DELETE ON mainline_commits "
+                "BEGIN INSERT INTO _mc_writes VALUES ('delete'); END"
+            )
+        )
+        s.commit()
+    try:
+        walk()
+        with seeded_db() as s:
+            writes = s.execute(text("SELECT op FROM _mc_writes")).scalars().all()
+    finally:
+        with seeded_db() as s:
+            s.execute(text("DROP TRIGGER IF EXISTS _mc_ins"))
+            s.execute(text("DROP TRIGGER IF EXISTS _mc_del"))
+            s.execute(text("DROP TABLE IF EXISTS _mc_writes"))
+            s.commit()
+    assert len(_tree_keys(seeded_db, "linux-next")) == 3  # precondition
+    assert writes == []
