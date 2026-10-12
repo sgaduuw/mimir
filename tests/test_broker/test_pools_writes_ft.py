@@ -1,11 +1,11 @@
 """Free-threading-specific race tests for Phase 1 of the broker
-two-pool restructure. Runs under both Python 3.14 (GIL on) and
-3.14t (free-threaded) via the existing CI matrix (the test +
+two-pool restructure. Runs under both Python 3.15 (GIL on) and
+3.15t (free-threaded) via the existing CI matrix (the test +
 test-ft jobs added in 2.9.0).
 
 These tests use threading.Barrier to force contention. Each one
 loops N times to surface intermittent races; if a race exists,
-running under 3.14t will eventually expose it."""
+running free-threaded will eventually expose it."""
 
 import threading
 from concurrent.futures import wait

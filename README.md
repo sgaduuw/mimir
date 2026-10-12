@@ -33,7 +33,7 @@ reads archives; it does not send mail or manage mailing-list subscriptions.
 
 ## Try it locally
 
-You need **Python 3.14**, **uv**, and **Git**. These commands create a new `.env`;
+You need **Python 3.15**, **uv**, and **Git**. These commands create a new `.env`;
 keep your existing configuration if you already have a checkout.
 
 ```sh

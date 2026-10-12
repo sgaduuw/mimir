@@ -1,7 +1,7 @@
 """Phase 2 free-threading stress test: N concurrent warm_inbox
 RPCs against a running broker, verify all complete cleanly with
 the active read pool + writer in the loop. Runs under both
-Python 3.14 (test job) and 3.14t (test-ft job) via the existing
+Python 3.15 (test job) and 3.15t (test-ft job) via the existing
 CI matrix from 2.9.0."""
 
 import threading

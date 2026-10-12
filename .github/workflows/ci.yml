@@ -40,7 +40,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.14'
+          python-version: '3.15'
 
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -71,7 +71,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.14'
+          python-version: '3.15'
 
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -99,8 +99,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Python (free-threaded 3.14t)
-        # `python-version: '3.14t'` is the setup-python spec for the
+      - name: Set up Python (free-threaded 3.15t)
+        # `python-version: '3.15t'` is the setup-python spec for the
         # free-threaded build (PEP 703 / PEP 779). If a future
         # setup-python release drops support for this spec, fall back
         # to installing python-build-standalone directly via curl from
@@ -108,20 +108,20 @@ jobs:
         # (same source the Dockerfile uses; pin via release date).
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.14t'
+          python-version: '3.15t'
 
       - name: Install uv
-        # `python-version: '3.14t'` here is the load-bearing bit for the
+        # `python-version: '3.15t'` here is the load-bearing bit for the
         # free-threaded job: setup-uv exports UV_PYTHON so that uv sync /
         # uv run pick the freethreaded interpreter setup-python just
         # provisioned, rather than uv's own default (which is a regular
-        # GIL-enabled 3.14 build and would silently re-enable the GIL).
+        # GIL-enabled 3.15 build and would silently re-enable the GIL).
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
           prune-cache: true
           cache-dependency-glob: uv.lock
-          python-version: '3.14t'
+          python-version: '3.15t'
 
       - name: Confirm uv selected the free-threaded interpreter
         # Fail-fast before paying for `uv sync`: catches the uv-vs-
