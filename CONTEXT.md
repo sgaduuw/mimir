@@ -1065,6 +1065,22 @@ propagating the error would 500 a successful response; the next
 request just recomputes and tries again. Encoder / programming
 errors are *not* caught, they should still raise loudly.
 
+**One process-local derivation, deliberately (#705).** The subsystem
+rules snapshot (~10k MAINTAINERS rules) is the one cached value too
+expensive to decode per call: about 16 ms per decode on a laptop, paid
+on every patch page's subsystem line, before matching even started.
+`subsystems._rules_index` keeps the matching index built from it in the
+process. It is reused only while two things hold: the rules version
+(`mainline_state.last_commit_sha` for linus, written in the same
+transaction as the rules and changed by every rebuild, `--force`
+included) is unchanged, and the snapshot's cache row is still alive
+(`cache.alive`). So every way the shared snapshot goes away (a reload's
+`invalidate_rules_snapshot`, expiry, the per-test cache reset) also
+drops the index, and no new invalidation hook exists to forget. With no
+rules version (before the first MAINTAINERS load) nothing is kept.
+Reach for this only when a decode measurably dominates; everything else
+stays in the shared table.
+
 ### Landing page (`/`)
 
 The dashboard is a stack of independent surfaces, each driven by its
