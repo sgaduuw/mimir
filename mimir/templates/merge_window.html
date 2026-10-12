@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Linux merge window: patches queued in linux-next | {{ site_name }}{% endblock %}
+{% block meta_description %}Patches in linux-next that are not yet in Linus's tree, grouped by kernel subsystem, each linked to its review thread: what the next Linux merge window is likely to bring.{% endblock %}
+
+{% block content %}
+<h1>Linux merge window <small>patches queued in linux-next</small></h1>
+
+<p>
+  {%- if mw.linus_release and mw.window_open %}<strong>The merge window after {{ mw.linus_release }} is open.</strong> {% elif mw.linus_release %}The next merge window opens when {{ mw.linus_release }} is released. {% endif -%}
+  {%- if mw.linus_tag %}Linus's tree is at <strong>{{ mw.linus_tag }}</strong>. {% endif -%}
+  {%- if mw.queued_walked_at %}linux-next as of {{ mw.queued_walked_at.strftime('%Y-%m-%d %H:%M') }} UTC.{% endif %}
+</p>
+
+{% if mw.queued %}
+<p><small>{{ mw.queued }} patch{{ '' if mw.queued == 1 else 'es' }} in linux-next
+  {{ 'is' if mw.queued == 1 else 'are' }} not in Linus's tree yet, grouped by the most specific
+  MAINTAINERS subsystem each touches.
+  {%- if mw.walked_commits %} {{ mw.walked_linked }} of {{ mw.walked_commits }} commits in linux-next link their mailing-list patch; the rest cannot be shown here.{% endif %}
+  Only commits that link their mailing-list message (a <code>Link:</code> trailer) are counted.
+  {%- if mw.not_archived %} {{ mw.not_archived }} of them link to messages not archived here.{% endif %}
+  A series shows once, by its cover letter.</small></p>
+
+{% if mw.sections or mw.smaller %}
+<nav aria-label="Subsystems"><small>
+  {%- for sec in mw.sections %}<a href="#{{ sec.anchor }}">{{ sec.name }}</a> ({{ sec.patches }}), {% endfor -%}
+  {%- if mw.smaller %}<a href="#smaller-subsystems">smaller subsystems</a> ({{ mw.smaller_patches }}){% endif -%}
+</small></nav>
+{% endif %}
+
+{# Long sections fold after FOLD rows: a shorter page at merge-window
+   scale, with every link still in the HTML for crawlers. #}
+{% set FOLD = 20 %}
+{% macro rows(items) %}
+<ul>
+  {% for row in items %}
+  <li>
+    <a href="{{ row.url }}">{{ row.subject|clean_subject or '(no subject)' }}</a>
+    {%- if row.patches > 1 %} <small>{{ row.patches }} patches</small>{% endif %}
+    <br><small>{{ row.author|display_name }}
+      {%- if row.date %} &middot; {{ row.date.strftime('%Y-%m-%d') }}{% endif %}
+      &middot; {{ row.inbox_name }}
+      {%- if row.trees %} &middot; also in {{ row.trees|join(', ') }}{% endif %}
+      {%- if row.also %} &middot; touches {{ row.also|join(', ') }}{% endif %}</small>
+  </li>
+  {% endfor %}
+</ul>
+{% endmacro %}
+
+{% for sec in mw.sections %}
+<h2 id="{{ sec.anchor }}">{{ sec.name }} <small>{{ sec.patches }} patches</small></h2>
+{{ rows(sec.rows[:FOLD]) }}
+{% if sec.rows|length > FOLD %}
+<details>
+  <summary>Show all {{ sec.rows|length }}</summary>
+  {{ rows(sec.rows[FOLD:]) }}
+</details>
+{% endif %}
+{% endfor %}
+
+{% if mw.smaller %}
+<h2 id="smaller-subsystems">Smaller subsystems <small>{{ mw.smaller|length }} subsystems, {{ mw.smaller_patches }} patch{{ '' if mw.smaller_patches == 1 else 'es' }}</small></h2>
+<p><small>Subsystems with fewer than {{ section_min }} queued patches.</small></p>
+<details>
+  <summary>Show {{ mw.smaller|length }} smaller subsystems</summary>
+  {% for sec in mw.smaller %}
+  <h3 id="{{ sec.anchor }}">{{ sec.name }} <small>{{ sec.patches }}</small></h3>
+  {{ rows(sec.rows) }}
+  {% endfor %}
+</details>
+{% endif %}
+{% else %}
+{# Empty is a real state: right after a merge window closes, or before
+   linux-next has been walked at all. #}
+<p>Nothing is queued: every linked patch in linux-next is already in Linus's tree, or linux-next has not been indexed yet.</p>
+{% endif %}
+{% endblock %}

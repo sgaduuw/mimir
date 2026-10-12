@@ -59,8 +59,8 @@ class TreeConfig(BaseModel):
     # where the canonical pickup signal isn't HEAD.
     branch: str = "HEAD"
     # True for trees that force-push (linux-next, daily). The walker
-    # DELETEs the tree's existing rows then re-walks from scratch,
-    # letting INSERT-OR-IGNORE absorb intra-walk dups.
+    # re-walks the whole tree and replaces its rows by difference in
+    # one transaction, so readers never see a partial tree (#671).
     rebases: bool = False
     # Per-tree cadence: skip the tree on `update_mainline` ticks that
     # arrive sooner than this since the last successful walk.
@@ -102,9 +102,13 @@ def _curated_default_trees() -> dict[str, TreeConfig]:
             path=Path("Mainline/tip.git"),
             walk_every_seconds=3600,
         ),
+        # The tree linux-next pulls (`Next/Trees`: pci/pci.git#next). The
+        # old helgaas/pci.git HEAD is `main`, which holds nothing beyond
+        # Linus, so it produced no rows at all (#713).
         "pci": TreeConfig(
-            url="https://git.kernel.org/pub/scm/linux/kernel/git/helgaas/pci.git",
+            url="https://git.kernel.org/pub/scm/linux/kernel/git/pci/pci.git",
             path=Path("Mainline/pci.git"),
+            branch="next",
             walk_every_seconds=3600,
         ),
         "mm": TreeConfig(

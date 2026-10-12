@@ -453,9 +453,8 @@ def _make_fake_tree_with_branches(tmp_path, branches):
 def test_walk_commits_rebases_true_clears_old_rows_for_tree(
     seeded_db, tmp_path, writer_thread
 ):
-    """rebases=True walker DELETEs existing rows for this tree before
-    walking. Stale SHAs from a prior force-pushed history don't
-    accumulate."""
+    """rebases=True walker drops rows the tree no longer holds. Stale
+    SHAs from a prior force-pushed history don't accumulate."""
     from mimir.models import MainlineCommit
 
     with seeded_db() as s:
@@ -1340,3 +1339,309 @@ def test_the_clone_guard_survives_update_mainlines_per_tree_except(
             skip_maintainers=True,
             skip_commits=True,
         )
+
+
+# Rebuild by difference (#671): a rebasing tree's rows change in one
+# step, so a reader never sees a partial tree.
+
+
+def _tree_keys(seeded_db, tree_name):
+    with seeded_db() as s:
+        return set(
+            s.execute(
+                select(MainlineCommit.commit_sha, MainlineCommit.message_id).where(
+                    MainlineCommit.tree_name == tree_name
+                )
+            ).tuples()
+        )
+
+
+def _seed_rows(seeded_db, tree_name, keys):
+    with seeded_db() as s:
+        for sha, mid in keys:
+            s.add(
+                MainlineCommit(
+                    commit_sha=sha,
+                    message_id=mid,
+                    tree_name=tree_name,
+                    committed_at=datetime(2026, 1, 1, tzinfo=UTC),
+                )
+            )
+        s.commit()
+
+
+def _rebuild_fixture(tmp_path):
+    """A linux-next with three linked commits, and its first commit's
+    sha (kept across the rebuild)."""
+    tree_path = _make_fake_tree(
+        tmp_path,
+        commits=[
+            (f"c{n}\n\nLink: https://lore.kernel.org/r/c{n}@x\n", b"a.c")
+            for n in (1, 2, 3)
+        ],
+    )
+    repo = Repo(str(tree_path))
+    first = next(iter(repo.get_walker(include=[repo.head()], reverse=True)))
+    return tree_path, first.commit.id.decode("ascii")
+
+
+def test_rebuild_reader_sees_only_the_old_or_the_new_set(
+    seeded_db, tmp_path, writer_thread
+):
+    """After every write the walk makes, the tree holds either the
+    complete previous set or the complete new one. The old shape
+    deleted everything first, so readers saw an empty linux-next for
+    the length of the walk and lifecycle pills fell back to pending."""
+    tree_path, c1_sha = _rebuild_fixture(tmp_path)
+    old = {(c1_sha, "c1@x"), ("a" * 40, "gone@x")}
+    _seed_rows(seeded_db, "linux-next", old)
+
+    seen = []
+    real_submit = writer_thread.submit
+
+    def _observing_submit(op):
+        future = real_submit(op)
+        future.result(timeout=60)
+        seen.append(_tree_keys(seeded_db, "linux-next"))
+        return future
+
+    writer_thread.submit = _observing_submit
+    try:
+        with seeded_db() as s:
+            walk_commits(
+                s,
+                tree_path,
+                tree_name="linux-next",
+                rebases=True,
+                batch_size=1,
+                writer=writer_thread,
+            )
+    finally:
+        writer_thread.submit = real_submit
+
+    new = _tree_keys(seeded_db, "linux-next")
+    assert {mid for _, mid in new} == {"c1@x", "c2@x", "c3@x"}  # precondition
+    assert len(seen) >= 2, seen  # precondition: several writes observed
+    assert all(state in (old, new) for state in seen), seen
+
+
+def test_rebuild_that_fails_midway_leaves_rows_unchanged(
+    seeded_db, tmp_path, writer_thread, monkeypatch
+):
+    """A walk that raises before it finishes changes nothing."""
+    from mimir import mainline
+
+    tree_path, c1_sha = _rebuild_fixture(tmp_path)
+    old = {(c1_sha, "c1@x"), ("a" * 40, "gone@x")}
+    _seed_rows(seeded_db, "linux-next", old)
+
+    real_extract = mainline.extract_message_ids
+    calls = []
+
+    def _fail_on_second(message):
+        calls.append(message)
+        if len(calls) == 2:
+            raise RuntimeError("walk interrupted")
+        return real_extract(message)
+
+    monkeypatch.setattr(mainline, "extract_message_ids", _fail_on_second)
+    with seeded_db() as s, pytest.raises(RuntimeError, match="walk interrupted"):
+        walk_commits(
+            s,
+            tree_path,
+            tree_name="linux-next",
+            rebases=True,
+            batch_size=1,
+            writer=writer_thread,
+        )
+    assert len(calls) == 2  # precondition: it failed mid-walk
+    assert _tree_keys(seeded_db, "linux-next") == old
+
+
+def test_rebuild_with_no_changes_writes_no_rows(seeded_db, tmp_path, writer_thread):
+    """Re-walking an unchanged tree inserts and deletes nothing: the
+    daily write volume is the day's changes, not the whole tree."""
+    from sqlalchemy import text
+
+    tree_path, _ = _rebuild_fixture(tmp_path)
+
+    def walk():
+        with seeded_db() as s:
+            walk_commits(
+                s,
+                tree_path,
+                tree_name="linux-next",
+                rebases=True,
+                writer=writer_thread,
+            )
+
+    walk()
+    with seeded_db() as s:
+        s.execute(text("CREATE TABLE IF NOT EXISTS _mc_writes (op TEXT)"))
+        s.execute(
+            text(
+                "CREATE TRIGGER _mc_ins AFTER INSERT ON mainline_commits "
+                "BEGIN INSERT INTO _mc_writes VALUES ('insert'); END"
+            )
+        )
+        s.execute(
+            text(
+                "CREATE TRIGGER _mc_del AFTER DELETE ON mainline_commits "
+                "BEGIN INSERT INTO _mc_writes VALUES ('delete'); END"
+            )
+        )
+        s.commit()
+    try:
+        walk()
+        with seeded_db() as s:
+            writes = s.execute(text("SELECT op FROM _mc_writes")).scalars().all()
+    finally:
+        with seeded_db() as s:
+            s.execute(text("DROP TRIGGER IF EXISTS _mc_ins"))
+            s.execute(text("DROP TRIGGER IF EXISTS _mc_del"))
+            s.execute(text("DROP TABLE IF EXISTS _mc_writes"))
+            s.commit()
+    assert len(_tree_keys(seeded_db, "linux-next")) == 3  # precondition
+    assert writes == []
+
+
+def test_rebuild_records_non_merge_commits_seen_and_linked(
+    seeded_db, tmp_path, writer_thread
+):
+    """The linux-next rebuild stores how many non-merge commits it saw
+    and how many link a message, so /merge-window can say how much of
+    linux-next it can show (#703). Merges count in neither, matching
+    `git rev-list --no-merges`: a merge's trailer names no patch."""
+    from dulwich.objects import Commit, Tree
+
+    repo_path = tmp_path / "next.git"
+    repo = Repo.init_bare(str(repo_path), mkdir=True)
+    tree = Tree()
+    repo.object_store.add_object(tree)
+
+    def commit(msg, parents):
+        c = Commit()
+        c.tree = tree.id
+        c.parents = parents
+        c.author = c.committer = b"T <t@x>"
+        c.author_time = c.commit_time = 1700000000 + len(parents)
+        c.author_timezone = c.commit_timezone = 0
+        c.message = msg
+        repo.object_store.add_object(c)
+        return c.id
+
+    a = commit(b"a\n\nLink: https://lore.kernel.org/r/a@x\n", [])
+    b = commit(b"b, no trailer\n", [a])
+    side = commit(b"side\n\nLink: https://lore.kernel.org/r/side@x\n", [a])
+    merge = commit(b"Merge\n\nLink: https://lore.kernel.org/r/merge@x\n", [b, side])
+    repo.refs[b"HEAD"] = merge
+
+    with seeded_db() as s:
+        walk_commits(
+            s, repo_path, tree_name="linux-next", rebases=True, writer=writer_thread
+        )
+    with seeded_db() as s:
+        state = s.get(MainlineState, "linux-next")
+        assert (state.walked_commits, state.walked_linked) == (3, 2)
+
+
+# A tree's source follows its config (#713).
+
+
+def _bare_repo_with(tmp_path, name, branch, message):
+    """A bare repo whose `branch` holds one commit, as a fetch source."""
+    import subprocess
+
+    work = tmp_path / f"{name}-work"
+    subprocess.run(["git", "init", "-q", "-b", branch, str(work)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(work),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@x",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            message,
+        ],
+        check=True,
+    )
+    bare = tmp_path / f"{name}.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(work), str(bare)], check=True)
+    return bare
+
+
+def _git(path, *args):
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-C", str(path), *args], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def test_ensure_tree_follows_a_changed_url(tmp_path):
+    """Changing a tree's `url` must reach a mirror that already exists.
+    A mirror fetches from the remote recorded at clone time, so the pci
+    fix would otherwise never leave the config on a deployed host."""
+    import subprocess
+
+    from mimir.config import TreeConfig
+    from mimir.mainline import _ensure_tree
+
+    old = _bare_repo_with(tmp_path, "old", "main", "old source")
+    new = _bare_repo_with(tmp_path, "new", "next", "new source")
+    mirror = tmp_path / "pci.git"
+    subprocess.run(
+        ["git", "clone", "-q", "--mirror", str(old), str(mirror)], check=True
+    )
+    assert _git(mirror, "config", "--get", "remote.origin.url") == str(
+        old
+    )  # precondition
+
+    tree = TreeConfig.model_construct(url=str(new), path=mirror, branch="next")
+    _ensure_tree(tree, reference=None, skip_fetch=False)
+
+    assert _git(mirror, "config", "--get", "remote.origin.url") == str(new)
+    assert _git(mirror, "log", "-1", "--format=%s", "refs/heads/next") == "new source"
+
+
+def test_ensure_tree_leaves_a_matching_url_alone(tmp_path, monkeypatch):
+    """An unchanged URL rewrites nothing: no `remote set-url` per tick."""
+    import subprocess
+
+    from mimir import mainline
+    from mimir.config import TreeConfig
+
+    src = _bare_repo_with(tmp_path, "src", "main", "src")
+    mirror = tmp_path / "m.git"
+    subprocess.run(
+        ["git", "clone", "-q", "--mirror", str(src), str(mirror)], check=True
+    )
+    calls = []
+    real_run = subprocess.run
+
+    def spy(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(mainline.subprocess, "run", spy)
+    tree = TreeConfig.model_construct(url=str(src), path=mirror, branch="HEAD")
+    mainline._ensure_tree(tree, reference=None, skip_fetch=False)
+    assert any("fetch" in c for c in calls)  # precondition: the fetch path ran
+    assert not any("set-url" in c for c in calls), calls
+
+
+def test_curated_pci_tree_is_the_one_linux_next_pulls():
+    """linux-next's Next/Trees lists pci as `pci/pci.git#next`; HEAD of
+    the old `helgaas/pci.git` is `main`, which holds nothing beyond
+    Linus, so the tree produced no rows (#713)."""
+    from mimir.config import _curated_default_trees
+
+    pci = _curated_default_trees()["pci"]
+    assert pci.url == "https://git.kernel.org/pub/scm/linux/kernel/git/pci/pci.git"
+    assert pci.branch == "next"

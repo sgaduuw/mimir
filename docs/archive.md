@@ -161,6 +161,8 @@ export TREES__example__WALK_EVERY_SECONDS=3600
 ```
 
 Any explicit tree set replaces the defaults; it does not merge with them.
+Changing a tree's `URL` takes effect at its next walk: an existing mirror is
+pointed at the new URL before it fetches, with a warning in the broker log.
 The legacy `MAINLINE_TREE_URL` and `MAINLINE_TREE_PATH` settings seed only the
 `linus` entry. See [config.py](../mimir/config.py) for the current settings.
 
