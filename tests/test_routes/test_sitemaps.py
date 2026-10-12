@@ -136,8 +136,9 @@ def test_sitemap_index_sub_sitemap_lastmods(client):
 
 
 def test_meta_sitemap_lastmod_is_global_max(client):
-    """`/meta-sitemap.xml` is a one-URL urlset listing `/` with the
-    global max article date as its lastmod."""
+    """`/meta-sitemap.xml` lists `/` with the global max article date as
+    its lastmod, then `/merge-window` (#672), whose lastmod is the last
+    linux-next walk and absent before the first one."""
     import xml.etree.ElementTree as ET
 
     _clear_sitemap_cache()
@@ -147,9 +148,11 @@ def test_meta_sitemap_lastmod_is_global_max(client):
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     urls = root.findall("s:url", ns)
-    assert len(urls) == 1
+    assert len(urls) == 2
     assert urls[0].find("s:loc", ns).text.endswith("/")
     assert urls[0].find("s:lastmod", ns).text == "2024-03-01"
+    assert urls[1].find("s:loc", ns).text.endswith("/merge-window")
+    assert urls[1].find("s:lastmod", ns) is None
 
 
 def test_maintainers_sitemap_xml_lists_seeded_maintainers(client):
