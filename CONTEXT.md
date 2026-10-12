@@ -508,7 +508,7 @@ and dispatches batched WriteOps through `_context.get_active_writer()`.
   index_elements=["commit_sha", "message_id", "tree_name"])`
   (`tree_name` joined the key in #673). The caller waits
   on `.result(timeout=60)` before composing the next batch.
-- For `rebases=True` trees (e.g. `linux-next`, `mm`), there are no
+- For `rebases=True` trees (e.g. `linux-next`), there are no
   per-batch WriteOps: the walk collects every row in memory, then one
   `mainline:<tree>:rebuild` WriteOp reads the live rows on the
   writer's connection and applies the difference (#671). The old
@@ -1070,14 +1070,19 @@ rules snapshot (~10k MAINTAINERS rules) is the one cached value too
 expensive to decode per call: about 16 ms per decode on a laptop, paid
 on every patch page's subsystem line, before matching even started.
 `subsystems._rules_index` keeps the matching index built from it in the
-process. It is reused only while two things hold: the rules version
-(`mainline_state.last_commit_sha` for linus, written in the same
-transaction as the rules and changed by every rebuild, `--force`
-included) is unchanged, and the snapshot's cache row is still alive
-(`cache.alive`). So every way the shared snapshot goes away (a reload's
-`invalidate_rules_snapshot`, expiry, the per-test cache reset) also
-drops the index, and no new invalidation hook exists to forget. With no
-rules version (before the first MAINTAINERS load) nothing is kept.
+process. The rules version (`mainline_state.last_commit_sha` for linus,
+written in the same transaction as the rules and changed by every
+rebuild, `--force` included) is stored IN the snapshot, read before the
+rules, and the index is keyed by that. A call reuses the index only
+while the database's version equals it and the snapshot's cache row is
+alive (`cache.alive`); a snapshot whose version differs from the
+database's is recomputed rather than used. That last check matters
+because a reload commits the rules, then drops the snapshot in a later
+write: a reader in between, or a slow reader writing old rules back
+after the drop, would otherwise leave an old index running under a page
+ETag that already names the new rules (found in the 3.17.0 release
+review). With no rules version (before the first MAINTAINERS load)
+nothing is kept.
 Reach for this only when a decode measurably dominates; everything else
 stays in the shared table.
 
@@ -2408,8 +2413,8 @@ daily) would invalidate the SHA cursor every tick. The
 `rebases=True` branch in `walk_commits` re-walks the tree from
 scratch each tick and replaces its rows by difference in one
 WriteOp (#671): readers see the previous set or the new one, a walk
-that raises first changes nothing, and an unchanged tree writes
-nothing. Like every
+that raises first changes nothing, and an unchanged tree writes no
+rows (only its two coverage counters on `mainline_state`). Like every
 non-Linus tree it excludes commits reachable from Linus's HEAD, so
 the daily walk covers only what linux-next holds beyond Linus
 (#673; before that it walked the whole history). Cheaper than the
