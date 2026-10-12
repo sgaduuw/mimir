@@ -59,8 +59,8 @@ class TreeConfig(BaseModel):
     # where the canonical pickup signal isn't HEAD.
     branch: str = "HEAD"
     # True for trees that force-push (linux-next, daily). The walker
-    # DELETEs the tree's existing rows then re-walks from scratch,
-    # letting INSERT-OR-IGNORE absorb intra-walk dups.
+    # re-walks the whole tree and replaces its rows by difference in
+    # one transaction, so readers never see a partial tree (#671).
     rebases: bool = False
     # Per-tree cadence: skip the tree on `update_mainline` ticks that
     # arrive sooner than this since the last successful walk.
