@@ -62,7 +62,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/subsystem/` | Active subsystem index |
 | `/<inbox>/subsystem/<name>/` | Subsystem dashboard |
 | `/maintainers/<address>` | Cross-inbox maintainer profile |
-| `/merge-window` | Patches in linux-next not yet in Linus's tree, by mailing list; linked commits only |
+| `/merge-window` | Patches in linux-next not yet in Linus's tree, by kernel subsystem; linked commits only |
 | `/<inbox>/feed.atom` | Inbox Atom feed |
 | `/<inbox>/author/<substring>/feed.atom` | Author Atom feed |
 | `/api/<inbox>/recent?offset=N` | HTML partial for loading more recent messages; offset capped at 1,000 |
