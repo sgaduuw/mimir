@@ -1543,3 +1543,105 @@ def test_rebuild_records_non_merge_commits_seen_and_linked(
     with seeded_db() as s:
         state = s.get(MainlineState, "linux-next")
         assert (state.walked_commits, state.walked_linked) == (3, 2)
+
+
+# A tree's source follows its config (#713).
+
+
+def _bare_repo_with(tmp_path, name, branch, message):
+    """A bare repo whose `branch` holds one commit, as a fetch source."""
+    import subprocess
+
+    work = tmp_path / f"{name}-work"
+    subprocess.run(["git", "init", "-q", "-b", branch, str(work)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(work),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@x",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            message,
+        ],
+        check=True,
+    )
+    bare = tmp_path / f"{name}.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(work), str(bare)], check=True)
+    return bare
+
+
+def _git(path, *args):
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-C", str(path), *args], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def test_ensure_tree_follows_a_changed_url(tmp_path):
+    """Changing a tree's `url` must reach a mirror that already exists.
+    A mirror fetches from the remote recorded at clone time, so the pci
+    fix would otherwise never leave the config on a deployed host."""
+    import subprocess
+
+    from mimir.config import TreeConfig
+    from mimir.mainline import _ensure_tree
+
+    old = _bare_repo_with(tmp_path, "old", "main", "old source")
+    new = _bare_repo_with(tmp_path, "new", "next", "new source")
+    mirror = tmp_path / "pci.git"
+    subprocess.run(
+        ["git", "clone", "-q", "--mirror", str(old), str(mirror)], check=True
+    )
+    assert _git(mirror, "config", "--get", "remote.origin.url") == str(
+        old
+    )  # precondition
+
+    tree = TreeConfig.model_construct(url=str(new), path=mirror, branch="next")
+    _ensure_tree(tree, reference=None, skip_fetch=False)
+
+    assert _git(mirror, "config", "--get", "remote.origin.url") == str(new)
+    assert _git(mirror, "log", "-1", "--format=%s", "refs/heads/next") == "new source"
+
+
+def test_ensure_tree_leaves_a_matching_url_alone(tmp_path, monkeypatch):
+    """An unchanged URL rewrites nothing: no `remote set-url` per tick."""
+    import subprocess
+
+    from mimir import mainline
+    from mimir.config import TreeConfig
+
+    src = _bare_repo_with(tmp_path, "src", "main", "src")
+    mirror = tmp_path / "m.git"
+    subprocess.run(
+        ["git", "clone", "-q", "--mirror", str(src), str(mirror)], check=True
+    )
+    calls = []
+    real_run = subprocess.run
+
+    def spy(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(mainline.subprocess, "run", spy)
+    tree = TreeConfig.model_construct(url=str(src), path=mirror, branch="HEAD")
+    mainline._ensure_tree(tree, reference=None, skip_fetch=False)
+    assert any("fetch" in c for c in calls)  # precondition: the fetch path ran
+    assert not any("set-url" in c for c in calls), calls
+
+
+def test_curated_pci_tree_is_the_one_linux_next_pulls():
+    """linux-next's Next/Trees lists pci as `pci/pci.git#next`; HEAD of
+    the old `helgaas/pci.git` is `main`, which holds nothing beyond
+    Linus, so the tree produced no rows (#713)."""
+    from mimir.config import _curated_default_trees
+
+    pci = _curated_default_trees()["pci"]
+    assert pci.url == "https://git.kernel.org/pub/scm/linux/kernel/git/pci/pci.git"
+    assert pci.branch == "next"
