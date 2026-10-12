@@ -680,3 +680,49 @@ def test_needs_attention_pages_across_a_shared_timestamp(seeded_db):
         ("tie-v1-1@x", 6),
         ("after-tie@x", 0),
     ]
+
+
+def test_needs_attention_series_more_counts_the_whole_posting(seeded_db):
+    """The list fills on the series' first patch, mid-page, so its
+    siblings on later pages are never fetched; the count is still
+    every other patch of the posting."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _add_article(
+            s,
+            "solo@x",
+            paths=["net/core/dev.c"],
+            days_ago=40,
+            trailers=[("Reviewed-by", "rev@example.com")],
+        )
+        _series(s, "big", "v1", 15)
+        s.commit()
+        # limit=2 gives pages of 7: solo + big 1..6 on page one.
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=2)
+    assert [(p.message_id, p.series_more) for p in result] == [
+        ("solo@x", 0),
+        ("big-v1-1@x", 14),
+    ]
+
+
+def test_series_more_counts_patches_that_are_not_listed(seeded_db):
+    """ "+N more in this series" counts the posting's other patches,
+    not only the ones that would qualify for this list: patch 3 has no
+    review trailer and still counts."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _series(s, "part", "v1", 2)
+        _add_article(
+            s,
+            "part-v1-3@x",
+            paths=["net/core/dev.c"],
+            days_ago=29,
+            patch_series_key="part",
+            patch_series_version="v1",
+            patch_series_position=3,
+        )
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [(p.message_id, p.series_more) for p in result] == [("part-v1-1@x", 2)]
