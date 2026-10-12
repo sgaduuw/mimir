@@ -578,7 +578,7 @@ def _series(s, key, version, patches, *, trailers=True, days_ago=30):
 
 def test_needs_attention_resend_is_one_row(seeded_db):
     """`[PATCH v2]` and `[PATCH RESEND v2]` are both stored as v2:
-    one row, the original, counting the resend (#686)."""
+    one row, the original (#686)."""
     with seeded_db() as s:
         sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
         s.commit()
@@ -595,7 +595,8 @@ def test_needs_attention_resend_is_one_row(seeded_db):
             )
         s.commit()
         result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
-    assert [(p.message_id, p.series_more) for p in result] == [("orig@x", 1)]
+    # One row; the resent copy is the same patch, not another one.
+    assert [(p.message_id, p.series_more) for p in result] == [("orig@x", 0)]
 
 
 def test_needs_attention_large_series_does_not_crowd_the_list(seeded_db):
@@ -726,3 +727,57 @@ def test_series_more_counts_patches_that_are_not_listed(seeded_db):
         s.commit()
         result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
     assert [(p.message_id, p.series_more) for p in result] == [("part-v1-1@x", 2)]
+
+
+def _cover(s, key, version, msgid, days_ago=30.01):
+    """A cover letter as ingest stores it: position 0, the posting's
+    key and version, no `diff --git`, so no ArticleFile rows."""
+    _add_article(
+        s,
+        msgid,
+        paths=[],
+        days_ago=days_ago,
+        patch_series_key=key,
+        patch_series_version=version,
+        patch_series_position=0,
+    )
+
+
+def test_series_more_does_not_count_the_cover_letter(seeded_db):
+    """`[PATCH 0/3]` + three patches: the listed patch has two other
+    patches. The cover is not a patch (CHANGELOG: "the posting's other
+    patches")."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _cover(s, "cov", "v1", "cov-v1-0@x")
+        _series(s, "cov", "v1", 3)
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [(p.message_id, p.series_more) for p in result] == [("cov-v1-1@x", 2)]
+
+
+def test_series_more_counts_a_resent_patch_once(seeded_db):
+    """`[PATCH v2 0/2]` and `[PATCH RESEND v2 0/2]` are one posting
+    (#686) of two patches: the listed patch has one other patch, not
+    the three other copies (and two covers) stored under the key."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _cover(s, "rs", "v2", "rs-cover-orig@x", days_ago=30.01)
+        _series(s, "rs", "v2", 2, days_ago=30)
+        _cover(s, "rs", "v2", "rs-cover-resend@x", days_ago=20.01)
+        for n in (1, 2):
+            _add_article(
+                s,
+                f"rs-resend-{n}@x",
+                paths=["net/core/dev.c"],
+                days_ago=20 - n / 1440,
+                patch_series_key="rs",
+                patch_series_version="v2",
+                patch_series_position=n,
+                trailers=[("Reviewed-by", "rev@example.com")],
+            )
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [(p.message_id, p.series_more) for p in result] == [("rs-v2-1@x", 1)]
