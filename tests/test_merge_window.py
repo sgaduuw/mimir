@@ -13,8 +13,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from mimir.merge_window import MERGE_WINDOW_PATH, linus_tag, merge_window
-from mimir.models import Article, ArticleList, Inbox, MainlineCommit, MainlineState
+from mimir.merge_window import MERGE_WINDOW_PATH, NO_SUBSYSTEM, linus_tag, merge_window
+from mimir.models import (
+    Article,
+    ArticleFile,
+    ArticleList,
+    Inbox,
+    MainlineCommit,
+    MainlineState,
+)
 
 _T0 = datetime(2026, 9, 1, tzinfo=UTC)
 
@@ -23,7 +30,9 @@ def _inbox(s, name):
     return s.execute(select(Inbox).where(Inbox.name == name)).scalar_one()
 
 
-def _article(s, msgid, *, inbox="alpha", days=0, key=None, version=None, pos=None):
+def _article(
+    s, msgid, *, inbox="alpha", days=0, key=None, version=None, pos=None, files=()
+):
     art = Article(
         message_id=msgid,
         subject=f"[PATCH] {msgid}",
@@ -37,6 +46,7 @@ def _article(s, msgid, *, inbox="alpha", days=0, key=None, version=None, pos=Non
                 inbox_id=_inbox(s, inbox).id, epoch="0.git", commit_sha="f" * 40
             )
         ],
+        files=[ArticleFile(path=f) for f in files],
     )
     s.add(art)
     s.flush()
@@ -54,12 +64,23 @@ def _commit(s, msgid, tree, sha=None):
     )
 
 
+def _groups(mw):
+    return [*mw.sections, *mw.smaller]
+
+
 def _ids(mw):
-    """{list: [(subject, patches, trees)]} for compact assertions."""
+    """{subsystem: [(subject, patches, trees)]} for compact assertions."""
     return {
-        lst.inbox_name: [(r.subject, r.patches, r.trees) for r in lst.rows]
-        for lst in mw.lists
+        g.name: [(r.subject, r.patches, r.trees) for r in g.rows] for g in _groups(mw)
     }
+
+
+def _subsystem(s, name, files):
+    from mimir.models import Subsystem, SubsystemPath
+
+    sub = Subsystem(name=name, status="Maintained")
+    sub.paths = [SubsystemPath(glob=f, is_exclude=False) for f in files]
+    s.add(sub)
 
 
 def test_queued_is_linux_next_minus_linus_by_message_id(seeded_db):
@@ -77,7 +98,7 @@ def test_queued_is_linux_next_minus_linus_by_message_id(seeded_db):
         _commit(s, "landed-other-sha@x", "linus", sha="c" * 40)
         s.commit()
         mw = merge_window(s)
-    assert _ids(mw) == {"alpha": [("[PATCH] queued@x", 1, [])]}
+    assert _ids(mw) == {NO_SUBSYSTEM: [("[PATCH] queued@x", 1, [])]}
     assert mw.queued == 1
 
 
@@ -88,7 +109,7 @@ def test_queued_patch_names_the_other_trees_carrying_it(seeded_db):
         _commit(s, "nn@x", "net-next")
         s.commit()
         mw = merge_window(s)
-    assert _ids(mw) == {"alpha": [("[PATCH] nn@x", 1, ["net-next"])]}
+    assert _ids(mw) == {NO_SUBSYSTEM: [("[PATCH] nn@x", 1, ["net-next"])]}
 
 
 def test_unarchived_queued_messages_are_counted_not_listed(seeded_db):
@@ -100,7 +121,7 @@ def test_unarchived_queued_messages_are_counted_not_listed(seeded_db):
         mw = merge_window(s)
     assert mw.queued == 2
     assert mw.not_archived == 1
-    assert [r.subject for lst in mw.lists for r in lst.rows] == ["[PATCH] here@x"]
+    assert [r.subject for g in _groups(mw) for r in g.rows] == ["[PATCH] here@x"]
 
 
 def test_series_with_cover_is_one_row_named_by_the_cover(seeded_db):
@@ -114,8 +135,8 @@ def test_series_with_cover_is_one_row_named_by_the_cover(seeded_db):
             _commit(s, f"p{n}@x", "linux-next")
         s.commit()
         mw = merge_window(s)
-    assert _ids(mw) == {"alpha": [("[PATCH v2 0/2] net: the series", 2, [])]}
-    assert mw.lists[0].rows[0].url.endswith(f"/{cover.id}")
+    assert _ids(mw) == {NO_SUBSYSTEM: [("[PATCH v2 0/2] net: the series", 2, [])]}
+    assert _groups(mw)[0].rows[0].url.endswith(f"/{cover.id}")
 
 
 def test_series_without_archived_cover_is_named_by_its_oldest_patch(seeded_db):
@@ -125,20 +146,80 @@ def test_series_without_archived_cover_is_named_by_its_oldest_patch(seeded_db):
             _commit(s, f"q{n}@x", "linux-next")
         s.commit()
         mw = merge_window(s)
-    assert _ids(mw) == {"alpha": [("[PATCH] q1@x", 2, [])]}
+    assert _ids(mw) == {NO_SUBSYSTEM: [("[PATCH] q1@x", 2, [])]}
 
 
-def test_lists_largest_first_and_rows_newest_first(seeded_db):
+def test_sections_largest_first_and_rows_newest_first(seeded_db, monkeypatch):
+    import mimir.merge_window as mwmod
+
+    monkeypatch.setattr(mwmod, "SECTION_MIN_PATCHES", 1)
     with seeded_db() as s:
+        _subsystem(s, "MM", ["mm/"])
+        _subsystem(s, "NET", ["net/"])
         for n, days in (("old", 1), ("new", 5)):
-            _article(s, f"{n}@x", inbox="beta", days=days)
+            _article(s, f"{n}@x", days=days, files=[f"net/{n}.c"])
             _commit(s, f"{n}@x", "linux-next")
-        _article(s, "lone@x", inbox="alpha")
+        _article(s, "lone@x", files=["mm/lone.c"])
         _commit(s, "lone@x", "linux-next")
         s.commit()
         mw = merge_window(s)
-    assert [lst.inbox_name for lst in mw.lists] == ["beta", "alpha"]
-    assert [r.subject for r in mw.lists[0].rows] == ["[PATCH] new@x", "[PATCH] old@x"]
+    assert [g.name for g in mw.sections] == ["NET", "MM"]
+    assert [r.subject for r in mw.sections[0].rows] == [
+        "[PATCH] new@x",
+        "[PATCH] old@x",
+    ]
+
+
+def test_primary_is_the_most_specific_subsystem_never_the_catch_all(seeded_db):
+    """A patch in mlx5 goes under MLX5, not the broader NETWORKING
+    DRIVERS it also matches; the catch-all never groups anything, so a
+    patch only it matches lands in "(no subsystem)"."""
+    with seeded_db() as s:
+        _subsystem(s, "THE REST", ["*", "*/"])
+        _subsystem(s, "NETWORKING DRIVERS", ["drivers/net/"])
+        _subsystem(s, "MLX5", ["drivers/net/ethernet/mellanox/mlx5/"])
+        _article(s, "mlx@x", files=["drivers/net/ethernet/mellanox/mlx5/en.c"])
+        _commit(s, "mlx@x", "linux-next")
+        _article(s, "misc@x", files=["scripts/checkpatch.pl"])
+        _commit(s, "misc@x", "linux-next")
+        s.commit()
+        mw = merge_window(s)
+    by_name = {g.name: g for g in _groups(mw)}
+    assert set(by_name) == {"MLX5", NO_SUBSYSTEM}
+    assert by_name["MLX5"].rows[0].also == ["NETWORKING DRIVERS"]
+    assert by_name[NO_SUBSYSTEM].rows[0].subject == "[PATCH] misc@x"
+
+
+def test_series_is_grouped_once_by_all_its_files(seeded_db):
+    """Patch 1 touches only the broad subsystem, patch 2 the specific
+    one: the series appears once, under the specific one."""
+    with seeded_db() as s:
+        _subsystem(s, "NETWORKING DRIVERS", ["drivers/net/"])
+        _subsystem(s, "MLX5", ["drivers/net/ethernet/mellanox/mlx5/"])
+        for n, path in (
+            (1, "drivers/net/core.c"),
+            (2, "drivers/net/ethernet/mellanox/mlx5/en.c"),
+        ):
+            _article(s, f"s{n}@x", key="k", version="v1", pos=n, days=n, files=[path])
+            _commit(s, f"s{n}@x", "linux-next")
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {"MLX5": [("[PATCH] s1@x", 2, [])]}
+
+
+def test_a_section_needs_twenty_five_patches(seeded_db):
+    with seeded_db() as s:
+        _subsystem(s, "BIG", ["big/"])
+        _subsystem(s, "SMALL", ["small/"])
+        for name, n in (("big", 25), ("small", 24)):
+            for i in range(n):
+                _article(s, f"{name}{i}@x", files=[f"{name}/{i}.c"])
+                _commit(s, f"{name}{i}@x", "linux-next")
+        s.commit()
+        mw = merge_window(s)
+    assert [g.name for g in mw.sections] == ["BIG"]
+    assert [g.name for g in mw.smaller] == ["SMALL"]
+    assert mw.smaller_patches == 24
 
 
 def test_null_canonical_falls_back_to_a_linked_list(seeded_db):
@@ -149,7 +230,7 @@ def test_null_canonical_falls_back_to_a_linked_list(seeded_db):
         _commit(s, "nocanon@x", "linux-next")
         s.commit()
         mw = merge_window(s)
-    assert [lst.inbox_name for lst in mw.lists] == ["beta"]
+    assert [r.inbox_name for g in _groups(mw) for r in g.rows] == ["beta"]
 
 
 def test_empty_linux_next_renders_the_empty_state(client):
@@ -170,6 +251,25 @@ def test_page_lists_queued_patch_and_links_its_thread(client):
     html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
     assert f'<a href="{url}">' in html
     assert re.search(r"also in net-next\b", html)
+
+
+def test_rules_version_moves_the_etag(client):
+    """The grouping follows MAINTAINERS, so a rules rebuild (a new
+    `last_commit_sha` for linus) must move the validator too."""
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        s.add(
+            MainlineState(
+                tree_name="linus", last_walked_at=_T0, last_commit_sha="a" * 40
+            )
+        )
+        s.commit()
+    before = client.get(MERGE_WINDOW_PATH).headers["ETag"]
+    with SessionLocal() as s:
+        s.get(MainlineState, "linus").last_commit_sha = "b" * 40
+        s.commit()
+    assert client.get(MERGE_WINDOW_PATH).headers["ETag"] != before
 
 
 @pytest.mark.parametrize("tree", ["linux-next", "linus"])
@@ -270,18 +370,22 @@ def test_page_says_whether_the_merge_window_is_open(client, monkeypatch, tag, ex
     assert sentences == ([expected] if expected else [])
 
 
-def test_long_list_folds_after_twenty_rows(client):
-    """Each list shows its first 20 rows; the rest sit in a <details>,
-    still in the HTML so crawlers see every link (#703)."""
+def test_long_section_folds_after_twenty_rows(client):
+    """Each section shows its first 20 rows; the rest sit in a <details>,
+    still in the HTML so crawlers see every link (#703). The index links
+    to the section by its anchor."""
     from mimir.extensions import SessionLocal
 
     with SessionLocal() as s:
+        _subsystem(s, "KERNEL VIRTUAL MACHINE FOR X86 (KVM/x86)", ["arch/x86/kvm/"])
         for n in range(25):
-            _article(s, f"fold{n:02d}@x", days=n)
+            _article(s, f"fold{n:02d}@x", days=n, files=[f"arch/x86/kvm/{n}.c"])
             _commit(s, f"fold{n:02d}@x", "linux-next")
         s.commit()
     html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
-    section = html.split('<h2 id="alpha">', 1)[1].split("</h2>", 1)[1]
+    anchor = "kernel-virtual-machine-for-x86-kvm-x86"
+    assert f'<a href="#{anchor}">' in html
+    section = html.split(f'<h2 id="{anchor}">', 1)[1].split("</h2>", 1)[1]
     section = section.split("<h2", 1)[0]
     visible, _, folded = section.partition("<details")
     assert visible.count("<li>") == 20

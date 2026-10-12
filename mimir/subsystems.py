@@ -321,6 +321,30 @@ def _rules_index(session: Session) -> _RulesIndex:
     return built
 
 
+# The MAINTAINERS catch-all: matches every path, so it is never a
+# patch's primary subsystem (#703).
+CATCH_ALL_SUBSYSTEM = "THE REST"
+
+
+def ranked_subsystems(session: Session, groups: list[list[str]]) -> list[list[str]]:
+    """For each group of paths, the names of the subsystems it matches,
+    most specific first (the longest fixed prefix of a matching F: rule,
+    then name), without the catch-all. The first is the group's primary
+    subsystem, which `/merge-window` groups by (#703). Same matching as
+    `subsystems_for_article`; batched so the index is looked up once."""
+    index = _rules_index(session)
+    out = []
+    for paths in groups:
+        best = {
+            index.subsystems[sid].name: spec
+            for sid, spec in index.match(paths).items()
+            if sid in index.subsystems
+            and index.subsystems[sid].name != CATCH_ALL_SUBSYSTEM
+        }
+        out.append(sorted(best, key=lambda name: (-best[name], name)))
+    return out
+
+
 class SubsystemHit(BaseModel):
     """Compact summary of one subsystem match. Just the fields the
     patch-page header needs, avoids carrying the entire SQLA row
@@ -501,10 +525,12 @@ def recent_patches_touching(
 
 
 __all__ = [
+    "CATCH_ALL_SUBSYSTEM",
     "SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC",
     "RelatedPatch",
     "SubsystemHit",
     "path_matches_glob",
+    "ranked_subsystems",
     "recent_patches_touching",
     "subsystems_for_article",
 ]

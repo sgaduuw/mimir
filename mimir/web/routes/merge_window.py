@@ -1,5 +1,6 @@
 """`/merge-window`: patches in linux-next that Linus's tree does not
-have yet, grouped by mailing list (#672). Data in `mimir.merge_window`.
+have yet, grouped by kernel subsystem (#672, #703). Data in
+`mimir.merge_window`.
 """
 
 import hashlib
@@ -7,7 +8,12 @@ import hashlib
 from flask import Response, render_template, request
 
 from mimir.extensions import SessionLocal
-from mimir.merge_window import MERGE_WINDOW_PATH, merge_window, merge_window_state
+from mimir.merge_window import (
+    MERGE_WINDOW_PATH,
+    SECTION_MIN_PATCHES,
+    merge_window,
+    merge_window_state,
+)
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _site_base
 
@@ -32,6 +38,7 @@ def merge_window_page():
             mw=data,
             current_inbox=None,
             canonical_url=_site_base() + MERGE_WINDOW_PATH,
+            section_min=SECTION_MIN_PATCHES,
         )
     )
     response.set_etag(etag)
