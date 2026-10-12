@@ -62,6 +62,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/subsystem/` | Active subsystem index |
 | `/<inbox>/subsystem/<name>/` | Subsystem dashboard |
 | `/maintainers/<address>` | Cross-inbox maintainer profile |
+| `/merge-window` | Patches in linux-next not yet in Linus's tree, by mailing list; linked commits only |
 | `/<inbox>/feed.atom` | Inbox Atom feed |
 | `/<inbox>/author/<substring>/feed.atom` | Author Atom feed |
 | `/api/<inbox>/recent?offset=N` | HTML partial for loading more recent messages; offset capped at 1,000 |
@@ -79,7 +80,7 @@ the root message URL until their membership can be determined.
 | Path | Contents |
 | --- | --- |
 | `/sitemap.xml` | Index of the following sitemap surfaces |
-| `/meta-sitemap.xml` | Site root |
+| `/meta-sitemap.xml` | Site root and `/merge-window` |
 | `/<inbox>/sitemap.xml` | Inbox, archive pages, active subsystems, and recent threads |
 | `/<inbox>/<YYYY>/sitemap.xml` | A year's thread URLs |
 | `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread URLs |

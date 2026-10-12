@@ -2,7 +2,7 @@
 and `/<inbox>/sitemap.xml`.
 
 `/sitemap.xml` is a `<sitemapindex>` pointing at `/meta-sitemap.xml`
-(a one-URL urlset for `/`), one `/<inbox>/sitemap.xml` per configured
+(a urlset for `/` and `/merge-window`), one `/<inbox>/sitemap.xml` per configured
 inbox, and `/sitemap-maintainers.xml` (a urlset of every maintainer
 profile page). Crawlers fetch the sub-sitemaps independently and
 skip unchanged inboxes via each entry's `<lastmod>`. The index/meta
@@ -69,7 +69,7 @@ def sitemap() -> Response:
 
 @bp_web.route("/meta-sitemap.xml")
 def meta_sitemap() -> Response:
-    """One-entry sitemap listing `/`. Lives behind the sitemap index
+    """Sitemap listing `/` and `/merge-window`. Lives behind the sitemap index
     so the index stays purely a `<sitemapindex>` (which can't carry
     a `<url>` for the root directly per sitemaps.org schema). lastmod
     is the global most-recent article date."""

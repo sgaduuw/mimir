@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Linux merge window: patches queued in linux-next | {{ site_name }}{% endblock %}
+{% block meta_description %}Patches in linux-next that are not yet in Linus's tree, grouped by mailing list, each linked to its review thread: what the next Linux merge window is likely to bring.{% endblock %}
+
+{% block content %}
+<h1>Linux merge window <small>patches queued in linux-next</small></h1>
+
+<p>
+  {%- if mw.linus_tag %}Linus's tree is at <strong>{{ mw.linus_tag }}</strong>. {% endif -%}
+  {%- if mw.queued_walked_at %}linux-next as of {{ mw.queued_walked_at.strftime('%Y-%m-%d %H:%M') }} UTC.{% endif %}
+</p>
+
+{% if mw.queued %}
+<p><small>{{ mw.queued }} patch{{ '' if mw.queued == 1 else 'es' }} in linux-next
+  {{ 'is' if mw.queued == 1 else 'are' }} not in Linus's tree yet
+  {%- if mw.lists %}, across {{ mw.lists|length }} mailing list{{ '' if mw.lists|length == 1 else 's' }}{% endif %}.
+  Only commits that link their mailing-list message (a <code>Link:</code> trailer) are counted.
+  {%- if mw.not_archived %} {{ mw.not_archived }} of them link to messages not archived here.{% endif %}
+  A series shows once, by its cover letter.</small></p>
+
+{% if mw.lists %}
+<nav aria-label="Mailing lists"><small>
+  {%- for lst in mw.lists %}<a href="#{{ lst.inbox_name }}">{{ lst.inbox_name }}</a> ({{ lst.patches }}){{ ', ' if not loop.last }}{% endfor -%}
+</small></nav>
+{% endif %}
+
+{% for lst in mw.lists %}
+<h2 id="{{ lst.inbox_name }}">{{ lst.inbox_name }} <small>{{ lst.patches }} patch{{ '' if lst.patches == 1 else 'es' }}</small></h2>
+<ul>
+  {% for row in lst.rows %}
+  <li>
+    <a href="{{ row.url }}">{{ row.subject|clean_subject or '(no subject)' }}</a>
+    {%- if row.patches > 1 %} <small>{{ row.patches }} patches</small>{% endif %}
+    <br><small>{{ row.author|display_name }}
+      {%- if row.date %} &middot; {{ row.date.strftime('%Y-%m-%d') }}{% endif %}
+      {%- if row.trees %} &middot; also in {{ row.trees|join(', ') }}{% endif %}</small>
+  </li>
+  {% endfor %}
+</ul>
+{% endfor %}
+{% else %}
+{# Empty is a real state: right after a merge window closes, or before
+   linux-next has been walked at all. #}
+<p>Nothing is queued: every linked patch in linux-next is already in Linus's tree, or linux-next has not been indexed yet.</p>
+{% endif %}
+{% endblock %}

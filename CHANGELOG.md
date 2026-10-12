@@ -11,6 +11,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- `/merge-window`: the patches in linux-next that Linus's tree does not have
+  yet, grouped by mailing list and linked to their threads, with the tag
+  Linus's tree is at. A series shows once, by its cover letter. Only commits
+  with a `Link:` trailer are counted; queued messages not archived here are
+  counted, not listed. Linked from the front page and listed in
+  `/meta-sitemap.xml` (#672).
+
 ### Fixed
 
 - Lifecycle pills no longer show "pending" for patches that are only in
