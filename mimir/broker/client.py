@@ -197,7 +197,8 @@ class BrokerClient:
 
     def _demux_loop(self) -> None:
         """Read JSONL replies in a loop; resolve the matching
-        pending future. On EOF or OSError, fails every pending
+        pending future. On EOF, OSError, or a file closed under it,
+        fails every pending
         future with BrokerUnavailable and exits so the next caller
         reconnects fresh.
 
@@ -214,7 +215,10 @@ class BrokerClient:
             while not self._closed:
                 try:
                     line = rfile.readline()
-                except OSError:
+                except OSError, ValueError:
+                    # ValueError: `close()` shut the file under a
+                    # blocked readline ("I/O operation on closed file").
+                    # Same outcome as a dropped socket (#699).
                     break
                 if not line:
                     break  # Clean EOF from broker.
