@@ -505,7 +505,8 @@ def test_needs_attention_keeps_earlier_patches_of_one_series(seeded_db):
             )
         s.commit()
         result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
-    assert sorted(p.message_id for p in result) == ["p1@x", "p2@x"]
+    # One row for the posting (#686), the oldest patch, counting the other.
+    assert [(p.message_id, p.series_more) for p in result] == [("p1@x", 1)]
 
 
 def test_needs_attention_superseded_by_version_not_date(seeded_db):
@@ -553,4 +554,129 @@ def test_needs_attention_keeps_a_patch_the_next_revision_dropped(seeded_db):
             )
         s.commit()
         result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
-    assert sorted(p.message_id for p in result) == ["v1-3@x", "v2-1@x", "v2-2@x"]
+    assert [(p.message_id, p.series_more) for p in result] == [
+        ("v1-3@x", 0),
+        ("v2-1@x", 1),
+    ]
+
+
+def _series(s, key, version, patches, *, trailers=True, days_ago=30):
+    """Add one posting of a series: `patches` patches at positions
+    1..N, one minute apart, oldest first."""
+    for n in range(1, patches + 1):
+        _add_article(
+            s,
+            f"{key}-{version}-{n}@x",
+            paths=["net/core/dev.c"],
+            days_ago=days_ago - n / 1440,
+            patch_series_key=key,
+            patch_series_version=version,
+            patch_series_position=n,
+            trailers=[("Reviewed-by", "rev@example.com")] if trailers else [],
+        )
+
+
+def test_needs_attention_resend_is_one_row(seeded_db):
+    """`[PATCH v2]` and `[PATCH RESEND v2]` are both stored as v2:
+    one row, the original, counting the resend (#686)."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        for msgid, days_ago in (("orig@x", 21), ("resend@x", 20)):
+            _add_article(
+                s,
+                msgid,
+                paths=["net/core/dev.c"],
+                days_ago=days_ago,
+                patch_series_key="key5",
+                patch_series_version="v2",
+                patch_series_position=1,
+                trailers=[("Reviewed-by", "rev@example.com")],
+            )
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [(p.message_id, p.series_more) for p in result] == [("orig@x", 1)]
+
+
+def test_needs_attention_large_series_does_not_crowd_the_list(seeded_db):
+    """A 15-patch series older than everything else fills the first
+    page of candidates; the list must still fill up from later pages."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _series(s, "big", "v1", 15)
+        for n in range(3):
+            _add_article(
+                s,
+                f"solo{n}@x",
+                paths=["net/core/dev.c"],
+                days_ago=20 - n,
+                trailers=[("Reviewed-by", "rev@example.com")],
+            )
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=3)
+    assert [(p.message_id, p.series_more) for p in result] == [
+        ("big-v1-1@x", 14),
+        ("solo0@x", 0),
+        ("solo1@x", 0),
+    ]
+
+
+def test_quiet_series_is_one_row(seeded_db):
+    """Every patch of a series replies to the cover, so each looks
+    quiet on its own; the list shows the posting once (#686)."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _series(s, "quietkey", "v1", 3, trailers=False, days_ago=60)
+        s.commit()
+        result = quiet_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [(p.message_id, p.series_more) for p in result] == [("quietkey-v1-1@x", 2)]
+
+
+def test_quiet_excludes_superseded(seeded_db):
+    """A quiet v1 with a v2 at the same position is superseded and
+    leaves the list, as on needs-attention and the pill (#688)."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        for msgid, version, days_ago in (("q-v1@x", "v1", 60), ("q-v2@x", "v2", 50)):
+            _add_article(
+                s,
+                msgid,
+                paths=["net/core/dev.c"],
+                days_ago=days_ago,
+                patch_series_key="qkey",
+                patch_series_version=version,
+                patch_series_position=1,
+            )
+        s.commit()
+        result = quiet_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [p.message_id for p in result] == ["q-v2@x"]
+
+
+def test_needs_attention_pages_across_a_shared_timestamp(seeded_db):
+    """Paging resumes after the last (date, id) seen. A series and a
+    later patch with one identical timestamp, split across pages,
+    must give each row once and skip none."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _series(s, "tie", "v1", 7)
+        _add_article(
+            s,
+            "after-tie@x",
+            paths=["net/core/dev.c"],
+            days_ago=30,
+            trailers=[("Reviewed-by", "rev@example.com")],
+        )
+        same = datetime.now(UTC) - timedelta(days=30)
+        for a in s.execute(select(Article)).scalars():
+            a.date = same
+        s.commit()
+        # limit=2 gives pages of 7: the series fills page one exactly.
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=2)
+    assert [(p.message_id, p.series_more) for p in result] == [
+        ("tie-v1-1@x", 6),
+        ("after-tie@x", 0),
+    ]

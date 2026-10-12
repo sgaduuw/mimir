@@ -11,6 +11,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- A subsystem's needs-attention and quiet lists show each posting of a series
+  once, as its oldest patch with "+N more in this series", instead of one row
+  per patch. A long series no longer fills a list, and a `RESEND` of the same
+  version folds into the original (#686).
+- The quiet list leaves out patches with a newer revision, using the same
+  rule as the SUPERSEDED pill and the needs-attention list (#688).
+
 ## [3.14.1] - 2026-10-11
 
 ### Fixed
