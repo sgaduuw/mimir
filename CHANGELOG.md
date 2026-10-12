@@ -11,6 +11,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Resolving a patch's subsystems (the subsystem line on every patch's message
+  and thread page) indexes the MAINTAINERS rules by directory and keeps the
+  index per process until the rules change, instead of decoding and walking
+  all ~10k rules per call. Same results; locally about 65 times faster on a
+  production-sized rule set (median 23 ms to 0.35 ms), and production measured
+  75 ms per patch before (#705).
+
 ### Added
 
 - `/merge-window`: the patches in linux-next that Linus's tree does not have
