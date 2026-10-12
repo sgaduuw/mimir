@@ -1,4 +1,4 @@
-"""`/merge-window` (#672): linux-next minus Linus, by mailing list.
+"""`/merge-window` (#672, #703): linux-next minus Linus, by subsystem.
 
 One test per state dimension in the spec: where a patch is (linux-next
 only, also in a subsystem tree, landed under the same or another sha),
@@ -431,3 +431,43 @@ def test_page_says_how_much_of_linux_next_it_can_see(client, counts, expected):
     )
     assert (found.group(0) if found else None) == expected
     assert "Link: trailer" in text  # the general note stays either way
+
+
+def test_site_base_change_moves_the_merge_window_etag(client, monkeypatch):
+    """The page renders its canonical from `SITE_BASE_URL`, a knob that
+    changes on a restart without a version bump, so it is part of the
+    ETag, as on the message page (found in the 3.17.0 release review)."""
+    from mimir import config
+
+    monkeypatch.setattr(config.settings, "site_base_url", "https://old.example")
+    first = client.get(MERGE_WINDOW_PATH)
+    assert 'href="https://old.example/merge-window"' in first.get_data(as_text=True)
+
+    monkeypatch.setattr(config.settings, "site_base_url", "https://new.example")
+    fresh = client.get(MERGE_WINDOW_PATH)
+    # Precondition: the body really did change.
+    assert 'href="https://new.example/merge-window"' in fresh.get_data(as_text=True)
+
+    revalidate = client.get(
+        MERGE_WINDOW_PATH, headers={"If-None-Match": first.headers["ETag"]}
+    )
+    assert revalidate.status_code == 200
+
+
+@pytest.mark.parametrize("knob", ["tree_display_name", "demoted_inboxes"])
+def test_config_knobs_move_the_etag(client, monkeypatch, knob):
+    """Restart-only config the page depends on is in its validator:
+    tree labels ("also in <label>") and the demoted inboxes that decide
+    which list a row links into."""
+    from mimir.config import settings
+
+    before = client.get(MERGE_WINDOW_PATH).headers["ETag"]
+    if knob == "tree_display_name":
+        monkeypatch.setattr(settings.trees["net-next"], "display_name", "netdev next")
+    else:
+        monkeypatch.setattr(
+            settings,
+            "canonical_demoted_inboxes",
+            [*settings.canonical_demoted_inboxes, "alpha"],
+        )
+    assert client.get(MERGE_WINDOW_PATH).headers["ETag"] != before
