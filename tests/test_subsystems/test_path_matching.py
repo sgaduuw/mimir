@@ -552,3 +552,73 @@ def test_rules_index_is_built_once_per_rules_version(seeded_db, monkeypatch):
         subsystems_for_article(s, art)
         subsystems_for_article(s, art)
         assert len(builds) == 5
+
+
+def _names(s, art):
+    return sorted(h.name for h in subsystems_for_article(s, art))
+
+
+def test_index_does_not_outlive_a_reload_seen_mid_invalidation(seeded_db):
+    """A MAINTAINERS reload commits rules and version together, then
+    drops the cached snapshot in a later write. A reader in between sees
+    the new version with the old snapshot; its index must not survive
+    once the reload finishes (found in the 3.17.0 release review)."""
+    from mimir import subsystems
+    from mimir.models import MainlineState
+
+    with seeded_db() as s:
+        _add_subsystem(s, "NET", "Maintained", files=["net/"])
+        art = _add_patch_article(s, "reload@x", ["drivers/x/a.c"])
+        s.add(MainlineState(tree_name="linus", last_commit_sha="a" * 40))
+        s.commit()
+
+        # This process builds and keeps its index at version a.
+        assert _names(s, art) == []
+
+        # The reload's first write: new rules and new version, one commit.
+        _add_subsystem(s, "DRV", "Maintained", files=["drivers/x/"])
+        s.get(MainlineState, "linus").last_commit_sha = "b" * 40
+        s.commit()
+
+        # A request here, before the invalidation lands, rebuilds from the
+        # still-cached old snapshot. (Wrong for this one request; the
+        # pre-3.17 code had the same one-request window.)
+        _names(s, art)
+
+        # The reload's second write.
+        subsystems.invalidate_rules_snapshot()
+
+        # Another process (its own empty memo) serves a request and
+        # recomputes the snapshot row from the new rules.
+        mine = getattr(subsystems, "_index", None)
+        subsystems._index = None
+        assert _names(s, art) == ["DRV"]  # precondition: new rules visible
+        subsystems._index = mine
+
+        # The reload is complete. This process must see the new rules too.
+        assert _names(s, art) == ["DRV"]
+
+
+def test_a_stale_snapshot_written_back_after_a_reload_is_not_used(seeded_db):
+    """A slow reader that computed the snapshot from the old rules can
+    write it back after the reload's delete. Its version is older than
+    the rules', so it is recomputed rather than matched against."""
+    from mimir import cache, subsystems
+    from mimir.models import MainlineState
+
+    with seeded_db() as s:
+        _add_subsystem(s, "NET", "Maintained", files=["net/"])
+        art = _add_patch_article(s, "late@x", ["drivers/x/a.c"])
+        s.add(MainlineState(tree_name="linus", last_commit_sha="a" * 40))
+        s.commit()
+        old = subsystems._compute_rules_snapshot()
+        assert old.version == "a" * 40  # precondition
+
+        _add_subsystem(s, "DRV", "Maintained", files=["drivers/x/"])
+        s.get(MainlineState, "linus").last_commit_sha = "b" * 40
+        s.commit()
+        subsystems.invalidate_rules_snapshot()
+        cache.set(subsystems._RULES_CACHE_KEY, old, ttl=3600)  # the late write
+        subsystems._index = None
+
+        assert _names(s, art) == ["DRV"]

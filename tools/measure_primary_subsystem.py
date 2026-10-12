@@ -20,6 +20,11 @@ the subsystem pages already fill (only during the cross-check).
 
 Results on 2026-10-12 are recorded on mimir#703; the matcher is the
 basis of mimir#705.
+
+Measured against 3.16.0 code. From 3.17.0 on, `subsystems_for_article`
+uses the indexed matcher itself (#705), so a rerun no longer reproduces
+the 2026-10-12 baselines: the cross-check then compares this matcher
+with the same algorithm, and agreement proves nothing.
 """
 
 import collections
