@@ -3,6 +3,7 @@ the `/<inbox>/` dashboard, per-subsystem dashboards,
 per-author / per-reviewer pages, and the surrounding render
 contract (card grids, sparklines, tracker tiles, footer)."""
 
+import re
 from datetime import UTC
 
 from tests.test_routes._helpers import (
@@ -1368,3 +1369,33 @@ def test_reviewer_page_links_a_linked_inbox_when_canonical_is_not_linked(
     assert len(links) == 1
     assert links[0].startswith("/alpha/")
     assert client.get(links[0]).status_code == 200
+
+
+def test_subsystem_dashboard_folds_a_series_into_one_triage_row(client, tmp_path):
+    """A three-patch posting shows once on the quiet list, with the
+    other two counted (#686)."""
+    from datetime import datetime, timedelta
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleFile
+    from tests.test_routes._helpers import seed_thread_shape
+
+    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [(f"fold-{n}@x", None) for n in (1, 2, 3)]
+    )
+    with SessionLocal() as s:
+        for n in (1, 2, 3):
+            art = s.get(Article, seeded[f"fold-{n}@x"][0])
+            art.subject = f"[PATCH {n}/3] bcachefs: fold {n}"
+            art.date = datetime.now(UTC) - timedelta(days=60, minutes=-n)
+            art.patch_series_key = "foldkey"
+            art.patch_series_version = "v1"
+            art.patch_series_position = n
+            s.add(ArticleFile(article_id=art.id, path="fs/bcachefs/super.c"))
+        s.commit()
+    text = client.get("/alpha/subsystem/bcachefs/").data.decode()
+    assert "Quiet for" in text  # precondition: the quiet list rendered
+    quiet = text.split("Quiet for", 1)[1]
+    assert quiet.count("bcachefs: fold") == 1, quiet
+    assert re.search(r"fold 1</a>\s*<small>\+2 more in this series</small>", quiet)
