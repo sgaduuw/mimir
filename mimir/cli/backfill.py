@@ -196,7 +196,8 @@ def backfill_patch_series_command(
         f"indexed={result.indexed} "
         f"in_series_indexed={result.in_series_indexed} "
         f"in_series_orphan={result.in_series_orphan} "
-        f"not_cover={result.not_cover} skipped={result.skipped}"
+        f"not_cover={result.not_cover} skipped={result.skipped} "
+        f"subjects_unfolded={result.subjects_unfolded}"
     )
     _echo_run_summary(run)
 
