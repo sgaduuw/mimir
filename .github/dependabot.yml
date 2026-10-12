@@ -23,7 +23,7 @@ updates:
 
   # Tracks the debian:trixie-slim base image referenced via FROM in the
   # Dockerfile. The Astral python-build-standalone tarball pulled into
-  # the python-3.14t stage is ARG-pinned (PBS_RELEASE / PYTHON_VERSION)
+  # the python-3.15t stage is ARG-pinned (PBS_RELEASE / PYTHON_VERSION)
   # and is not visible to Dependabot's docker scanner; PBS bumps stay
   # manual until a custom updater becomes worth wiring up.
   - package-ecosystem: "docker"

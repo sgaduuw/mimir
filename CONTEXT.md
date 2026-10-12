@@ -191,9 +191,12 @@ assumes each is a Mailbox. RFC 5322 *group* addresses
 `.local_part` attribute → `AttributeError`. Real-world lkml messages
 hit this often enough to fail dozens of messages per epoch.
 
-**Verified still present on 3.14.4** (re-checked after the Python bump).
-Don't assume a future minor bump fixes it, re-test before removing the
-workaround.
+**Verified present on 3.14.4.** On 2026-10-12 the shape in
+`test_group_address_does_not_crash` (`From: "ML": a@b, c@d;`) no longer
+raised on 3.14.8 or 3.15.0, through `msg.items()` or `msg["From"]`, so
+either a 3.14 patch release fixed it or the real trigger is a shape that
+test lacks. Unconfirmed either way: keep the workaround (it costs
+nothing) until a reproduction on the current version says otherwise.
 
 **Workaround in `mimir.parser`:**
 - Read every header via `msg.raw_items()`, bypasses policy parsing.

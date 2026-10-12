@@ -358,7 +358,7 @@ class Settings(BaseSettings):
     # ReadSessionPool sized by this field. `os.cpu_count()` is the
     # natural starting default so the pool sizes itself to the host.
     # On the production 4-core coruscant box: 4 read-pool threads +
-    # 1 writer = 5 threads total. With 3.14t free-threading, the
+    # 1 writer = 5 threads total. With 3.15t free-threading, the
     # 4 read-pool threads can occupy 4 cores. Operator override:
     # BROKER_READ_POOL_SIZE. See
     # _claude/plans/2026-05-29-broker-two-pool-phase-1-infrastructure.md.
