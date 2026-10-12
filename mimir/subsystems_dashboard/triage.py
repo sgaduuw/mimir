@@ -17,12 +17,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.config import settings
 from mimir.models import (
+    Article,
     ArticleTrailer,
     Inbox,
     Subsystem,
@@ -50,9 +51,10 @@ class PatchAttention(BaseModel):
     date: datetime | None
     inbox_name: str
     trailer_summary: str = ""
-    # Further patches of the same posting (series key and version)
-    # folded into this row (#686): a series is one row, not one per
-    # patch, so a long series cannot fill the list.
+    # The posting's other patches (same series key and version, other
+    # positions), shown as "+N more in this series". A posting is one
+    # row, not one per patch, so a long series cannot fill the list
+    # (#686).
     series_more: int = 0
 
 
@@ -325,10 +327,7 @@ def _run_triage(
                 if r.patch_series_key
                 else None
             )
-            # ponytail: counts only the siblings fetched before the list
-            # filled; a sibling past the last page is not counted.
             if series in by_series:
-                by_series[series].series_more += 1
                 continue
             if len(out) >= limit:
                 continue
@@ -345,7 +344,7 @@ def _run_triage(
             if series is not None:
                 by_series[series] = row
         if len(out) >= limit or len(rows) < params["page"]:
-            return out
+            break
         # Keyset, not OFFSET: the next page starts in the date index
         # where this one ended, so k pages cost k walks, not k^2/2.
         params = {
@@ -353,6 +352,25 @@ def _run_triage(
             "min_date": rows[-1].art_date,
             "after_id": rows[-1].article_id,
         }
+    # Counted, not tallied while paging: the list can fill before a
+    # posting's later patches are fetched. Every other patch of the
+    # posting counts, listed or not. Positions, not rows: the cover
+    # (position 0) is not a patch, and a `RESEND` of the same version
+    # stores every patch twice.
+    if by_series:
+        posting = tuple_(Article.patch_series_key, Article.patch_series_version)
+        counts = session.execute(
+            select(
+                Article.patch_series_key,
+                Article.patch_series_version,
+                func.count(Article.patch_series_position.distinct()),
+            )
+            .where(posting.in_(list(by_series)), Article.patch_series_position > 0)
+            .group_by(Article.patch_series_key, Article.patch_series_version)
+        ).all()
+        for key, version, n in counts:
+            by_series[(key, version)].series_more = max(n - 1, 0)
+    return out
 
 
 def needs_attention_patches_in_subsystem(
