@@ -796,3 +796,45 @@ def test_parsed_attachment_pickles_round_trip():
     assert revived.filename == "report.pdf"
     assert revived.content_type == "application/pdf"
     assert revived.content == b"\x00\x01\x02\x03binary"
+
+
+# Folded headers (#710)
+
+
+def test_folded_subject_is_unfolded():
+    """RFC 5322 folding (a line break before whitespace) is not part of
+    the value. A folded subject stored with its line break broke both
+    series parsers for ~1M patches (#710)."""
+    raw = _msg().replace(
+        b"Subject: hi\r\n",
+        b"Subject: [PATCH v2 02/12] platform/x86: lenovo-wmi-capdata: Do not stop the\r\n AC\r\n",
+    )
+    art = parse_message(raw)
+    assert art.subject == (
+        "[PATCH v2 02/12] platform/x86: lenovo-wmi-capdata: Do not stop the AC"
+    )
+
+
+def test_folded_encoded_words_decode_as_one_subject():
+    """Unfolding happens before RFC 2047 decoding, so encoded-words
+    split across a fold still decode into one line, and the whitespace
+    after a fold is kept as sent (a tab stays a tab) rather than being
+    collapsed by the decoder."""
+    raw = _msg().replace(
+        b"Subject: hi\r\n",
+        b"Subject: =?UTF-8?Q?J=C3=B6rg?=\r\n =?UTF-8?Q?_fixes?= the\r\n\tthing\r\n",
+    )
+    subject = parse_message(raw).subject
+    assert "\n" not in subject
+    assert subject == "Jörg fixes the\tthing"
+
+
+def test_unfold_keeps_the_whitespace_and_only_removes_line_breaks():
+    from mimir.parser import normalize_subject, unfold
+
+    folded = "[PATCH 1/2] foo: bar the\n baz\r\n\tqux"
+    assert unfold(folded) == "[PATCH 1/2] foo: bar the baz\tqux"
+    assert unfold(None) is None
+    # The stored `subject_normalized` already collapsed whitespace, so
+    # unfolding the subject leaves it unchanged: no rewrite needed.
+    assert normalize_subject(folded) == normalize_subject(unfold(folded))
