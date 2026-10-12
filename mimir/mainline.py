@@ -279,6 +279,11 @@ def walk_commits(
         # rebases=True: every row of the walk, keyed like the table's PK
         # within one tree; merge-graph re-emissions collapse here.
         walked_rows: dict[tuple[str, str], dict] = {}
+        # rebases=True: non-merge commits walked, and how many link a
+        # message, for /merge-window's coverage line (#703). Merges are
+        # left out to match `git rev-list --no-merges`.
+        non_merge_seen = 0
+        non_merge_linked = 0
         # Tracks the SHA of the last commit processed; updated per commit
         # in the main loop and used for the post-walk cursor WriteOp.
         last_seen_sha_for_cursor: str | None = result.last_walked_sha
@@ -310,6 +315,9 @@ def walk_commits(
             last_seen_sha_for_cursor = sha
 
             msgids = extract_message_ids(commit.message)
+            if len(commit.parents) < 2:
+                non_merge_seen += 1
+                non_merge_linked += bool(msgids)
             if msgids:
                 result.linked += 1
                 committed_at = datetime.fromtimestamp(
@@ -343,7 +351,12 @@ def walk_commits(
         # batch. A rebasing tree applies its whole walk in one WriteOp.
         flush()
         if rebases:
-            _submit_mainline_rebuild(writer, tree_name, walked_rows).result(timeout=300)
+            _submit_mainline_rebuild(
+                writer,
+                tree_name,
+                walked_rows,
+                walked=(non_merge_seen, non_merge_linked),
+            ).result(timeout=300)
 
         # Cursor update: submit the final WriteOp advancing
         # MainlineState.commits_walked_to_sha to the last commit seen. This
@@ -501,7 +514,11 @@ def _submit_mainline_batch(writer, tree_name: str, batch: list[dict]) -> WriteFu
 
 
 def _submit_mainline_rebuild(
-    writer, tree_name: str, rows: dict[tuple[str, str], dict]
+    writer,
+    tree_name: str,
+    rows: dict[tuple[str, str], dict],
+    *,
+    walked: tuple[int, int],
 ) -> WriteFuture:
     """Replace a rebasing tree's rows with `rows` in one WriteOp, by
     difference: delete the live keys the walk no longer has, insert
@@ -509,6 +526,10 @@ def _submit_mainline_rebuild(
     WriteOp, on the writer's connection, so the comparison and the
     change are one transaction. Readers see the old set or the new
     one, and an unchanged tree writes nothing (#671).
+
+    `walked` is (non-merge commits, of which linked) for the same walk,
+    stored on `mainline_state` in this transaction so the coverage
+    figure and the rows never describe different walks (#703).
 
     ponytail: one transaction sized by the day's difference; on a
     first walk or after a `--reference` loss it is the whole tree.
@@ -541,6 +562,15 @@ def _submit_mainline_rebuild(
                     index_elements=["commit_sha", "message_id", "tree_name"]
                 )
             )
+        seen, linked = walked
+        conn.execute(
+            sqlite_insert(MainlineState)
+            .values(tree_name=tree_name, walked_commits=seen, walked_linked=linked)
+            .on_conflict_do_update(
+                index_elements=["tree_name"],
+                set_={"walked_commits": seen, "walked_linked": linked},
+            )
+        )
 
     return writer.submit(
         WriteOp(label=f"mainline:{tree_name}:rebuild", fn=_fn),

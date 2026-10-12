@@ -7,6 +7,7 @@
 <h1>Linux merge window <small>patches queued in linux-next</small></h1>
 
 <p>
+  {%- if mw.linus_release and mw.window_open %}<strong>The merge window after {{ mw.linus_release }} is open.</strong> {% elif mw.linus_release %}The next merge window opens when {{ mw.linus_release }} is released. {% endif -%}
   {%- if mw.linus_tag %}Linus's tree is at <strong>{{ mw.linus_tag }}</strong>. {% endif -%}
   {%- if mw.queued_walked_at %}linux-next as of {{ mw.queued_walked_at.strftime('%Y-%m-%d %H:%M') }} UTC.{% endif %}
 </p>
@@ -15,6 +16,7 @@
 <p><small>{{ mw.queued }} patch{{ '' if mw.queued == 1 else 'es' }} in linux-next
   {{ 'is' if mw.queued == 1 else 'are' }} not in Linus's tree yet
   {%- if mw.lists %}, across {{ mw.lists|length }} mailing list{{ '' if mw.lists|length == 1 else 's' }}{% endif %}.
+  {%- if mw.walked_commits %} {{ mw.walked_linked }} of {{ mw.walked_commits }} commits in linux-next link their mailing-list patch; the rest cannot be shown here.{% endif %}
   Only commits that link their mailing-list message (a <code>Link:</code> trailer) are counted.
   {%- if mw.not_archived %} {{ mw.not_archived }} of them link to messages not archived here.{% endif %}
   A series shows once, by its cover letter.</small></p>
@@ -27,8 +29,13 @@
 
 {% for lst in mw.lists %}
 <h2 id="{{ lst.inbox_name }}">{{ lst.inbox_name }} <small>{{ lst.patches }} patch{{ '' if lst.patches == 1 else 'es' }}</small></h2>
+{# Long lists fold after FOLD rows: a shorter page at merge-window
+   scale (netdev alone runs to hundreds of rows), with every link
+   still in the HTML for crawlers. #}
+{% set FOLD = 20 %}
+{% macro rows(items) %}
 <ul>
-  {% for row in lst.rows %}
+  {% for row in items %}
   <li>
     <a href="{{ row.url }}">{{ row.subject|clean_subject or '(no subject)' }}</a>
     {%- if row.patches > 1 %} <small>{{ row.patches }} patches</small>{% endif %}
@@ -38,6 +45,14 @@
   </li>
   {% endfor %}
 </ul>
+{% endmacro %}
+{{ rows(lst.rows[:FOLD]) }}
+{% if lst.rows|length > FOLD %}
+<details>
+  <summary>Show all {{ lst.rows|length }}</summary>
+  {{ rows(lst.rows[FOLD:]) }}
+</details>
+{% endif %}
 {% endfor %}
 {% else %}
 {# Empty is a real state: right after a merge window closes, or before

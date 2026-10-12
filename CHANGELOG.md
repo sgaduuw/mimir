@@ -18,7 +18,12 @@ changes, not internal refactors. Categories: **Added**,
   Linus's tree is at. A series shows once, by its cover letter. Only commits
   with a `Link:` trailer are counted; queued messages not archived here are
   counted, not listed. Linked from the front page and listed in
-  `/meta-sitemap.xml` (#672).
+  `/meta-sitemap.xml` (#672). It says whether the merge window is open (after
+  a release tag) or when it opens (at an rc tag), folds each list after 20
+  rows behind "Show all", and says how many commits in linux-next link their
+  mailing-list patch, from the walk that built the list (#703). That count
+  is stored on `mainline_state` (migration at broker startup, two new nullable
+  columns) and appears after the next linux-next walk.
 
 ### Fixed
 
