@@ -1503,3 +1503,43 @@ def test_rebuild_with_no_changes_writes_no_rows(seeded_db, tmp_path, writer_thre
             s.commit()
     assert len(_tree_keys(seeded_db, "linux-next")) == 3  # precondition
     assert writes == []
+
+
+def test_rebuild_records_non_merge_commits_seen_and_linked(
+    seeded_db, tmp_path, writer_thread
+):
+    """The linux-next rebuild stores how many non-merge commits it saw
+    and how many link a message, so /merge-window can say how much of
+    linux-next it can show (#703). Merges count in neither, matching
+    `git rev-list --no-merges`: a merge's trailer names no patch."""
+    from dulwich.objects import Commit, Tree
+
+    repo_path = tmp_path / "next.git"
+    repo = Repo.init_bare(str(repo_path), mkdir=True)
+    tree = Tree()
+    repo.object_store.add_object(tree)
+
+    def commit(msg, parents):
+        c = Commit()
+        c.tree = tree.id
+        c.parents = parents
+        c.author = c.committer = b"T <t@x>"
+        c.author_time = c.commit_time = 1700000000 + len(parents)
+        c.author_timezone = c.commit_timezone = 0
+        c.message = msg
+        repo.object_store.add_object(c)
+        return c.id
+
+    a = commit(b"a\n\nLink: https://lore.kernel.org/r/a@x\n", [])
+    b = commit(b"b, no trailer\n", [a])
+    side = commit(b"side\n\nLink: https://lore.kernel.org/r/side@x\n", [a])
+    merge = commit(b"Merge\n\nLink: https://lore.kernel.org/r/merge@x\n", [b, side])
+    repo.refs[b"HEAD"] = merge
+
+    with seeded_db() as s:
+        walk_commits(
+            s, repo_path, tree_name="linux-next", rebases=True, writer=writer_thread
+        )
+    with seeded_db() as s:
+        state = s.get(MainlineState, "linux-next")
+        assert (state.walked_commits, state.walked_linked) == (3, 2)

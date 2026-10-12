@@ -247,3 +247,83 @@ def test_linus_tag_release_beats_its_candidates(tmp_path):
 def test_linus_tag_missing_mirror_or_tags_is_none(tmp_path):
     assert linus_tag(tmp_path / "absent.git") is None
     assert linus_tag(_tagged_repo(tmp_path, ["junk"])) is None
+
+
+@pytest.mark.parametrize(
+    ("tag", "expected"),
+    [
+        ("v7.3", "The merge window after v7.3 is open."),
+        ("v7.4-rc3", "The next merge window opens when v7.4 is released."),
+        (None, None),
+    ],
+)
+def test_page_says_whether_the_merge_window_is_open(client, monkeypatch, tag, expected):
+    """A release tag means the window after it is open; an rc tag means
+    it opens at that release. No predicted version number (#703)."""
+    import mimir.merge_window as mw
+
+    monkeypatch.setattr(mw, "linus_tag", lambda path: tag)
+    text = re.sub(r"<[^>]+>", "", client.get(MERGE_WINDOW_PATH).get_data(as_text=True))
+    sentences = re.findall(
+        r"The (?:next )?merge window .*?(?:is open|is released)\.", text
+    )
+    assert sentences == ([expected] if expected else [])
+
+
+def test_long_list_folds_after_twenty_rows(client):
+    """Each list shows its first 20 rows; the rest sit in a <details>,
+    still in the HTML so crawlers see every link (#703)."""
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        for n in range(25):
+            _article(s, f"fold{n:02d}@x", days=n)
+            _commit(s, f"fold{n:02d}@x", "linux-next")
+        s.commit()
+    html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
+    section = html.split('<h2 id="alpha">', 1)[1].split("</h2>", 1)[1]
+    section = section.split("<h2", 1)[0]
+    visible, _, folded = section.partition("<details")
+    assert visible.count("<li>") == 20
+    assert folded.count("<li>") == 5
+    assert re.search(r"<summary>Show all 25</summary>", folded)
+
+
+@pytest.mark.parametrize(
+    ("counts", "expected"),
+    [
+        (
+            (14450, 9760),
+            "9760 of 14450 commits in linux-next link their mailing-list patch",
+        ),
+        ((None, None), None),
+    ],
+)
+def test_page_says_how_much_of_linux_next_it_can_see(client, counts, expected):
+    """The share comes from the walk that built the rows on the page, so
+    it always describes this snapshot (#703). Before the first walk that
+    records it, the page keeps its general note."""
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        s.add(
+            MainlineState(
+                tree_name="linux-next",
+                last_walked_at=_T0,
+                walked_commits=counts[0],
+                walked_linked=counts[1],
+            )
+        )
+        _article(s, "cov@x")
+        _commit(s, "cov@x", "linux-next")
+        s.commit()
+    text = re.sub(
+        r"\s+",
+        " ",
+        re.sub(r"<[^>]+>", "", client.get(MERGE_WINDOW_PATH).get_data(as_text=True)),
+    )
+    found = re.search(
+        r"\d+ of \d+ commits in linux-next link their mailing-list patch", text
+    )
+    assert (found.group(0) if found else None) == expected
+    assert "Link: trailer" in text  # the general note stays either way
