@@ -11,14 +11,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
-### Changed
-
-- Resolving a patch's subsystems (the subsystem line on every patch's message
-  and thread page) indexes the MAINTAINERS rules by directory and keeps the
-  index per process until the rules change, instead of decoding and walking
-  all ~10k rules per call. Same results; locally about 65 times faster on a
-  production-sized rule set (median 23 ms to 0.35 ms), and production measured
-  75 ms per patch before (#705).
+## [3.17.0] - 2026-10-12
 
 ### Added
 
@@ -34,9 +27,18 @@ changes, not internal refactors. Categories: **Added**,
   says whether the merge window is open (after a release tag) or when it
   opens (at an rc tag), folds each section after 20 rows behind "Show all",
   and says how many commits in linux-next link their mailing-list patch, from
-  the walk that built the list (#703). That count
-  is stored on `mainline_state` (migration at broker startup, two new nullable
-  columns) and appears after the next linux-next walk.
+  the walk that built the list (#703). That count is stored on
+  `mainline_state` (migration at broker startup, two new nullable columns)
+  and appears after the next linux-next walk.
+
+### Changed
+
+- Resolving a patch's subsystems (the subsystem line on every patch's message
+  and thread page) indexes the MAINTAINERS rules by directory and keeps the
+  index per process until the rules change, instead of decoding and walking
+  all ~10k rules per call. Same results; locally about 65 times faster on a
+  production-sized rule set (median 23 ms to 0.35 ms), and production measured
+  75 ms per patch before (#705).
 
 ### Fixed
 

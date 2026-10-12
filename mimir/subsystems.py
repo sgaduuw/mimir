@@ -144,6 +144,10 @@ class _RulesSnapshot(BaseModel):
 
     rules: list[_SubsystemRule] = []
     subsystems: dict[int, _SubsystemSnap] = {}
+    # The rules version these rows were read at (linus
+    # `last_commit_sha`), read BEFORE the rules so a reload landing in
+    # between can only make it look older than it is, never newer.
+    version: str | None = None
 
 
 cache.register("_SubsystemRule", _SubsystemRule)
@@ -159,6 +163,11 @@ def _compute_rules_snapshot() -> _RulesSnapshot:
     from mimir.extensions import SessionLocal
 
     with SessionLocal() as session:
+        version = session.scalar(
+            select(MainlineState.last_commit_sha).where(
+                MainlineState.tree_name == "linus"
+            )
+        )
         subs = (
             session.execute(
                 select(Subsystem).options(selectinload(Subsystem.maintainers))
@@ -190,7 +199,7 @@ def _compute_rules_snapshot() -> _RulesSnapshot:
         )
         for sub_id, glob, is_exclude in rule_rows
     ]
-    return _RulesSnapshot(rules=rules, subsystems=sub_map)
+    return _RulesSnapshot(rules=rules, subsystems=sub_map, version=version)
 
 
 def _rules_snapshot(session: Session) -> _RulesSnapshot:
@@ -316,8 +325,19 @@ def _rules_index(session: Session) -> _RulesIndex:
         and cache.alive(session, _RULES_CACHE_KEY)
     ):
         return memo[1]
-    built = _RulesIndex.build(_rules_snapshot(session))
-    _index = (version, built) if version is not None else None
+    snap = _rules_snapshot(session)
+    if snap.version != version:
+        # Cached before the current rules (a reload between its commit
+        # and its invalidation, or a late write from a reader): rebuild.
+        snap = cache.get_or_compute(
+            session,
+            _RULES_CACHE_KEY,
+            _RULES_CACHE_TTL_SEC,
+            _compute_rules_snapshot,
+            force=True,
+        )
+    built = _RulesIndex.build(snap)
+    _index = (snap.version, built) if snap.version is not None else None
     return built
 
 
