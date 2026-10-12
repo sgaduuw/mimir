@@ -1,5 +1,5 @@
 """Data for `/merge-window` (#672): the patches in linux-next that
-Linus's tree does not have yet, grouped by mailing list.
+Linus's tree does not have yet, grouped by primary subsystem (#703).
 
 "Queued" is linux-next minus Linus, on message-id rather than commit
 sha: quilt-managed parts of linux-next get new shas on every rebuild,
@@ -31,8 +31,9 @@ import mimir
 from mimir import cache
 from mimir.config import settings
 from mimir.mainline import resolve_tree_path
-from mimir.models import Article, MainlineState
+from mimir.models import Article, ArticleFile, MainlineState
 from mimir.patch_state import _resolve_tree_label
+from mimir.subsystems import ranked_subsystems
 from mimir.threading import _coerce_dt
 from mimir.web.urls import _canonical_inbox_names_for, _msg_path
 
@@ -48,6 +49,13 @@ MERGE_WINDOW_PATH = "/merge-window"
 # unused entry lingers.
 MERGE_WINDOW_CACHE_TTL_SEC = 24 * 3600
 
+# A subsystem gets its own section from this many queued patches; the
+# rest share "Smaller subsystems". Chosen 2026-10-12 from a production
+# measurement: ~85 sections holding 60% of patches (#703).
+SECTION_MIN_PATCHES = 25
+ALSO_TOUCHES = 3
+NO_SUBSYSTEM = "(no subsystem)"
+
 
 class MergeWindowRow(BaseModel):
     """One posting: a series (cover letter, or its oldest queued patch
@@ -61,16 +69,29 @@ class MergeWindowRow(BaseModel):
     # Other trees carrying any of the posting's patches (net-next,
     # tip, ...), as display labels. linux-next is implied.
     trees: list[str]
+    # The list the row links into.
+    inbox_name: str = ""
+    # The next most specific subsystems the posting touches, after the
+    # one its section is for (at most `ALSO_TOUCHES`).
+    also: list[str] = []
 
 
-class MergeWindowList(BaseModel):
-    inbox_name: str
+class MergeWindowSection(BaseModel):
+    """One primary subsystem's postings, newest first."""
+
+    name: str
+    # Stable fragment id, so a section can be linked to directly.
+    anchor: str
     patches: int
     rows: list[MergeWindowRow]
 
 
 class MergeWindow(BaseModel):
-    lists: list[MergeWindowList]
+    # Subsystems with at least `SECTION_MIN_PATCHES` queued patches,
+    # largest first; then the rest, by name, "(no subsystem)" last.
+    sections: list[MergeWindowSection]
+    smaller: list[MergeWindowSection] = []
+    smaller_patches: int = 0
     # Queued message-ids, archived or not.
     queued: int
     # Queued message-ids with no article mimir can link to.
@@ -90,7 +111,7 @@ class MergeWindow(BaseModel):
 
 
 cache.register("MergeWindowRow", MergeWindowRow)
-cache.register("MergeWindowList", MergeWindowList)
+cache.register("MergeWindowSection", MergeWindowSection)
 cache.register("MergeWindow", MergeWindow)
 
 
@@ -104,18 +125,25 @@ def merge_window_state(session: Session) -> str:
     on a restart without a version bump are listed explicitly (AGENTS.md
     "A cache validator is the same pair, in time").
 
-    Known gap, accepted: a canonical-inbox recompute (#645) moves
-    grouping and links without moving either timestamp. Linus walks
-    every 25 minutes, which corrects it. The few seconds between a
+    Known gap, accepted: a canonical-inbox recompute (#645), or an
+    `article_files` reprocess, moves links or grouping without moving
+    either timestamp. Linus walks every 25 minutes, which corrects it. The few seconds between a
     rebuild's commit and its `last_walked_at` write can likewise serve
     the new set under the old key."""
-    walked = dict(
-        session.execute(
-            select(MainlineState.tree_name, MainlineState.last_walked_at).where(
-                MainlineState.tree_name.in_((QUEUED_TREE, LINUS_TREE))
-            )
+    states = {
+        row.tree_name: row
+        for row in session.execute(
+            select(
+                MainlineState.tree_name,
+                MainlineState.last_walked_at,
+                MainlineState.last_commit_sha,
+            ).where(MainlineState.tree_name.in_((QUEUED_TREE, LINUS_TREE)))
         ).all()
-    )
+    }
+    walked = {name: row.last_walked_at for name, row in states.items()}
+    # The subsystem grouping follows MAINTAINERS; this is its version
+    # (see `subsystems._rules_index`).
+    rules = states[LINUS_TREE].last_commit_sha if LINUS_TREE in states else None
     labels = ",".join(
         f"{name}={cfg.display_name or ''}"
         for name, cfg in sorted(settings.trees.items())
@@ -125,6 +153,7 @@ def merge_window_state(session: Session) -> str:
             mimir.__version__,
             str(walked.get(QUEUED_TREE) or ""),
             str(walked.get(LINUS_TREE) or ""),
+            rules or "",
             ",".join(sorted(settings.canonical_demoted_inboxes)),
             labels,
             str(_linus_path()),
@@ -209,8 +238,26 @@ def _compute(session: Session) -> MergeWindow:
         session, [rep[0] for rep in representatives.values()]
     )
 
-    by_inbox: dict[str, list[MergeWindowRow]] = {}
-    patches_by_inbox: dict[str, int] = {}
+    files = _files(session, [r.id for r in archived])
+    # The posting's files together decide its primary subsystem, so a
+    # series appears once, under the most specific subsystem any of its
+    # patches touches.
+    posting_keys = list(postings)
+    ranked_by_posting = dict(
+        zip(
+            posting_keys,
+            ranked_subsystems(
+                session,
+                [
+                    [path for m in postings[k] for path in files.get(m.id, ())]
+                    for k in posting_keys
+                ],
+            ),
+            strict=True,
+        )
+    )
+    by_subsystem: dict[str, list[MergeWindowRow]] = {}
+    patches_by_subsystem: dict[str, int] = {}
     unlinked = 0
     for posting, members in postings.items():
         rep_id, subject, author, date = representatives[posting]
@@ -226,7 +273,9 @@ def _compute(session: Session) -> MergeWindow:
                 for t in trees_by_msgid.get(m.message_id, ())
             }
         )
-        by_inbox.setdefault(inbox_name, []).append(
+        ranked = ranked_by_posting[posting]
+        primary = ranked[0] if ranked else NO_SUBSYSTEM
+        by_subsystem.setdefault(primary, []).append(
             MergeWindowRow(
                 subject=subject,
                 url=_msg_path(rep_id, date, inbox_name),
@@ -234,29 +283,45 @@ def _compute(session: Session) -> MergeWindow:
                 date=date,
                 patches=len(members),
                 trees=trees,
+                inbox_name=inbox_name,
+                also=ranked[1 : 1 + ALSO_TOUCHES],
             )
         )
-        patches_by_inbox[inbox_name] = patches_by_inbox.get(inbox_name, 0) + len(
+        patches_by_subsystem[primary] = patches_by_subsystem.get(primary, 0) + len(
             members
         )
 
-    lists = [
-        MergeWindowList(
-            inbox_name=name,
-            patches=patches_by_inbox[name],
+    groups = [
+        MergeWindowSection(
+            name=name,
+            anchor=_anchor(name),
+            patches=patches_by_subsystem[name],
             rows=sorted(
                 rows,
                 key=lambda row: (row.date is not None, row.date),
                 reverse=True,
             ),
         )
-        for name, rows in by_inbox.items()
+        for name, rows in by_subsystem.items()
     ]
-    lists.sort(key=lambda lst: (-lst.patches, lst.inbox_name))
+    sections = sorted(
+        (
+            g
+            for g in groups
+            if g.patches >= SECTION_MIN_PATCHES and g.name != NO_SUBSYSTEM
+        ),
+        key=lambda g: (-g.patches, g.name),
+    )
+    smaller = sorted(
+        (g for g in groups if g not in sections),
+        key=lambda g: (g.name == NO_SUBSYSTEM, g.name),
+    )
 
     state = session.get(MainlineState, QUEUED_TREE)
     return MergeWindow(
-        lists=lists,
+        sections=sections,
+        smaller=smaller,
+        smaller_patches=sum(g.patches for g in smaller),
         queued=queued,
         not_archived=queued - len(archived) + unlinked,
         **_window(linus_tag(_linus_path())),
@@ -264,6 +329,26 @@ def _compute(session: Session) -> MergeWindow:
         walked_commits=state.walked_commits if state else None,
         walked_linked=state.walked_linked if state else None,
     )
+
+
+def _files(session: Session, article_ids: list[int]) -> dict[int, list[str]]:
+    """Touched files per article, for the subsystem grouping."""
+    out: dict[int, list[str]] = {}
+    for i in range(0, len(article_ids), 900):
+        for aid, path in session.execute(
+            select(ArticleFile.article_id, ArticleFile.path).where(
+                ArticleFile.article_id.in_(article_ids[i : i + 900])
+            )
+        ).all():
+            out.setdefault(aid, []).append(path)
+    return out
+
+
+def _anchor(name: str) -> str:
+    """A section's fragment id: the subsystem name, lowercased, with
+    every run of other characters as one hyphen (`KERNEL VIRTUAL MACHINE
+    FOR X86 (KVM/x86)` gives `kernel-virtual-machine-for-x86-kvm-x86`)."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "section"
 
 
 def _covers(session: Session, postings: list[tuple]) -> dict[tuple, tuple]:
