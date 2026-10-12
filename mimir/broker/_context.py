@@ -24,7 +24,7 @@ from mimir.broker.writes import WriterThread
 # #483 proposed replacing the lock with a single immutable tuple read
 # under the theory that free-threading serialises this otherwise.
 # Microbenchmark `_claude/bench-483-context-lock.py` measured both
-# shapes on GIL-on and GIL-off (3.14t) interpreters at N in {1, 2, 4,
+# shapes on GIL-on and GIL-off (free-threaded) interpreters at N in {1, 2, 4,
 # 8, 16} threads:
 #
 # - GIL on: lockless ~3x faster, scales linearly. Expected.

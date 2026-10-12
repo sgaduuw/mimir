@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 #
 # Multi-stage build:
-# - `python-3.14t`: Astral python-build-standalone install. The official
-#   `python:3.14t-slim` image doesn't exist on Docker Hub yet (PEP 779 is
+# - `python-3.15t`: Astral python-build-standalone install. The official
+#   `python:3.15t-slim` image doesn't exist on Docker Hub yet (PEP 779 is
 #   supported in CPython core as of 3.14, but docker-library/python is a
 #   separate maintenance track that hasn't shipped a free-threaded
 #   variant), so we pull the reproducible CPython distribution Astral /
@@ -10,7 +10,7 @@
 # - `builder`: install dependencies via uv into a project-local
 #   venv. Only the venv ships.
 # - `runtime`: clean stage with the venv + source, runs gunicorn as a
-#   non-root user. Derives from the same `python-3.14t` base as builder
+#   non-root user. Derives from the same `python-3.15t` base as builder
 #   so the venv's shebangs (which point at `/opt/python/bin/python3`)
 #   stay valid in the runtime image.
 #
@@ -37,19 +37,19 @@
 # Operator must `chown -R 1001:1001 <host-data-dir>` before bringing
 # the container up (rootful podman / docker, no UID remapping).
 
-ARG PBS_RELEASE=20261003
-ARG PYTHON_VERSION=3.14.8
+ARG PBS_RELEASE=20261009
+ARG PYTHON_VERSION=3.15.0
 ARG PBS_ARCH=x86_64-unknown-linux-gnu
 ARG PBS_URL=https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/cpython-${PYTHON_VERSION}+${PBS_RELEASE}-${PBS_ARCH}-freethreaded-install_only.tar.gz
 
 
-FROM debian:trixie-slim AS python-3.14t
+FROM debian:trixie-slim AS python-3.15t
 
-# Pull Astral's python-build-standalone free-threaded CPython 3.14 into
+# Pull Astral's python-build-standalone free-threaded CPython 3.15 into
 # /opt/python. The `install_only` tarball ships everything needed at
 # runtime (no debug symbols, no test suite); extracting under /opt
 # gives us `/opt/python/bin/python3` as the interpreter and
-# `/opt/python/bin/python3.14t` as the free-threaded-named symlink.
+# `/opt/python/bin/python3.15t` as the free-threaded-named symlink.
 # The build-time `sys._is_gil_enabled() is False` assertion is the
 # gate that catches a bad URL or a future tarball schema change at
 # build time rather than letting a GIL-enabled binary silently land in
@@ -67,7 +67,7 @@ RUN apt-get update \
 ENV PATH="/opt/python/bin:${PATH}"
 
 
-FROM python-3.14t AS builder
+FROM python-3.15t AS builder
 
 # Copy the uv binary from its official image rather than installing
 # it via pip. This avoids pip's own resolver and keeps the builder
@@ -75,7 +75,7 @@ FROM python-3.14t AS builder
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 # UV_PYTHON_DOWNLOADS=never: the PBS Python at /opt/python/bin/python3
-# (PATH-prepended in the python-3.14t base) is what uv must use; we
+# (PATH-prepended in the python-3.15t base) is what uv must use; we
 # do not want uv to attempt a download of its own interpreter.
 # UV_LINK_MODE=copy: avoids hardlink errors across the BuildKit cache
 # mount filesystem boundary.
@@ -105,7 +105,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
 
-FROM python-3.14t AS runtime
+FROM python-3.15t AS runtime
 
 # git: `mimir update` shells out to `git clone --mirror` / `git fetch`
 # to sync upstream public-inbox epochs. ca-certificates: HTTPS verify

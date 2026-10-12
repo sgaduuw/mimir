@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # Tests reset this between cases via monkeypatch.
 # `threading.Event` rather than a bool because the GIL-era
 # read-check-write pattern (`if not flag: ...; flag = True`) is racy
-# under PYTHON_GIL=0 (3.14t production): 8 warm workers can all see
+# under PYTHON_GIL=0 (3.15t production): 8 warm workers can all see
 # False, all log, all set True. Event.is_set() / .set() are documented
 # thread-safe via the internal `_cond`'s memory barrier; the paired
 # `_SITEMAP_GAP_LOG_LOCK` covers the check-decide-log-then-set sequence
