@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Closing a broker client while its reader thread was waiting no longer logs
+  an unhandled `ValueError` traceback; the reader ends as it does when the
+  socket drops (#699).
+
 ## [3.17.0] - 2026-10-12
 
 ### Added
