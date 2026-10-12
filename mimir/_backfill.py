@@ -122,7 +122,10 @@ def walk_articles(
                 result.examined += 1
                 batch_examined += 1
                 bucket, payload = process_one(session, article, reprocess)
-                setattr(result, bucket, getattr(result, bucket) + 1)
+                # One bucket per row, or a tuple when a row counts twice
+                # (a cover whose folded subject was also rewritten, #710).
+                for name in bucket if isinstance(bucket, tuple) else (bucket,):
+                    setattr(result, name, getattr(result, name) + 1)
                 if payload is not None:
                     batch_payloads.append(payload)
                 cursor = article.id

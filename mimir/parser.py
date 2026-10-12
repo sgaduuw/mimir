@@ -178,6 +178,18 @@ def _split_references(value: str | None) -> list[str]:
 _CFWS_COMMENT_RE = re.compile(r"\([^)]*\)")
 
 
+# RFC 5322 section 2.2.3: a line break followed by whitespace is folding,
+# not part of the value. `raw_items()` keeps it.
+_FOLD_RE = re.compile(r"\r?\n(?=[ \t])")
+
+
+def unfold(value: str | None) -> str | None:
+    """Remove header folding: the line breaks, keeping the whitespace
+    after them. Shared by ingest and `backfill-patch-series`, which
+    rewrites subjects stored before this existed (#710)."""
+    return None if value is None else _FOLD_RE.sub("", value)
+
+
 def _decode_rfc2047(value: str | None) -> str | None:
     """Decode RFC 2047 encoded-words. Safe on plain ASCII strings (returns as-is).
 
@@ -409,7 +421,9 @@ def parse_message(raw: bytes) -> ParsedArticle:
 
     return ParsedArticle(
         message_id=message_id,
-        subject=_decode_rfc2047(_raw_header(msg, "Subject")),
+        # Unfolded before decoding: a folded subject kept its line break
+        # and broke both series parsers (#710).
+        subject=_decode_rfc2047(unfold(_raw_header(msg, "Subject"))),
         author=_decode_rfc2047(_raw_header(msg, "From")),
         date=date,
         body=body,
