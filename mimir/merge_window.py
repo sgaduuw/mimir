@@ -76,7 +76,17 @@ class MergeWindow(BaseModel):
     # Queued message-ids with no article mimir can link to.
     not_archived: int
     linus_tag: str | None
+    # The release `linus_tag` belongs to (`v7.4` for `v7.4-rc3`), and
+    # whether the tag IS that release: right after a release the next
+    # merge window is open, from rc1 on it is closed until the release.
+    linus_release: str | None = None
+    window_open: bool = False
     queued_walked_at: datetime | None
+    # The linux-next rebuild's non-merge commits beyond Linus, and how
+    # many link a message: the share the page can show (#703). None
+    # until the first rebuild that records them.
+    walked_commits: int | None = None
+    walked_linked: int | None = None
 
 
 cache.register("MergeWindowRow", MergeWindowRow)
@@ -244,17 +254,15 @@ def _compute(session: Session) -> MergeWindow:
     ]
     lists.sort(key=lambda lst: (-lst.patches, lst.inbox_name))
 
-    walked_at = session.scalar(
-        select(MainlineState.last_walked_at).where(
-            MainlineState.tree_name == QUEUED_TREE
-        )
-    )
+    state = session.get(MainlineState, QUEUED_TREE)
     return MergeWindow(
         lists=lists,
         queued=queued,
         not_archived=queued - len(archived) + unlinked,
-        linus_tag=linus_tag(_linus_path()),
-        queued_walked_at=walked_at,
+        **_window(linus_tag(_linus_path())),
+        queued_walked_at=state.last_walked_at if state else None,
+        walked_commits=state.walked_commits if state else None,
+        walked_linked=state.walked_linked if state else None,
     )
 
 
@@ -295,6 +303,20 @@ def _linus_path() -> Path | None:
 # Release and release-candidate tags only (`v7.3`, `v7.3-rc4`,
 # `v2.6.39`); anything else in Linus's tree is not a version.
 _VERSION_TAG_RE = re.compile(r"^v(\d+(?:\.\d+)+)(?:-rc(\d+))?$")
+
+
+def _window(tag: str | None) -> dict:
+    """`linus_tag`, `linus_release` and `window_open` for a tag. The
+    page never names the next version: Linus picks major bumps by
+    hand (6.19 to 7.0)."""
+    m = _VERSION_TAG_RE.match(tag or "")
+    if m is None:
+        return {"linus_tag": tag, "linus_release": None, "window_open": False}
+    return {
+        "linus_tag": tag,
+        "linus_release": f"v{m.group(1)}",
+        "window_open": m.group(2) is None,
+    }
 
 
 def linus_tag(path: Path | None) -> str | None:
