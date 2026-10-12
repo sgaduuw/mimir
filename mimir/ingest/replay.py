@@ -100,7 +100,7 @@ def _replay_loop(
         # state assumes single-threaded access to a given .git, and two
         # concurrent Repos over the same path (replay vs warm handler, two
         # concurrent admin replays) can race on the shared pack index cache
-        # on free-threaded 3.14t (audit #480).
+        # on free-threaded 3.14t and later (audit #480).
         try:
             with Repo(str(repo_path)) as repo:
                 try:
