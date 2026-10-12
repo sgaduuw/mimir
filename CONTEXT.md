@@ -508,9 +508,13 @@ and dispatches batched WriteOps through `_context.get_active_writer()`.
   index_elements=["commit_sha", "message_id", "tree_name"])`
   (`tree_name` joined the key in #673). The caller waits
   on `.result(timeout=60)` before composing the next batch.
-- For `rebases=True` trees (e.g. `linux-next`, `mm`), the pre-walk
-  DELETE that purges stale rows is also a WriteOp now
-  (`mainline:<tree>:delete-rebases` label).
+- For `rebases=True` trees (e.g. `linux-next`, `mm`), there are no
+  per-batch WriteOps: the walk collects every row in memory, then one
+  `mainline:<tree>:rebuild` WriteOp reads the live rows on the
+  writer's connection and applies the difference (#671). The old
+  shape, a pre-walk DELETE then batches, left readers a near-empty
+  tree for the length of the walk, so lifecycle pills showed
+  "pending" for linux-next-only patches during every daily rebuild.
 - The cursor (`MainlineState.commits_walked_to_sha`) is the FINAL
   WriteOp per tree, via `_submit_mainline_cursor_update`. This
   preserves resume-from-cursor semantics: a crash between batch N
@@ -2385,9 +2389,11 @@ bootstrapping a `trees` table from `Settings.trees`, same as
 
 **Per-tree `rebases` flag.** Force-pushed trees (linux-next,
 daily) would invalidate the SHA cursor every tick. The
-`rebases=True` branch in `walk_commits` `DELETE`s the tree's
-existing rows and re-walks from scratch each tick; the
-`INSERT OR IGNORE` constraint dedups intra-walk. Like every
+`rebases=True` branch in `walk_commits` re-walks the tree from
+scratch each tick and replaces its rows by difference in one
+WriteOp (#671): readers see the previous set or the new one, a walk
+that raises first changes nothing, and an unchanged tree writes
+nothing. Like every
 non-Linus tree it excludes commits reachable from Linus's HEAD, so
 the daily walk covers only what linux-next holds beyond Linus
 (#673; before that it walked the whole history). Cheaper than the
