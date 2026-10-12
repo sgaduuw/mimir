@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.15.0] - 2026-10-12
+
 ### Changed
 
 - A subsystem's needs-attention and quiet lists show each posting of a series
