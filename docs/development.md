@@ -5,7 +5,7 @@
 ## Local environment
 
 Follow the [broker-first local setup](../README.md#try-it-locally).
-Use Python 3.14 and `uv sync --locked`; the checked-in `.python-version` and
+Use Python 3.15 and `uv sync --locked`; the checked-in `.python-version` and
 `uv.lock` select the interpreter and dependency versions.
 
 Keep `MIMIR_IS_BROKER=true` scoped to the broker process. Other processes open

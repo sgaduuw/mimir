@@ -11,6 +11,17 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-10-12
+
+### Changed
+
+- mimir now runs on Python 3.15, free-threaded (3.15t) in the image, and
+  requires it (`requires-python = ">=3.15"`). The image builds from
+  python-build-standalone `20261009`. pydantic moves to 2.14.1
+  (pydantic-core 2.50.1), the first release with free-threaded 3.15 wheels
+  for Linux. Parsing 25,837 real messages (lkml and workflows) gave identical
+  results on 3.14 and 3.15 (#689).
+
 ## [3.15.0] - 2026-10-12
 
 ### Changed

@@ -56,7 +56,7 @@ _NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 # Guarded by `_INBOX_NAMES_LOCK` against torn reads. Under the GIL the
 # slice-assignment was approximately atomic and readers/writers were
-# safe without a lock; under PYTHON_GIL=0 (3.14t in production) the
+# safe without a lock; under PYTHON_GIL=0 (3.15t in production) the
 # underlying list resize + copy loop runs without the GIL and a reader
 # can observe partial state. Writers acquire the lock around
 # `_INBOX_NAMES[:] = names`; readers acquire the lock around
