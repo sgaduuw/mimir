@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-10-12
+
 ### Changed
 
 - mimir now runs on Python 3.15, free-threaded (3.15t) in the image, and
