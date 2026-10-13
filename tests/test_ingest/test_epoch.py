@@ -1059,6 +1059,47 @@ def test_parallel_cross_posts_match_serial_ingest(
     assert _article_state(seeded_db, "x722@example.com") == serial
 
 
+def test_backfill_batch_does_not_overwrite_a_pin_ingest_writes_meanwhile(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """#722: a backfill chunk reads its articles' links, then writes. If
+    ingest links and pins the topical copy in between, the chunk must
+    re-pick over the links at write time instead of writing back the
+    firehose pick it made from the old links."""
+    from mimir import _pending_backfill
+    from mimir.broker._context import get_active_writer
+    from mimir.ingest import backfill_canonicals
+
+    alpha, beta = _topical_and_firehose(seeded_db, monkeypatch)
+    raw = _rfc5322("bf722@example.com", to=_FIREHOSE, cc=_TOPICAL)
+    _ingest_epoch_files(seeded_db, tmp_path, beta, "s.git", [raw])
+    pin, links = _pin_and_links(seeded_db, "bf722@example.com")
+    assert (pin, links) == (beta.id, {beta.id}), "fixture must start on the firehose"
+
+    real_submit = _pending_backfill._submit_canonical_batch
+    held = []
+
+    def _hold(writer, payloads, after=None):
+        held.extend(payloads)
+        done: Future = Future()
+        done.set_result(None)
+        return done
+
+    with monkeypatch.context() as m:
+        m.setattr(_pending_backfill, "_submit_canonical_batch", _hold)
+        backfill_canonicals(reprocess=True)
+    assert len(held) == 1
+
+    _ingest_epoch_files(seeded_db, tmp_path, alpha, "s.git", [raw])
+    pin, links = _pin_and_links(seeded_db, "bf722@example.com")
+    assert (pin, links) == (alpha.id, {alpha.id, beta.id})
+
+    real_submit(get_active_writer(), held).result(timeout=10)
+
+    pin, _ = _pin_and_links(seeded_db, "bf722@example.com")
+    assert pin == alpha.id
+
+
 def test_ingest_canonical_null_when_no_known_address_matches(
     seeded_db, tmp_path, broker_active
 ):
