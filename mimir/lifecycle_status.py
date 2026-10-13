@@ -106,7 +106,9 @@ _REVIEW_ROLES_PARAM = bindparam(
 # `last_thread_date` ends up NULL when an article has no replies.
 # Both walks stay inside the requesting inbox, so the chip reads the
 # same inbox-scoped thread the page and its ETag do (#676), root
-# included: `_find_thread_root_cte` stops at the same ancestors.
+# included: `_find_thread_root_cte` stops at the same ancestors. EXISTS,
+# not JOIN: without sqlite_stat1 a JOIN is driven from
+# `ix_article_lists_inbox_id` and reads the whole inbox per message walked.
 #
 # `mc` carries the in_linus count + linus_sha/at AND the earliest non-
 # linus tree + sha/at for the LANDED/QUEUED tooltip leading lines.
@@ -143,8 +145,9 @@ roots(leaf, message_id, thread_parent, depth) AS (
     SELECT r.leaf, p.message_id, p.thread_parent, r.depth + 1
       FROM roots r
       JOIN articles p ON p.message_id = r.thread_parent
-      JOIN article_lists pl ON pl.article_id = p.id AND pl.inbox_id = :inbox_id
      WHERE r.thread_parent IS NOT NULL AND r.depth < 1000
+       AND EXISTS (SELECT 1 FROM article_lists pl
+                    WHERE pl.article_id = p.id AND pl.inbox_id = :inbox_id)
 ),
 root_per_leaf AS (
     SELECT leaf, message_id AS root_msgid
@@ -161,8 +164,9 @@ descendants(root_msgid, message_id, thread_parent, depth) AS (
     SELECT d.root_msgid, c.message_id, c.thread_parent, d.depth + 1
       FROM descendants d
       JOIN articles c ON c.thread_parent = d.message_id
-      JOIN article_lists cl ON cl.article_id = c.id AND cl.inbox_id = :inbox_id
      WHERE d.depth < 1000
+       AND EXISTS (SELECT 1 FROM article_lists cl
+                    WHERE cl.article_id = c.id AND cl.inbox_id = :inbox_id)
 ),
 thread_dates AS (
     SELECT r.leaf, MAX(a.date) AS last_thread_date
@@ -527,9 +531,7 @@ def lifecycle_status_for_articles(
     of a thread shares one entry. Time still moves the pill under an
     unchanged ETag: the activity chip's buckets are relative to now and
     age within the TTL. Cached rather than computed live because the live
-    compute walks the whole thread: about 120 ms per `_bulk_uncached` call on the 12,342-message syzbot
-    thread (production, 2026-10-10; the 54.6 ms quoted in the thread
-    route is the `descendants` CTE alone, measured earlier).
+    compute walks the whole thread.
     """
     if not article_ids:
         return {}

@@ -647,12 +647,7 @@ def test_lifecycle_status_query_uses_index_seeks(session):
     # because the recursive CTE for thread-activity walk-up
     # legitimately scans the seed set (bounded by `IN :ids`; the
     # cost scales with listing size, not corpus size).
-    for table in (
-        "mainline_commits",
-        "article_trailers",
-        "subsystem_maintainers",
-        "article_lists",
-    ):
+    for table in ("mainline_commits", "article_trailers", "subsystem_maintainers"):
         assert f"scan {table}" not in plan_text, (
             f"query plan should not SCAN {table}; got:\n{plan_text}"
         )
@@ -663,6 +658,32 @@ def test_lifecycle_status_query_uses_index_seeks(session):
     assert "search" in plan_text or "using index" in plan_text, (
         f"expected at least one index seek in the plan; got:\n{plan_text}"
     )
+
+
+def test_chip_walk_does_not_drive_from_the_inbox_index(session):
+    """#676. The inbox filter in the thread walk must be a per-row key
+    lookup. Written as a JOIN and planned without `sqlite_stat1` (no
+    ANALYZE here, deliberately), SQLite drives each recursive step from
+    `ix_article_lists_inbox_id` and reads the whole inbox once per
+    message walked. EXPLAIN names the index, not the table."""
+    from sqlalchemy import text
+
+    from mimir.lifecycle_status import _BULK_SQL
+    from mimir.trailers import REVIEW_TRAILER_ROLES
+
+    _seed_article(session, "plan@x")
+    ids = [r[0] for r in session.execute(text("SELECT id FROM articles LIMIT 20"))]
+    raw_sql = (
+        _BULK_SQL.text.replace(":ids", "(" + ", ".join(map(str, ids)) + ")")
+        .replace(
+            ":review_roles",
+            "(" + ", ".join(f"'{r}'" for r in REVIEW_TRAILER_ROLES) + ")",
+        )
+        .replace(":inbox_id", str(_lkml(session)))
+    )
+    plan_rows = session.execute(text("EXPLAIN QUERY PLAN " + raw_sql)).all()
+    plan_text = "\n".join(r[3] for r in plan_rows)
+    assert "ix_article_lists_inbox_id" not in plan_text, plan_text
 
 
 def test_queued_tree_tie_survives_a_linux_next_rebuild(session):
