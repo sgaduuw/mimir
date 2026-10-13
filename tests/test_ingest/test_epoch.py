@@ -891,17 +891,16 @@ def test_ingest_observations_accumulate_across_messages(
         assert obs.last_seen is not None
 
 
-def test_ingest_sets_canonical_when_to_address_matches_known_inbox(
+def test_ingest_sets_canonical_when_to_address_matches_linked_inbox(
     seeded_db, tmp_path, broker_active
 ):
-    """alpha already has list_address set; ingesting a message into
-    beta whose To: points at alpha sets canonical_inbox_id=alpha.id."""
+    """A message ingested into alpha whose To: is alpha's list address
+    pins to alpha."""
     with seeded_db() as s:
         a = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         a.list_address = "linux-fsdevel@vger.kernel.org"
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
 
     raw = _rfc5322(
         "canon1@example.com",
@@ -911,7 +910,7 @@ def test_ingest_sets_canonical_when_to_address_matches_known_inbox(
     _build_pubinbox_repo(tmp_path / "0.git", [raw])
 
     with seeded_db() as s:
-        ingest_epoch(s, beta, "0.git", tmp_path / "0.git", workers=1)
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
 
     with seeded_db() as s:
         art = s.execute(
@@ -923,47 +922,19 @@ def test_ingest_sets_canonical_when_to_address_matches_known_inbox(
 def test_ingest_canonical_demotes_lkml_in_favour_of_topical(
     seeded_db, tmp_path, monkeypatch, broker_active
 ):
-    """When `Settings.canonical_demoted_inboxes` lists an inbox and a
-    cross-posted message hits both the demoted inbox and a topical
-    inbox, `canonical_inbox_id` pins to the topical one even if the
-    demoted address appears first in To/Cc. End-to-end check that
-    the ingest-time call site threads `demoted_inbox_ids` correctly."""
-    from mimir.config import settings
+    """With `Settings.canonical_demoted_inboxes` listing an inbox, a
+    message filed in both the demoted inbox and a topical one pins to
+    the topical one even when the demoted address is first in To/Cc.
+    End-to-end check that the cross-post re-pick threads
+    `demoted_inbox_ids` through."""
+    alpha, beta = _topical_and_firehose(seeded_db, monkeypatch)
 
-    # Use beta as the firehose stand-in (the seeded fixture
-    # ships alpha+beta; "lkml" isn't seeded). Map beta's
-    # list_address to the canonical lkml address shape.
-    monkeypatch.setattr(settings, "canonical_demoted_inboxes", ["beta"])
-    with seeded_db() as s:
-        a = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        b = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
-        a.list_address = "linux-arm-kernel@lists.infradead.org"
-        b.list_address = "linux-kernel@vger.kernel.org"
-        s.commit()
-        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+    _ingest_copy(seeded_db, tmp_path, beta, "demote@example.com")
+    _ingest_copy(seeded_db, tmp_path, alpha, "demote@example.com")
 
-    raw = _rfc5322(
-        "demote@example.com",
-        # Demoted (lkml-shaped) appears positionally first; topical
-        # (alpha) appears after. Old behaviour would canonicalise
-        # to beta; new behaviour canonicalises to alpha.
-        to="linux-kernel@vger.kernel.org",
-        cc="linux-arm-kernel@lists.infradead.org",
-    )
-    _build_pubinbox_repo(tmp_path / "0.git", [raw])
-
-    with seeded_db() as s:
-        ingest_epoch(s, beta, "0.git", tmp_path / "0.git", workers=1)
-
-    with seeded_db() as s:
-        art = s.execute(
-            select(Article).where(Article.message_id == "demote@example.com")
-        ).scalar_one()
-        assert art.canonical_inbox_id == alpha.id, (
-            f"expected canonical to skip demoted beta and pick alpha "
-            f"(id={alpha.id}); got {art.canonical_inbox_id}"
-        )
+    pin, links = _pin_and_links(seeded_db, "demote@example.com")
+    assert links == {alpha.id, beta.id}
+    assert pin == alpha.id
 
 
 def test_ingest_canonical_null_when_no_known_address_matches(
@@ -984,6 +955,117 @@ def test_ingest_canonical_null_when_no_known_address_matches(
             select(Article).where(Article.message_id == "canon-null@example.com")
         ).scalar_one()
         assert art.canonical_inbox_id is None
+
+
+_TOPICAL = "linux-arm-kernel@lists.infradead.org"
+_FIREHOSE = "linux-kernel@vger.kernel.org"
+
+
+def _topical_and_firehose(seeded_db, monkeypatch):
+    """alpha is the topical list, beta the demoted firehose (the lkml
+    stand-in the seeded fixture allows). Returns (alpha, beta)."""
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "canonical_demoted_inboxes", ["beta"])
+    with seeded_db() as s:
+        a = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        b = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        a.list_address = _TOPICAL
+        b.list_address = _FIREHOSE
+        s.commit()
+        return (
+            s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one(),
+            s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one(),
+        )
+
+
+def _pin_and_links(seeded_db, msgid):
+    """The article's stored pin and the set of inbox ids it is linked
+    to. Asserts the pin is one of them, the invariant #675 restores."""
+    with seeded_db() as s:
+        art = s.execute(select(Article).where(Article.message_id == msgid)).scalar_one()
+        links = set(
+            s.execute(
+                select(ArticleList.inbox_id).where(ArticleList.article_id == art.id)
+            ).scalars()
+        )
+        pin = art.canonical_inbox_id
+    assert pin is None or pin in links, f"pin {pin} names an inbox not in {links}"
+    return pin, links
+
+
+def _ingest_copy(seeded_db, tmp_path, inbox, msgid):
+    """Ingest one copy of the same cross-post (To names the firehose
+    first, Cc the topical list) into `inbox`, from its own repo dir."""
+    from tests.test_ingest._helpers import _ingest_with_to
+
+    _ingest_with_to(
+        seeded_db,
+        tmp_path,
+        inbox,
+        msgid,
+        to=_FIREHOSE,
+        cc=_TOPICAL,
+        repo_dir=f"{inbox.name}.git",
+    )
+
+
+def test_ingest_canonical_never_names_an_unlinked_inbox(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """#675: To names beta's list first, Cc names alpha's; the article
+    is filed only in alpha. The pin must be alpha, not beta."""
+    from tests.test_ingest._helpers import _ingest_with_to
+
+    alpha, _beta = _topical_and_firehose(seeded_db, monkeypatch)
+    monkeypatch.setattr("mimir.config.settings.canonical_demoted_inboxes", [])
+    _ingest_with_to(
+        seeded_db,
+        tmp_path,
+        alpha,
+        "unlinked@example.com",
+        to=_FIREHOSE,
+        cc=_TOPICAL,
+    )
+
+    pin, links = _pin_and_links(seeded_db, "unlinked@example.com")
+    assert links == {alpha.id}
+    assert pin == alpha.id
+
+
+def test_cross_post_topical_copy_arriving_second_upgrades_pin(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """#675: the firehose copy lands first and is the only link, so it
+    is the pin; the topical copy arriving later must take it over."""
+    alpha, beta = _topical_and_firehose(seeded_db, monkeypatch)
+
+    _ingest_copy(seeded_db, tmp_path, beta, "xpost-fwd@example.com")
+    pin, links = _pin_and_links(seeded_db, "xpost-fwd@example.com")
+    assert links == {beta.id}, "fixture must ingest the firehose copy first"
+    assert pin == beta.id
+
+    _ingest_copy(seeded_db, tmp_path, alpha, "xpost-fwd@example.com")
+    pin, links = _pin_and_links(seeded_db, "xpost-fwd@example.com")
+    assert links == {alpha.id, beta.id}
+    assert pin == alpha.id
+
+
+def test_cross_post_topical_copy_first_keeps_pin_when_firehose_follows(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """#675: reverse arrival order, same final pin."""
+    alpha, beta = _topical_and_firehose(seeded_db, monkeypatch)
+
+    _ingest_copy(seeded_db, tmp_path, alpha, "xpost-rev@example.com")
+    pin, links = _pin_and_links(seeded_db, "xpost-rev@example.com")
+    assert links == {alpha.id}, "fixture must ingest the topical copy first"
+    assert pin == alpha.id
+
+    _ingest_copy(seeded_db, tmp_path, beta, "xpost-rev@example.com")
+    pin, links = _pin_and_links(seeded_db, "xpost-rev@example.com")
+    assert links == {alpha.id, beta.id}
+    assert pin == alpha.id
 
 
 def test_promote_list_address_below_threshold_skips(seeded_db, writer):

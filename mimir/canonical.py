@@ -199,11 +199,19 @@ def extract_list_addresses(headers: dict[str, str]) -> list[str]:
 def pick_canonical_inbox_id(
     addresses: list[str],
     address_to_inbox_id: dict[str, int],
+    linked_inbox_ids: frozenset[int],
     demoted_inbox_ids: frozenset[int] = frozenset(),
 ) -> int | None:
     """Walk `addresses` (already in To-then-Cc order) and return the
-    inbox_id of the best matching inbox. None if no address matches;
-    caller falls back to the alphabetical-first rule at render time.
+    inbox_id of the best matching inbox *the article is linked to*
+    (`linked_inbox_ids`). None if no linked inbox matches; caller falls
+    back to the alphabetical-first rule at render time.
+
+    Only linked inboxes qualify so the stored pin and
+    `fallback_canonical_name` agree by construction (#675): a pin on an
+    inbox with no `article_lists` row for the article is a URL that
+    404s. Ingest, cross-post linking and the backfill all call this
+    with the article's links so they cannot disagree.
 
     Two-pass: a match against a *demoted* inbox (a firehose like
     lkml, configured via `Settings.canonical_demoted_inboxes`) is
@@ -220,7 +228,7 @@ def pick_canonical_inbox_id(
     fallback: int | None = None
     for addr in addresses:
         inbox_id = address_to_inbox_id.get(addr)
-        if inbox_id is None:
+        if inbox_id is None or inbox_id not in linked_inbox_ids:
             continue
         if inbox_id in demoted_inbox_ids:
             if fallback is None:
