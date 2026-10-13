@@ -52,11 +52,11 @@ def test_patch_series_pending_default_shape():
 def test_canonical_pending_default_shape():
     p = _CanonicalPending(
         article_id=1,
-        new_canonical_inbox_id=None,
+        repick=lambda links: None,
         observation_deltas={},
     )
     assert p.article_id == 1
-    assert p.new_canonical_inbox_id is None
+    assert p.repick(frozenset()) is None
     assert p.observation_deltas == {}
 
 
@@ -358,7 +358,7 @@ def test_submit_canonical_batch_updates_canonical_and_observations(writer, seede
     payloads = [
         _CanonicalPending(
             article_id=article_id,
-            new_canonical_inbox_id=alpha_id,
+            repick=lambda links: alpha_id,
             observation_deltas={
                 alpha_id: {"list@example.com": (1, ts)},
             },
@@ -412,7 +412,7 @@ def test_submit_canonical_batch_no_canonical_change_skips_update(writer, seeded_
     payloads = [
         _CanonicalPending(
             article_id=article_id,
-            new_canonical_inbox_id=alpha_id,
+            repick=lambda links: alpha_id,
             observation_deltas={alpha_id: {"a@x.example": (2, ts)}},
         )
     ]
@@ -667,7 +667,7 @@ def test_submit_batch_issues_exactly_one_writeop(backfill_name, writer, seeded_d
         payloads = [
             _CanonicalPending(
                 article_id=article_id,
-                new_canonical_inbox_id=alpha_id,
+                repick=lambda links: alpha_id,
                 observation_deltas={alpha_id: {"one-writeop@example.com": (1, ts)}},
             )
         ]
@@ -752,7 +752,7 @@ def test_submit_canonical_batch_rolls_back_observations_on_canonical_update_fail
     payloads = [
         _CanonicalPending(
             article_id=article_id,
-            new_canonical_inbox_id=alpha_id,
+            repick=lambda links: alpha_id,
             observation_deltas={
                 invalid_inbox_id: {"atomicity@example.com": (1, ts)},
             },
