@@ -54,7 +54,7 @@ def search(inbox_name: str):
             results = search_articles(session, inbox, q, limit=SEARCH_RESULT_CAP)
             truncated = len(results) >= SEARCH_RESULT_CAP
         lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, [a.id for a in results]
+            session, [a.id for a in results], inbox.id
         )
 
     # SearchResultsPage only when we're actually rendering results.
@@ -101,7 +101,7 @@ def author_view(inbox_name: str, sub: str):
         inbox = _get_inbox_or_404(session, inbox_name)
         results = author_recent(session, inbox, sub, limit=AUTHOR_VIEW_LIMIT)
         lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, [a.id for a in results]
+            session, [a.id for a in results], inbox.id
         )
     # Pin the canonical URL with `sub` percent-encoded so the page's
     # <link rel="canonical"> matches the <link rel="alternate"> for
@@ -154,7 +154,7 @@ def reviewer_view(inbox_name: str, address: str):
             limit=REVIEWS_PER_PAGE_LIMIT,
         )
         lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, [e.article_id for e in entries]
+            session, [e.article_id for e in entries], inbox.id
         )
     role_counts: dict[str, int] = {}
     for e in entries:

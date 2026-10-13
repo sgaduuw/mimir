@@ -64,7 +64,7 @@ def _daily_view(inbox_name: str, day: date_cls, heading: str):
             )
         )
         lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, [t.id for t in threads]
+            session, [t.id for t in threads], inbox.id
         )
     return render_template(
         "daily.html",
@@ -123,7 +123,7 @@ def threads_since_view(inbox_name: str, since_str: str):
             )
         )
         lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, [t.id for t in threads]
+            session, [t.id for t in threads], inbox.id
         )
     return render_template(
         "since.html",
@@ -187,7 +187,7 @@ def month_archive(inbox_name: str, year: int, month: int):
         volume = monthly_volume(session, inbox, year)
         total = next((c for m, c in volume.months if m == month), 0)
         lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, [t.id for t in threads]
+            session, [t.id for t in threads], inbox.id
         )
 
     if month == 1:

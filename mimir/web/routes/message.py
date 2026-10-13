@@ -603,7 +603,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # Keyed by the ETag's content part, like the card above: a cached
         # pill is reused only while that part is unchanged.
         lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, [article.id], state_key=content_key
+            session, [article.id], inbox.id, state_key=content_key
         )
         lifecycle_status = lifecycle_status_by_id.get(article.id)
 
