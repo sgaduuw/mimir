@@ -18,6 +18,15 @@ changes, not internal refactors. Categories: **Added**,
   through its canonical inbox, so before this a conditional request could get
   a 304 for a page whose fold link had since moved. The thread page's ETag
   also rotates in this case, though that page does not show the fold (#687).
+- A message's pinned canonical inbox is now always one of the inboxes it is
+  filed in. The pin was picked from every inbox named in To/Cc, so about 1.5%
+  of stored pins (107,269 in the measured production range) named an inbox
+  with no copy of the message. A cross-post arriving from another inbox now
+  re-picks the pin, so a topical list's copy still takes over from the
+  firehose copy that landed first. Stored rows are fixed by one more
+  `admin canonicals backfill --reprocess --restart`, run after the deploy:
+  since #680 plain `--reprocess` resumes an unfinished run from its old
+  cursor and would skip the ids above it (#675).
 - The activity chip counts replies in the list you are viewing only. A reply
   that landed in another list moved the chip on message and thread pages
   without moving the ETag, so a cached page kept the old chip behind a 304.

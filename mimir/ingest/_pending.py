@@ -78,6 +78,9 @@ class _ArticleListInsert:
     inbox_id: int
     epoch: str
     commit_sha: str
+    # Cross-post links only: the re-picked pin to write onto the existing
+    # article; None leaves it alone.
+    canonical_inbox_id: int | None = None
 
 
 @dataclass
@@ -389,6 +392,12 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
                 )
                 .on_conflict_do_nothing(index_elements=["article_id", "inbox_id"])
             )
+            if al.canonical_inbox_id is not None:
+                conn.execute(
+                    update(Article)
+                    .where(Article.id == article_id)
+                    .values(canonical_inbox_id=al.canonical_inbox_id)
+                )
             # Maintain the materialised root for this (article, inbox)
             # pair, and re-root anything that was waiting on it.
             # The accumulator already carries the parent for rows this
