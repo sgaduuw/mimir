@@ -23,6 +23,11 @@ from tests.test_ingest._helpers import (
 )
 
 
+def _beta(seeded_db) -> Inbox:
+    with seeded_db() as s:
+        return s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+
+
 def test_backfill_resolves_canonical_when_to_matches_known_address(
     seeded_db, tmp_path, broker_active
 ):
@@ -144,6 +149,16 @@ def test_backfill_reprocess_re_examines_already_set(seeded_db, tmp_path, broker_
         alpha,
         "bf-rep@example.com",
         to="linux-fsdevel@vger.kernel.org",
+    )
+    # Cross-post into beta too: a pin can only move to an inbox the
+    # article is linked to (#675).
+    _ingest_with_to(
+        seeded_db,
+        tmp_path,
+        _beta(seeded_db),
+        "bf-rep@example.com",
+        to="linux-fsdevel@vger.kernel.org",
+        repo_dir="1.git",
     )
 
     with seeded_db() as s:

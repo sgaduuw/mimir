@@ -13,6 +13,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- A message's pinned canonical inbox is now always one of the inboxes it is
+  filed in. The pin was picked from every inbox named in To/Cc, so about 1.5%
+  of stored pins (107,269 in the measured production range) named an inbox
+  with no copy of the message. A cross-post arriving from another inbox now
+  re-picks the pin, so a topical list's copy still takes over from the
+  firehose copy that landed first. Stored rows are fixed by one more
+  `admin canonicals backfill --reprocess` (#675).
 - A Subject header the sender folded across lines is stored on one line.
   Folded subjects kept their line break, so both series parsers missed them:
   about a million numbered patches (production, 2026-10-12) had no series

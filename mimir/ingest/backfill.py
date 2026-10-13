@@ -261,6 +261,7 @@ def backfill_canonicals(
                 new_canonical = pick_canonical_inbox_id(
                     list_addrs,
                     address_to_inbox_id,
+                    frozenset(links),
                     demoted_inbox_ids,
                 )
                 if new_canonical != article.canonical_inbox_id:
