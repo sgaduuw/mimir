@@ -40,7 +40,7 @@ def api_recent(inbox_name: str):
             session, inbox, offset, RECENT_PAGE_SIZE
         )
         lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, [a.id for a in recent]
+            session, [a.id for a in recent], inbox.id
         )
     return render_template(
         "_recent_items.html",
