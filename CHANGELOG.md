@@ -13,6 +13,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- A message page's ETag now changes when a sibling revision of its patch is
+  cross-posted to another inbox. The revisions fold links each revision
+  through its canonical inbox, so before this a conditional request could get
+  a 304 for a page whose fold link had since moved. The thread page's ETag
+  rotates in the same case (#687).
 - The activity chip counts replies in the list you are viewing only. A reply
   that landed in another list moved the chip on message and thread pages
   without moving the ETag, so a cached page kept the old chip behind a 304.
