@@ -622,6 +622,7 @@ def ingest_epoch(
             select(
                 Article.id,
                 Article.date,
+                Article.canonical_inbox_id,
                 ArticleList.article_id.label("linked_id"),
             )
             .select_from(Article)
@@ -646,7 +647,20 @@ def ingest_epoch(
                 )
                 result.dup_db += 1
             else:
-                # Cross-post: link to existing article.
+                # Cross-post: link to existing article, and re-pick the
+                # pin now that it has one more inbox to choose from. A
+                # topical copy arriving after the firehose copy is what
+                # upgrades the pin (#675). None keeps the current pin.
+                linked = frozenset(
+                    session.execute(
+                        select(ArticleList.inbox_id).where(
+                            ArticleList.article_id == existing_article_id
+                        )
+                    ).scalars()
+                ) | {inbox_id}
+                repick = pick_canonical_inbox_id(
+                    list_addrs, address_to_inbox_id, linked, demoted_inbox_ids
+                )
                 pending.article_lists.append(
                     _ArticleListInsert(
                         article_index=-1,
@@ -654,6 +668,11 @@ def ingest_epoch(
                         inbox_id=inbox_id,
                         epoch=epoch_name,
                         commit_sha=commit_sha,
+                        canonical_inbox_id=(
+                            repick
+                            if repick != existing_row.canonical_inbox_id
+                            else None
+                        ),
                     )
                 )
                 seen_in_batch.add(parsed.message_id)
@@ -677,6 +696,7 @@ def ingest_epoch(
         canonical_inbox_id = pick_canonical_inbox_id(
             list_addrs,
             address_to_inbox_id,
+            frozenset({inbox_id}),
             demoted_inbox_ids,
         )
         art_insert = _to_article_insert(
