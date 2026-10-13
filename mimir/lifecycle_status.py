@@ -104,6 +104,8 @@ _REVIEW_ROLES_PARAM = bindparam(
 # descendants(...) walks DOWN from each root and thread_dates takes
 # the MAX(date) over the subtree, excluding the leaf article itself.
 # `last_thread_date` ends up NULL when an article has no replies.
+# Replies count only when they are in the requesting inbox, so the chip
+# reads the same inbox-scoped thread the page's ETag does (#676).
 #
 # `mc` carries the in_linus count + linus_sha/at AND the earliest non-
 # linus tree + sha/at for the LANDED/QUEUED tooltip leading lines.
@@ -157,6 +159,7 @@ descendants(root_msgid, message_id, thread_parent, depth) AS (
     SELECT d.root_msgid, c.message_id, c.thread_parent, d.depth + 1
       FROM descendants d
       JOIN articles c ON c.thread_parent = d.message_id
+      JOIN article_lists cl ON cl.article_id = c.id AND cl.inbox_id = :inbox_id
      WHERE d.depth < 1000
 ),
 thread_dates AS (
@@ -396,13 +399,14 @@ def _format_count_suffix(total: int, maintainer_count: int) -> str | None:
 def _bulk_uncached(
     session: Session,
     article_ids: list[int],
+    inbox_id: int,
 ) -> dict[int, LifecycleStatusInfo]:
     """Run the bulk SQL + reviewer-names query, derive the 5-state
     classification, and pre-compute all display fields per row.
     Pure compute; no cache. Called by `lifecycle_status_for_
     articles` on cache misses and by the query-plan-pin test
     directly."""
-    rows = session.execute(_BULK_SQL, {"ids": article_ids}).all()
+    rows = session.execute(_BULK_SQL, {"ids": article_ids, "inbox_id": inbox_id}).all()
     name_rows = session.execute(_REVIEWER_NAMES_SQL, {"ids": article_ids}).all()
 
     # Index reviewer names per article: [(name, is_maintainer), ...]
@@ -494,13 +498,18 @@ def _bulk_uncached(
 def lifecycle_status_for_articles(
     session: Session,
     article_ids: list[int],
+    inbox_id: int,
     *,
     state_key: str | None = None,
 ) -> dict[int, LifecycleStatusInfo]:
     """Bulk lifecycle-status fetch for a listing of articles.
 
+    `inbox_id` scopes the activity chip to replies in that inbox, as the
+    page's own thread is, and is part of the cache key: a cross-posted
+    article has one chip per inbox.
+
     Per-article cache rows with a 5-minute TTL. Cache key
-    `lifecycle_status:<id>`, backed by `cache.get_many` so a
+    `lifecycle_status:<id>:i<inbox_id>`, backed by `cache.get_many` so a
     single SELECT covers all hits. Misses are computed together
     via one combined SQL call in `_bulk_uncached`. Empty input
     -> empty dict. Missing IDs (e.g. articles not in the corpus)
@@ -513,25 +522,22 @@ def lifecycle_status_for_articles(
     body changed under an ETag that did not, pinning the stale pill in
     every cache that kept it. Keyed by the content part, a cached pill
     is reused only while the page content is unchanged, and every page
-    of a thread shares one entry. Two things still move the pill under an
-    unchanged ETag: time (the activity chip's buckets are relative to
-    now and age within the TTL), and a reply that lands only in ANOTHER
-    inbox, because `descendants` walks the thread across inboxes while
-    the pages' ETags carry their own inbox's reply date. Cached rather
-    than computed live because the live compute walks the whole thread:
-    about 120 ms per `_bulk_uncached` call on the 12,342-message syzbot
+    of a thread shares one entry. Time still moves the pill under an
+    unchanged ETag: the activity chip's buckets are relative to now and
+    age within the TTL. Cached rather than computed live because the live
+    compute walks the whole thread: about 120 ms per `_bulk_uncached` call on the 12,342-message syzbot
     thread (production, 2026-10-10; the 54.6 ms quoted in the thread
     route is the `descendants` CTE alone, measured earlier).
     """
     if not article_ids:
         return {}
-    suffix = f":{state_key}" if state_key is not None else ""
+    suffix = f":i{inbox_id}" + (f":{state_key}" if state_key is not None else "")
     key_to_id = {f"lifecycle_status:{a}{suffix}": a for a in article_ids}
     hits = cache.get_many(list(key_to_id))
     out: dict[int, LifecycleStatusInfo] = {key_to_id[k]: v for k, v in hits.items()}
     missing_ids = [a for a in article_ids if a not in out]
     if missing_ids:
-        computed = _bulk_uncached(session, missing_ids)
+        computed = _bulk_uncached(session, missing_ids, inbox_id)
         for article_id, info in computed.items():
             cache.set(
                 f"lifecycle_status:{article_id}{suffix}",

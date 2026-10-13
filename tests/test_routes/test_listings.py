@@ -47,12 +47,13 @@ def test_recent_listing_renders_landed_pill_for_landed_article(client):
         # cache row if test ordering changes; clear explicitly.
         from sqlalchemy import select
 
-        from mimir.models import Article
+        from mimir.models import Article, Inbox
 
         art = s.execute(
             select(Article).where(Article.message_id == "art1@example.com")
         ).scalar_one()
-        cache.delete(f"lifecycle_status:{art.id}")
+        alpha_id = s.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
+        cache.delete(f"lifecycle_status:{art.id}:i{alpha_id}")
 
     r = client.get("/alpha/")
     assert r.status_code == 200

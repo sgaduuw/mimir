@@ -59,6 +59,10 @@ def _seed_article(session, message_id, **overrides):
     return art
 
 
+def _lkml(session) -> int:
+    return session.execute(select(Inbox.id).where(Inbox.name == "lkml")).scalar_one()
+
+
 def test_landed_when_linus_row_exists(session):
     art = _seed_article(session, "landed@x")
     session.add(
@@ -70,7 +74,7 @@ def test_landed_when_linus_row_exists(session):
         )
     )
     session.commit()
-    got = lifecycle_status_for_articles(session, [art.id])
+    got = lifecycle_status_for_articles(session, [art.id], _lkml(session))
     assert got[art.id].state == LifecycleStatus.LANDED
 
 
@@ -89,7 +93,7 @@ def test_superseded_when_higher_version_exists(session):
         patch_series_position=1,
         patch_series_version="v2",
     )
-    got = lifecycle_status_for_articles(session, [v1.id, v2.id])
+    got = lifecycle_status_for_articles(session, [v1.id, v2.id], _lkml(session))
     assert got[v1.id].state == LifecycleStatus.SUPERSEDED
     assert got[v2.id].state == LifecycleStatus.PENDING
 
@@ -119,7 +123,7 @@ def test_landed_outranks_superseded(session):
         )
     )
     session.commit()
-    got = lifecycle_status_for_articles(session, [v1.id])
+    got = lifecycle_status_for_articles(session, [v1.id], _lkml(session))
     assert got[v1.id].state == LifecycleStatus.LANDED
 
 
@@ -134,7 +138,7 @@ def test_queued_when_only_non_linus_row(session):
         )
     )
     session.commit()
-    got = lifecycle_status_for_articles(session, [art.id])
+    got = lifecycle_status_for_articles(session, [art.id], _lkml(session))
     assert got[art.id].state == LifecycleStatus.QUEUED
     assert got[art.id].tree == "net-next"
 
@@ -152,7 +156,7 @@ def test_reviewed_when_only_review_trailers(session, role):
         )
     )
     session.commit()
-    got = lifecycle_status_for_articles(session, [art.id])
+    got = lifecycle_status_for_articles(session, [art.id], _lkml(session))
     assert got[art.id].state == LifecycleStatus.REVIEWED
     assert got[art.id].count_suffix == ": 1 (0M)"
     assert got[art.id].tooltip == "Bob"
@@ -172,13 +176,13 @@ def test_signed_off_by_alone_does_not_count_as_reviewed(session):
         )
     )
     session.commit()
-    got = lifecycle_status_for_articles(session, [art.id])
+    got = lifecycle_status_for_articles(session, [art.id], _lkml(session))
     assert got[art.id].state == LifecycleStatus.PENDING
 
 
 def test_pending_default(session):
     art = _seed_article(session, "pending@x")
-    got = lifecycle_status_for_articles(session, [art.id])
+    got = lifecycle_status_for_articles(session, [art.id], _lkml(session))
     assert got[art.id].state == LifecycleStatus.PENDING
 
 
@@ -204,7 +208,7 @@ def test_bulk_mixed_states(session):
     a_pending = _seed_article(session, "mp1@x")
     session.commit()
     got = lifecycle_status_for_articles(
-        session, [a_landed.id, a_queued.id, a_pending.id]
+        session, [a_landed.id, a_queued.id, a_pending.id], _lkml(session)
     )
     assert got[a_landed.id].state == LifecycleStatus.LANDED
     assert got[a_queued.id].state == LifecycleStatus.QUEUED
@@ -212,7 +216,7 @@ def test_bulk_mixed_states(session):
 
 
 def test_empty_input_returns_empty(session):
-    assert lifecycle_status_for_articles(session, []) == {}
+    assert lifecycle_status_for_articles(session, [], 1) == {}
 
 
 def test_superseded_handles_double_digit_versions(session):
@@ -232,7 +236,7 @@ def test_superseded_handles_double_digit_versions(session):
         patch_series_position=1,
         patch_series_version="v10",
     )
-    got = lifecycle_status_for_articles(session, [v9.id, v10.id])
+    got = lifecycle_status_for_articles(session, [v9.id, v10.id], _lkml(session))
     assert got[v9.id].state == LifecycleStatus.SUPERSEDED
     assert got[v10.id].state == LifecycleStatus.PENDING
 
@@ -241,14 +245,15 @@ def test_lifecycle_status_caches_per_article(session):
     from mimir import cache
 
     a = _seed_article(session, "cached@x")
-    lifecycle_status_for_articles(session, [a.id])
-    cached = cache.get(f"lifecycle_status:{a.id}")
+    lifecycle_status_for_articles(session, [a.id], _lkml(session))
+    cached = cache.get(f"lifecycle_status:{a.id}:i{_lkml(session)}")
     assert cached is not None
 
 
 def test_lifecycle_status_uses_cache_for_hits(session, monkeypatch):
     a = _seed_article(session, "hit@x")
-    lifecycle_status_for_articles(session, [a.id])
+    inbox_id = _lkml(session)
+    lifecycle_status_for_articles(session, [a.id], inbox_id)
     call_count = {"n": 0}
     real_exec = session.execute
 
@@ -257,7 +262,7 @@ def test_lifecycle_status_uses_cache_for_hits(session, monkeypatch):
         return real_exec(*args, **kwargs)
 
     monkeypatch.setattr(session, "execute", counting_exec)
-    lifecycle_status_for_articles(session, [a.id])
+    lifecycle_status_for_articles(session, [a.id], inbox_id)
     assert call_count["n"] == 0, "cache hit should skip SQL"
 
 
@@ -537,7 +542,7 @@ def test_bulk_uncached_returns_reviewer_counts(session):
         )
     session.commit()
 
-    got = _bulk_uncached(session, [art.id])
+    got = _bulk_uncached(session, [art.id], _lkml(session))
     info = got[art.id]
     assert info.count_suffix == ": 3 (1M)"
 
@@ -573,7 +578,7 @@ def test_bulk_uncached_computes_thread_activity(session):
     )
     session.commit()
 
-    got = _bulk_uncached(session, [root.id])
+    got = _bulk_uncached(session, [root.id], _lkml(session))
     assert got[root.id].activity_heat == "hot"
     assert got[root.id].activity_detail == "today"
 
@@ -620,7 +625,7 @@ def test_lifecycle_status_query_uses_index_seeks(session):
 
     # Force a non-empty IN clause similar to a real listing.
     ids = [r[0] for r in session.execute(text("SELECT id FROM articles LIMIT 20"))]
-    _bulk_uncached(session, ids)
+    _bulk_uncached(session, ids, _lkml(session))
 
     # EXPLAIN QUERY PLAN against the compiled SQL. `_BULK_SQL` uses
     # SQLAlchemy's expanding bindparam, which `literal_binds` can't
@@ -629,8 +634,10 @@ def test_lifecycle_status_query_uses_index_seeks(session):
     # user input) so EXPLAIN sees the real query shape.
     ids_literal = "(" + ", ".join(str(i) for i in ids) + ")"
     roles_literal = "(" + ", ".join(f"'{r}'" for r in REVIEW_TRAILER_ROLES) + ")"
-    raw_sql = _BULK_SQL.text.replace(":ids", ids_literal).replace(
-        ":review_roles", roles_literal
+    raw_sql = (
+        _BULK_SQL.text.replace(":ids", ids_literal)
+        .replace(":review_roles", roles_literal)
+        .replace(":inbox_id", str(_lkml(session)))
     )
     plan_rows = session.execute(text("EXPLAIN QUERY PLAN " + raw_sql)).all()
     plan_text = "\n".join(r[3] for r in plan_rows).lower()
@@ -640,7 +647,12 @@ def test_lifecycle_status_query_uses_index_seeks(session):
     # because the recursive CTE for thread-activity walk-up
     # legitimately scans the seed set (bounded by `IN :ids`; the
     # cost scales with listing size, not corpus size).
-    for table in ("mainline_commits", "article_trailers", "subsystem_maintainers"):
+    for table in (
+        "mainline_commits",
+        "article_trailers",
+        "subsystem_maintainers",
+        "article_lists",
+    ):
         assert f"scan {table}" not in plan_text, (
             f"query plan should not SCAN {table}; got:\n{plan_text}"
         )
@@ -680,7 +692,7 @@ def test_queued_tree_tie_survives_a_linux_next_rebuild(session):
     add("net-next")
     for _ in range(2):
         session.expire_all()
-        got = lifecycle_status_for_articles(session, [art.id])[art.id]
+        got = lifecycle_status_for_articles(session, [art.id], _lkml(session))[art.id]
         assert got.state == LifecycleStatus.QUEUED
         assert got.tree == "net-next"
         assert _mainline_landings(session, art)[0].tree_name == "net-next"
@@ -709,7 +721,7 @@ def test_rfc_is_superseded_by_v2(session):
         patch_series_position=1,
         patch_series_version="v2",
     )
-    got = lifecycle_status_for_articles(session, [rfc.id, v2.id])
+    got = lifecycle_status_for_articles(session, [rfc.id, v2.id], _lkml(session))
     assert got[rfc.id].state == LifecycleStatus.SUPERSEDED
     assert got[v2.id].state == LifecycleStatus.PENDING
 
@@ -741,7 +753,7 @@ def test_superseded_tooltip_pairs_version_with_its_own_date(session):
         patch_series_version="v3",
         date=datetime(2026, 5, 20, tzinfo=UTC),
     )
-    tip = lifecycle_status_for_articles(session, [v1.id])[v1.id].tooltip
+    tip = lifecycle_status_for_articles(session, [v1.id], _lkml(session))[v1.id].tooltip
     assert tip == "Superseded by v4 posted 2026-05-10"
 
 
@@ -766,7 +778,9 @@ def test_landed_tooltip_pairs_sha_with_its_own_date(session):
         ]
     )
     session.commit()
-    tip = lifecycle_status_for_articles(session, [art.id])[art.id].tooltip
+    tip = lifecycle_status_for_articles(session, [art.id], _lkml(session))[
+        art.id
+    ].tooltip
     assert tip == f"{'f' * 12} · 2026-05-01 00:00"
 
 
@@ -800,6 +814,8 @@ def test_tied_commits_tooltip_matches_card(session, tree_name):
         for c in _mainline_landings(session, art)
         if (c.tree_name == "linus") == (tree_name == "linus")
     )
-    tip = lifecycle_status_for_articles(session, [art.id])[art.id].tooltip
+    tip = lifecycle_status_for_articles(session, [art.id], _lkml(session))[
+        art.id
+    ].tooltip
     assert card.commit_sha == "a" * 40  # precondition: the tie is broken by sha
     assert tip.split(" · ")[0] == card.commit_sha[:12]
