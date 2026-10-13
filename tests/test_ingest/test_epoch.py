@@ -919,24 +919,6 @@ def test_ingest_sets_canonical_when_to_address_matches_linked_inbox(
         assert art.canonical_inbox_id == alpha.id
 
 
-def test_ingest_canonical_demotes_lkml_in_favour_of_topical(
-    seeded_db, tmp_path, monkeypatch, broker_active
-):
-    """With `Settings.canonical_demoted_inboxes` listing an inbox, a
-    message filed in both the demoted inbox and a topical one pins to
-    the topical one even when the demoted address is first in To/Cc.
-    End-to-end check that the cross-post re-pick threads
-    `demoted_inbox_ids` through."""
-    alpha, beta = _topical_and_firehose(seeded_db, monkeypatch)
-
-    _ingest_copy(seeded_db, tmp_path, beta, "demote@example.com")
-    _ingest_copy(seeded_db, tmp_path, alpha, "demote@example.com")
-
-    pin, links = _pin_and_links(seeded_db, "demote@example.com")
-    assert links == {alpha.id, beta.id}
-    assert pin == alpha.id
-
-
 def test_ingest_canonical_null_when_no_known_address_matches(
     seeded_db, tmp_path, broker_active
 ):
@@ -1037,7 +1019,8 @@ def test_cross_post_topical_copy_arriving_second_upgrades_pin(
     seeded_db, tmp_path, monkeypatch, broker_active
 ):
     """#675: the firehose copy lands first and is the only link, so it
-    is the pin; the topical copy arriving later must take it over."""
+    is the pin; the topical copy arriving later must take it over, even
+    though the demoted firehose address is first in To/Cc."""
     alpha, beta = _topical_and_firehose(seeded_db, monkeypatch)
 
     _ingest_copy(seeded_db, tmp_path, beta, "xpost-fwd@example.com")
