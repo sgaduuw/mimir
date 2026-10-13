@@ -23,6 +23,7 @@ no list-address signal anyway.
 import logging
 import time
 from datetime import UTC, datetime
+from functools import partial
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -45,9 +46,12 @@ _BATCH = 1000
 
 class BackfillResult(BaseModel):
     """Outcome counters for `backfill_canonicals`. Each examined article
-    lands in exactly one of resolved/unresolved/skipped (resolved =
-    `canonical_inbox_id` was set or updated; unresolved = parsed cleanly
-    but no list address matched; skipped = blob couldn't be read).
+    lands in exactly one of resolved/unresolved/skipped (resolved = the
+    pick made when the article was read differs from the pin stored then;
+    unresolved = it equals it; skipped = blob couldn't be read). The
+    writer re-picks over the links it finds at write time, so with
+    concurrent ingest these two counts are an estimate, not a tally of
+    rows written.
 
     `partial` marks a broker chunk that stopped on its time budget
     (Phase 2.2); the broker keeps the run's cursor (`mimir.backfill_runs`).
@@ -258,12 +262,16 @@ def backfill_canonicals(
                         for addr in list_addrs:
                             obs_deltas[inbox_id][addr] = (1, obs_time)
 
-                new_canonical = pick_canonical_inbox_id(
+                repick = partial(
+                    pick_canonical_inbox_id,
                     list_addrs,
                     address_to_inbox_id,
-                    frozenset(links),
-                    demoted_inbox_ids,
+                    demoted_inbox_ids=demoted_inbox_ids,
                 )
+                # Counts compare the read-time pick with the read-time
+                # pin. The writer re-picks at write time, so under
+                # concurrent ingest they are an estimate.
+                new_canonical = repick(frozenset(links))
                 if new_canonical != article.canonical_inbox_id:
                     out.resolved += 1
                 else:
@@ -272,7 +280,7 @@ def backfill_canonicals(
                 batch_payloads.append(
                     _CanonicalPending(
                         article_id=article.id,
-                        new_canonical_inbox_id=new_canonical,
+                        repick=repick,
                         observation_deltas=obs_deltas,
                     )
                 )

@@ -9,11 +9,13 @@ gate), the kept-headers filter, and the tz-aware UTC normalisation for
 `-0000`-dated messages."""
 
 import logging
+from concurrent.futures import Future
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 import pytest
 from dulwich.repo import Repo
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from mimir._pending_backfill import _submit_promote_list_address_sweep
 from mimir.ingest import (
@@ -917,6 +919,186 @@ def test_ingest_sets_canonical_when_to_address_matches_linked_inbox(
             select(Article).where(Article.message_id == "canon1@example.com")
         ).scalar_one()
         assert art.canonical_inbox_id == alpha.id
+
+
+def _ingest_epoch_files(seeded_db, tmp_path, inbox, epoch, raws):
+    """Ingest `raws` into `inbox` from a fresh repo named `epoch`."""
+    repo = tmp_path / inbox.name / epoch
+    repo.parent.mkdir(exist_ok=True)
+    _build_pubinbox_repo(repo, raws)
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == inbox.id)).scalar_one()
+        ix.mirror_path = str(tmp_path / inbox.name)
+        s.commit()
+        ingest_epoch(s, ix, epoch, repo, workers=1)
+
+
+def _article_state(seeded_db, msgid):
+    """(inbox names linked, pin's inbox name, thread root's message id per
+    inbox) for one article: the observable result of ingesting it."""
+    with seeded_db() as s:
+        art = s.execute(select(Article).where(Article.message_id == msgid)).scalar_one()
+        names = {i.id: i.name for i in s.execute(select(Inbox)).scalars()}
+        rows = s.execute(
+            select(ArticleList.inbox_id, ArticleList.thread_root_id).where(
+                ArticleList.article_id == art.id
+            )
+        ).all()
+        roots = {
+            names[inbox_id]: s.get(Article, root).message_id for inbox_id, root in rows
+        }
+        pin = names.get(art.canonical_inbox_id)
+    return set(roots), pin, roots
+
+
+def _wipe_article(seeded_db, msgid):
+    with seeded_db() as s:
+        art_id = select(Article.id).where(Article.message_id == msgid).scalar_subquery()
+        s.execute(delete(ArticleList).where(ArticleList.article_id == art_id))
+        s.execute(delete(Article).where(Article.message_id == msgid))
+        s.commit()
+
+
+@contextmanager
+def _held_batches(monkeypatch):
+    """Capture the batches ingest prepares instead of writing them, so a
+    test can prepare several against one snapshot (what two long workers
+    do), then write them in order with the yielded `write()`."""
+    from mimir.broker._context import get_active_writer
+    from mimir.ingest import _pending
+
+    real_submit = _pending._submit_ingest_batch
+    prepared = []
+
+    def _hold(writer, pending):
+        prepared.append(pending)
+        done: Future = Future()
+        done.set_result(None)
+        return done
+
+    def write():
+        for pending in prepared:
+            real_submit(get_active_writer(), pending).result(timeout=10)
+
+    with monkeypatch.context() as m:
+        m.setattr(_pending, "_submit_ingest_batch", _hold)
+        yield prepared, write
+
+
+def test_parallel_first_copies_match_serial_ingest(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """#722: with more than one long worker, two inboxes can each queue the
+    first copy of the same message before either batch is written. The
+    second article INSERT is then a no-op, and its inbox's link used to be
+    dropped. Links, pin and thread roots must match serial ingest, where
+    the second inbox takes the cross-post path."""
+    alpha, beta = _topical_and_firehose(seeded_db, monkeypatch)
+    parent = _rfc5322("p722@example.com", to=_FIREHOSE, cc=_TOPICAL)
+    child = _rfc5322(
+        "c722@example.com", to=_FIREHOSE, cc=_TOPICAL, in_reply_to="p722@example.com"
+    )
+    for ix in (alpha, beta):
+        _ingest_epoch_files(seeded_db, tmp_path, ix, "p.git", [parent])
+
+    _ingest_epoch_files(seeded_db, tmp_path, beta, "s.git", [child])
+    _ingest_epoch_files(seeded_db, tmp_path, alpha, "s.git", [child])
+    serial = _article_state(seeded_db, "c722@example.com")
+    assert serial[0] == {"alpha", "beta"}, "serial run must link both inboxes"
+    assert serial[1] == "alpha", "serial run must end on the topical pin"
+    _wipe_article(seeded_db, "c722@example.com")
+
+    with _held_batches(monkeypatch) as (prepared, write):
+        _ingest_epoch_files(seeded_db, tmp_path, beta, "q.git", [child])
+        _ingest_epoch_files(seeded_db, tmp_path, alpha, "q.git", [child])
+        assert [len(p.articles) for p in prepared] == [1, 1], (
+            "both inboxes must queue a first-copy insert"
+        )
+        write()
+
+    assert _article_state(seeded_db, "c722@example.com") == serial
+
+
+def test_parallel_cross_posts_match_serial_ingest(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """#722: two topical copies prepared from the same snapshot each
+    re-pick over a stale set of links. The writer must re-pick over the
+    links as they stand at write time, so the pin matches serial ingest."""
+    alpha, beta = _topical_and_firehose(seeded_db, monkeypatch)
+    gamma_addr = "linux-mm@kvack.org"
+    with seeded_db() as s:
+        s.add(
+            Inbox(
+                name="gamma",
+                mirror_path="/x",
+                upstream_url="https://x/g",
+                list_address=gamma_addr,
+            )
+        )
+        s.commit()
+        gamma = s.execute(select(Inbox).where(Inbox.name == "gamma")).scalar_one()
+    # alpha's address first among the topical ones: serial ends on alpha.
+    raw = _rfc5322("x722@example.com", to=_FIREHOSE, cc=f"{_TOPICAL}, {gamma_addr}")
+
+    for ix in (beta, alpha, gamma):
+        _ingest_epoch_files(seeded_db, tmp_path, ix, "s.git", [raw])
+    serial = _article_state(seeded_db, "x722@example.com")
+    assert serial[0] == {"alpha", "beta", "gamma"}
+    assert serial[1] == "alpha"
+    _wipe_article(seeded_db, "x722@example.com")
+
+    _ingest_epoch_files(seeded_db, tmp_path, beta, "q.git", [raw])
+    with _held_batches(monkeypatch) as (prepared, write):
+        _ingest_epoch_files(seeded_db, tmp_path, alpha, "q.git", [raw])
+        _ingest_epoch_files(seeded_db, tmp_path, gamma, "q.git", [raw])
+        assert [len(p.articles) for p in prepared] == [0, 0], (
+            "both copies must take the cross-post path"
+        )
+        write()
+
+    assert _article_state(seeded_db, "x722@example.com") == serial
+
+
+def test_backfill_batch_does_not_overwrite_a_pin_ingest_writes_meanwhile(
+    seeded_db, tmp_path, monkeypatch, broker_active
+):
+    """#722: a backfill chunk reads its articles' links, then writes. If
+    ingest links and pins the topical copy in between, the chunk must
+    re-pick over the links at write time instead of writing back the
+    firehose pick it made from the old links."""
+    from mimir import _pending_backfill
+    from mimir.broker._context import get_active_writer
+    from mimir.ingest import backfill_canonicals
+
+    alpha, beta = _topical_and_firehose(seeded_db, monkeypatch)
+    raw = _rfc5322("bf722@example.com", to=_FIREHOSE, cc=_TOPICAL)
+    _ingest_epoch_files(seeded_db, tmp_path, beta, "s.git", [raw])
+    pin, links = _pin_and_links(seeded_db, "bf722@example.com")
+    assert (pin, links) == (beta.id, {beta.id}), "fixture must start on the firehose"
+
+    real_submit = _pending_backfill._submit_canonical_batch
+    held = []
+
+    def _hold(writer, payloads, after=None):
+        held.extend(payloads)
+        done: Future = Future()
+        done.set_result(None)
+        return done
+
+    with monkeypatch.context() as m:
+        m.setattr(_pending_backfill, "_submit_canonical_batch", _hold)
+        backfill_canonicals(reprocess=True)
+    assert len(held) == 1
+
+    _ingest_epoch_files(seeded_db, tmp_path, alpha, "s.git", [raw])
+    pin, links = _pin_and_links(seeded_db, "bf722@example.com")
+    assert (pin, links) == (alpha.id, {alpha.id, beta.id})
+
+    real_submit(get_active_writer(), held).result(timeout=10)
+
+    pin, _ = _pin_and_links(seeded_db, "bf722@example.com")
+    assert pin == alpha.id
 
 
 def test_ingest_canonical_null_when_no_known_address_matches(
