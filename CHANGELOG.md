@@ -13,6 +13,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- A message page's ETag now changes when a sibling revision of its patch is
+  cross-posted to another inbox. The revisions fold links each revision
+  through its canonical inbox, so before this a conditional request could get
+  a 304 for a page whose fold link had since moved. The thread page's ETag
+  also rotates in this case, though that page does not show the fold (#687).
 - A message's pinned canonical inbox is now always one of the inboxes it is
   filed in. The pin was picked from every inbox named in To/Cc, so about 1.5%
   of stored pins (107,269 in the measured production range) named an inbox

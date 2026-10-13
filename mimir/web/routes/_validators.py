@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from mimir.models import (
     Article,
     ArticleFile,
+    ArticleList,
     ArticleTrailer,
     MainlineCommit,
     MainlineState,
@@ -137,13 +138,23 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     # renumber a version in place at the same count.
     series_tag = ""
     if series is not None and series[0]:
+        # Plus each revision's canonical inbox and memberships: the fold
+        # links every revision (and the diff's `to` slot) through
+        # `_canonical_url_for`, so a sibling cross-posted later moves a
+        # link without moving anything else here (#687).
         revisions = session.execute(
-            select(Article.id, Article.patch_series_version)
+            select(
+                Article.id,
+                Article.patch_series_version,
+                Article.canonical_inbox_id,
+                ArticleList.inbox_id,
+            )
+            .outerjoin(ArticleList, ArticleList.article_id == Article.id)
             .where(
                 Article.patch_series_key == series[0],
                 func.coalesce(Article.patch_series_position, 0) == (series[1] or 0),
             )
-            .order_by(Article.id)
+            .order_by(Article.id, ArticleList.inbox_id)
         ).all()
         series_tag = _digest(repr(tuple(r)) for r in revisions)
     return (

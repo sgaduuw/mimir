@@ -2293,6 +2293,126 @@ def test_message_page_etag_changes_when_canonical_inbox_moves(client, tmp_path):
     assert "/beta/" in _canonical(second)
 
 
+def test_message_page_etag_changes_when_a_sibling_revision_is_cross_posted(
+    client, tmp_path
+):
+    """#687: the revisions fold links each revision through its
+    canonical inbox and memberships. A sibling revision cross-posted
+    later moves that link without touching this article or its thread,
+    so the ETag has to carry the siblings' canonical inbox and
+    memberships or the fold keeps serving the old link behind 304s."""
+    from sqlalchemy import select as _sa_select
+    from sqlalchemy import update as _sa_update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    v1_id, v1_url = _ingest_one_article(
+        tmp_path, "alpha", "x687-v1@x", subject="[PATCH 1/1] bar: baz"
+    )
+    # The helper repoints alpha's mirror at the dir it was given.
+    (tmp_path / "v2").mkdir()
+    v2_id, v2_url = _ingest_one_article(
+        tmp_path / "v2", "alpha", "x687-v2@x", subject="[PATCH v2 1/1] bar: baz"
+    )
+    with SessionLocal() as s:
+        beta = s.execute(_sa_select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        for art_id, version in ((v1_id, "v1"), (v2_id, "v2")):
+            s.execute(
+                _sa_update(Article)
+                .where(Article.id == art_id)
+                .values(
+                    patch_series_key="k687",
+                    patch_series_position=1,
+                    patch_series_version=version,
+                )
+            )
+        # v1 was addressed to beta, whose copy has not been ingested yet.
+        s.get(Article, v1_id).canonical_inbox_id = beta.id
+        v1_link = s.execute(
+            _sa_select(ArticleList).where(ArticleList.article_id == v1_id)
+        ).scalar_one()
+        epoch, sha, beta_id = v1_link.epoch, v1_link.commit_sha, beta.id
+        s.commit()
+
+    first = client.get(v2_url)
+    assert first.status_code == 200
+    # Precondition: the fold links v1 through alpha, the only inbox it is in.
+    assert f'href="{v1_url}"' in first.data.decode()
+
+    with SessionLocal() as s:
+        s.add(
+            ArticleList(article_id=v1_id, inbox_id=beta_id, epoch=epoch, commit_sha=sha)
+        )
+        s.commit()
+
+    second = client.get(v2_url, headers={"If-None-Match": first.headers["ETag"]})
+    assert second.status_code == 200, "stale revisions-fold link served as 304"
+    assert f'href="{v1_url.replace("/alpha/", "/beta/")}"' in second.data.decode()
+
+
+def test_message_page_etag_changes_when_a_sibling_revision_canonical_moves(
+    client, tmp_path
+):
+    """#687: a recompute (`backfill-canonicals`, an admin pin) can move a
+    sibling revision's canonical inbox while its memberships stay the
+    same. That moves the fold link too, so the ETag has to carry the
+    canonical on its own, not only the memberships."""
+    from sqlalchemy import select as _sa_select
+    from sqlalchemy import update as _sa_update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    v1_id, v1_url = _ingest_one_article(
+        tmp_path, "alpha", "x687c-v1@x", subject="[PATCH 1/1] bar: baz"
+    )
+    (tmp_path / "v2").mkdir()
+    v2_id, v2_url = _ingest_one_article(
+        tmp_path / "v2", "alpha", "x687c-v2@x", subject="[PATCH v2 1/1] bar: baz"
+    )
+    with SessionLocal() as s:
+        alpha = s.execute(_sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        beta = s.execute(_sa_select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        for art_id, version in ((v1_id, "v1"), (v2_id, "v2")):
+            s.execute(
+                _sa_update(Article)
+                .where(Article.id == art_id)
+                .values(
+                    patch_series_key="k687c",
+                    patch_series_position=1,
+                    patch_series_version=version,
+                )
+            )
+        # v1 is in both inboxes from the start; only its canonical moves.
+        v1_link = s.execute(
+            _sa_select(ArticleList).where(ArticleList.article_id == v1_id)
+        ).scalar_one()
+        s.add(
+            ArticleList(
+                article_id=v1_id,
+                inbox_id=beta.id,
+                epoch=v1_link.epoch,
+                commit_sha=v1_link.commit_sha,
+            )
+        )
+        s.get(Article, v1_id).canonical_inbox_id = alpha.id
+        beta_id = beta.id
+        s.commit()
+
+    first = client.get(v2_url)
+    assert first.status_code == 200
+    assert f'href="{v1_url}"' in first.data.decode()
+
+    with SessionLocal() as s:
+        s.get(Article, v1_id).canonical_inbox_id = beta_id
+        s.commit()
+
+    second = client.get(v2_url, headers={"If-None-Match": first.headers["ETag"]})
+    assert second.status_code == 200, "stale revisions-fold link served as 304"
+    assert f'href="{v1_url.replace("/alpha/", "/beta/")}"' in second.data.decode()
+
+
 def _canonical_href(resp) -> str:
     return re.search(r'<link rel="canonical" href="([^"]+)"', resp.data.decode()).group(
         1
