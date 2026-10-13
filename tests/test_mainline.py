@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 
 from mimir.broker.writes import WriterThread
 from mimir.mainline import extract_message_ids, walk_commits
-from mimir.models import MainlineCommit, MainlineState
+from mimir.models import Inbox, MainlineCommit, MainlineState
 
 
 @pytest.fixture
@@ -645,7 +645,9 @@ def test_linus_records_a_commit_a_subsystem_tree_recorded_first(
             select(MainlineCommit.tree_name).where(MainlineCommit.message_id == "c1@x")
         ).all()
         assert sorted(trees) == ["linus", "net-next"]
-        got = lifecycle_status_for_articles(s, [art_id])
+        got = lifecycle_status_for_articles(
+            s, [art_id], s.scalar(select(Inbox.id).where(Inbox.name == "lkml"))
+        )
     assert got[art_id].state == LifecycleStatus.LANDED
 
 

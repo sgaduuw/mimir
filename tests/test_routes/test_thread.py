@@ -1106,9 +1106,11 @@ def test_etag_page_does_not_render_a_cached_pill(client, tmp_path, surface):
     """
     from datetime import datetime
 
+    from sqlalchemy import select
+
     from mimir.extensions import SessionLocal
     from mimir.lifecycle_status import lifecycle_status_for_articles
-    from mimir.models import MainlineCommit
+    from mimir.models import Inbox, MainlineCommit
     from tests.test_routes._helpers import seed_thread_shape
 
     seeded = seed_thread_shape(
@@ -1128,7 +1130,8 @@ def test_etag_page_does_not_render_a_cached_pill(client, tmp_path, surface):
             )
         )
         s.commit()
-        primed = lifecycle_status_for_articles(s, [root_id])[root_id]
+        inbox_id = s.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
+        primed = lifecycle_status_for_articles(s, [root_id], inbox_id)[root_id]
     assert primed.pill_label == "IN LINUX-NEXT", primed.pill_label  # precondition
 
     with SessionLocal() as s:
@@ -1142,7 +1145,7 @@ def test_etag_page_does_not_render_a_cached_pill(client, tmp_path, surface):
         )
         s.commit()
         # Precondition: the cache still holds the queued pill.
-        still = lifecycle_status_for_articles(s, [root_id])[root_id]
+        still = lifecycle_status_for_articles(s, [root_id], inbox_id)[root_id]
     assert still.pill_label == "IN LINUX-NEXT", still.pill_label
 
     html = client.get(url).get_data(as_text=True)
@@ -1197,7 +1200,9 @@ def test_repeat_request_reuses_the_cached_pill(client, tmp_path, monkeypatch, su
     monkeypatch.setattr(
         lifecycle_status,
         "_bulk_uncached",
-        lambda session, ids: computed.append(ids) or real(session, ids),
+        lambda session, ids, inbox_id: (
+            computed.append(ids) or real(session, ids, inbox_id)
+        ),
     )
     first = client.get(url)
     assert computed, "precondition: the first request computes the pill"
@@ -1367,15 +1372,11 @@ def test_reply_does_not_leave_a_cached_activity_chip_under_the_new_etag(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="#676: the chip walks the thread across inboxes, the ETag does not",
-)
 @pytest.mark.parametrize("surface", ["message", "thread"])
-def test_off_inbox_reply_moves_the_etag_if_it_moves_the_chip(client, tmp_path, surface):
-    """A reply that lands only in ANOTHER inbox moves the chip and no
-    validator input. Known gap, independent of caching (#676)."""
+def test_chip_and_etag_move_together_on_replies(client, tmp_path, surface):
+    """The chip reads this inbox's thread, as the ETag does (#676). A
+    reply in ANOTHER inbox moves neither; a reply in this one moves both,
+    so the agreement is not the chip being stuck."""
     from datetime import datetime
 
     from sqlalchemy import delete, select
@@ -1393,31 +1394,40 @@ def test_off_inbox_reply_moves_the_etag_if_it_moves_the_chip(client, tmp_path, s
     first = client.get(url)
     assert _activity(first.get_data(as_text=True)) == "dormant"  # precondition
 
-    with SessionLocal() as s:
-        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
-        other = Article(
-            message_id="offlist-reply@x",
-            thread_parent="root@x",
-            subject="Re: [PATCH] foo: bar",
-            author="c@d.example",
-            date=datetime.now(UTC),
-        )
-        s.add(other)
-        s.flush()
-        s.add(
-            ArticleList(
-                article_id=other.id, inbox_id=beta.id, epoch=0, commit_sha="b" * 40
+    def reply_in(inbox_name, message_id):
+        with SessionLocal() as s:
+            inbox = s.execute(
+                select(Inbox).where(Inbox.name == inbox_name)
+            ).scalar_one()
+            reply = Article(
+                message_id=message_id,
+                thread_parent="root@x",
+                subject="Re: [PATCH] foo: bar",
+                author="c@d.example",
+                date=datetime.now(UTC),
             )
-        )
-        s.execute(delete(CacheEntry))
-        s.commit()
+            s.add(reply)
+            s.flush()
+            s.add(
+                ArticleList(
+                    article_id=reply.id,
+                    inbox_id=inbox.id,
+                    epoch=0,
+                    commit_sha="b" * 40,
+                )
+            )
+            s.execute(delete(CacheEntry))
+            s.commit()
 
-    second = client.get(url)
-    # Precondition outside the xfail's reach: a fixture that renders no
-    # chip must error, not pass as the known gap.
-    if _activity(second.get_data(as_text=True)) != "hot":
-        raise RuntimeError("fixture: the off-inbox reply did not move the chip")
-    assert second.headers["ETag"] != first.headers["ETag"]
+    reply_in("beta", "offlist-reply@x")
+    off = client.get(url)
+    assert _activity(off.get_data(as_text=True)) == "dormant"
+    assert off.headers["ETag"] == first.headers["ETag"]
+
+    reply_in("alpha", "inlist-reply@x")
+    on = client.get(url)
+    assert _activity(on.get_data(as_text=True)) == "hot"
+    assert on.headers["ETag"] != first.headers["ETag"]
 
 
 @pytest.mark.parametrize("surface", ["message", "thread"])
@@ -1936,9 +1946,9 @@ def test_thread_pages_share_one_pill_compute(client, tmp_path, monkeypatch, vari
     calls = []
     real = lifecycle_status._bulk_uncached
 
-    def counting(session, ids):
+    def counting(session, ids, inbox_id):
         calls.append(list(ids))
-        return real(session, ids)
+        return real(session, ids, inbox_id)
 
     monkeypatch.setattr(lifecycle_status, "_bulk_uncached", counting)
     if variant == "pages":

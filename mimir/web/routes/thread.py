@@ -235,7 +235,7 @@ def thread_view(
             # ON THIS PATH. Scoped deliberately: `lifecycle_status_for_articles`
             # below still runs a recursive `WITH RECURSIVE descendants`
             # over the whole thread (54.6 ms on the 12,342-message
-            # syzbot thread, and NOT inbox-scoped), so the request as a
+            # syzbot thread, now scoped to this inbox), so the request as a
             # whole does still walk it. A 5-minute cache keyed by the
             # ETag's content part (shared by every page of the thread)
             # amortises that; the sentence is about membership, not
@@ -400,7 +400,7 @@ def thread_view(
             # Keyed by the ETag's content part, as on the message page: a
             # cached pill is reused only while that part is unchanged.
             root_lifecycle = lifecycle_status_for_articles(
-                session, [root_node.id], state_key=content_key
+                session, [root_node.id], inbox.id, state_key=content_key
             ).get(root_node.id)
 
         # Self-canonical, deliberately. Cross-inbox thread
