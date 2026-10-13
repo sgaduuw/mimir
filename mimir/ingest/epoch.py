@@ -18,6 +18,7 @@ import time
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime
+from functools import partial
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -606,6 +607,16 @@ def ingest_epoch(
                     cnt, ts = prev
                     pending.address_observations[addr] = (cnt + 1, max(ts, obs_time))
 
+        # The one pick function for first copy, cross-post link and the
+        # no-op insert of a parallel batch: the writer calls it with the
+        # links as they stand at write time (#722).
+        repick = partial(
+            pick_canonical_inbox_id,
+            list_addrs,
+            address_to_inbox_id,
+            demoted_inbox_ids=demoted_inbox_ids,
+        )
+
         if parsed.message_id in seen_in_batch:
             logger.debug(
                 "epoch %s commit %s: skip (in-batch dup) %s",
@@ -622,7 +633,6 @@ def ingest_epoch(
             select(
                 Article.id,
                 Article.date,
-                Article.canonical_inbox_id,
                 ArticleList.article_id.label("linked_id"),
             )
             .select_from(Article)
@@ -647,20 +657,10 @@ def ingest_epoch(
                 )
                 result.dup_db += 1
             else:
-                # Cross-post: link to existing article, and re-pick the
-                # pin now that it has one more inbox to choose from. A
-                # topical copy arriving after the firehose copy is what
-                # upgrades the pin (#675). None keeps the current pin.
-                linked = frozenset(
-                    session.execute(
-                        select(ArticleList.inbox_id).where(
-                            ArticleList.article_id == existing_article_id
-                        )
-                    ).scalars()
-                ) | {inbox_id}
-                repick = pick_canonical_inbox_id(
-                    list_addrs, address_to_inbox_id, linked, demoted_inbox_ids
-                )
+                # Cross-post: link to existing article. The writer
+                # re-picks the pin over the links it finds at write time,
+                # so a topical copy arriving after the firehose copy
+                # upgrades it (#675) even when another batch links first.
                 pending.article_lists.append(
                     _ArticleListInsert(
                         article_index=-1,
@@ -668,11 +668,7 @@ def ingest_epoch(
                         inbox_id=inbox_id,
                         epoch=epoch_name,
                         commit_sha=commit_sha,
-                        canonical_inbox_id=(
-                            repick
-                            if repick != existing_row.canonical_inbox_id
-                            else None
-                        ),
+                        repick=repick,
                     )
                 )
                 seen_in_batch.add(parsed.message_id)
@@ -693,12 +689,7 @@ def ingest_epoch(
                 )
             continue
 
-        canonical_inbox_id = pick_canonical_inbox_id(
-            list_addrs,
-            address_to_inbox_id,
-            frozenset({inbox_id}),
-            demoted_inbox_ids,
-        )
+        canonical_inbox_id = repick(frozenset({inbox_id}))
         art_insert = _to_article_insert(
             parsed,
             inbox_id=inbox_id,
@@ -710,6 +701,7 @@ def ingest_epoch(
             pending_articles=pending.articles,
         )
         article_index = len(pending.articles)
+        art_insert.repick = repick
         pending.articles.append(art_insert)
         pending.article_lists.append(
             _ArticleListInsert(
