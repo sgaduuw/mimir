@@ -6,12 +6,16 @@ active ReadSessionPool), and at every batch boundary submits the
 snapshot as one composite WriteOp via `_submit_ingest_batch`. Pure
 data with no SQLAlchemy ORM objects so the snapshot crosses the
 read-pool to writer-thread boundary cleanly without session affinity.
+The one exception is the `repick` callable on the two insert records:
+a pure function of the article's linked inbox ids, run only on the
+writer thread, holding no ORM objects.
 
 Underscore-prefixed module: internal to `mimir.ingest`; not part
 of the public surface.
 """
 
 import logging
+from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -50,7 +54,13 @@ class _ArticleInsert:
     the returned `article_id`. Empty list for articles with no review
     attestation trailers. `address_normalized` is derived in the WriteOp
     closure (lowercase of `address`) rather than carried here to keep the
-    dataclass lean."""
+    dataclass lean.
+
+    `repick` maps the article's linked inbox ids to its canonical pin
+    (None for no match). The writer calls it only when this insert is a
+    no-op because another batch wrote the article first, with the links
+    as they stand then (#722). A pure callable, run on the writer thread,
+    with no ORM objects inside."""
 
     message_id: str
     subject: str | None
@@ -64,6 +74,7 @@ class _ArticleInsert:
     patch_series_position: int | None = None
     touched_paths: list[str] = field(default_factory=list)
     trailer_rows: list[tuple[str, str, str]] = field(default_factory=list)
+    repick: Callable[[frozenset[int]], int | None] | None = None
 
 
 @dataclass
@@ -78,9 +89,12 @@ class _ArticleListInsert:
     inbox_id: int
     epoch: str
     commit_sha: str
-    # Cross-post links only: the re-picked pin to write onto the existing
-    # article; None leaves it alone.
-    canonical_inbox_id: int | None = None
+    # Cross-post links only: maps the article's linked inbox ids to its
+    # pin. The writer calls it with the links as they stand at write
+    # time, not as the read phase saw them, so two batches written in
+    # turn cannot re-pick over a stale set. A pure callable, run on the
+    # writer thread, with no ORM objects inside.
+    repick: Callable[[frozenset[int]], int | None] | None = None
 
 
 @dataclass
@@ -246,6 +260,24 @@ def _resolve_thread_root(conn, inbox_id: int, article_id: int, parent_msgid) -> 
     _set_subtree_root(conn, inbox_id, article_id, root_id)
 
 
+def _apply_repick(conn, article_id: int, repick) -> None:
+    """Re-pick the article's pin over its links as they stand now, and
+    store it when it is a match that differs. None keeps the current pin."""
+    links = frozenset(
+        conn.execute(
+            select(ArticleList.inbox_id).where(ArticleList.article_id == article_id)
+        ).scalars()
+    )
+    new = repick(links)
+    if new is None:
+        return
+    conn.execute(
+        update(Article)
+        .where(Article.id == article_id, Article.canonical_inbox_id.is_not(new))
+        .values(canonical_inbox_id=new)
+    )
+
+
 def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
     """Phase 3b of the two-pool restructure.
 
@@ -374,14 +406,22 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
 
         # Step 2: INSERT article_lists rows, resolving FKs by index.
         for al in article_lists:
+            repick = al.repick
             if al.article_index == -1:
                 article_id = al.existing_article_id
             else:
                 article_id = article_ids[al.article_index]
             if article_id is None:
-                # The article INSERT was a no-op (duplicate); skip
-                # the article_list row to avoid a NULL FK violation.
-                continue
+                # The article INSERT was a no-op: another batch (a second
+                # inbox's first copy, with more than one long worker)
+                # wrote it first. Link this inbox to that article rather
+                # than dropping the row (#722). Its files and trailers
+                # are already there, so only the link is added.
+                art = articles[al.article_index]
+                article_id = conn.execute(
+                    select(Article.id).where(Article.message_id == art.message_id)
+                ).scalar_one()
+                repick = art.repick
             conn.execute(
                 sqlite_insert(ArticleList)
                 .values(
@@ -392,12 +432,8 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
                 )
                 .on_conflict_do_nothing(index_elements=["article_id", "inbox_id"])
             )
-            if al.canonical_inbox_id is not None:
-                conn.execute(
-                    update(Article)
-                    .where(Article.id == article_id)
-                    .values(canonical_inbox_id=al.canonical_inbox_id)
-                )
+            if repick is not None:
+                _apply_repick(conn, article_id, repick)
             # Maintain the materialised root for this (article, inbox)
             # pair, and re-root anything that was waiting on it.
             # The accumulator already carries the parent for rows this

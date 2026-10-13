@@ -13,6 +13,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- With more than one long worker, two inboxes ingesting the first copy of the
+  same message at the same time no longer lose the second inbox's link. The
+  second insert was a no-op and its link was dropped, so the message stayed
+  missing from that inbox until a reindex. The link is now added, and the
+  canonical pin is re-picked over the links as they stand when the batch is
+  written, for this case and for cross-post links, so parallel ingest ends on
+  the same pin as serial ingest (#722).
 - A message page's ETag now changes when a sibling revision of its patch is
   cross-posted to another inbox. The revisions fold links each revision
   through its canonical inbox, so before this a conditional request could get
