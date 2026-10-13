@@ -1372,17 +1372,42 @@ def test_reply_does_not_leave_a_cached_activity_chip_under_the_new_etag(
     )
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
-def test_chip_and_etag_move_together_on_replies(client, tmp_path, surface):
-    """The chip reads this inbox's thread, as the ETag does (#676). A
-    reply in ANOTHER inbox moves neither; a reply in this one moves both,
-    so the agreement is not the chip being stuck."""
+def _add_reply(inbox_name, message_id, parent, date=None):
+    """One reply in `inbox_name` only (default: now), and a cleared cache."""
     from datetime import datetime
 
     from sqlalchemy import delete, select
 
     from mimir.extensions import SessionLocal
     from mimir.models import ArticleList, CacheEntry, Inbox
+
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        reply = Article(
+            message_id=message_id,
+            thread_parent=parent,
+            subject="Re: [PATCH] foo: bar",
+            author="c@d.example",
+            date=date or datetime.now(UTC),
+        )
+        s.add(reply)
+        s.flush()
+        s.add(
+            ArticleList(
+                article_id=reply.id, inbox_id=inbox.id, epoch=0, commit_sha="b" * 40
+            )
+        )
+        s.execute(delete(CacheEntry))
+        s.commit()
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_chip_and_etag_move_together_on_replies(client, tmp_path, surface):
+    """The chip reads this inbox's thread, as the ETag does (#676). A
+    reply in ANOTHER inbox moves neither; a reply in this one moves both,
+    so the agreement is not the chip being stuck."""
+
+    from mimir.extensions import SessionLocal
     from tests.test_routes._helpers import seed_thread_shape
 
     seeded = seed_thread_shape(tmp_path, "alpha", [("root@x", None)])
@@ -1394,40 +1419,72 @@ def test_chip_and_etag_move_together_on_replies(client, tmp_path, surface):
     first = client.get(url)
     assert _activity(first.get_data(as_text=True)) == "dormant"  # precondition
 
-    def reply_in(inbox_name, message_id):
-        with SessionLocal() as s:
-            inbox = s.execute(
-                select(Inbox).where(Inbox.name == inbox_name)
-            ).scalar_one()
-            reply = Article(
-                message_id=message_id,
-                thread_parent="root@x",
-                subject="Re: [PATCH] foo: bar",
-                author="c@d.example",
-                date=datetime.now(UTC),
-            )
-            s.add(reply)
-            s.flush()
-            s.add(
-                ArticleList(
-                    article_id=reply.id,
-                    inbox_id=inbox.id,
-                    epoch=0,
-                    commit_sha="b" * 40,
-                )
-            )
-            s.execute(delete(CacheEntry))
-            s.commit()
-
-    reply_in("beta", "offlist-reply@x")
+    _add_reply("beta", "offlist-reply@x", "root@x")
     off = client.get(url)
     assert _activity(off.get_data(as_text=True)) == "dormant"
     assert off.headers["ETag"] == first.headers["ETag"]
 
-    reply_in("alpha", "inlist-reply@x")
+    _add_reply("alpha", "inlist-reply@x", "root@x")
     on = client.get(url)
     assert _activity(on.get_data(as_text=True)) == "hot"
     assert on.headers["ETag"] != first.headers["ETag"]
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_sibling_thread_does_not_move_the_chip_under_the_etag(
+    client, tmp_path, surface
+):
+    """p1 and p2 reply to a cover letter this inbox never got, so each is
+    its own thread here. Once the cover lands in another inbox, a reply to
+    p2 must not move p1's chip: p1's page and ETag do not contain it
+    (#676)."""
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("p1@x", "cover@x"), ("p2@x", "cover@x")]
+    )
+    p1_id, p1_url = seeded["p1@x"]
+    url = p1_url if surface == "message" else p1_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, p1_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    first = client.get(url)
+    assert _activity(first.get_data(as_text=True)) == "dormant"  # precondition
+
+    _add_reply("beta", "cover@x", None, datetime(2024, 1, 1, tzinfo=UTC))
+    _add_reply("alpha", "p2-reply@x", "p2@x")
+
+    after = client.get(url)
+    assert after.headers["ETag"] == first.headers["ETag"]  # precondition
+    assert _activity(after.get_data(as_text=True)) == "dormant"
+
+
+@pytest.mark.parametrize("surface", ["message", "thread"])
+def test_chip_counts_own_replies_below_an_off_inbox_parent(client, tmp_path, surface):
+    """top (alpha) <- mid (beta only) <- leaf (alpha). In alpha, leaf is
+    its own thread and its page shows the fresh reply, so the chip is hot.
+    Walking up through mid to top would start the inbox-scoped walk down
+    where it cannot pass mid, and lose leaf's own reply (#676)."""
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("top@x", None), ("leaf@x", "mid@x")]
+    )
+    leaf_id, leaf_url = seeded["leaf@x"]
+    url = leaf_url if surface == "message" else leaf_url + "/t"
+    with SessionLocal() as s:
+        s.get(Article, leaf_id).subject = "[PATCH] foo: bar"
+        s.commit()
+    _add_reply("beta", "mid@x", "top@x", datetime(2024, 1, 1, tzinfo=UTC))
+    _add_reply("alpha", "leaf-reply@x", "leaf@x")
+
+    assert _activity(client.get(url).get_data(as_text=True)) == "hot"
 
 
 @pytest.mark.parametrize("surface", ["message", "thread"])
