@@ -211,7 +211,11 @@ def pick_canonical_inbox_id(
     `fallback_canonical_name` agree by construction (#675): a pin on an
     inbox with no `article_lists` row for the article is a URL that
     404s. Ingest, cross-post linking and the backfill all call this
-    with the article's links so they cannot disagree.
+    with the article's links, so a given set of links and addresses
+    gives one answer. Two gaps remain: replay links cross-posts without
+    re-picking, and when the pick is None ingest keeps a legacy
+    non-member pin where the backfill writes NULL. Readers still go
+    through `fallback_canonical_name`, which ignores a non-member pin.
 
     Two-pass: a match against a *demoted* inbox (a firehose like
     lkml, configured via `Settings.canonical_demoted_inboxes`) is

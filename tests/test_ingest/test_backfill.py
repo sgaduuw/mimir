@@ -3,7 +3,7 @@ over already-ingested articles, the `--limit` /
 `--inbox-filter` / `--reprocess` flags, the missing-blob
 skip path, and the observation tally re-derivation."""
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from mimir.ingest import (
     backfill_canonicals,
@@ -11,6 +11,7 @@ from mimir.ingest import (
 )
 from mimir.models import (
     Article,
+    ArticleList,
     Inbox,
     InboxAddressObservation,
 )
@@ -227,3 +228,46 @@ def test_backfill_records_observations(seeded_db, tmp_path, broker_active):
 # tz-aware dates raised TypeError mid-ingest and rolled back the
 # whole batch, production lkml ingest crashed after walking 6M
 # commits with only 26 articles persisting.
+
+
+def test_backfill_reprocess_never_pins_an_unlinked_inbox(
+    seeded_db, tmp_path, broker_active
+):
+    """#675: the backfill repairs the stored rows, so it must use the
+    same linked-only predicate as ingest. To names beta's list first, Cc
+    names alpha's, and the article is filed only in alpha: the re-pick
+    must land on alpha, not beta."""
+    _clear_seed_articles(seeded_db)
+    alpha = _alpha(seeded_db)
+    alpha_addr = "linux-arm-kernel@lists.infradead.org"
+    beta_addr = "linux-kernel@vger.kernel.org"
+    with seeded_db() as s:
+        s.execute(
+            update(Inbox).where(Inbox.name == "alpha").values(list_address=alpha_addr)
+        )
+        s.execute(
+            update(Inbox).where(Inbox.name == "beta").values(list_address=beta_addr)
+        )
+        s.commit()
+    _ingest_with_to(
+        seeded_db,
+        tmp_path,
+        alpha,
+        "bf-unlinked@example.com",
+        to=beta_addr,
+        cc=alpha_addr,
+    )
+
+    backfill_canonicals(reprocess=True, promote_every=1)
+
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == "bf-unlinked@example.com")
+        ).scalar_one()
+        links = set(
+            s.execute(
+                select(ArticleList.inbox_id).where(ArticleList.article_id == art.id)
+            ).scalars()
+        )
+        assert links == {alpha.id}
+        assert art.canonical_inbox_id == alpha.id

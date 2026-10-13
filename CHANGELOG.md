@@ -19,7 +19,9 @@ changes, not internal refactors. Categories: **Added**,
   with no copy of the message. A cross-post arriving from another inbox now
   re-picks the pin, so a topical list's copy still takes over from the
   firehose copy that landed first. Stored rows are fixed by one more
-  `admin canonicals backfill --reprocess` (#675).
+  `admin canonicals backfill --reprocess --restart`, run after the deploy:
+  since #680 plain `--reprocess` resumes an unfinished run from its old
+  cursor and would skip the ids above it (#675).
 - A Subject header the sender folded across lines is stored on one line.
   Folded subjects kept their line break, so both series parsers missed them:
   about a million numbered patches (production, 2026-10-12) had no series
