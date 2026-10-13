@@ -23,6 +23,7 @@ no list-address signal anyway.
 import logging
 import time
 from datetime import UTC, datetime
+from functools import partial
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -258,12 +259,13 @@ def backfill_canonicals(
                         for addr in list_addrs:
                             obs_deltas[inbox_id][addr] = (1, obs_time)
 
-                new_canonical = pick_canonical_inbox_id(
+                repick = partial(
+                    pick_canonical_inbox_id,
                     list_addrs,
                     address_to_inbox_id,
-                    frozenset(links),
-                    demoted_inbox_ids,
+                    demoted_inbox_ids=demoted_inbox_ids,
                 )
+                new_canonical = repick(frozenset(links))
                 if new_canonical != article.canonical_inbox_id:
                     out.resolved += 1
                 else:
@@ -272,7 +274,7 @@ def backfill_canonicals(
                 batch_payloads.append(
                     _CanonicalPending(
                         article_id=article.id,
-                        new_canonical_inbox_id=new_canonical,
+                        repick=repick,
                         observation_deltas=obs_deltas,
                     )
                 )

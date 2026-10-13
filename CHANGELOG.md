@@ -18,8 +18,10 @@ changes, not internal refactors. Categories: **Added**,
   second insert was a no-op and its link was dropped, so the message stayed
   missing from that inbox until a reindex. The link is now added, and the
   canonical pin is re-picked over the links as they stand when the batch is
-  written, for this case and for cross-post links, so parallel ingest ends on
-  the same pin as serial ingest (#722).
+  written, for this case, for cross-post links and for `admin canonicals
+  backfill`, so parallel ingest ends on the same pin as serial ingest and a
+  backfill chunk no longer overwrites a pin that ingest wrote while it ran
+  (#722).
 - A message page's ETag now changes when a sibling revision of its patch is
   cross-posted to another inbox. The revisions fold links each revision
   through its canonical inbox, so before this a conditional request could get

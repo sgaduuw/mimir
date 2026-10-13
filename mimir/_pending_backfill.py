@@ -34,6 +34,7 @@ from mimir.ingest._pending import _promote_list_address
 from mimir.models import (
     Article,
     ArticleFile,
+    ArticleList,
     ArticleTrailer,
     Inbox,
     InboxAddressObservation,
@@ -107,10 +108,14 @@ class _PatchSeriesPending:
 class _CanonicalPending:
     """Per-article pending writes for `backfill_canonicals`.
 
-    `new_canonical_inbox_id` is the resolved canonical-inbox id. The
-    closure issues `UPDATE articles SET canonical_inbox_id=? WHERE id=?
-    AND (canonical_inbox_id IS DISTINCT FROM ?)` so a no-op resolution
-    doesn't churn rows.
+    `repick` maps the article's linked inbox ids to its canonical-inbox
+    id (None for no match). The closure reads the article's links at
+    write time, so a link and pin that ingest committed after this
+    chunk read its batch are not overwritten with a pick from the old
+    links (#722), then issues `UPDATE articles SET canonical_inbox_id=?
+    WHERE id=? AND (canonical_inbox_id IS DISTINCT FROM ?)` so a no-op
+    resolution doesn't churn rows. A pure callable, run on the writer
+    thread, with no ORM objects inside.
 
     `observation_deltas` is `{inbox_id: {address: (count, last_seen)}}`;
     the closure upserts every (inbox_id, address) pair via
@@ -119,7 +124,7 @@ class _CanonicalPending:
     """
 
     article_id: int
-    new_canonical_inbox_id: int | None
+    repick: Callable[[frozenset[int]], int | None]
     observation_deltas: dict[int, dict[str, tuple[int, datetime]]] = field(
         default_factory=dict
     )
@@ -273,13 +278,21 @@ def _submit_canonical_batch(
 
     def _fn(conn):
         for p in payloads:
+            links = frozenset(
+                conn.execute(
+                    select(ArticleList.inbox_id).where(
+                        ArticleList.article_id == p.article_id
+                    )
+                ).scalars()
+            )
+            new_canonical = p.repick(links)
             conn.execute(
                 update(Article)
                 .where(
                     Article.id == p.article_id,
-                    Article.canonical_inbox_id.is_not(p.new_canonical_inbox_id),
+                    Article.canonical_inbox_id.is_not(new_canonical),
                 )
-                .values(canonical_inbox_id=p.new_canonical_inbox_id)
+                .values(canonical_inbox_id=new_canonical)
             )
             for inbox_id, by_addr in p.observation_deltas.items():
                 for address, (count, last_seen) in by_addr.items():
