@@ -1005,6 +1005,7 @@ def test_parallel_first_copies_match_serial_ingest(
     _ingest_epoch_files(seeded_db, tmp_path, alpha, "s.git", [child])
     serial = _article_state(seeded_db, "c722@example.com")
     assert serial[0] == {"alpha", "beta"}, "serial run must link both inboxes"
+    assert serial[1] == "alpha", "serial run must end on the topical pin"
     _wipe_article(seeded_db, "c722@example.com")
 
     with _held_batches(monkeypatch) as (prepared, write):

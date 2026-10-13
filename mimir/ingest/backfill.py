@@ -46,9 +46,12 @@ _BATCH = 1000
 
 class BackfillResult(BaseModel):
     """Outcome counters for `backfill_canonicals`. Each examined article
-    lands in exactly one of resolved/unresolved/skipped (resolved =
-    `canonical_inbox_id` was set or updated; unresolved = parsed cleanly
-    but no list address matched; skipped = blob couldn't be read).
+    lands in exactly one of resolved/unresolved/skipped (resolved = the
+    pick made when the article was read differs from the pin stored then;
+    unresolved = it equals it; skipped = blob couldn't be read). The
+    writer re-picks over the links it finds at write time, so with
+    concurrent ingest these two counts are an estimate, not a tally of
+    rows written.
 
     `partial` marks a broker chunk that stopped on its time budget
     (Phase 2.2); the broker keeps the run's cursor (`mimir.backfill_runs`).
@@ -265,6 +268,9 @@ def backfill_canonicals(
                     address_to_inbox_id,
                     demoted_inbox_ids=demoted_inbox_ids,
                 )
+                # Counts compare the read-time pick with the read-time
+                # pin. The writer re-picks at write time, so under
+                # concurrent ingest they are an estimate.
                 new_canonical = repick(frozenset(links))
                 if new_canonical != article.canonical_inbox_id:
                     out.resolved += 1
