@@ -13,6 +13,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- The activity chip counts replies in the list you are viewing only. A reply
+  that landed in another list moved the chip on message and thread pages
+  without moving the ETag, so a cached page kept the old chip behind a 304.
+  A cross-posted patch can now show a different chip in each list (#676).
 - A Subject header the sender folded across lines is stored on one line.
   Folded subjects kept their line break, so both series parsers missed them:
   about a million numbered patches (production, 2026-10-12) had no series
