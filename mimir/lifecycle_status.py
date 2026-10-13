@@ -104,8 +104,9 @@ _REVIEW_ROLES_PARAM = bindparam(
 # descendants(...) walks DOWN from each root and thread_dates takes
 # the MAX(date) over the subtree, excluding the leaf article itself.
 # `last_thread_date` ends up NULL when an article has no replies.
-# Replies count only when they are in the requesting inbox, so the chip
-# reads the same inbox-scoped thread the page's ETag does (#676).
+# Both walks stay inside the requesting inbox, so the chip reads the
+# same inbox-scoped thread the page and its ETag do (#676), root
+# included: `_find_thread_root_cte` stops at the same ancestors.
 #
 # `mc` carries the in_linus count + linus_sha/at AND the earliest non-
 # linus tree + sha/at for the LANDED/QUEUED tooltip leading lines.
@@ -142,6 +143,7 @@ roots(leaf, message_id, thread_parent, depth) AS (
     SELECT r.leaf, p.message_id, p.thread_parent, r.depth + 1
       FROM roots r
       JOIN articles p ON p.message_id = r.thread_parent
+      JOIN article_lists pl ON pl.article_id = p.id AND pl.inbox_id = :inbox_id
      WHERE r.thread_parent IS NOT NULL AND r.depth < 1000
 ),
 root_per_leaf AS (
