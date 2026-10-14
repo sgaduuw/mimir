@@ -31,7 +31,6 @@ from mimir.maintainer_directory import (
     is_addressable_maintainer_address,
     maintainer_path,
 )
-from mimir.models import Article
 from mimir.rendering import render_body
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.trailers import REVIEW_TRAILER_ROLES
@@ -159,9 +158,7 @@ def _is_previewable(att) -> bool:
     }:
         return True
     if att.filename:
-        for ext in _TEXT_LIKE_EXTENSIONS:
-            if att.filename.lower().endswith(ext):
-                return True
+        return att.filename.lower().endswith(tuple(_TEXT_LIKE_EXTENSIONS))
     return False
 
 
@@ -228,30 +225,23 @@ def _redact_trailer_address(email: str) -> str:
     return "<redacted>"
 
 
-@bp_web.app_template_filter("msg_url")
-def _msg_url_filter(article: Article, inbox_name: str) -> str:
-    return _msg_url(article, inbox_name)
+bp_web.add_app_template_filter(_msg_url, "msg_url")
+bp_web.add_app_template_filter(_is_previewable, "is_previewable")
 
-
-@bp_web.app_template_filter("thread_url")
-def _thread_url_filter(article: Article, inbox_name: str) -> str:
-    """URL of the whole-thread view rooted at `article`.
-
-    Listings link the subject to the message page and the reply count
-    to here, so the thread view gains inbound links from the pages that
-    actually get crawled. It is the canonical target for every message
-    in a multi-message thread and the URL the sitemap lists, yet before
-    this the entire template set contained exactly ONE link to it
-    (`message.html`, conditional), while ten templates linked message
-    pages. A canonical target reachable only through the pages that
-    disclaim themselves is a weak structure, whatever the canonical
-    tag says.
-
-    Callers must gate on the thread actually having replies; `/t` on a
-    single-message thread is a poorer page than the message itself and
-    deliberately not its canonical.
-    """
-    return _thread_view_url(article, inbox_name)
+# `thread_url`: listings link the subject to the message page and the
+# reply count to the whole-thread view, so the thread view gains
+# inbound links from the pages that actually get crawled. It is the
+# canonical target for every message in a multi-message thread and the
+# URL the sitemap lists, yet before this filter the entire template set
+# contained exactly ONE link to it (`message.html`, conditional), while
+# ten templates linked message pages. A canonical target reachable only
+# through the pages that disclaim themselves is a weak structure,
+# whatever the canonical tag says.
+#
+# Callers must gate on the thread actually having replies; `/t` on a
+# single-message thread is a poorer page than the message itself and
+# deliberately not its canonical.
+bp_web.add_app_template_filter(_thread_view_url, "thread_url")
 
 
 @bp_web.app_template_filter("render_body")
@@ -268,11 +258,6 @@ def _render_body_filter(
         parent_url=parent_url,
         lore_mirror_urls=lore_mirror_urls,
     )
-
-
-@bp_web.app_template_filter("is_previewable")
-def _is_previewable_filter(att) -> bool:
-    return _is_previewable(att)
 
 
 @bp_web.app_template_filter("safe_from")
