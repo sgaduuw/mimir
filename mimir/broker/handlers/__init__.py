@@ -9,8 +9,9 @@ more ops:
 - `warm.py`: per-inbox + global cache warming → route to the warm
   workers (N-multi-worker queue, Phase 2.2).
 
-This module owns the three cross-cutting things that have to stay
-in sync with each other:
+This module owns one table, `_HANDLERS`: one row per op of
+(request model, handler, queue). Everything the server routes on is
+derived from it:
 
 - `LONG_OPS`: op names that route to the long queue.
 - `WARM_OPS`: op names that route to the warm queue (Phase 2.2).
@@ -107,105 +108,63 @@ from mimir.broker.protocol import (
 logger = logging.getLogger(__name__)
 
 
-# Long ops route to the broker's long-op worker. Keep this set
-# in lockstep with `_DISPATCH` below; the reader uses this for
-# routing (no DB or model side effects in the classification
-# path), the worker uses `_DISPATCH` for the actual dispatch.
+# One row per op: (request model, handler, queue). The op name is
+# the model's `op` default, so it is spelled once, in protocol.py;
+# the routing sets and the dispatch lookup below are derived, which
+# is what keeps them from drifting apart. The queue is "cache"
+# (sub-ms commits, the only queue the web tier waits on), "long"
+# (minutes-long ops on one worker) or "warm" (cache warming, drained
+# by N parallel workers). An op belongs to exactly one.
+_HANDLERS: list[tuple[type, Callable, str]] = [
+    (CacheSetRequest, handle_cache_set, "cache"),
+    (CacheDeleteRequest, handle_cache_delete, "cache"),
+    (CacheDeleteForInboxRequest, handle_cache_delete_for_inbox, "cache"),
+    (CachePurgeExpiredRequest, handle_cache_purge_expired, "cache"),
+    (PingRequest, handle_ping, "cache"),
+    (BootstrapInboxesRequest, handle_bootstrap_inboxes, "long"),
+    (IngestInboxRequest, handle_ingest_inbox, "long"),
+    (ReindexRequest, handle_reindex, "long"),
+    (BackfillArticleFilesRequest, handle_backfill_article_files, "long"),
+    (BackfillArticleTrailersRequest, handle_backfill_article_trailers, "long"),
+    (BackfillPatchSeriesRequest, handle_backfill_patch_series, "long"),
+    (BackfillCanonicalsRequest, handle_backfill_canonicals, "long"),
+    (UpdateMainlineRequest, handle_update_mainline, "long"),
+    (AnalyzeRequest, handle_analyze, "long"),
+    (BackfillThreadRootsRequest, handle_backfill_thread_roots, "long"),
+    (VacuumRequest, handle_vacuum, "long"),
+    (FailuresReplayRequest, handle_failures_replay, "long"),
+    (InboxCreateRequest, handle_inbox_create, "long"),
+    (InboxUpdateRequest, handle_inbox_update, "long"),
+    (InboxDeleteRequest, handle_inbox_delete, "long"),
+    (InboxSetTrackedAuthorsRequest, handle_inbox_set_tracked_authors, "long"),
+    (RobotsAddRequest, handle_robots_add, "long"),
+    (RobotsUpdateRequest, handle_robots_update, "long"),
+    (RobotsRemoveRequest, handle_robots_remove, "long"),
+    (RobotsResetRequest, handle_robots_reset, "long"),
+    (WarmInboxRequest, handle_warm_inbox, "warm"),
+    (WarmSubsystemRequest, handle_warm_subsystem, "warm"),
+    (WarmGlobalRequest, handle_warm_global, "warm"),
+]
+
+
+def _op_name(model: type) -> str:
+    return model.model_fields["op"].default
+
+
+# The reader routes on these two sets (a cheap JSON peek, no model
+# side effects); anything in neither falls through to the cache queue.
 LONG_OPS: frozenset[str] = frozenset(
-    {
-        "bootstrap_inboxes",
-        "ingest_inbox",
-        "reindex",
-        "backfill_article_files",
-        "backfill_article_trailers",
-        "backfill_patch_series",
-        "backfill_canonicals",
-        "update_mainline",
-        "analyze",
-        "backfill_thread_roots",
-        "vacuum",
-        "failures_replay",
-        "inbox_create",
-        "inbox_update",
-        "inbox_delete",
-        "inbox_set_tracked_authors",
-        "robots_add",
-        "robots_update",
-        "robots_remove",
-        "robots_reset",
-    }
+    _op_name(m) for m, _h, queue in _HANDLERS if queue == "long"
 )
-
-
-# Warm ops route to the broker's warm queue, which is drained by
-# N parallel warm-workers (Phase 2.2). Sibling to LONG_OPS; an op
-# can only belong to one routing set. Anything in neither set
-# falls through to the cache queue.
 WARM_OPS: frozenset[str] = frozenset(
-    {
-        "warm_inbox",
-        "warm_subsystem",
-        "warm_global",
-    }
+    _op_name(m) for m, _h, queue in _HANDLERS if queue == "warm"
 )
-
 
 # Op-name → (request model, handler). Lookup at dispatch time;
 # unknown ops become `Reply(ok=False, error="UnknownOp")` rather
 # than crashing the connection-handler thread.
 _DISPATCH: dict[str, tuple[type, Callable]] = {
-    "cache_set": (CacheSetRequest, handle_cache_set),
-    "cache_delete": (CacheDeleteRequest, handle_cache_delete),
-    "cache_delete_for_inbox": (
-        CacheDeleteForInboxRequest,
-        handle_cache_delete_for_inbox,
-    ),
-    "cache_purge_expired": (
-        CachePurgeExpiredRequest,
-        handle_cache_purge_expired,
-    ),
-    "ping": (PingRequest, handle_ping),
-    "bootstrap_inboxes": (BootstrapInboxesRequest, handle_bootstrap_inboxes),
-    "ingest_inbox": (IngestInboxRequest, handle_ingest_inbox),
-    "reindex": (ReindexRequest, handle_reindex),
-    "backfill_article_files": (
-        BackfillArticleFilesRequest,
-        handle_backfill_article_files,
-    ),
-    "backfill_article_trailers": (
-        BackfillArticleTrailersRequest,
-        handle_backfill_article_trailers,
-    ),
-    "backfill_patch_series": (
-        BackfillPatchSeriesRequest,
-        handle_backfill_patch_series,
-    ),
-    "backfill_canonicals": (
-        BackfillCanonicalsRequest,
-        handle_backfill_canonicals,
-    ),
-    "update_mainline": (UpdateMainlineRequest, handle_update_mainline),
-    "analyze": (AnalyzeRequest, handle_analyze),
-    "backfill_thread_roots": (
-        BackfillThreadRootsRequest,
-        handle_backfill_thread_roots,
-    ),
-    "vacuum": (VacuumRequest, handle_vacuum),
-    "failures_replay": (FailuresReplayRequest, handle_failures_replay),
-    "inbox_create": (InboxCreateRequest, handle_inbox_create),
-    "inbox_update": (InboxUpdateRequest, handle_inbox_update),
-    "inbox_delete": (InboxDeleteRequest, handle_inbox_delete),
-    "inbox_set_tracked_authors": (
-        InboxSetTrackedAuthorsRequest,
-        handle_inbox_set_tracked_authors,
-    ),
-    "robots_add": (RobotsAddRequest, handle_robots_add),
-    "robots_update": (RobotsUpdateRequest, handle_robots_update),
-    "robots_remove": (RobotsRemoveRequest, handle_robots_remove),
-    "robots_reset": (RobotsResetRequest, handle_robots_reset),
-    "warm_inbox": (WarmInboxRequest, handle_warm_inbox),
-    "warm_subsystem": (WarmSubsystemRequest, handle_warm_subsystem),
-    "warm_global": (WarmGlobalRequest, handle_warm_global),
+    _op_name(m): (m, h) for m, h, _queue in _HANDLERS
 }
 
 

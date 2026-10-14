@@ -51,6 +51,27 @@ def test_classify_op_recognises_long_ops():
     assert "bootstrap_inboxes" in handlers.LONG_OPS
 
 
+def test_every_request_model_has_a_dispatch_row():
+    """`_HANDLERS` is the one table the routing sets and the dispatch
+    lookup derive from, so the drift that remains possible is a
+    protocol model with no row: the op would parse at the client and
+    come back `UnknownOp`. Every `_BrokerRequest` subclass that
+    declares an `op` must be dispatched, and no two rows may claim
+    the same op (a duplicate would silently shadow a handler)."""
+    from mimir.broker import protocol
+
+    declared = {
+        cls.model_fields["op"].default
+        for cls in vars(protocol).values()
+        if isinstance(cls, type)
+        and issubclass(cls, protocol._BrokerRequest)
+        and "op" in cls.model_fields
+    }
+    assert declared, "no request models found; the scan is stale"
+    assert declared == set(handlers._DISPATCH)
+    assert len(handlers._HANDLERS) == len(handlers._DISPATCH)
+
+
 def test_classify_op_returns_op_name():
     """Reader uses this to route. Plain string return on the happy
     path."""
