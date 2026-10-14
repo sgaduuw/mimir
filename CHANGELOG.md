@@ -47,10 +47,12 @@ changes, not internal refactors. Categories: **Added**,
   about a million numbered patches (production, 2026-10-12) had no series
   key, position or version, so they showed as one row per patch in the
   triage lists and were missed by the revisions fold and SUPERSEDED. New
-  mail is unfolded at ingest. For stored rows, run `backfill-patch-series`
-  (resumable; `--reprocess` is not needed): it rewrites folded subjects, in
-  every mode, then finds their series, and reports `subjects_unfolded`
-  (#710).
+  mail is unfolded at ingest. For stored rows, run `backfill-patch-series
+  --restart` once (`--reprocess` is not needed): it rewrites folded
+  subjects, in every mode, then finds their series, and reports
+  `subjects_unfolded`. Without `--restart` an unfinished earlier run resumes
+  from its old cursor and skips the rows above it. If this run is
+  interrupted, run it again without `--restart` to resume (#710).
 - Closing a broker client while its reader thread was waiting no longer logs
   an unhandled `ValueError` traceback; the reader ends as it does when the
   socket drops (#699).
