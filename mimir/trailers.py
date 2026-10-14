@@ -21,10 +21,9 @@ import logging
 import re
 from collections.abc import Callable
 
-from pydantic import BaseModel
 from sqlalchemy import select
 
-from mimir._backfill import walk_articles
+from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
 from mimir.models import Article, ArticleTrailer
 from mimir.store import read_first_readable
@@ -96,15 +95,11 @@ def extract_trailers(body: str | None) -> list[tuple[str, str, str]]:
     return out
 
 
-class BackfillResult(BaseModel):
+class BackfillResult(BackfillCounters):
     """Outcome counters for `backfill_article_trailers`. Each examined
     article lands in exactly one bucket. `skipped` covers articles
     that already have rows (idempotent re-runs) plus mirror-
     unreachable cases.
-
-    `partial` marks a broker chunk that stopped on its time budget
-    (Phase 2.2); the broker keeps the run's cursor (`mimir.backfill_runs`).
-    Direct (non-broker) callers always see `partial=False`.
     """
 
     examined: int = 0
@@ -112,19 +107,6 @@ class BackfillResult(BaseModel):
     no_trailers: int = 0  # body parsed but no indexed-role trailers
     skipped: int = 0  # already had rows, or unreadable
     failed: int = 0  # parse error reading the blob
-    partial: bool = False
-
-    def merge(self, other: BackfillResult) -> BackfillResult:
-        """Sum counters with `other`, carrying `other`'s
-        `partial` forward."""
-        return BackfillResult(
-            examined=self.examined + other.examined,
-            indexed=self.indexed + other.indexed,
-            no_trailers=self.no_trailers + other.no_trailers,
-            skipped=self.skipped + other.skipped,
-            failed=self.failed + other.failed,
-            partial=other.partial,
-        )
 
 
 def backfill_article_trailers(
