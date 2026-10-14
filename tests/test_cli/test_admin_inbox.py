@@ -5,6 +5,7 @@ ClickException branches on unknown inboxes / invalid args /
 malformed inputs and the remove --yes / --keep-orphans /
 missing-mirror branches."""
 
+import pytest
 from click.testing import CliRunner
 from sqlalchemy import select
 
@@ -100,6 +101,19 @@ def test_trackers_add_appends(seeded_db):
     }
 
 
+def test_trackers_add_replaces_label(seeded_db):
+    set_tracked_authors("alpha", {"Linus": "torvalds@", "Greg": "gregkh@"})
+    result = CliRunner().invoke(
+        admin_inbox_trackers_add_command,
+        ["alpha", "Linus", "linus@kernel.org"],
+    )
+    assert result.exit_code == 0
+    assert get_inbox("alpha").tracked_authors == {
+        "Linus": "linus@kernel.org",
+        "Greg": "gregkh@",
+    }
+
+
 def test_trackers_remove_drops_label(seeded_db):
     set_tracked_authors("alpha", {"Linus": "torvalds@", "Greg": "gregkh@"})
     result = CliRunner().invoke(
@@ -120,6 +134,20 @@ def test_trackers_remove_missing_label_fails(seeded_db):
     assert "no tracker labelled" in result.output
 
 
+def test_trackers_remove_last_entry_writes_null(seeded_db):
+    set_tracked_authors("alpha", {"Linus": "torvalds@"})
+    result = CliRunner().invoke(admin_inbox_trackers_remove_command, ["alpha", "Linus"])
+    assert result.exit_code == 0
+    assert get_inbox("alpha").tracked_authors is None
+
+
+def test_trackers_remove_on_null_fails(seeded_db):
+    assert get_inbox("alpha").tracked_authors is None
+    result = CliRunner().invoke(admin_inbox_trackers_remove_command, ["alpha", "Linus"])
+    assert result.exit_code != 0
+    assert "no tracker labelled" in result.output
+
+
 def test_trackers_clear_writes_null(seeded_db):
     set_tracked_authors("alpha", {"Linus": "torvalds@"})
     result = CliRunner().invoke(
@@ -128,6 +156,20 @@ def test_trackers_clear_writes_null(seeded_db):
     )
     assert result.exit_code == 0
     assert get_inbox("alpha").tracked_authors is None
+
+
+@pytest.mark.parametrize(
+    ("command", "args"),
+    [
+        (admin_inbox_trackers_add_command, ["Linus", "torvalds@"]),
+        (admin_inbox_trackers_remove_command, ["Linus"]),
+        (admin_inbox_trackers_clear_command, []),
+    ],
+)
+def test_trackers_edit_unknown_inbox_fails(seeded_db, command, args):
+    result = CliRunner().invoke(command, ["nope", *args])
+    assert result.exit_code != 0
+    assert "no inbox named 'nope'" in result.output
 
 
 def test_admin_inbox_list_shows_tracker_count(seeded_db):
