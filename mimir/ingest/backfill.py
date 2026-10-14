@@ -25,11 +25,11 @@ import time
 from datetime import UTC, datetime
 from functools import partial
 
-from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mimir import backfill_runs
+from mimir._backfill import BackfillCounters
 from mimir.backfill_runs import Run
 from mimir.canonical import extract_list_addresses, pick_canonical_inbox_id
 from mimir.config import settings
@@ -44,35 +44,19 @@ logger = logging.getLogger(__name__)
 _BATCH = 1000
 
 
-class BackfillResult(BaseModel):
+class BackfillResult(BackfillCounters):
     """Outcome counters for `backfill_canonicals`. Each examined article
     lands in exactly one of resolved/unresolved/skipped (resolved = the
     pick made when the article was read differs from the pin stored then;
     unresolved = it equals it; skipped = blob couldn't be read). The
     writer re-picks over the links it finds at write time, so with
     concurrent ingest these two counts are an estimate, not a tally of
-    rows written.
-
-    `partial` marks a broker chunk that stopped on its time budget
-    (Phase 2.2); the broker keeps the run's cursor (`mimir.backfill_runs`).
-    Direct (non-broker) callers always see `partial=False`."""
+    rows written."""
 
     examined: int = 0
     resolved: int = 0
     unresolved: int = 0
     skipped: int = 0
-    partial: bool = False
-
-    def merge(self, other: BackfillResult) -> BackfillResult:
-        """Sum counters with `other`, carrying `other`'s
-        `partial` forward."""
-        return BackfillResult(
-            examined=self.examined + other.examined,
-            resolved=self.resolved + other.resolved,
-            unresolved=self.unresolved + other.unresolved,
-            skipped=self.skipped + other.skipped,
-            partial=other.partial,
-        )
 
 
 def backfill_canonicals(

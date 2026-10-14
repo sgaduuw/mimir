@@ -23,6 +23,7 @@ from sqlalchemy.sql.elements import TextClause
 
 from mimir import cache
 from mimir.config import settings
+from mimir.datetime_utils import coerce_dt
 from mimir.models import (
     Article,
     ArticleTrailer,
@@ -35,7 +36,6 @@ from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
 from mimir.subsystems_dashboard._path_filter import (
     _subsystem_path_filter_exists_sql,
 )
-from mimir.threading import _coerce_dt
 from mimir.trailers import REVIEW_TRAILER_ROLES
 
 
@@ -348,7 +348,7 @@ def _run_triage(
                 message_id=r.message_id,
                 subject=r.subject,
                 author=r.author,
-                date=_coerce_dt(r.art_date),
+                date=coerce_dt(r.art_date),
                 inbox_name=inbox.name,
                 trailer_summary=summaries.get(r.article_id, ""),
             )
@@ -361,7 +361,7 @@ def _run_triage(
         # where this one ended, so k pages cost k walks, not k^2/2.
         params = {
             **params,
-            "min_date": _coerce_dt(rows[-1].art_date),
+            "min_date": coerce_dt(rows[-1].art_date),
             "after_id": rows[-1].article_id,
         }
     # Counted, not tallied while paging: the list can fill before a

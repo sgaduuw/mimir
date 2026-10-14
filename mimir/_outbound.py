@@ -7,11 +7,10 @@ Two callers use this module:
 - `mimir.indexnow.notify` for the IndexNow POST, configured via
   `Settings.indexnow_endpoint`.
 
-And three validators delegate to it:
+And two validators delegate to it:
 
 - `mimir.inboxes.validate_upstream_url` (admin CLI for
   `Inbox.upstream_url`).
-- pydantic `field_validator` on `Settings.mainline_tree_url`.
 - pydantic `field_validator` on `Settings.indexnow_endpoint`.
 
 The shape is three pieces working together:
@@ -47,7 +46,6 @@ trust boundary moves outward.
 """
 
 import ipaddress
-from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, build_opener
 
@@ -131,24 +129,13 @@ class NoRedirectHandler(HTTPRedirectHandler):
 
     Replaces the stdlib default's silent multi-hop redirect chain
     (up to 10 hops, no per-target inspection, scheme downgrades
-    allowed). Raises `HTTPError` on the first 3xx so the calling
-    code surfaces the rejection rather than silently fetching the
-    redirect target.
+    allowed). Declining the redirect (`None`) makes urllib raise
+    `HTTPError` for the 3xx itself, so the calling code surfaces the
+    rejection rather than silently fetching the redirect target.
     """
 
-    def http_error_301(self, req, fp, code, msg, headers):
-        raise HTTPError(
-            req.full_url,
-            code,
-            f"redirect-following disabled (HTTP {code})",
-            headers,
-            fp,
-        )
-
-    http_error_302 = http_error_301
-    http_error_303 = http_error_301
-    http_error_307 = http_error_301
-    http_error_308 = http_error_301
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 OUTBOUND_OPENER = build_opener(NoRedirectHandler())

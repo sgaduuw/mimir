@@ -57,10 +57,10 @@ def test_settings_rejects_render_cap_below_one():
 
 
 def test_settings_trees_seeds_curated_defaults_on_fresh_deploy(monkeypatch):
-    """When neither TREES__* nor legacy MAINLINE_TREE_URL/PATH is set,
-    the validator seeds the full 7-tree curated default set."""
+    """When no TREES__* is set, the validator seeds the full 7-tree
+    curated default set."""
     for k in list(os.environ):
-        if k.upper().startswith("TREES__") or k.startswith("MAINLINE_TREE"):
+        if k.upper().startswith("TREES__"):
             monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("SECRET_KEY", "x" * 32)
     from mimir.config import Settings
@@ -80,31 +80,13 @@ def test_settings_trees_seeds_curated_defaults_on_fresh_deploy(monkeypatch):
     assert s.trees["mm"].branch == "mm-stable"
 
 
-def test_settings_trees_legacy_env_seeds_only_linus(monkeypatch):
-    """When MAINLINE_TREE_URL / MAINLINE_TREE_PATH are set and
-    TREES__* is unset, only the linus entry is seeded from
-    the legacy scalars. The curated extras stay opted out."""
-    for k in list(os.environ):
-        if k.upper().startswith("TREES__"):
-            monkeypatch.delenv(k, raising=False)
-    monkeypatch.setenv("SECRET_KEY", "x" * 32)
-    monkeypatch.setenv("MAINLINE_TREE_URL", "https://example.com/legacy.git")
-    monkeypatch.setenv("MAINLINE_TREE_PATH", "Mainline/legacy.git")
-    from mimir.config import Settings
-
-    s = Settings()
-    assert set(s.trees.keys()) == {"linus"}
-    assert s.trees["linus"].url == "https://example.com/legacy.git"
-    assert s.trees["linus"].walk_every_seconds == 1500
-
-
 def test_settings_trees_env_override_wins(monkeypatch):
     """When TREES__* env vars are set, take env as-is. Curated defaults
     are NOT merged in. Slug `bcachefs` (no underscore) passes through
     unchanged (the normaliser only converts underscore-to-dash for
     slugs that were env-encoded with underscores in place of dashes)."""
     for k in list(os.environ):
-        if k.upper().startswith("TREES__") or k.startswith("MAINLINE_TREE"):
+        if k.upper().startswith("TREES__"):
             monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("SECRET_KEY", "x" * 32)
     monkeypatch.setenv(
