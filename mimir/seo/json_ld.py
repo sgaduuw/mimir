@@ -107,7 +107,7 @@ def _thread_url_for(thread, inbox_name: str) -> str:
     grouped by root, not a downward walk, so a cycle cannot re-emit an
     article and fake a multi-message thread.
     """
-    from mimir.web import _msg_url, _thread_view_url
+    from mimir.web.urls import _msg_url, _thread_view_url
 
     if thread.reply_count > 0:
         return _thread_view_url(thread, inbox_name)
@@ -123,7 +123,7 @@ def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
     """
     # Lazy imports break a `web → seo → web` cycle: these helpers
     # live in web.py with the rest of the display filters.
-    from mimir.web import _clean_subject_filter
+    from mimir.web.filters import _clean_subject_filter
 
     payload: dict = {
         "@context": "https://schema.org",
@@ -195,7 +195,7 @@ def _person(raw: str | None, *, base: str, inbox_name: str, with_url: bool) -> d
     eligibility. Off for thread comments: repeating the same per-inbox
     URL for every participant adds no signal.
     """
-    from mimir.web import _allowlisted_email, _display_name_filter
+    from mimir.web.filters import _allowlisted_email, _display_name_filter
 
     name = _display_name_filter(raw)
     person: dict = {"@type": "Person", "name": name}
@@ -329,7 +329,7 @@ def _json_ld_message(
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring). The redaction helpers and display filter live in
     # web.py with the rest of the visible-HTML pipeline.
-    from mimir.web import _redact_trailer_address
+    from mimir.web.filters import _redact_trailer_address
 
     iso_date = _iso_datetime(parsed.date or article.date)
     subject = parsed.subject or "(no subject)"
@@ -487,7 +487,8 @@ def _json_ld_thread(
     apply per surface, and this surface carries N bodies rather than
     one, so a miss here would leak N times over.
     """
-    from mimir.web import _clean_subject_filter, _msg_url, _redact_trailer_address
+    from mimir.web.filters import _clean_subject_filter, _redact_trailer_address
+    from mimir.web.urls import _msg_url
 
     def _text_for(node) -> str | None:
         parsed = parsed_by_id.get(node.id)

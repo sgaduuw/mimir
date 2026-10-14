@@ -77,7 +77,7 @@ def dev_seed_thread_command(
     from dulwich.objects import Blob, Commit, Tree
     from dulwich.repo import Repo
 
-    from mimir.inboxes import InboxNotFound, create_inbox, get_inbox
+    from mimir.inboxes import InboxNotFound, get_inbox
 
     mirror_dir = Path(mirror_root) / inbox_name / "git"
     epoch_dir = mirror_dir / "0.git"
@@ -96,16 +96,21 @@ def dev_seed_thread_command(
         # to InboxNotFound only so a real DB error (connection lost,
         # schema mismatch) surfaces as a traceback rather than
         # silently triggering an unwanted create_inbox.
-        create_inbox(
-            name=inbox_name,
-            mirror_path=str(mirror_dir),
-            upstream_url=f"https://local-dev.invalid/{inbox_name}",
-        )
+        # Written directly: this dev-only command has no broker writer,
+        # and `create_inbox` requires one.
+        with SessionLocal() as s:
+            s.add(
+                Inbox(
+                    name=inbox_name,
+                    mirror_path=str(mirror_dir),
+                    upstream_url=f"https://local-dev.invalid/{inbox_name}",
+                )
+            )
+            s.commit()
         click.echo(f"created inbox '{inbox_name}'")
 
     with SessionLocal() as s:
-        # The service-layer create_inbox returned a detached value;
-        # reload + pin mirror_path inside this session in case it differs.
+        # Reload + pin mirror_path in case an existing inbox's differs.
         ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
         ix.mirror_path = str(mirror_dir)
         s.commit()

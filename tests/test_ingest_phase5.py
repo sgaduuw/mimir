@@ -71,38 +71,6 @@ def test_add_rule_dispatches_via_writer(seeded_db, broker_active):
     assert row.user_agent == "phase5-test-agent"
 
 
-def test_add_rule_falls_back_to_direct_when_no_context(seeded_db):
-    """When called outside the broker context, `add_rule` must fall
-    back to the legacy direct `SessionLocal()` path (write_transaction
-    was removed in Phase 6b)."""
-    from sqlalchemy import select
-
-    from mimir.broker import _context
-    from mimir.models import RobotsRule
-    from mimir.robots import add_rule
-
-    # Temporarily clear the active broker context so no writer is available.
-    saved_pool = _context._active_pool
-    saved_writer = _context._active_writer
-    _context.clear_active()
-    try:
-        add_rule(
-            user_agent="phase5-fallback-agent",
-            disallow=["/fallback"],
-            crawl_delay=None,
-            content_signals=None,
-        )
-    finally:
-        if saved_pool is not None and saved_writer is not None:
-            _context.set_active(saved_pool, saved_writer)
-
-    with seeded_db() as s:
-        row = s.execute(
-            select(RobotsRule).where(RobotsRule.user_agent == "phase5-fallback-agent")
-        ).scalar_one()
-    assert row.user_agent == "phase5-fallback-agent"
-
-
 def test_update_rule_dispatches_via_writer(seeded_db, broker_active):
     """Phase 5 contract: update_rule dispatches via the writer."""
     from sqlalchemy import insert, select

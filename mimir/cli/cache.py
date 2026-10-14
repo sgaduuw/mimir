@@ -42,13 +42,13 @@ from mimir.subsystems_dashboard import (
 )
 from mimir.threading import active_threads, threads_for_day
 from mimir.web import (
-    FEED_ENTRY_LIMIT,
-    SUBSYSTEM_RECENT_PATCHES_LIMIT,
     inbox_sitemap_xml,
     maintainers_sitemap_xml,
     meta_sitemap_xml,
     sitemap_index_xml,
 )
+from mimir.web.routes.dashboards import SUBSYSTEM_RECENT_PATCHES_LIMIT
+from mimir.web.routes.feeds import FEED_ENTRY_LIMIT
 
 # Refresh-window used by warm-cache. See the call site in
 # `warm_cache_command` for the calibration rationale (cron period +
