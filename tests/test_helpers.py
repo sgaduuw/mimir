@@ -12,12 +12,9 @@ from sqlalchemy import select
 
 from mimir.models import Inbox
 from mimir.store import MessageNotFound, read_message
-from mimir.web import (
-    _canonical_inbox_names_for,
-    _content_disposition,
-    _redact_trailer_address,
-    _safe_from_filter,
-)
+from mimir.web.filters import _redact_trailer_address, _safe_from_filter
+from mimir.web.routes.attachments import _content_disposition
+from mimir.web.urls import _canonical_inbox_names_for
 from tests.test_routes._helpers import count_repo_opens
 
 

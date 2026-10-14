@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.datetime_utils import aware_utc as _aware_utc
+from mimir.datetime_utils import coerce_dt
 from mimir.patch_series import newer_revision_sql, version_number_sql
 from mimir.trailers import REVIEW_TRAILER_ROLES
 
@@ -33,21 +34,6 @@ from mimir.trailers import REVIEW_TRAILER_ROLES
 # regex catches C0/C1 control bytes + the surrogate range that
 # Jinja would happily pass through to break a rendered attribute.
 _UNSAFE_ATTR_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\ud800-\udfff]")
-
-
-def _coerce_dt(value) -> datetime | None:
-    """text() raw SQL bypasses SQLAlchemy type coercion, so DateTime
-    columns come back as ISO strings (the CTE round-trips
-    `articles.date` and `mainline_commits.committed_at` through
-    SQLite's TEXT storage). Parse back to datetime; tz normalization
-    happens at the comparison boundary via `_aware_utc`.
-    """
-    if value is None or isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(value)
-    except TypeError, ValueError:
-        return None
 
 
 class LifecycleStatus(Enum):
@@ -456,8 +442,8 @@ def _bulk_uncached(
         # Treat last_thread_date <= article_date as "no replies"
         # (e.g. a malformed thread where a parent post-dates a
         # child); the heat bucket then collapses to dormant.
-        last_at = _coerce_dt(row.last_thread_date)
-        article_at = _coerce_dt(row.article_date)
+        last_at = coerce_dt(row.last_thread_date)
+        article_at = coerce_dt(row.article_date)
         days: int | None
         if last_at is None or article_at is None:
             days = None
@@ -481,11 +467,11 @@ def _bulk_uncached(
         tooltip = _format_tooltip(
             state=state,
             linus_sha=row.linus_sha,
-            linus_committed_at=_coerce_dt(row.linus_committed_at),
+            linus_committed_at=coerce_dt(row.linus_committed_at),
             earliest_other_sha=row.earliest_other_sha,
-            earliest_other_at=_coerce_dt(row.earliest_other_at),
+            earliest_other_at=coerce_dt(row.earliest_other_at),
             superseded_by_version=row.sup_by_version,
-            superseded_by_posted_at=_coerce_dt(row.sup_by_date),
+            superseded_by_posted_at=coerce_dt(row.sup_by_date),
             reviewers=names_by_article.get(row.id, []),
         )
 

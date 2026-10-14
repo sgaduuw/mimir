@@ -21,14 +21,38 @@ single-transaction-per-walk locking model.
 
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Self
 
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from mimir import backfill_runs
 from mimir.backfill_runs import Run
 from mimir.models import Article
+
+
+class BackfillCounters(BaseModel):
+    """Base for each backfill's `BackfillResult`: the subclass declares
+    its integer buckets, this class carries `partial` and the merge.
+
+    `partial` marks a broker chunk that stopped on its time budget
+    (Phase 2.2); the broker keeps the run's cursor (`mimir.backfill_runs`).
+    Direct (non-broker) callers always see `partial=False`.
+    """
+
+    partial: bool = False
+
+    def merge(self, other: Self) -> Self:
+        """Sum every counter with `other`, carrying `other`'s `partial`
+        forward. Used by the CLI loop that aggregates per-chunk results
+        from the broker."""
+        summed = {
+            name: getattr(self, name) + getattr(other, name)
+            for name in type(self).model_fields
+            if name != "partial"
+        }
+        return type(self)(**summed, partial=other.partial)
 
 
 def walk_articles(

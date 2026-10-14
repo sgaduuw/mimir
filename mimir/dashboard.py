@@ -19,8 +19,8 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
+from mimir.datetime_utils import coerce_dt
 from mimir.models import Article, ArticleList, Inbox
-from mimir.threading import _coerce_dt
 
 STATS_CACHE_TTL_SEC = 86400  # 1 day
 DAILY_VOLUME_CACHE_TTL_SEC = 3600  # 1 hour
@@ -482,7 +482,7 @@ def archive_stats(session: Session, inbox: Inbox, force: bool = False) -> Archiv
         return ArchiveStats(
             total=row.total,
             epochs=row.epochs,
-            first_date=_coerce_dt(row.first_date),
+            first_date=coerce_dt(row.first_date),
             last_date=None,
         )
 

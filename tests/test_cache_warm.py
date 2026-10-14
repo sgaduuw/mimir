@@ -1,137 +1,92 @@
-"""Tests for the warm-cache refresh-window TTL-zone classifier.
+"""Unit tests for `mimir.cache_warm`.
 
-The classifier is a pure function: given `nominal_ttl`,
-`window_sec`, and `elapsed`, it returns a `Decision` enum
-indicating whether the warm-cache tick should skip, refresh
-probabilistically, or refresh deterministically. The probability
-math lives in a sibling `should_refresh` function so the
-classifier itself stays deterministic and trivially testable."""
+`should_refresh` decides, from `nominal_ttl`, `window_sec` and the
+row's `remaining` seconds, whether warm-cache recomputes it this
+tick: never above twice the effective window, always inside it, and
+on a linear ramp between. `effective_window_sec` caps the window at
+half the nominal TTL.
+"""
 
 from unittest.mock import patch
 
-from mimir.cache_warm import (
-    Decision,
-    classify_zone,
-    effective_window_sec,
-    should_refresh,
-)
+from mimir.cache_warm import effective_window_sec, should_refresh
 
 
 def test_effective_window_sec_uncapped_for_long_ttl():
-    """1h nominal + 10min window: window fits inside half-nominal,
-    no cap applies, effective window equals configured window."""
+    """nominal_ttl=3600, window_sec=600 -> effective=600 (no cap)."""
     assert effective_window_sec(nominal_ttl=3600, window_sec=600) == 600
 
 
 def test_effective_window_sec_capped_for_short_ttl():
-    """5min nominal + 10min configured window: window can't exceed
-    nominal // 2 = 150s, so effective window is 150s."""
+    """nominal_ttl=300, window_sec=600 -> effective=150 (capped at
+    nominal // 2)."""
     assert effective_window_sec(nominal_ttl=300, window_sec=600) == 150
 
 
 def test_effective_window_sec_zero_for_sub_2sec_nominal():
-    """Sub-2-second nominal: cap floors window to 0 (no window,
-    identical to today's TTL-skip without the refresh-window
-    mechanic). Guards the degenerate case."""
+    """nominal_ttl=1 -> effective=0 (degenerate; no window)."""
     assert effective_window_sec(nominal_ttl=1, window_sec=600) == 0
 
 
-def test_classify_zone_skip_when_remaining_above_2x_window():
-    """Outside the refresh window: remaining > 2 * effective_window.
-    For sitemap example (stored=4200, window=600): elapsed < 3000
-    means remaining > 1200 → skip."""
-    decision = classify_zone(stored_ttl=4200, window_sec=600, elapsed=2999)
-    assert decision == Decision.SKIP
-
-
-def test_classify_zone_probabilistic_in_upper_window():
-    """Probabilistic zone: window_sec < remaining <= 2 * window.
-    For sitemap example: elapsed in [3000, 3600) means remaining
-    in (600, 1200] → PROBABILISTIC."""
-    assert (
-        classify_zone(stored_ttl=4200, window_sec=600, elapsed=3000)
-        == Decision.PROBABILISTIC
-    )
-    assert (
-        classify_zone(stored_ttl=4200, window_sec=600, elapsed=3599)
-        == Decision.PROBABILISTIC
-    )
-
-
-def test_classify_zone_deterministic_in_insurance_band():
-    """Deterministic insurance: remaining <= window_sec. For sitemap
-    example: elapsed in [3600, 4200) means remaining <= 600
-    → DETERMINISTIC."""
-    assert (
-        classify_zone(stored_ttl=4200, window_sec=600, elapsed=3600)
-        == Decision.DETERMINISTIC
-    )
-    assert (
-        classify_zone(stored_ttl=4200, window_sec=600, elapsed=4199)
-        == Decision.DETERMINISTIC
-    )
-
-
-def test_should_refresh_skip_returns_false():
-    """Outside the window: never refresh."""
-    assert should_refresh(stored_ttl=4200, window_sec=600, elapsed=1000) is False
-
-
-def test_should_refresh_deterministic_returns_true():
-    """In insurance band: always refresh."""
-    assert should_refresh(stored_ttl=4200, window_sec=600, elapsed=3800) is True
-
-
-def test_should_refresh_probabilistic_ramp_at_window_start():
-    """At the very start of the probabilistic zone (remaining =
-    2 * window): p = 0, so even random()=0 doesn't fire."""
+def test_should_refresh_skips_above_twice_the_window():
+    """remaining=1201 > 2 * 600: outer band, never fires."""
     with patch("mimir.cache_warm.random.random", return_value=0.0):
-        # Elapsed=3000: remaining=1200, p = 1 - (1200 - 600) / 600 = 0
-        assert should_refresh(stored_ttl=4200, window_sec=600, elapsed=3000) is False
+        assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=1201) is False
 
 
-def test_should_refresh_probabilistic_ramp_at_window_end():
-    """At the very end of the probabilistic zone (remaining = window
-    + 1s): p ≈ 1, so even random()≈1 fires."""
+def test_should_refresh_never_fires_without_a_window():
+    """effective=0 (nominal_ttl=1) collapses every band to skip."""
+    with patch("mimir.cache_warm.random.random", return_value=0.0):
+        assert should_refresh(nominal_ttl=1, window_sec=600, remaining=0) is False
+
+
+def test_should_refresh_uses_the_capped_window():
+    """nominal_ttl=300 caps the window at 150, so remaining=400 is
+    outside the bands even though it is below 2 * window_sec."""
+    with patch("mimir.cache_warm.random.random", return_value=0.0):
+        assert should_refresh(nominal_ttl=300, window_sec=600, remaining=400) is False
+        assert should_refresh(nominal_ttl=300, window_sec=600, remaining=150) is True
+
+
+def test_should_refresh_deterministic_inside_the_window():
+    """remaining <= effective: insurance band, fires regardless of the
+    random draw."""
     with patch("mimir.cache_warm.random.random", return_value=0.99):
-        # Elapsed=3599: remaining=601, p = 1 - (601 - 600) / 600 ≈ 0.998
-        assert should_refresh(stored_ttl=4200, window_sec=600, elapsed=3599) is True
+        assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=600) is True
+        assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=1) is True
+
+
+def test_should_refresh_probabilistic_ramp_at_band_start():
+    """remaining=1200 (2 * effective): p=0. Even a draw of 0.0 does
+    not fire, because `0.0 < 0.0` is False."""
+    with patch("mimir.cache_warm.random.random", return_value=0.0):
+        assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=1200) is False
+
+
+def test_should_refresh_probabilistic_ramp_at_band_end():
+    """remaining=601 (just above effective): p ~= 1. A draw of 0.99
+    fires."""
+    with patch("mimir.cache_warm.random.random", return_value=0.99):
+        assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=601) is True
 
 
 def test_should_refresh_probabilistic_ramp_midpoint():
-    """At the probabilistic-zone midpoint (remaining = 1.5 * window):
-    p = 0.5. random()=0.4 fires; random()=0.6 doesn't."""
-    midpoint_elapsed = 3300  # remaining=900, p = 1 - (900-600)/600 = 0.5
+    """remaining=900 (midpoint of [600, 1200]): p=0.5. A draw of 0.4
+    fires, a draw of 0.6 does not."""
     with patch("mimir.cache_warm.random.random", return_value=0.4):
-        assert (
-            should_refresh(stored_ttl=4200, window_sec=600, elapsed=midpoint_elapsed)
-            is True
-        )
+        assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=900) is True
     with patch("mimir.cache_warm.random.random", return_value=0.6):
-        assert (
-            should_refresh(stored_ttl=4200, window_sec=600, elapsed=midpoint_elapsed)
-            is False
-        )
+        assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=900) is False
 
 
 def test_should_refresh_monte_carlo_fires_before_expiry():
-    """1000 trials of stepping a sitemap key through its stored TTL
-    one tick at a time. Refresh fires before expiry in 100% of
-    trials because the deterministic insurance zone catches any
-    that the probabilistic ramp missed."""
-    fire_count = 0
-    trials = 1000
-    cadence_sec = 60  # fast-tier tick rate
-    for _ in range(trials):
-        fired = False
-        for elapsed in range(0, 4200, cadence_sec):
-            if should_refresh(stored_ttl=4200, window_sec=600, elapsed=elapsed):
-                fired = True
-                break
-        if fired:
-            fire_count += 1
-    assert fire_count == trials, (
-        f"refresh failed to fire before expiry in "
-        f"{trials - fire_count}/{trials} trials; "
-        f"deterministic insurance zone should catch all"
-    )
+    """Walking one key from the start of the probabilistic band to the
+    end of the insurance band, with the real RNG, must fire at least
+    once: the insurance band guarantees it even if every probabilistic
+    draw misses."""
+    fired = False
+    for remaining in range(1200, 0, -1):
+        if should_refresh(nominal_ttl=3600, window_sec=600, remaining=remaining):
+            fired = True
+            break
+    assert fired, "no refresh fired across the whole window"

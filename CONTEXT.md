@@ -993,7 +993,7 @@ which reads the column and would agree with any corruption by
 construction.
 
 `text()` raw SQL bypasses SQLAlchemy's type coercion, so the `date`
-column comes back as an ISO string from the CTE. `_coerce_dt` parses
+column comes back as an ISO string from the CTE. `coerce_dt` parses
 it back to `datetime` before the row is wrapped in a `ThreadNode`
 dataclass.
 

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from mimir import cache
 from mimir.canonical import fallback_canonical_name
 from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume
+from mimir.datetime_utils import coerce_dt
 from mimir.models import (
     ArticleList,
     Inbox,
@@ -27,7 +28,7 @@ from mimir.subsystems import (
     RelatedPatch,
 )
 from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
-from mimir.threading import ActiveThread, _active_threads_query, _coerce_dt
+from mimir.threading import ActiveThread, _active_threads_query
 
 
 def recent_articles_in_subsystem(
@@ -114,7 +115,7 @@ def recent_articles_in_subsystem(
                     message_id=r.message_id,
                     subject=r.subject,
                     author=r.author,
-                    date=_coerce_dt(r.art_date),
+                    date=coerce_dt(r.art_date),
                     inbox_name=canon_name,
                 )
             )
