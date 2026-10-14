@@ -34,16 +34,13 @@ from tests.test_broker._helpers import broker_running, short_socket_path
 
 
 def test_classify_op_recognises_phase_2_4_ops():
-    """The 8 Phase 2.4 ops must route to the long queue."""
+    """The 5 Phase 2.4 ops must route to the long queue."""
     for op in (
         "failures_replay",
         "inbox_create",
         "inbox_update",
         "inbox_delete",
         "inbox_set_tracked_authors",
-        "inbox_add_tracked_author",
-        "inbox_remove_tracked_author",
-        "inbox_clear_tracked_authors",
     ):
         assert op in handlers.LONG_OPS
 
@@ -56,9 +53,6 @@ def test_classify_op_recognises_phase_2_4_ops():
         "inbox_update",
         "inbox_delete",
         "inbox_set_tracked_authors",
-        "inbox_add_tracked_author",
-        "inbox_remove_tracked_author",
-        "inbox_clear_tracked_authors",
     ],
 )
 def test_dispatch_table_routes_phase_2_4_ops(op_name):
@@ -243,48 +237,6 @@ def test_inbox_set_tracked_authors_via_broker(seeded_db):
         "linus": "torvalds@",
         "greg": "gregkh@",
     }
-
-
-def test_inbox_add_tracked_author_via_broker(seeded_db):
-    sp = short_socket_path("trackers-add")
-    with broker_running(sp):
-        c = BrokerClient(sp)
-        try:
-            c.inbox_set_tracked_authors("alpha", {})
-            payload = c.inbox_add_tracked_author("alpha", "linus", "torvalds@")
-        finally:
-            c.close()
-    assert payload["tracked_authors"] == {"linus": "torvalds@"}
-
-
-def test_inbox_remove_tracked_author_via_broker(seeded_db):
-    sp = short_socket_path("trackers-rm")
-    with broker_running(sp):
-        c = BrokerClient(sp)
-        try:
-            c.inbox_set_tracked_authors(
-                "alpha",
-                {"linus": "torvalds@", "greg": "gregkh@"},
-            )
-            payload = c.inbox_remove_tracked_author("alpha", "linus")
-        finally:
-            c.close()
-    assert payload["tracked_authors"] == {"greg": "gregkh@"}
-
-
-def test_inbox_clear_tracked_authors_via_broker(seeded_db):
-    sp = short_socket_path("trackers-clear")
-    with broker_running(sp):
-        c = BrokerClient(sp)
-        try:
-            c.inbox_set_tracked_authors(
-                "alpha",
-                {"linus": "torvalds@"},
-            )
-            payload = c.inbox_clear_tracked_authors("alpha")
-        finally:
-            c.close()
-    assert not payload["tracked_authors"]
 
 
 # ----- failures_replay ----------------------------------------------------

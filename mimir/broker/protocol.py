@@ -362,48 +362,6 @@ class InboxSetTrackedAuthorsRequest(_BrokerRequest):
         return _validate_inbox_name(v)
 
 
-class InboxAddTrackedAuthorRequest(_BrokerRequest):
-    """Add (or replace) one tracker entry. Handler delegates to
-    `mimir.inboxes.add_tracked_author`."""
-
-    op: Literal["inbox_add_tracked_author"] = "inbox_add_tracked_author"
-    name: str = Field(min_length=1, max_length=64)
-    label: str = Field(min_length=1, max_length=128)
-    substring: str = Field(min_length=1, max_length=512)
-
-    @field_validator("name")
-    @classmethod
-    def _name_is_slug(cls, v: str) -> str:
-        return _validate_inbox_name(v)
-
-
-class InboxRemoveTrackedAuthorRequest(_BrokerRequest):
-    """Remove one tracker entry by label. Handler delegates to
-    `mimir.inboxes.remove_tracked_author`."""
-
-    op: Literal["inbox_remove_tracked_author"] = "inbox_remove_tracked_author"
-    name: str = Field(min_length=1, max_length=64)
-    label: str = Field(min_length=1, max_length=128)
-
-    @field_validator("name")
-    @classmethod
-    def _name_is_slug(cls, v: str) -> str:
-        return _validate_inbox_name(v)
-
-
-class InboxClearTrackedAuthorsRequest(_BrokerRequest):
-    """Drop all tracker entries (writes NULL). Handler delegates to
-    `mimir.inboxes.clear_tracked_authors`."""
-
-    op: Literal["inbox_clear_tracked_authors"] = "inbox_clear_tracked_authors"
-    name: str = Field(min_length=1, max_length=64)
-
-    @field_validator("name")
-    @classmethod
-    def _name_is_slug(cls, v: str) -> str:
-        return _validate_inbox_name(v)
-
-
 # Mirror of `mimir.robots._UA_RE` / `_PATH_RE` / Content-Signal
 # enums. Duplicated here (rather than imported) so the protocol
 # module stays free of the heavy `mimir.robots` → `mimir.extensions`
@@ -677,9 +635,6 @@ Request = (
     | InboxUpdateRequest
     | InboxDeleteRequest
     | InboxSetTrackedAuthorsRequest
-    | InboxAddTrackedAuthorRequest
-    | InboxRemoveTrackedAuthorRequest
-    | InboxClearTrackedAuthorsRequest
     | RobotsAddRequest
     | RobotsUpdateRequest
     | RobotsRemoveRequest

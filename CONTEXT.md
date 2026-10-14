@@ -812,7 +812,7 @@ Per-handler structural-contract tests in
 active writer via a recording wrapper around
 `_context.get_active_writer()`, run the service function, assert
 at least one submit happened (i.e. the dispatch path was taken).
-Each of the 12 handlers gets one such test. End-to-end DB-state
+Each service function the handlers call gets one such test. End-to-end DB-state
 correctness is gated by the existing handler-level tests in
 `tests/test_broker/test_admin_ops.py` which assert post-RPC
 state and continue to pass unchanged.
@@ -829,16 +829,16 @@ documentation):
   Legacy fallback paths continue to call `_publish_names(session)`
   inline.
 
-- **Two-call-chain functions fold into one closure.**
-  `add_tracked_author` and `remove_tracked_author` previously opened
-  two separate `SessionLocal()` contexts (first for `get_inbox`,
-  then for `set_tracked_authors`). The writer-path closures combine
-  both into one closure operating on the writer's `conn`: SELECT
-  current `tracked_authors`, mutate in Python, UPDATE in SQL. This
-  is atomic per-transaction (vs the legacy two-transaction shape's
-  brief TOCTOU window, and the broker is single-writer so the window was
-  never observably racy). Net: writer path is slightly more correct
-  than the legacy path.
+- **Tracker add/remove/clear are no longer broker ops (#708).**
+  Phase 5 folded `add_tracked_author` and `remove_tracked_author`
+  into one writer closure each (SELECT, mutate in Python, UPDATE).
+  Those ops, `clear_tracked_authors`, and their protocol models,
+  client methods and handlers are gone: `admin inbox trackers
+  add/remove/clear` read the dict in the CLI, edit it there, and
+  write it back through `inbox_set_tracked_authors`. That reopens
+  a read-then-write window between two concurrent operator edits
+  of one inbox's trackers (the last write wins). Accepted: trackers
+  are edited by hand, rarely, by one operator.
 
 - **`write_transaction()` is dead code on the writer path for
   robots functions.** `write_transaction` is a ContextVar-gated
@@ -1124,9 +1124,10 @@ and recent messages stay full-width since they're the primary content.
 
 Trackers are **per-inbox state**, not a settings-level dict. The
 `Inbox.tracked_authors` JSON column is mutated through
-`admin inbox trackers {show,set,add,remove,clear} <inbox>` (service
-layer in `mimir/inboxes.py`); cache invalidation for the affected
-inbox happens on every write. Adding a tracker shows up as a new
+`admin inbox trackers {show,set,add,remove,clear} <inbox>`, all
+writing through `set_tracked_authors` in `mimir/inboxes.py`. No
+cache is invalidated: `author_recent` keys embed the email
+substring, so orphaned rows age out by TTL. Adding a tracker shows up as a new
 tile on that inbox's dashboard without touching code or env. The
 older `Settings.tracked_authors` knob (a single global dict) was
 removed once mimir went multi-inbox: a single tracker list across

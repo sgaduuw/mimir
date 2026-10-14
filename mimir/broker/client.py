@@ -38,11 +38,8 @@ from mimir.broker.protocol import (
     CachePurgeExpiredRequest,
     CacheSetRequest,
     FailuresReplayRequest,
-    InboxAddTrackedAuthorRequest,
-    InboxClearTrackedAuthorsRequest,
     InboxCreateRequest,
     InboxDeleteRequest,
-    InboxRemoveTrackedAuthorRequest,
     InboxSetTrackedAuthorsRequest,
     InboxUpdateRequest,
     IngestInboxRequest,
@@ -784,53 +781,6 @@ class BrokerClient:
         reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
             raise BrokerUnavailable(f"inbox_set_tracked_authors: {reply.error}")
-        return (reply.result or {}).get("inbox", {})
-
-    def inbox_add_tracked_author(
-        self,
-        name: str,
-        label: str,
-        substring: str,
-        *,
-        timeout: float = 60.0,
-    ) -> dict:
-        """Add (or replace) one tracker entry."""
-        req = InboxAddTrackedAuthorRequest(
-            rpc_id=0,
-            name=name,
-            label=label,
-            substring=substring,
-        )
-        reply = self._rpc(req, timeout=timeout)
-        if not reply.ok:
-            raise BrokerUnavailable(f"inbox_add_tracked_author: {reply.error}")
-        return (reply.result or {}).get("inbox", {})
-
-    def inbox_remove_tracked_author(
-        self,
-        name: str,
-        label: str,
-        *,
-        timeout: float = 60.0,
-    ) -> dict:
-        """Remove one tracker entry by label."""
-        req = InboxRemoveTrackedAuthorRequest(rpc_id=0, name=name, label=label)
-        reply = self._rpc(req, timeout=timeout)
-        if not reply.ok:
-            raise BrokerUnavailable(f"inbox_remove_tracked_author: {reply.error}")
-        return (reply.result or {}).get("inbox", {})
-
-    def inbox_clear_tracked_authors(
-        self,
-        name: str,
-        *,
-        timeout: float = 60.0,
-    ) -> dict:
-        """Drop all tracker entries (writes NULL)."""
-        req = InboxClearTrackedAuthorsRequest(rpc_id=0, name=name)
-        reply = self._rpc(req, timeout=timeout)
-        if not reply.ok:
-            raise BrokerUnavailable(f"inbox_clear_tracked_authors: {reply.error}")
         return (reply.result or {}).get("inbox", {})
 
     def robots_add(

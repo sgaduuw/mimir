@@ -273,52 +273,6 @@ def test_set_tracked_authors_dispatches_via_writer(seeded_db, broker_active):
     assert inbox.tracked_authors == {"phase5": "phase5@test"}
 
 
-def test_add_tracked_author_dispatches_via_writer(seeded_db, broker_active):
-    """Phase 5 contract: add_tracked_author dispatches via the writer."""
-    from mimir.inboxes import add_tracked_author
-
-    _, submits = _writer_submit_recorder()
-    inbox = add_tracked_author(name="alpha", label="phase5", substring="phase5@test")
-
-    assert len(submits) >= 1, "add_tracked_author must dispatch at least one WriteOp"
-    assert submits[0].label.startswith("inbox:add_tracked_author:")
-    assert inbox.tracked_authors is not None
-    assert inbox.tracked_authors.get("phase5") == "phase5@test"
-
-
-def test_remove_tracked_author_dispatches_via_writer(seeded_db, broker_active):
-    """Phase 5 contract: remove_tracked_author dispatches via the writer."""
-    from mimir.inboxes import remove_tracked_author, set_tracked_authors
-
-    # Seed a tracker entry so removal has something to remove.
-    set_tracked_authors(name="alpha", authors={"to-remove": "remove@test"})
-
-    _, submits = _writer_submit_recorder()
-    inbox = remove_tracked_author(name="alpha", label="to-remove")
-
-    assert len(submits) >= 1, "remove_tracked_author must dispatch at least one WriteOp"
-    assert submits[0].label.startswith("inbox:remove_tracked_author:")
-    assert inbox.tracked_authors is None or "to-remove" not in inbox.tracked_authors
-
-
-def test_clear_tracked_authors_dispatches_via_writer(seeded_db, broker_active):
-    """Phase 5 contract: clear_tracked_authors dispatches via the writer.
-    It delegates to set_tracked_authors which was migrated first; this
-    test pins that the delegation chain still takes the writer path."""
-    from mimir.inboxes import clear_tracked_authors, set_tracked_authors
-
-    # Seed a tracker entry so clearing has something to clear.
-    set_tracked_authors(name="alpha", authors={"to-clear": "clear@test"})
-
-    _, submits = _writer_submit_recorder()
-    inbox = clear_tracked_authors(name="alpha")
-
-    assert len(submits) >= 1, "clear_tracked_authors must dispatch at least one WriteOp"
-    # clear_tracked_authors delegates to set_tracked_authors
-    assert submits[0].label.startswith("inbox:set_tracked_authors:")
-    assert inbox.tracked_authors is None
-
-
 def test_create_inbox_dispatches_via_writer(seeded_db, broker_active):
     """Phase 5 contract: create_inbox dispatches via the writer."""
     from mimir.inboxes import create_inbox
