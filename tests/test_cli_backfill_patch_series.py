@@ -12,7 +12,7 @@ from mimir.models import Article, ArticleList, Inbox
 from mimir.patch_series import backfill_patch_series
 
 
-def _add_article(seeded_db, msgid, subject, author="A <a@x>"):
+def _add_article(seeded_db, msgid, subject, author="A <a@x>", thread_parent=None):
     """Insert a minimal Article with no series-key set, so the
     backfill has something to do. Linked to the seeded `alpha`
     inbox for the route-side compatibility shape."""
@@ -25,7 +25,7 @@ def _add_article(seeded_db, msgid, subject, author="A <a@x>"):
             subject=subject,
             author=author,
             date=datetime(2024, 6, 1, tzinfo=UTC),
-            thread_parent=None,
+            thread_parent=thread_parent,
             subject_normalized=subject.lower(),
             canonical_inbox_id=inbox.id,
             lists=[ArticleList(inbox_id=inbox.id, epoch="0.git", commit_sha="f" * 40)],
@@ -217,3 +217,71 @@ def test_backfill_relinks_orphan_when_cover_arrives_later(seeded_db, broker_acti
         ).scalar_one()
     assert patch.patch_series_key == cover.patch_series_key
     assert patch.patch_series_version == cover.patch_series_version
+
+
+def _row(seeded_db, msgid):
+    with seeded_db() as s:
+        return s.execute(
+            select(Article).where(Article.message_id == msgid)
+        ).scalar_one()
+
+
+def test_backfill_unfolds_stored_subjects_and_then_finds_the_series(
+    seeded_db, broker_active
+):
+    """Folded stored subjects (#710): the backfill parses them unfolded,
+    so the cover and its patch get their series columns, and writes the
+    unfolded subject back."""
+    _add_article(
+        seeded_db, "fcover@x", "[PATCH v2 0/2] platform/x86: rework\n the capdata"
+    )
+    _add_article(
+        seeded_db,
+        "fpatch@x",
+        "[PATCH v2 1/2] platform/x86: Do not stop the\n AC",
+        thread_parent="fcover@x",
+    )
+    result = backfill_patch_series()
+
+    cover, patch = _row(seeded_db, "fcover@x"), _row(seeded_db, "fpatch@x")
+    assert cover.subject == "[PATCH v2 0/2] platform/x86: rework the capdata"
+    assert patch.subject == "[PATCH v2 1/2] platform/x86: Do not stop the AC"
+    assert (cover.patch_series_position, patch.patch_series_position) == (0, 1)
+    assert patch.patch_series_key == cover.patch_series_key is not None
+    assert result.subjects_unfolded == 2
+
+
+def test_backfill_unfolds_subjects_it_would_otherwise_skip(seeded_db, broker_active):
+    """A plain run (no --reprocess) still unfolds: a fully resolved row
+    keeps its series columns, a non-series row just gets its subject."""
+    from sqlalchemy import update
+
+    _add_article(seeded_db, "done@x", "[PATCH 0/1] already keyed\n here")
+    _add_article(seeded_db, "talk@x", "Re: a folded\n discussion")
+    with seeded_db() as s:
+        s.execute(
+            update(Article)
+            .where(Article.message_id == "done@x")
+            .values(
+                patch_series_key="k", patch_series_version="v1", patch_series_position=0
+            )
+        )
+        s.commit()
+
+    backfill_patch_series()
+
+    done, talk = _row(seeded_db, "done@x"), _row(seeded_db, "talk@x")
+    assert done.subject == "[PATCH 0/1] already keyed here"
+    assert (done.patch_series_key, done.patch_series_position) == ("k", 0)
+    assert talk.subject == "Re: a folded discussion"
+    assert talk.patch_series_key is None
+
+
+def test_cli_reports_subjects_unfolded(seeded_db, broker_active):
+    import re
+
+    _add_article(seeded_db, "clifold@x", "a folded\n subject")
+    result = CliRunner().invoke(backfill_patch_series_command, [])
+    assert result.exit_code == 0, result.output
+    m = re.search(r"\bsubjects_unfolded=(\d+)", result.output)
+    assert m is not None and int(m.group(1)) == 1, result.output

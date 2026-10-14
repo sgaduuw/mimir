@@ -11,6 +11,52 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.17.1] - 2026-10-14
+
+### Fixed
+
+- With more than one long worker, two inboxes ingesting the first copy of the
+  same message at the same time no longer lose the second inbox's link. The
+  second insert was a no-op and its link was dropped, so the message stayed
+  missing from that inbox until a reindex. The link is now added, and the
+  canonical pin is re-picked over the links as they stand when the batch is
+  written, for this case, for cross-post links and for `admin canonicals
+  backfill`, so parallel ingest ends on the same pin as serial ingest and a
+  backfill chunk no longer overwrites a pin that ingest wrote while it ran
+  (#722).
+- A message page's ETag now changes when a sibling revision of its patch is
+  cross-posted to another inbox. The revisions fold links each revision
+  through its canonical inbox, so before this a conditional request could get
+  a 304 for a page whose fold link had since moved. The thread page's ETag
+  also rotates in this case, though that page does not show the fold (#687).
+- A message's pinned canonical inbox is now always one of the inboxes it is
+  filed in. The pin was picked from every inbox named in To/Cc, so about 1.5%
+  of stored pins (107,269 in the measured production range) named an inbox
+  with no copy of the message. A cross-post arriving from another inbox now
+  re-picks the pin, so a topical list's copy still takes over from the
+  firehose copy that landed first. Stored rows are fixed by one more
+  `admin canonicals backfill --reprocess --restart`, run after the deploy:
+  since #680 plain `--reprocess` resumes an unfinished run from its old
+  cursor and would skip the ids above it (#675).
+- The activity chip counts replies in the list you are viewing only. A reply
+  that landed in another list moved the chip on message and thread pages
+  without moving the ETag, so a cached page kept the old chip behind a 304.
+  A cross-posted patch can now show a different chip in each list (#676).
+- A Subject header the sender folded across lines is stored on one line.
+  Folded subjects kept their line break, so both series parsers missed them:
+  about a million numbered patches (production, 2026-10-12) had no series
+  key, position or version, so they showed as one row per patch in the
+  triage lists and were missed by the revisions fold and SUPERSEDED. New
+  mail is unfolded at ingest. For stored rows, run `backfill-patch-series
+  --restart` once (`--reprocess` is not needed): it rewrites folded
+  subjects, in every mode, then finds their series, and reports
+  `subjects_unfolded`. Without `--restart` an unfinished earlier run resumes
+  from its old cursor and skips the rows above it. If this run is
+  interrupted, run it again without `--restart` to resume (#710).
+- Closing a broker client while its reader thread was waiting no longer logs
+  an unhandled `ValueError` traceback; the reader ends as it does when the
+  socket drops (#699).
+
 ## [3.17.0] - 2026-10-12
 
 ### Added
