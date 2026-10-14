@@ -727,9 +727,12 @@ WriterThread and awaits `.result()`. Phase 5 shipped with a
 #707 removed it. `get_active_writer()` raises `RuntimeError` when no
 writer is active and the mutators let it propagate, so a process
 without a writer cannot write on its own (the single-writer
-invariant). The one deliberate no-writer write left is
-`bootstrap_inboxes`, which the broker runs pre-serve, before the
-WriterThread starts.
+invariant). The one no-writer write left is `bootstrap_inboxes`, and
+only at broker startup: `build_server` runs it through
+`_bootstrap_inboxes_if_needed` before the WriterThread is started and
+registered, so there is no writer to dispatch to. Its steady-state RPC
+(`handle_bootstrap_inboxes`) does use the writer. Phase 6a moved only
+that RPC onto the writer, not the startup call.
 
 The architectural payoff: after Phase 5 the admin write surface
 joins the single-writer invariant. The periodic purge timer
