@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- The subsystem triage queues no longer pass dates to SQLite through Python's
+  deprecated default datetime adapter, which a future Python removes. The
+  date bounds are now sent in the same format the database stores.
+
 ## [3.17.1] - 2026-10-14
 
 ### Fixed

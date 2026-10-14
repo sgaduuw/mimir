@@ -103,6 +103,11 @@ markers = [
     "allow_tree_clone: test deliberately exercises mainline._ensure_tree's clone path with subprocess mocked",
 ]
 testpaths = ["tests"]
+# A raw text() bind of a datetime goes through sqlite3's default adapter,
+# deprecated since 3.12 (#700). Bind through a DateTime type instead.
+filterwarnings = [
+    "error:The default datetime adapter is deprecated:DeprecationWarning",
+]
 
 [build-system]
 requires = ["hatchling"]

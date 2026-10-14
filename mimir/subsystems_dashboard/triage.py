@@ -17,8 +17,9 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel
-from sqlalchemy import func, select, text, tuple_
+from sqlalchemy import DateTime, bindparam, func, select, text, tuple_
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import TextClause
 
 from mimir import cache
 from mimir.config import settings
@@ -283,6 +284,17 @@ def _candidate_query_quiet(
     }
 
 
+def _triage_stmt(sql: str) -> TextClause:
+    """Wrap a candidate query with typed date binds. A bare datetime in
+    text() goes through sqlite3's deprecated default adapter and lands
+    as '...+00:00', while the ORM stores articles.date without an
+    offset (#700)."""
+    return text(sql).bindparams(
+        bindparam("min_date", type_=DateTime),
+        bindparam("cutoff_date", type_=DateTime),
+    )
+
+
 def _run_triage(
     session: Session,
     inbox: Inbox,
@@ -310,7 +322,7 @@ def _run_triage(
     out: list[PatchAttention] = []
     by_series: dict[tuple[str, str | None], PatchAttention] = {}
     while True:
-        rows = session.execute(text(sql), params).all()
+        rows = session.execute(_triage_stmt(sql), params).all()
         candidate_ids = [r.article_id for r in rows]
         drop_ids: set[int] = set()
         if drop_maintainer_acked:
@@ -349,7 +361,7 @@ def _run_triage(
         # where this one ended, so k pages cost k walks, not k^2/2.
         params = {
             **params,
-            "min_date": rows[-1].art_date,
+            "min_date": _coerce_dt(rows[-1].art_date),
             "after_id": rows[-1].article_id,
         }
     # Counted, not tallied while paging: the list can fill before a
