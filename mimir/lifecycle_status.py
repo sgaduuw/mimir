@@ -21,8 +21,8 @@ from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.datetime_utils import aware_utc as _aware_utc
+from mimir.datetime_utils import coerce_dt
 from mimir.patch_series import newer_revision_sql, version_number_sql
-from mimir.threading import _coerce_dt
 from mimir.trailers import REVIEW_TRAILER_ROLES
 
 # Strip control bytes + surrogates before flowing reviewer names
@@ -442,8 +442,8 @@ def _bulk_uncached(
         # Treat last_thread_date <= article_date as "no replies"
         # (e.g. a malformed thread where a parent post-dates a
         # child); the heat bucket then collapses to dormant.
-        last_at = _coerce_dt(row.last_thread_date)
-        article_at = _coerce_dt(row.article_date)
+        last_at = coerce_dt(row.last_thread_date)
+        article_at = coerce_dt(row.article_date)
         days: int | None
         if last_at is None or article_at is None:
             days = None
@@ -467,11 +467,11 @@ def _bulk_uncached(
         tooltip = _format_tooltip(
             state=state,
             linus_sha=row.linus_sha,
-            linus_committed_at=_coerce_dt(row.linus_committed_at),
+            linus_committed_at=coerce_dt(row.linus_committed_at),
             earliest_other_sha=row.earliest_other_sha,
-            earliest_other_at=_coerce_dt(row.earliest_other_at),
+            earliest_other_at=coerce_dt(row.earliest_other_at),
             superseded_by_version=row.sup_by_version,
-            superseded_by_posted_at=_coerce_dt(row.sup_by_date),
+            superseded_by_posted_at=coerce_dt(row.sup_by_date),
             reviewers=names_by_article.get(row.id, []),
         )
 
