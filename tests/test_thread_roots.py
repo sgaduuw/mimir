@@ -34,7 +34,7 @@ from sqlalchemy import select
 
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox
-from mimir.thread_roots import backfill_inbox
+from mimir.thread_roots import drive_passes
 from mimir.threading import _find_thread_root_cte
 from tests.test_routes._helpers import seed_thread_shape
 
@@ -194,7 +194,7 @@ def _cross_post_all(src: str, dst: str, only: list[str] | None = None) -> None:
         # computed"), which is precisely the state the backfill exists
         # for, so run it here rather than hand-computing: that way this
         # test exercises the backfill path as well as the ingest one.
-        backfill_inbox(s, target.id)
+        drive_passes(lambda fn: fn(s, target.id))
         s.commit()
 
 
@@ -303,7 +303,7 @@ def test_ingest_into_an_unbackfilled_corpus_never_writes_a_wrong_root(
 
     from mimir.extensions import SessionLocal
     from mimir.models import ArticleList, Inbox
-    from mimir.thread_roots import backfill_inbox
+    from mimir.thread_roots import drive_passes
 
     (tmp_path / "a").mkdir()
     seed_thread_shape(
@@ -322,7 +322,7 @@ def test_ingest_into_an_unbackfilled_corpus_never_writes_a_wrong_root(
 
     with SessionLocal() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        backfill_inbox(s, inbox.id)
+        drive_passes(lambda fn: fn(s, inbox.id))
         s.commit()
 
     _assert_invariant_for(
@@ -472,7 +472,7 @@ def test_child_first_batch_into_an_unbackfilled_corpus_leaves_nothing_stale(
 
     from mimir.extensions import SessionLocal
     from mimir.models import ArticleList, Inbox
-    from mimir.thread_roots import backfill_inbox
+    from mimir.thread_roots import drive_passes
 
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
@@ -488,7 +488,7 @@ def test_child_first_batch_into_an_unbackfilled_corpus_leaves_nothing_stale(
 
     with SessionLocal() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        backfill_inbox(s, inbox.id)
+        drive_passes(lambda fn: fn(s, inbox.id))
         s.commit()
 
     _assert_invariant_for(
@@ -869,7 +869,7 @@ def test_backfill_reports_exhaustion_when_the_pass_budget_runs_out(
             .values(thread_root_id=None)
         )
         s.commit()
-        counts = thread_roots.backfill_inbox(s, inbox.id)
+        counts = thread_roots.drive_passes(lambda fn: fn(s, inbox.id))
         s.commit()
 
     assert counts["exhausted"] == 1, counts
@@ -1314,7 +1314,7 @@ def test_startup_backfill_commits_per_inbox_and_withholds_on_failure(
 
     The run committed once after the loop, so any error, SIGKILL, or
     OOM threw away every completed inbox: the opposite of the
-    "interrupted runs resume" property `backfill_inbox` documents.
+    "interrupted runs resume" property `drive_passes` documents.
     """
     import mimir.thread_roots
     from mimir.broker.server import _backfill_thread_roots_if_needed
@@ -1334,8 +1334,8 @@ def test_startup_backfill_commits_per_inbox_and_withholds_on_failure(
         return real(session, inbox_id)
 
     # Patched at the pass level, because the startup path drives the
-    # passes itself (to commit between them) rather than calling
-    # `backfill_inbox`.
+    # passes itself (to commit between them) rather than running
+    # them in one session.
     monkeypatch.setattr(mimir.thread_roots, "seed_roots", _fail_on_beta)
 
     sock = tmp_path / "sock"
@@ -1959,7 +1959,7 @@ def test_backfill_passes_never_rewrite_an_already_rooted_row(client, tmp_path):
 
     from mimir.extensions import SessionLocal
     from mimir.models import Article, ArticleList, Inbox
-    from mimir.thread_roots import backfill_inbox
+    from mimir.thread_roots import drive_passes
 
     edges = [
         ("nr1@x", None),
@@ -1998,7 +1998,7 @@ def test_backfill_passes_never_rewrite_an_already_rooted_row(client, tmp_path):
         _set("nr4@x", None)
         s.commit()
 
-        backfill_inbox(s, inbox.id)
+        drive_passes(lambda fn: fn(s, inbox.id))
         s.commit()
 
     after = _roots_by_inbox("alpha", {m for m, _ in edges})
