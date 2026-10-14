@@ -1411,7 +1411,14 @@ data:
    wins as a fallback when no non-demoted match is found later in
    the walk. So `Cc: linux-kernel@vger.kernel.org,
    linux-arm-kernel@lists.infradead.org` pins to linux-arm-kernel
-   even though lkml is positionally first. NULL is allowed (and
+   even though lkml is positionally first. Only inboxes the article
+   is filed in can win (#675): a pin naming an inbox with no copy
+   sends readers to a page that does not have the message. Each
+   cross-post re-picks, so a topical copy arriving after the
+   firehose copy takes over. The pick runs on the writer, over the
+   links as they stand inside the same WriteOp (#722): with more
+   than one long worker, a pick made in the read phase could be
+   written after another batch added a link it never saw. NULL is allowed (and
    common during warm-up); render-time falls back to the
    alphabetically-first inbox among the article's `lists`, with
    the same demoted-to-back ordering.
@@ -2206,8 +2213,7 @@ cases (`maintainers_reparse`, `article_files_rewrite`) are left out of
 it because the fixture page does not render them, so those inputs have
 validator coverage but no warm-versus-cold coverage until #678. Known
 exceptions: time-relative output (the activity chip ages within the TTL;
-no validator can carry `now()`), a reply that lands only in another
-inbox (#676, a strict xfail), and the related-patches and
+no validator can carry `now()`), and the related-patches and
 related-discussions lists, which are cached by id and are not validator
 inputs at all, by the same choice as before 3.13.0.
 
