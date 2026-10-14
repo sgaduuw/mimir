@@ -720,13 +720,19 @@ CRUD + 1 failures replay, all in
 the service layer's `SessionLocal()` (and `write_transaction()`
 for `mimir/robots.py`). Each service-layer function in
 `mimir/inboxes.py`, `mimir/robots.py`, and
-`mimir/ingest/replay.py::replay_failures` now starts with a
-`try: writer = _context.get_active_writer(); except RuntimeError:
-writer = None` dispatch fork: when an active broker context is
-set (handler invocation), it composes a composite WriteOp whose
-closure runs the full SQL sequence and awaits `.result()`; when
-not (tests, `bootstrap_inboxes`, dev scripts), it falls back to
-the legacy `SessionLocal()` path.
+`mimir/ingest/replay.py::replay_failures` composes a composite
+WriteOp whose closure runs the full SQL sequence on the active
+WriterThread and awaits `.result()`. Phase 5 shipped with a
+`SessionLocal()` fallback for callers without a broker context;
+#707 removed it. `get_active_writer()` raises `RuntimeError` when no
+writer is active and the mutators let it propagate, so a process
+without a writer cannot write on its own (the single-writer
+invariant). The one no-writer write left is `bootstrap_inboxes`, and
+only at broker startup: `build_server` runs it through
+`_bootstrap_inboxes_if_needed` before the WriterThread is started and
+registered, so there is no writer to dispatch to. Its steady-state RPC
+(`handle_bootstrap_inboxes`) does use the writer. Phase 6a moved only
+that RPC onto the writer, not the startup call.
 
 The architectural payoff: after Phase 5 the admin write surface
 joins the single-writer invariant. The periodic purge timer
@@ -754,8 +760,7 @@ so `write_transaction()` + the BEGIN-IMMEDIATE listener + the
 - `longops.bootstrap_inboxes` and `mainline.load_maintainers`
   (the latter explicitly deferred from Phase 3) still wrap
   shared-engine writes in `write_transaction()`.
-- robots.py's legacy fallback path (non-broker callers only:
-  tests, dev scripts).
+- (robots.py's non-broker fallback was listed here; #707 removed it.)
 
 So Phase 6 is **not** a pure deletion: it must first migrate the
 remaining in-broker shared-engine writers onto the WriterThread,
@@ -795,9 +800,10 @@ statement-builders (`_set_stmt` / `_delete_one_stmt` /
 `*_via_writer` closures and the `_direct_*` helpers; `_direct_*`
 are retained as explicitly TEST-ONLY scaffolding (no production
 caller, guarded by `test_no_production_module_references_direct_cache_helpers`).
-The robots.py and `load_maintainers` non-broker fallback paths drop
-the `write_transaction` wrapper (plain `SessionLocal`; single-threaded,
-no concurrent committer, so DEFERRED begin is safe). **The cache
+The `load_maintainers` non-broker fallback path drops the
+`write_transaction` wrapper (plain `SessionLocal`; single-threaded,
+no concurrent committer, so DEFERRED begin is safe). The robots.py one
+went too, and #707 later removed the fallback itself. **The cache
 worker thread is KEPT, not collapsed** (it is load-bearing for
 dispatch-level concurrency: it lets cache RPCs submit promptly and
 interleave into the WriterThread FIFO between a long op's per-batch
@@ -820,14 +826,11 @@ state and continue to pass unchanged.
 Subtleties surfaced during the migration (worth durable
 documentation):
 
-- **`_publish_names` requires a Session.** Every legacy `inboxes.py`
-  write function ended with `_publish_names(session)` to refresh the
-  in-memory `_INBOX_NAMES` nav cache. Writer closures receive a
-  Connection, not a Session, so Phase 5's writer-path branch calls
+- **`_publish_names` requires a Session.** The `inboxes.py` write
+  functions must refresh the in-memory `_INBOX_NAMES` nav cache.
+  Writer closures receive a Connection, not a Session, so each calls
   the existing `refresh_inbox_names()` helper after `future.result()`
   (a few ms after the commit lands; acceptable for a nav cache).
-  Legacy fallback paths continue to call `_publish_names(session)`
-  inline.
 
 - **Tracker add/remove/clear are no longer broker ops (#708).**
   Phase 5 folded `add_tracked_author` and `remove_tracked_author`
@@ -840,15 +843,13 @@ documentation):
   of one inbox's trackers (the last write wins). Accepted: trackers
   are edited by hand, rarely, by one operator.
 
-- **`write_transaction()` is dead code on the writer path for
+- **`write_transaction()` was dead code on the writer path for
   robots functions.** `write_transaction` is a ContextVar-gated
   event listener that fires on the shared engine's `connect` event.
   The WriterThread uses its own engine (`WriterThread.from_settings()`),
   not the shared pool, so the listener doesn't fire on writer-thread
-  connections. The `with write_transaction(...)` wrapper in the
-  legacy robots functions becomes a no-op on the writer path; the
-  fallback path keeps it (and DOES use the shared engine). The
-  writer path doesn't include `write_transaction()` in its closure.
+  connections, and the writer closures never included it. Only the
+  robots fallback used it; that fallback is gone (#707).
 
 - **WriterThread engine `_sqlite_pragmas` registration (resolved).**
   Phase 5 originally shipped with the WriterThread's
