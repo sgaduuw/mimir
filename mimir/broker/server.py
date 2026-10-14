@@ -170,20 +170,6 @@ _HAS_SO_PEERCRED = hasattr(socket, "SO_PEERCRED")
 _BROKER_EUID = os.geteuid()
 
 
-class _NoopHandler(socketserver.BaseRequestHandler):
-    """Stub passed to `socketserver` because the framework requires a
-    RequestHandlerClass argument. `_BrokerServer.process_request`
-    overrides the per-connection handler dispatch to spawn a reader
-    thread instead, so this class is never instantiated in
-    practice."""
-
-    def handle(self) -> None:
-        raise RuntimeError(
-            "broker: _NoopHandler.handle should not be reached; "
-            "_BrokerServer.process_request overrides this path"
-        )
-
-
 class _BrokerServer(socketserver.UnixStreamServer):
     """UNIX-socket server that hands every accepted connection off
     to a dedicated reader thread and runs **three** classes of
@@ -228,7 +214,10 @@ class _BrokerServer(socketserver.UnixStreamServer):
     request_queue_size = 256
 
     def __init__(self, socket_path: str) -> None:
-        super().__init__(socket_path, _NoopHandler)
+        # The handler class is never instantiated: `process_request`
+        # below hands each connection to a reader thread instead, so
+        # the framework's base class satisfies the required argument.
+        super().__init__(socket_path, socketserver.BaseRequestHandler)
         self.stop_event = threading.Event()
         # Three queues, one per worker class. Items are
         # `(line, conn, enqueued_at)` tuples; the reader classifies
@@ -901,7 +890,7 @@ def _backfill_thread_roots_if_needed(socket_path: Path) -> None:
     matters: lkml alone is ~87%% of the total run, so a SIGKILL lands
     inside it with overwhelming probability and would discard all of
     it. Committing per pass makes "interrupted runs resume" true at
-    the granularity the docstring on `backfill_inbox` claims, because
+    the granularity the docstring on `drive_passes` claims, because
     every pass only touches NULL rows.
 
     Verification does NOT run here, and is no longer called from this
