@@ -448,6 +448,7 @@ def set(key: str, value: Any, ttl: int) -> None:
         # the client out, and lets unit tests for the cache module
         # run without spinning up a broker).
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+        from mimir.broker.protocol import CacheSetRequest
 
         # Apply the extension here, before crossing the wire: the
         # broker's _ttl_extension ContextVar is unset in the cache-
@@ -458,7 +459,9 @@ def set(key: str, value: Any, ttl: int) -> None:
         # it's silently dropped at the wire.
         wire_ttl = _apply_ttl_extension(ttl)
         try:
-            get_broker_client().cache_set(nskey, payload, wire_ttl)
+            get_broker_client().call(
+                CacheSetRequest(rpc_id=0, key=nskey, value_json=payload, ttl=wire_ttl)
+            )
         except BrokerUnavailable as exc:
             logger.warning("broker write failed for %s: %s", nskey, exc)
         return
@@ -679,9 +682,14 @@ def purge_expired() -> int:
     """
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+        from mimir.broker.protocol import CachePurgeExpiredRequest
 
         try:
-            return get_broker_client().cache_purge_expired()
+            return (
+                get_broker_client()
+                .call(CachePurgeExpiredRequest(rpc_id=0))
+                .get("rows_deleted", 0)
+            )
         except BrokerUnavailable as exc:
             logger.warning("broker purge_expired failed: %s", exc)
             return 0
@@ -730,9 +738,14 @@ def delete(key: str) -> int:
             return delete_via_writer(_writer, nskey).result()
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+        from mimir.broker.protocol import CacheDeleteRequest
 
         try:
-            return get_broker_client().cache_delete(nskey)
+            return (
+                get_broker_client()
+                .call(CacheDeleteRequest(rpc_id=0, key=nskey))
+                .get("rows_deleted", 0)
+            )
         except BrokerUnavailable as exc:
             logger.warning("broker delete failed for %s: %s", nskey, exc)
             return 0
@@ -779,9 +792,14 @@ def delete_for_inbox(inbox_name: str) -> int:
             return delete_for_inbox_via_writer(_writer, inbox_name).result()
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+        from mimir.broker.protocol import CacheDeleteForInboxRequest
 
         try:
-            return get_broker_client().cache_delete_for_inbox(inbox_name)
+            return (
+                get_broker_client()
+                .call(CacheDeleteForInboxRequest(rpc_id=0, name=inbox_name))
+                .get("rows_deleted", 0)
+            )
         except BrokerUnavailable as exc:
             logger.warning(
                 "broker delete_for_inbox failed for %s: %s",

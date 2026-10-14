@@ -11,6 +11,7 @@ import pytest
 from click.testing import CliRunner
 from sqlalchemy import select
 
+from mimir.broker.protocol import PingRequest, ReindexRequest
 from mimir.cli import (
     ingest_command,
     reindex_command,
@@ -397,10 +398,13 @@ def test_reindex_does_not_block_cache_rpc(seeded_db, tmp_path, monkeypatch):
     monkeypatch.setattr(service, "ingest_epoch", slow_walk)
     broker = get_broker_client()
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(broker.reindex, "alpha", "2.git", workers=1)
+        future = executor.submit(
+            broker.call,
+            ReindexRequest(rpc_id=0, inbox_name="alpha", epoch="2.git", workers=1),
+        )
         try:
             assert entered.wait(timeout=5), "re-walk never started"
-            assert broker.ping()
+            assert broker.call(PingRequest(rpc_id=0)) == {}
         finally:
             release.set()
         assert future.result(timeout=10)["ingest"]["new"] == 1

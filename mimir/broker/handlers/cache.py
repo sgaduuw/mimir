@@ -85,7 +85,7 @@ def handle_cache_delete_for_inbox(req: CacheDeleteForInboxRequest) -> Reply:
             "cache_delete_for_inbox timeout: writer busy (name=%s)", req.name
         )
         return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
-    return Reply(rpc_id=req.rpc_id, ok=True, rows_deleted=n)
+    return Reply(rpc_id=req.rpc_id, ok=True, result={"rows_deleted": n})
 
 
 def handle_cache_purge_expired(req: CachePurgeExpiredRequest) -> Reply:
@@ -95,7 +95,7 @@ def handle_cache_purge_expired(req: CachePurgeExpiredRequest) -> Reply:
     except TimeoutError:
         logger.warning("cache_purge_expired timeout: writer busy")
         return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
-    return Reply(rpc_id=req.rpc_id, ok=True, rows_deleted=n)
+    return Reply(rpc_id=req.rpc_id, ok=True, result={"rows_deleted": n})
 
 
 def handle_ping(req: PingRequest) -> Reply:

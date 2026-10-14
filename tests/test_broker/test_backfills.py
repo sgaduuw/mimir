@@ -374,11 +374,12 @@ def test_dispatch_backfill_canonicals_with_inbox_filter(seeded_db):
 
 
 def test_broker_client_backfill_returns_typed_result(seeded_db):
-    """`BrokerClient.backfill_patch_series` reconstructs a typed
+    """`BrokerClient.backfill` reconstructs a typed
     `BackfillResult` from the broker reply, plus the run info.
     End-to-end via a real broker on a tmp socket so the framing +
     JSONL + reply-shape round-trip is exercised."""
     from mimir.broker.client import BrokerClient
+    from mimir.broker.protocol import BackfillPatchSeriesRequest
     from mimir.patch_series import BackfillResult
     from tests.test_broker._helpers import broker_running, short_socket_path
 
@@ -386,7 +387,10 @@ def test_broker_client_backfill_returns_typed_result(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result, run = c.backfill_patch_series(limit=4, start="resume")
+            result, run = c.backfill(
+                BackfillPatchSeriesRequest(rpc_id=0, limit=4, start="resume"),
+                BackfillResult,
+            )
         finally:
             c.close()
     assert isinstance(result, BackfillResult)
@@ -399,13 +403,20 @@ def test_broker_client_backfill_canonicals_inbox_filter(seeded_db):
     """`inbox_filter` flows through the BrokerClient → request →
     handler chain."""
     from mimir.broker.client import BrokerClient
+    from mimir.broker.protocol import BackfillCanonicalsRequest
+    from mimir.ingest.backfill import BackfillResult
     from tests.test_broker._helpers import broker_running, short_socket_path
 
     sp = short_socket_path("backfill-canonicals-filter")
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result, _run = c.backfill_canonicals(inbox_filter="alpha", start="resume")
+            result, _run = c.backfill(
+                BackfillCanonicalsRequest(
+                    rpc_id=0, inbox_filter="alpha", start="resume"
+                ),
+                BackfillResult,
+            )
         finally:
             c.close()
     assert result.examined == 3  # 3 alpha-linked seeded articles
@@ -423,7 +434,7 @@ _RUN = {
 
 
 def test_broker_backfill_loop_converges_across_chunks(seeded_db):
-    """Stub a `client.backfill_*`-shaped call that returns partial
+    """Stub a chunk call that returns partial
     chunks N-2 times before a final partial=False chunk. The loop
     must aggregate counter sums, stop on partial=False, and send
     `start` on the first RPC only."""
@@ -492,8 +503,8 @@ def test_broker_backfill_loop_respects_limit_across_chunks(seeded_db):
 
 def test_broker_backfill_loop_passes_extra_kwargs(seeded_db):
     """Canonicals' `inbox_filter` rides on `extra=` in the loop
-    helper. Verify it flows through to the bound client method on
-    every iteration."""
+    helper. Verify it flows through to the chunk call on every
+    iteration."""
     from mimir.cli._common import _broker_backfill_loop
     from mimir.ingest.backfill import BackfillResult
 
@@ -527,8 +538,10 @@ def test_chunked_resume_via_broker_covers_full_corpus(seeded_db, monkeypatch):
     handler + walker.
     """
     from mimir.broker.client import BrokerClient
+    from mimir.broker.protocol import BackfillPatchSeriesRequest
     from mimir.cli._common import _broker_backfill_loop
     from mimir.config import settings
+    from mimir.patch_series import BackfillResult
     from tests.test_broker._helpers import broker_running, short_socket_path
 
     # Add 6 more cover-letter-shaped articles so the seeded corpus
@@ -547,7 +560,9 @@ def test_chunked_resume_via_broker_covers_full_corpus(seeded_db, monkeypatch):
         c = BrokerClient(sp)
         try:
             result, run = _broker_backfill_loop(
-                c.backfill_patch_series,
+                lambda **kw: c.backfill(
+                    BackfillPatchSeriesRequest(rpc_id=0, **kw), BackfillResult
+                ),
                 limit=None,
                 reprocess=False,
             )
