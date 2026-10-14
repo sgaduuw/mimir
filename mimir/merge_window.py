@@ -30,11 +30,11 @@ from sqlalchemy.orm import Session
 import mimir
 from mimir import cache
 from mimir.config import settings
+from mimir.datetime_utils import coerce_dt
 from mimir.mainline import resolve_tree_path
 from mimir.models import Article, ArticleFile, MainlineState
 from mimir.patch_state import _resolve_tree_label
 from mimir.subsystems import ranked_subsystems
-from mimir.threading import _coerce_dt
 from mimir.web.urls import _canonical_inbox_names_for, _msg_path
 
 QUEUED_TREE = "linux-next"
@@ -202,7 +202,7 @@ def _compute(session: Session) -> MergeWindow:
     # Raw SQL returns SQLite's stored text for dates; coerce as the
     # triage queries do.
     archived = [
-        SimpleNamespace(**{**r._mapping, "date": _coerce_dt(r.date)})
+        SimpleNamespace(**{**r._mapping, "date": coerce_dt(r.date)})
         for r in rows
         if r.id is not None
     ]
