@@ -207,8 +207,8 @@ def _inbox_error_reply(req, exc: Exception) -> Reply:
 
 
 def _inbox_to_dict(inbox) -> dict:
-    """Project an `Inbox` ORM row to the dict shape the admin client
-    methods reconstruct. Detached at call time (service-layer
+    """Project an `Inbox` ORM row to the dict shape the admin CLI
+    reads. Detached at call time (service-layer
     functions all `session.expunge` before returning), so attribute
     reads are safe outside a session."""
     return {
@@ -349,7 +349,7 @@ def _robots_error_reply(req, exc: Exception) -> Reply:
 
 def _robots_rule_to_dict(rule) -> dict:
     """Project a `RobotsRule` ORM row to the dict shape the admin
-    client methods reconstruct. Service-layer returns expunge before
+    CLI reads. Service-layer returns expunge before
     handing back so attribute reads are safe outside a session."""
     return {
         "user_agent": rule.user_agent,

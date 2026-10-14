@@ -673,9 +673,20 @@ def test_build_slow_global_targets_includes_aggregator(seeded_db):
 # `mimir.broker.client.get_broker_client` (the in-function import in
 # `warm_cache_command` reads through the module attribute, so the
 # patch lands). The FakeClient stubs `warm_inbox` / `warm_global` to
-# record the targets passed by the CLI, and stubs `cache_purge_expired`
-# because `cache.purge_expired()` (called at the end of
+# record the targets passed by the CLI; `_FakeBrokerClient` stubs
+# `cache_purge_expired` because `cache.purge_expired()` (called at the end of
 # `warm_cache_command`) also routes through `get_broker_client()`.
+
+
+class _FakeBrokerClient:
+    """Routes `call(req)` to the method named after `req.op`, passing
+    the request's fields, so each test stubs only the ops it watches."""
+
+    def call(self, req, timeout=None):
+        return getattr(self, req.op)(**req.model_dump(exclude={"rpc_id", "op"}))
+
+    def cache_purge_expired(self):
+        return {}
 
 
 def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
@@ -694,7 +705,7 @@ def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
     global_captured: list[tuple[list[str] | None, int]] = []
     subsystem_captured: list[tuple[str, int, int]] = []
 
-    class FakeClient:
+    class FakeClient(_FakeBrokerClient):
         def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
             captured.append((inbox_name, targets, priority))
             return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
@@ -706,9 +717,6 @@ def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
         def warm_global(self, *, targets=None, priority=1, **kwargs):
             global_captured.append((targets, priority))
             return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
-
-        def cache_purge_expired(self, **kwargs):
-            return 0
 
     monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
     monkeypatch.setattr(settings, "site_base_url", "https://example.test")
@@ -784,7 +792,7 @@ def test_warm_cache_command_tier_slow_dispatches_slow_targets_only(
     global_captured: list[tuple[list[str] | None, int]] = []
     subsystem_captured: list[tuple[str, int, int]] = []
 
-    class FakeClient:
+    class FakeClient(_FakeBrokerClient):
         def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
             captured.append((inbox_name, targets, priority))
             return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
@@ -796,9 +804,6 @@ def test_warm_cache_command_tier_slow_dispatches_slow_targets_only(
         def warm_global(self, *, targets=None, priority=1, **kwargs):
             global_captured.append((targets, priority))
             return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
-
-        def cache_purge_expired(self, **kwargs):
-            return 0
 
     monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
     monkeypatch.setattr(settings, "site_base_url", "https://example.test")
@@ -856,7 +861,7 @@ def test_warm_cache_command_default_tier_all_passes_no_targets(seeded_db, monkey
     global_captured: list[tuple[list[str] | None, int]] = []
     subsystem_captured: list[tuple[str, int, int]] = []
 
-    class FakeClient:
+    class FakeClient(_FakeBrokerClient):
         def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
             captured.append((inbox_name, targets, priority))
             return {"warmed": [], "errors": [], "elapsed_ms": 0}
@@ -868,9 +873,6 @@ def test_warm_cache_command_default_tier_all_passes_no_targets(seeded_db, monkey
         def warm_global(self, *, targets=None, priority=1, **kwargs):
             global_captured.append((targets, priority))
             return {"warmed": [], "errors": [], "elapsed_ms": 0}
-
-        def cache_purge_expired(self, **kwargs):
-            return 0
 
     monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
     monkeypatch.setattr(settings, "site_base_url", "https://example.test")
@@ -926,7 +928,7 @@ def test_warm_cache_command_tier_slow_dispatches_per_subsystem_rpcs(
 
     captured: list[tuple[str, object, object, int]] = []
 
-    class FakeClient:
+    class FakeClient(_FakeBrokerClient):
         def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
             captured.append(("warm_inbox", inbox_name, targets, priority))
             return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
@@ -938,9 +940,6 @@ def test_warm_cache_command_tier_slow_dispatches_per_subsystem_rpcs(
         def warm_global(self, *, targets=None, priority=1, **kwargs):
             captured.append(("warm_global", targets, None, priority))
             return {"warmed": [], "errors": [], "elapsed_ms": 0}
-
-        def cache_purge_expired(self, **kwargs):
-            return 0
 
     monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
     monkeypatch.setattr(settings, "site_base_url", "https://example.test")
@@ -977,7 +976,7 @@ def test_warm_cache_command_tier_fast_does_not_dispatch_subsystem_rpcs(
 
     captured: list[tuple[str, object]] = []
 
-    class FakeClient:
+    class FakeClient(_FakeBrokerClient):
         def warm_inbox(self, inbox_name, *, targets=None, priority=1, **kwargs):
             captured.append(("warm_inbox", inbox_name))
             return {"warmed": targets or [], "errors": [], "elapsed_ms": 0}
@@ -989,9 +988,6 @@ def test_warm_cache_command_tier_fast_does_not_dispatch_subsystem_rpcs(
         def warm_global(self, *, targets=None, priority=1, **kwargs):
             captured.append(("warm_global",))
             return {"warmed": [], "errors": [], "elapsed_ms": 0}
-
-        def cache_purge_expired(self, **kwargs):
-            return 0
 
     monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
     monkeypatch.setattr(settings, "site_base_url", "https://example.test")

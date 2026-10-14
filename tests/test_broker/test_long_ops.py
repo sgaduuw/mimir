@@ -18,6 +18,12 @@ import time
 
 from mimir.broker import handlers
 from mimir.broker.client import BrokerClient
+from mimir.broker.protocol import (
+    BootstrapInboxesRequest,
+    CacheSetRequest,
+    IngestInboxRequest,
+    PingRequest,
+)
 from tests.test_broker._helpers import broker_running, short_socket_path
 
 # ----- classify_op --------------------------------------------------------
@@ -67,7 +73,7 @@ def test_classify_op_returns_none_on_malformed_or_unknown():
 
 def test_bootstrap_inboxes_via_broker_reconciles_inboxes(seeded_db):
     """End-to-end: spin a broker on a tmp socket, invoke
-    `BrokerClient.bootstrap_inboxes()`, verify it returns the
+    `bootstrap_inboxes` through `BrokerClient.call`, verify it returns the
     count from `mimir.inboxes.bootstrap_inboxes()` and the DB
     actually got the rows."""
     from sqlalchemy import select
@@ -79,7 +85,7 @@ def test_bootstrap_inboxes_via_broker_reconciles_inboxes(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            count = c.bootstrap_inboxes()
+            count = c.call(BootstrapInboxesRequest(rpc_id=0))["inboxes"]
         finally:
             c.close()
 
@@ -107,8 +113,8 @@ def test_bootstrap_inboxes_via_broker_returns_count_on_reply(seeded_db):
         try:
             # Two consecutive calls (idempotent); same count both
             # times.
-            n1 = c.bootstrap_inboxes()
-            n2 = c.bootstrap_inboxes()
+            n1 = c.call(BootstrapInboxesRequest(rpc_id=0))["inboxes"]
+            n2 = c.call(BootstrapInboxesRequest(rpc_id=0))["inboxes"]
         finally:
             c.close()
     assert n1 == n2
@@ -129,12 +135,12 @@ def test_per_op_timeout_restored_after_rpc(seeded_db):
         c = BrokerClient(sp)
         try:
             # Force a connection by sending a ping (default timeout).
-            assert c.ping() is True
+            assert c.call(PingRequest(rpc_id=0)) == {}
             assert c._sock is not None
             default_t = c._sock.gettimeout()
 
             # Long op with a deliberately large timeout.
-            c.bootstrap_inboxes(timeout=42.0)
+            c.call(BootstrapInboxesRequest(rpc_id=0), timeout=42.0)
 
             # Socket's timeout must be restored to the default
             # after the long op returns; otherwise the next cache
@@ -170,14 +176,16 @@ def test_ingest_inbox_via_broker_runs_to_completion(seeded_db, tmp_path):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            results = c.ingest_inbox("alpha", limit=None, workers=1)
+            results = c.call(
+                IngestInboxRequest(rpc_id=0, inbox_name="alpha", workers=1)
+            )["results"]
         finally:
             c.close()
 
-    # Returned shape: list of IngestResult objects (reconstructed
-    # client-side from the Reply.result payload).
+    # Returned shape: the Reply.result payload, one IngestResult
+    # dict per epoch.
     assert results, "expected at least one IngestResult"
-    total_new = sum(r.new for r in results)
+    total_new = sum(r["new"] for r in results)
     assert total_new == 3, f"expected 3 new rows, got {total_new}"
 
     # Articles actually landed in the DB.
@@ -215,7 +223,11 @@ def test_ingest_inbox_via_broker_unknown_inbox_returns_clean_error(seeded_db):
         c = BrokerClient(sp)
         try:
             with pytest.raises(BrokerUnavailable) as exc_info:
-                c.ingest_inbox("does-not-exist", limit=1, workers=1)
+                c.call(
+                    IngestInboxRequest(
+                        rpc_id=0, inbox_name="does-not-exist", limit=1, workers=1
+                    )
+                )
         finally:
             c.close()
     assert "UnknownInbox:does-not-exist" in str(exc_info.value)
@@ -323,7 +335,9 @@ def test_long_worker_does_not_block_cache_worker(seeded_db, monkeypatch):
 
                 def _run_long():
                     try:
-                        long_client.bootstrap_inboxes(timeout=10.0)
+                        long_client.call(
+                            BootstrapInboxesRequest(rpc_id=0), timeout=10.0
+                        )
                     finally:
                         done_event.set()
 
@@ -337,10 +351,13 @@ def test_long_worker_does_not_block_cache_worker(seeded_db, monkeypatch):
                 # the cache worker, this would wait the full
                 # 0.5s. With two workers, it returns immediately.
                 t0 = time.perf_counter()
-                cache_client.cache_set(
-                    cache._ns("two-workers-test"),
-                    '"v"',
-                    60,
+                cache_client.call(
+                    CacheSetRequest(
+                        rpc_id=0,
+                        key=cache._ns("two-workers-test"),
+                        value_json='"v"',
+                        ttl=60,
+                    )
                 )
                 cache_elapsed_ms = (time.perf_counter() - t0) * 1000.0
                 # Generous bound: typical cache_set is single-

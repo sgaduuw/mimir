@@ -9,6 +9,7 @@ import socket
 import time
 from pathlib import Path
 
+from mimir.broker.protocol import CacheSetRequest, PingRequest
 from mimir.broker.server import build_server
 from tests.test_broker._helpers import broker_running, short_socket_path
 
@@ -122,7 +123,11 @@ def test_server_warns_on_slow_rpc(seeded_db, caplog, monkeypatch):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.cache_set(cache._ns("slow-warn-test"), '"x"', 60)
+            c.call(
+                CacheSetRequest(
+                    rpc_id=0, key=cache._ns("slow-warn-test"), value_json='"x"', ttl=60
+                )
+            )
         finally:
             c.close()
 
@@ -169,7 +174,14 @@ def test_server_does_not_warn_when_threshold_disabled(seeded_db, caplog, monkeyp
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.cache_set(cache._ns("slow-disabled-test"), '"x"', 60)
+            c.call(
+                CacheSetRequest(
+                    rpc_id=0,
+                    key=cache._ns("slow-disabled-test"),
+                    value_json='"x"',
+                    ttl=60,
+                )
+            )
         finally:
             c.close()
 
@@ -207,16 +219,30 @@ def test_server_serves_two_clients_concurrently(seeded_db):
             # Open both connections by issuing a cheap ping from
             # each, in order — this forces the broker to accept()
             # both before either tries serious work.
-            assert a.ping() is True
-            assert b.ping() is True
+            assert a.call(PingRequest(rpc_id=0)) == {}
+            assert b.call(PingRequest(rpc_id=0)) == {}
 
             # Now interleave real RPCs from both clients. If only
             # one reader thread existed, the second `b.cache_set`
             # would block past the 5s client timeout because the
             # broker isn't reading from b's socket.
             for i in range(20):
-                a.cache_set(cache._ns(f"two-clients:a:{i}"), f'"a-{i}"', 60)
-                b.cache_set(cache._ns(f"two-clients:b:{i}"), f'"b-{i}"', 60)
+                a.call(
+                    CacheSetRequest(
+                        rpc_id=0,
+                        key=cache._ns(f"two-clients:a:{i}"),
+                        value_json=f'"a-{i}"',
+                        ttl=60,
+                    )
+                )
+                b.call(
+                    CacheSetRequest(
+                        rpc_id=0,
+                        key=cache._ns(f"two-clients:b:{i}"),
+                        value_json=f'"b-{i}"',
+                        ttl=60,
+                    )
+                )
         finally:
             a.close()
             b.close()
@@ -248,7 +274,14 @@ def test_server_serves_many_clients_concurrently(seeded_db):
             def _worker(cid: int) -> None:
                 c = clients[cid]
                 for i in range(rpcs_per_client):
-                    c.cache_set(cache._ns(f"many:{cid}:{i}"), f'"{cid}-{i}"', 60)
+                    c.call(
+                        CacheSetRequest(
+                            rpc_id=0,
+                            key=cache._ns(f"many:{cid}:{i}"),
+                            value_json=f'"{cid}-{i}"',
+                            ttl=60,
+                        )
+                    )
 
             with ThreadPoolExecutor(max_workers=n_clients) as ex:
                 futures = [ex.submit(_worker, c) for c in range(n_clients)]
@@ -284,7 +317,7 @@ def test_reader_threads_prunes_dead_threads(seeded_db):
     with broker_running(sp) as server:
         for _ in range(n_clients):
             c = BrokerClient(sp)
-            assert c.ping() is True
+            assert c.call(PingRequest(rpc_id=0)) == {}
             c.close()
 
         # Reader threads notice EOF within SHUTDOWN_POLL_SEC (0.1s) of
@@ -334,7 +367,14 @@ def test_server_slow_rpc_warning_includes_queue_wait(seeded_db, caplog, monkeypa
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.cache_set(cache._ns("slow-breakdown-test"), '"x"', 60)
+            c.call(
+                CacheSetRequest(
+                    rpc_id=0,
+                    key=cache._ns("slow-breakdown-test"),
+                    value_json='"x"',
+                    ttl=60,
+                )
+            )
         finally:
             c.close()
 
@@ -1432,24 +1472,27 @@ def test_web_tier_rpcs_all_route_to_the_cache_queue():
     from mimir.broker.handlers import _DISPATCH, LONG_OPS, WARM_OPS
 
     src = (Path(__file__).resolve().parents[2] / "mimir" / "cache.py").read_text()
+    op_of = {model.__name__: op for op, (model, _handler) in _DISPATCH.items()}
     ops = set()
     for node in ast.walk(ast.parse(src)):
-        # `get_broker_client().<method>(...)`
+        # `get_broker_client().call(<Model>(...))`
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "call"
             and isinstance(node.func.value, ast.Call)
             and isinstance(node.func.value.func, ast.Name)
             and node.func.value.func.id == "get_broker_client"
         ):
-            ops.add(node.func.attr)
+            model = node.args[0].func.id
+            ops.add(op_of.get(model, model))
 
     assert ops, "found no broker RPCs in mimir/cache.py; the AST walk is stale"
     unknown = ops - set(_DISPATCH)
     assert not unknown, (
         f"cache.py issues RPC(s) with no matching broker op: {sorted(unknown)}; "
-        "either the client method no longer shares its name with the op, or "
-        "this test can no longer see the routing"
+        "either the request is not a dispatched protocol model, or this test "
+        "can no longer see the routing"
     )
     misrouted = ops & (LONG_OPS | WARM_OPS)
     assert not misrouted, (

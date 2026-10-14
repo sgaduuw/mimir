@@ -683,6 +683,9 @@ Reply shapes preserved exactly: `handle_cache_set` and
 `handle_cache_delete` return `Reply(ok=True)` (no `rows_deleted`);
 `handle_cache_delete_for_inbox` and `handle_cache_purge_expired`
 return `Reply(ok=True, rows_deleted=n)`. No RPC contract change.
+(#706 later moved that count into `result={"rows_deleted": n}`, so
+every op's payload sits in `result` and `BrokerClient.call` returns
+it.)
 
 The architectural payoff: after Phase 4 every SQLite write inside
 the broker funnels through one WriterThread, regardless of which

@@ -43,6 +43,8 @@ def _ingest_all_dispatch(
     `{inbox_name: [IngestResult, ...]}`.
     """
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import IngestInboxRequest
+    from mimir.ingest.epoch import IngestResult
 
     client = get_broker_client()
     out: dict = {}
@@ -51,13 +53,14 @@ def _ingest_all_dispatch(
         if remaining is not None and remaining <= 0:
             break
         try:
-            results = client.ingest_inbox(
-                name,
-                limit=remaining,
-                workers=workers,
-            )
+            raw = client.call(
+                IngestInboxRequest(
+                    rpc_id=0, inbox_name=name, limit=remaining, workers=workers
+                )
+            ).get("results", [])
         except BrokerUnavailable as exc:
             raise click.ClickException(f"broker ingest_inbox({name}) failed: {exc}")
+        results = [IngestResult.model_validate(r) for r in raw]
         out[name] = results
         if remaining is not None:
             for r in results:
@@ -159,16 +162,20 @@ def reindex_command(
             param_hint="EPOCH",
         )
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import ReindexRequest
     from mimir.cli._common import _verbose_broker_hint
     from mimir.ingest.epoch import IngestResult
 
     _verbose_broker_hint(verbose)
     try:
-        response = get_broker_client().reindex(
-            inbox_name,
-            epoch,
-            from_scratch=from_scratch,
-            workers=workers,
+        response = get_broker_client().call(
+            ReindexRequest(
+                rpc_id=0,
+                inbox_name=inbox_name,
+                epoch=epoch,
+                from_scratch=from_scratch,
+                workers=workers,
+            )
         )
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker {exc}") from exc

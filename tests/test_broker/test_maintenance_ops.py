@@ -15,6 +15,12 @@ from dulwich.repo import Repo
 
 from mimir.broker import handlers
 from mimir.broker.client import BrokerClient
+from mimir.broker.protocol import (
+    AnalyzeRequest,
+    CacheSetRequest,
+    UpdateMainlineRequest,
+    VacuumRequest,
+)
 from mimir.cli.maintenance import analyze_command, vacuum_command
 from mimir.config import settings
 from tests.conftest import linus_tree as _linus_tree
@@ -42,7 +48,7 @@ def test_analyze_via_broker_runs(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = c.analyze()
+            result = c.call(AnalyzeRequest(rpc_id=0))
         finally:
             c.close()
     assert isinstance(result, dict)
@@ -60,7 +66,7 @@ def test_analyze_full_via_broker_runs(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = c.analyze(full=True)
+            result = c.call(AnalyzeRequest(rpc_id=0, full=True))
         finally:
             c.close()
     assert result.get("full") is True
@@ -99,7 +105,7 @@ def test_vacuum_via_broker_runs(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = c.vacuum()
+            result = c.call(VacuumRequest(rpc_id=0))
         finally:
             c.close()
     assert "elapsed_ms" in result
@@ -120,7 +126,7 @@ def test_vacuum_logs_warning_at_start(seeded_db, caplog):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.vacuum()
+            c.call(VacuumRequest(rpc_id=0))
         finally:
             c.close()
     msgs = [
@@ -199,7 +205,9 @@ def test_update_mainline_via_broker_loads_maintainers(seeded_db, tmp_path, monke
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = c.update_mainline(skip_fetch=True, skip_commits=True)
+            result = c.call(
+                UpdateMainlineRequest(rpc_id=0, skip_fetch=True, skip_commits=True)
+            )
         finally:
             c.close()
 
@@ -229,8 +237,10 @@ def test_update_mainline_via_broker_reports_unchanged_on_second_call(
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.update_mainline(skip_fetch=True, skip_commits=True)
-            second = c.update_mainline(skip_fetch=True, skip_commits=True)
+            c.call(UpdateMainlineRequest(rpc_id=0, skip_fetch=True, skip_commits=True))
+            second = c.call(
+                UpdateMainlineRequest(rpc_id=0, skip_fetch=True, skip_commits=True)
+            )
         finally:
             c.close()
 
@@ -249,11 +259,11 @@ def test_update_mainline_via_broker_force_reloads(seeded_db, tmp_path, monkeypat
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.update_mainline(skip_fetch=True, skip_commits=True)
-            second = c.update_mainline(
-                skip_fetch=True,
-                skip_commits=True,
-                force=True,
+            c.call(UpdateMainlineRequest(rpc_id=0, skip_fetch=True, skip_commits=True))
+            second = c.call(
+                UpdateMainlineRequest(
+                    rpc_id=0, skip_fetch=True, skip_commits=True, force=True
+                )
             )
         finally:
             c.close()
@@ -288,10 +298,10 @@ def test_cache_op_completes_while_maintenance_op_runs(seeded_db, tmp_path, monke
 
             def _long_op():
                 try:
-                    c_long.update_mainline(
-                        skip_fetch=True,
-                        skip_commits=True,
-                        force=True,
+                    c_long.call(
+                        UpdateMainlineRequest(
+                            rpc_id=0, skip_fetch=True, skip_commits=True, force=True
+                        )
                     )
                 finally:
                     done.set()
@@ -302,7 +312,11 @@ def test_cache_op_completes_while_maintenance_op_runs(seeded_db, tmp_path, monke
             time.sleep(0.05)
             # Cache op on a parallel client must succeed without
             # waiting for the long op to finish.
-            c_cache.cache_set(cache._ns("interleave-key"), '"v"', 60)
+            c_cache.call(
+                CacheSetRequest(
+                    rpc_id=0, key=cache._ns("interleave-key"), value_json='"v"', ttl=60
+                )
+            )
             t.join(timeout=10)
             assert done.is_set(), "long op didn't complete in time"
         finally:

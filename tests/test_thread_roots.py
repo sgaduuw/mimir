@@ -926,8 +926,8 @@ def test_cli_fails_when_the_backfill_is_truncated(client, tmp_path, monkeypatch)
             "_C",
             (),
             {
-                "backfill_thread_roots": staticmethod(
-                    lambda **_kw: {
+                "call": staticmethod(
+                    lambda _req: {
                         "inboxes": 1,
                         "seeded": 1,
                         "propagated": 0,

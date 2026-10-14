@@ -23,7 +23,7 @@ op. See `handlers.LONG_OPS` for the routing set.
 """
 
 import re
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -57,6 +57,11 @@ class _BrokerRequest(BaseModel):
     RPCs on one socket. 3.0.0 wire-protocol change."""
 
     rpc_id: int = Field(ge=0)
+    # How long `BrokerClient.call` waits for this op's reply, in
+    # seconds. A ClassVar, so it never goes on the wire. The broker is
+    # on the same host on a UNIX socket, so 5 s is generous for a
+    # cache op; the long ops override it below.
+    timeout: ClassVar[float] = 5.0
 
 
 class CacheSetRequest(_BrokerRequest):
@@ -125,6 +130,9 @@ class IngestInboxRequest(_BrokerRequest):
     `DEFAULT_WORKERS` server-side."""
 
     op: Literal["ingest_inbox"] = "ingest_inbox"
+    # A fresh deploy's first ingest of an unindexed mirror; per-tick
+    # ingests finish in seconds.
+    timeout: ClassVar[float] = 3600.0
     inbox_name: str = Field(min_length=1, max_length=64)
     limit: int | None = Field(default=None, ge=0)
     workers: int | None = Field(default=None, ge=1)
@@ -132,6 +140,7 @@ class IngestInboxRequest(_BrokerRequest):
 
 class ReindexRequest(_BrokerRequest):
     op: Literal["reindex"] = "reindex"
+    timeout: ClassVar[float] = 3600.0
     inbox_name: str = Field(min_length=1, max_length=64)
     epoch: str = Field(pattern=r"^[0-9]+\.git$")
     from_scratch: bool = False
@@ -146,6 +155,8 @@ class BootstrapInboxesRequest(_BrokerRequest):
     Phase 2.1 migrates the meatier ingest ops)."""
 
     op: Literal["bootstrap_inboxes"] = "bootstrap_inboxes"
+    # One upsert per inbox.
+    timeout: ClassVar[float] = 60.0
 
 
 # Phase 2.2 long ops: the four backfills. Each shares the same RPC
@@ -171,6 +182,10 @@ class BootstrapInboxesRequest(_BrokerRequest):
 
 class BackfillArticleFilesRequest(_BrokerRequest):
     op: Literal["backfill_article_files"] = "backfill_article_files"
+    # Per chunk. The handler returns within
+    # `broker_backfill_chunk_seconds`, so an hour only catches a
+    # pathologically slow row (mirror IO during a blob fetch).
+    timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
     start: Literal["resume", "restart"] | None = None
@@ -178,6 +193,7 @@ class BackfillArticleFilesRequest(_BrokerRequest):
 
 class BackfillArticleTrailersRequest(_BrokerRequest):
     op: Literal["backfill_article_trailers"] = "backfill_article_trailers"
+    timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
     start: Literal["resume", "restart"] | None = None
@@ -185,6 +201,7 @@ class BackfillArticleTrailersRequest(_BrokerRequest):
 
 class BackfillPatchSeriesRequest(_BrokerRequest):
     op: Literal["backfill_patch_series"] = "backfill_patch_series"
+    timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
     start: Literal["resume", "restart"] | None = None
@@ -197,6 +214,7 @@ class BackfillCanonicalsRequest(_BrokerRequest):
     surface."""
 
     op: Literal["backfill_canonicals"] = "backfill_canonicals"
+    timeout: ClassVar[float] = 3600.0
     inbox_filter: str | None = Field(default=None, min_length=1, max_length=64)
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
@@ -227,6 +245,10 @@ class UpdateMainlineRequest(_BrokerRequest):
     cross-process snapshot-upgrade window stays closed."""
 
     op: Literal["update_mainline"] = "update_mainline"
+    # The steady-state tick walks ~zero new commits in seconds; the
+    # first run on a fresh deploy walks ~1.5M Linus-tree commits and
+    # can take several minutes.
+    timeout: ClassVar[float] = 600.0
     skip_fetch: bool = False
     skip_maintainers: bool = False
     skip_commits: bool = False
@@ -246,6 +268,9 @@ class BackfillThreadRootsRequest(_BrokerRequest):
     whole."""
 
     op: Literal["backfill_thread_roots"] = "backfill_thread_roots"
+    # A cold run walks every inbox; the bulk UPDATEs make wall time
+    # a function of corpus size.
+    timeout: ClassVar[float] = 3600.0
     inbox: str | None = None
 
 
@@ -256,6 +281,10 @@ class AnalyzeRequest(_BrokerRequest):
     pass undersamples."""
 
     op: Literal["analyze"] = "analyze"
+    # Covers the bounded daily pass (~10.8 s, measured 2026-08-04)
+    # and the weekly `full=True` pass (~25-30 s when measured at 11M
+    # rows, not re-measured at the current 28.8M) with headroom.
+    timeout: ClassVar[float] = 600.0
     full: bool = False
 
 
@@ -273,6 +302,9 @@ class FailuresReplayRequest(_BrokerRequest):
     rows attempted in this RPC."""
 
     op: Literal["failures_replay"] = "failures_replay"
+    # A multi-thousand-row replay after a parser fix; steady-state
+    # replays are sub-second.
+    timeout: ClassVar[float] = 1800.0
     inbox_name: str = Field(min_length=1, max_length=64)
     epoch_filter: str | None = Field(default=None, min_length=1, max_length=16)
     limit: int | None = Field(default=None, ge=0)
@@ -285,7 +317,7 @@ class FailuresReplayRequest(_BrokerRequest):
 
 # Phase 2.4 admin-inbox CRUD ops. Each one is a split RPC matching
 # the same shape as the rest of the broker family: one pydantic
-# type per logical op, dispatched to a per-op handler. All seven
+# type per logical op, dispatched to a per-op handler. All four
 # route to the long queue alongside `bootstrap_inboxes` (sub-second
 # writes, but conservative routing keeps them out of cache-queue
 # contention). Name validation uses the shared
@@ -298,6 +330,7 @@ class InboxCreateRequest(_BrokerRequest):
     delegates to `mimir.inboxes.create_inbox`."""
 
     op: Literal["inbox_create"] = "inbox_create"
+    timeout: ClassVar[float] = 60.0
     name: str = Field(min_length=1, max_length=64)
     mirror_path: str = Field(min_length=1, max_length=512)
     upstream_url: str = Field(min_length=1, max_length=512)
@@ -314,6 +347,7 @@ class InboxUpdateRequest(_BrokerRequest):
     `mimir.inboxes.update_inbox`."""
 
     op: Literal["inbox_update"] = "inbox_update"
+    timeout: ClassVar[float] = 60.0
     name: str = Field(min_length=1, max_length=64)
     new_name: str | None = Field(default=None, min_length=1, max_length=64)
     mirror_path: str | None = Field(default=None, min_length=1, max_length=512)
@@ -338,6 +372,9 @@ class InboxDeleteRequest(_BrokerRequest):
     the post-confirmation intent."""
 
     op: Literal["inbox_delete"] = "inbox_delete"
+    # With `remove_inbox_data=True` the broker `rm -rf`s the mirror,
+    # which can take minutes on a ~20 GB lkml-shaped tree.
+    timeout: ClassVar[float] = 600.0
     name: str = Field(min_length=1, max_length=64)
     keep_orphan_articles: bool = False
     remove_inbox_data: bool = False
@@ -353,6 +390,7 @@ class InboxSetTrackedAuthorsRequest(_BrokerRequest):
     delegates to `mimir.inboxes.set_tracked_authors`."""
 
     op: Literal["inbox_set_tracked_authors"] = "inbox_set_tracked_authors"
+    timeout: ClassVar[float] = 60.0
     name: str = Field(min_length=1, max_length=64)
     trackers: dict[str, str]
 
@@ -419,6 +457,7 @@ class RobotsAddRequest(_BrokerRequest):
     `mimir.robots.add_rule`."""
 
     op: Literal["robots_add"] = "robots_add"
+    timeout: ClassVar[float] = 60.0
     user_agent: str = Field(min_length=1, max_length=64)
     disallow: list[str] = Field(default_factory=list, max_length=64)
     crawl_delay: int | None = Field(default=None, ge=0, le=86_400)
@@ -449,6 +488,7 @@ class RobotsUpdateRequest(_BrokerRequest):
     keys) removes; `clear_all_content_signals` wipes to NULL."""
 
     op: Literal["robots_update"] = "robots_update"
+    timeout: ClassVar[float] = 60.0
     user_agent: str = Field(min_length=1, max_length=64)
     add_disallow: list[str] = Field(default_factory=list, max_length=64)
     remove_disallow: list[str] = Field(default_factory=list, max_length=64)
@@ -484,6 +524,7 @@ class RobotsRemoveRequest(_BrokerRequest):
     layer. Handler delegates to `mimir.robots.remove_rule`."""
 
     op: Literal["robots_remove"] = "robots_remove"
+    timeout: ClassVar[float] = 60.0
     user_agent: str = Field(min_length=1, max_length=64)
 
     @field_validator("user_agent")
@@ -497,6 +538,7 @@ class RobotsResetRequest(_BrokerRequest):
     defaults. Handler delegates to `mimir.robots.reset_rules`."""
 
     op: Literal["robots_reset"] = "robots_reset"
+    timeout: ClassVar[float] = 60.0
 
 
 class VacuumRequest(_BrokerRequest):
@@ -507,6 +549,9 @@ class VacuumRequest(_BrokerRequest):
     CONTEXT.md as an accepted weekly-quiet-window trade-off."""
 
     op: Literal["vacuum"] = "vacuum"
+    # Scales with on-disk DB size; a multi-GB corpus takes minutes.
+    # The ceiling stops a runaway from holding the CLI forever.
+    timeout: ClassVar[float] = 3600.0
 
 
 # Phase 2.2 warm-queue ops: per-inbox + global warming. Routed to
@@ -552,6 +597,9 @@ class WarmInboxRequest(_BrokerRequest):
     """
 
     op: Literal["warm_inbox"] = "warm_inbox"
+    # Seconds on the production corpus; five minutes covers a new
+    # inbox's first warm, where every helper is cold.
+    timeout: ClassVar[float] = 300.0
     inbox_name: str = Field(min_length=1, max_length=64)
     targets: list[str] | None = None
     priority: int = Field(default=1, ge=0, le=1)
@@ -577,6 +625,7 @@ class WarmSubsystemRequest(_BrokerRequest):
     """
 
     op: Literal["warm_subsystem"] = "warm_subsystem"
+    timeout: ClassVar[float] = 300.0
     inbox_name: str = Field(min_length=1, max_length=64)
     subsystem_id: int = Field(ge=1)
     priority: int = Field(default=1, ge=0, le=1)
@@ -607,6 +656,7 @@ class WarmGlobalRequest(_BrokerRequest):
     """
 
     op: Literal["warm_global"] = "warm_global"
+    timeout: ClassVar[float] = 300.0
     targets: list[str] | None = None
     priority: int = Field(default=1, ge=0, le=1)
 
@@ -657,11 +707,9 @@ class Reply(BaseModel):
     # Free-form error tag on failure (e.g. "InvalidRequest",
     # "OperationalError"). Absent on success.
     error: str | None = None
-    # Optional payload, set by ops that return a value. Today only
-    # `cache_purge_expired` returns `rows_deleted`. Keeps the reply
-    # shape uniform across ops; absent for ops with no return value.
-    rows_deleted: int | None = None
-    # Free-form result payload for long ops:
+    # Free-form result payload for ops that return a value:
+    #   - `cache_delete`, `cache_delete_for_inbox`,
+    #     `cache_purge_expired`: `{"rows_deleted": int}`
     #   - `bootstrap_inboxes`: `{"inboxes": 5}`
     #   - `ingest_inbox` (Phase 2.1): `{"results": [<IngestResult>, ...]}`
     #   - `backfill_*` (Phase 2.2):
