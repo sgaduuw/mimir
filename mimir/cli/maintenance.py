@@ -45,9 +45,10 @@ def analyze_command(full: bool) -> None:
     and the full pass catches whatever drifted.
     """
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import AnalyzeRequest
 
     try:
-        payload = get_broker_client().analyze(full=full)
+        payload = get_broker_client().call(AnalyzeRequest(rpc_id=0, full=full))
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker analyze failed: {exc}")
     elapsed_s = payload.get("elapsed_ms", 0) / 1000.0
@@ -69,9 +70,10 @@ def vacuum_command() -> None:
     broker worker pauses. Run during a quiet window.
     """
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import VacuumRequest
 
     try:
-        payload = get_broker_client().vacuum()
+        payload = get_broker_client().call(VacuumRequest(rpc_id=0))
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker vacuum failed: {exc}")
     _echo_vacuum_outcome(payload)

@@ -81,9 +81,9 @@ def test_reply_round_trip():
     assert parsed2.ok is False
     assert parsed2.error == "MalformedJSON"
 
-    r3 = Reply(rpc_id=1, ok=True, rows_deleted=42)
+    r3 = Reply(rpc_id=1, ok=True, result={"rows_deleted": 42})
     parsed3 = Reply.model_validate_json(r3.model_dump_json())
-    assert parsed3.rows_deleted == 42
+    assert parsed3.result == {"rows_deleted": 42}
 
 
 def test_op_tag_is_load_bearing():

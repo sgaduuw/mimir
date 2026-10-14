@@ -136,7 +136,8 @@ def _broker_backfill_loop(
     per-chunk counters into one `BackfillResult`. Returns
     `(result, run)` where `run` is the last chunk's run info.
 
-    `call` is a bound `BrokerClient.backfill_*` method. Each RPC
+    `call(**kwargs)` sends one chunk built from those kwargs, usually
+    through `BrokerClient.backfill`. Each RPC
     advances by at most one chunk (the broker's
     `broker_backfill_chunk_seconds` budget); the loop continues while
     `partial=True` is returned. The broker keeps the run's cursor, so
