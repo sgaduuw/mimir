@@ -282,7 +282,7 @@ def test_repair_passes_never_touch_a_non_null_row(session):
     quietly repairing them the comment would be a lie in the other
     direction.
     """
-    from mimir.thread_roots import backfill_inbox, break_cycle, propagate, seed_roots
+    from mimir.thread_roots import break_cycle, drive_passes, propagate, seed_roots
 
     ix, ids = _seed_nodes(session, "trstale", 3)
     # n0 <- n1 <- n2, with n1 holding a stale self-root: exactly the
@@ -304,7 +304,7 @@ def test_repair_passes_never_touch_a_non_null_row(session):
     # the corruption spreads rather than being repaired.
     propagate(session, ix.id)
     assert break_cycle(session, ix.id) == 0
-    backfill_inbox(session, ix.id)
+    drive_passes(lambda fn: fn(session, ix.id))
     session.commit()
 
     stored = dict(

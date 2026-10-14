@@ -181,44 +181,6 @@ def _parse_iter(
         yield from pool.map(_parse_pair, items, chunksize=PARSE_CHUNKSIZE)
 
 
-def _record_parse_failure(
-    session: Session,
-    inbox_id: int,
-    epoch: str,
-    commit_sha: str,
-    exc: Exception,
-    *,
-    already_recorded: bool,
-) -> None:
-    """Persist (or refresh) a parse_failures row for one bad commit.
-    `already_recorded=True` means the row exists and we just bump
-    last_attempt + attempts and refresh the error fields (the cause may
-    have shifted between parser versions). Otherwise insert fresh."""
-    now = datetime.now(UTC)
-    error_class = type(exc).__name__
-    error_message = str(exc)[:1000]  # cap pathological repr/str
-    if already_recorded:
-        row = session.get(ParseFailure, (inbox_id, epoch, commit_sha))
-        if row is not None:
-            row.last_attempt = now
-            row.attempts += 1
-            row.error_class = error_class
-            row.error_message = error_message
-            return
-    session.add(
-        ParseFailure(
-            inbox_id=inbox_id,
-            epoch=epoch,
-            commit_sha=commit_sha,
-            error_class=error_class,
-            error_message=error_message,
-            first_seen=now,
-            last_attempt=now,
-            attempts=1,
-        )
-    )
-
-
 def _to_article(
     parsed: ParsedArticle,
     inbox_id: int,
