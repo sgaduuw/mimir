@@ -71,7 +71,7 @@ def test_dispatch_cache_delete_for_inbox_reports_count(seeded_db):
 
     reply = dispatch(_line(CacheDeleteForInboxRequest(rpc_id=1, name="alpha")))
     assert reply.ok is True
-    assert reply.rows_deleted == 2
+    assert reply.result == {"rows_deleted": 2}
 
     assert cache.get("archive_stats:alpha") is None
     assert cache.get("daily_volume:alpha:30") is None
@@ -99,7 +99,7 @@ def test_dispatch_cache_purge_expired_reports_count(seeded_db):
 
     reply = dispatch(_line(CachePurgeExpiredRequest(rpc_id=1)))
     assert reply.ok is True
-    assert (reply.rows_deleted or 0) >= 1
+    assert reply.result["rows_deleted"] >= 1
 
     assert cache.get("expired_one") is None
     assert cache.get("alive_one") == "y"

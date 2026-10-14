@@ -16,6 +16,7 @@ import time
 
 from mimir import cache as cache_mod
 from mimir.broker.client import BrokerClient
+from mimir.broker.protocol import CacheSetRequest, PingRequest
 from tests.test_broker._helpers import broker_running, short_socket_path
 
 # Project root needed for alembic and for launching the broker CLI as
@@ -44,7 +45,7 @@ def test_sixteen_concurrent_pings_all_complete(seeded_db, monkeypatch):
             results = [None] * 16
 
             def fire(i: int) -> None:
-                results[i] = c.ping()
+                results[i] = c.call(PingRequest(rpc_id=0))
 
             threads = [threading.Thread(target=fire, args=(i,)) for i in range(16)]
             for t in threads:
@@ -53,7 +54,7 @@ def test_sixteen_concurrent_pings_all_complete(seeded_db, monkeypatch):
                 t.join(timeout=10.0)
             for i, t in enumerate(threads):
                 assert not t.is_alive(), f"thread {i} hung"
-            assert all(results), results
+            assert all(r == {} for r in results), results
         finally:
             c.close()
 
@@ -71,10 +72,17 @@ def test_mixed_op_types_concurrent(seeded_db, monkeypatch):
         try:
 
             def do_set(i: int) -> None:
-                c.cache_set(cache_mod._ns(f"key_{i}"), f'"v_{i}"', 60)
+                c.call(
+                    CacheSetRequest(
+                        rpc_id=0,
+                        key=cache_mod._ns(f"key_{i}"),
+                        value_json=f'"v_{i}"',
+                        ttl=60,
+                    )
+                )
 
             def do_ping(slot: list) -> None:
-                slot.append(c.ping())
+                slot.append(c.call(PingRequest(rpc_id=0)))
 
             ping_slots: list = []
             threads = []
@@ -90,7 +98,7 @@ def test_mixed_op_types_concurrent(seeded_db, monkeypatch):
                 assert not t.is_alive(), f"thread {i} hung"
             # All 8 pings should have returned True.
             assert len(ping_slots) == 8
-            assert all(ping_slots), ping_slots
+            assert all(r == {} for r in ping_slots), ping_slots
         finally:
             c.close()
 
