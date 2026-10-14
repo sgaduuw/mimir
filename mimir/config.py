@@ -14,13 +14,10 @@ from mimir._outbound import validate_outbound_url
 # explicitly in any deployment that doesn't ship the tree as-is.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Single source of truth for the Linus mainline tree URL and local
-# mirror path. Referenced by three distinct consumers:
-#   - Settings.mainline_tree_url / mainline_tree_path field defaults
-#   - _seed_trees() legacy-shim drift detection
-#   - _curated_default_trees() linus entry construction
-# Defining them once here prevents silent drift where a change to one
-# default leaves the others pointing at the old value.
+# Linus's `linux.git`, the `linus` entry of the curated default tree
+# set. The path follows the same pattern as the per-inbox mirrors
+# under `Inboxes/`, so a typical deploy gets `<data root>/Inboxes/<list>/git`
+# and `<data root>/Mainline/linux.git` side-by-side.
 _LINUS_DEFAULT_URL = (
     "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
 )
@@ -476,55 +473,27 @@ class Settings(BaseSettings):
     # disable.
     analyze_after_ingest_rows: int = 10000
 
-    # Mainline tree (Linus's `linux.git`). Mirrored locally so the
-    # `update-mainline` CLI can read MAINTAINERS, and, in a later
-    # slice, walk commit-message `Link:` trailers for the patch-page
-    # "applied as <sha>" surface.
-    #
-    # Path follows the same pattern as the per-inbox mirrors under
-    # `Inboxes/`; pick `Mainline/linux.git` so a typical deploy gets
-    # `<data root>/Inboxes/<list>/git` and `<data root>/Mainline/linux.git`
-    # side-by-side. Override via MAINLINE_TREE_PATH / MAINLINE_TREE_URL.
-    mainline_tree_path: Path = _LINUS_DEFAULT_PATH
-    mainline_tree_url: str = _LINUS_DEFAULT_URL
-
     # Per-tree config for the multi-tree mainline lifecycle surfaces.
-    # Three-way seed:
+    # Mirrored locally so the `update-mainline` CLI can read MAINTAINERS
+    # and walk commit-message `Link:` trailers for the patch-page
+    # "applied as <sha>" surface. Two-way seed:
     #   1. TREES__<slug>__URL / TREES__<slug>__PATH env keys set -> take env
     #      as-is. Uses `env_nested_delimiter="__"` in model_config; slugs
     #      that contain dashes must be env-encoded with underscores
     #      (e.g. `TREES__net_next__URL`) and are normalised back to dashes.
     #      Important: ANY TREES__* env key REPLACES the whole default set;
     #      pydantic-settings does not merge individual keys into the defaults.
-    #   2. Legacy MAINLINE_TREE_URL/PATH set -> seed only `linus`.
-    #   3. Neither -> seed the full curated default set.
-    # The legacy MAINLINE_TREE_URL / MAINLINE_TREE_PATH scalars
-    # above are deprecated; removed in the next major.
+    #   2. None set -> seed the full curated default set.
     trees: dict[str, TreeConfig] = {}
 
     @field_validator("trees", mode="after")
     @classmethod
-    def _seed_trees(cls, v: dict, info) -> dict:
+    def _seed_trees(cls, v: dict) -> dict:
         if v:
             # Operator set TREES__* env keys -> use as-is.
             # Normalise underscore-style slugs to dash-style for the
             # user-facing labels.
             return {k.replace("_", "-"): cfg for k, cfg in v.items()}
-
-        data = info.data
-        legacy_url = data.get("mainline_tree_url")
-        legacy_path = data.get("mainline_tree_path")
-        if (legacy_url and legacy_url != _LINUS_DEFAULT_URL) or (
-            legacy_path and legacy_path != _LINUS_DEFAULT_PATH
-        ):
-            return {
-                "linus": TreeConfig(
-                    url=legacy_url or _LINUS_DEFAULT_URL,
-                    path=legacy_path or _LINUS_DEFAULT_PATH,
-                    walk_every_seconds=1500,
-                ),
-            }
-
         return _curated_default_trees()
 
     # IndexNow (https://www.indexnow.org/). Push-notification protocol
@@ -554,7 +523,7 @@ class Settings(BaseSettings):
     indexnow_endpoint: str = "https://api.indexnow.org/indexnow"
     indexnow_max_per_tick: int = 1000
 
-    @field_validator("mainline_tree_url", "indexnow_endpoint")
+    @field_validator("indexnow_endpoint")
     @classmethod
     def _validate_outbound_endpoint(cls, v: str) -> str:
         # Shared with `Inbox.upstream_url`'s validator and

@@ -7,11 +7,10 @@ Two callers use this module:
 - `mimir.indexnow.notify` for the IndexNow POST, configured via
   `Settings.indexnow_endpoint`.
 
-And three validators delegate to it:
+And two validators delegate to it:
 
 - `mimir.inboxes.validate_upstream_url` (admin CLI for
   `Inbox.upstream_url`).
-- pydantic `field_validator` on `Settings.mainline_tree_url`.
 - pydantic `field_validator` on `Settings.indexnow_endpoint`.
 
 The shape is three pieces working together:

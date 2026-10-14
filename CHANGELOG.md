@@ -11,6 +11,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Removed
+
+- The deprecated `MAINLINE_TREE_URL` / `MAINLINE_TREE_PATH` settings.
+  They seeded only the `linus` tree; an env that still sets them is
+  now ignored and gets the curated default tree set. Set
+  `TREES__linus__URL` / `TREES__linus__PATH` to override `linus`
+  alone (any `TREES__*` key replaces the whole default set).
+
 ## [3.17.1] - 2026-10-14
 
 ### Fixed
