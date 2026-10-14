@@ -1,20 +1,15 @@
 """Unit tests for `mimir.cache_warm`.
 
-`classify_zone` is a pure function: given `nominal_ttl`,
-`window_sec`, and `remaining`, it returns a `Decision` enum
-(SKIP / PROBABILISTIC / DETERMINISTIC). The probabilistic ramp
-math lives in a sibling `should_refresh` function so the
-classifier stays deterministic and testable.
+`should_refresh` decides, from `nominal_ttl`, `window_sec` and the
+row's `remaining` seconds, whether warm-cache recomputes it this
+tick: never above twice the effective window, always inside it, and
+on a linear ramp between. `effective_window_sec` caps the window at
+half the nominal TTL.
 """
 
 from unittest.mock import patch
 
-from mimir.cache_warm import (
-    Decision,
-    classify_zone,
-    effective_window_sec,
-    should_refresh,
-)
+from mimir.cache_warm import effective_window_sec, should_refresh
 
 
 def test_effective_window_sec_uncapped_for_long_ttl():
@@ -33,74 +28,42 @@ def test_effective_window_sec_zero_for_sub_2sec_nominal():
     assert effective_window_sec(nominal_ttl=1, window_sec=600) == 0
 
 
-def test_classify_zone_skip_when_remaining_above_2x_window():
-    """remaining=1201 > 2 * 600 -> SKIP."""
-    decision = classify_zone(nominal_ttl=3600, window_sec=600, remaining=1201)
-    assert decision == Decision.SKIP
+def test_should_refresh_skips_above_twice_the_window():
+    """remaining=1201 > 2 * 600: outer band, never fires."""
+    with patch("mimir.cache_warm.random.random", return_value=0.0):
+        assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=1201) is False
 
 
-def test_classify_zone_probabilistic_in_upper_window():
-    """600 < remaining <= 1200 -> PROBABILISTIC, at both ends of the
-    band."""
-    assert (
-        classify_zone(nominal_ttl=3600, window_sec=600, remaining=1200)
-        == Decision.PROBABILISTIC
-    )
-    assert (
-        classify_zone(nominal_ttl=3600, window_sec=600, remaining=601)
-        == Decision.PROBABILISTIC
-    )
+def test_should_refresh_never_fires_without_a_window():
+    """effective=0 (nominal_ttl=1) collapses every band to skip."""
+    with patch("mimir.cache_warm.random.random", return_value=0.0):
+        assert should_refresh(nominal_ttl=1, window_sec=600, remaining=0) is False
 
 
-def test_classify_zone_deterministic_in_insurance_band():
-    """remaining <= 600 -> DETERMINISTIC, at both ends of the band."""
-    assert (
-        classify_zone(nominal_ttl=3600, window_sec=600, remaining=600)
-        == Decision.DETERMINISTIC
-    )
-    assert (
-        classify_zone(nominal_ttl=3600, window_sec=600, remaining=1)
-        == Decision.DETERMINISTIC
-    )
+def test_should_refresh_uses_the_capped_window():
+    """nominal_ttl=300 caps the window at 150, so remaining=400 is
+    outside the bands even though it is below 2 * window_sec."""
+    with patch("mimir.cache_warm.random.random", return_value=0.0):
+        assert should_refresh(nominal_ttl=300, window_sec=600, remaining=400) is False
+        assert should_refresh(nominal_ttl=300, window_sec=600, remaining=150) is True
 
 
-def test_classify_zone_uses_the_capped_window_for_short_ttl():
-    """nominal_ttl=300 caps the window at 150, so the bands sit at
-    150 and 300, not at window_sec. Working the window back out of
-    the stored ttl got this wrong: warm-cache stores nominal +
-    window_sec uncapped (900 here), and the recovery then returned
-    300, firing for a row with 400s left that the spec says to skip."""
-    assert (
-        classify_zone(nominal_ttl=300, window_sec=600, remaining=400) == Decision.SKIP
-    )
-    assert (
-        classify_zone(nominal_ttl=300, window_sec=600, remaining=300)
-        == Decision.PROBABILISTIC
-    )
-    assert (
-        classify_zone(nominal_ttl=300, window_sec=600, remaining=150)
-        == Decision.DETERMINISTIC
-    )
+def test_should_refresh_deterministic_inside_the_window():
+    """remaining <= effective: insurance band, fires regardless of the
+    random draw."""
+    with patch("mimir.cache_warm.random.random", return_value=0.99):
+        assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=600) is True
+        assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=1) is True
 
 
-def test_should_refresh_skip_returns_false():
-    """SKIP zone -> never refresh."""
-    assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=3200) is False
-
-
-def test_should_refresh_deterministic_returns_true():
-    """DETERMINISTIC zone -> always refresh."""
-    assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=400) is True
-
-
-def test_should_refresh_probabilistic_ramp_at_window_start():
+def test_should_refresh_probabilistic_ramp_at_band_start():
     """remaining=1200 (2 * effective): p=0. Even a draw of 0.0 does
     not fire, because `0.0 < 0.0` is False."""
     with patch("mimir.cache_warm.random.random", return_value=0.0):
         assert should_refresh(nominal_ttl=3600, window_sec=600, remaining=1200) is False
 
 
-def test_should_refresh_probabilistic_ramp_at_window_end():
+def test_should_refresh_probabilistic_ramp_at_band_end():
     """remaining=601 (just above effective): p ~= 1. A draw of 0.99
     fires."""
     with patch("mimir.cache_warm.random.random", return_value=0.99):
