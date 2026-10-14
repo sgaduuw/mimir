@@ -194,7 +194,7 @@ def test_thread_summary_helper_counts_and_relative_time(frozen_clock):
     from dataclasses import dataclass
     from datetime import datetime, timedelta
 
-    from mimir.web import _thread_summary
+    from mimir.web.filters import _thread_summary
 
     @dataclass
     class N:
