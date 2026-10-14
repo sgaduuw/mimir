@@ -1,10 +1,6 @@
-"""Phase 3c tests: per-batch composite WriteOp dispatch in the four
-patch-metadata backfills.
-
-Pins the structural contract for Phase 3c of the broker two-pool
-restructure (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
-Kept in its own file so the Phase 3c PR audit is easy.
-"""
+"""Tests for mimir._pending_backfill: the per-batch composite WriteOps
+the four patch-metadata backfills dispatch through the broker's
+WriterThread."""
 
 from datetime import UTC
 
@@ -13,58 +9,17 @@ from sqlalchemy import insert, select
 
 from mimir._pending_backfill import (
     _ArticleFilesPending,
-    _ArticleTrailersPending,
-    _CanonicalPending,
-    _PatchSeriesPending,
     _submit_article_files_batch,
 )
 from mimir.broker.writes import WriterThread
 from mimir.models import Article, ArticleFile
 
 
-def test_article_files_pending_default_shape():
-    p = _ArticleFilesPending(article_id=1)
-    assert p.article_id == 1
-    assert p.delete_first is False
-    assert p.paths == []
-
-
-def test_article_trailers_pending_default_shape():
-    p = _ArticleTrailersPending(article_id=1)
-    assert p.article_id == 1
-    assert p.delete_first is False
-    assert p.trailers == []
-
-
-def test_patch_series_pending_default_shape():
-    p = _PatchSeriesPending(
-        article_id=1,
-        patch_series_key=None,
-        patch_series_version=None,
-        patch_series_position=None,
-    )
-    assert p.article_id == 1
-    assert p.patch_series_key is None
-    assert p.patch_series_version is None
-    assert p.patch_series_position is None
-
-
-def test_canonical_pending_default_shape():
-    p = _CanonicalPending(
-        article_id=1,
-        repick=lambda links: None,
-        observation_deltas={},
-    )
-    assert p.article_id == 1
-    assert p.repick(frozenset()) is None
-    assert p.observation_deltas == {}
-
-
 @pytest.fixture
 def writer():
     """Function-scoped WriterThread for _submit_*_batch tests.
 
-    Mirrors the `writer` fixture in `tests/test_ingest_phase3b.py`. The
+    Mirrors the `writer` fixture in `tests/test_ingest/test_pending.py`. The
     autouse `_reset_db` fixture seeds the DB before this fixture is
     entered, so writes against the seeded `articles` rows are safe.
     """
@@ -563,28 +518,6 @@ def test_batch_closure_failure_rolls_back_entire_batch(
         f"the mid-batch failure must have rolled back the early INSERT; "
         f"found {survived!r}"
     )
-
-
-# ---------------------------------------------------------------------------
-# One-composite-WriteOp-per-backfill invariant
-# ---------------------------------------------------------------------------
-#
-# The existing `test_batch_closure_failure_rolls_back_entire_batch` above
-# pins the WriterThread's BEGIN IMMEDIATE / COMMIT / ROLLBACK semantic via
-# a custom closure: any composite WriteOp inherits all-or-nothing atomicity
-# from the writer. That contract is shared across all four backfills.
-#
-# What that test does NOT pin: that each `_submit_<X>_batch` actually
-# packages its work into ONE composite WriteOp. A regression that split a
-# backfill's work into two writer.submit() calls (e.g., "submit the DELETE
-# as its own WriteOp, THEN submit the INSERT as a second WriteOp") would
-# break atomicity: a crash between the two calls leaves the DELETE
-# committed and the INSERT lost. Per-table atomicity inherited from the
-# writer can't help when the writes are in different transactions.
-#
-# These tests pin the structural invariant: each backfill's
-# `_submit_<X>_batch` makes exactly ONE call to `writer.submit()`. Catches
-# the split-WriteOp regression across all four backfills.
 
 
 @pytest.mark.parametrize(

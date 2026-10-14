@@ -11,7 +11,7 @@ from mimir.ingest import ingest_epoch
 from mimir.models import Article, ArticleFile, Inbox
 from mimir.patches import backfill_article_files
 
-# Shared with tests/test_ingest/test_*.py + tests/test_ingest_phase3b.py
+# Shared with tests/test_ingest/test_*.py + tests/test_ingest/test_pending.py
 # etc. Pytest sibling-module imports work fine in this repo (the
 # `_helpers.py` filename's underscore prefix keeps it out of pytest's
 # collection); the docstring on the previous local copy claimed
