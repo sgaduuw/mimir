@@ -17,8 +17,6 @@ from dulwich.repo import Repo
 from pydantic import BaseModel
 from sqlalchemy import delete, insert, select, update
 
-from mimir.extensions import SessionLocal
-from mimir.ingest.epoch import _to_article
 from mimir.models import (
     Article,
     ArticleFile,
@@ -46,22 +44,17 @@ class ReplayResult(BaseModel):
 
 
 def _replay_loop(
-    conn_or_session,
+    conn,
     inbox_id: int,
     inbox_mirror_path: str,
     epoch_filter: str | None,
     limit: int | None,
-    is_conn: bool,
 ) -> ReplayResult:
-    """Core replay logic, shared by both the writer-thread and legacy paths.
+    """Core replay logic, run on the writer thread's Core Connection.
 
-    When `is_conn=True`, `conn_or_session` is a SQLAlchemy Core Connection and
-    writes use Core DML statements with RETURNING for new Article ids.
-    When `is_conn=False`, `conn_or_session` is an ORM Session and writes use
-    the legacy ORM path.
-
-    The dulwich blob fetches are identical in both paths: they read from the
-    mirror on disk, no session involvement.
+    Writes use Core DML statements with RETURNING for new Article ids.
+    The dulwich blob fetches read from the mirror on disk, no connection
+    involvement.
     """
     out = ReplayResult()
 
@@ -72,26 +65,15 @@ def _replay_loop(
     if limit is not None:
         q = q.limit(limit)
 
-    if is_conn:
-        rows = list(conn_or_session.execute(q).mappings())
-    else:
-        rows = list(conn_or_session.execute(q).scalars())
+    rows = list(conn.execute(q).mappings())
 
-    # still-failed updates accumulate for a single executemany at the end
-    # when on the conn path. On the session path we mutate ORM objects in
-    # the loop and let the single commit flush them.
+    # still-failed updates accumulate and are written after the loop.
     still_failed_updates: list[dict] = []
-    # Message ids recovered by this run. Needed by name rather than by
-    # article id because the Session path `add()`s the Article and its
-    # id is only assigned at flush, which happens after the loop.
+    # Message ids recovered by this run, for the thread-root passes.
     recovered_msgids: list[str] = []
     for row in rows:
-        if is_conn:
-            row_epoch = row["epoch"]
-            row_commit_sha = row["commit_sha"]
-        else:
-            row_epoch = row.epoch
-            row_commit_sha = row.commit_sha
+        row_epoch = row["epoch"]
+        row_commit_sha = row["commit_sha"]
         out.attempted += 1
         repo_path = Path(inbox_mirror_path) / row_epoch
         # Open the Repo with a context manager and close it as soon as the
@@ -121,159 +103,120 @@ def _replay_loop(
         try:
             parsed = parse_message(raw)
         except Exception as exc:
-            if is_conn:
-                # Defer to a batch update after the loop.
-                still_failed_updates.append(
-                    {
-                        "_epoch": row_epoch,
-                        "_commit_sha": row_commit_sha,
-                        "_error_class": type(exc).__name__,
-                        "_error_message": str(exc)[:1000],
-                        "_now": datetime.now(UTC),
-                    }
-                )
-            else:
-                row.last_attempt = datetime.now(UTC)
-                row.attempts += 1
-                row.error_class = type(exc).__name__
-                row.error_message = str(exc)[:1000]
+            # Defer to a batch update after the loop.
+            still_failed_updates.append(
+                {
+                    "_epoch": row_epoch,
+                    "_commit_sha": row_commit_sha,
+                    "_error_class": type(exc).__name__,
+                    "_error_message": str(exc)[:1000],
+                    "_now": datetime.now(UTC),
+                }
+            )
             out.still_failed += 1
             continue
 
-        if is_conn:
-            existing_id = conn_or_session.execute(
-                select(Article.id).where(Article.message_id == parsed.message_id)
-            ).scalar_one_or_none()
-            if existing_id is None:
-                # Build the article values inline (mirrors _to_article
-                # with session=None, i.e. no in-series parent lookup).
-                thread_parent = parsed.in_reply_to or (
-                    parsed.references[-1] if parsed.references else None
-                )
-                series_key_val: str | None = None
-                series_version_val: str | None = None
-                series_position_val: int | None = None
-                cover = parse_cover_letter(parsed.subject)
-                if cover is not None:
-                    series_key_val = series_key(cover.title, parsed.author)
-                    series_version_val = cover.version
-                    series_position_val = 0
-                else:
-                    in_series = parse_in_series_patch_subject(parsed.subject)
-                    if in_series is not None:
-                        series_position_val = in_series.position
-                        # No in-series parent lookup: replay is single-row,
-                        # low-volume; the backfill command closes any gap in
-                        # patch_series_key + patch_series_version later.
-
-                result = conn_or_session.execute(
-                    insert(Article)
-                    .values(
-                        message_id=parsed.message_id,
-                        subject=parsed.subject,
-                        author=parsed.author,
-                        date=commit_time,
-                        thread_parent=thread_parent,
-                        subject_normalized=normalize_subject(parsed.subject),
-                        canonical_inbox_id=None,
-                        patch_series_key=series_key_val,
-                        patch_series_version=series_version_val,
-                        patch_series_position=series_position_val,
-                    )
-                    .returning(Article.id)
-                )
-                new_article_id = result.scalar_one()
-                conn_or_session.execute(
-                    insert(ArticleList).values(
-                        article_id=new_article_id,
-                        inbox_id=inbox_id,
-                        epoch=row_epoch,
-                        commit_sha=row_commit_sha,
-                    )
-                )
-                # Insert any diff-touched path rows.
-                touched_paths = sorted(extract_touched_paths(parsed.body))
-                if touched_paths:
-                    conn_or_session.execute(
-                        insert(ArticleFile).values(
-                            [
-                                {"article_id": new_article_id, "path": p}
-                                for p in touched_paths
-                            ]
-                        )
-                    )
-                # Insert any review-attestation trailer rows.
-                trailer_tuples = list(extract_trailers(parsed.body))
-                if trailer_tuples:
-                    conn_or_session.execute(
-                        insert(ArticleTrailer).values(
-                            [
-                                {
-                                    "article_id": new_article_id,
-                                    "role": role,
-                                    "name": name,
-                                    "address": address,
-                                    "address_normalized": address.lower(),
-                                }
-                                for role, name, address in trailer_tuples
-                            ]
-                        )
-                    )
+        existing_id = conn.execute(
+            select(Article.id).where(Article.message_id == parsed.message_id)
+        ).scalar_one_or_none()
+        if existing_id is None:
+            # Build the article values inline (mirrors _to_article
+            # with session=None, i.e. no in-series parent lookup).
+            thread_parent = parsed.in_reply_to or (
+                parsed.references[-1] if parsed.references else None
+            )
+            series_key_val: str | None = None
+            series_version_val: str | None = None
+            series_position_val: int | None = None
+            cover = parse_cover_letter(parsed.subject)
+            if cover is not None:
+                series_key_val = series_key(cover.title, parsed.author)
+                series_version_val = cover.version
+                series_position_val = 0
             else:
-                already_linked = conn_or_session.execute(
-                    select(ArticleList.article_id).where(
-                        ArticleList.article_id == existing_id,
-                        ArticleList.inbox_id == inbox_id,
-                    )
-                ).scalar_one_or_none()
-                if already_linked is None:
-                    conn_or_session.execute(
-                        insert(ArticleList).values(
-                            article_id=existing_id,
-                            inbox_id=inbox_id,
-                            epoch=row_epoch,
-                            commit_sha=row_commit_sha,
-                        )
-                    )
-            conn_or_session.execute(
-                delete(ParseFailure).where(
-                    ParseFailure.inbox_id == inbox_id,
-                    ParseFailure.epoch == row_epoch,
-                    ParseFailure.commit_sha == row_commit_sha,
+                in_series = parse_in_series_patch_subject(parsed.subject)
+                if in_series is not None:
+                    series_position_val = in_series.position
+                    # No in-series parent lookup: replay is single-row,
+                    # low-volume; the backfill command closes any gap in
+                    # patch_series_key + patch_series_version later.
+
+            result = conn.execute(
+                insert(Article)
+                .values(
+                    message_id=parsed.message_id,
+                    subject=parsed.subject,
+                    author=parsed.author,
+                    date=commit_time,
+                    thread_parent=thread_parent,
+                    subject_normalized=normalize_subject(parsed.subject),
+                    canonical_inbox_id=None,
+                    patch_series_key=series_key_val,
+                    patch_series_version=series_version_val,
+                    patch_series_position=series_position_val,
+                )
+                .returning(Article.id)
+            )
+            new_article_id = result.scalar_one()
+            conn.execute(
+                insert(ArticleList).values(
+                    article_id=new_article_id,
+                    inbox_id=inbox_id,
+                    epoch=row_epoch,
+                    commit_sha=row_commit_sha,
                 )
             )
+            # Insert any diff-touched path rows.
+            touched_paths = sorted(extract_touched_paths(parsed.body))
+            if touched_paths:
+                conn.execute(
+                    insert(ArticleFile).values(
+                        [
+                            {"article_id": new_article_id, "path": p}
+                            for p in touched_paths
+                        ]
+                    )
+                )
+            # Insert any review-attestation trailer rows.
+            trailer_tuples = list(extract_trailers(parsed.body))
+            if trailer_tuples:
+                conn.execute(
+                    insert(ArticleTrailer).values(
+                        [
+                            {
+                                "article_id": new_article_id,
+                                "role": role,
+                                "name": name,
+                                "address": address,
+                                "address_normalized": address.lower(),
+                            }
+                            for role, name, address in trailer_tuples
+                        ]
+                    )
+                )
         else:
-            existing_id = conn_or_session.execute(
-                select(Article.id).where(Article.message_id == parsed.message_id)
+            already_linked = conn.execute(
+                select(ArticleList.article_id).where(
+                    ArticleList.article_id == existing_id,
+                    ArticleList.inbox_id == inbox_id,
+                )
             ).scalar_one_or_none()
-            if existing_id is None:
-                conn_or_session.add(
-                    _to_article(
-                        parsed,
+            if already_linked is None:
+                conn.execute(
+                    insert(ArticleList).values(
+                        article_id=existing_id,
                         inbox_id=inbox_id,
                         epoch=row_epoch,
                         commit_sha=row_commit_sha,
-                        date=commit_time,
-                        session=conn_or_session,
                     )
                 )
-            else:
-                already_linked = conn_or_session.execute(
-                    select(ArticleList.article_id).where(
-                        ArticleList.article_id == existing_id,
-                        ArticleList.inbox_id == inbox_id,
-                    )
-                ).scalar_one_or_none()
-                if already_linked is None:
-                    conn_or_session.add(
-                        ArticleList(
-                            article_id=existing_id,
-                            inbox_id=inbox_id,
-                            epoch=row_epoch,
-                            commit_sha=row_commit_sha,
-                        )
-                    )
-            conn_or_session.delete(row)
+        conn.execute(
+            delete(ParseFailure).where(
+                ParseFailure.inbox_id == inbox_id,
+                ParseFailure.epoch == row_epoch,
+                ParseFailure.commit_sha == row_commit_sha,
+            )
+        )
         out.recovered += 1
         recovered_msgids.append(parsed.message_id)
 
@@ -289,38 +232,25 @@ def _replay_loop(
     # NULL, so on a fully-backfilled corpus with nothing recovered this
     # is a couple of no-op statements.
     if out.recovered:
-        # Flush first on the Session path. `SessionLocal` is
-        # `autoflush=False`, and the passes below are raw `text()`
-        # UPDATEs, so without this they would run against a database
-        # that has not yet seen the ORM rows this loop just `add()`ed
-        # and the whole call would be a silent no-op, re-creating
-        # exactly the permanent-NULL hole it exists to close. Portfolio
-        # MEMORY 2026-06-13: bulk raw SQL after ORM adds needs an
-        # explicit flush under autoflush=False.
-        if not is_conn:
-            conn_or_session.flush()
-        _resolve_roots_after_replay(conn_or_session, inbox_id, recovered_msgids)
+        _resolve_roots_after_replay(conn, inbox_id, recovered_msgids)
 
     # Flush still-failed updates: one UPDATE per row so each carries
     # its specific error_class / error_message.
-    if is_conn:
-        for upd in still_failed_updates:
-            conn_or_session.execute(
-                update(ParseFailure)
-                .where(
-                    ParseFailure.inbox_id == inbox_id,
-                    ParseFailure.epoch == upd["_epoch"],
-                    ParseFailure.commit_sha == upd["_commit_sha"],
-                )
-                .values(
-                    last_attempt=upd["_now"],
-                    attempts=ParseFailure.attempts + 1,
-                    error_class=upd["_error_class"],
-                    error_message=upd["_error_message"],
-                )
+    for upd in still_failed_updates:
+        conn.execute(
+            update(ParseFailure)
+            .where(
+                ParseFailure.inbox_id == inbox_id,
+                ParseFailure.epoch == upd["_epoch"],
+                ParseFailure.commit_sha == upd["_commit_sha"],
             )
-    else:
-        conn_or_session.commit()
+            .values(
+                last_attempt=upd["_now"],
+                attempts=ParseFailure.attempts + 1,
+                error_class=upd["_error_class"],
+                error_message=upd["_error_message"],
+            )
+        )
 
     return out
 
@@ -330,10 +260,9 @@ def _resolve_roots_after_replay(
 ) -> None:
     """Run the thread-root passes for one inbox after a replay.
 
-    `replay_failures` holds either a writer Connection (broker path) or
-    a Session (legacy path). The passes only `execute(text(...))` and
-    read `.rowcount`, which both support identically, so neither needs
-    wrapping.
+    `replay_failures` holds the writer's Connection. The passes only
+    `execute(text(...))` and read `.rowcount`, which a Session supports
+    identically, so neither needs wrapping.
 
     Two halves, and the passes are only the second one.
 
@@ -392,50 +321,29 @@ def replay_failures(
     error fields. Sequential by design, replay is a low-volume admin
     op, not the hot ingest path.
 
-    When an active broker WriterThread is present (broker context), the
-    full replay loop runs inside a single WriteOp closure dispatched to
-    the writer thread. When no broker context is active, the legacy
-    SessionLocal() path is used.
+    The full replay loop runs inside a single WriteOp closure dispatched
+    to the broker's writer thread. Raises RuntimeError when no writer is
+    active.
     """
-    try:
-        from mimir.broker._context import get_active_writer
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
 
-        writer = get_active_writer()
-    except RuntimeError:
-        writer = None
+    writer = get_active_writer()
 
-    if writer is not None:
-        from mimir.broker.writes import WriteOp
+    # Capture inbox attributes now; `inbox` may be a detached ORM
+    # object and reading its attributes later (in a different thread)
+    # is safe because we're only reading scalars that were already
+    # loaded, not triggering lazy loads.
+    inbox_id = inbox.id
+    inbox_mirror_path = inbox.mirror_path
 
-        # Capture inbox attributes now; `inbox` may be a detached ORM
-        # object and reading its attributes later (in a different thread)
-        # is safe because we're only reading scalars that were already
-        # loaded, not triggering lazy loads.
-        inbox_id = inbox.id
-        inbox_mirror_path = inbox.mirror_path
-
-        def _fn(conn):
-            return _replay_loop(
-                conn,
-                inbox_id=inbox_id,
-                inbox_mirror_path=inbox_mirror_path,
-                epoch_filter=epoch_filter,
-                limit=limit,
-                is_conn=True,
-            )
-
-        return writer.submit(WriteOp(label="failures_replay", fn=_fn)).result(
-            timeout=300
-        )
-
-    # Legacy fallback (no broker context active).
-    with SessionLocal() as session:
-        attached = session.merge(inbox)
+    def _fn(conn):
         return _replay_loop(
-            session,
-            inbox_id=attached.id,
-            inbox_mirror_path=attached.mirror_path,
+            conn,
+            inbox_id=inbox_id,
+            inbox_mirror_path=inbox_mirror_path,
             epoch_filter=epoch_filter,
             limit=limit,
-            is_conn=False,
         )
+
+    return writer.submit(WriteOp(label="failures_replay", fn=_fn)).result(timeout=300)
