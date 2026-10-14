@@ -16,7 +16,12 @@ import click
 
 from mimir.cli.admin import admin_group
 from mimir.extensions import SessionLocal
-from mimir.robots import RobotsValidationError, get_rule, list_rules
+from mimir.robots import (
+    RobotsValidationError,
+    format_content_signals,
+    get_rule,
+    list_rules,
+)
 
 
 def _robots_click_error(exc) -> click.ClickException:
@@ -42,13 +47,6 @@ def _parse_content_signal_pair(raw: str) -> tuple[str, str]:
     return k.strip(), v.strip()
 
 
-def _format_content_signals(signals: dict[str, str]) -> str:
-    """Canonical-order rendering matching the service-layer."""
-    canonical_order = ("search", "ai-input", "ai-train")
-    parts = [f"{k}={signals[k]}" for k in canonical_order if k in signals]
-    return ", ".join(parts)
-
-
 def _format_rule(rule_dict: dict) -> list[str]:
     """Multi-line pretty-print of one rule dict (used by `show` and
     the add/update success output). Matches the rendered file's
@@ -56,7 +54,7 @@ def _format_rule(rule_dict: dict) -> list[str]:
     lines = [f"User-agent: {rule_dict['user_agent']}"]
     signals = rule_dict.get("content_signals") or {}
     if signals:
-        lines.append(f"Content-Signal: {_format_content_signals(signals)}")
+        lines.append(f"Content-Signal: {format_content_signals(signals)}")
     if rule_dict.get("crawl_delay") is not None:
         lines.append(f"Crawl-delay: {rule_dict['crawl_delay']}")
     for p in rule_dict.get("disallow_paths") or []:
@@ -86,7 +84,7 @@ def admin_robots_list_command() -> None:
     for r in rules:
         delay = "-" if r.crawl_delay is None else str(r.crawl_delay)
         paths = ", ".join(r.disallow_paths or []) or "-"
-        signals = _format_content_signals(r.content_signals or {}) or "-"
+        signals = format_content_signals(r.content_signals or {}) or "-"
         click.echo(
             f"{r.user_agent:<{ua_w}}  crawl_delay={delay:<4}  "
             f"disallow={paths}  content_signals={signals}"

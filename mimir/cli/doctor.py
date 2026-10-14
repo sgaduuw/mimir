@@ -90,7 +90,7 @@ CheckFunc = Callable[[str, "object", "object"], CheckResult]
 def _check_database_url(role, settings, session_factory) -> CheckResult:
     """DATABASE_URL must be set; for sqlite, the parent directory
     must exist (else the broker can't even create the file)."""
-    url = getattr(settings, "database_url", "") or ""
+    url = settings.database_url or ""
     if not url:
         return CheckResult(
             name="DATABASE_URL",
@@ -123,7 +123,7 @@ def _check_secret_key(role, settings, session_factory) -> CheckResult:
     min_length=16 at Settings construction time, so by the time the
     doctor runs an empty key would have crashed startup; the check
     is still useful as a reassurance row in the report."""
-    key = getattr(settings, "secret_key", "") or ""
+    key = settings.secret_key or ""
     if not key:
         return CheckResult(
             name="SECRET_KEY",
@@ -143,7 +143,7 @@ def _check_site_base_url(role, settings, session_factory) -> CheckResult:
     silently degrades sitemap warming; severity warning, not error,
     because the rest of the surface (request-time canonical URLs
     via ProxyFix) continues to work."""
-    raw = (getattr(settings, "site_base_url", "") or "").strip()
+    raw = (settings.site_base_url or "").strip()
     if not raw:
         return CheckResult(
             name="SITE_BASE_URL",
@@ -165,7 +165,7 @@ def _check_indexnow_key(role, settings, session_factory) -> CheckResult:
     """INDEXNOW_KEY is intentionally optional. An unset key disables
     the IndexNow push-notification feature (Bing/Yandex/etc.); the
     sitemap is still the discovery path. Report as info, not warning."""
-    key = getattr(settings, "indexnow_key", None)
+    key = settings.indexnow_key
     if key:
         return CheckResult(
             name="INDEXNOW_KEY",
@@ -186,13 +186,13 @@ def _check_broker_socket(role, settings, session_factory) -> CheckResult:
     against the configured path. Severity error on failure: an
     unreachable broker means every cache write and every admin op
     fails."""
-    if getattr(settings, "mimir_is_broker", False):
+    if settings.mimir_is_broker:
         return CheckResult(
             name="Broker socket",
             status=STATUS_OK,
             value="N/A (this IS the broker)",
         )
-    path = getattr(settings, "broker_socket_path", None)
+    path = settings.broker_socket_path
     if path is None:
         return CheckResult(
             name="Broker socket",
@@ -231,8 +231,8 @@ def _check_warm_cadence(role, settings, session_factory) -> CheckResult:
     two would silently invert the tier semantics; the broker still
     runs both, but the operator's expectation about "fast = per-
     minute, slow = per-hour" is wrong."""
-    fast = getattr(settings, "warm_cache_fast_every", 0)
-    slow = getattr(settings, "warm_cache_slow_every", 0)
+    fast = settings.warm_cache_fast_every
+    slow = settings.warm_cache_slow_every
     if fast >= slow:
         return CheckResult(
             name="Warm-cache cadence",
@@ -252,8 +252,8 @@ def _check_warm_refresh_window(role, settings, session_factory) -> CheckResult:
     ticks worth (window vs cadence sanity). A window much larger
     than the cadence flattens the probabilistic-refresh ramp and
     every tick fires; not catastrophic but a sign of a mistuned env."""
-    fast = getattr(settings, "warm_cache_fast_every", 0)
-    window = getattr(settings, "warm_cache_fast_refresh_window_sec", 0)
+    fast = settings.warm_cache_fast_every
+    window = settings.warm_cache_fast_refresh_window_sec
     if fast > 0 and window >= fast * 30:
         return CheckResult(
             name="Warm-cache refresh windows",
@@ -261,7 +261,7 @@ def _check_warm_refresh_window(role, settings, session_factory) -> CheckResult:
             value=f"fast_window={window}s vs fast_every={fast}s (window > 30x cadence)",
             remediation="Reduce WARM_CACHE_FAST_REFRESH_WINDOW_SEC or raise WARM_CACHE_FAST_EVERY.",
         )
-    slow_window = getattr(settings, "warm_cache_slow_refresh_window_sec", 0)
+    slow_window = settings.warm_cache_slow_refresh_window_sec
     return CheckResult(
         name="Warm-cache refresh windows",
         status=STATUS_OK,

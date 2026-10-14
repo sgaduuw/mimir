@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from mimir import cache
 from mimir.datetime_utils import aware_utc as _aware_utc
 from mimir.patch_series import newer_revision_sql, version_number_sql
+from mimir.threading import _coerce_dt
 from mimir.trailers import REVIEW_TRAILER_ROLES
 
 # Strip control bytes + surrogates before flowing reviewer names
@@ -33,21 +34,6 @@ from mimir.trailers import REVIEW_TRAILER_ROLES
 # regex catches C0/C1 control bytes + the surrogate range that
 # Jinja would happily pass through to break a rendered attribute.
 _UNSAFE_ATTR_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\ud800-\udfff]")
-
-
-def _coerce_dt(value) -> datetime | None:
-    """text() raw SQL bypasses SQLAlchemy type coercion, so DateTime
-    columns come back as ISO strings (the CTE round-trips
-    `articles.date` and `mainline_commits.committed_at` through
-    SQLite's TEXT storage). Parse back to datetime; tz normalization
-    happens at the comparison boundary via `_aware_utc`.
-    """
-    if value is None or isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(value)
-    except TypeError, ValueError:
-        return None
 
 
 class LifecycleStatus(Enum):
