@@ -10,7 +10,7 @@ production cold-miss."""
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from mimir.models import (
     Article,
@@ -408,6 +408,7 @@ def test_triage_queries_use_date_index_no_full_scans(seeded_db):
     from mimir.subsystems_dashboard.triage import (
         _candidate_query_needs_attention,
         _candidate_query_quiet,
+        _triage_stmt,
     )
 
     with seeded_db() as s:
@@ -431,7 +432,7 @@ def test_triage_queries_use_date_index_no_full_scans(seeded_db):
             # The bounded date range surfaces in the plan as
             # `date>? AND date<?` (BETWEEN compiles to that pair).
             plan_rows = s.execute(
-                text("EXPLAIN QUERY PLAN " + sql),
+                _triage_stmt("EXPLAIN QUERY PLAN " + sql),
                 params,
             ).all()
             plan = "\n".join(r[3] for r in plan_rows)
