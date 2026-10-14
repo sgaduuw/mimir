@@ -386,7 +386,7 @@ def reset_rules() -> None:
     return
 
 
-def _format_content_signals(signals: dict[str, str]) -> str:
+def format_content_signals(signals: dict[str, str]) -> str:
     """Render one stanza's Content-Signal value: comma-delimited
     `key=value` pairs in the canonical order (`search`, `ai-input`,
     `ai-train`) so the line is stable across deploys."""
@@ -480,7 +480,7 @@ def render_robots_txt(session: Session, sitemap_url: str) -> str:
         first = False
         out.write(f"User-agent: {rule.user_agent}\n")
         if signals:
-            out.write(f"Content-Signal: {_format_content_signals(signals)}\n")
+            out.write(f"Content-Signal: {format_content_signals(signals)}\n")
         if rule.crawl_delay is not None:
             out.write(f"Crawl-delay: {rule.crawl_delay}\n")
         for p in paths:

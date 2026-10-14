@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from mimir._outbound import OUTBOUND_OPENER
 from mimir.config import settings
 from mimir.models import Article
-from mimir.web import _advertised_urls_for
+from mimir.web.urls import _advertised_urls_for
 
 logger = logging.getLogger(__name__)
 

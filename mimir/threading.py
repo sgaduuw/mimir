@@ -26,6 +26,7 @@ from sqlalchemy import func, literal, select, text, tuple_
 from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
+from mimir.datetime_utils import coerce_dt
 from mimir.models import Article, ArticleList, Inbox
 
 MAX_DEPTH = 1000
@@ -84,17 +85,6 @@ class ActiveThread:
 
 
 cache.register("ActiveThread", ActiveThread)
-
-
-def _coerce_dt(value) -> datetime | None:
-    """text() raw SQL bypasses SQLAlchemy type coercion, so DateTime columns
-    come back as ISO strings. Coerce back to datetime."""
-    if value is None or isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(value)
-    except TypeError, ValueError:
-        return None
 
 
 def dedupe_thread(nodes: list) -> list:
@@ -249,7 +239,7 @@ def thread_aggregates(
     )
     return ThreadAggregates(
         total=total or 0,
-        last_activity=_coerce_dt(last_activity),
+        last_activity=coerce_dt(last_activity),
         authors=authors,
     )
 
@@ -613,7 +603,7 @@ def get_thread(
             thread_parent=r.thread_parent,
             subject=r.subject,
             author=r.author,
-            date=_coerce_dt(r.date),
+            date=coerce_dt(r.date),
             depth=r.depth,
         )
         for r in rows
@@ -721,10 +711,10 @@ def _active_threads_query(
             message_id=r.message_id,
             subject=r.subject,
             author=r.author,
-            date=_coerce_dt(r.root_date),
+            date=coerce_dt(r.root_date),
             recent_count=r.recent_count,
             reply_count=r.reply_count,
-            last_activity=_coerce_dt(r.last_activity),
+            last_activity=coerce_dt(r.last_activity),
         )
         for r in rows
     ]

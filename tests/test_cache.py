@@ -888,7 +888,7 @@ def test_refresh_window_recomputes_when_near_expiry():
         with SessionLocal() as s, refresh_window(300):
             # ttl=3600 matches what the original caller would have
             # stored; remaining 60 << window 300 puts us in the
-            # DETERMINISTIC band of the cache_warm classifier.
+            # insurance band of `cache_warm.should_refresh`.
             out = get_or_compute(s, key, ttl=3600, fn=compute)
         assert out == "fresh"
         assert calls == 1, "near-expiry row inside refresh_window must recompute"
@@ -1405,7 +1405,7 @@ def test_get_or_compute_window_check_is_probabilistic_when_refresh_within_active
     seeded_db, monkeypatch
 ):
     """Inside `refresh_window(window_sec)`, `get_or_compute` uses
-    the cache_warm classifier instead of the deterministic "if
+    `cache_warm.should_refresh` instead of the deterministic "if
     remaining < window, recompute" check. Verified by monkey-
     patching `cache_warm.should_refresh` and confirming the result
     is honoured."""

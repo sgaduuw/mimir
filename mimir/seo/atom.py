@@ -49,7 +49,8 @@ def atom_response(
     as one entry, not two)."""
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring).
-    from mimir.web import _allowlisted_email, _display_name_filter, _msg_url
+    from mimir.web.filters import _allowlisted_email, _display_name_filter
+    from mimir.web.urls import _msg_url
 
     feed_updated = max(
         (e.date for e in entries if e.date), default=None

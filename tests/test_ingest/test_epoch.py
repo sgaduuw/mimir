@@ -18,12 +18,9 @@ from dulwich.repo import Repo
 from sqlalchemy import delete, func, select
 
 from mimir._pending_backfill import _submit_promote_list_address_sweep
-from mimir.ingest import (
-    MIN_PROMOTE_OBSERVATIONS,
-    PROMOTE_DOMINANCE,
-    ingest_epoch,
-)
+from mimir.ingest import ingest_epoch
 from mimir.ingest._pending import _submit_promote_list_address
+from mimir.ingest.epoch import MIN_PROMOTE_OBSERVATIONS, PROMOTE_DOMINANCE
 from mimir.models import (
     Article,
     ArticleFile,
