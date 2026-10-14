@@ -29,6 +29,7 @@ from sqlalchemy import select
 from mimir._backfill import walk_articles
 from mimir.backfill_runs import Run
 from mimir.models import Article
+from mimir.parser import unfold
 from mimir.patch_revisions import parse_in_series_patch_subject
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,7 @@ class BackfillResult(BaseModel):
     in_series_orphan: int = 0  # in-series patch, position set, cover not in DB
     not_cover: int = 0  # non-series-shaped subject (prose, replies, solo [PATCH])
     skipped: int = 0  # already fully resolved (idempotent re-run)
+    subjects_unfolded: int = 0  # stored folded subject rewritten (#710)
     partial: bool = False
 
     def merge(self, other: BackfillResult) -> BackfillResult:
@@ -204,6 +206,7 @@ class BackfillResult(BaseModel):
             in_series_orphan=self.in_series_orphan + other.in_series_orphan,
             not_cover=self.not_cover + other.not_cover,
             skipped=self.skipped + other.skipped,
+            subjects_unfolded=self.subjects_unfolded + other.subjects_unfolded,
             partial=other.partial,
         )
 
@@ -242,7 +245,7 @@ def _resolve_in_series_link(
         return None
     if parent.patch_series_key is not None:
         return parent.patch_series_key, parent.patch_series_version
-    cover = parse_cover_letter(parent.subject)
+    cover = parse_cover_letter(unfold(parent.subject))
     if cover is None:
         return None
     return series_key(cover.title, parent.author), cover.version
@@ -267,39 +270,60 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
     """
     from mimir._pending_backfill import _PatchSeriesPending
 
+    # Subjects stored before ingest unfolded them (#710) are parsed
+    # unfolded and written back, in every mode, including rows that are
+    # otherwise skipped.
+    subject = unfold(article.subject)
+    rewrite = subject if subject != article.subject else None
+
+    def bucket(name: str):
+        return (name, "subjects_unfolded") if rewrite is not None else name
+
+    def keep_series() -> _PatchSeriesPending:
+        return _PatchSeriesPending(
+            article_id=article.id,
+            patch_series_key=article.patch_series_key,
+            patch_series_version=article.patch_series_version,
+            patch_series_position=article.patch_series_position,
+            subject=rewrite,
+        )
+
     is_fully_resolved = article.patch_series_position is not None and (
         (article.patch_series_position == 0 and article.patch_series_key is not None)
         or (article.patch_series_position > 0 and article.patch_series_key is not None)
     )
     if is_fully_resolved and not reprocess:
-        return "skipped", None
+        return bucket("skipped"), keep_series() if rewrite is not None else None
 
-    cover = parse_cover_letter(article.subject)
+    cover = parse_cover_letter(subject)
     if cover is not None:
-        return "indexed", _PatchSeriesPending(
+        return bucket("indexed"), _PatchSeriesPending(
             article_id=article.id,
             patch_series_key=series_key(cover.title, article.author),
             patch_series_version=cover.version,
             patch_series_position=0,
+            subject=rewrite,
         )
 
-    in_series = parse_in_series_patch_subject(article.subject)
+    in_series = parse_in_series_patch_subject(subject)
     if in_series is not None:
         link = _resolve_in_series_link(session, article)
         if link is not None:
             key, version = link
-            return "in_series_indexed", _PatchSeriesPending(
+            return bucket("in_series_indexed"), _PatchSeriesPending(
                 article_id=article.id,
                 patch_series_key=key,
                 patch_series_version=version,
                 patch_series_position=in_series.position,
+                subject=rewrite,
             )
         # Orphan: clear key/version on reprocess; keep position.
-        return "in_series_orphan", _PatchSeriesPending(
+        return bucket("in_series_orphan"), _PatchSeriesPending(
             article_id=article.id,
             patch_series_key=None if reprocess else article.patch_series_key,
             patch_series_version=(None if reprocess else article.patch_series_version),
             patch_series_position=in_series.position,
+            subject=rewrite,
         )
 
     # Neither cover nor in-series. On reprocess, clear any prior series row.
@@ -307,13 +331,14 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
         article.patch_series_key is not None
         or article.patch_series_position is not None
     ):
-        return "not_cover", _PatchSeriesPending(
+        return bucket("not_cover"), _PatchSeriesPending(
             article_id=article.id,
             patch_series_key=None,
             patch_series_version=None,
             patch_series_position=None,
+            subject=rewrite,
         )
-    return "not_cover", None
+    return bucket("not_cover"), keep_series() if rewrite is not None else None
 
 
 def backfill_patch_series(

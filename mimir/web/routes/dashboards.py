@@ -228,7 +228,9 @@ def inbox_dashboard(inbox_name: str):
             dashboard_ids.extend(a.id for a in t["messages"])
         dashboard_ids.extend(a.id for a in history)
         dashboard_ids.extend(a.id for a in recent)
-        lifecycle_status_by_id = lifecycle_status_for_articles(session, dashboard_ids)
+        lifecycle_status_by_id = lifecycle_status_for_articles(
+            session, dashboard_ids, inbox.id
+        )
     base = _site_base()
     year_decades: list[tuple[int, list[int]]] = []
     if stats and stats.first_date and stats.last_date:
@@ -409,7 +411,9 @@ def subsystem_dashboard(inbox_name: str, name: str):
         subsystem_ids.extend(p.article_id for p in recent)
         subsystem_ids.extend(p.article_id for p in needs_attention)
         subsystem_ids.extend(p.article_id for p in quiet)
-        lifecycle_status_by_id = lifecycle_status_for_articles(session, subsystem_ids)
+        lifecycle_status_by_id = lifecycle_status_for_articles(
+            session, subsystem_ids, inbox.id
+        )
     return render_template(
         "subsystem.html",
         inbox_name=inbox.name,

@@ -199,24 +199,37 @@ def test_pick_first_matching_address():
         "linux-kernel@vger.kernel.org": 1,
     }
     # To-then-Cc order means linux-fsdevel wins, even though both match.
-    assert pick_canonical_inbox_id(addrs, mapping) == 7
+    assert pick_canonical_inbox_id(addrs, mapping, frozenset(mapping.values())) == 7
 
 
 def test_pick_skips_unknown_addresses():
     addrs = ["unknown@vger.kernel.org", "linux-kernel@vger.kernel.org"]
     mapping = {"linux-kernel@vger.kernel.org": 1}
-    assert pick_canonical_inbox_id(addrs, mapping) == 1
+    assert pick_canonical_inbox_id(addrs, mapping, frozenset(mapping.values())) == 1
 
 
 def test_pick_returns_none_when_no_match():
     addrs = ["unknown@vger.kernel.org"]
     mapping = {"linux-kernel@vger.kernel.org": 1}
-    assert pick_canonical_inbox_id(addrs, mapping) is None
+    assert pick_canonical_inbox_id(addrs, mapping, frozenset(mapping.values())) is None
 
 
 def test_pick_empty_inputs():
-    assert pick_canonical_inbox_id([], {"x": 1}) is None
-    assert pick_canonical_inbox_id(["x@vger.kernel.org"], {}) is None
+    assert pick_canonical_inbox_id([], {"x": 1}, frozenset({1})) is None
+    assert pick_canonical_inbox_id(["x@vger.kernel.org"], {}, frozenset({1})) is None
+
+
+# pick_canonical_inbox_id: only linked inboxes qualify (#675)
+
+
+def test_pick_ignores_inbox_the_article_is_not_linked_to():
+    addrs = ["op-tee@lists.trustedfirmware.org", "linux-kernel@vger.kernel.org"]
+    mapping = {
+        "op-tee@lists.trustedfirmware.org": 7,
+        "linux-kernel@vger.kernel.org": 1,
+    }
+    assert pick_canonical_inbox_id(addrs, mapping, frozenset({1})) == 1
+    assert pick_canonical_inbox_id(addrs, mapping, frozenset({2})) is None
 
 
 # pick_canonical_inbox_id: demoted inboxes used only as fallback
@@ -235,7 +248,12 @@ def test_pick_skips_demoted_in_favour_of_later_non_demoted():
         "linux-kernel@vger.kernel.org": 1,
         "linux-arm-kernel@lists.infradead.org": 2,
     }
-    assert pick_canonical_inbox_id(addrs, mapping, frozenset({1})) == 2
+    assert (
+        pick_canonical_inbox_id(
+            addrs, mapping, frozenset(mapping.values()), frozenset({1})
+        )
+        == 2
+    )
 
 
 def test_pick_uses_demoted_when_only_demoted_matches():
@@ -248,7 +266,12 @@ def test_pick_uses_demoted_when_only_demoted_matches():
         "alice@example.com",  # not list-shaped → no match
     ]
     mapping = {"linux-kernel@vger.kernel.org": 1}
-    assert pick_canonical_inbox_id(addrs, mapping, frozenset({1})) == 1
+    assert (
+        pick_canonical_inbox_id(
+            addrs, mapping, frozenset(mapping.values()), frozenset({1})
+        )
+        == 1
+    )
 
 
 def test_pick_non_demoted_match_before_demoted_in_walk_order():
@@ -264,7 +287,12 @@ def test_pick_non_demoted_match_before_demoted_in_walk_order():
         "linux-arm-kernel@lists.infradead.org": 2,
         "linux-kernel@vger.kernel.org": 1,
     }
-    assert pick_canonical_inbox_id(addrs, mapping, frozenset({1})) == 2
+    assert (
+        pick_canonical_inbox_id(
+            addrs, mapping, frozenset(mapping.values()), frozenset({1})
+        )
+        == 2
+    )
 
 
 # fallback_canonical_name: render-time two-tier sort
