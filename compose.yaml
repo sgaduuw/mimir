@@ -41,11 +41,12 @@ services:
       # broker only since the broker is the sole VACUUM caller.
       SQLITE_TMPDIR: /data/db
       # Keep the GIL disabled under the 3.15t free-threading build.
-      # CPython auto-re-enables the GIL when any C extension without
-      # a Py_GIL_DISABLED declaration is imported (SQLAlchemy's
-      # cyextension.collections is one such module). Setting PYTHON_GIL=0
-      # suppresses the re-enable; warnings still fire at import but the
-      # runtime stays GIL-free. Broker only: it is the multi-thread
+      # CPython re-enables the GIL when a C extension without a
+      # Py_GIL_DISABLED declaration is imported; PYTHON_GIL=0 keeps it
+      # off. No locked wheel does that today (the 3.16.0 release review
+      # found the GIL stays off on 3.15t without this setting), so it is
+      # a cheap guard against a future dependency that does. Broker
+      # only: it is the multi-thread
       # process (cache + long + 4 warm workers) where free-threading
       # actually pays off. mimir-app is gunicorn sync workers (one
       # thread each); mimir-tasks is the scheduler shelling out RPCs.
@@ -209,13 +210,11 @@ services:
       # guard. Leave default `/data/.broker.sock` for
       # BROKER_SOCKET_PATH unless you've moved the socket.
       MIMIR_DEPLOY: "true"
-      # Silences the RuntimeWarning that fires on every Flask CLI
-      # invocation when SQLAlchemy's cyextension imports re-enable
-      # the GIL (see the broker block above for the full rationale).
+      # Same guard as the broker block above, for log hygiene only:
       # tasks is the scheduler shelling out one-shot RPC dispatchers
-      # in a loop, so each `mimir <cmd>` subprocess re-imports and
-      # re-fires the warning; free-threading itself buys nothing
-      # here. This is purely log hygiene.
+      # in a loop, so an extension that re-enabled the GIL would print
+      # its RuntimeWarning from every `mimir <cmd>` subprocess.
+      # Free-threading itself buys nothing here.
       PYTHON_GIL: "0"
       # Match the web container's INBOXES / SITE_NAME / etc. so the
       # CLI commands see the same Settings.
