@@ -23,10 +23,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from email.utils import parseaddr
 
-from pydantic import BaseModel
 from sqlalchemy import select
 
-from mimir._backfill import walk_articles
+from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
 from mimir.models import Article
 from mimir.parser import unfold
@@ -179,13 +178,8 @@ def series_key(title: str, author: str | None) -> str:
     return hashlib.sha1(payload).hexdigest()
 
 
-class BackfillResult(BaseModel):
-    """Outcome counters for `backfill_patch_series`.
-
-    `partial` marks a broker chunk that stopped on its time budget
-    (Phase 2.2); the broker keeps the run's cursor (`mimir.backfill_runs`).
-    Direct (non-broker) callers always see `partial=False`.
-    """
+class BackfillResult(BackfillCounters):
+    """Outcome counters for `backfill_patch_series`."""
 
     examined: int = 0
     indexed: int = 0  # cover letter detected, key + version + pos=0 written
@@ -194,21 +188,6 @@ class BackfillResult(BaseModel):
     not_cover: int = 0  # non-series-shaped subject (prose, replies, solo [PATCH])
     skipped: int = 0  # already fully resolved (idempotent re-run)
     subjects_unfolded: int = 0  # stored folded subject rewritten (#710)
-    partial: bool = False
-
-    def merge(self, other: BackfillResult) -> BackfillResult:
-        """Sum counters with `other`, carrying `other`'s
-        `partial` forward."""
-        return BackfillResult(
-            examined=self.examined + other.examined,
-            indexed=self.indexed + other.indexed,
-            in_series_indexed=self.in_series_indexed + other.in_series_indexed,
-            in_series_orphan=self.in_series_orphan + other.in_series_orphan,
-            not_cover=self.not_cover + other.not_cover,
-            skipped=self.skipped + other.skipped,
-            subjects_unfolded=self.subjects_unfolded + other.subjects_unfolded,
-            partial=other.partial,
-        )
 
 
 def _resolve_in_series_link(

@@ -200,6 +200,15 @@ def drive_passes(run) -> dict[str, int]:
     of the loop matters more than the six lines it saves, because the
     termination logic has to be right in all three and the copies had
     already drifted (the replay one had no exhaustion signal at all).
+
+    Idempotent: every pass only touches NULL rows, so a re-run resumes
+    a partial pass and never clobbers live ingest. Tests and dev
+    scripts that want a whole run in one session call
+    `drive_passes(lambda fn: fn(session, inbox_id))`; both in-broker
+    drivers commit one pass at a time instead, because holding the
+    single writer for a full run would queue every web-tier cache
+    write behind it. See `FULL_RUN_SECONDS_AT_1M_ROWS` for how long
+    that is.
     """
     counts = {
         "seeded": run(seed_roots),
@@ -218,29 +227,6 @@ def drive_passes(run) -> dict[str, int]:
         break
     else:
         counts["exhausted"] = 1
-    return counts
-
-
-def backfill_inbox(session: Session, inbox_id: int) -> dict[str, int]:
-    """Populate `thread_root_id` for one inbox, all passes in ONE
-    session. Idempotent: only touches NULL rows, so a re-run resumes a
-    partial pass and never clobbers live ingest.
-
-    For non-broker callers (tests, dev scripts) that want the whole run
-    in one transaction. Both in-broker drivers instead commit one pass
-    at a time (the RPC handler submits each as its own WriteOp; the
-    startup path drives the same `drive_passes` seam and commits
-    between passes), because holding the single writer for a full run
-    would queue every web-tier cache write behind it. See
-    `FULL_RUN_SECONDS_AT_1M_ROWS` for how long that is.
-    """
-    counts = drive_passes(lambda fn: fn(session, inbox_id))
-    if counts["exhausted"]:
-        logger.warning(
-            "thread-roots: inbox %s hit MAX_PASSES (%s); rows remain unrooted",
-            inbox_id,
-            MAX_PASSES,
-        )
     return counts
 
 
