@@ -222,7 +222,7 @@ def test_daily_view_counts_messages_in_window(client, frozen_clock):
 
 
 def test_year_decade_groups_groups_by_decade():
-    from mimir.web import _year_decade_groups
+    from mimir.web.urls import _year_decade_groups
 
     out = _year_decade_groups(1996, 2026)
     decades = [decade for decade, _ in out]
@@ -233,14 +233,14 @@ def test_year_decade_groups_groups_by_decade():
 
 
 def test_year_decade_groups_single_decade():
-    from mimir.web import _year_decade_groups
+    from mimir.web.urls import _year_decade_groups
 
     out = _year_decade_groups(2024, 2026)
     assert out == [(2020, [2026, 2025, 2024])]
 
 
 def test_year_decade_groups_single_year():
-    from mimir.web import _year_decade_groups
+    from mimir.web.urls import _year_decade_groups
 
     assert _year_decade_groups(2025, 2025) == [(2020, [2025])]
 
@@ -248,7 +248,7 @@ def test_year_decade_groups_single_year():
 def test_year_decade_groups_handles_decade_boundary():
     """1999 → 2010 spans 3 decades; each gets exactly the years that
     belong to it (no off-by-one wrap)."""
-    from mimir.web import _year_decade_groups
+    from mimir.web.urls import _year_decade_groups
 
     out = _year_decade_groups(1999, 2010)
     assert out == [
@@ -259,6 +259,6 @@ def test_year_decade_groups_handles_decade_boundary():
 
 
 def test_year_decade_groups_returns_empty_when_inverted():
-    from mimir.web import _year_decade_groups
+    from mimir.web.urls import _year_decade_groups
 
     assert _year_decade_groups(2026, 1996) == []
