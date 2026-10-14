@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.17.1] - 2026-10-14
+
 ### Fixed
 
 - With more than one long worker, two inboxes ingesting the first copy of the
