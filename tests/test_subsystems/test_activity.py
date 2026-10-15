@@ -336,7 +336,9 @@ def test_most_active_subsystems_global_compute_on_miss_false_returns_empty(
         wrapped.get_or_compute.assert_not_called()
 
 
-def test_most_active_subsystems_counts_an_article_on_the_start_day(seeded_db):
+def test_most_active_subsystems_counts_an_article_on_the_start_day(
+    seeded_db, frozen_clock
+):
     """The window opens at midnight UTC of the start day. An article
     later that day was dropped while the bind was an isoformat string
     ('...T00:00:00+00:00' sorts after the stored '... 12:00:00')
