@@ -400,11 +400,11 @@ def test_reindex_does_not_block_cache_rpc(seeded_db, tmp_path, monkeypatch):
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             broker.call,
-            ReindexRequest(rpc_id=0, inbox_name="alpha", epoch="2.git", workers=1),
+            ReindexRequest(inbox_name="alpha", epoch="2.git", workers=1),
         )
         try:
             assert entered.wait(timeout=5), "re-walk never started"
-            assert broker.call(PingRequest(rpc_id=0)) == {}
+            assert broker.call(PingRequest()) == {}
         finally:
             release.set()
         assert future.result(timeout=10)["ingest"]["new"] == 1

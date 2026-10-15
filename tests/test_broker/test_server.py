@@ -125,7 +125,7 @@ def test_server_warns_on_slow_rpc(seeded_db, caplog, monkeypatch):
         try:
             c.call(
                 CacheSetRequest(
-                    rpc_id=0, key=cache._ns("slow-warn-test"), value_json='"x"', ttl=60
+                    key=cache._ns("slow-warn-test"), value_json='"x"', ttl=60
                 )
             )
         finally:
@@ -176,7 +176,6 @@ def test_server_does_not_warn_when_threshold_disabled(seeded_db, caplog, monkeyp
         try:
             c.call(
                 CacheSetRequest(
-                    rpc_id=0,
                     key=cache._ns("slow-disabled-test"),
                     value_json='"x"',
                     ttl=60,
@@ -219,8 +218,8 @@ def test_server_serves_two_clients_concurrently(seeded_db):
             # Open both connections by issuing a cheap ping from
             # each, in order — this forces the broker to accept()
             # both before either tries serious work.
-            assert a.call(PingRequest(rpc_id=0)) == {}
-            assert b.call(PingRequest(rpc_id=0)) == {}
+            assert a.call(PingRequest()) == {}
+            assert b.call(PingRequest()) == {}
 
             # Now interleave real RPCs from both clients. If only
             # one reader thread existed, the second `b.cache_set`
@@ -229,7 +228,6 @@ def test_server_serves_two_clients_concurrently(seeded_db):
             for i in range(20):
                 a.call(
                     CacheSetRequest(
-                        rpc_id=0,
                         key=cache._ns(f"two-clients:a:{i}"),
                         value_json=f'"a-{i}"',
                         ttl=60,
@@ -237,7 +235,6 @@ def test_server_serves_two_clients_concurrently(seeded_db):
                 )
                 b.call(
                     CacheSetRequest(
-                        rpc_id=0,
                         key=cache._ns(f"two-clients:b:{i}"),
                         value_json=f'"b-{i}"',
                         ttl=60,
@@ -276,7 +273,6 @@ def test_server_serves_many_clients_concurrently(seeded_db):
                 for i in range(rpcs_per_client):
                     c.call(
                         CacheSetRequest(
-                            rpc_id=0,
                             key=cache._ns(f"many:{cid}:{i}"),
                             value_json=f'"{cid}-{i}"',
                             ttl=60,
@@ -317,7 +313,7 @@ def test_reader_threads_prunes_dead_threads(seeded_db):
     with broker_running(sp) as server:
         for _ in range(n_clients):
             c = BrokerClient(sp)
-            assert c.call(PingRequest(rpc_id=0)) == {}
+            assert c.call(PingRequest()) == {}
             c.close()
 
         # Reader threads notice EOF within SHUTDOWN_POLL_SEC (0.1s) of
@@ -369,7 +365,6 @@ def test_server_slow_rpc_warning_includes_queue_wait(seeded_db, caplog, monkeypa
         try:
             c.call(
                 CacheSetRequest(
-                    rpc_id=0,
                     key=cache._ns("slow-breakdown-test"),
                     value_json='"x"',
                     ttl=60,

@@ -19,7 +19,7 @@ def bootstrap_inboxes_command() -> None:
     from mimir.broker.protocol import BootstrapInboxesRequest
 
     try:
-        result = get_broker_client().call(BootstrapInboxesRequest(rpc_id=0))
+        result = get_broker_client().call(BootstrapInboxesRequest())
         count = int(result.get("inboxes", 0))
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker bootstrap_inboxes failed: {exc}")

@@ -20,7 +20,7 @@ def test_client_ping_returns_true(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            assert c.call(PingRequest(rpc_id=0)) == {}
+            assert c.call(PingRequest()) == {}
         finally:
             c.close()
 
@@ -32,7 +32,6 @@ def test_client_cache_set_persists_through_broker(seeded_db):
         try:
             c.call(
                 CacheSetRequest(
-                    rpc_id=0,
                     key=cache._ns("test_client_set"),
                     value_json='"hello"',
                     ttl=60,
@@ -52,9 +51,7 @@ def test_client_cache_delete_for_inbox_returns_count(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            n = c.call(CacheDeleteForInboxRequest(rpc_id=0, name="alpha"))[
-                "rows_deleted"
-            ]
+            n = c.call(CacheDeleteForInboxRequest(name="alpha"))["rows_deleted"]
         finally:
             c.close()
     assert n == 2
@@ -69,7 +66,7 @@ def test_client_raises_broker_unavailable_when_no_broker(seeded_db):
     sp = short_socket_path("nobroker")
     c = BrokerClient(sp)
     with pytest.raises(BrokerUnavailable):
-        c.call(CacheSetRequest(rpc_id=0, key="x", value_json='"v"', ttl=60))
+        c.call(CacheSetRequest(key="x", value_json='"v"', ttl=60))
 
 
 def test_client_reconnects_lazily_after_broker_restart(seeded_db):
@@ -83,7 +80,7 @@ def test_client_reconnects_lazily_after_broker_restart(seeded_db):
     c = BrokerClient(sp)
     try:
         with broker_running(sp):
-            assert c.call(PingRequest(rpc_id=0)) == {}
+            assert c.call(PingRequest()) == {}
         # The broker's reader and worker threads run independently
         # of broker_running's context exit and may still drain a
         # request landing inside the SHUTDOWN_POLL_SEC=0.1s window
@@ -96,10 +93,10 @@ def test_client_reconnects_lazily_after_broker_restart(seeded_db):
         # Broker is gone; the client's socket is stale.
         # The next RPC against a stopped broker raises.
         with pytest.raises(BrokerUnavailable):
-            c.call(PingRequest(rpc_id=0))
+            c.call(PingRequest())
         # New broker on the same path. Next RPC reconnects.
         with broker_running(sp):
-            assert c.call(PingRequest(rpc_id=0)) == {}
+            assert c.call(PingRequest()) == {}
     finally:
         try:
             if c._sock is not None:
@@ -125,7 +122,7 @@ def test_client_persistent_connection_survives_idle_window(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            assert c.call(PingRequest(rpc_id=0)) == {}
+            assert c.call(PingRequest()) == {}
             # Longer than the handler's selector timeout (100ms)
             # plus a margin so we cross at least one poll boundary
             # mid-idle. The prior bug surfaced on the very NEXT
@@ -136,7 +133,7 @@ def test_client_persistent_connection_survives_idle_window(seeded_db):
             # disconnects and the client reconnects on retry, which
             # still costs latency). With the fix the broker is
             # quietly waiting and the RPC returns clean.
-            assert c.call(PingRequest(rpc_id=0)) == {}
+            assert c.call(PingRequest()) == {}
         finally:
             c.close()
 
@@ -172,9 +169,7 @@ def test_client_concurrent_rpcs_from_one_singleton(seeded_db):
                 for i in range(rpcs_per_thread):
                     key = _ns(f"concurrent:{tid}:{i}")
                     c.call(
-                        CacheSetRequest(
-                            rpc_id=0, key=key, value_json=f'"v-{tid}-{i}"', ttl=60
-                        )
+                        CacheSetRequest(key=key, value_json=f'"v-{tid}-{i}"', ttl=60)
                     )
 
             with ThreadPoolExecutor(max_workers=n_threads) as ex:
@@ -221,7 +216,6 @@ def test_client_cache_set_handles_payload_larger_than_socket_buffer(seeded_db):
         try:
             c.call(
                 CacheSetRequest(
-                    rpc_id=0,
                     key=cache._ns("large-payload-test"),
                     value_json=f'"{big}"',
                     ttl=60,
@@ -245,9 +239,9 @@ def test_client_persistent_connection_reuses_socket(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            assert c.call(PingRequest(rpc_id=0)) == {}
+            assert c.call(PingRequest()) == {}
             sock_id = id(c._sock)
-            assert c.call(PingRequest(rpc_id=0)) == {}
+            assert c.call(PingRequest()) == {}
             assert id(c._sock) == sock_id, (
                 "client opened a new socket for the second RPC; "
                 "persistent-connection contract broken"
@@ -342,12 +336,12 @@ def test_two_threads_dispatch_concurrently_no_serialization(seeded_db, monkeypat
 
             def thread_a():
                 # Will get rpc_id=1; handler blocks on barrier.
-                results["a"] = c.call(PingRequest(rpc_id=0))
+                results["a"] = c.call(PingRequest())
 
             def thread_b():
                 # Will get rpc_id=2; must dispatch fully even while
                 # Thread A is parked on the barrier.
-                results["b"] = c.call(PingRequest(rpc_id=0))
+                results["b"] = c.call(PingRequest())
                 # Releasing the barrier lets Thread A finish.
                 barrier.set()
 
@@ -422,7 +416,7 @@ def test_caller_timeout_leaves_client_usable(seeded_db, monkeypatch):
         c = BrokerClient(sp)
         try:
             # Force 100ms timeout; the broker sleeps 500ms.
-            req = PingRequest(rpc_id=0)
+            req = PingRequest()
             with pytest.raises(BrokerUnavailable):
                 c._rpc(req, timeout=0.1)
 
@@ -431,7 +425,7 @@ def test_caller_timeout_leaves_client_usable(seeded_db, monkeypatch):
             time.sleep(1.0)
 
             # Subsequent RPC works normally.
-            assert c.call(PingRequest(rpc_id=0)) == {}
+            assert c.call(PingRequest()) == {}
         finally:
             c.close()
 
@@ -519,7 +513,7 @@ def test_call_waits_for_the_request_models_own_timeout(seeded_db, monkeypatch):
         c = BrokerClient(sp)
         try:
             with pytest.raises(BrokerUnavailable, match=r"timed out after 0\.1s"):
-                c.call(PingRequest(rpc_id=0))
+                c.call(PingRequest())
         finally:
             c.close()
 
@@ -536,9 +530,7 @@ def test_call_raises_with_the_op_and_reply_error(seeded_db):
         try:
             with pytest.raises(BrokerUnavailable) as exc_info:
                 c.call(
-                    InboxUpdateRequest(
-                        rpc_id=0, name="nosuch", upstream_url="https://x.example/"
-                    )
+                    InboxUpdateRequest(name="nosuch", upstream_url="https://x.example/")
                 )
         finally:
             c.close()
@@ -559,4 +551,4 @@ def test_every_long_and_warm_op_sets_its_own_timeout():
     )
     assert len(LONG_OPS | WARM_OPS) > 20
     assert short == []
-    assert "timeout" not in PingRequest(rpc_id=0).model_dump()
+    assert "timeout" not in PingRequest().model_dump()

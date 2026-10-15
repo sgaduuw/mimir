@@ -255,7 +255,7 @@ def test_broker_client_warm_inbox_round_trip(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = c.call(WarmInboxRequest(rpc_id=0, inbox_name="alpha"))
+            result = c.call(WarmInboxRequest(inbox_name="alpha"))
         finally:
             c.close()
     assert isinstance(result, dict)
@@ -269,7 +269,7 @@ def test_broker_client_warm_global_round_trip(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = c.call(WarmGlobalRequest(rpc_id=0))
+            result = c.call(WarmGlobalRequest())
         finally:
             c.close()
     assert isinstance(result, dict)
@@ -312,7 +312,7 @@ def test_warm_workers_drain_in_parallel(seeded_db, monkeypatch):
 
                 def fire(client):
                     t0 = time.perf_counter()
-                    client.call(WarmInboxRequest(rpc_id=0, inbox_name="alpha"))
+                    client.call(WarmInboxRequest(inbox_name="alpha"))
                     with lock:
                         results.append(time.perf_counter() - t0)
 
@@ -498,16 +498,14 @@ def test_warm_workers_do_not_preempt_in_flight_slow_op(seeded_db, monkeypatch):
 
                 def fire_slow():
                     c_slow.call(
-                        WarmInboxRequest(rpc_id=0, inbox_name="alpha")
+                        WarmInboxRequest(inbox_name="alpha")
                     )  # priority=1 default
                     completions["slow"] = time.perf_counter()
                     if "fast" in completions:
                         done.set()
 
                 def fire_fast():
-                    c_fast.call(
-                        WarmInboxRequest(rpc_id=0, inbox_name="alpha", priority=0)
-                    )
+                    c_fast.call(WarmInboxRequest(inbox_name="alpha", priority=0))
                     completions["fast"] = time.perf_counter()
                     if "slow" in completions:
                         done.set()
@@ -930,7 +928,7 @@ def test_broker_client_warm_subsystem_round_trip(seeded_db):
         c = BrokerClient(sp)
         try:
             result = c.call(
-                WarmSubsystemRequest(rpc_id=0, inbox_name="alpha", subsystem_id=sub_id)
+                WarmSubsystemRequest(inbox_name="alpha", subsystem_id=sub_id)
             )
         finally:
             c.close()

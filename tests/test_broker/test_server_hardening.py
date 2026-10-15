@@ -260,7 +260,7 @@ def test_stalled_reply_releases_worker_for_other_clients(seeded_db, monkeypatch)
             assert replying.wait(timeout=2)
             client = BrokerClient(sp)
             try:
-                assert client.call(PingRequest(rpc_id=0)) == {}, (
+                assert client.call(PingRequest()) == {}, (
                     "stalled response blocked another client's ping"
                 )
                 # A partial JSON frame cannot share a connection with later replies.

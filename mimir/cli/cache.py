@@ -513,7 +513,6 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
                     pool.submit(
                         client.call,
                         WarmInboxRequest(
-                            rpc_id=0,
                             inbox_name=name,
                             targets=per_inbox_targets(inbox),
                             priority=priority_for_tier,
@@ -526,7 +525,6 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
                             pool.submit(
                                 client.call,
                                 WarmSubsystemRequest(
-                                    rpc_id=0,
                                     inbox_name=name,
                                     subsystem_id=sub_id,
                                     priority=priority_for_tier,
@@ -554,9 +552,7 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
         # (broker runs the full global list), tier=fast/slow pass
         # an explicit label list.
         global_result = client.call(
-            WarmGlobalRequest(
-                rpc_id=0, targets=global_targets, priority=priority_for_tier
-            )
+            WarmGlobalRequest(targets=global_targets, priority=priority_for_tier)
         )
         total_keys += len(global_result.get("warmed", []))
         if verbose:

@@ -161,7 +161,6 @@ def admin_robots_add_command(
     try:
         rule_dict = get_broker_client().call(
             RobotsAddRequest(
-                rpc_id=0,
                 user_agent=user_agent,
                 disallow=list(disallow),
                 crawl_delay=crawl_delay,
@@ -233,7 +232,6 @@ def admin_robots_update_command(
     try:
         rule_dict = get_broker_client().call(
             RobotsUpdateRequest(
-                rpc_id=0,
                 user_agent=user_agent,
                 add_disallow=list(add_disallow),
                 remove_disallow=list(remove_disallow),
@@ -259,7 +257,7 @@ def admin_robots_remove_command(user_agent: str) -> None:
     from mimir.broker.protocol import RobotsRemoveRequest
 
     try:
-        get_broker_client().call(RobotsRemoveRequest(rpc_id=0, user_agent=user_agent))
+        get_broker_client().call(RobotsRemoveRequest(user_agent=user_agent))
     except BrokerUnavailable as exc:
         raise _robots_click_error(exc)
     click.echo(f"removed rule for user_agent {user_agent!r}")
@@ -284,7 +282,7 @@ def admin_robots_reset_command(yes: bool) -> None:
     from mimir.broker.protocol import RobotsResetRequest
 
     try:
-        get_broker_client().call(RobotsResetRequest(rpc_id=0))
+        get_broker_client().call(RobotsResetRequest())
     except BrokerUnavailable as exc:
         raise _robots_click_error(exc)
     click.echo("reset robots_rules to seeded defaults")

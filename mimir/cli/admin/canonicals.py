@@ -88,7 +88,7 @@ def admin_canonicals_backfill_command(
     try:
         result, run = _broker_backfill_loop(
             lambda **kw: client.backfill(
-                BackfillCanonicalsRequest(rpc_id=0, **kw), BackfillResult
+                BackfillCanonicalsRequest(**kw), BackfillResult
             ),
             limit=limit,
             reprocess=reprocess,

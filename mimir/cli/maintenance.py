@@ -48,7 +48,7 @@ def analyze_command(full: bool) -> None:
     from mimir.broker.protocol import AnalyzeRequest
 
     try:
-        payload = get_broker_client().call(AnalyzeRequest(rpc_id=0, full=full))
+        payload = get_broker_client().call(AnalyzeRequest(full=full))
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker analyze failed: {exc}")
     elapsed_s = payload.get("elapsed_ms", 0) / 1000.0
@@ -73,7 +73,7 @@ def vacuum_command() -> None:
     from mimir.broker.protocol import VacuumRequest
 
     try:
-        payload = get_broker_client().call(VacuumRequest(rpc_id=0))
+        payload = get_broker_client().call(VacuumRequest())
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker vacuum failed: {exc}")
     _echo_vacuum_outcome(payload)
