@@ -683,6 +683,9 @@ Reply shapes preserved exactly: `handle_cache_set` and
 `handle_cache_delete` return `Reply(ok=True)` (no `rows_deleted`);
 `handle_cache_delete_for_inbox` and `handle_cache_purge_expired`
 return `Reply(ok=True, rows_deleted=n)`. No RPC contract change.
+(#706 later moved that count into `result={"rows_deleted": n}`, so
+every op's payload sits in `result` and `BrokerClient.call` returns
+it.)
 
 The architectural payoff: after Phase 4 every SQLite write inside
 the broker funnels through one WriterThread, regardless of which
@@ -720,13 +723,19 @@ CRUD + 1 failures replay, all in
 the service layer's `SessionLocal()` (and `write_transaction()`
 for `mimir/robots.py`). Each service-layer function in
 `mimir/inboxes.py`, `mimir/robots.py`, and
-`mimir/ingest/replay.py::replay_failures` now starts with a
-`try: writer = _context.get_active_writer(); except RuntimeError:
-writer = None` dispatch fork: when an active broker context is
-set (handler invocation), it composes a composite WriteOp whose
-closure runs the full SQL sequence and awaits `.result()`; when
-not (tests, `bootstrap_inboxes`, dev scripts), it falls back to
-the legacy `SessionLocal()` path.
+`mimir/ingest/replay.py::replay_failures` composes a composite
+WriteOp whose closure runs the full SQL sequence on the active
+WriterThread and awaits `.result()`. Phase 5 shipped with a
+`SessionLocal()` fallback for callers without a broker context;
+#707 removed it. `get_active_writer()` raises `RuntimeError` when no
+writer is active and the mutators let it propagate, so a process
+without a writer cannot write on its own (the single-writer
+invariant). The one no-writer write left is `bootstrap_inboxes`, and
+only at broker startup: `build_server` runs it through
+`_bootstrap_inboxes_if_needed` before the WriterThread is started and
+registered, so there is no writer to dispatch to. Its steady-state RPC
+(`handle_bootstrap_inboxes`) does use the writer. Phase 6a moved only
+that RPC onto the writer, not the startup call.
 
 The architectural payoff: after Phase 5 the admin write surface
 joins the single-writer invariant. The periodic purge timer
@@ -754,8 +763,7 @@ so `write_transaction()` + the BEGIN-IMMEDIATE listener + the
 - `longops.bootstrap_inboxes` and `mainline.load_maintainers`
   (the latter explicitly deferred from Phase 3) still wrap
   shared-engine writes in `write_transaction()`.
-- robots.py's legacy fallback path (non-broker callers only:
-  tests, dev scripts).
+- (robots.py's non-broker fallback was listed here; #707 removed it.)
 
 So Phase 6 is **not** a pure deletion: it must first migrate the
 remaining in-broker shared-engine writers onto the WriterThread,
@@ -795,9 +803,10 @@ statement-builders (`_set_stmt` / `_delete_one_stmt` /
 `*_via_writer` closures and the `_direct_*` helpers; `_direct_*`
 are retained as explicitly TEST-ONLY scaffolding (no production
 caller, guarded by `test_no_production_module_references_direct_cache_helpers`).
-The robots.py and `load_maintainers` non-broker fallback paths drop
-the `write_transaction` wrapper (plain `SessionLocal`; single-threaded,
-no concurrent committer, so DEFERRED begin is safe). **The cache
+The `load_maintainers` non-broker fallback path drops the
+`write_transaction` wrapper (plain `SessionLocal`; single-threaded,
+no concurrent committer, so DEFERRED begin is safe). The robots.py one
+went too, and #707 later removed the fallback itself. **The cache
 worker thread is KEPT, not collapsed** (it is load-bearing for
 dispatch-level concurrency: it lets cache RPCs submit promptly and
 interleave into the WriterThread FIFO between a long op's per-batch
@@ -812,7 +821,7 @@ Per-handler structural-contract tests in
 active writer via a recording wrapper around
 `_context.get_active_writer()`, run the service function, assert
 at least one submit happened (i.e. the dispatch path was taken).
-Each of the 12 handlers gets one such test. End-to-end DB-state
+Each service function the handlers call gets one such test. End-to-end DB-state
 correctness is gated by the existing handler-level tests in
 `tests/test_broker/test_admin_ops.py` which assert post-RPC
 state and continue to pass unchanged.
@@ -820,35 +829,30 @@ state and continue to pass unchanged.
 Subtleties surfaced during the migration (worth durable
 documentation):
 
-- **`_publish_names` requires a Session.** Every legacy `inboxes.py`
-  write function ended with `_publish_names(session)` to refresh the
-  in-memory `_INBOX_NAMES` nav cache. Writer closures receive a
-  Connection, not a Session, so Phase 5's writer-path branch calls
+- **`_publish_names` requires a Session.** The `inboxes.py` write
+  functions must refresh the in-memory `_INBOX_NAMES` nav cache.
+  Writer closures receive a Connection, not a Session, so each calls
   the existing `refresh_inbox_names()` helper after `future.result()`
   (a few ms after the commit lands; acceptable for a nav cache).
-  Legacy fallback paths continue to call `_publish_names(session)`
-  inline.
 
-- **Two-call-chain functions fold into one closure.**
-  `add_tracked_author` and `remove_tracked_author` previously opened
-  two separate `SessionLocal()` contexts (first for `get_inbox`,
-  then for `set_tracked_authors`). The writer-path closures combine
-  both into one closure operating on the writer's `conn`: SELECT
-  current `tracked_authors`, mutate in Python, UPDATE in SQL. This
-  is atomic per-transaction (vs the legacy two-transaction shape's
-  brief TOCTOU window, and the broker is single-writer so the window was
-  never observably racy). Net: writer path is slightly more correct
-  than the legacy path.
+- **Tracker add/remove/clear are no longer broker ops (#708).**
+  Phase 5 folded `add_tracked_author` and `remove_tracked_author`
+  into one writer closure each (SELECT, mutate in Python, UPDATE).
+  Those ops, `clear_tracked_authors`, and their protocol models,
+  client methods and handlers are gone: `admin inbox trackers
+  add/remove/clear` read the dict in the CLI, edit it there, and
+  write it back through `inbox_set_tracked_authors`. That reopens
+  a read-then-write window between two concurrent operator edits
+  of one inbox's trackers (the last write wins). Accepted: trackers
+  are edited by hand, rarely, by one operator.
 
-- **`write_transaction()` is dead code on the writer path for
+- **`write_transaction()` was dead code on the writer path for
   robots functions.** `write_transaction` is a ContextVar-gated
   event listener that fires on the shared engine's `connect` event.
   The WriterThread uses its own engine (`WriterThread.from_settings()`),
   not the shared pool, so the listener doesn't fire on writer-thread
-  connections. The `with write_transaction(...)` wrapper in the
-  legacy robots functions becomes a no-op on the writer path; the
-  fallback path keeps it (and DOES use the shared engine). The
-  writer path doesn't include `write_transaction()` in its closure.
+  connections, and the writer closures never included it. Only the
+  robots fallback used it; that fallback is gone (#707).
 
 - **WriterThread engine `_sqlite_pragmas` registration (resolved).**
   Phase 5 originally shipped with the WriterThread's
@@ -993,7 +997,7 @@ which reads the column and would agree with any corruption by
 construction.
 
 `text()` raw SQL bypasses SQLAlchemy's type coercion, so the `date`
-column comes back as an ISO string from the CTE. `_coerce_dt` parses
+column comes back as an ISO string from the CTE. `coerce_dt` parses
 it back to `datetime` before the row is wrapped in a `ThreadNode`
 dataclass.
 
@@ -1124,9 +1128,10 @@ and recent messages stay full-width since they're the primary content.
 
 Trackers are **per-inbox state**, not a settings-level dict. The
 `Inbox.tracked_authors` JSON column is mutated through
-`admin inbox trackers {show,set,add,remove,clear} <inbox>` (service
-layer in `mimir/inboxes.py`); cache invalidation for the affected
-inbox happens on every write. Adding a tracker shows up as a new
+`admin inbox trackers {show,set,add,remove,clear} <inbox>`, all
+writing through `set_tracked_authors` in `mimir/inboxes.py`. No
+cache is invalidated: `author_recent` keys embed the email
+substring, so orphaned rows age out by TTL. Adding a tracker shows up as a new
 tile on that inbox's dashboard without touching code or env. The
 older `Settings.tracked_authors` knob (a single global dict) was
 removed once mimir went multi-inbox: a single tracker list across
@@ -1411,7 +1416,14 @@ data:
    wins as a fallback when no non-demoted match is found later in
    the walk. So `Cc: linux-kernel@vger.kernel.org,
    linux-arm-kernel@lists.infradead.org` pins to linux-arm-kernel
-   even though lkml is positionally first. NULL is allowed (and
+   even though lkml is positionally first. Only inboxes the article
+   is filed in can win (#675): a pin naming an inbox with no copy
+   sends readers to a page that does not have the message. Each
+   cross-post re-picks, so a topical copy arriving after the
+   firehose copy takes over. The pick runs on the writer, over the
+   links as they stand inside the same WriteOp (#722): with more
+   than one long worker, a pick made in the read phase could be
+   written after another batch added a link it never saw. NULL is allowed (and
    common during warm-up); render-time falls back to the
    alphabetically-first inbox among the article's `lists`, with
    the same demoted-to-back ordering.
@@ -2206,8 +2218,7 @@ cases (`maintainers_reparse`, `article_files_rewrite`) are left out of
 it because the fixture page does not render them, so those inputs have
 validator coverage but no warm-versus-cold coverage until #678. Known
 exceptions: time-relative output (the activity chip ages within the TTL;
-no validator can carry `now()`), a reply that lands only in another
-inbox (#676, a strict xfail), and the related-patches and
+no validator can carry `now()`), and the related-patches and
 related-discussions lists, which are cached by id and are not validator
 inputs at all, by the same choice as before 3.13.0.
 

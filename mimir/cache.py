@@ -448,6 +448,7 @@ def set(key: str, value: Any, ttl: int) -> None:
         # the client out, and lets unit tests for the cache module
         # run without spinning up a broker).
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+        from mimir.broker.protocol import CacheSetRequest
 
         # Apply the extension here, before crossing the wire: the
         # broker's _ttl_extension ContextVar is unset in the cache-
@@ -458,7 +459,9 @@ def set(key: str, value: Any, ttl: int) -> None:
         # it's silently dropped at the wire.
         wire_ttl = _apply_ttl_extension(ttl)
         try:
-            get_broker_client().cache_set(nskey, payload, wire_ttl)
+            get_broker_client().call(
+                CacheSetRequest(key=nskey, value_json=payload, ttl=wire_ttl)
+            )
         except BrokerUnavailable as exc:
             logger.warning("broker write failed for %s: %s", nskey, exc)
         return
@@ -607,35 +610,16 @@ def get_or_compute(
             window = _refresh_within.get()
             if window is None:
                 return _decode(json.loads(row.value))
-            # Probabilistic refresh window: use the cache_warm
-            # classifier to decide skip / probabilistic-ramp /
-            # deterministic-insurance. Outside the warm-cache
-            # cycle this branch is never reached (window is None
-            # by default).
-            #
-            # A read-time `_ttl_extension` mismatch with the value
-            # in scope at write time is benign: `remaining` is
-            # read from the row directly (independent of any
-            # ContextVar), and `remaining` survives the mismatch
-            # because the stored_ttl error cancels the elapsed
-            # error (elapsed = stored_ttl - remaining, so passing
-            # both to should_refresh yields the same remaining
-            # internally). `effective` is recovered from
-            # stored_ttl + window_sec via `_effective_for_stored`,
-            # so zone boundaries are stable as long as `window_sec`
-            # is consistent between write and read. The genuine
-            # failure case is a `window_sec` config change between
-            # write and read: zone boundaries shift, but no row is
-            # corrupted.
+            # Probabilistic refresh window, only reached inside a
+            # warm-cache cycle (window is None by default). The
+            # bands are measured from the row's own clock, so a
+            # `ttl_extension` in scope here does not matter.
             from mimir.cache_warm import should_refresh
 
-            stored_ttl = _apply_ttl_extension(ttl)
-            now = _now()
-            elapsed = stored_ttl - (row.expires_at - now)
             if not should_refresh(
-                stored_ttl=stored_ttl,
+                nominal_ttl=ttl,
                 window_sec=int(window),
-                elapsed=int(elapsed),
+                remaining=int(row.expires_at - _now()),
             ):
                 return _decode(json.loads(row.value))
             # Probabilistic / deterministic check said yes: fall
@@ -679,9 +663,14 @@ def purge_expired() -> int:
     """
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+        from mimir.broker.protocol import CachePurgeExpiredRequest
 
         try:
-            return get_broker_client().cache_purge_expired()
+            return (
+                get_broker_client()
+                .call(CachePurgeExpiredRequest())
+                .get("rows_deleted", 0)
+            )
         except BrokerUnavailable as exc:
             logger.warning("broker purge_expired failed: %s", exc)
             return 0
@@ -730,9 +719,14 @@ def delete(key: str) -> int:
             return delete_via_writer(_writer, nskey).result()
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+        from mimir.broker.protocol import CacheDeleteRequest
 
         try:
-            return get_broker_client().cache_delete(nskey)
+            return (
+                get_broker_client()
+                .call(CacheDeleteRequest(key=nskey))
+                .get("rows_deleted", 0)
+            )
         except BrokerUnavailable as exc:
             logger.warning("broker delete failed for %s: %s", nskey, exc)
             return 0
@@ -779,9 +773,14 @@ def delete_for_inbox(inbox_name: str) -> int:
             return delete_for_inbox_via_writer(_writer, inbox_name).result()
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
+        from mimir.broker.protocol import CacheDeleteForInboxRequest
 
         try:
-            return get_broker_client().cache_delete_for_inbox(inbox_name)
+            return (
+                get_broker_client()
+                .call(CacheDeleteForInboxRequest(name=inbox_name))
+                .get("rows_deleted", 0)
+            )
         except BrokerUnavailable as exc:
             logger.warning(
                 "broker delete_for_inbox failed for %s: %s",

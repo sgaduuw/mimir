@@ -23,9 +23,9 @@ op. See `handlers.LONG_OPS` for the routing set.
 """
 
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator
 
 # Mirror of `mimir.inboxes._NAME_RE`. Duplicated here (rather than
 # imported) so the broker protocol module stays free of the heavy
@@ -50,13 +50,31 @@ def _validate_inbox_name(v: str) -> str:
     return v
 
 
-class _BrokerRequest(BaseModel):
-    """Base for every broker Request type. Carries the required
-    `rpc_id` field that the client allocates and the broker echoes
-    back into the Reply so the client can demux concurrent in-flight
-    RPCs on one socket. 3.0.0 wire-protocol change."""
+# The wire type for an `Inbox.name`-shaped field: length bounds and
+# the slug check travel together, so a model cannot declare one
+# without the other.
+InboxName = Annotated[
+    str, Field(min_length=1, max_length=64), AfterValidator(_validate_inbox_name)
+]
 
-    rpc_id: int = Field(ge=0)
+
+class _BrokerRequest(BaseModel):
+    """Base for every broker Request type. Carries the `rpc_id` field
+    that the client allocates and the broker echoes back into the
+    Reply so the client can demux concurrent in-flight RPCs on one
+    socket. 3.0.0 wire-protocol change.
+
+    The default of 0 is client-side only: callers build requests
+    without an id and `BrokerClient.call` overwrites it with the
+    allocated one. The wire still requires the key, and `dispatch()`
+    rejects a request without it before this model sees it."""
+
+    rpc_id: int = Field(default=0, ge=0)
+    # How long `BrokerClient.call` waits for this op's reply, in
+    # seconds. A ClassVar, so it never goes on the wire. The broker is
+    # on the same host on a UNIX socket, so 5 s is generous for a
+    # cache op; the long ops override it below.
+    timeout: ClassVar[float] = 5.0
 
 
 class CacheSetRequest(_BrokerRequest):
@@ -84,24 +102,14 @@ class CacheDeleteRequest(_BrokerRequest):
 
 class CacheDeleteForInboxRequest(_BrokerRequest):
     op: Literal["cache_delete_for_inbox"] = "cache_delete_for_inbox"
-    name: str = Field(min_length=1, max_length=64)
-
-    @field_validator("name")
-    @classmethod
-    def _name_is_slug(cls, v: str) -> str:
-        # `cache._direct_delete_for_inbox` translates this name into a
-        # `LIKE %name%` clause. The CLI write paths slug-validate via
-        # `mimir.inboxes.validate_name` before the call ever reaches
-        # cache, so LIKE-pattern metacharacters can't appear in
-        # practice. Re-enforcing it at the wire boundary keeps a
-        # buggy or hostile peer from passing `_:foo` (or any other
-        # pattern) and matching unrelated rows.
-        if not _INBOX_NAME_RE.fullmatch(v):
-            raise ValueError(
-                "name must be lowercase alphanumeric/hyphen, "
-                "1 to 64 chars, not starting or ending with a hyphen"
-            )
-        return v
+    # `cache._direct_delete_for_inbox` translates this name into a
+    # `LIKE %name%` clause. The CLI write paths slug-validate via
+    # `mimir.inboxes.validate_name` before the call ever reaches
+    # cache, so LIKE-pattern metacharacters can't appear in
+    # practice. Re-enforcing it at the wire boundary keeps a
+    # buggy or hostile peer from passing `_:foo` (or any other
+    # pattern) and matching unrelated rows.
+    name: InboxName
 
 
 class CachePurgeExpiredRequest(_BrokerRequest):
@@ -125,14 +133,18 @@ class IngestInboxRequest(_BrokerRequest):
     `DEFAULT_WORKERS` server-side."""
 
     op: Literal["ingest_inbox"] = "ingest_inbox"
-    inbox_name: str = Field(min_length=1, max_length=64)
+    # A fresh deploy's first ingest of an unindexed mirror; per-tick
+    # ingests finish in seconds.
+    timeout: ClassVar[float] = 3600.0
+    inbox_name: InboxName
     limit: int | None = Field(default=None, ge=0)
     workers: int | None = Field(default=None, ge=1)
 
 
 class ReindexRequest(_BrokerRequest):
     op: Literal["reindex"] = "reindex"
-    inbox_name: str = Field(min_length=1, max_length=64)
+    timeout: ClassVar[float] = 3600.0
+    inbox_name: InboxName
     epoch: str = Field(pattern=r"^[0-9]+\.git$")
     from_scratch: bool = False
     workers: int | None = Field(default=None, ge=1)
@@ -146,6 +158,8 @@ class BootstrapInboxesRequest(_BrokerRequest):
     Phase 2.1 migrates the meatier ingest ops)."""
 
     op: Literal["bootstrap_inboxes"] = "bootstrap_inboxes"
+    # One upsert per inbox.
+    timeout: ClassVar[float] = 60.0
 
 
 # Phase 2.2 long ops: the four backfills. Each shares the same RPC
@@ -171,6 +185,10 @@ class BootstrapInboxesRequest(_BrokerRequest):
 
 class BackfillArticleFilesRequest(_BrokerRequest):
     op: Literal["backfill_article_files"] = "backfill_article_files"
+    # Per chunk. The handler returns within
+    # `broker_backfill_chunk_seconds`, so an hour only catches a
+    # pathologically slow row (mirror IO during a blob fetch).
+    timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
     start: Literal["resume", "restart"] | None = None
@@ -178,6 +196,7 @@ class BackfillArticleFilesRequest(_BrokerRequest):
 
 class BackfillArticleTrailersRequest(_BrokerRequest):
     op: Literal["backfill_article_trailers"] = "backfill_article_trailers"
+    timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
     start: Literal["resume", "restart"] | None = None
@@ -185,6 +204,7 @@ class BackfillArticleTrailersRequest(_BrokerRequest):
 
 class BackfillPatchSeriesRequest(_BrokerRequest):
     op: Literal["backfill_patch_series"] = "backfill_patch_series"
+    timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
     start: Literal["resume", "restart"] | None = None
@@ -197,7 +217,8 @@ class BackfillCanonicalsRequest(_BrokerRequest):
     surface."""
 
     op: Literal["backfill_canonicals"] = "backfill_canonicals"
-    inbox_filter: str | None = Field(default=None, min_length=1, max_length=64)
+    timeout: ClassVar[float] = 3600.0
+    inbox_filter: InboxName | None = None
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
     start: Literal["resume", "restart"] | None = None
@@ -227,6 +248,10 @@ class UpdateMainlineRequest(_BrokerRequest):
     cross-process snapshot-upgrade window stays closed."""
 
     op: Literal["update_mainline"] = "update_mainline"
+    # The steady-state tick walks ~zero new commits in seconds; the
+    # first run on a fresh deploy walks ~1.5M Linus-tree commits and
+    # can take several minutes.
+    timeout: ClassVar[float] = 600.0
     skip_fetch: bool = False
     skip_maintainers: bool = False
     skip_commits: bool = False
@@ -246,7 +271,10 @@ class BackfillThreadRootsRequest(_BrokerRequest):
     whole."""
 
     op: Literal["backfill_thread_roots"] = "backfill_thread_roots"
-    inbox: str | None = None
+    # A cold run walks every inbox; the bulk UPDATEs make wall time
+    # a function of corpus size.
+    timeout: ClassVar[float] = 3600.0
+    inbox: InboxName | None = None
 
 
 class AnalyzeRequest(_BrokerRequest):
@@ -256,6 +284,10 @@ class AnalyzeRequest(_BrokerRequest):
     pass undersamples."""
 
     op: Literal["analyze"] = "analyze"
+    # Covers the bounded daily pass (~10.8 s, measured 2026-08-04)
+    # and the weekly `full=True` pass (~25-30 s when measured at 11M
+    # rows, not re-measured at the current 28.8M) with headroom.
+    timeout: ClassVar[float] = 600.0
     full: bool = False
 
 
@@ -273,24 +305,20 @@ class FailuresReplayRequest(_BrokerRequest):
     rows attempted in this RPC."""
 
     op: Literal["failures_replay"] = "failures_replay"
-    inbox_name: str = Field(min_length=1, max_length=64)
+    # A multi-thousand-row replay after a parser fix; steady-state
+    # replays are sub-second.
+    timeout: ClassVar[float] = 1800.0
+    inbox_name: InboxName
     epoch_filter: str | None = Field(default=None, min_length=1, max_length=16)
     limit: int | None = Field(default=None, ge=0)
-
-    @field_validator("inbox_name")
-    @classmethod
-    def _name_is_slug(cls, v: str) -> str:
-        return _validate_inbox_name(v)
 
 
 # Phase 2.4 admin-inbox CRUD ops. Each one is a split RPC matching
 # the same shape as the rest of the broker family: one pydantic
-# type per logical op, dispatched to a per-op handler. All seven
+# type per logical op, dispatched to a per-op handler. All four
 # route to the long queue alongside `bootstrap_inboxes` (sub-second
 # writes, but conservative routing keeps them out of cache-queue
-# contention). Name validation uses the shared
-# `_validate_inbox_name` defined near `_INBOX_NAME_RE` at module
-# top.
+# contention).
 
 
 class InboxCreateRequest(_BrokerRequest):
@@ -298,14 +326,10 @@ class InboxCreateRequest(_BrokerRequest):
     delegates to `mimir.inboxes.create_inbox`."""
 
     op: Literal["inbox_create"] = "inbox_create"
-    name: str = Field(min_length=1, max_length=64)
+    timeout: ClassVar[float] = 60.0
+    name: InboxName
     mirror_path: str = Field(min_length=1, max_length=512)
     upstream_url: str = Field(min_length=1, max_length=512)
-
-    @field_validator("name")
-    @classmethod
-    def _name_is_slug(cls, v: str) -> str:
-        return _validate_inbox_name(v)
 
 
 class InboxUpdateRequest(_BrokerRequest):
@@ -314,17 +338,13 @@ class InboxUpdateRequest(_BrokerRequest):
     `mimir.inboxes.update_inbox`."""
 
     op: Literal["inbox_update"] = "inbox_update"
-    name: str = Field(min_length=1, max_length=64)
-    new_name: str | None = Field(default=None, min_length=1, max_length=64)
+    timeout: ClassVar[float] = 60.0
+    name: InboxName
+    new_name: InboxName | None = None
     mirror_path: str | None = Field(default=None, min_length=1, max_length=512)
     upstream_url: str | None = Field(default=None, min_length=1, max_length=512)
     # "" clears to NULL, None leaves it alone.
     list_address: str | None = Field(default=None, max_length=254)
-
-    @field_validator("name", "new_name")
-    @classmethod
-    def _name_is_slug(cls, v: str | None) -> str | None:
-        return None if v is None else _validate_inbox_name(v)
 
 
 class InboxDeleteRequest(_BrokerRequest):
@@ -338,14 +358,12 @@ class InboxDeleteRequest(_BrokerRequest):
     the post-confirmation intent."""
 
     op: Literal["inbox_delete"] = "inbox_delete"
-    name: str = Field(min_length=1, max_length=64)
+    # With `remove_inbox_data=True` the broker `rm -rf`s the mirror,
+    # which can take minutes on a ~20 GB lkml-shaped tree.
+    timeout: ClassVar[float] = 600.0
+    name: InboxName
     keep_orphan_articles: bool = False
     remove_inbox_data: bool = False
-
-    @field_validator("name")
-    @classmethod
-    def _name_is_slug(cls, v: str) -> str:
-        return _validate_inbox_name(v)
 
 
 class InboxSetTrackedAuthorsRequest(_BrokerRequest):
@@ -353,55 +371,9 @@ class InboxSetTrackedAuthorsRequest(_BrokerRequest):
     delegates to `mimir.inboxes.set_tracked_authors`."""
 
     op: Literal["inbox_set_tracked_authors"] = "inbox_set_tracked_authors"
-    name: str = Field(min_length=1, max_length=64)
+    timeout: ClassVar[float] = 60.0
+    name: InboxName
     trackers: dict[str, str]
-
-    @field_validator("name")
-    @classmethod
-    def _name_is_slug(cls, v: str) -> str:
-        return _validate_inbox_name(v)
-
-
-class InboxAddTrackedAuthorRequest(_BrokerRequest):
-    """Add (or replace) one tracker entry. Handler delegates to
-    `mimir.inboxes.add_tracked_author`."""
-
-    op: Literal["inbox_add_tracked_author"] = "inbox_add_tracked_author"
-    name: str = Field(min_length=1, max_length=64)
-    label: str = Field(min_length=1, max_length=128)
-    substring: str = Field(min_length=1, max_length=512)
-
-    @field_validator("name")
-    @classmethod
-    def _name_is_slug(cls, v: str) -> str:
-        return _validate_inbox_name(v)
-
-
-class InboxRemoveTrackedAuthorRequest(_BrokerRequest):
-    """Remove one tracker entry by label. Handler delegates to
-    `mimir.inboxes.remove_tracked_author`."""
-
-    op: Literal["inbox_remove_tracked_author"] = "inbox_remove_tracked_author"
-    name: str = Field(min_length=1, max_length=64)
-    label: str = Field(min_length=1, max_length=128)
-
-    @field_validator("name")
-    @classmethod
-    def _name_is_slug(cls, v: str) -> str:
-        return _validate_inbox_name(v)
-
-
-class InboxClearTrackedAuthorsRequest(_BrokerRequest):
-    """Drop all tracker entries (writes NULL). Handler delegates to
-    `mimir.inboxes.clear_tracked_authors`."""
-
-    op: Literal["inbox_clear_tracked_authors"] = "inbox_clear_tracked_authors"
-    name: str = Field(min_length=1, max_length=64)
-
-    @field_validator("name")
-    @classmethod
-    def _name_is_slug(cls, v: str) -> str:
-        return _validate_inbox_name(v)
 
 
 # Mirror of `mimir.robots._UA_RE` / `_PATH_RE` / Content-Signal
@@ -456,30 +428,36 @@ def _validate_robots_content_signal_keys(v: list[str]) -> list[str]:
     return v
 
 
+# Wire types for the robots fields, bounds and check in one place as
+# with `InboxName`.
+RobotsUserAgent = Annotated[
+    str,
+    Field(min_length=1, max_length=64),
+    AfterValidator(_validate_robots_user_agent),
+]
+RobotsPaths = Annotated[
+    list[str], Field(max_length=64), AfterValidator(_validate_robots_paths)
+]
+RobotsContentSignals = Annotated[
+    dict[str, str], AfterValidator(_validate_robots_content_signals)
+]
+RobotsContentSignalKeys = Annotated[
+    list[str],
+    Field(max_length=8),
+    AfterValidator(_validate_robots_content_signal_keys),
+]
+
+
 class RobotsAddRequest(_BrokerRequest):
     """Insert one new robots_rules row. Handler delegates to
     `mimir.robots.add_rule`."""
 
     op: Literal["robots_add"] = "robots_add"
-    user_agent: str = Field(min_length=1, max_length=64)
-    disallow: list[str] = Field(default_factory=list, max_length=64)
+    timeout: ClassVar[float] = 60.0
+    user_agent: RobotsUserAgent
+    disallow: RobotsPaths = Field(default_factory=list)
     crawl_delay: int | None = Field(default=None, ge=0, le=86_400)
-    content_signals: dict[str, str] = Field(default_factory=dict)
-
-    @field_validator("user_agent")
-    @classmethod
-    def _ua_ok(cls, v: str) -> str:
-        return _validate_robots_user_agent(v)
-
-    @field_validator("disallow")
-    @classmethod
-    def _paths_ok(cls, v: list[str]) -> list[str]:
-        return _validate_robots_paths(v)
-
-    @field_validator("content_signals")
-    @classmethod
-    def _signals_ok(cls, v: dict[str, str]) -> dict[str, str]:
-        return _validate_robots_content_signals(v)
+    content_signals: RobotsContentSignals = Field(default_factory=dict)
 
 
 class RobotsUpdateRequest(_BrokerRequest):
@@ -491,34 +469,15 @@ class RobotsUpdateRequest(_BrokerRequest):
     keys) removes; `clear_all_content_signals` wipes to NULL."""
 
     op: Literal["robots_update"] = "robots_update"
-    user_agent: str = Field(min_length=1, max_length=64)
-    add_disallow: list[str] = Field(default_factory=list, max_length=64)
-    remove_disallow: list[str] = Field(default_factory=list, max_length=64)
+    timeout: ClassVar[float] = 60.0
+    user_agent: RobotsUserAgent
+    add_disallow: RobotsPaths = Field(default_factory=list)
+    remove_disallow: RobotsPaths = Field(default_factory=list)
     crawl_delay: int | None = Field(default=None, ge=0, le=86_400)
     clear_crawl_delay: bool = False
-    set_content_signal: dict[str, str] = Field(default_factory=dict)
-    clear_content_signal: list[str] = Field(default_factory=list, max_length=8)
+    set_content_signal: RobotsContentSignals = Field(default_factory=dict)
+    clear_content_signal: RobotsContentSignalKeys = Field(default_factory=list)
     clear_all_content_signals: bool = False
-
-    @field_validator("user_agent")
-    @classmethod
-    def _ua_ok(cls, v: str) -> str:
-        return _validate_robots_user_agent(v)
-
-    @field_validator("add_disallow", "remove_disallow")
-    @classmethod
-    def _paths_ok(cls, v: list[str]) -> list[str]:
-        return _validate_robots_paths(v)
-
-    @field_validator("set_content_signal")
-    @classmethod
-    def _set_signals_ok(cls, v: dict[str, str]) -> dict[str, str]:
-        return _validate_robots_content_signals(v)
-
-    @field_validator("clear_content_signal")
-    @classmethod
-    def _clear_signal_keys_ok(cls, v: list[str]) -> list[str]:
-        return _validate_robots_content_signal_keys(v)
 
 
 class RobotsRemoveRequest(_BrokerRequest):
@@ -526,12 +485,8 @@ class RobotsRemoveRequest(_BrokerRequest):
     layer. Handler delegates to `mimir.robots.remove_rule`."""
 
     op: Literal["robots_remove"] = "robots_remove"
-    user_agent: str = Field(min_length=1, max_length=64)
-
-    @field_validator("user_agent")
-    @classmethod
-    def _ua_ok(cls, v: str) -> str:
-        return _validate_robots_user_agent(v)
+    timeout: ClassVar[float] = 60.0
+    user_agent: RobotsUserAgent
 
 
 class RobotsResetRequest(_BrokerRequest):
@@ -539,6 +494,7 @@ class RobotsResetRequest(_BrokerRequest):
     defaults. Handler delegates to `mimir.robots.reset_rules`."""
 
     op: Literal["robots_reset"] = "robots_reset"
+    timeout: ClassVar[float] = 60.0
 
 
 class VacuumRequest(_BrokerRequest):
@@ -549,6 +505,9 @@ class VacuumRequest(_BrokerRequest):
     CONTEXT.md as an accepted weekly-quiet-window trade-off."""
 
     op: Literal["vacuum"] = "vacuum"
+    # Scales with on-disk DB size; a multi-GB corpus takes minutes.
+    # The ceiling stops a runaway from holding the CLI forever.
+    timeout: ClassVar[float] = 3600.0
 
 
 # Phase 2.2 warm-queue ops: per-inbox + global warming. Routed to
@@ -594,7 +553,10 @@ class WarmInboxRequest(_BrokerRequest):
     """
 
     op: Literal["warm_inbox"] = "warm_inbox"
-    inbox_name: str = Field(min_length=1, max_length=64)
+    # Seconds on the production corpus; five minutes covers a new
+    # inbox's first warm, where every helper is cold.
+    timeout: ClassVar[float] = 300.0
+    inbox_name: InboxName
     targets: list[str] | None = None
     priority: int = Field(default=1, ge=0, le=1)
 
@@ -619,7 +581,8 @@ class WarmSubsystemRequest(_BrokerRequest):
     """
 
     op: Literal["warm_subsystem"] = "warm_subsystem"
-    inbox_name: str = Field(min_length=1, max_length=64)
+    timeout: ClassVar[float] = 300.0
+    inbox_name: InboxName
     subsystem_id: int = Field(ge=1)
     priority: int = Field(default=1, ge=0, le=1)
 
@@ -649,6 +612,7 @@ class WarmGlobalRequest(_BrokerRequest):
     """
 
     op: Literal["warm_global"] = "warm_global"
+    timeout: ClassVar[float] = 300.0
     targets: list[str] | None = None
     priority: int = Field(default=1, ge=0, le=1)
 
@@ -677,9 +641,6 @@ Request = (
     | InboxUpdateRequest
     | InboxDeleteRequest
     | InboxSetTrackedAuthorsRequest
-    | InboxAddTrackedAuthorRequest
-    | InboxRemoveTrackedAuthorRequest
-    | InboxClearTrackedAuthorsRequest
     | RobotsAddRequest
     | RobotsUpdateRequest
     | RobotsRemoveRequest
@@ -702,11 +663,9 @@ class Reply(BaseModel):
     # Free-form error tag on failure (e.g. "InvalidRequest",
     # "OperationalError"). Absent on success.
     error: str | None = None
-    # Optional payload, set by ops that return a value. Today only
-    # `cache_purge_expired` returns `rows_deleted`. Keeps the reply
-    # shape uniform across ops; absent for ops with no return value.
-    rows_deleted: int | None = None
-    # Free-form result payload for long ops:
+    # Free-form result payload for ops that return a value:
+    #   - `cache_delete`, `cache_delete_for_inbox`,
+    #     `cache_purge_expired`: `{"rows_deleted": int}`
     #   - `bootstrap_inboxes`: `{"inboxes": 5}`
     #   - `ingest_inbox` (Phase 2.1): `{"results": [<IngestResult>, ...]}`
     #   - `backfill_*` (Phase 2.2):

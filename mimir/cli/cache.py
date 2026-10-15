@@ -42,13 +42,13 @@ from mimir.subsystems_dashboard import (
 )
 from mimir.threading import active_threads, threads_for_day
 from mimir.web import (
-    FEED_ENTRY_LIMIT,
-    SUBSYSTEM_RECENT_PATCHES_LIMIT,
     inbox_sitemap_xml,
     maintainers_sitemap_xml,
     meta_sitemap_xml,
     sitemap_index_xml,
 )
+from mimir.web.routes.dashboards import SUBSYSTEM_RECENT_PATCHES_LIMIT
+from mimir.web.routes.feeds import FEED_ENTRY_LIMIT
 
 # Refresh-window used by warm-cache. See the call site in
 # `warm_cache_command` for the calibration rationale (cron period +
@@ -493,6 +493,11 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
     # concurrently. The CLI-side ThreadPool is just a fan-out + collect
     # pattern; no work runs in this process beyond JSON encode/decode.
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import (
+        WarmGlobalRequest,
+        WarmInboxRequest,
+        WarmSubsystemRequest,
+    )
 
     client = get_broker_client()
     total_keys = 0
@@ -506,20 +511,24 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
             for name, inbox in inboxes.items():
                 futures[
                     pool.submit(
-                        client.warm_inbox,
-                        name,
-                        targets=per_inbox_targets(inbox),
-                        priority=priority_for_tier,
+                        client.call,
+                        WarmInboxRequest(
+                            inbox_name=name,
+                            targets=per_inbox_targets(inbox),
+                            priority=priority_for_tier,
+                        ),
                     )
                 ] = ("warm_inbox", name)
                 if tier in ("slow", "all"):
                     for sub_id in per_inbox_subsystem_ids.get(name, []):
                         futures[
                             pool.submit(
-                                client.warm_subsystem,
-                                name,
-                                sub_id,
-                                priority=priority_for_tier,
+                                client.call,
+                                WarmSubsystemRequest(
+                                    inbox_name=name,
+                                    subsystem_id=sub_id,
+                                    priority=priority_for_tier,
+                                ),
                             )
                         ] = ("warm_subsystem", f"{name}:{sub_id}")
             for fut in as_completed(futures):
@@ -542,8 +551,8 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
         # this call is unconditional: tier=all passes targets=None
         # (broker runs the full global list), tier=fast/slow pass
         # an explicit label list.
-        global_result = client.warm_global(
-            targets=global_targets, priority=priority_for_tier
+        global_result = client.call(
+            WarmGlobalRequest(targets=global_targets, priority=priority_for_tier)
         )
         total_keys += len(global_result.get("warmed", []))
         if verbose:

@@ -11,6 +11,45 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-10-15
+
+### Removed
+
+- The deprecated `MAINLINE_TREE_URL` / `MAINLINE_TREE_PATH` settings.
+  They seeded only the `linus` tree; an env that still sets them is
+  now ignored and gets the curated default tree set. Set
+  `TREES__linus__URL` / `TREES__linus__PATH` to override `linus`
+  alone (any `TREES__*` key replaces the whole default set).
+
+### Changed
+
+- The broker now rejects an inbox name that is not a slug (lowercase
+  alphanumeric and hyphens, 1 to 64 characters) on `ingest_inbox`,
+  `reindex`, `backfill_canonicals`, `backfill_thread_roots`,
+  `warm_inbox` and `warm_subsystem`, as it already did on the inbox
+  admin ops. Inboxes created through `admin inbox` are always slugs,
+  but `INBOXES` config keys are not checked: a key with an underscore,
+  capital or dot now makes `mimir ingest` and `mimir warm-cache` stop
+  at that inbox. Check your `INBOXES` keys before upgrading.
+
+### Fixed
+
+- The subsystem triage lists and `/merge-window` now show a series and its
+  unversioned `RESEND` or `RFC` repost as one row. They were stored as
+  `resend` and `rfc` beside `v1` and listed twice, though all three are
+  revision 1. The row is the real submission (`v1`) when there is one, not
+  an RFC that came first, and "+N more" counts that posting's patches only.
+  The revisions panel and the series diff still keep them apart (#691).
+- The subsystem activity and active-reviewer lists now count messages
+  from the first day of their window, which were left out (#740).
+- Warm-cache keys whose TTL is shorter than twice the refresh window
+  were refreshed from a wider band than the configured cap allows
+  (a 300s key under a 600s window from 300s out instead of 150s).
+  The band is now computed from the key's own TTL.
+- The subsystem triage queues no longer pass dates to SQLite through Python's
+  deprecated default datetime adapter, which a future Python removes. The
+  date bounds are now sent in the same format the database stores.
+
 ## [3.17.1] - 2026-10-14
 
 ### Fixed

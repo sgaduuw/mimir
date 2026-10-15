@@ -9,7 +9,7 @@ Covers:
 - `handle_warm_global` runs the cross-inbox aggregators.
 - Per-target exceptions are captured in `errors` rather than
   failing the whole RPC (best-effort warming).
-- `BrokerClient.warm_inbox` and `warm_global` round-trip cleanly
+- `warm_inbox` and `warm_global` requests round-trip cleanly
   through a real broker on a tmp socket.
 - The CLI's broker-mode dispatch fans warm_inbox jobs and a
   single warm_global, then prints the summary.
@@ -29,7 +29,11 @@ from mimir.broker import _context, handlers
 from mimir.broker.client import BrokerClient
 from mimir.broker.handlers import dispatch
 from mimir.broker.pools import ReadSessionPool
-from mimir.broker.protocol import WarmGlobalRequest, WarmInboxRequest
+from mimir.broker.protocol import (
+    WarmGlobalRequest,
+    WarmInboxRequest,
+    WarmSubsystemRequest,
+)
 from mimir.broker.writes import WriterThread
 from tests.test_broker._helpers import broker_running, short_socket_path
 
@@ -251,7 +255,7 @@ def test_broker_client_warm_inbox_round_trip(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = c.warm_inbox("alpha")
+            result = c.call(WarmInboxRequest(inbox_name="alpha"))
         finally:
             c.close()
     assert isinstance(result, dict)
@@ -265,7 +269,7 @@ def test_broker_client_warm_global_round_trip(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = c.warm_global()
+            result = c.call(WarmGlobalRequest())
         finally:
             c.close()
     assert isinstance(result, dict)
@@ -308,7 +312,7 @@ def test_warm_workers_drain_in_parallel(seeded_db, monkeypatch):
 
                 def fire(client):
                     t0 = time.perf_counter()
-                    client.warm_inbox("alpha")
+                    client.call(WarmInboxRequest(inbox_name="alpha"))
                     with lock:
                         results.append(time.perf_counter() - t0)
 
@@ -348,7 +352,7 @@ def test_warm_cache_command_broker_mode_dispatches_via_rpc(
     """`mimir warm-cache` in broker mode fans warm_inbox RPCs per
     configured inbox and exits, plus one warm_global. Asserts the
     dispatch shape end-to-end without spinning a broker: stub
-    `BrokerClient.warm_inbox` / `warm_global` to capture calls.
+    `BrokerClient.call` to capture the requests.
     """
     from pathlib import Path
 
@@ -371,18 +375,17 @@ def test_warm_cache_command_broker_mode_dispatches_via_rpc(
     seen_global = [0]
 
     class FakeClient:
-        def warm_inbox(self, name, **_kw):
-            seen_inboxes.append(name)
-            return {"warmed": ["x"], "elapsed_ms": 1, "errors": []}
-
-        def warm_global(self, **_kw):
-            seen_global[0] += 1
-            return {"warmed": ["global"], "elapsed_ms": 1, "errors": []}
-
-        def cache_purge_expired(self):
-            # Called by warm-cache at the end; stubbed so the
-            # CLI's tail-end purge step doesn't blow up.
-            return 0
+        def call(self, req, timeout=None):
+            if req.op == "warm_inbox":
+                seen_inboxes.append(req.inbox_name)
+                return {"warmed": ["x"], "elapsed_ms": 1, "errors": []}
+            if req.op == "warm_global":
+                seen_global[0] += 1
+                return {"warmed": ["global"], "elapsed_ms": 1, "errors": []}
+            # warm-cache purges expired rows at the end; any other op
+            # is unexpected here.
+            assert req.op == "cache_purge_expired", req.op
+            return {}
 
     monkeypatch.setattr(
         broker_client_mod,
@@ -494,13 +497,15 @@ def test_warm_workers_do_not_preempt_in_flight_slow_op(seeded_db, monkeypatch):
                 done = threading.Event()
 
                 def fire_slow():
-                    c_slow.warm_inbox("alpha")  # priority=1 default
+                    c_slow.call(
+                        WarmInboxRequest(inbox_name="alpha")
+                    )  # priority=1 default
                     completions["slow"] = time.perf_counter()
                     if "fast" in completions:
                         done.set()
 
                 def fire_fast():
-                    c_fast.warm_inbox("alpha", priority=0)
+                    c_fast.call(WarmInboxRequest(inbox_name="alpha", priority=0))
                     completions["fast"] = time.perf_counter()
                     if "slow" in completions:
                         done.set()
@@ -922,7 +927,9 @@ def test_broker_client_warm_subsystem_round_trip(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = c.warm_subsystem("alpha", sub_id)
+            result = c.call(
+                WarmSubsystemRequest(inbox_name="alpha", subsystem_id=sub_id)
+            )
         finally:
             c.close()
     assert isinstance(result, dict)

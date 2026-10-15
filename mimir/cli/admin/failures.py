@@ -139,12 +139,15 @@ def admin_failures_replay_command(
     # The broker handler looks the inbox up server-side and runs
     # `replay_failures` inside the broker process.
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import FailuresReplayRequest
 
     try:
-        payload = get_broker_client().failures_replay(
-            inbox_name,
-            epoch_filter=epoch_filter,
-            limit=limit,
+        payload = get_broker_client().call(
+            FailuresReplayRequest(
+                inbox_name=inbox_name,
+                epoch_filter=epoch_filter,
+                limit=limit,
+            )
         )
     except BrokerUnavailable as exc:
         # Translate the broker's `InboxNotFound:<msg>` structured

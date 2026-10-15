@@ -83,14 +83,17 @@ def update_mainline_command(
     _configure_logging(verbose)
 
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import UpdateMainlineRequest
 
     try:
-        payload = get_broker_client().update_mainline(
-            skip_fetch=skip_fetch,
-            skip_maintainers=skip_maintainers,
-            skip_commits=skip_commits,
-            force=force,
-            rewalk=rewalk,
+        payload = get_broker_client().call(
+            UpdateMainlineRequest(
+                skip_fetch=skip_fetch,
+                skip_maintainers=skip_maintainers,
+                skip_commits=skip_commits,
+                force=force,
+                rewalk=rewalk,
+            )
         )
     except BrokerUnavailable as exc:
         # update_mainline() catches per-tree exceptions; FileNotFoundError

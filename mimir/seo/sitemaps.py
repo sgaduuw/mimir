@@ -23,6 +23,7 @@ import zlib
 from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from itertools import groupby
 from xml.etree.ElementTree import Element, SubElement, tostring
 
@@ -187,53 +188,42 @@ def _warn_if_over_cap(entries: list, kind: str) -> None:
         )
 
 
-def _build_sitemap_xml(entries: list[tuple[str, str | None]]) -> str:
-    """Render an XML <urlset> sitemap. Each entry is
-    `(loc, lastmod | None)`; when `lastmod` is None the element is
-    omitted. Caller formats the timestamp, date-only `YYYY-MM-DD`
-    is what Google's docs recommend for crawl-scheduling and is what
-    mimir emits.
+def _build_xml(
+    root_tag: str, child_tag: str, entries: list[tuple[str, str | None]]
+) -> str:
+    """Render a sitemaps.org document: a `<urlset>` of `<url>` for a
+    sitemap, a `<sitemapindex>` of `<sitemap>` for the index. Each
+    entry is `(loc, lastmod | None)`; when `lastmod` is None the
+    element is omitted. Caller formats the timestamp, date-only
+    `YYYY-MM-DD` is what Google's docs recommend for crawl-scheduling
+    and is what mimir emits.
 
     The over-cap warning exists because a breach is silent by
     construction: the document renders, the route serves 200, and the
     crawler discards it. Every caller derives its own entry count from
     a different query, so this is the one place that sees the number
-    that actually matters.
+    that actually matters. The index is the surface with LESS headroom:
+    sitemaps.org caps it at 50,000 `<sitemap>` entries too, and it was
+    measured at 32,229 on 2026-07-30 (64% of the limit) against a
+    worst-case urlset of 23,844 (48%). It is also the one that grows
+    without bound: every calendar month adds about one entry per inbox,
+    and an `admin inbox add` for a historically-imported list can add
+    hundreds at once.
     """
-    _warn_if_over_cap(entries, "urlset")
-    root = Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+    _warn_if_over_cap(entries, root_tag)
+    root = Element(root_tag, xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
     for loc, lastmod in entries:
-        url_el = SubElement(root, "url")
-        SubElement(url_el, "loc").text = loc
+        el = SubElement(root, child_tag)
+        SubElement(el, "loc").text = loc
         if lastmod:
-            SubElement(url_el, "lastmod").text = lastmod
+            SubElement(el, "lastmod").text = lastmod
     return '<?xml version="1.0" encoding="utf-8"?>\n' + tostring(
         root, encoding="unicode"
     )
 
 
-def _build_sitemap_index_xml(entries: list[tuple[str, str | None]]) -> str:
-    """Render a <sitemapindex> referencing sub-sitemaps. Same
-    `(loc, lastmod)` shape as `_build_sitemap_xml`; the schema and
-    element names differ, `<sitemapindex>` of `<sitemap>` rather
-    than `<urlset>` of `<url>`."""
-    # Same alarm as `_build_sitemap_xml`, and this is the surface with
-    # LESS headroom: sitemaps.org caps an index at 50,000 `<sitemap>`
-    # entries too, and the index was measured at 32,229 on 2026-07-30
-    # (64% of the limit) against a worst-case urlset of 23,844 (48%).
-    # It is also the one that grows without bound: every calendar month
-    # adds about one entry per inbox, and an `admin inbox add` for a
-    # historically-imported list can add hundreds at once.
-    _warn_if_over_cap(entries, "index")
-    root = Element("sitemapindex", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
-    for loc, lastmod in entries:
-        sm = SubElement(root, "sitemap")
-        SubElement(sm, "loc").text = loc
-        if lastmod:
-            SubElement(sm, "lastmod").text = lastmod
-    return '<?xml version="1.0" encoding="utf-8"?>\n' + tostring(
-        root, encoding="unicode"
-    )
+_build_sitemap_xml = partial(_build_xml, "urlset", "url")
+_build_sitemap_index_xml = partial(_build_xml, "sitemapindex", "sitemap")
 
 
 def _per_inbox_latest_date(session) -> dict[str, str | None]:

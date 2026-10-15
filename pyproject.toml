@@ -1,6 +1,6 @@
 [project]
 name = "mimir"
-version = "3.17.1"
+version = "3.18.0"
 description = "toy project for reading lkml"
 authors = [{name = "Eelco Wesemann", email = "6771014+sgaduuw@users.noreply.github.com"}]
 license = "MIT"
@@ -24,17 +24,11 @@ mimir = "mimir.cli:mimir"
 
 [dependency-groups]
 dev = [
-    "ruff>=0.16.10,<0.17",
+    "ruff>=0.17.0,<0.18",
     "pytest>=9.1.1,<10",
     "pillow>=12.3.0,<13",
     "freezegun>=1.5.5,<2",
 ]
-
-[tool.ruff]
-# Pinned below `requires-python` while ruff's py315 target is preview
-# ("may be unstable"): an unstable target would let a ruff patch bump
-# change what the lint gate checks. Drop when ruff supports py315 (#693).
-target-version = "py314"
 
 [tool.ruff.lint]
 # EXPLICIT, because the alternative is delegating "what counts as
@@ -109,6 +103,11 @@ markers = [
     "allow_tree_clone: test deliberately exercises mainline._ensure_tree's clone path with subprocess mocked",
 ]
 testpaths = ["tests"]
+# A raw text() bind of a datetime goes through sqlite3's default adapter,
+# deprecated since 3.12 (#700). Bind through a DateTime type instead.
+filterwarnings = [
+    "error:The default datetime adapter is deprecated:DeprecationWarning",
+]
 
 [build-system]
 requires = ["hatchling"]

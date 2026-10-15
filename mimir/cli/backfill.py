@@ -67,11 +67,15 @@ def backfill_article_files_command(
     _configure_logging(verbose)
     _verbose_broker_hint(verbose)
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import BackfillArticleFilesRequest
+    from mimir.patches import BackfillResult
 
     client = get_broker_client()
     try:
         result, run = _broker_backfill_loop(
-            client.backfill_article_files,
+            lambda **kw: client.backfill(
+                BackfillArticleFilesRequest(**kw), BackfillResult
+            ),
             limit=limit,
             reprocess=reprocess,
             restart=restart,
@@ -123,11 +127,15 @@ def backfill_article_trailers_command(
     _configure_logging(verbose)
     _verbose_broker_hint(verbose)
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import BackfillArticleTrailersRequest
+    from mimir.trailers import BackfillResult
 
     client = get_broker_client()
     try:
         result, run = _broker_backfill_loop(
-            client.backfill_article_trailers,
+            lambda **kw: client.backfill(
+                BackfillArticleTrailersRequest(**kw), BackfillResult
+            ),
             limit=limit,
             reprocess=reprocess,
             restart=restart,
@@ -180,11 +188,15 @@ def backfill_patch_series_command(
     _configure_logging(verbose)
     _verbose_broker_hint(verbose)
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import BackfillPatchSeriesRequest
+    from mimir.patch_series import BackfillResult
 
     client = get_broker_client()
     try:
         result, run = _broker_backfill_loop(
-            client.backfill_patch_series,
+            lambda **kw: client.backfill(
+                BackfillPatchSeriesRequest(**kw), BackfillResult
+            ),
             limit=limit,
             reprocess=reprocess,
             restart=restart,
@@ -244,13 +256,14 @@ def backfill_thread_roots_command(
     from sqlalchemy import select
 
     from mimir.broker.client import get_broker_client
+    from mimir.broker.protocol import BackfillThreadRootsRequest
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
     from mimir.thread_roots import verify_thread_roots
 
     _configure_logging(0)
     client = get_broker_client()
-    counts = client.backfill_thread_roots(inbox=inbox)
+    counts = client.call(BackfillThreadRootsRequest(inbox=inbox))
     if inbox and not counts.get("inboxes"):
         # A typo'd inbox matched nothing. Reporting the usual summary
         # would read as "done" when nothing ran.

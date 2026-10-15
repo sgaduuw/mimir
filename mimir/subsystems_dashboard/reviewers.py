@@ -12,14 +12,14 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import text
+from sqlalchemy import DateTime, bindparam, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
+from mimir.datetime_utils import coerce_dt
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
 from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
-from mimir.threading import _coerce_dt
 
 
 @dataclass
@@ -169,7 +169,7 @@ def articles_reviewed_by(
                 article_id=r.article_id,
                 message_id=r.message_id,
                 subject=r.subject,
-                date=_coerce_dt(r.art_date) if r.art_date else None,
+                date=coerce_dt(r.art_date) if r.art_date else None,
                 role=r.role,
                 inbox_name=inbox_names[r.article_id],
             )
@@ -240,10 +240,10 @@ def active_reviewers_in_subsystem(
                   AND a.id IN ({path_sql})
                 ORDER BY a.date DESC
                 """
-            ),
+            ).bindparams(bindparam("start", type_=DateTime)),
             {
                 "inbox_id": inbox.id,
-                "start": start.isoformat(),
+                "start": start,
                 **path_params,
             },
         ).all()
@@ -260,7 +260,7 @@ def active_reviewers_in_subsystem(
                     "address": r.address,
                     "address_normalized": key,
                     "role_counts": defaultdict(int),
-                    "last_seen": _coerce_dt(r.art_date),
+                    "last_seen": coerce_dt(r.art_date),
                 }
                 agg[key] = entry
             entry["role_counts"][r.role] += 1
