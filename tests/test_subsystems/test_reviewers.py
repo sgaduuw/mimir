@@ -646,13 +646,14 @@ def test_articles_reviewed_by_survives_link_deleted_between_queries(
     assert out == []
 
 
-def test_active_reviewers_counts_an_article_on_the_start_day(seeded_db):
+def test_active_reviewers_counts_an_article_on_the_start_day(seeded_db, frozen_clock):
     """The window opens at now minus `days`. An article later on that
     same calendar day was dropped while the bind was an isoformat
     string ('...T...+00:00' sorts after the stored '... ...') (#731).
     The article sits midway between the start time and the next
     midnight, so it is after the start yet still on the start day.
-    `force=True` skips the cache read so the query runs."""
+    `force=True` skips the cache read so the query runs. The clock is
+    frozen at mid-day so the start time cannot sit next to midnight."""
     days = 3
     start = datetime.now(UTC) - timedelta(days=days)
     next_midnight = datetime.combine(
