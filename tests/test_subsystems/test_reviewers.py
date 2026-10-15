@@ -2,7 +2,7 @@
 reviewer surfaces (`active_reviewers_in_subsystem`,
 `articles_reviewed_by`)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -644,3 +644,33 @@ def test_articles_reviewed_by_survives_link_deleted_between_queries(
         s.commit()
         out = articles_reviewed_by(s, alpha, "r@kernel.org", force=True)
     assert out == []
+
+
+def test_active_reviewers_counts_an_article_on_the_start_day(seeded_db):
+    """The window opens at now minus `days`. An article later on that
+    same calendar day was dropped while the bind was an isoformat
+    string ('...T...+00:00' sorts after the stored '... ...') (#731).
+    The article sits midway between the start time and the next
+    midnight, so it is after the start yet still on the start day.
+    `force=True` skips the cache read so the query runs."""
+    days = 3
+    start = datetime.now(UTC) - timedelta(days=days)
+    next_midnight = datetime.combine(
+        start.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+    )
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        art = _add_recent_patch_with_trailers(
+            s,
+            "start-day@x",
+            ["fs/bcachefs/super.c"],
+            [("Reviewed-by", "Alice", "alice@kernel.org")],
+        )
+        art.date = start + (next_midnight - start) / 2
+        s.commit()
+        # Precondition: on the start day, after the window's start time.
+        assert art.date.date() == start.date()
+        assert art.date > start
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = active_reviewers_in_subsystem(s, alpha, sub, days=days, force=True)
+    assert [(r.address_normalized, r.total) for r in out] == [("alice@kernel.org", 1)]
