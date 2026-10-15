@@ -460,7 +460,7 @@ def set(key: str, value: Any, ttl: int) -> None:
         wire_ttl = _apply_ttl_extension(ttl)
         try:
             get_broker_client().call(
-                CacheSetRequest(rpc_id=0, key=nskey, value_json=payload, ttl=wire_ttl)
+                CacheSetRequest(key=nskey, value_json=payload, ttl=wire_ttl)
             )
         except BrokerUnavailable as exc:
             logger.warning("broker write failed for %s: %s", nskey, exc)
@@ -668,7 +668,7 @@ def purge_expired() -> int:
         try:
             return (
                 get_broker_client()
-                .call(CachePurgeExpiredRequest(rpc_id=0))
+                .call(CachePurgeExpiredRequest())
                 .get("rows_deleted", 0)
             )
         except BrokerUnavailable as exc:
@@ -724,7 +724,7 @@ def delete(key: str) -> int:
         try:
             return (
                 get_broker_client()
-                .call(CacheDeleteRequest(rpc_id=0, key=nskey))
+                .call(CacheDeleteRequest(key=nskey))
                 .get("rows_deleted", 0)
             )
         except BrokerUnavailable as exc:
@@ -778,7 +778,7 @@ def delete_for_inbox(inbox_name: str) -> int:
         try:
             return (
                 get_broker_client()
-                .call(CacheDeleteForInboxRequest(rpc_id=0, name=inbox_name))
+                .call(CacheDeleteForInboxRequest(name=inbox_name))
                 .get("rows_deleted", 0)
             )
         except BrokerUnavailable as exc:

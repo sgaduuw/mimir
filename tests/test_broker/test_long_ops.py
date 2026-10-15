@@ -106,7 +106,7 @@ def test_bootstrap_inboxes_via_broker_reconciles_inboxes(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            count = c.call(BootstrapInboxesRequest(rpc_id=0))["inboxes"]
+            count = c.call(BootstrapInboxesRequest())["inboxes"]
         finally:
             c.close()
 
@@ -134,8 +134,8 @@ def test_bootstrap_inboxes_via_broker_returns_count_on_reply(seeded_db):
         try:
             # Two consecutive calls (idempotent); same count both
             # times.
-            n1 = c.call(BootstrapInboxesRequest(rpc_id=0))["inboxes"]
-            n2 = c.call(BootstrapInboxesRequest(rpc_id=0))["inboxes"]
+            n1 = c.call(BootstrapInboxesRequest())["inboxes"]
+            n2 = c.call(BootstrapInboxesRequest())["inboxes"]
         finally:
             c.close()
     assert n1 == n2
@@ -156,12 +156,12 @@ def test_per_op_timeout_restored_after_rpc(seeded_db):
         c = BrokerClient(sp)
         try:
             # Force a connection by sending a ping (default timeout).
-            assert c.call(PingRequest(rpc_id=0)) == {}
+            assert c.call(PingRequest()) == {}
             assert c._sock is not None
             default_t = c._sock.gettimeout()
 
             # Long op with a deliberately large timeout.
-            c.call(BootstrapInboxesRequest(rpc_id=0), timeout=42.0)
+            c.call(BootstrapInboxesRequest(), timeout=42.0)
 
             # Socket's timeout must be restored to the default
             # after the long op returns; otherwise the next cache
@@ -197,9 +197,9 @@ def test_ingest_inbox_via_broker_runs_to_completion(seeded_db, tmp_path):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            results = c.call(
-                IngestInboxRequest(rpc_id=0, inbox_name="alpha", workers=1)
-            )["results"]
+            results = c.call(IngestInboxRequest(inbox_name="alpha", workers=1))[
+                "results"
+            ]
         finally:
             c.close()
 
@@ -245,9 +245,7 @@ def test_ingest_inbox_via_broker_unknown_inbox_returns_clean_error(seeded_db):
         try:
             with pytest.raises(BrokerUnavailable) as exc_info:
                 c.call(
-                    IngestInboxRequest(
-                        rpc_id=0, inbox_name="does-not-exist", limit=1, workers=1
-                    )
+                    IngestInboxRequest(inbox_name="does-not-exist", limit=1, workers=1)
                 )
         finally:
             c.close()
@@ -356,9 +354,7 @@ def test_long_worker_does_not_block_cache_worker(seeded_db, monkeypatch):
 
                 def _run_long():
                     try:
-                        long_client.call(
-                            BootstrapInboxesRequest(rpc_id=0), timeout=10.0
-                        )
+                        long_client.call(BootstrapInboxesRequest(), timeout=10.0)
                     finally:
                         done_event.set()
 
@@ -374,7 +370,6 @@ def test_long_worker_does_not_block_cache_worker(seeded_db, monkeypatch):
                 t0 = time.perf_counter()
                 cache_client.call(
                     CacheSetRequest(
-                        rpc_id=0,
                         key=cache._ns("two-workers-test"),
                         value_json='"v"',
                         ttl=60,

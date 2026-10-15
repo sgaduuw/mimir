@@ -59,12 +59,17 @@ InboxName = Annotated[
 
 
 class _BrokerRequest(BaseModel):
-    """Base for every broker Request type. Carries the required
-    `rpc_id` field that the client allocates and the broker echoes
-    back into the Reply so the client can demux concurrent in-flight
-    RPCs on one socket. 3.0.0 wire-protocol change."""
+    """Base for every broker Request type. Carries the `rpc_id` field
+    that the client allocates and the broker echoes back into the
+    Reply so the client can demux concurrent in-flight RPCs on one
+    socket. 3.0.0 wire-protocol change.
 
-    rpc_id: int = Field(ge=0)
+    The default of 0 is client-side only: callers build requests
+    without an id and `BrokerClient.call` overwrites it with the
+    allocated one. The wire still requires the key, and `dispatch()`
+    rejects a request without it before this model sees it."""
+
+    rpc_id: int = Field(default=0, ge=0)
     # How long `BrokerClient.call` waits for this op's reply, in
     # seconds. A ClassVar, so it never goes on the wire. The broker is
     # on the same host on a UNIX socket, so 5 s is generous for a

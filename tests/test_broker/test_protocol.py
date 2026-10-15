@@ -249,12 +249,11 @@ def test_reply_rpc_id_round_trips():
     assert decoded.rpc_id == 42
 
 
-def test_cache_set_request_requires_rpc_id():
-    """Every broker Request MUST carry rpc_id (3.0.0 wire-protocol
-    change). The CacheSetRequest is the canary; the full sweep
-    lands in the next task. Missing rpc_id raises ValidationError."""
-    with pytest.raises(ValidationError):
-        CacheSetRequest(key="x", value_json='"v"', ttl=60)
+def test_cache_set_request_rpc_id_defaults_to_zero():
+    """rpc_id defaults to 0 client-side; `BrokerClient.call` overwrites
+    it. The wire still requires the key, which `dispatch()` enforces
+    (see test_dispatch_missing_rpc_id_returns_rpc_id_zero)."""
+    assert CacheSetRequest(key="x", value_json='"v"', ttl=60).rpc_id == 0
 
 
 def test_cache_set_request_rpc_id_round_trips():

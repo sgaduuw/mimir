@@ -144,7 +144,6 @@ def admin_failures_replay_command(
     try:
         payload = get_broker_client().call(
             FailuresReplayRequest(
-                rpc_id=0,
                 inbox_name=inbox_name,
                 epoch_filter=epoch_filter,
                 limit=limit,
