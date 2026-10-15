@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-10-15
+
 ### Removed
 
 - The deprecated `MAINLINE_TREE_URL` / `MAINLINE_TREE_PATH` settings.
@@ -25,8 +27,10 @@ changes, not internal refactors. Categories: **Added**,
   alphanumeric and hyphens, 1 to 64 characters) on `ingest_inbox`,
   `reindex`, `backfill_canonicals`, `backfill_thread_roots`,
   `warm_inbox` and `warm_subsystem`, as it already did on the inbox
-  admin ops. Names of existing inboxes always pass; the check only
-  stops a malformed value reaching SQL or a filesystem path.
+  admin ops. Inboxes created through `admin inbox` are always slugs,
+  but `INBOXES` config keys are not checked: a key with an underscore,
+  capital or dot now makes `mimir ingest` and `mimir warm-cache` stop
+  at that inbox. Check your `INBOXES` keys before upgrading.
 
 ### Fixed
 
@@ -36,6 +40,8 @@ changes, not internal refactors. Categories: **Added**,
   revision 1. The row is the real submission (`v1`) when there is one, not
   an RFC that came first, and "+N more" counts that posting's patches only.
   The revisions panel and the series diff still keep them apart (#691).
+- The subsystem activity and active-reviewer lists now count messages
+  from the first day of their window, which were left out (#740).
 - Warm-cache keys whose TTL is shorter than twice the refresh window
   were refreshed from a wider band than the configured cap allows
   (a 300s key under a 600s window from 300s out instead of 150s).
