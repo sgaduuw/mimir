@@ -388,7 +388,7 @@ def test_broker_client_backfill_returns_typed_result(seeded_db):
         c = BrokerClient(sp)
         try:
             result, run = c.backfill(
-                BackfillPatchSeriesRequest(rpc_id=0, limit=4, start="resume"),
+                BackfillPatchSeriesRequest(limit=4, start="resume"),
                 BackfillResult,
             )
         finally:
@@ -412,9 +412,7 @@ def test_broker_client_backfill_canonicals_inbox_filter(seeded_db):
         c = BrokerClient(sp)
         try:
             result, _run = c.backfill(
-                BackfillCanonicalsRequest(
-                    rpc_id=0, inbox_filter="alpha", start="resume"
-                ),
+                BackfillCanonicalsRequest(inbox_filter="alpha", start="resume"),
                 BackfillResult,
             )
         finally:
@@ -561,7 +559,7 @@ def test_chunked_resume_via_broker_covers_full_corpus(seeded_db, monkeypatch):
         try:
             result, run = _broker_backfill_loop(
                 lambda **kw: c.backfill(
-                    BackfillPatchSeriesRequest(rpc_id=0, **kw), BackfillResult
+                    BackfillPatchSeriesRequest(**kw), BackfillResult
                 ),
                 limit=None,
                 reprocess=False,

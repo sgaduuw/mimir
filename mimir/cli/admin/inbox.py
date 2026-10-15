@@ -158,7 +158,7 @@ def admin_inbox_add_command(
     try:
         inbox_dict = get_broker_client().call(
             InboxCreateRequest(
-                rpc_id=0, name=name, mirror_path=mirror_path, upstream_url=upstream_url
+                name=name, mirror_path=mirror_path, upstream_url=upstream_url
             )
         )["inbox"]
     except BrokerUnavailable as exc:
@@ -224,7 +224,6 @@ def admin_inbox_update_command(
     try:
         inbox_dict = get_broker_client().call(
             InboxUpdateRequest(
-                rpc_id=0,
                 name=name,
                 new_name=new_name,
                 mirror_path=mirror_path,
@@ -298,7 +297,6 @@ def admin_inbox_remove_command(
     try:
         report_dict = get_broker_client().call(
             InboxDeleteRequest(
-                rpc_id=0,
                 name=name,
                 keep_orphan_articles=keep_orphan_articles,
                 remove_inbox_data=remove_inbox_data,
@@ -364,7 +362,7 @@ def _set_trackers(name: str, authors: dict[str, str]) -> dict:
 
     try:
         return get_broker_client().call(
-            InboxSetTrackedAuthorsRequest(rpc_id=0, name=name, trackers=authors)
+            InboxSetTrackedAuthorsRequest(name=name, trackers=authors)
         )["inbox"]
     except BrokerUnavailable as exc:
         raise _inbox_click_error(exc)

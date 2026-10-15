@@ -220,6 +220,11 @@ def dispatch(line: bytes) -> Reply:
     if entry is None:
         return Reply(rpc_id=pre_parse_rpc_id, ok=False, error="UnknownOp")
     model, handler = entry
+    # The model defaults rpc_id for client-side construction; the wire
+    # still requires the key, so a request without it never runs.
+    if "rpc_id" not in raw:
+        logger.warning("broker: %s without rpc_id", op)
+        return Reply(rpc_id=0, ok=False, error="InvalidRequest")
     try:
         req = model.model_validate(raw)
     except ValidationError as exc:

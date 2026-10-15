@@ -96,7 +96,6 @@ def test_inbox_create_via_broker_inserts_row(seeded_db):
         try:
             payload = c.call(
                 InboxCreateRequest(
-                    rpc_id=0,
                     name="delta",
                     mirror_path="Inboxes/delta/git",
                     upstream_url="https://lore.kernel.org/delta",
@@ -129,7 +128,6 @@ def test_inbox_create_duplicate_returns_invalid_error(seeded_db):
                 # alpha already exists in the seeded fixture.
                 c.call(
                     InboxCreateRequest(
-                        rpc_id=0,
                         name="alpha",
                         mirror_path="Inboxes/alpha/git",
                         upstream_url="https://lore.kernel.org/alpha",
@@ -158,7 +156,6 @@ def test_inbox_update_via_broker_mutates_only_supplied_fields(seeded_db):
         try:
             payload = c.call(
                 InboxUpdateRequest(
-                    rpc_id=0,
                     name="alpha",
                     upstream_url="https://lore.kernel.org/alpha-new",
                 )
@@ -184,21 +181,17 @@ def test_inbox_update_list_address_via_broker(seeded_db):
         c = BrokerClient(sp)
         try:
             payload = c.call(
-                InboxUpdateRequest(
-                    rpc_id=0, name="alpha", list_address="Alpha@Lists.Example.ORG"
-                )
+                InboxUpdateRequest(name="alpha", list_address="Alpha@Lists.Example.ORG")
             )["inbox"]
             assert payload["list_address"] == "alpha@lists.example.org"
             with pytest.raises(BrokerUnavailable) as ei:
                 c.call(
                     InboxUpdateRequest(
-                        rpc_id=0, name="beta", list_address="alpha@lists.example.org"
+                        name="beta", list_address="alpha@lists.example.org"
                     )
                 )
             assert "InvalidInbox:" in str(ei.value)
-            payload = c.call(
-                InboxUpdateRequest(rpc_id=0, name="alpha", list_address="")
-            )["inbox"]
+            payload = c.call(InboxUpdateRequest(name="alpha", list_address=""))["inbox"]
             assert payload["list_address"] is None
         finally:
             c.close()
@@ -211,9 +204,7 @@ def test_inbox_update_unknown_returns_not_found(seeded_db):
         try:
             with pytest.raises(BrokerUnavailable) as ei:
                 c.call(
-                    InboxUpdateRequest(
-                        rpc_id=0, name="nosuch", upstream_url="https://x.example/"
-                    )
+                    InboxUpdateRequest(name="nosuch", upstream_url="https://x.example/")
                 )
         finally:
             c.close()
@@ -238,13 +229,12 @@ def test_inbox_delete_via_broker_removes_row(seeded_db):
             # keep the test scoped.)
             c.call(
                 InboxCreateRequest(
-                    rpc_id=0,
                     name="to-delete",
                     mirror_path="Inboxes/to-delete/git",
                     upstream_url="https://lore.kernel.org/to-delete",
                 )
             )
-            report = c.call(InboxDeleteRequest(rpc_id=0, name="to-delete"))["report"]
+            report = c.call(InboxDeleteRequest(name="to-delete"))["report"]
         finally:
             c.close()
 
@@ -266,7 +256,6 @@ def test_inbox_set_tracked_authors_via_broker(seeded_db):
         try:
             payload = c.call(
                 InboxSetTrackedAuthorsRequest(
-                    rpc_id=0,
                     name="alpha",
                     trackers={"linus": "torvalds@", "greg": "gregkh@"},
                 )
@@ -290,7 +279,7 @@ def test_failures_replay_via_broker_unknown_inbox(seeded_db):
         c = BrokerClient(sp)
         try:
             with pytest.raises(BrokerUnavailable) as ei:
-                c.call(FailuresReplayRequest(rpc_id=0, inbox_name="nosuch"))
+                c.call(FailuresReplayRequest(inbox_name="nosuch"))
         finally:
             c.close()
     assert "InboxNotFound:" in str(ei.value)
@@ -303,7 +292,7 @@ def test_failures_replay_via_broker_empty_inbox_returns_zero_counters(seeded_db)
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result = c.call(FailuresReplayRequest(rpc_id=0, inbox_name="alpha"))
+            result = c.call(FailuresReplayRequest(inbox_name="alpha"))
         finally:
             c.close()
     assert result == {
@@ -651,9 +640,7 @@ def test_robots_add_via_broker_inserts_row(seeded_db):
         c = BrokerClient(sp)
         try:
             payload = c.call(
-                RobotsAddRequest(
-                    rpc_id=0, user_agent="GPTBot", disallow=["/"], crawl_delay=10
-                )
+                RobotsAddRequest(user_agent="GPTBot", disallow=["/"], crawl_delay=10)
             )["rule"]
         finally:
             c.close()
@@ -686,7 +673,7 @@ def test_robots_add_duplicate_returns_invalid_error(seeded_db):
         c = BrokerClient(sp)
         try:
             with pytest.raises(BrokerUnavailable) as ei:
-                c.call(RobotsAddRequest(rpc_id=0, user_agent="GPTBot", disallow=["/"]))
+                c.call(RobotsAddRequest(user_agent="GPTBot", disallow=["/"]))
         finally:
             c.close()
     assert "InvalidRobotsRule:" in str(ei.value)
@@ -699,7 +686,7 @@ def test_robots_update_via_broker_mutates_row(seeded_db):
         try:
             payload = c.call(
                 RobotsUpdateRequest(
-                    rpc_id=0, user_agent="*", add_disallow=["/private/"], crawl_delay=30
+                    user_agent="*", add_disallow=["/private/"], crawl_delay=30
                 )
             )["rule"]
         finally:
@@ -720,7 +707,7 @@ def test_robots_remove_via_broker_drops_row(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.call(RobotsRemoveRequest(rpc_id=0, user_agent="GPTBot"))
+            c.call(RobotsRemoveRequest(user_agent="GPTBot"))
         finally:
             c.close()
 
@@ -738,7 +725,7 @@ def test_robots_remove_star_refused(seeded_db):
         c = BrokerClient(sp)
         try:
             with pytest.raises(BrokerUnavailable) as ei:
-                c.call(RobotsRemoveRequest(rpc_id=0, user_agent="*"))
+                c.call(RobotsRemoveRequest(user_agent="*"))
         finally:
             c.close()
     assert "InvalidRobotsRule:" in str(ei.value)
@@ -759,7 +746,7 @@ def test_robots_reset_via_broker_reseeds_defaults(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.call(RobotsResetRequest(rpc_id=0))
+            c.call(RobotsResetRequest())
         finally:
             c.close()
 
@@ -869,7 +856,6 @@ def test_robots_add_with_content_signals_via_broker(seeded_db):
         try:
             payload = c.call(
                 RobotsAddRequest(
-                    rpc_id=0,
                     user_agent="Googlebot",
                     content_signals={"search": "yes", "ai-train": "no"},
                 )
@@ -900,23 +886,19 @@ def test_robots_update_content_signals_via_broker(seeded_db):
             # 1) upsert a key
             payload = c.call(
                 RobotsUpdateRequest(
-                    rpc_id=0, user_agent="*", set_content_signal={"ai-train": "yes"}
+                    user_agent="*", set_content_signal={"ai-train": "yes"}
                 )
             )["rule"]
             assert payload["content_signals"]["ai-train"] == "yes"
             assert payload["content_signals"]["search"] == "yes"
             # 2) drop a specific key
             payload = c.call(
-                RobotsUpdateRequest(
-                    rpc_id=0, user_agent="*", clear_content_signal=["ai-input"]
-                )
+                RobotsUpdateRequest(user_agent="*", clear_content_signal=["ai-input"])
             )["rule"]
             assert "ai-input" not in payload["content_signals"]
             # 3) wipe all
             payload = c.call(
-                RobotsUpdateRequest(
-                    rpc_id=0, user_agent="*", clear_all_content_signals=True
-                )
+                RobotsUpdateRequest(user_agent="*", clear_all_content_signals=True)
             )["rule"]
             assert payload["content_signals"] == {}
         finally:
@@ -942,7 +924,7 @@ def test_robots_update_invalid_content_signal_fails_at_client(seeded_db):
             with pytest.raises(ValidationError) as ei:
                 c.call(
                     RobotsUpdateRequest(
-                        rpc_id=0, user_agent="*", set_content_signal={"unknown": "yes"}
+                        user_agent="*", set_content_signal={"unknown": "yes"}
                     )
                 )
         finally:

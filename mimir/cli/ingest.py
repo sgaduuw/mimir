@@ -54,9 +54,7 @@ def _ingest_all_dispatch(
             break
         try:
             raw = client.call(
-                IngestInboxRequest(
-                    rpc_id=0, inbox_name=name, limit=remaining, workers=workers
-                )
+                IngestInboxRequest(inbox_name=name, limit=remaining, workers=workers)
             ).get("results", [])
         except BrokerUnavailable as exc:
             raise click.ClickException(f"broker ingest_inbox({name}) failed: {exc}")
@@ -170,7 +168,6 @@ def reindex_command(
     try:
         response = get_broker_client().call(
             ReindexRequest(
-                rpc_id=0,
                 inbox_name=inbox_name,
                 epoch=epoch,
                 from_scratch=from_scratch,
