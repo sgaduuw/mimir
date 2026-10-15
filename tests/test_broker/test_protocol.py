@@ -10,13 +10,19 @@ import pytest
 from pydantic import ValidationError
 
 from mimir.broker.protocol import (
+    BackfillCanonicalsRequest,
+    BackfillThreadRootsRequest,
     BootstrapInboxesRequest,
     CacheDeleteForInboxRequest,
     CacheDeleteRequest,
     CachePurgeExpiredRequest,
     CacheSetRequest,
+    IngestInboxRequest,
     PingRequest,
+    ReindexRequest,
     Reply,
+    WarmInboxRequest,
+    WarmSubsystemRequest,
 )
 
 
@@ -255,3 +261,34 @@ def test_cache_set_request_rpc_id_round_trips():
     req = CacheSetRequest(rpc_id=7, key="x", value_json='"v"', ttl=60)
     decoded = CacheSetRequest.model_validate_json(req.model_dump_json())
     assert decoded.rpc_id == 7
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda name: IngestInboxRequest(rpc_id=1, inbox_name=name),
+        lambda name: ReindexRequest(rpc_id=1, inbox_name=name, epoch="0.git"),
+        lambda name: BackfillCanonicalsRequest(rpc_id=1, inbox_filter=name),
+        lambda name: BackfillThreadRootsRequest(rpc_id=1, inbox=name),
+        lambda name: WarmInboxRequest(rpc_id=1, inbox_name=name),
+        lambda name: WarmSubsystemRequest(rpc_id=1, inbox_name=name, subsystem_id=1),
+    ],
+    ids=[
+        "ingest_inbox",
+        "reindex",
+        "backfill_canonicals",
+        "backfill_thread_roots",
+        "warm_inbox",
+        "warm_subsystem",
+    ],
+)
+def test_inbox_name_fields_reject_non_slug_names(build):
+    """Every inbox-name-shaped field on the wire shares `InboxName`,
+    the same predicate `mimir.inboxes.validate_name` applies at
+    creation, so a peer cannot smuggle path components or LIKE
+    metacharacters into an op that composes the value into SQL or a
+    filesystem path. A well-formed name still passes."""
+    assert build("lkml")
+    for bad in ("LKML", "a b", "-x", "x-", "../etc", "%", "a" * 65):
+        with pytest.raises(ValidationError):
+            build(bad)
