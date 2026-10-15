@@ -782,3 +782,154 @@ def test_series_more_counts_a_resent_patch_once(seeded_db):
         s.commit()
         result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
     assert [(p.message_id, p.series_more) for p in result] == [("rs-v2-1@x", 1)]
+
+
+def _unversioned_pair(s, other):
+    """One patch posted as `[PATCH]` (stored v1) and again as `other`
+    (`resend` or `rfc`, stored without a number): revision 1 both times."""
+    for msgid, version, days_ago in (
+        ("first@x", "v1", 21),
+        ("second@x", other, 20),
+    ):
+        _add_article(
+            s,
+            msgid,
+            paths=["net/core/dev.c"],
+            days_ago=days_ago,
+            patch_series_key="rev1",
+            patch_series_version=version,
+            patch_series_position=1,
+            trailers=[("Reviewed-by", "rev@example.com")],
+        )
+
+
+@pytest.mark.parametrize("other", ["resend", "rfc"])
+def test_unversioned_resend_and_rfc_fold_into_v1(seeded_db, other):
+    """`version_number_sql` rates `resend` and `rfc` as revision 1, so
+    the posting folds on the revision number, not the stored string
+    (#691)."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _unversioned_pair(s, other)
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [(p.message_id, p.series_more) for p in result] == [("first@x", 0)]
+
+
+def test_quiet_unversioned_resend_folds_into_v1(seeded_db):
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        for msgid, version, days_ago in (("q1@x", "v1", 60), ("q2@x", "resend", 59)):
+            _add_article(
+                s,
+                msgid,
+                paths=["net/core/dev.c"],
+                days_ago=days_ago,
+                patch_series_key="qrev",
+                patch_series_version=version,
+                patch_series_position=1,
+            )
+        s.commit()
+        result = quiet_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [p.message_id for p in result] == ["q1@x"]
+
+
+def test_different_revisions_stay_two_rows(seeded_db):
+    """Folding on the number must not merge v1 with v2: v2 drops
+    patch 1, so v1's patch 1 is not superseded and both are listed."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        for msgid, version, position, days_ago in (
+            ("old@x", "v1", 1, 21),
+            ("new@x", "v2", 2, 20),
+        ):
+            _add_article(
+                s,
+                msgid,
+                paths=["net/core/dev.c"],
+                days_ago=days_ago,
+                patch_series_key="two",
+                patch_series_version=version,
+                patch_series_position=position,
+                trailers=[("Reviewed-by", "rev@example.com")],
+            )
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [p.message_id for p in result] == ["old@x", "new@x"]
+
+
+def test_series_more_counts_an_unversioned_resend_once(seeded_db):
+    """A two-patch v1 resent as `resend`: the listed patch has one
+    other patch, not three (#691)."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _series(s, "uv", "v1", 2, days_ago=30)
+        _series(s, "uv", "resend", 2, days_ago=20)
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [(p.message_id, p.series_more) for p in result] == [("uv-v1-1@x", 1)]
+
+
+def test_rfc_before_v1_lists_the_v1_patch(seeded_db):
+    """An older `rfc` patch must not hide the `v1` patch it folds with:
+    a stored `vN` is the row, whatever the date order (#691)."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        for msgid, version, days_ago in (("rfc@x", "rfc", 30), ("v1@x", "v1", 20)):
+            _add_article(
+                s,
+                msgid,
+                paths=["net/core/dev.c"],
+                days_ago=days_ago,
+                patch_series_key="rf",
+                patch_series_version=version,
+                patch_series_position=1,
+                trailers=[("Reviewed-by", "rev@example.com")],
+            )
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [p.message_id for p in result] == ["v1@x"]
+
+
+def test_series_more_counts_only_the_listed_posting(seeded_db):
+    """A 3-patch RFC then a 2-patch v1: the row is v1's first patch, and
+    "+N more" is v1's one other patch, not the RFC's too (#691)."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _series(s, "mix", "rfc", 3, days_ago=30)
+        _series(s, "mix", "v1", 2, days_ago=20)
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [(p.message_id, p.series_more) for p in result] == [("mix-v1-1@x", 1)]
+
+
+def test_replaced_row_keeps_date_order(seeded_db):
+    """The list is oldest first: the `v1` row that replaces an older
+    `rfc` row is newer than the unrelated patch listed in between."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        for msgid, key, version, days_ago in (
+            ("rfc@x", "rf", "rfc", 30),
+            ("other@x", "ot", "v1", 25),
+            ("v1@x", "rf", "v1", 20),
+        ):
+            _add_article(
+                s,
+                msgid,
+                paths=["net/core/dev.c"],
+                days_ago=days_ago,
+                patch_series_key=key,
+                patch_series_version=version,
+                patch_series_position=1,
+                trailers=[("Reviewed-by", "rev@example.com")],
+            )
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [p.message_id for p in result] == ["other@x", "v1@x"]

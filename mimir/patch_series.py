@@ -67,6 +67,16 @@ def version_number_sql(column: str) -> str:
     )
 
 
+def representative_key(version: str | None, date, article_id: int) -> tuple:
+    """Sort key choosing the row that names a folded posting (#691): a
+    stored `vN` beats `rfc` and `resend` (the real submission, whatever
+    the archive order), then the oldest by `(date, id)`. Both lists that
+    fold on the revision number use it, so they pick the same posting.
+    The `v` test is the `LIKE 'v%'` of `version_number_sql`."""
+    numbered = version is not None and version.lower().startswith("v")
+    return (not numbered, date is None, date, article_id)
+
+
 def newer_revision_sql(older: str, newer: str) -> str:
     """SQL condition: the article aliased `newer` is a later revision
     of the patch aliased `older`. Same series key, same position (NULL

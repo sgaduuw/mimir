@@ -30,6 +30,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- The subsystem triage lists and `/merge-window` now show a series and its
+  unversioned `RESEND` or `RFC` repost as one row. They were stored as
+  `resend` and `rfc` beside `v1` and listed twice, though all three are
+  revision 1. The row is the real submission (`v1`) when there is one, not
+  an RFC that came first, and "+N more" counts that posting's patches only.
+  The revisions panel and the series diff still keep them apart (#691).
 - Warm-cache keys whose TTL is shorter than twice the refresh window
   were refreshed from a wider band than the configured cap allows
   (a 300s key under a 600s window from 300s out instead of 150s).
