@@ -471,3 +471,85 @@ def test_config_knobs_move_the_etag(client, monkeypatch, knob):
             [*settings.canonical_demoted_inboxes, "alpha"],
         )
     assert client.get(MERGE_WINDOW_PATH).headers["ETag"] != before
+
+
+@pytest.mark.parametrize("other", ["resend", "rfc"])
+def test_unversioned_resend_and_rfc_are_one_posting_with_v1(seeded_db, other):
+    """`resend` and `rfc` are revision 1, as `version_number_sql` rates
+    them: the original and its repost are one row, named by the
+    original cover (#691)."""
+    with seeded_db() as s:
+        cover = _article(s, "c1@x", key="k", version="v1", pos=0)
+        cover.subject = "[PATCH 0/2] the series"
+        _article(s, "c2@x", key="k", version=other, pos=0, days=5)
+        for version, days in (("v1", 1), (other, 6)):
+            for n in (1, 2):
+                _article(
+                    s,
+                    f"{version}-{n}@x",
+                    key="k",
+                    version=version,
+                    pos=n,
+                    days=days + n,
+                )
+                _commit(s, f"{version}-{n}@x", "linux-next")
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {NO_SUBSYSTEM: [("[PATCH 0/2] the series", 4, [])]}
+    assert _groups(mw)[0].rows[0].url.endswith(f"/{cover.id}")
+
+
+def test_different_revisions_are_two_postings(seeded_db):
+    with seeded_db() as s:
+        for version, days in (("v1", 1), ("v2", 5)):
+            _article(s, f"{version}@x", key="k", version=version, pos=1, days=days)
+            _commit(s, f"{version}@x", "linux-next")
+        s.commit()
+        mw = merge_window(s)
+    assert sorted(r.patches for g in _groups(mw) for r in g.rows) == [1, 1]
+
+
+def test_rfc_before_v1_does_not_name_the_queued_posting(seeded_db):
+    """The RFC is posted first, as usual on lkml, and only v1's patches
+    are queued: a stored `vN` names the posting over `rfc`, whatever the
+    archive order (#691)."""
+    with seeded_db() as s:
+        rfc = _article(s, "rfc0@x", key="k", version="rfc", pos=0)
+        rfc.subject = "[RFC PATCH 0/2] the series"
+        v1 = _article(s, "v10@x", key="k", version="v1", pos=0, days=10)
+        v1.subject = "[PATCH 0/2] the series"
+        for n in (1, 2):
+            _article(s, f"rfc-{n}@x", key="k", version="rfc", pos=n, days=n)
+            _article(s, f"v1-{n}@x", key="k", version="v1", pos=n, days=10 + n)
+            _commit(s, f"v1-{n}@x", "linux-next")
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {NO_SUBSYSTEM: [("[PATCH 0/2] the series", 2, [])]}
+    assert _groups(mw)[0].rows[0].url.endswith(f"/{v1.id}")
+
+
+def test_rfc_cover_does_not_name_queued_v1_without_its_cover(seeded_db):
+    """v1's cover is not archived, the RFC's is, and only v1's patches
+    are queued: the RFC cover must not name the posting (#691)."""
+    with seeded_db() as s:
+        rfc = _article(s, "rfc0@x", key="k", version="rfc", pos=0)
+        rfc.subject = "[RFC PATCH 0/2] the series"
+        for n in (1, 2):
+            _article(s, f"rfc-{n}@x", key="k", version="rfc", pos=n, days=n)
+            _article(s, f"v1-{n}@x", key="k", version="v1", pos=n, days=10 + n)
+            _commit(s, f"v1-{n}@x", "linux-next")
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {NO_SUBSYSTEM: [("[PATCH] v1-1@x", 2, [])]}
+
+
+def test_queued_v1_patch_names_the_posting_over_an_older_queued_rfc_patch(seeded_db):
+    """No cover archived: of the queued patches, the stored `vN` one
+    names the posting even though the `rfc` one is older (#691)."""
+    with seeded_db() as s:
+        for msgid, version, days in (("rfc@x", "rfc", 1), ("v1@x", "v1", 5)):
+            _article(s, msgid, key="k", version=version, pos=1, days=days)
+            _commit(s, msgid, "linux-next")
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {NO_SUBSYSTEM: [("[PATCH] v1@x", 2, [])]}
