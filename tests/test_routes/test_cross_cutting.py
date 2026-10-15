@@ -668,7 +668,7 @@ def test_access_log_does_not_consume_stream(client, access_records):
 def test_canonical_inbox_name_uses_canonical_id():
     from unittest.mock import MagicMock
 
-    from mimir.web import _canonical_inbox_name
+    from mimir.web.urls import _canonical_inbox_name
 
     art = MagicMock()
     art.canonical_inbox_id = 7
@@ -680,7 +680,7 @@ def test_canonical_inbox_name_uses_canonical_id():
 def test_canonical_inbox_name_falls_back_alphabetical_when_null():
     from unittest.mock import MagicMock
 
-    from mimir.web import _canonical_inbox_name
+    from mimir.web.urls import _canonical_inbox_name
 
     art = MagicMock()
     art.canonical_inbox_id = None
@@ -691,7 +691,7 @@ def test_canonical_inbox_name_falls_back_alphabetical_when_null():
 def test_canonical_inbox_name_returns_none_for_orphan_article():
     from unittest.mock import MagicMock
 
-    from mimir.web import _canonical_inbox_name
+    from mimir.web.urls import _canonical_inbox_name
 
     art = MagicMock()
     art.canonical_inbox_id = None
@@ -702,7 +702,7 @@ def test_canonical_url_for_combines_base_and_msg_url():
     from datetime import datetime
     from unittest.mock import MagicMock
 
-    from mimir.web import _canonical_url_for
+    from mimir.web.urls import _canonical_url_for
 
     art = MagicMock()
     art.id = 99
@@ -812,7 +812,7 @@ def test_static_assets_carry_cache_control(client):
 
 
 def test_clean_subject_filter_collapses_whitespace():
-    from mimir.web import _clean_subject_filter
+    from mimir.web.filters import _clean_subject_filter
 
     assert _clean_subject_filter("a\n  b") == "a b"
     assert _clean_subject_filter("a\tb\r\nc") == "a b c"
@@ -822,7 +822,7 @@ def test_clean_subject_filter_collapses_whitespace():
 
 
 def test_display_name_filter_strips_address(client):
-    from mimir.web import _display_name_filter
+    from mimir.web.filters import _display_name_filter
 
     assert _display_name_filter("Bob <bob@example.com>") == "Bob"
     assert _display_name_filter("bob@example.com") == "unknown sender"

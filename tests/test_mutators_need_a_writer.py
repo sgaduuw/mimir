@@ -1,19 +1,53 @@
-"""Phase 5 tests: broker admin RPC handlers migrate from inline
-direct-SQLite writes (via service-layer SessionLocal/write_transaction)
-to WriteOp dispatch through the active WriterThread.
-
-Pins the structural contract for Phase 5 of the broker two-pool
-restructure (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
-Kept in its own file so the Phase 5 PR audit is easy.
-
-Contract-test shape: capture all WriteOp submits to the active
-writer via a recording wrapper around `_context.get_active_writer()`,
-run the service function, assert at least one submit happened
-(i.e. the dispatch path was taken, not the legacy SessionLocal
-path).
-"""
+"""Every inbox, robots and replay mutator writes through the broker's
+WriterThread and raises when none is active (#707). The single-writer
+invariant means a process without a writer must not fall back to its
+own SessionLocal write."""
 
 from datetime import UTC
+
+import pytest
+from sqlalchemy import select
+
+from mimir.broker import _context
+from mimir.inboxes import (
+    create_inbox,
+    delete_inbox,
+    set_tracked_authors,
+    update_inbox,
+)
+from mimir.ingest.replay import replay_failures
+from mimir.models import Inbox, RobotsRule
+from mimir.robots import add_rule, remove_rule, reset_rules, update_rule
+
+MUTATORS = {
+    "create_inbox": lambda: create_inbox(
+        "fresh", "/tmp/fresh", "https://example.invalid/fresh"
+    ),
+    "update_inbox": lambda: update_inbox("alpha", mirror_path="/tmp/moved"),
+    "delete_inbox": lambda: delete_inbox("alpha"),
+    "set_tracked_authors": lambda: set_tracked_authors("alpha", None),
+    "add_rule": lambda: add_rule("fresh-bot", disallow=["/x"]),
+    "update_rule": lambda: update_rule("tester-bot", add_disallow=["/y"]),
+    "remove_rule": lambda: remove_rule("tester-bot"),
+    "reset_rules": reset_rules,
+    "replay_failures": lambda: replay_failures(Inbox(id=1, name="alpha")),
+}
+
+
+@pytest.mark.parametrize("name", MUTATORS)
+def test_mutator_without_a_writer_raises(seeded_db, monkeypatch, name):
+    with seeded_db() as s:
+        s.add(RobotsRule(user_agent="tester-bot", disallow_paths=[]))
+        s.commit()
+        # Precondition: the legacy path would have found its target,
+        # so a green run means "refused", not "nothing to do".
+        assert s.execute(select(Inbox).where(Inbox.name == "alpha")).first()
+
+    monkeypatch.setattr(_context, "_active_pool", None)
+    monkeypatch.setattr(_context, "_active_writer", None)
+
+    with pytest.raises(RuntimeError, match="No active broker"):
+        MUTATORS[name]()
 
 
 def _writer_submit_recorder():
@@ -69,38 +103,6 @@ def test_add_rule_dispatches_via_writer(seeded_db, broker_active):
             select(RobotsRule).where(RobotsRule.user_agent == "phase5-test-agent")
         ).scalar_one()
     assert row.user_agent == "phase5-test-agent"
-
-
-def test_add_rule_falls_back_to_direct_when_no_context(seeded_db):
-    """When called outside the broker context, `add_rule` must fall
-    back to the legacy direct `SessionLocal()` path (write_transaction
-    was removed in Phase 6b)."""
-    from sqlalchemy import select
-
-    from mimir.broker import _context
-    from mimir.models import RobotsRule
-    from mimir.robots import add_rule
-
-    # Temporarily clear the active broker context so no writer is available.
-    saved_pool = _context._active_pool
-    saved_writer = _context._active_writer
-    _context.clear_active()
-    try:
-        add_rule(
-            user_agent="phase5-fallback-agent",
-            disallow=["/fallback"],
-            crawl_delay=None,
-            content_signals=None,
-        )
-    finally:
-        if saved_pool is not None and saved_writer is not None:
-            _context.set_active(saved_pool, saved_writer)
-
-    with seeded_db() as s:
-        row = s.execute(
-            select(RobotsRule).where(RobotsRule.user_agent == "phase5-fallback-agent")
-        ).scalar_one()
-    assert row.user_agent == "phase5-fallback-agent"
 
 
 def test_update_rule_dispatches_via_writer(seeded_db, broker_active):
@@ -271,52 +273,6 @@ def test_set_tracked_authors_dispatches_via_writer(seeded_db, broker_active):
     assert len(submits) >= 1, "set_tracked_authors must dispatch at least one WriteOp"
     assert submits[0].label.startswith("inbox:set_tracked_authors:")
     assert inbox.tracked_authors == {"phase5": "phase5@test"}
-
-
-def test_add_tracked_author_dispatches_via_writer(seeded_db, broker_active):
-    """Phase 5 contract: add_tracked_author dispatches via the writer."""
-    from mimir.inboxes import add_tracked_author
-
-    _, submits = _writer_submit_recorder()
-    inbox = add_tracked_author(name="alpha", label="phase5", substring="phase5@test")
-
-    assert len(submits) >= 1, "add_tracked_author must dispatch at least one WriteOp"
-    assert submits[0].label.startswith("inbox:add_tracked_author:")
-    assert inbox.tracked_authors is not None
-    assert inbox.tracked_authors.get("phase5") == "phase5@test"
-
-
-def test_remove_tracked_author_dispatches_via_writer(seeded_db, broker_active):
-    """Phase 5 contract: remove_tracked_author dispatches via the writer."""
-    from mimir.inboxes import remove_tracked_author, set_tracked_authors
-
-    # Seed a tracker entry so removal has something to remove.
-    set_tracked_authors(name="alpha", authors={"to-remove": "remove@test"})
-
-    _, submits = _writer_submit_recorder()
-    inbox = remove_tracked_author(name="alpha", label="to-remove")
-
-    assert len(submits) >= 1, "remove_tracked_author must dispatch at least one WriteOp"
-    assert submits[0].label.startswith("inbox:remove_tracked_author:")
-    assert inbox.tracked_authors is None or "to-remove" not in inbox.tracked_authors
-
-
-def test_clear_tracked_authors_dispatches_via_writer(seeded_db, broker_active):
-    """Phase 5 contract: clear_tracked_authors dispatches via the writer.
-    It delegates to set_tracked_authors which was migrated first; this
-    test pins that the delegation chain still takes the writer path."""
-    from mimir.inboxes import clear_tracked_authors, set_tracked_authors
-
-    # Seed a tracker entry so clearing has something to clear.
-    set_tracked_authors(name="alpha", authors={"to-clear": "clear@test"})
-
-    _, submits = _writer_submit_recorder()
-    inbox = clear_tracked_authors(name="alpha")
-
-    assert len(submits) >= 1, "clear_tracked_authors must dispatch at least one WriteOp"
-    # clear_tracked_authors delegates to set_tracked_authors
-    assert submits[0].label.startswith("inbox:set_tracked_authors:")
-    assert inbox.tracked_authors is None
 
 
 def test_create_inbox_dispatches_via_writer(seeded_db, broker_active):

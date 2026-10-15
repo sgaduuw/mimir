@@ -13,7 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from mimir.broker import server as broker_server
-from mimir.broker.protocol import CacheDeleteForInboxRequest
+from mimir.broker.protocol import CacheDeleteForInboxRequest, PingRequest
 from mimir.broker.server import build_server
 from tests.test_broker._helpers import broker_running, short_socket_path
 
@@ -260,7 +260,9 @@ def test_stalled_reply_releases_worker_for_other_clients(seeded_db, monkeypatch)
             assert replying.wait(timeout=2)
             client = BrokerClient(sp)
             try:
-                assert client.ping(), "stalled response blocked another client's ping"
+                assert client.call(PingRequest()) == {}, (
+                    "stalled response blocked another client's ping"
+                )
                 # A partial JSON frame cannot share a connection with later replies.
                 slow.settimeout(2)
                 partial = bytearray()

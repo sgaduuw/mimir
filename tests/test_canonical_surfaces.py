@@ -11,8 +11,7 @@ from mimir.canonical import fallback_canonical_name
 from mimir.models import Article, ArticleFile, ArticleList, Inbox
 from mimir.subsystems import recent_patches_touching
 from mimir.subsystems_dashboard import recent_articles_in_subsystem
-from mimir.web import _canonical_inbox_name
-from mimir.web.urls import _canonical_inbox_names_for
+from mimir.web.urls import _canonical_inbox_name, _canonical_inbox_names_for
 from tests.test_subsystems._helpers import _add_subsystem
 
 

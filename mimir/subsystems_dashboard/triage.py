@@ -17,11 +17,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel
-from sqlalchemy import func, select, text, tuple_
+from sqlalchemy import DateTime, bindparam, func, select, text, tuple_
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import TextClause
 
 from mimir import cache
 from mimir.config import settings
+from mimir.datetime_utils import coerce_dt
 from mimir.models import (
     Article,
     ArticleTrailer,
@@ -29,12 +31,15 @@ from mimir.models import (
     Subsystem,
     SubsystemMaintainer,
 )
-from mimir.patch_series import newer_revision_sql
+from mimir.patch_series import (
+    newer_revision_sql,
+    representative_key,
+    version_number_sql,
+)
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
 from mimir.subsystems_dashboard._path_filter import (
     _subsystem_path_filter_exists_sql,
 )
-from mimir.threading import _coerce_dt
 from mimir.trailers import REVIEW_TRAILER_ROLES
 
 
@@ -187,7 +192,8 @@ def _candidate_query_needs_attention(
     sql = f"""
         SELECT a.id AS article_id, a.message_id, a.subject,
                a.author, a.date AS art_date,
-               a.patch_series_key, a.patch_series_version
+               a.patch_series_key, a.patch_series_version,
+               {version_number_sql("a.patch_series_version")} AS series_rev
         FROM articles a
         WHERE a.date BETWEEN :min_date AND :cutoff_date
           AND NOT (a.date = :min_date AND a.id <= :after_id)
@@ -245,7 +251,8 @@ def _candidate_query_quiet(
     sql = f"""
         SELECT a.id AS article_id, a.message_id, a.subject,
                a.author, a.date AS art_date,
-               a.patch_series_key, a.patch_series_version
+               a.patch_series_key, a.patch_series_version,
+               {version_number_sql("a.patch_series_version")} AS series_rev
         FROM articles a
         WHERE a.date BETWEEN :min_date AND :cutoff_date
           AND NOT (a.date = :min_date AND a.id <= :after_id)
@@ -283,6 +290,17 @@ def _candidate_query_quiet(
     }
 
 
+def _triage_stmt(sql: str) -> TextClause:
+    """Wrap a candidate query with typed date binds. A bare datetime in
+    text() goes through sqlite3's deprecated default adapter and lands
+    as '...+00:00', while the ORM stores articles.date without an
+    offset (#700)."""
+    return text(sql).bindparams(
+        bindparam("min_date", type_=DateTime),
+        bindparam("cutoff_date", type_=DateTime),
+    )
+
+
 def _run_triage(
     session: Session,
     inbox: Inbox,
@@ -300,17 +318,20 @@ def _run_triage(
     """Shared post-processing across the two triage queries: run
     the candidate SELECT a page at a time, optionally drop
     maintainer-Acked rows, optionally annotate with trailer summary,
-    and fold every patch of one posting (series key and version) into
-    its oldest row (#686), until `limit` rows are built or the
-    candidates run out."""
+    and fold every patch of one posting (series key and revision
+    number, so an unversioned `resend` or `rfc` joins `v1`) into one
+    row, the `representative_key` winner: a stored `vN` over `rfc` and
+    `resend`, then the oldest (#686, #691), until `limit` rows are built
+    or the candidates run out."""
     built = build_query(inbox, subsystem, cutoff_date, limit)
     if built is None:
         return []
     sql, params = built
     out: list[PatchAttention] = []
-    by_series: dict[tuple[str, str | None], PatchAttention] = {}
+    # Per folded posting: the listed row, its rank and its stored version.
+    by_series: dict[tuple[str, int | None], tuple[tuple, PatchAttention, str]] = {}
     while True:
-        rows = session.execute(text(sql), params).all()
+        rows = session.execute(_triage_stmt(sql), params).all()
         candidate_ids = [r.article_id for r in rows]
         drop_ids: set[int] = set()
         if drop_maintainer_acked:
@@ -322,42 +343,47 @@ def _run_triage(
         for r in rows:
             if r.article_id in drop_ids:
                 continue
-            series = (
-                (r.patch_series_key, r.patch_series_version)
-                if r.patch_series_key
-                else None
+            series = (r.patch_series_key, r.series_rev) if r.patch_series_key else None
+            rank = representative_key(
+                r.patch_series_version, coerce_dt(r.art_date), r.article_id
             )
-            if series in by_series:
+            if series in by_series and rank >= by_series[series][0]:
                 continue
-            if len(out) >= limit:
+            if series not in by_series and len(out) >= limit:
                 continue
             row = PatchAttention(
                 article_id=r.article_id,
                 message_id=r.message_id,
                 subject=r.subject,
                 author=r.author,
-                date=_coerce_dt(r.art_date),
+                date=coerce_dt(r.art_date),
                 inbox_name=inbox.name,
                 trailer_summary=summaries.get(r.article_id, ""),
             )
+            if series in by_series:
+                # Rows arrive in date order: the replacement is newer, so it
+                # moves to the end to keep the list oldest first.
+                out.remove(by_series[series][1])
             out.append(row)
             if series is not None:
-                by_series[series] = row
+                by_series[series] = (rank, row, r.patch_series_version)
         if len(out) >= limit or len(rows) < params["page"]:
             break
         # Keyset, not OFFSET: the next page starts in the date index
         # where this one ended, so k pages cost k walks, not k^2/2.
         params = {
             **params,
-            "min_date": rows[-1].art_date,
+            "min_date": coerce_dt(rows[-1].art_date),
             "after_id": rows[-1].article_id,
         }
     # Counted, not tallied while paging: the list can fill before a
     # posting's later patches are fetched. Every other patch of the
-    # posting counts, listed or not. Positions, not rows: the cover
-    # (position 0) is not a patch, and a `RESEND` of the same version
-    # stores every patch twice.
+    # listed row's own posting (key and stored version, so "+N more"
+    # matches the row clicked) counts, listed or not. Positions, not
+    # rows: the cover (position 0) is not a patch, and a `RESEND` of the
+    # same version stores every patch twice.
     if by_series:
+        own = {(s[0], v): row for s, (_, row, v) in by_series.items()}
         posting = tuple_(Article.patch_series_key, Article.patch_series_version)
         counts = session.execute(
             select(
@@ -365,11 +391,11 @@ def _run_triage(
                 Article.patch_series_version,
                 func.count(Article.patch_series_position.distinct()),
             )
-            .where(posting.in_(list(by_series)), Article.patch_series_position > 0)
+            .where(posting.in_(list(own)), Article.patch_series_position > 0)
             .group_by(Article.patch_series_key, Article.patch_series_version)
         ).all()
         for key, version, n in counts:
-            by_series[(key, version)].series_more = max(n - 1, 0)
+            own[(key, version)].series_more = max(n - 1, 0)
     return out
 
 

@@ -34,11 +34,8 @@ from mimir.broker.protocol import (
     AnalyzeRequest,
     BackfillThreadRootsRequest,
     FailuresReplayRequest,
-    InboxAddTrackedAuthorRequest,
-    InboxClearTrackedAuthorsRequest,
     InboxCreateRequest,
     InboxDeleteRequest,
-    InboxRemoveTrackedAuthorRequest,
     InboxSetTrackedAuthorsRequest,
     InboxUpdateRequest,
     Reply,
@@ -210,8 +207,8 @@ def _inbox_error_reply(req, exc: Exception) -> Reply:
 
 
 def _inbox_to_dict(inbox) -> dict:
-    """Project an `Inbox` ORM row to the dict shape the admin client
-    methods reconstruct. Detached at call time (service-layer
+    """Project an `Inbox` ORM row to the dict shape the admin CLI
+    reads. Detached at call time (service-layer
     functions all `session.expunge` before returning), so attribute
     reads are safe outside a session."""
     return {
@@ -311,53 +308,6 @@ def handle_inbox_set_tracked_authors(
     return Reply(rpc_id=req.rpc_id, ok=True, result={"inbox": _inbox_to_dict(inbox)})
 
 
-def handle_inbox_add_tracked_author(
-    req: InboxAddTrackedAuthorRequest,
-) -> Reply:
-    """Add (or replace) one tracker entry."""
-    from mimir.inboxes import (
-        InboxNotFound,
-        InboxValidationError,
-        add_tracked_author,
-    )
-
-    try:
-        inbox = add_tracked_author(req.name, req.label, req.substring)
-    except (InboxNotFound, InboxValidationError) as exc:
-        return _inbox_error_reply(req, exc)
-    return Reply(rpc_id=req.rpc_id, ok=True, result={"inbox": _inbox_to_dict(inbox)})
-
-
-def handle_inbox_remove_tracked_author(
-    req: InboxRemoveTrackedAuthorRequest,
-) -> Reply:
-    """Remove one tracker entry by label."""
-    from mimir.inboxes import (
-        InboxNotFound,
-        InboxValidationError,
-        remove_tracked_author,
-    )
-
-    try:
-        inbox = remove_tracked_author(req.name, req.label)
-    except (InboxNotFound, InboxValidationError) as exc:
-        return _inbox_error_reply(req, exc)
-    return Reply(rpc_id=req.rpc_id, ok=True, result={"inbox": _inbox_to_dict(inbox)})
-
-
-def handle_inbox_clear_tracked_authors(
-    req: InboxClearTrackedAuthorsRequest,
-) -> Reply:
-    """Drop all tracker entries (writes NULL)."""
-    from mimir.inboxes import InboxNotFound, clear_tracked_authors
-
-    try:
-        inbox = clear_tracked_authors(req.name)
-    except InboxNotFound as exc:
-        return _inbox_error_reply(req, exc)
-    return Reply(rpc_id=req.rpc_id, ok=True, result={"inbox": _inbox_to_dict(inbox)})
-
-
 # ----- Phase 2.4: admin failures replay ----------------------------------
 
 
@@ -399,7 +349,7 @@ def _robots_error_reply(req, exc: Exception) -> Reply:
 
 def _robots_rule_to_dict(rule) -> dict:
     """Project a `RobotsRule` ORM row to the dict shape the admin
-    client methods reconstruct. Service-layer returns expunge before
+    CLI reads. Service-layer returns expunge before
     handing back so attribute reads are safe outside a session."""
     return {
         "user_agent": rule.user_agent,
@@ -479,11 +429,8 @@ def handle_robots_reset(req: RobotsResetRequest) -> Reply:
 __all__ = [
     "handle_analyze",
     "handle_failures_replay",
-    "handle_inbox_add_tracked_author",
-    "handle_inbox_clear_tracked_authors",
     "handle_inbox_create",
     "handle_inbox_delete",
-    "handle_inbox_remove_tracked_author",
     "handle_inbox_set_tracked_authors",
     "handle_inbox_update",
     "handle_robots_add",

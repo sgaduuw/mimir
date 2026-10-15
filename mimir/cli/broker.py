@@ -14,6 +14,7 @@ from pathlib import Path
 import click
 
 from mimir.broker.client import BrokerClient, BrokerUnavailable
+from mimir.broker.protocol import PingRequest
 from mimir.broker.server import serve
 from mimir.cli._common import _configure_logging
 
@@ -58,13 +59,10 @@ def broker_ping_command(socket_path: Path) -> None:
     Used as the compose healthcheck for `mimir-broker`."""
     client = BrokerClient(socket_path)
     try:
-        ok = client.ping()
+        client.call(PingRequest())
     except BrokerUnavailable as exc:
         click.echo(f"broker ping failed: {exc}", err=True)
         raise SystemExit(1)
     finally:
         client.close()
-    if not ok:
-        click.echo("broker ping returned ok=false", err=True)
-        raise SystemExit(1)
     click.echo("ok")

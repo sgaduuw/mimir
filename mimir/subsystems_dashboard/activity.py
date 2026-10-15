@@ -12,13 +12,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
 
-from sqlalchemy import select, text
+from sqlalchemy import DateTime, bindparam, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
 from mimir.dashboard import DailyVolume
+from mimir.datetime_utils import coerce_dt
 from mimir.models import Inbox, Subsystem
-from mimir.threading import _coerce_dt
 
 
 @dataclass
@@ -198,8 +198,8 @@ def _most_active_subsystems_in_inbox_full(
                 JOIN article_files af ON af.article_id = a.id
                 WHERE al.inbox_id = :inbox_id AND a.date >= :start
                 """
-            ),
-            {"inbox_id": inbox.id, "start": start.isoformat()},
+            ).bindparams(bindparam("start", type_=DateTime)),
+            {"inbox_id": inbox.id, "start": start},
         ).all()
 
         # Inverted indices over MAINTAINERS subsystem path rules.
@@ -276,7 +276,7 @@ def _most_active_subsystems_in_inbox_full(
             matched = inc - exc
             if not matched:
                 continue
-            path_date = _coerce_dt(r.art_date)
+            path_date = coerce_dt(r.art_date)
             day_key = path_date.date()
             for sub_id in matched:
                 counts[sub_id].add(r.article_id)

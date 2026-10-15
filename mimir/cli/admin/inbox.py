@@ -28,8 +28,8 @@ from mimir.models import ArticleList, IngestState
 
 
 def _inbox_click_error(exc) -> click.ClickException:
-    """Given a `BrokerUnavailable` raised by an `inbox_*` client
-    method, extract the structured error portion and return a
+    """Given a `BrokerUnavailable` raised by an `inbox_*` broker
+    call, extract the structured error portion and return a
     `ClickException` matching the direct-path text.
 
     The client wraps the broker's `Reply.error` as
@@ -153,13 +153,14 @@ def admin_inbox_add_command(
         upstream_url = f"https://lore.kernel.org/{name}"
 
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import InboxCreateRequest
 
     try:
-        inbox_dict = get_broker_client().inbox_create(
-            name,
-            mirror_path,
-            upstream_url,
-        )
+        inbox_dict = get_broker_client().call(
+            InboxCreateRequest(
+                name=name, mirror_path=mirror_path, upstream_url=upstream_url
+            )
+        )["inbox"]
     except BrokerUnavailable as exc:
         raise _inbox_click_error(exc)
     click.echo(f"created inbox {inbox_dict['name']!r} (id={inbox_dict['id']})")
@@ -209,6 +210,7 @@ def admin_inbox_update_command(
         )
 
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import InboxUpdateRequest
     from mimir.canonical import is_list_address
 
     if list_address and not is_list_address(list_address.strip().lower()):
@@ -220,13 +222,15 @@ def admin_inbox_update_command(
         )
 
     try:
-        inbox_dict = get_broker_client().inbox_update(
-            name,
-            new_name=new_name,
-            mirror_path=mirror_path,
-            upstream_url=upstream_url,
-            list_address=list_address,
-        )
+        inbox_dict = get_broker_client().call(
+            InboxUpdateRequest(
+                name=name,
+                new_name=new_name,
+                mirror_path=mirror_path,
+                upstream_url=upstream_url,
+                list_address=list_address,
+            )
+        )["inbox"]
     except BrokerUnavailable as exc:
         raise _inbox_click_error(exc)
     click.echo(f"updated inbox {inbox_dict['name']!r}")
@@ -288,13 +292,16 @@ def admin_inbox_remove_command(
         )
 
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import InboxDeleteRequest
 
     try:
-        report_dict = get_broker_client().inbox_delete(
-            name,
-            keep_orphan_articles=keep_orphan_articles,
-            remove_inbox_data=remove_inbox_data,
-        )
+        report_dict = get_broker_client().call(
+            InboxDeleteRequest(
+                name=name,
+                keep_orphan_articles=keep_orphan_articles,
+                remove_inbox_data=remove_inbox_data,
+            )
+        )["report"]
     except BrokerUnavailable as exc:
         raise _inbox_click_error(exc)
     click.echo(f"removed inbox {report_dict['name']!r}")
@@ -339,6 +346,28 @@ def admin_inbox_trackers_show_command(name: str) -> None:
         click.echo(f"  {label:<{label_w}}  {substring}")
 
 
+def _current_trackers(name: str) -> dict[str, str]:
+    try:
+        return dict(get_inbox(name).tracked_authors or {})
+    except InboxNotFound as exc:
+        raise click.ClickException(str(exc))
+
+
+def _set_trackers(name: str, authors: dict[str, str]) -> dict:
+    """Write the whole tracker dict through the broker's one tracker op.
+    add/remove/clear read the dict here and edit it in the CLI; the
+    broker validates, and an empty dict writes NULL."""
+    from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import InboxSetTrackedAuthorsRequest
+
+    try:
+        return get_broker_client().call(
+            InboxSetTrackedAuthorsRequest(name=name, trackers=authors)
+        )["inbox"]
+    except BrokerUnavailable as exc:
+        raise _inbox_click_error(exc)
+
+
 @admin_inbox_trackers_group.command("set")
 @click.argument("name")
 @click.argument("pairs", nargs=-1, required=True)
@@ -348,16 +377,7 @@ def admin_inbox_trackers_set_command(name: str, pairs: tuple[str, ...]) -> None:
     for pair in pairs:
         label, substring = _parse_pair(pair)
         authors[label] = substring
-
-    from mimir.broker.client import BrokerUnavailable, get_broker_client
-
-    try:
-        inbox_dict = get_broker_client().inbox_set_tracked_authors(
-            name,
-            authors,
-        )
-    except BrokerUnavailable as exc:
-        raise _inbox_click_error(exc)
+    inbox_dict = _set_trackers(name, authors)
     n = len(inbox_dict.get("tracked_authors") or {})
     click.echo(f"{inbox_dict['name']}: set {n} tracker(s)")
 
@@ -372,16 +392,9 @@ def admin_inbox_trackers_add_command(
     substring: str,
 ) -> None:
     """Add (or replace) one tracker entry."""
-    from mimir.broker.client import BrokerUnavailable, get_broker_client
-
-    try:
-        inbox_dict = get_broker_client().inbox_add_tracked_author(
-            name,
-            label,
-            substring,
-        )
-    except BrokerUnavailable as exc:
-        raise _inbox_click_error(exc)
+    authors = _current_trackers(name)
+    authors[label.strip()] = substring
+    inbox_dict = _set_trackers(name, authors)
     n = len(inbox_dict.get("tracked_authors") or {})
     click.echo(
         f"{inbox_dict['name']}: added tracker {label!r} → {substring!r} ({n} total)"
@@ -393,15 +406,12 @@ def admin_inbox_trackers_add_command(
 @click.argument("label")
 def admin_inbox_trackers_remove_command(name: str, label: str) -> None:
     """Remove one tracker entry by label."""
-    from mimir.broker.client import BrokerUnavailable, get_broker_client
-
-    try:
-        inbox_dict = get_broker_client().inbox_remove_tracked_author(
-            name,
-            label,
+    authors = _current_trackers(name)
+    if authors.pop(label.strip(), None) is None:
+        raise click.ClickException(
+            f"inbox {name!r} has no tracker labelled {label.strip()!r}"
         )
-    except BrokerUnavailable as exc:
-        raise _inbox_click_error(exc)
+    inbox_dict = _set_trackers(name, authors)
     n = len(inbox_dict.get("tracked_authors") or {})
     click.echo(f"{inbox_dict['name']}: removed tracker {label!r} ({n} remaining)")
 
@@ -410,10 +420,5 @@ def admin_inbox_trackers_remove_command(name: str, label: str) -> None:
 @click.argument("name")
 def admin_inbox_trackers_clear_command(name: str) -> None:
     """Drop all tracker entries (writes NULL)."""
-    from mimir.broker.client import BrokerUnavailable, get_broker_client
-
-    try:
-        inbox_dict = get_broker_client().inbox_clear_tracked_authors(name)
-    except BrokerUnavailable as exc:
-        raise _inbox_click_error(exc)
+    inbox_dict = _set_trackers(name, {})
     click.echo(f"{inbox_dict['name']}: cleared all trackers")

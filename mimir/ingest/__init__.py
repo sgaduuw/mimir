@@ -16,16 +16,7 @@
 """
 
 from mimir.ingest.backfill import BackfillResult, backfill_canonicals
-from mimir.ingest.epoch import (
-    COMMIT_EVERY,
-    DEFAULT_WORKERS,
-    MIN_PROMOTE_OBSERVATIONS,
-    PARSE_CHUNKSIZE,
-    PROGRESS_EVERY,
-    PROMOTE_DOMINANCE,
-    IngestResult,
-    ingest_epoch,
-)
+from mimir.ingest.epoch import DEFAULT_WORKERS, IngestResult, ingest_epoch
 from mimir.ingest.orchestrate import (
     discover_epochs,
     ingest_all,
@@ -34,12 +25,7 @@ from mimir.ingest.orchestrate import (
 from mimir.ingest.replay import ReplayResult, replay_failures
 
 __all__ = [
-    "COMMIT_EVERY",
     "DEFAULT_WORKERS",
-    "MIN_PROMOTE_OBSERVATIONS",
-    "PARSE_CHUNKSIZE",
-    "PROGRESS_EVERY",
-    "PROMOTE_DOMINANCE",
     "BackfillResult",
     "IngestResult",
     "ReplayResult",

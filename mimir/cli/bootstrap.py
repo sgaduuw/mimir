@@ -16,9 +16,11 @@ import click
 def bootstrap_inboxes_command() -> None:
     """Seed `inboxes` from env config. Idempotent; safe to re-run."""
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import BootstrapInboxesRequest
 
     try:
-        count = get_broker_client().bootstrap_inboxes()
+        result = get_broker_client().call(BootstrapInboxesRequest())
+        count = int(result.get("inboxes", 0))
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker bootstrap_inboxes failed: {exc}")
     click.echo(f"bootstrap-inboxes: {count} inbox(es) reconciled (via broker)")

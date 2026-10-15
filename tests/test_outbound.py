@@ -191,13 +191,10 @@ def test_no_redirect_handler_raises_on_any_3xx(code):
     """Each of the redirect statuses raises rather than chasing the
     Location header. Without this the IndexNow POST body (carrying
     the operator's key) would follow a 302 to an attacker host."""
-    handler = NoRedirectHandler()
     req, fp, _code, msg, headers = _fake_3xx_response(code)
-    method = getattr(handler, f"http_error_{code}")
     with pytest.raises(HTTPError) as ei:
-        method(req, fp, code, msg, headers)
+        OUTBOUND_OPENER.error("http", req, fp, code, msg, headers)
     assert ei.value.code == code
-    assert "redirect-following disabled" in str(ei.value)
 
 
 def test_outbound_opener_has_no_redirect_handler():

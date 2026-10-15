@@ -81,11 +81,15 @@ def admin_canonicals_backfill_command(
     _configure_logging(verbose)
     _verbose_broker_hint(verbose)
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import BackfillCanonicalsRequest
+    from mimir.ingest.backfill import BackfillResult
 
     client = get_broker_client()
     try:
         result, run = _broker_backfill_loop(
-            client.backfill_canonicals,
+            lambda **kw: client.backfill(
+                BackfillCanonicalsRequest(**kw), BackfillResult
+            ),
             limit=limit,
             reprocess=reprocess,
             restart=restart,

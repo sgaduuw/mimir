@@ -41,3 +41,16 @@ def aware_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt
+
+
+def coerce_dt(value) -> datetime | None:
+    """text() raw SQL bypasses SQLAlchemy type coercion, so DateTime
+    columns come back as ISO strings. Parse back to datetime; tz
+    normalisation is the caller's, via `aware_utc`, at the comparison
+    boundary."""
+    if value is None or isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(value)
+    except TypeError, ValueError:
+        return None

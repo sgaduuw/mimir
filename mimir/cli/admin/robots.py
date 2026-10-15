@@ -16,7 +16,12 @@ import click
 
 from mimir.cli.admin import admin_group
 from mimir.extensions import SessionLocal
-from mimir.robots import RobotsValidationError, get_rule, list_rules
+from mimir.robots import (
+    RobotsValidationError,
+    format_content_signals,
+    get_rule,
+    list_rules,
+)
 
 
 def _robots_click_error(exc) -> click.ClickException:
@@ -42,13 +47,6 @@ def _parse_content_signal_pair(raw: str) -> tuple[str, str]:
     return k.strip(), v.strip()
 
 
-def _format_content_signals(signals: dict[str, str]) -> str:
-    """Canonical-order rendering matching the service-layer."""
-    canonical_order = ("search", "ai-input", "ai-train")
-    parts = [f"{k}={signals[k]}" for k in canonical_order if k in signals]
-    return ", ".join(parts)
-
-
 def _format_rule(rule_dict: dict) -> list[str]:
     """Multi-line pretty-print of one rule dict (used by `show` and
     the add/update success output). Matches the rendered file's
@@ -56,7 +54,7 @@ def _format_rule(rule_dict: dict) -> list[str]:
     lines = [f"User-agent: {rule_dict['user_agent']}"]
     signals = rule_dict.get("content_signals") or {}
     if signals:
-        lines.append(f"Content-Signal: {_format_content_signals(signals)}")
+        lines.append(f"Content-Signal: {format_content_signals(signals)}")
     if rule_dict.get("crawl_delay") is not None:
         lines.append(f"Crawl-delay: {rule_dict['crawl_delay']}")
     for p in rule_dict.get("disallow_paths") or []:
@@ -86,7 +84,7 @@ def admin_robots_list_command() -> None:
     for r in rules:
         delay = "-" if r.crawl_delay is None else str(r.crawl_delay)
         paths = ", ".join(r.disallow_paths or []) or "-"
-        signals = _format_content_signals(r.content_signals or {}) or "-"
+        signals = format_content_signals(r.content_signals or {}) or "-"
         click.echo(
             f"{r.user_agent:<{ua_w}}  crawl_delay={delay:<4}  "
             f"disallow={paths}  content_signals={signals}"
@@ -158,14 +156,17 @@ def admin_robots_add_command(
     `admin robots add Googlebot --content-signal search=yes`."""
     signals = dict(_parse_content_signal_pair(s) for s in content_signal)
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import RobotsAddRequest
 
     try:
-        rule_dict = get_broker_client().robots_add(
-            user_agent,
-            disallow=list(disallow),
-            crawl_delay=crawl_delay,
-            content_signals=signals or None,
-        )
+        rule_dict = get_broker_client().call(
+            RobotsAddRequest(
+                user_agent=user_agent,
+                disallow=list(disallow),
+                crawl_delay=crawl_delay,
+                content_signals=signals,
+            )
+        )["rule"]
     except BrokerUnavailable as exc:
         raise _robots_click_error(exc)
     click.echo(f"added rule for user_agent {rule_dict['user_agent']!r}:")
@@ -226,18 +227,21 @@ def admin_robots_update_command(
     """Mutate an existing stanza in place."""
     set_signals = dict(_parse_content_signal_pair(s) for s in set_content_signal)
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import RobotsUpdateRequest
 
     try:
-        rule_dict = get_broker_client().robots_update(
-            user_agent,
-            add_disallow=list(add_disallow),
-            remove_disallow=list(remove_disallow),
-            crawl_delay=crawl_delay,
-            clear_crawl_delay=clear_crawl_delay,
-            set_content_signal=set_signals or None,
-            clear_content_signal=list(clear_content_signal),
-            clear_all_content_signals=clear_all_content_signals,
-        )
+        rule_dict = get_broker_client().call(
+            RobotsUpdateRequest(
+                user_agent=user_agent,
+                add_disallow=list(add_disallow),
+                remove_disallow=list(remove_disallow),
+                crawl_delay=crawl_delay,
+                clear_crawl_delay=clear_crawl_delay,
+                set_content_signal=set_signals,
+                clear_content_signal=list(clear_content_signal),
+                clear_all_content_signals=clear_all_content_signals,
+            )
+        )["rule"]
     except BrokerUnavailable as exc:
         raise _robots_click_error(exc)
     click.echo(f"updated rule for user_agent {rule_dict['user_agent']!r}:")
@@ -250,9 +254,10 @@ def admin_robots_update_command(
 def admin_robots_remove_command(user_agent: str) -> None:
     """Drop one User-agent stanza. Refuses `*` (use `reset` instead)."""
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import RobotsRemoveRequest
 
     try:
-        get_broker_client().robots_remove(user_agent)
+        get_broker_client().call(RobotsRemoveRequest(user_agent=user_agent))
     except BrokerUnavailable as exc:
         raise _robots_click_error(exc)
     click.echo(f"removed rule for user_agent {user_agent!r}")
@@ -274,9 +279,10 @@ def admin_robots_reset_command(yes: bool) -> None:
             abort=True,
         )
     from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import RobotsResetRequest
 
     try:
-        get_broker_client().robots_reset()
+        get_broker_client().call(RobotsResetRequest())
     except BrokerUnavailable as exc:
         raise _robots_click_error(exc)
     click.echo("reset robots_rules to seeded defaults")
