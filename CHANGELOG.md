@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-10-15
+
 ### Removed
 
 - The deprecated `MAINLINE_TREE_URL` / `MAINLINE_TREE_PATH` settings.
