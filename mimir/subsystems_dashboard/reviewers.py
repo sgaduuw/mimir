@@ -12,7 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import text
+from sqlalchemy import DateTime, bindparam, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
@@ -240,10 +240,10 @@ def active_reviewers_in_subsystem(
                   AND a.id IN ({path_sql})
                 ORDER BY a.date DESC
                 """
-            ),
+            ).bindparams(bindparam("start", type_=DateTime)),
             {
                 "inbox_id": inbox.id,
-                "start": start.isoformat(),
+                "start": start,
                 **path_params,
             },
         ).all()

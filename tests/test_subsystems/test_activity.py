@@ -2,6 +2,8 @@
 inbox 'most active subsystems' aggregations and the
 carrying of top-maintainer / status / sparkline metadata."""
 
+from datetime import UTC, datetime, time, timedelta
+
 from sqlalchemy import select
 
 from mimir.models import (
@@ -332,3 +334,29 @@ def test_most_active_subsystems_global_compute_on_miss_false_returns_empty(
         assert out == []
         wrapped.get.assert_called()
         wrapped.get_or_compute.assert_not_called()
+
+
+def test_most_active_subsystems_counts_an_article_on_the_start_day(
+    seeded_db, frozen_clock
+):
+    """The window opens at midnight UTC of the start day. An article
+    later that day was dropped while the bind was an isoformat string
+    ('...T00:00:00+00:00' sorts after the stored '... 12:00:00')
+    (#731). `force=True` skips the cache read so the query runs; the
+    global ranking reaches the same query through the per-inbox one."""
+    days = 3
+    start_day = datetime.now(UTC).date() - timedelta(days=days - 1)
+    start = datetime.combine(start_day, time.min, tzinfo=UTC)
+    with seeded_db() as s:
+        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        art = _add_recent_thread_root(s, "start-day@x", ["fs/bcachefs/a.c"])
+        art.date = start + timedelta(hours=12)
+        s.commit()
+        # Precondition: on the start day, after the window's start time.
+        assert art.date.date() == start_day
+        assert art.date > start
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        in_inbox = most_active_subsystems_in_inbox(s, alpha, days=days, force=True)
+        global_ = most_active_subsystems_global(s, days=days, force=True)
+    assert [(a.name, a.message_count) for a in in_inbox] == [("BCACHEFS", 1)]
+    assert [(a.name, a.message_count) for a in global_] == [("BCACHEFS", 1)]

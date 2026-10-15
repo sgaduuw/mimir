@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
 
-from sqlalchemy import select, text
+from sqlalchemy import DateTime, bindparam, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
@@ -198,8 +198,8 @@ def _most_active_subsystems_in_inbox_full(
                 JOIN article_files af ON af.article_id = a.id
                 WHERE al.inbox_id = :inbox_id AND a.date >= :start
                 """
-            ),
-            {"inbox_id": inbox.id, "start": start.isoformat()},
+            ).bindparams(bindparam("start", type_=DateTime)),
+            {"inbox_id": inbox.id, "start": start},
         ).all()
 
         # Inverted indices over MAINTAINERS subsystem path rules.
