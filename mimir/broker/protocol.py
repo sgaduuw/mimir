@@ -131,7 +131,7 @@ class IngestInboxRequest(_BrokerRequest):
     # A fresh deploy's first ingest of an unindexed mirror; per-tick
     # ingests finish in seconds.
     timeout: ClassVar[float] = 3600.0
-    inbox_name: str = Field(min_length=1, max_length=64)
+    inbox_name: InboxName
     limit: int | None = Field(default=None, ge=0)
     workers: int | None = Field(default=None, ge=1)
 
@@ -139,7 +139,7 @@ class IngestInboxRequest(_BrokerRequest):
 class ReindexRequest(_BrokerRequest):
     op: Literal["reindex"] = "reindex"
     timeout: ClassVar[float] = 3600.0
-    inbox_name: str = Field(min_length=1, max_length=64)
+    inbox_name: InboxName
     epoch: str = Field(pattern=r"^[0-9]+\.git$")
     from_scratch: bool = False
     workers: int | None = Field(default=None, ge=1)
@@ -213,7 +213,7 @@ class BackfillCanonicalsRequest(_BrokerRequest):
 
     op: Literal["backfill_canonicals"] = "backfill_canonicals"
     timeout: ClassVar[float] = 3600.0
-    inbox_filter: str | None = Field(default=None, min_length=1, max_length=64)
+    inbox_filter: InboxName | None = None
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
     start: Literal["resume", "restart"] | None = None
@@ -269,7 +269,7 @@ class BackfillThreadRootsRequest(_BrokerRequest):
     # A cold run walks every inbox; the bulk UPDATEs make wall time
     # a function of corpus size.
     timeout: ClassVar[float] = 3600.0
-    inbox: str | None = None
+    inbox: InboxName | None = None
 
 
 class AnalyzeRequest(_BrokerRequest):
@@ -551,7 +551,7 @@ class WarmInboxRequest(_BrokerRequest):
     # Seconds on the production corpus; five minutes covers a new
     # inbox's first warm, where every helper is cold.
     timeout: ClassVar[float] = 300.0
-    inbox_name: str = Field(min_length=1, max_length=64)
+    inbox_name: InboxName
     targets: list[str] | None = None
     priority: int = Field(default=1, ge=0, le=1)
 
@@ -577,7 +577,7 @@ class WarmSubsystemRequest(_BrokerRequest):
 
     op: Literal["warm_subsystem"] = "warm_subsystem"
     timeout: ClassVar[float] = 300.0
-    inbox_name: str = Field(min_length=1, max_length=64)
+    inbox_name: InboxName
     subsystem_id: int = Field(ge=1)
     priority: int = Field(default=1, ge=0, le=1)
 

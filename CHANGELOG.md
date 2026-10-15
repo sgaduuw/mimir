@@ -19,6 +19,15 @@ changes, not internal refactors. Categories: **Added**,
   `TREES__linus__URL` / `TREES__linus__PATH` to override `linus`
   alone (any `TREES__*` key replaces the whole default set).
 
+### Changed
+
+- The broker now rejects an inbox name that is not a slug (lowercase
+  alphanumeric and hyphens, 1 to 64 characters) on `ingest_inbox`,
+  `reindex`, `backfill_canonicals`, `backfill_thread_roots`,
+  `warm_inbox` and `warm_subsystem`, as it already did on the inbox
+  admin ops. Names of existing inboxes always pass; the check only
+  stops a malformed value reaching SQL or a filesystem path.
+
 ### Fixed
 
 - Warm-cache keys whose TTL is shorter than twice the refresh window
