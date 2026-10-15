@@ -88,7 +88,6 @@ def update_mainline_command(
     try:
         payload = get_broker_client().call(
             UpdateMainlineRequest(
-                rpc_id=0,
                 skip_fetch=skip_fetch,
                 skip_maintainers=skip_maintainers,
                 skip_commits=skip_commits,

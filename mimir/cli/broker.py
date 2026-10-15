@@ -59,7 +59,7 @@ def broker_ping_command(socket_path: Path) -> None:
     Used as the compose healthcheck for `mimir-broker`."""
     client = BrokerClient(socket_path)
     try:
-        client.call(PingRequest(rpc_id=0))
+        client.call(PingRequest())
     except BrokerUnavailable as exc:
         click.echo(f"broker ping failed: {exc}", err=True)
         raise SystemExit(1)

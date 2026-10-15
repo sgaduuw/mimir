@@ -74,7 +74,7 @@ def backfill_article_files_command(
     try:
         result, run = _broker_backfill_loop(
             lambda **kw: client.backfill(
-                BackfillArticleFilesRequest(rpc_id=0, **kw), BackfillResult
+                BackfillArticleFilesRequest(**kw), BackfillResult
             ),
             limit=limit,
             reprocess=reprocess,
@@ -134,7 +134,7 @@ def backfill_article_trailers_command(
     try:
         result, run = _broker_backfill_loop(
             lambda **kw: client.backfill(
-                BackfillArticleTrailersRequest(rpc_id=0, **kw), BackfillResult
+                BackfillArticleTrailersRequest(**kw), BackfillResult
             ),
             limit=limit,
             reprocess=reprocess,
@@ -195,7 +195,7 @@ def backfill_patch_series_command(
     try:
         result, run = _broker_backfill_loop(
             lambda **kw: client.backfill(
-                BackfillPatchSeriesRequest(rpc_id=0, **kw), BackfillResult
+                BackfillPatchSeriesRequest(**kw), BackfillResult
             ),
             limit=limit,
             reprocess=reprocess,
@@ -263,7 +263,7 @@ def backfill_thread_roots_command(
 
     _configure_logging(0)
     client = get_broker_client()
-    counts = client.call(BackfillThreadRootsRequest(rpc_id=0, inbox=inbox))
+    counts = client.call(BackfillThreadRootsRequest(inbox=inbox))
     if inbox and not counts.get("inboxes"):
         # A typo'd inbox matched nothing. Reporting the usual summary
         # would read as "done" when nothing ran.

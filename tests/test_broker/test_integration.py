@@ -45,7 +45,7 @@ def test_sixteen_concurrent_pings_all_complete(seeded_db, monkeypatch):
             results = [None] * 16
 
             def fire(i: int) -> None:
-                results[i] = c.call(PingRequest(rpc_id=0))
+                results[i] = c.call(PingRequest())
 
             threads = [threading.Thread(target=fire, args=(i,)) for i in range(16)]
             for t in threads:
@@ -74,7 +74,6 @@ def test_mixed_op_types_concurrent(seeded_db, monkeypatch):
             def do_set(i: int) -> None:
                 c.call(
                     CacheSetRequest(
-                        rpc_id=0,
                         key=cache_mod._ns(f"key_{i}"),
                         value_json=f'"v_{i}"',
                         ttl=60,
@@ -82,7 +81,7 @@ def test_mixed_op_types_concurrent(seeded_db, monkeypatch):
                 )
 
             def do_ping(slot: list) -> None:
-                slot.append(c.call(PingRequest(rpc_id=0)))
+                slot.append(c.call(PingRequest()))
 
             ping_slots: list = []
             threads = []
