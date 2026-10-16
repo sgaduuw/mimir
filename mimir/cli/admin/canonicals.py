@@ -30,7 +30,8 @@ def admin_canonicals_group() -> None:
     emitting <link rel="canonical"> targets for cross-posts. Use after
     initial deployment of canonical resolution, or after editing an
     `Inbox.list_address` to repoint canonicals (with `--reprocess
-    --restart`, so an open run does not resume below its old cursor).
+    --restart`, so an open run does not resume below its old cursor;
+    add `--yes` when it refuses to discard a run that has progress).
     """
 
 
@@ -59,7 +60,15 @@ def admin_canonicals_group() -> None:
     "--restart",
     is_flag=True,
     help="Discard an unfinished run of this backfill and start again "
-    "from the newest article. Without it, an interrupted run resumes.",
+    "from the newest article. A run that has examined articles is "
+    "kept unless --yes is also given. Without --restart, an "
+    "interrupted run resumes.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="With --restart, discard an unfinished run that has progress "
+    "instead of refusing.",
 )
 @click.option(
     "-v",
@@ -73,6 +82,7 @@ def admin_canonicals_backfill_command(
     limit: int | None,
     reprocess: bool,
     restart: bool,
+    yes: bool,
     verbose: int,
 ) -> None:
     """Walk historical articles, recording per-inbox address
@@ -93,6 +103,7 @@ def admin_canonicals_backfill_command(
             limit=limit,
             reprocess=reprocess,
             restart=restart,
+            yes=yes,
             extra={"inbox_filter": inbox_filter},
         )
     except BrokerUnavailable as exc:

@@ -8,6 +8,8 @@ sizes for the maintenance commands; `_parse_pair` parses the
 
 import logging
 import re
+import shlex
+import sys
 
 import click
 
@@ -130,6 +132,7 @@ def _broker_backfill_loop(
     limit: int | None,
     reprocess: bool,
     restart: bool = False,
+    yes: bool = False,
     extra: dict | None = None,
 ):
     """Run a chunked backfill RPC loop against the broker, summing
@@ -144,7 +147,10 @@ def _broker_backfill_loop(
     every chunk, and the next invocation after an interruption,
     continues where the last committed batch stopped. Only the first
     RPC carries `start`, so only it may start a run: "restart" when
-    `restart` is set, which discards an unfinished run, else "resume".
+    `restart` is set, else "resume". A restart discards an unfinished
+    run only if it has no progress or `yes` is set ("force_restart");
+    otherwise the broker refuses and this raises, naming the run and
+    the command that resumes it. A discarded run is reported first.
     `extra` carries per-backfill extras (e.g. `inbox_filter` for
     canonicals).
 
@@ -157,7 +163,7 @@ def _broker_backfill_loop(
     extra = extra or {}
     aggregated = None
     remaining = limit
-    start = "restart" if restart else "resume"
+    start = ("force_restart" if yes else "restart") if restart else "resume"
     while True:
         chunk, run = call(
             limit=remaining,
@@ -166,8 +172,20 @@ def _broker_backfill_loop(
             **extra,
         )
         start = None
+        if run is not None and run.get("refused"):
+            _echo_old_run("refusing to discard", run)
+            click.echo(
+                "resume it with: "
+                + shlex.join(a for a in sys.argv if a != "--restart"),
+                err=True,
+            )
+            raise click.ClickException(
+                "the unfinished run has progress; resume it, or add --yes to discard it"
+            )
         if aggregated is None:
             aggregated = chunk
+            if run is not None and "discarded" in run:
+                _echo_old_run("discarding", run["discarded"])
             if run["cursor"] is not None:
                 click.echo(
                     f"resuming run started {run['started_at']} UTC "
@@ -182,6 +200,17 @@ def _broker_backfill_loop(
             remaining -= chunk.examined
             if remaining <= 0:
                 return aggregated, run
+
+
+def _echo_old_run(verb: str, run: dict) -> None:
+    """Say which run a `--restart` is discarding, or refusing to."""
+    # A run that has not finished a batch has no cursor yet.
+    at = f" at id {run['cursor']}" if run["cursor"] is not None else ""
+    click.echo(
+        f"{verb} run {run['id']} started {run['started_at']} UTC{at} "
+        f"({run['examined']} examined)",
+        err=True,
+    )
 
 
 def _echo_run_summary(run: dict | None) -> None:

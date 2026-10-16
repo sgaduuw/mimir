@@ -17,7 +17,7 @@ yield finer interleaving with queued cache writes / ingest ticks.
 
 Runs are resumable: the broker keeps each run's cursor, so after a
 broker restart or a killed CLI the same command continues where the
-run stopped (`--restart` starts over). See `mimir.backfill_runs`.
+run stopped (`--restart --yes` starts over). See `mimir.backfill_runs`.
 """
 
 import click
@@ -47,7 +47,15 @@ from mimir.cli._common import (
     "--restart",
     is_flag=True,
     help="Discard an unfinished run of this backfill and start again "
-    "from the newest article. Without it, an interrupted run resumes.",
+    "from the newest article. A run that has examined articles is "
+    "kept unless --yes is also given. Without --restart, an "
+    "interrupted run resumes.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="With --restart, discard an unfinished run that has progress "
+    "instead of refusing.",
 )
 @click.option(
     "-v",
@@ -60,6 +68,7 @@ def backfill_article_files_command(
     limit: int | None,
     reprocess: bool,
     restart: bool,
+    yes: bool,
     verbose: int,
 ) -> None:
     """One-shot walker that fills `article_files` for articles
@@ -79,6 +88,7 @@ def backfill_article_files_command(
             limit=limit,
             reprocess=reprocess,
             restart=restart,
+            yes=yes,
         )
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker backfill_article_files failed: {exc}")
@@ -107,7 +117,15 @@ def backfill_article_files_command(
     "--restart",
     is_flag=True,
     help="Discard an unfinished run of this backfill and start again "
-    "from the newest article. Without it, an interrupted run resumes.",
+    "from the newest article. A run that has examined articles is "
+    "kept unless --yes is also given. Without --restart, an "
+    "interrupted run resumes.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="With --restart, discard an unfinished run that has progress "
+    "instead of refusing.",
 )
 @click.option(
     "-v",
@@ -120,6 +138,7 @@ def backfill_article_trailers_command(
     limit: int | None,
     reprocess: bool,
     restart: bool,
+    yes: bool,
     verbose: int,
 ) -> None:
     """One-shot walker that fills `article_trailers` for articles
@@ -139,6 +158,7 @@ def backfill_article_trailers_command(
             limit=limit,
             reprocess=reprocess,
             restart=restart,
+            yes=yes,
         )
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker backfill_article_trailers failed: {exc}")
@@ -167,7 +187,15 @@ def backfill_article_trailers_command(
     "--restart",
     is_flag=True,
     help="Discard an unfinished run of this backfill and start again "
-    "from the newest article. Without it, an interrupted run resumes.",
+    "from the newest article. A run that has examined articles is "
+    "kept unless --yes is also given. Without --restart, an "
+    "interrupted run resumes.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="With --restart, discard an unfinished run that has progress "
+    "instead of refusing.",
 )
 @click.option(
     "-v",
@@ -180,6 +208,7 @@ def backfill_patch_series_command(
     limit: int | None,
     reprocess: bool,
     restart: bool,
+    yes: bool,
     verbose: int,
 ) -> None:
     """One-shot walker that fills `patch_series_key` and
@@ -200,6 +229,7 @@ def backfill_patch_series_command(
             limit=limit,
             reprocess=reprocess,
             restart=restart,
+            yes=yes,
         )
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker backfill_patch_series failed: {exc}")

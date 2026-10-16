@@ -176,11 +176,14 @@ class BootstrapInboxesRequest(_BrokerRequest):
 # The broker owns the cursor (#680): each chunk resumes the unfinished
 # run for its backfill and parameters (`mimir.backfill_runs`), so the
 # request carries no position. `start` is set on a CLI session's first
-# RPC only: "resume" starts a run when there is none, "restart" discards
-# the unfinished run and starts a new one at the newest article. Later
-# RPCs leave it None and never start a run, so a session whose run
-# another session finished ends there. `limit` caps this request, not
-# the run.
+# RPC only: "resume" starts a run when there is none, "restart"
+# discards the unfinished run and starts a new one at the newest
+# article, unless the run has examined something, in which case the
+# chunk walks nothing and the reply names the run it refused to
+# discard. "force_restart" discards it regardless (the CLI's `--yes`).
+# Later RPCs leave it None and never start a run, so a session whose
+# run another session finished ends there. `limit` caps this request,
+# not the run.
 
 
 class BackfillArticleFilesRequest(_BrokerRequest):
@@ -191,7 +194,7 @@ class BackfillArticleFilesRequest(_BrokerRequest):
     timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    start: Literal["resume", "restart"] | None = None
+    start: Literal["resume", "restart", "force_restart"] | None = None
 
 
 class BackfillArticleTrailersRequest(_BrokerRequest):
@@ -199,7 +202,7 @@ class BackfillArticleTrailersRequest(_BrokerRequest):
     timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    start: Literal["resume", "restart"] | None = None
+    start: Literal["resume", "restart", "force_restart"] | None = None
 
 
 class BackfillPatchSeriesRequest(_BrokerRequest):
@@ -207,7 +210,7 @@ class BackfillPatchSeriesRequest(_BrokerRequest):
     timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    start: Literal["resume", "restart"] | None = None
+    start: Literal["resume", "restart", "force_restart"] | None = None
 
 
 class BackfillCanonicalsRequest(_BrokerRequest):
@@ -221,7 +224,7 @@ class BackfillCanonicalsRequest(_BrokerRequest):
     inbox_filter: InboxName | None = None
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    start: Literal["resume", "restart"] | None = None
+    start: Literal["resume", "restart", "force_restart"] | None = None
 
 
 # Phase 2.3 long ops: the three periodic maintenance writers
@@ -670,9 +673,13 @@ class Reply(BaseModel):
     #   - `ingest_inbox` (Phase 2.1): `{"results": [<IngestResult>, ...]}`
     #   - `backfill_*` (Phase 2.2):
     #       `{"counters": <BackfillResult>, "partial": bool,
-    #         "run": {"started_at": str, "cursor": <int | None>,
-    #                 "examined": int, "finished": bool} | None}`
+    #         "run": {"id": int, "started_at": str,
+    #                 "cursor": <int | None>, "examined": int,
+    #                 "finished": bool} | None}`
     #     where `run.cursor` is where this chunk started and
-    #     `run.examined` counts the whole run.
+    #     `run.examined` counts the whole run. A first chunk that
+    #     discarded an unfinished run adds `run.discarded`, that run's
+    #     own `run` fields. A `restart` refused for progress replies
+    #     with the refused run's fields and `run.refused: true`.
     # Stays `None` for ops that don't return a value.
     result: dict[str, Any] | None = None

@@ -28,6 +28,8 @@ start, since the broker boots fast and long ops fire on the
 scheduler's tick schedule).
 """
 
+import logging
+
 from mimir.broker.protocol import (
     BackfillArticleFilesRequest,
     BackfillArticleTrailersRequest,
@@ -38,6 +40,8 @@ from mimir.broker.protocol import (
     ReindexRequest,
     Reply,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def handle_bootstrap_inboxes(req: BootstrapInboxesRequest) -> Reply:
@@ -139,12 +143,35 @@ def _run_backfill_chunk(req, name: str, backfill, **params) -> Reply:
     across the whole run, and whether the run is finished.
 
     A follow-up chunk whose run another session finished walks nothing
-    and returns `partial=False`, which ends this session."""
+    and returns `partial=False`, which ends this session. So does a
+    `restart` refused because the unfinished run has progress: `run` is
+    then that run with `refused` set, and nothing was deleted. A first
+    chunk that discarded a run carries it as `run["discarded"]`, and
+    the broker logs it, since the deleted row was the only record."""
     from mimir import backfill_runs
 
-    run = backfill_runs.resolve(
+    resolved = backfill_runs.resolve(
         name, backfill_runs.params_key(**params), start=req.start
     )
+    run = resolved.run
+    if resolved.refused is not None:
+        info = {**_run_info(resolved.refused, resolved.refused), "refused": True}
+        return Reply(
+            rpc_id=req.rpc_id,
+            ok=True,
+            result={"counters": {}, "partial": False, "run": info},
+        )
+    discarded = None
+    if resolved.discarded is not None:
+        discarded = _run_info(resolved.discarded, resolved.discarded)
+        logger.warning(
+            "%s: discarding run %d started %s UTC at id %s (%d examined)",
+            name,
+            discarded["id"],
+            discarded["started_at"],
+            discarded["cursor"],
+            discarded["examined"],
+        )
     if run is None or run.finished:
         return Reply(
             rpc_id=req.rpc_id,
@@ -160,7 +187,10 @@ def _run_backfill_chunk(req, name: str, backfill, **params) -> Reply:
             "partial": bool(result.partial),
             # Read back, so the totals include other sessions' chunks;
             # a run deleted by `--restart` meanwhile reports as it was.
-            "run": _run_info(run, backfill_runs.get(run.id) or run),
+            "run": {
+                **_run_info(run, backfill_runs.get(run.id) or run),
+                **({"discarded": discarded} if discarded else {}),
+            },
         },
     )
 
@@ -169,6 +199,7 @@ def _run_info(before, now) -> dict | None:
     if before is None:
         return None
     return {
+        "id": before.id,
         "started_at": before.started_at.isoformat(sep=" ", timespec="seconds"),
         "cursor": before.cursor,
         "examined": now.examined,
