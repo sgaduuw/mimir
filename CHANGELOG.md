@@ -11,6 +11,19 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- `--restart` on `backfill-article-files`, `backfill-article-trailers`,
+  `backfill-patch-series` and `admin canonicals backfill` now reports
+  what it discards and no longer discards a run that has examined
+  articles unless `--yes` is also given. Without `--yes` it prints the
+  run (id, start time, cursor, examined count) and the command that
+  resumes it, and exits non-zero without walking anything. A run with no
+  progress is still discarded without asking, and a discarded run is
+  printed (`discarding run N ...`) and logged by the broker at WARNING.
+  Anything scripting `--restart` against a run with progress must now
+  add `--yes`, or better, resume without `--restart`.
+
 ## [3.18.0] - 2026-10-15
 
 ### Removed

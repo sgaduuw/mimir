@@ -914,9 +914,15 @@ the oldest, 17.7M ids, October 2026).
   Only a session's first RPC (`start` set) may start a run. A later
   RPC joins whatever run is unfinished for the key, and ends the
   session only when there is none, so a session never starts a new
-  full walk on its own after another session finishes its run. `--restart` deletes the unfinished run (deleted, not
-  marked finished, so `finished_at` always means the walk reached
-  the oldest article). Run ids use AUTOINCREMENT, so a chunk of a
+  full walk on its own after another session finishes its run.
+  `--restart` deletes the unfinished run (deleted, not marked
+  finished, so `finished_at` always means the walk reached the
+  oldest article), unless it has examined something: `resolve`
+  looks the run up and decides in its one WriteOp, so a run that
+  advanced meanwhile is refused rather than discarded unseen, and
+  only `--yes` (`force_restart`) deletes a run with progress. The
+  deleted row was the only record of the lost work, so the broker
+  logs it at WARNING. Run ids use AUTOINCREMENT, so a chunk of a
   deleted run still in flight cannot write to its replacement.
 - **Concurrency is not refused.** Two CLIs on one key join the same
   run. With the default single long worker their chunks serialise.
