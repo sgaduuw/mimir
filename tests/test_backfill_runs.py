@@ -326,12 +326,166 @@ def test_restart_starts_from_the_newest_article(
     assert calls["n"] == 2
     assert [r[2:] for r in _runs(seeded_db)] == [(ids[1], 2, False)]
 
-    restarted = _invoke(backfill_patch_series_command, "--reprocess", "--restart")
+    restarted = _invoke(
+        backfill_patch_series_command, "--reprocess", "--restart", "--yes"
+    )
     assert restarted.exit_code == 0, restarted.output
     assert _resumed_at(restarted.output) is None
     assert _examined(restarted.output) == _N
     # The discarded run is gone; the new one walked to the oldest id.
     assert [r[2:] for r in _runs(seeded_db)] == [(ids[-1], _N, True)]
+
+
+def _interrupt_with_progress(command, submit, seeded_db, tmp_path, monkeypatch):
+    """Leave an unfinished run that examined two articles, the state
+    `--restart` must not discard unseen. Returns the corpus ids and the
+    run row as `_run_row` reads it."""
+    ids = _corpus(seeded_db, tmp_path)
+    _small_batches(monkeypatch)
+    calls = _fail_batch(monkeypatch, submit, on_call=2)
+    assert _invoke(command, "--reprocess").exit_code != 0
+    assert calls["n"] == 2
+    row = _run_row(seeded_db)
+    assert (row[2], row[3]) == (ids[1], 2), "fixture did not build a run with progress"
+    return ids, row
+
+
+def _run_row(seeded_db) -> tuple:
+    """The only run's (id, started_at, cursor, examined, finished)."""
+    with seeded_db() as s:
+        (row,) = s.execute(
+            text(
+                "SELECT id, started_at, cursor, examined, finished_at IS NOT NULL "
+                "FROM backfill_runs"
+            )
+        ).all()
+    return tuple(row)
+
+
+def _old_run_line(output: str, verb: str) -> tuple[int, str, int | None, int]:
+    """The `<verb> run N started T UTC [at id C] (E examined)` line."""
+    m = re.search(
+        rf"^{verb} run (\d+) started (.+) UTC(?: at id (\d+))? \((\d+) examined\)$",
+        output,
+        re.MULTILINE,
+    )
+    assert m is not None, output
+    cursor = int(m.group(3)) if m.group(3) else None
+    return int(m.group(1)), m.group(2), cursor, int(m.group(4))
+
+
+@pytest.mark.parametrize("name", list(BACKFILLS))
+def test_restart_refuses_to_discard_a_run_with_progress(
+    name, seeded_db, tmp_path, broker_active, monkeypatch
+):
+    command, submit = BACKFILLS[name]
+    ids, row = _interrupt_with_progress(
+        command, submit, seeded_db, tmp_path, monkeypatch
+    )
+    argv = ["mimir", "some-command", "--reprocess", "--restart"]
+    monkeypatch.setattr("sys.argv", argv)
+
+    result = _invoke(command, "--reprocess", "--restart")
+
+    assert result.exit_code != 0, result.output
+    assert _run_row(seeded_db) == row
+    run_id, started, cursor, examined = _old_run_line(
+        result.output, "refusing to discard"
+    )
+    assert (run_id, cursor, examined) == (row[0], ids[1], 2)
+    assert started == row[1].replace("T", " ")[:19]
+    resume = re.search(r"^resume it with: (.+)$", result.output, re.MULTILINE)
+    assert resume is not None, result.output
+    assert resume.group(1).split() == ["mimir", "some-command", "--reprocess"]
+    assert re.search(r"\bexamined=\d+", result.output) is None, "a chunk walked"
+
+
+@pytest.mark.parametrize("name", list(BACKFILLS))
+def test_restart_with_yes_discards_and_says_what(
+    name, seeded_db, tmp_path, broker_active, monkeypatch
+):
+    command, submit = BACKFILLS[name]
+    ids, row = _interrupt_with_progress(
+        command, submit, seeded_db, tmp_path, monkeypatch
+    )
+
+    result = _invoke(command, "--reprocess", "--restart", "--yes")
+
+    assert result.exit_code == 0, result.output
+    run_id, started, cursor, examined = _old_run_line(result.output, "discarding")
+    assert (run_id, cursor, examined) == (row[0], ids[1], 2)
+    assert started == row[1].replace("T", " ")[:19]
+    # Said before the first chunk's output, not after the walk.
+    assert result.output.index("discarding run") < result.output.index("examined=")
+    assert _examined(result.output) == _N
+    new = _run_row(seeded_db)
+    assert new[0] != row[0]
+    assert new[2:] == (ids[-1], _N, 1)
+
+
+@pytest.mark.parametrize("name", list(BACKFILLS))
+def test_restart_needs_no_confirmation_without_progress(
+    name, seeded_db, tmp_path, broker_active, monkeypatch
+):
+    from mimir import backfill_runs
+
+    command, _submit = BACKFILLS[name]
+    _corpus(seeded_db, tmp_path)
+    _small_batches(monkeypatch)
+
+    # No unfinished run: nothing to report.
+    fresh = _invoke(command, "--reprocess", "--restart")
+    assert fresh.exit_code == 0, fresh.output
+    assert "discarding" not in fresh.output
+    assert "refusing" not in fresh.output
+
+    # An unfinished run that has examined nothing is discarded unasked.
+    with seeded_db() as s:
+        s.execute(text("DELETE FROM backfill_runs"))
+        s.commit()
+    key = backfill_runs.params_key(reprocess=True)
+    backfill_runs.resolve(f"backfill_{name}", key, start="resume")
+    assert _run_row(seeded_db)[3] == 0, "fixture did not build an empty run"
+    empty = _invoke(command, "--reprocess", "--restart")
+    assert empty.exit_code == 0, empty.output
+    assert "refusing" not in empty.output
+    assert _old_run_line(empty.output, "discarding")[3] == 0
+
+
+def test_restart_decides_inside_the_one_writeop(seeded_db, broker_active, monkeypatch):
+    """Looking the run up and deleting it are one WriteOp, so a run
+    that advanced between a separate check and the delete cannot be
+    discarded unseen: plain `restart` never deletes a run with progress,
+    and `force_restart` is the only way to."""
+    from mimir import backfill_runs
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+
+    key = backfill_runs.params_key(reprocess=True)
+    backfill_runs.resolve("b", key, start="resume")
+    run_id = _run_row(seeded_db)[0]
+    get_active_writer().submit(
+        WriteOp(label="test", fn=backfill_runs.advance(run_id, 5, 3))
+    ).result(timeout=10)
+    before = _run_row(seeded_db)
+
+    labels: list[str] = []
+    writer = get_active_writer()
+    real_submit = writer.submit
+    monkeypatch.setattr(
+        writer, "submit", lambda op: (labels.append(op.label), real_submit(op))[1]
+    )
+    refused = backfill_runs.resolve("b", key, start="restart")
+    assert _run_row(seeded_db) == before
+    assert refused.run is None
+    assert (refused.refused.id, refused.refused.examined) == (run_id, 3)
+    assert refused.discarded is None
+
+    forced = backfill_runs.resolve("b", key, start="force_restart")
+    assert (forced.discarded.id, forced.discarded.cursor) == (run_id, 5)
+    assert forced.refused is None
+    assert forced.run.id != run_id
+    assert labels == ["backfill_runs:b:resolve"] * 2
 
 
 def test_different_inbox_filter_does_not_resume_the_other_run(
@@ -403,7 +557,7 @@ def test_advance_never_moves_the_cursor_back_up(seeded_db, broker_active):
 
     run = backfill_runs.resolve(
         "b", backfill_runs.params_key(reprocess=True), start="resume"
-    )
+    ).run
     assert run.cursor is None
     writer = get_active_writer()
     for cursor in (5, 9):
@@ -469,8 +623,8 @@ def test_a_discarded_run_cannot_move_or_finish_its_replacement(
     from mimir.broker.writes import WriteOp
 
     key = backfill_runs.params_key(reprocess=True)
-    old = backfill_runs.resolve("b", key, start="resume")
-    new = backfill_runs.resolve("b", key, start="restart")
+    old = backfill_runs.resolve("b", key, start="resume").run
+    new = backfill_runs.resolve("b", key, start="restart").run
     assert [r[2:] for r in _runs(seeded_db)] == [(None, 0, False)]
 
     get_active_writer().submit(

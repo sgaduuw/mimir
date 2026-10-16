@@ -120,8 +120,9 @@ known list host, so for any other host add it to `LIST_HOST_SUFFIX_OVERRIDES`
 (JSON array) or the command warns that the value never matches. `''` clears it
 and hands the inbox back to auto-detection, which can promote a cross-post
 address again. It does not recompute canonicals; run
-`uv run mimir admin canonicals backfill --reprocess --restart` afterwards, so an
-unfinished earlier run does not skip the articles above its cursor.
+`uv run mimir admin canonicals backfill --reprocess --restart` afterwards (add
+`--yes` if it refuses to discard a run with progress), so an unfinished earlier
+run does not skip the articles above its cursor.
 
 Inbox edits live in SQLite and survive restarts. The `INBOXES` environment
 setting is a bootstrap source, not an override for existing rows.
@@ -192,11 +193,20 @@ A run belongs to one command with one set of `--reprocess` and `--inbox`
 values; a different `--inbox` starts its own run. `--limit` caps one session
 only: the run stays open, and the next invocation continues it. A run that
 reaches the oldest article is finished, and the next invocation starts a new
-one at the newest article. Pass `--restart` to discard an unfinished run and
-start again at the newest article. The summary counts this session; the line
-after it gives the run's start time, its total examined count, and whether the
-run is `finished` or still `open`. After changing an inbox's `--list-address`,
-use `--restart`: a resumed run only revisits articles below its cursor.
+one at the newest article. Resuming is almost always what you want, so run
+the same command again without `--restart`; `--restart` throws the run's
+progress away.
+
+Pass `--restart` to discard an unfinished run and start again at the newest
+article. It prints `discarding run N started <time> UTC (E examined)` first,
+with `at id C` after the time once the run has a position. If the run has examined any articles, `--restart` refuses instead,
+prints that run and the command that resumes it, and exits non-zero; add
+`--yes` to discard it anyway. A run with no progress is discarded without
+asking, and nothing extra is printed when there is no unfinished run. The
+summary counts this session; the line after it gives the run's start time, its
+total examined count, and whether the run is `finished` or still `open`. After
+changing an inbox's `--list-address`, use `--restart`, with `--yes` if it
+refuses: a resumed run only revisits articles below its cursor.
 
 Thread roots are maintained by ingest, reindex, and failure replay. The broker
 also fills missing roots at startup, so a manual backfill is normally unnecessary.
