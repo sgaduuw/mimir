@@ -20,8 +20,13 @@ command is the recovery.
   session's, if one started meanwhile) and ends the session only when
   there is none, getting the key's latest finished run back.
 - `start="restart"` deletes the unfinished run before starting a new
-  one. Deleted, not marked finished, so a finished row always means a
-  walk that reached the oldest article.
+  one, unless the run has examined something: then it is left alone and
+  handed back as refused, because a run can be a day into its work and
+  the delete takes the evidence with it. `start="force_restart"`
+  deletes it regardless. Either way the run found is handed back, so
+  the caller can say what was discarded or refused. Deleted, not marked
+  finished, so a finished row always means a walk that reached the
+  oldest article.
 
 Concurrency: two CLIs on the same key join the same run. Their chunks
 serialise on the broker's single long worker by default. With more long
@@ -78,33 +83,55 @@ def params_key(*, reprocess: bool, inbox_filter: str | None = None) -> str:
     )
 
 
+@dataclass(frozen=True)
+class Resolved:
+    """What `resolve` found. `run` is the run to walk, None when there
+    is none or `refused` is set. `discarded` is the unfinished run a
+    restart deleted; `refused` is the one a plain restart left alone."""
+
+    run: Run | None
+    discarded: Run | None = None
+    refused: Run | None = None
+
+
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
 def resolve(
-    name: str, key: str, *, start: Literal["resume", "restart"] | None
-) -> Run | None:
-    """Return the unfinished run for `(name, key)`.
+    name: str,
+    key: str,
+    *,
+    start: Literal["resume", "restart", "force_restart"] | None,
+) -> Resolved:
+    """Resolve the unfinished run for `(name, key)`.
 
     `start` is set on a session's first chunk only: "resume" starts a
     run when there is none, "restart" discards the unfinished run and
-    starts a new one. A later chunk (`start=None`) never starts a run;
-    when there is no unfinished run it gets the key's latest run, which
+    starts a new one unless the run has examined something (then it
+    refuses and changes nothing), "force_restart" discards it whatever
+    it has done. A later chunk (`start=None`) never starts a run; when
+    there is no unfinished run it gets the key's latest run, which
     another session finished, or None.
 
-    One WriteOp, so the lookup and the insert cannot race another
-    chunk resolving the same key."""
+    One WriteOp, so the lookup, the refuse-or-delete decision and the
+    insert cannot race another chunk resolving the same key: a run that
+    advanced after the caller last looked is judged as it is now."""
     from mimir.broker._context import get_active_writer
     from mimir.broker.writes import WriteOp
 
     same_key = (BackfillRun.name == name) & (BackfillRun.params_key == key)
     unfinished = same_key & BackfillRun.finished_at.is_(None)
 
-    def _fn(conn) -> Run | None:
-        if start == "restart":
-            conn.execute(delete(BackfillRun).where(unfinished))
+    def _fn(conn) -> Resolved:
         row = conn.execute(select(*_COLUMNS).where(unfinished)).one_or_none()
+        discarded = None
+        if row is not None and start in ("restart", "force_restart"):
+            old = Run(*row)
+            if start == "restart" and old.examined > 0:
+                return Resolved(None, refused=old)
+            conn.execute(delete(BackfillRun).where(BackfillRun.id == old.id))
+            discarded, row = old, None
         if row is None and start is None:
             row = conn.execute(
                 select(*_COLUMNS)
@@ -112,7 +139,7 @@ def resolve(
                 .order_by(BackfillRun.id.desc())
                 .limit(1)
             ).one_or_none()
-            return Run(*row) if row is not None else None
+            return Resolved(Run(*row) if row is not None else None)
         if row is None:
             now = _now()
             conn.execute(
@@ -125,7 +152,7 @@ def resolve(
                 )
             )
             row = conn.execute(select(*_COLUMNS).where(unfinished)).one()
-        return Run(*row)
+        return Resolved(Run(*row), discarded)
 
     op = WriteOp(label=f"backfill_runs:{name}:resolve", fn=_fn)
     return get_active_writer().submit(op).result(timeout=60)
