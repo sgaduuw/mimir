@@ -13,6 +13,16 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- An `INBOXES` key that is not a slug (lowercase letters, digits and
+  hyphens, 1 to 64 characters, no hyphen at either end) now stops
+  startup with an error naming the key. Since 3.18.0 such an inbox
+  loaded, then made `mimir ingest` and `mimir warm-cache` stop at it.
+  The nested env form keeps underscores (`INBOXES__linux_arm_kernel__...`
+  is the inbox `linux_arm_kernel`), so spell such a list with hyphens
+  in JSON `INBOXES` instead (#747). On a deployment that already
+  bootstrapped such an inbox, a renamed key starts a new inbox and
+  leaves the old row and its articles under the old name; check before
+  upgrading.
 - `--restart` on `backfill-article-files`, `backfill-article-trailers`,
   `backfill-patch-series` and `admin canonicals backfill` now reports
   what it discards and no longer discards a run that has examined

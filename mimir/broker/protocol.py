@@ -27,12 +27,11 @@ from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, field_validator
 
-# Mirror of `mimir.inboxes._NAME_RE`. Duplicated here (rather than
-# imported) so the broker protocol module stays free of the heavy
-# inboxes/cache/extensions import chain that an `inboxes` import
-# would drag in. The two regexes must stay in sync; the inboxes-side
-# validator is the canonical source and any change there should
-# update this one in lockstep.
+# Mirror of `mimir._inbox_name.INBOX_NAME_RE`, the canonical source.
+# Duplicated here (rather than imported) so the broker protocol module
+# stays free of the heavy inboxes/cache/extensions import chain that an
+# `inboxes` import would drag in; #748 removes the copy. The two must
+# stay in sync until then.
 _INBOX_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 
