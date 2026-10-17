@@ -182,7 +182,8 @@ def admin_inbox_add_command(
     "another inbox holds it. '' clears it and hands the inbox back to "
     "auto-detection, which can promote a cross-post address again. "
     "Does not recompute canonicals, run "
-    "`admin canonicals backfill --reprocess --restart` afterwards.",
+    "`admin canonicals backfill --reprocess --restart` afterwards "
+    "(plus `--yes` if it refuses to discard a run with progress).",
 )
 @click.option(
     "--rename",

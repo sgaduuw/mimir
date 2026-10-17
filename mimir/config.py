@@ -4,6 +4,7 @@ from pathlib import Path
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from mimir._inbox_name import INBOX_NAME_RE
 from mimir._outbound import validate_outbound_url
 
 # Project root: <root>/mimir/config.py → parent → parent. Resolving
@@ -169,6 +170,9 @@ class Settings(BaseSettings):
     #   INBOXES__lkml__MIRROR_PATH=...  INBOXES__lkml__UPSTREAM_URL=...
     # Important: ANY INBOXES__* env key REPLACES the whole default dict;
     # pydantic-settings does not merge individual keys into the default.
+    # Keys must be slugs (`mimir._inbox_name`): a key is the inbox's name
+    # in URLs and the database, so `INBOXES__linux_arm_kernel__...` is
+    # refused at load rather than renamed, unlike TREES keys (#747).
     inboxes: dict[str, InboxConfig] = {
         "lkml": InboxConfig(
             mirror_path=Path("Inboxes/lkml/git"),
@@ -179,6 +183,22 @@ class Settings(BaseSettings):
             upstream_url="https://lore.kernel.org/linux-fsdevel",
         ),
     }
+
+    @field_validator("inboxes", mode="after")
+    @classmethod
+    def _refuse_non_slug_inbox_keys(cls, v: dict) -> dict:
+        # Fail at boot, naming the key: from 3.18.0 the broker refuses a
+        # non-slug name on the wire, so a bad key would otherwise stop
+        # `mimir ingest` at that inbox instead (#738, #747).
+        for name in v:
+            if not INBOX_NAME_RE.fullmatch(name):
+                raise ValueError(
+                    f"INBOXES key {name!r} must be a slug: lowercase letters, "
+                    "digits and hyphens, 1 to 64 characters, not starting or "
+                    "ending with a hyphen. Inbox names are in URLs and the "
+                    "database, so they are not renamed as TREES keys are."
+                )
+        return v
 
     # Senders whose email address is shown in full in the UI. Everyone
     # else's email gets hidden (display name kept). Substring match against

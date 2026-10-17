@@ -11,6 +11,48 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.19.0] - 2026-10-17
+
+### Changed
+
+- An `INBOXES` key that is not a slug (lowercase letters, digits and
+  hyphens, 1 to 64 characters, no hyphen at either end) now stops
+  startup with an error naming the key. Since 3.18.0 such an inbox
+  loaded, then made `mimir ingest` and `mimir warm-cache` stop at it.
+  The nested env form keeps underscores (`INBOXES__linux_arm_kernel__...`
+  is the inbox `linux_arm_kernel`), so spell such a list with hyphens
+  in JSON `INBOXES` instead (#747). On a deployment that already
+  bootstrapped such an inbox, a renamed key starts a new inbox and
+  leaves the old row and its articles under the old name; check before
+  upgrading.
+- `--restart` on `backfill-article-files`, `backfill-article-trailers`,
+  `backfill-patch-series` and `admin canonicals backfill` now reports
+  what it discards and no longer discards a run that has examined
+  articles unless `--yes` is also given. Without `--yes` it prints the
+  run (id, start time, cursor, examined count) and the command that
+  resumes it, and exits non-zero without walking anything. A run with no
+  progress is still discarded without asking, and a discarded run is
+  printed (`discarding run N ...`) and logged by the broker at WARNING.
+  Anything scripting `--restart` against a run with progress must now
+  add `--yes`, or better, resume without `--restart`.
+- The four chunked backfills now drive a run from one session at a
+  time. A second invocation on a run whose last committed batch is
+  under 300 seconds old exits non-zero (`run N is in progress ... Stop
+  it first, or wait S s if it was just killed.`) and changes nothing;
+  before, it joined the run and both sessions walked the same articles.
+  `--restart` and `--restart --yes` refuse a live run too, so they can
+  no longer delete a run another session is driving. A run left by a
+  killed session becomes takeable after the wait; there is no override.
+  A session that ends on its `--limit` releases the run, so the next
+  invocation continues it at once.
+
+### Fixed
+
+- `admin canonicals backfill` no longer ends a chunk with a
+  `TimeoutError` when the writer is slow to reach the list-address
+  promotion sweep. The walk now logs a warning once per chunk and
+  carries on; the sweep still runs when the writer gets to it.
+
 ## [3.18.0] - 2026-10-15
 
 ### Removed
