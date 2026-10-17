@@ -191,6 +191,7 @@ def test_walk_articles_starts_below_the_run_cursor(seeded_db, broker_active):
             cursor=min_id + 1,
             examined=0,
             finished=False,
+            updated_at=datetime(2026, 1, 1),
         ),
     )
     assert partial is False

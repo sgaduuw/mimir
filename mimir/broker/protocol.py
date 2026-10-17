@@ -27,12 +27,11 @@ from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, field_validator
 
-# Mirror of `mimir.inboxes._NAME_RE`. Duplicated here (rather than
-# imported) so the broker protocol module stays free of the heavy
-# inboxes/cache/extensions import chain that an `inboxes` import
-# would drag in. The two regexes must stay in sync; the inboxes-side
-# validator is the canonical source and any change there should
-# update this one in lockstep.
+# Mirror of `mimir._inbox_name.INBOX_NAME_RE`, the canonical source.
+# Duplicated here (rather than imported) so the broker protocol module
+# stays free of the heavy inboxes/cache/extensions import chain that an
+# `inboxes` import would drag in; #748 removes the copy. The two must
+# stay in sync until then.
 _INBOX_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 
@@ -176,11 +175,17 @@ class BootstrapInboxesRequest(_BrokerRequest):
 # The broker owns the cursor (#680): each chunk resumes the unfinished
 # run for its backfill and parameters (`mimir.backfill_runs`), so the
 # request carries no position. `start` is set on a CLI session's first
-# RPC only: "resume" starts a run when there is none, "restart" discards
-# the unfinished run and starts a new one at the newest article. Later
-# RPCs leave it None and never start a run, so a session whose run
-# another session finished ends there. `limit` caps this request, not
-# the run.
+# RPC only: "resume" starts a run when there is none, "restart"
+# discards the unfinished run and starts a new one at the newest
+# article, unless the run has examined something, in which case the
+# chunk walks nothing and the reply names the run it refused to
+# discard. "force_restart" discards it regardless (the CLI's `--yes`).
+# Any `start` is refused the same way when the run is live, its
+# `updated_at` newer than `backfill_runs.LIVE_RUN_SEC`: another session
+# is driving it.
+# Later RPCs leave it None and never start a run, so a session whose
+# run another session finished ends there. `limit` caps this request,
+# not the run.
 
 
 class BackfillArticleFilesRequest(_BrokerRequest):
@@ -191,7 +196,7 @@ class BackfillArticleFilesRequest(_BrokerRequest):
     timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    start: Literal["resume", "restart"] | None = None
+    start: Literal["resume", "restart", "force_restart"] | None = None
 
 
 class BackfillArticleTrailersRequest(_BrokerRequest):
@@ -199,7 +204,7 @@ class BackfillArticleTrailersRequest(_BrokerRequest):
     timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    start: Literal["resume", "restart"] | None = None
+    start: Literal["resume", "restart", "force_restart"] | None = None
 
 
 class BackfillPatchSeriesRequest(_BrokerRequest):
@@ -207,7 +212,7 @@ class BackfillPatchSeriesRequest(_BrokerRequest):
     timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    start: Literal["resume", "restart"] | None = None
+    start: Literal["resume", "restart", "force_restart"] | None = None
 
 
 class BackfillCanonicalsRequest(_BrokerRequest):
@@ -221,7 +226,7 @@ class BackfillCanonicalsRequest(_BrokerRequest):
     inbox_filter: InboxName | None = None
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
-    start: Literal["resume", "restart"] | None = None
+    start: Literal["resume", "restart", "force_restart"] | None = None
 
 
 # Phase 2.3 long ops: the three periodic maintenance writers
@@ -670,9 +675,15 @@ class Reply(BaseModel):
     #   - `ingest_inbox` (Phase 2.1): `{"results": [<IngestResult>, ...]}`
     #   - `backfill_*` (Phase 2.2):
     #       `{"counters": <BackfillResult>, "partial": bool,
-    #         "run": {"started_at": str, "cursor": <int | None>,
-    #                 "examined": int, "finished": bool} | None}`
+    #         "run": {"id": int, "started_at": str,
+    #                 "cursor": <int | None>, "examined": int,
+    #                 "finished": bool, "updated_at": str} | None}`
     #     where `run.cursor` is where this chunk started and
-    #     `run.examined` counts the whole run.
+    #     `run.examined` counts the whole run. A first chunk that
+    #     discarded an unfinished run adds `run.discarded`, that run's
+    #     own `run` fields. A `restart` refused for progress replies
+    #     with the refused run's fields and `run.refused: true`; a
+    #     `start` that finds the run live replies with its fields,
+    #     `run.busy: true` and `run.retry_after` (seconds).
     # Stays `None` for ops that don't return a value.
     result: dict[str, Any] | None = None
