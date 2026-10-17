@@ -188,7 +188,8 @@ per-command options.
 These three, and `admin canonicals backfill`, resume an interrupted run. The
 broker stores each run's position, so after a deploy, a dropped session or a
 killed command, run the same command again and it continues from the last
-committed batch. It prints `resuming run started <time> UTC at id N` when it does.
+committed batch (if it says the run is in progress instead, see below). It
+prints `resuming run started <time> UTC at id N` when it does.
 A run belongs to one command with one set of `--reprocess` and `--inbox`
 values; a different `--inbox` starts its own run. `--limit` caps one session
 only: the run stays open, and the next invocation continues it. A run that
@@ -199,8 +200,9 @@ progress away.
 
 Pass `--restart` to discard an unfinished run and start again at the newest
 article. It prints `discarding run N started <time> UTC (E examined)` first,
-with `at id C` after the time once the run has a position. If the run has examined any articles, `--restart` refuses instead,
-prints that run and the command that resumes it, and exits non-zero; add
+with `at id C` after the time once the run has a position. If the run has
+examined any articles, `--restart` refuses instead, prints that run and the
+command that resumes it, and exits non-zero; add
 `--yes` to discard it anyway. A run with no progress is discarded without
 asking, and nothing extra is printed when there is no unfinished run. The
 summary counts this session; the line after it gives the run's start time, its

@@ -937,9 +937,8 @@ the oldest, 17.7M ids, October 2026).
   `backfill_runs.release`, so the rerun continues at once; a killed
   one cannot, and is waited out. Why: chunks of one run that overlap
   process the same articles twice, and not every backfill's writes
-  are idempotent:
-  canonical observation counts add up, and trailer inserts without
-  `--reprocess` are plain inserts. The guard is a liveness window,
+  are idempotent: canonical observation counts add up, and trailer
+  inserts without `--reprocess` are plain inserts. The guard is a liveness window,
   not a lock: later chunks (`start=None`) still join, and a session
   paused over 300 s between chunks can be overtaken. `advance` takes
   `MIN` so the cursor never moves back up.

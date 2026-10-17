@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.19.0] - 2026-10-17
+
 ### Changed
 
 - An `INBOXES` key that is not a slug (lowercase letters, digits and
