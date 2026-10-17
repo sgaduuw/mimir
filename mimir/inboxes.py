@@ -31,7 +31,6 @@ reasoning.
 """
 
 import logging
-import re
 import shutil
 import threading
 from email.utils import parseaddr
@@ -42,6 +41,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from mimir import cache
+from mimir._inbox_name import INBOX_NAME_RE
 from mimir._outbound import OutboundUrlError, validate_outbound_url
 from mimir.config import settings
 from mimir.extensions import SessionLocal
@@ -49,10 +49,6 @@ from mimir.models import Article, ArticleList, Inbox, IngestState
 
 logger = logging.getLogger(__name__)
 
-# Slug constraint: name flows into URL paths and cache-key fragments,
-# so it must be URL-safe and `:`-free. Lowercase, alphanumeric +
-# hyphens, doesn't start or end with a hyphen. ≤64 chars.
-_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 # Guarded by `_INBOX_NAMES_LOCK` against torn reads. Under the GIL the
 # slice-assignment was approximately atomic and readers/writers were
@@ -80,7 +76,7 @@ def validate_name(name: str) -> str:
     if not isinstance(name, str):
         raise InboxValidationError("name must be a string")
     name = name.strip()
-    if not _NAME_RE.fullmatch(name):
+    if not INBOX_NAME_RE.fullmatch(name):
         raise InboxValidationError(
             f"name {name!r} must be lowercase alphanumeric/hyphen, "
             "1 64 chars, not starting or ending with a hyphen"
