@@ -27,13 +27,23 @@ command is the recovery.
   the caller can say what was discarded or refused. Deleted, not marked
   finished, so a finished row always means a walk that reached the
   oldest article.
+- A run is driven by one session at a time. A session's first chunk
+  (`start` set, any value) is refused while the run's `updated_at` is
+  newer than `LIVE_RUN_SEC`, and handed back as busy; otherwise it
+  claims the run in the same WriteOp, so the run looks live before the
+  first batch commits. Every committed batch bumps `updated_at`, even
+  one that writes no rows. A session that ends on its `--limit`
+  releases the run (`release`), so the next invocation continues it
+  at once; a killed session cannot, and is waited out.
 
-Concurrency: two CLIs on the same key join the same run. Their chunks
-serialise on the broker's single long worker by default. With more long
-workers, chunks of one run can overlap and process the same articles
-twice, and not every backfill's writes are idempotent (canonical
-observation counts add up; trailer inserts without `--reprocess` are
-plain inserts). `advance` only ever lowers the cursor. No locking.
+Concurrency: a second session cannot join a live run, because chunks of
+one run that overlap (with more than one long worker) can process the
+same articles twice, and not every backfill's writes are idempotent
+(canonical observation counts add up; trailer inserts without
+`--reprocess` are plain inserts). The guard is a liveness window, not
+a lock: a session paused longer than `LIVE_RUN_SEC` between chunks can
+be overtaken, and a later chunk (`start=None`) still joins whatever
+run is unfinished. `advance` only ever lowers the cursor.
 
 Every write goes through the broker's WriterThread; `get` reads through
 the active read pool.
@@ -41,12 +51,22 @@ the active read pool.
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from math import ceil
 from typing import Literal
 
 from sqlalchemy import delete, func, insert, select, update
 
 from mimir.models import BackfillRun
+
+# A run whose `updated_at` is newer than this is being driven, and a
+# session's first chunk may not take it. `updated_at` moves on every
+# committed batch, and the slowest chunk seen was 65 s waiting on the
+# writer (2026-10-16), so 300 s is several times a healthy gap: a
+# driven run does not look dead, a killed one is takeable within five
+# minutes. Not an option: an override is how two sessions end up on
+# one run.
+LIVE_RUN_SEC = 300
 
 
 @dataclass(frozen=True)
@@ -60,6 +80,7 @@ class Run:
     cursor: int | None
     examined: int
     finished: bool
+    updated_at: datetime
 
 
 _COLUMNS = (
@@ -68,6 +89,7 @@ _COLUMNS = (
     BackfillRun.cursor,
     BackfillRun.examined,
     BackfillRun.finished_at.is_not(None),
+    BackfillRun.updated_at,
 )
 
 
@@ -86,12 +108,16 @@ def params_key(*, reprocess: bool, inbox_filter: str | None = None) -> str:
 @dataclass(frozen=True)
 class Resolved:
     """What `resolve` found. `run` is the run to walk, None when there
-    is none or `refused` is set. `discarded` is the unfinished run a
-    restart deleted; `refused` is the one a plain restart left alone."""
+    is none, or when `refused` or `busy` is set. `discarded` is the
+    unfinished run a restart deleted; `refused` is the one a plain
+    restart left alone; `busy` is one another session is driving, and
+    `retry_after` is the seconds until it would be taken."""
 
     run: Run | None
     discarded: Run | None = None
     refused: Run | None = None
+    busy: Run | None = None
+    retry_after: int = 0
 
 
 def _now() -> datetime:
@@ -110,9 +136,12 @@ def resolve(
     run when there is none, "restart" discards the unfinished run and
     starts a new one unless the run has examined something (then it
     refuses and changes nothing), "force_restart" discards it whatever
-    it has done. A later chunk (`start=None`) never starts a run; when
-    there is no unfinished run it gets the key's latest run, which
-    another session finished, or None.
+    it has done. All three first refuse, changing nothing, when the run
+    is live: another session is driving it (`LIVE_RUN_SEC`). Otherwise
+    the session claims the run by bumping its `updated_at`. A later
+    chunk (`start=None`) never starts a run; when there is no
+    unfinished run it gets the key's latest run, which another session
+    finished, or None.
 
     One WriteOp, so the lookup, the refuse-or-delete decision and the
     insert cannot race another chunk resolving the same key: a run that
@@ -125,6 +154,13 @@ def resolve(
 
     def _fn(conn) -> Resolved:
         row = conn.execute(select(*_COLUMNS).where(unfinished)).one_or_none()
+        now = _now()
+        if row is not None and start is not None:
+            idle = (now - row.updated_at).total_seconds()
+            if idle < LIVE_RUN_SEC:
+                return Resolved(
+                    None, busy=Run(*row), retry_after=ceil(LIVE_RUN_SEC - idle)
+                )
         discarded = None
         if row is not None and start in ("restart", "force_restart"):
             old = Run(*row)
@@ -132,6 +168,14 @@ def resolve(
                 return Resolved(None, refused=old)
             conn.execute(delete(BackfillRun).where(BackfillRun.id == old.id))
             discarded, row = old, None
+        if row is not None and start is not None:
+            # Claim the run, so it looks live before its first batch
+            # commits.
+            conn.execute(
+                update(BackfillRun)
+                .where(BackfillRun.id == row.id)
+                .values(updated_at=now)
+            )
         if row is None and start is None:
             row = conn.execute(
                 select(*_COLUMNS)
@@ -141,7 +185,6 @@ def resolve(
             ).one_or_none()
             return Resolved(Run(*row) if row is not None else None)
         if row is None:
-            now = _now()
             conn.execute(
                 insert(BackfillRun).values(
                     name=name,
@@ -205,4 +248,23 @@ def finish(run_id: int) -> None:
         )
 
     op = WriteOp(label="backfill_runs:finish", fn=_fn)
+    get_active_writer().submit(op).result(timeout=60)
+
+
+def release(run_id: int) -> None:
+    """Let the next session take the run at once: a session that ended
+    on its `--limit` is not a driver the next invocation should wait
+    for. Ages `updated_at` out of the live window. A killed session
+    cannot call this, which is why `LIVE_RUN_SEC` exists."""
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+
+    def _fn(conn) -> None:
+        conn.execute(
+            update(BackfillRun)
+            .where(BackfillRun.id == run_id, BackfillRun.finished_at.is_(None))
+            .values(updated_at=_now() - timedelta(seconds=LIVE_RUN_SEC))
+        )
+
+    op = WriteOp(label="backfill_runs:release", fn=_fn)
     get_active_writer().submit(op).result(timeout=60)

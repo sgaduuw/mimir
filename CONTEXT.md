@@ -924,13 +924,25 @@ the oldest, 17.7M ids, October 2026).
   deleted row was the only record of the lost work, so the broker
   logs it at WARNING. Run ids use AUTOINCREMENT, so a chunk of a
   deleted run still in flight cannot write to its replacement.
-- **Concurrency is not refused.** Two CLIs on one key join the same
-  run. With the default single long worker their chunks serialise.
-  With more, chunks of one run can overlap and process the same
-  articles twice, and not every backfill's writes are idempotent:
+- **One session per run (#745).** A session's first chunk (`start`
+  set: resume, restart or force_restart) is refused, in `resolve`'s
+  one WriteOp, while the run's `updated_at` is newer than
+  `LIVE_RUN_SEC` (300 s), and the run is handed back as busy. It is
+  checked before the progress check, so `--restart --yes` cannot
+  delete a run another session is driving. A session that is let in
+  bumps `updated_at` in the same WriteOp, so the run looks live
+  before its first batch commits. 300 s is several times the slowest
+  chunk seen (65 s waiting on the writer, 2026-10-16); there is no
+  override flag. A session that ends on its `--limit` calls
+  `backfill_runs.release`, so the rerun continues at once; a killed
+  one cannot, and is waited out. Why: chunks of one run that overlap
+  process the same articles twice, and not every backfill's writes
+  are idempotent:
   canonical observation counts add up, and trailer inserts without
-  `--reprocess` are plain inserts. `advance` takes `MIN` so the
-  cursor never moves back up.
+  `--reprocess` are plain inserts. The guard is a liveness window,
+  not a lock: later chunks (`start=None`) still join, and a session
+  paused over 300 s between chunks can be overtaken. `advance` takes
+  `MIN` so the cursor never moves back up.
 - **Counts.** CLI counters cover the session. The run row keeps
   `examined` across sessions, and the CLI prints it with the run's
   start time and whether the run is finished or still open.
