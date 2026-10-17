@@ -208,6 +208,23 @@ total examined count, and whether the run is `finished` or still `open`. After
 changing an inbox's `--list-address`, use `--restart`, with `--yes` if it
 refuses: a resumed run only revisits articles below its cursor.
 
+Only one session drives a run at a time. A command that finds the run's last
+committed batch less than 300 seconds old stops with `run N is in progress
+(last chunk <time> UTC, at id C); another session is driving it`, and changes
+nothing; that holds for `--restart` and `--restart --yes` as well. Either the
+other session is still running, or it was killed within the last few minutes:
+the message says how many seconds to wait. To stop a run cleanly, run the
+command with `podman exec -it`, so Ctrl-C reaches it, or kill the process
+inside the container. Ctrl-C on `podman exec` without `-t` ends the client and
+leaves the command running. Stopping loses at most the batch in flight, and
+the next invocation resumes.
+
+A session that ends on its own `--limit` releases the run, so the next
+invocation continues it at once. A killed session cannot say it is gone, so
+after Ctrl-C (even with `-it`) an immediate rerun is refused for up to 5
+minutes: the broker only knows the run went quiet. Run it again after the wait
+the refusal names.
+
 Thread roots are maintained by ingest, reindex, and failure replay. The broker
 also fills missing roots at startup, so a manual backfill is normally unnecessary.
 Interrupted fills resume on restart. Check for `backfill complete` with

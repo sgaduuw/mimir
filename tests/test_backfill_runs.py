@@ -14,6 +14,7 @@ batches: ids[0:2], ids[2:4], ids[4:6], ids[6:7] with `ids` newest-first.
 """
 
 import re
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from click.testing import CliRunner
@@ -22,7 +23,11 @@ from sqlalchemy import delete, select, text, update
 from mimir import _pending_backfill
 from mimir._backfill import walk_articles
 from mimir.broker.handlers import dispatch
-from mimir.broker.protocol import BackfillPatchSeriesRequest
+from mimir.broker.protocol import (
+    BackfillArticleFilesRequest,
+    BackfillCanonicalsRequest,
+    BackfillPatchSeriesRequest,
+)
 from mimir.cli import (
     backfill_article_files_command,
     backfill_article_trailers_command,
@@ -36,6 +41,7 @@ from mimir.models import (
     Article,
     ArticleFile,
     ArticleTrailer,
+    BackfillRun,
     Inbox,
     InboxAddressObservation,
 )
@@ -746,3 +752,265 @@ def test_a_model_built_schema_never_reuses_a_run_id(tmp_path):
         second = conn.execute(insert(BackfillRun).values(**row)).inserted_primary_key[0]
     engine.dispose()
     assert (first, second) == (1, 2)
+
+
+# One session per run (#745). A run whose `updated_at` is newer than
+# `LIVE_RUN_SEC` is being driven; a session's first chunk may not take
+# it. The tests above leave runs behind that the next command resumes
+# at once, so they run with the window off; the tests below turn it on.
+
+
+@pytest.fixture(autouse=True)
+def _no_live_window(monkeypatch):
+    from mimir import backfill_runs
+
+    monkeypatch.setattr(backfill_runs, "LIVE_RUN_SEC", 0)
+
+
+@pytest.fixture
+def live_window(monkeypatch):
+    from mimir import backfill_runs
+
+    monkeypatch.setattr(backfill_runs, "LIVE_RUN_SEC", 300)
+    return 300
+
+
+def _set_updated_at(seeded_db, seconds_ago: int) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    then = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=seconds_ago)
+    with seeded_db() as s:
+        s.execute(update(BackfillRun).values(updated_at=then))
+        s.commit()
+
+
+def _updated_at(seeded_db):
+    with seeded_db() as s:
+        return s.execute(select(BackfillRun.updated_at)).scalar_one()
+
+
+_STARTS = ["resume", "restart", "force_restart"]
+
+
+@pytest.mark.parametrize("start", _STARTS)
+def test_a_session_may_not_take_a_run_that_is_live(
+    start, seeded_db, broker_active, live_window
+):
+    """The first session's claim makes the run look live, so a second
+    session's first chunk is refused whichever start it asks for, and
+    nothing changes: not the row, not its `updated_at`."""
+    from mimir import backfill_runs
+
+    key = backfill_runs.params_key(reprocess=True)
+    first = backfill_runs.resolve("b", key, start="resume").run
+    before = _run_row(seeded_db), _updated_at(seeded_db)
+
+    second = backfill_runs.resolve("b", key, start=start)
+
+    assert second.run is None
+    assert second.busy is not None and second.busy.id == first.id
+    assert second.discarded is None and second.refused is None
+    assert 0 < second.retry_after <= live_window
+    assert (_run_row(seeded_db), _updated_at(seeded_db)) == before
+    # A later chunk of a running session is not a claim.
+    assert backfill_runs.resolve("b", key, start=None).run.id == first.id
+
+
+@pytest.mark.parametrize("start", _STARTS)
+def test_a_session_may_take_a_run_once_it_has_gone_quiet(
+    start, seeded_db, broker_active, live_window
+):
+    from mimir import backfill_runs
+
+    key = backfill_runs.params_key(reprocess=True)
+    first = backfill_runs.resolve("b", key, start="resume").run
+
+    _set_updated_at(seeded_db, live_window - 5)
+    assert backfill_runs.resolve("b", key, start=start).busy is not None
+
+    _set_updated_at(seeded_db, live_window + 5)
+    taken = backfill_runs.resolve("b", key, start=start)
+    assert taken.busy is None and taken.run is not None
+    assert (taken.run.id == first.id) == (start == "resume")
+
+
+def test_taking_a_run_makes_it_look_live_before_its_first_batch(
+    seeded_db, broker_active, live_window
+):
+    """A resumed run is claimed in the claim's own WriteOp. Without
+    that the old `updated_at` would stay until the first batch commits,
+    and a second session would walk in during that gap."""
+    from mimir import backfill_runs
+
+    key = backfill_runs.params_key(reprocess=True)
+    backfill_runs.resolve("b", key, start="resume")
+    _set_updated_at(seeded_db, 10 * live_window)
+
+    assert backfill_runs.resolve("b", key, start="resume").busy is None
+    assert backfill_runs.resolve("b", key, start="resume").busy is not None
+
+
+def test_a_batch_that_writes_nothing_still_shows_the_run_is_alive(
+    seeded_db, tmp_path, broker_active, monkeypatch, live_window
+):
+    """Examining rows is progress even when no row changes (a
+    non-reprocess pass over articles that are all indexed), and a long
+    stretch of such batches must not let the run look dead."""
+    from mimir import backfill_runs
+
+    _corpus(seeded_db, tmp_path)
+    _small_batches(monkeypatch)
+    # One batch per chunk, and no limit: a limit would release the run.
+    monkeypatch.setattr(settings, "broker_backfill_chunk_seconds", 0)
+    key = backfill_runs.params_key(reprocess=False)
+    backfill_runs.resolve("backfill_article_files", key, start="resume")
+    _set_updated_at(seeded_db, 10 * live_window)
+
+    reply = dispatch(BackfillArticleFilesRequest(rpc_id=1).model_dump_json().encode())
+
+    assert reply.ok is True, reply.error
+    assert reply.result["counters"]["examined"] == 2
+    assert reply.result["counters"]["skipped"] == 2
+    assert (datetime.now(UTC).replace(tzinfo=None) - _updated_at(seeded_db)) < (
+        timedelta(seconds=live_window)
+    )
+
+
+def test_a_canonicals_batch_that_writes_nothing_still_shows_the_run_is_alive(
+    seeded_db, tmp_path, broker_active, monkeypatch, live_window
+):
+    from mimir import backfill_runs
+
+    _corpus(seeded_db, tmp_path)
+    _small_batches(monkeypatch)
+    # One batch per chunk, and no limit: a limit would release the run.
+    monkeypatch.setattr(settings, "broker_backfill_chunk_seconds", 0)
+    with seeded_db() as s:
+        # Unreadable blobs: every article is skipped, so no payload.
+        s.execute(update(Inbox).values(mirror_path=str(tmp_path / "gone")))
+        s.commit()
+    key = backfill_runs.params_key(reprocess=True)
+    backfill_runs.resolve("backfill_canonicals", key, start="resume")
+    _set_updated_at(seeded_db, 10 * live_window)
+
+    reply = dispatch(
+        BackfillCanonicalsRequest(rpc_id=1, reprocess=True).model_dump_json().encode()
+    )
+
+    assert reply.ok is True, reply.error
+    assert reply.result["counters"]["skipped"] == 2
+    assert (datetime.now(UTC).replace(tzinfo=None) - _updated_at(seeded_db)) < (
+        timedelta(seconds=live_window)
+    )
+
+
+def test_the_reply_names_the_busy_run_and_walks_nothing(
+    seeded_db, tmp_path, broker_active, live_window
+):
+    from mimir import backfill_runs
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+
+    key = backfill_runs.params_key(reprocess=True)
+    run = backfill_runs.resolve("backfill_patch_series", key, start="resume").run
+    get_active_writer().submit(
+        WriteOp(label="test", fn=backfill_runs.advance(run.id, 5, 3))
+    ).result(timeout=10)
+
+    reply = dispatch(
+        BackfillPatchSeriesRequest(rpc_id=1, reprocess=True, start="resume")
+        .model_dump_json()
+        .encode()
+    )
+
+    assert reply.ok is True, reply.error
+    assert reply.result["partial"] is False
+    assert reply.result["counters"] == {}
+    info = reply.result["run"]
+    assert (info["id"], info["cursor"], info["examined"]) == (run.id, 5, 3)
+    assert info["busy"] is True
+    assert 0 < info["retry_after"] <= live_window
+    assert info["updated_at"]
+
+
+@pytest.mark.parametrize("flags", [(), ("--restart",), ("--restart", "--yes")])
+def test_the_cli_says_the_run_is_in_progress_and_leaves_it(
+    flags, seeded_db, tmp_path, broker_active, live_window
+):
+    from mimir import backfill_runs
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+
+    key = backfill_runs.params_key(reprocess=True)
+    run = backfill_runs.resolve("backfill_patch_series", key, start="resume").run
+    get_active_writer().submit(
+        WriteOp(label="test", fn=backfill_runs.advance(run.id, 5, 3))
+    ).result(timeout=10)
+    before = _run_row(seeded_db), _updated_at(seeded_db)
+
+    result = _invoke(backfill_patch_series_command, "--reprocess", *flags)
+
+    assert result.exit_code != 0, result.output
+    m = re.search(
+        rf"run {run.id} is in progress \(last chunk (.+) UTC, at id 5\); "
+        r"another session is driving it\. Stop it first, or wait (\d+) s "
+        r"if it was just killed\.",
+        result.output,
+    )
+    assert m is not None, result.output
+    assert m.group(1) == before[1].isoformat(sep=" ", timespec="seconds")
+    assert 0 < int(m.group(2)) <= live_window
+    assert re.search(r"\bexamined=\d+", result.output) is None, "a chunk walked"
+    assert (_run_row(seeded_db), _updated_at(seeded_db)) == before
+
+
+def test_a_slow_writer_does_not_end_a_canonicals_chunk(
+    seeded_db, tmp_path, broker_active, monkeypatch, caplog
+):
+    """The promotion sweep is queued behind other writes. Waiting for
+    it timing out used to raise out of the walk; the sweep still runs
+    when the writer reaches it, so the walk carries on and says so once."""
+    from mimir import _pending_backfill
+
+    _corpus(seeded_db, tmp_path)
+    _small_batches(monkeypatch)
+
+    class _Queued:
+        def result(self, timeout=None):
+            raise TimeoutError
+
+    swept = {"n": 0}
+
+    def slow_sweep(writer):
+        swept["n"] += 1
+        return _Queued()
+
+    monkeypatch.setattr(
+        _pending_backfill, "_submit_promote_list_address_sweep", slow_sweep
+    )
+    caplog.set_level("WARNING", logger=canonicals_backfill.logger.name)
+
+    out = canonicals_backfill.backfill_canonicals(reprocess=True, promote_every=2)
+
+    assert out.examined == _N and out.partial is False
+    assert swept["n"] == _N // 2 + 1, "periodic sweeps and the final one"
+    assert len([r for r in caplog.records if "sweep" in r.getMessage()]) == 1
+
+
+def test_a_restart_refused_for_progress_does_not_claim_the_run(
+    seeded_db, broker_active, live_window
+):
+    from mimir import backfill_runs
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+
+    key = backfill_runs.params_key(reprocess=True)
+    run = backfill_runs.resolve("b", key, start="resume").run
+    get_active_writer().submit(
+        WriteOp(label="test", fn=backfill_runs.advance(run.id, 5, 3))
+    ).result(timeout=10)
+    _set_updated_at(seeded_db, 10 * live_window)
+    before = _run_row(seeded_db), _updated_at(seeded_db)
+
+    assert backfill_runs.resolve("b", key, start="restart").refused is not None
+    assert (_run_row(seeded_db), _updated_at(seeded_db)) == before

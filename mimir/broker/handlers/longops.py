@@ -144,6 +144,9 @@ def _run_backfill_chunk(req, name: str, backfill, **params) -> Reply:
 
     A follow-up chunk whose run another session finished walks nothing
     and returns `partial=False`, which ends this session. So does a
+    first chunk that finds the run live (another session is driving
+    it): `run` is that run with `busy` set and `retry_after` seconds,
+    and nothing was changed. So does a
     `restart` refused because the unfinished run has progress: `run` is
     then that run with `refused` set, and nothing was deleted. A first
     chunk that discarded a run carries it as `run["discarded"]`, and
@@ -154,6 +157,17 @@ def _run_backfill_chunk(req, name: str, backfill, **params) -> Reply:
         name, backfill_runs.params_key(**params), start=req.start
     )
     run = resolved.run
+    if resolved.busy is not None:
+        info = {
+            **_run_info(resolved.busy, resolved.busy),
+            "busy": True,
+            "retry_after": resolved.retry_after,
+        }
+        return Reply(
+            rpc_id=req.rpc_id,
+            ok=True,
+            result={"counters": {}, "partial": False, "run": info},
+        )
     if resolved.refused is not None:
         info = {**_run_info(resolved.refused, resolved.refused), "refused": True}
         return Reply(
@@ -179,6 +193,11 @@ def _run_backfill_chunk(req, name: str, backfill, **params) -> Reply:
             result={"counters": {}, "partial": False, "run": _run_info(run, run)},
         )
     result = backfill(limit=req.limit, max_seconds=_chunk_seconds(), run=run, **params)
+    # The CLI stops once its remaining budget is spent (`partial` or
+    # not), so a chunk that spends it ends the session: release the
+    # claim for the next invocation. `limit` is the remaining budget.
+    if req.limit is not None and result.examined >= req.limit:
+        backfill_runs.release(run.id)
     return Reply(
         rpc_id=req.rpc_id,
         ok=True,
@@ -204,6 +223,7 @@ def _run_info(before, now) -> dict | None:
         "cursor": before.cursor,
         "examined": now.examined,
         "finished": now.finished,
+        "updated_at": before.updated_at.isoformat(sep=" ", timespec="seconds"),
     }
 
 

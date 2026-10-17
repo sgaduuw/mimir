@@ -181,6 +181,9 @@ class BootstrapInboxesRequest(_BrokerRequest):
 # article, unless the run has examined something, in which case the
 # chunk walks nothing and the reply names the run it refused to
 # discard. "force_restart" discards it regardless (the CLI's `--yes`).
+# Any `start` is refused the same way when the run is live, its
+# `updated_at` newer than `backfill_runs.LIVE_RUN_SEC`: another session
+# is driving it.
 # Later RPCs leave it None and never start a run, so a session whose
 # run another session finished ends there. `limit` caps this request,
 # not the run.
@@ -675,11 +678,13 @@ class Reply(BaseModel):
     #       `{"counters": <BackfillResult>, "partial": bool,
     #         "run": {"id": int, "started_at": str,
     #                 "cursor": <int | None>, "examined": int,
-    #                 "finished": bool} | None}`
+    #                 "finished": bool, "updated_at": str} | None}`
     #     where `run.cursor` is where this chunk started and
     #     `run.examined` counts the whole run. A first chunk that
     #     discarded an unfinished run adds `run.discarded`, that run's
     #     own `run` fields. A `restart` refused for progress replies
-    #     with the refused run's fields and `run.refused: true`.
+    #     with the refused run's fields and `run.refused: true`; a
+    #     `start` that finds the run live replies with its fields,
+    #     `run.busy: true` and `run.retry_after` (seconds).
     # Stays `None` for ops that don't return a value.
     result: dict[str, Any] | None = None
