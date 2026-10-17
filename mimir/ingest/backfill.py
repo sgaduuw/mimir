@@ -148,6 +148,24 @@ def backfill_canonicals(
             inbox_cache[inbox_id] = ix
         return ix
 
+    sweep_wait_logged = False
+
+    def wait_for_sweep() -> None:
+        """Wait for the promotion sweep, but not forever. The sweep is
+        queued behind other writes; on timeout the walk goes on, and the
+        sweep still runs when the writer reaches it."""
+        nonlocal sweep_wait_logged
+        try:
+            _submit_promote_list_address_sweep(writer).result(timeout=60)
+        except TimeoutError:
+            if not sweep_wait_logged:
+                sweep_wait_logged = True
+                logger.warning(
+                    "backfill: promotion sweep still queued after 60 s; "
+                    "the walk continues and the sweep runs when the writer "
+                    "reaches it"
+                )
+
     def flush_batch_to_writer() -> None:
         nonlocal batch_payloads, unflushed
         after = None
@@ -272,7 +290,7 @@ def backfill_canonicals(
                 # Periodic promotion sweep (every `promote_every` articles).
                 if out.examined % promote_every == 0:
                     flush_batch_to_writer()
-                    _submit_promote_list_address_sweep(writer).result(timeout=60)
+                    wait_for_sweep()
                     # Release the read snapshot so refresh_address_map sees
                     # any new list_address values the sweep just wrote.
                     session.commit()
@@ -296,7 +314,7 @@ def backfill_canonicals(
 
         # Walk completed naturally. Final promotion sweep + final batch flush.
         flush_batch_to_writer()
-        _submit_promote_list_address_sweep(writer).result(timeout=60)
+        wait_for_sweep()
         if exhausted and run is not None:
             backfill_runs.finish(run.id)
 

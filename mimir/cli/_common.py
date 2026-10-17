@@ -151,6 +151,8 @@ def _broker_backfill_loop(
     run only if it has no progress or `yes` is set ("force_restart");
     otherwise the broker refuses and this raises, naming the run and
     the command that resumes it. A discarded run is reported first.
+    Whatever the start, a run another session is driving (see
+    `mimir.backfill_runs`) is refused and this raises.
     `extra` carries per-backfill extras (e.g. `inbox_filter` for
     canonicals).
 
@@ -172,6 +174,14 @@ def _broker_backfill_loop(
             **extra,
         )
         start = None
+        if run is not None and run.get("busy"):
+            at = f", at id {run['cursor']}" if run["cursor"] is not None else ""
+            raise click.ClickException(
+                f"run {run['id']} is in progress (last chunk "
+                f"{run['updated_at']} UTC{at}); another session is driving "
+                f"it. Stop it first, or wait {run['retry_after']} s if it "
+                "was just killed."
+            )
         if run is not None and run.get("refused"):
             _echo_old_run("refusing to discard", run)
             click.echo(
