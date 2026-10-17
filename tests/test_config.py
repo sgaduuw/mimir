@@ -12,6 +12,7 @@ boot with a short or blank secret. Pin the constraint directly.
 """
 
 import os
+import re
 
 import pytest
 from pydantic import ValidationError
@@ -197,3 +198,53 @@ def test_settings_related_discussions_bot_senders_env_override(monkeypatch):
     )
     s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.related_discussions_bot_senders == ["a@x.test", "b@y.test"]
+
+
+def _inbox(name: str) -> dict:
+    return {
+        name: {
+            "mirror_path": f"Inboxes/{name}/git",
+            "upstream_url": f"https://lore.kernel.org/{name}",
+        }
+    }
+
+
+def _refused_key(exc: ValidationError) -> str | None:
+    """The key the INBOXES validator names, parsed from its message."""
+    m = re.search(r"INBOXES key '([^']*)'", str(exc))
+    return m.group(1) if m else None
+
+
+@pytest.mark.parametrize(
+    "name", ["linux_arm_kernel", "Linux-ARM", "linux.arm", "-lkml", "a" * 65]
+)
+def test_settings_refuses_a_non_slug_inbox_key(name):
+    """An INBOXES key becomes an inbox name in URLs and the database,
+    and the broker refuses a non-slug name on the wire (#738), so a bad
+    key must stop boot rather than stop ingest later (#747)."""
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(secret_key="x" * 32, inboxes=_inbox(name))
+    assert _refused_key(excinfo.value) == name
+
+
+def test_settings_refuses_a_non_slug_inbox_key_from_nested_env(monkeypatch):
+    """The documented nested form keeps the underscore: unlike TREES,
+    INBOXES keys are not normalised, so this is the likeliest way in."""
+    for k in list(os.environ):
+        if k.upper().startswith("INBOXES"):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("SECRET_KEY", "x" * 32)
+    monkeypatch.setenv("INBOXES__linux_arm_kernel__MIRROR_PATH", "Inboxes/lak/git")
+    monkeypatch.setenv(
+        "INBOXES__linux_arm_kernel__UPSTREAM_URL",
+        "https://lore.kernel.org/linux-arm-kernel",
+    )
+    with pytest.raises(ValidationError) as excinfo:
+        Settings()
+    assert _refused_key(excinfo.value) == "linux_arm_kernel"
+
+
+def test_settings_accepts_slug_inbox_keys():
+    assert set(Settings(secret_key="x" * 32).inboxes) == {"lkml", "linux-fsdevel"}
+    s = Settings(secret_key="x" * 32, inboxes=_inbox("linux-arm-kernel"))
+    assert set(s.inboxes) == {"linux-arm-kernel"}
