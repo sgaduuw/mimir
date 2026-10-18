@@ -30,6 +30,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- The "needs attention" and "quiet" triage lists load faster for
+  smaller mailing lists (#775). A list under one million articles is
+  now read from its own articles instead of walking the whole
+  archive's last 180 days. Measured on production on 2026-10-18, first
+  page, same rows either way: u-boot 14.02 s to 0.49 s, linux-fsdevel
+  13.7 s to 0.35 s, alsa-devel 14.06 s to 0.28 s. lkml and netdev keep
+  the old walk, which is faster for them (lkml 0.60 s against 5.58 s).
+  A sparse subsystem on netdev is still slow (14.09 s).
+
 - The database now refuses a second inbox with the same list address
   (#658). A partial unique index on `inboxes.list_address` (NULL stays
   shared) backs up the checks in `admin inbox update` and in
