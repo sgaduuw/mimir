@@ -58,6 +58,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- `warm-cache` now refreshes the inboxes in `PINNED_INBOXES` first, in
+  that order, then the rest by name. It used to go alphabetically, so on
+  a slow cycle the most-read dashboards (lkml) waited behind every inbox
+  that sorts before them, and a short-lived key could expire before its
+  turn. The front page and `warm-cache` now share one definition of
+  pinned order (#763).
 - The broker health check is now `mimir-broker-ping`, a separate command
   that does not load the application. `mimir broker-ping` loads all of
   mimir before it pings, and on a busy production host (8 cores, load
