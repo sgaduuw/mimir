@@ -78,8 +78,14 @@ Check broker logs for `backfill complete` and `remaining=0`, or investigate
 `backfill incomplete`.
 
 ```sh
-docker compose exec mimir-broker mimir broker-ping --socket /data/.broker.sock
+docker compose exec mimir-broker mimir-broker-ping --socket /data/.broker.sock
 ```
+
+`mimir-broker-ping` is the broker health check in the example Compose file.
+It does not load the application, so it stays fast on a busy host.
+`mimir broker-ping` gives the same answer but loads the whole application
+first, which can take longer than the check's timeout under load. If your
+own Compose file still calls `mimir broker-ping`, change its `test:` line.
 
 Both other services wait for broker health. Allow the startup health-check
 budget to cover migrations and backfills on your actual dataset. The socket

@@ -74,7 +74,7 @@ services:
       MIMALLOC_PURGE_DELAY: "200"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "mimir", "broker-ping", "--socket", "/data/.broker.sock"]
+      test: ["CMD", "mimir-broker-ping", "--socket", "/data/.broker.sock"]
       interval: 10s
       timeout: 2s
       retries: 3

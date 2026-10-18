@@ -55,7 +55,7 @@ The broker prepares the database and stays running. In a **second terminal**,
 from the same checkout:
 
 ```sh
-uv run mimir broker-ping --socket instance/broker.sock
+uv run mimir-broker-ping --socket instance/broker.sock
 uv run mimir run
 ```
 
