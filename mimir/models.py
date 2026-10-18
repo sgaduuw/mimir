@@ -12,6 +12,17 @@ class Inbox(Base):
     admin UI."""
 
     __tablename__ = "inboxes"
+    __table_args__ = (
+        # One list address resolves to one inbox, so a second holder
+        # pins cross-posts to the wrong list (#644). NULL means "not
+        # detected yet" and stays shared.
+        Index(
+            "ix_inboxes_list_address",
+            "list_address",
+            unique=True,
+            sqlite_where=text("list_address IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     # URL slug; matches the dict key in Settings.inboxes.
@@ -27,7 +38,6 @@ class Inbox(Base):
     list_address: Mapped[str | None] = mapped_column(
         String,
         nullable=True,
-        index=True,
     )
 
     # Per-inbox tracker tiles on the dashboard. NULL = no tracker

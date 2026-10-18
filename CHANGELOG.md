@@ -11,6 +11,20 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- The database now refuses a second inbox with the same list address
+  (#658). A partial unique index on `inboxes.list_address` (NULL stays
+  shared) backs up the checks in `admin inbox update` and in
+  auto-promotion. The broker applies it at startup. If two inboxes
+  still share an address, the broker refuses to start, names each
+  address and its inboxes, and changes nothing: clear the extra holders
+  on the previous release with `admin inbox update NAME --list-address
+  ""`, then deploy again. Rolling back needs `alembic downgrade
+  1496642cb923`, run from this image before the older image starts
+  (the older broker does not know the new revision and refuses to
+  start).
+
 ## [3.21.0] - 2026-10-18
 
 ### Changed
