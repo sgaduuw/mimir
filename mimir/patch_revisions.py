@@ -37,22 +37,63 @@ from mimir import cache
 from mimir.models import Article, ArticleList, Inbox
 
 # `^[<inside>] <title>` matched only when the bracket starts the
-# subject; matches the existing cover-letter parser's anchoring so
-# `Re:` replies don't masquerade as in-series patches.
+# subject, so `Re:` replies don't masquerade as patches.
 _BRACKET_RE = re.compile(r"^\[([^\]]+)\]\s*(.+)$")
 
 # `N/M` shape inside the bracket. We accept `N >= 1` so the cover
 # letter's `0/M` doesn't match here (the cover letter is detected
 # upstream via `patch_series.parse_cover_letter`). The optional
 # `0*` prefix tolerates zero-padded shapes like `01/27`, `09/27`
-# produced by `git format-patch --numbered` on ≥10-patch series;
+# produced by `git format-patch --numbered` on >=10-patch series;
 # the capture group still pulls the actual position (`1`, `9`).
 _N_OF_M_RE = re.compile(r"\b0*([1-9]\d*)\s*/\s*(\d+)\b")
 
-# The bracket must literally contain `PATCH`. `[GIT PULL]` and
-# `[ANNOUNCE]` subjects can carry `N/M` shapes too (for entirely
-# unrelated reasons); the PATCH token disambiguates.
-_PATCH_TOKEN_RE = re.compile(r"\bPATCH\b")
+# Any `N/M`, zero included: the shape both parsers narrow further.
+_ANY_N_OF_M_RE = re.compile(r"\b(\d+)\s*/\s*(\d+)\b")
+
+# `PATCH` in any case: lists carry `[patch #1/11]` and `[Patch v2 ...]`.
+_PATCH_TOKEN_RE = re.compile(r"\bPATCH\b", re.IGNORECASE)
+
+# `[GIT PULL 0/3]`, `[ANNOUNCE 0/3]` and friends carry `N/M` for
+# unrelated reasons.
+_NOT_A_SERIES_RE = re.compile(r"\b(PULL|ANNOUNCE)\b", re.IGNORECASE)
+
+
+def patch_bracket(subject: str) -> tuple[str, str] | None:
+    """The bracket that decides `subject` is a patch, as `(inside,
+    title)`, or None. The one predicate behind `parse_cover_letter` and
+    `parse_in_series_patch_subject` (#711), so a subject is a patch for
+    both or for neither. Each parser then applies its own `N/M` rule.
+
+    A bracket counts when it is the first bracket and
+      - carries a PATCH token (any case), or
+      - has `N/M` with N <= M (not a date like `2024/11`), another word
+        besides it, no PULL or ANNOUNCE and no
+        colon (`[net-next v7 02/10]`, `[RFC 0/6]`, `[v2 0/1]`; not the
+        build robots' `[linux-next:master 1000/2056]` or a bare `[0/1]`).
+    A first bracket without PATCH followed by a bracket with PATCH is a
+    list tag (`[U-Boot] [PATCH 0/3] title`): the second bracket decides
+    and the title is what follows it. One leading tag only.
+    """
+    m = _BRACKET_RE.match(subject.strip())
+    if m is None:
+        return None
+    inside, title = m.group(1), m.group(2).strip()
+    if _PATCH_TOKEN_RE.search(inside):
+        return inside, title
+    second = _BRACKET_RE.match(title)
+    if second is not None and _PATCH_TOKEN_RE.search(second.group(1)):
+        return second.group(1), second.group(2).strip()
+    n_of_m = _ANY_N_OF_M_RE.search(inside)
+    if (
+        n_of_m is not None
+        and int(n_of_m.group(1)) <= int(n_of_m.group(2))
+        and re.search(r"\w", inside.replace(n_of_m.group(0), "", 1))
+        and not _NOT_A_SERIES_RE.search(inside)
+        and ":" not in inside
+    ):
+        return inside, title
+    return None
 
 
 @dataclass(frozen=True)
@@ -82,21 +123,27 @@ def parse_in_series_patch_subject(subject: str | None) -> ParsedPatchSubject | N
         [PATCH net-next v2 1/3] foo: do bar     -> pos=1 total=3
         [PATCH RFC v2 1/3] foo: do bar          -> pos=1 total=3
 
+        [net-next v7 02/10] foo: do bar         -> pos=2 total=10 (no PATCH token)
+        [RFC 1/6] foo: do bar                   -> pos=1 total=6
+        [U-Boot] [PATCH v2 1/2] foo: do bar     -> pos=1 total=2 (list tag, title after PATCH)
+        [patch #1/11] foo: do bar               -> pos=1 total=11 (PATCH in any case)
+
     Doesn't recognise:
         [PATCH 0/3] cover letter title          (cover letter; pos=0 filtered)
         [PATCH] solo patch                      (no N/M)
         [PATCH v2] solo patch                   (no N/M)
         Re: [PATCH v2 1/3] title                (bracket not at column 0)
-        [GIT PULL 1/3] title                    (no PATCH token)
+        [GIT PULL 1/3] title                    (PULL or ANNOUNCE)
+        [linux-next:master 1000/2056] title     (colon: a build robot)
+        [1/3] title                             (no other word)
+        [A] [B] [PATCH 1/3] title               (one list tag only)
     """
     if not subject:
         return None
-    m = _BRACKET_RE.match(subject.strip())
-    if m is None:
+    bracket = patch_bracket(subject)
+    if bracket is None:
         return None
-    inside, title = m.group(1), m.group(2).strip()
-    if not _PATCH_TOKEN_RE.search(inside):
-        return None
+    inside, title = bracket
     nom = _N_OF_M_RE.search(inside)
     if nom is None:
         return None

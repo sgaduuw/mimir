@@ -29,15 +29,10 @@ from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
 from mimir.models import Article
 from mimir.parser import unfold
-from mimir.patch_revisions import parse_in_series_patch_subject
+from mimir.patch_revisions import parse_in_series_patch_subject, patch_bracket
 
 logger = logging.getLogger(__name__)
 
-
-# `^[<inside>] <title>`, only matches when the bracket starts the
-# subject, so `Re: [PATCH ...]` replies don't masquerade as cover
-# letters. The original cover letter has nothing before the `[`.
-_BRACKET_RE = re.compile(r"^\[([^\]]+)\]\s*(.+)$")
 
 # `0/N` shape inside the bracket, the cover-letter discriminator.
 # `0+` (not just `0`) so zero-padded covers like `00/24` or `000/100`
@@ -94,12 +89,6 @@ def newer_revision_sql(older: str, newer: str) -> str:
     )
 
 
-# Bracket must literally contain the word "PATCH", there are
-# `[GIT PULL]` and `[ANNOUNCE]` subjects that carry `0/N` for
-# unrelated reasons; the PATCH token disambiguates.
-_PATCH_TOKEN_RE = re.compile(r"\bPATCH\b")
-
-
 @dataclass(frozen=True)
 class CoverLetter:
     """One detected cover letter. `version` is normalised to a
@@ -126,20 +115,24 @@ def parse_cover_letter(subject: str | None) -> CoverLetter | None:
         [PATCH RESEND v3 0/3] title     → v3   (RESEND ignored, real version wins)
         [PATCH net 0/3] title           → v1   (subsystem tag tolerated)
         [PATCH net-next v2 0/12] title  → v2
+        [RFC 0/6] title                 → rfc  (no PATCH token, see `patch_bracket`)
+        [net-next v7 00/10] title       → v7
+        [U-Boot] [PATCH v2 0/3] title   → v2   (list tag; title and key exclude it)
+        [patch 0/3] title               → v1   (PATCH in any case)
 
     Doesn't recognise:
         Re: [PATCH v2 0/3] title       , bracket isn't at column 0
         [PATCH 1/3] title              , not a cover letter
-        [ANNOUNCE 0/3] title           , no PATCH token
+        [ANNOUNCE 0/3] title           , PULL and ANNOUNCE never count
+        [linux-next:master 0/9] title  , a colon marks a build robot
+        [0/1] title                    , no other word in the bracket
     """
     if not subject:
         return None
-    m = _BRACKET_RE.match(subject.strip())
-    if m is None:
+    bracket = patch_bracket(subject)
+    if bracket is None:
         return None
-    inside, title = m.group(1), m.group(2).strip()
-    if not _PATCH_TOKEN_RE.search(inside):
-        return None
+    inside, title = bracket
     zero_of = _ZERO_OF_N_RE.search(inside)
     if zero_of is None:
         return None
