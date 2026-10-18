@@ -246,6 +246,15 @@ def list_inboxes() -> list[Inbox]:
         return list(session.execute(select(Inbox).order_by(Inbox.name)).scalars().all())
 
 
+def pinned_first(inboxes: list[Inbox]) -> list[Inbox]:
+    """`inboxes` with the pinned ones first, in `settings.pinned_inboxes`
+    order, then the rest by name. The one definition of "pinned order",
+    shared by the meta-index and `warm-cache`, so the cards topping the
+    front page are also the inboxes warmed first (#763)."""
+    rank = {name: i for i, name in enumerate(settings.pinned_inboxes)}
+    return sorted(inboxes, key=lambda ix: (rank.get(ix.name, len(rank)), ix.name))
+
+
 def get_inbox(name: str) -> Inbox:
     """Fetch one inbox by name. Raises InboxNotFound if absent."""
     with SessionLocal() as session:

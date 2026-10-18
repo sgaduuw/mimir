@@ -22,6 +22,7 @@ from mimir.dashboard import (
     this_day_in_history,
 )
 from mimir.extensions import SessionLocal
+from mimir.inboxes import pinned_first
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Article, ArticleList, Inbox, Subsystem
 from mimir.seo import _json_ld_inbox, _json_ld_index
@@ -110,10 +111,9 @@ def index():
     30-day `daily_volume` sparkline. Both are cached helpers; the
     per-card cost on a warm cache is one cache row read per inbox.
     """
-    pin_rank = {name: i for i, name in enumerate(settings.pinned_inboxes)}
+    pinned = set(settings.pinned_inboxes)
     with SessionLocal() as session:
-        inboxes = session.execute(select(Inbox)).scalars().all()
-        inboxes.sort(key=lambda ix: (pin_rank.get(ix.name, len(pin_rank)), ix.name))
+        inboxes = pinned_first(session.execute(select(Inbox)).scalars().all())
         inbox_summaries = []
         for inbox in inboxes:
             stats = archive_stats(session, inbox)
@@ -121,7 +121,7 @@ def index():
                 {
                     "name": inbox.name,
                     "stats": stats,
-                    "pinned": inbox.name in pin_rank,
+                    "pinned": inbox.name in pinned,
                     # Relative-time string for the visible "Last activity"
                     # line. None when the inbox has no messages yet (the
                     # template falls back to the empty-state copy).

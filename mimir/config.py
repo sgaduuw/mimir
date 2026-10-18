@@ -228,9 +228,11 @@ class Settings(BaseSettings):
 
     # Inboxes that should appear first on the meta-index `/`, in this
     # order, regardless of alphabetical order. The rest follow
-    # alphabetically. Override via PINNED_INBOXES as a JSON array.
-    # Default pins lkml since this archive treats it as the focal list;
-    # set to empty to fall back to pure alphabetical.
+    # alphabetically. `warm-cache` refreshes them first in the same
+    # order (#763), so pinning also sets warm priority. Override via
+    # PINNED_INBOXES as a JSON array. Default pins lkml since this
+    # archive treats it as the focal list; set to empty to fall back to
+    # pure alphabetical.
     pinned_inboxes: list[str] = ["lkml"]
 
     # Extra mailing-list host suffixes that augment the default
