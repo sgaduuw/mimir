@@ -49,6 +49,7 @@ from mimir.web.urls import (
     _canonical_inbox_name,
     _canonical_url_for,
     _get_inbox_or_404,
+    _msg_path,
     _msg_url,
     _site_base,
     thread_page_url,
@@ -421,10 +422,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
 
         # Build URLs for thread nodes (avoids per-node template logic).
         thread_urls = {
-            n.message_id: f"/{inbox.name}/{n.date.year}/{n.date.month:02d}/{n.id}"
-            if n.date
-            else f"/{inbox.name}/0000/00/{n.id}"
-            for n in thread
+            n.message_id: _msg_path(n.id, n.date, inbox.name) for n in thread
         }
 
         # Resolve in-body <Message-ID> references to canonical URLs.
