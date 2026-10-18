@@ -11,6 +11,51 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- A crawler budget in the web tier: a crawler over its budget gets `429
+  Too Many Requests` with `Retry-After` and `Cache-Control: no-store`,
+  without any database, blob or render work. It is off by default, so
+  deploying this release changes nothing until you set a budget.
+  Motivation, measured on production from 2026-10-17 19:41 to 2026-10-18
+  09:31 UTC (13.8 hours, 8-core host): Applebot made 124,026 requests
+  (about 9,000 an hour), 1,828 of 2,041 requests in a 10-minute sample,
+  from 4,199 IPs in one /16 with at most 3 requests per IP per 10
+  seconds, so no per-IP limit at the CDN can touch it without hitting
+  readers first, and Apple documents that Applebot ignores
+  `Crawl-delay`. `CRAWLER_BUDGET_PER_MINUTE` is the budget for all
+  crawlers combined and the master switch (0 gates nothing).
+  `CRAWLER_UA_BUDGETS` (JSON) is merged over a default list of Applebot,
+  Bytespider, PetalBot, meta-externalagent, facebookexternalhit, Slurp,
+  msnbot and Baiduspider, each at 10% of the global budget:
+  `{"Applebot": 50}` changes only Applebot, `{"Bytespider": 0}` drops
+  it, a new key adds a crawler. Keys are case-insensitive substrings of
+  the User-Agent (pick distinctive names; a key equal to a marker is
+  refused): a global 120 with Applebot at 10 is 12 a minute for
+  Applebot. A crawler with no entry is recognised by a product token
+  ending in `bot`, `crawler`, `spider`, `curl`, `wget` or
+  `python-requests` followed by a slash (`Googlebot/2.1`, `GPTBot/1.0`,
+  `curl/8.5.0`; set `CRAWLER_UA_MARKERS` to change the list) and gets
+  `CRAWLER_DEFAULT_UA_PCT` (default 10) of the global budget, so once
+  the global budget is set every recognised crawler, Googlebot and
+  Bingbot included, is held to 10% unless it is listed with its own
+  percentage. All unlisted crawlers together are also capped at
+  `CRAWLER_UNLISTED_POOL_PCT` (default 30) of the global budget, so a
+  flood of invented crawler names cannot starve listed ones; unlisted
+  real crawlers share that pool with the flood, so list a crawler to
+  protect it. The slash is required so a browser on a device named
+  `CUBOT X30` is not gated. Your own scripts and smoke checks that use
+  curl, wget or python-requests count as crawlers once the global budget
+  is set: give them a percentage in `CRAWLER_UA_BUDGETS` or a different
+  User-Agent. `CRAWLER_RETRY_AFTER_SEC` (default 120) sets the header.
+  Buckets are per worker process at budget divided by `WORKERS`, which
+  mimir now reads, and hold ten seconds of their rate, so in any window
+  the web tier admits at most that window's share of the budget plus ten
+  seconds' worth. Never gated: `/robots.txt`, the sitemaps, `/healthz`,
+  `/readyz`, static files, and any request that is not a recognised
+  crawler. A deferred-count warning is logged at most once a minute per
+  crawler per worker (#761).
+
 ### Changed
 
 - The broker health check is now `mimir-broker-ping`, a separate command

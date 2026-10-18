@@ -164,6 +164,18 @@ services:
       # Optional:
       # SITE_NAME: lkml-mirror
       # SECURITY_CONTACT: mailto:security@example.com
+      # Throttle a heavy crawler with 429 + Retry-After (off by default,
+      # see deploy/README.md "Crawler budgets"). Buckets are per worker
+      # at budget / WORKERS.
+      # CRAWLER_BUDGET_PER_MINUTE: "240"
+      # CRAWLER_UA_BUDGETS: '{"Applebot": 50, "Bytespider": 0}'
+      #   merged over the default crawler list (Applebot, Bytespider, ...,
+      #   10% each): changes Applebot to 50% and drops Bytespider (0).
+      # Any other recognised crawler (Googlebot/2.1, bingbot/2.0, ...)
+      # gets CRAWLER_DEFAULT_UA_PCT (10) of the global budget, and all
+      # of them together are capped by CRAWLER_UNLISTED_POOL_PCT (30);
+      # list a crawler to protect it from a flood of invented names.
+      # CRAWLER_UA_BUDGETS keys are substrings: pick distinctive ones.
       # SECURITY_POLICY_URL: https://example.com/security
     restart: unless-stopped
     healthcheck:
