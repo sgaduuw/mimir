@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from mimir._inbox_name import INBOX_NAME_RE
@@ -123,6 +123,21 @@ def _curated_default_trees() -> dict[str, TreeConfig]:
     }
 
 
+# Heavy known crawlers that name themselves in the User-Agent, each held
+# to 10% of the global budget (#761). Merged under CRAWLER_UA_BUDGETS.
+# Substring matches, so keep the names distinctive.
+DEFAULT_CRAWLER_UA_BUDGETS: dict[str, int] = {
+    "Applebot": 10,
+    "Bytespider": 10,
+    "PetalBot": 10,
+    "meta-externalagent": 10,
+    "facebookexternalhit": 10,
+    "Slurp": 10,
+    "msnbot": 10,
+    "Baiduspider": 10,
+}
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"),
@@ -213,9 +228,11 @@ class Settings(BaseSettings):
 
     # Inboxes that should appear first on the meta-index `/`, in this
     # order, regardless of alphabetical order. The rest follow
-    # alphabetically. Override via PINNED_INBOXES as a JSON array.
-    # Default pins lkml since this archive treats it as the focal list;
-    # set to empty to fall back to pure alphabetical.
+    # alphabetically. `warm-cache` refreshes them first in the same
+    # order (#763), so pinning also sets warm priority. Override via
+    # PINNED_INBOXES as a JSON array. Default pins lkml since this
+    # archive treats it as the focal list; set to empty to fall back to
+    # pure alphabetical.
     pinned_inboxes: list[str] = ["lkml"]
 
     # Extra mailing-list host suffixes that augment the default
@@ -693,6 +710,120 @@ class Settings(BaseSettings):
         "lkp@intel.com",
         "tip-bot2@linutronix.de",
     ]
+
+    # Crawler budgets (#761). Measured on production 2026-10-18, one
+    # crawler (Applebot) made 1,828 of 2,041 requests in a 10-minute
+    # sample and nothing in front of mimir can slow it without slowing
+    # readers, so the web tier answers 429 + Retry-After past a budget.
+    # Every default is 0 (off): deploying changes nothing until an
+    # operator opts in. See mimir/web/crawler_budget.py.
+    #
+    # Master switch and budget for ALL configured crawlers combined,
+    # requests per minute across the whole web tier. 0 = the whole gate
+    # is off and nothing is gated, whatever CRAWLER_UA_BUDGETS says.
+    crawler_budget_per_minute: int = Field(default=0, ge=0)
+
+    # Overrides on top of DEFAULT_CRAWLER_UA_BUDGETS (merged, not
+    # replaced: `{"Applebot": 50}` changes only Applebot). Each key is a
+    # case-insensitive substring of the raw User-Agent header (first
+    # match, in merged order); the value is that crawler's own share as
+    # a PERCENTAGE (1..100) of the global budget, so 10 with a global
+    # 120 is 12 a minute, and 0 DROPS a default entry. Env as JSON:
+    #   CRAWLER_UA_BUDGETS='{"Applebot": 50, "Bytespider": 0}'
+    # Because `env_nested_delimiter="__"` is active,
+    # CRAWLER_UA_BUDGETS__Applebot=50 also works (pydantic-settings
+    # lowercases that key, which is fine: matching and merging both
+    # ignore case). Keys are plain substrings
+    # with no slash rule, so pick distinctive ones; a key equal to a
+    # marker below is refused ("bot" would gate the CUBOT browser).
+    crawler_ua_budgets: dict[str, int] = {}
+
+    # Crawlers that are NOT listed above are still recognised by a
+    # product token: a name ending in one of these markers, followed by
+    # a slash (Googlebot/2.1, GPTBot/1.0, curl/8.5.0); a token that is
+    # just the marker counts. The slash keeps a browser on a device such
+    # as `CUBOT X30` from being gated. Script tools (curl, wget,
+    # python-requests) are markers too, so operator scripts and smoke
+    # checks using them are gated once the global budget is set.
+    # Case-insensitive. JSON array in env (CRAWLER_UA_MARKERS).
+    crawler_ua_markers: list[str] = [
+        "bot",
+        "crawler",
+        "spider",
+        "curl",
+        "wget",
+        "python-requests",
+    ]
+
+    @property
+    def effective_crawler_ua_budgets(self) -> dict[str, int]:
+        """The listed crawlers the gate uses: the defaults first in
+        their order, then new keys; an overridden default keeps its
+        position and a value of 0 removes the entry."""
+        merged = dict(DEFAULT_CRAWLER_UA_BUDGETS)
+        # Keys merge case-insensitively: the nested env form lowercases
+        # its key, and `applebot` must override `Applebot`, not sit
+        # beside it.
+        spelling = {k.lower(): k for k in merged}
+        for key, pct in self.crawler_ua_budgets.items():
+            merged[spelling.setdefault(key.lower(), key)] = pct
+        return {k: v for k, v in merged.items() if v > 0}
+
+    @model_validator(mode="after")
+    def _listed_keys_are_not_markers(self) -> Settings:
+        # A listed key is a bare substring, a marker is only a suffix
+        # before a slash: a key equal to a marker would gate any UA
+        # that merely contains it (CUBOT). Checked on the merged map so
+        # defaults and overrides are both covered.
+        markers = {m.lower() for m in self.crawler_ua_markers}
+        clash = sorted(
+            k for k in self.effective_crawler_ua_budgets if k.lower() in markers
+        )
+        if clash:
+            raise ValueError(f"crawler_ua_budgets keys equal to markers: {clash}")
+        return self
+
+    @field_validator("crawler_ua_markers")
+    @classmethod
+    def _validate_crawler_ua_markers(cls, v: list[str]) -> list[str]:
+        # A blank marker makes the token regex match any `name/` pair.
+        if any(not m.strip() for m in v):
+            raise ValueError("crawler_ua_markers entries must not be blank")
+        return v
+
+    # Share (percentage of the global budget) for a recognised crawler
+    # with no entry in CRAWLER_UA_BUDGETS. With the global budget set,
+    # Googlebot and Bingbot included are held to this unless listed.
+    crawler_default_ua_pct: int = Field(default=10, ge=1, le=100)
+
+    # Unlisted crawlers also draw on ONE shared bucket at this
+    # percentage of the global budget. Without it, invented names
+    # (a-bot/1, b-bot/1, ...) each get their own default share and a
+    # handful drain the global bucket, so real crawlers get 429s.
+    # Listed crawlers never touch it.
+    crawler_unlisted_pool_pct: int = Field(default=30, ge=1, le=100)
+
+    # Retry-After on a refused request, seconds. Long enough that a
+    # crawler backs off past a bucket refill instead of retrying at once.
+    crawler_retry_after_sec: int = Field(default=120, ge=1)
+
+    # gunicorn worker processes, read from the `WORKERS` the container
+    # already sets for `--workers`. The budget is enforced per worker at
+    # budget / web_workers, so this must match the real worker count.
+    web_workers: int = Field(default=1, ge=1, validation_alias="WORKERS")
+
+    @field_validator("crawler_ua_budgets")
+    @classmethod
+    def _validate_crawler_ua_budgets(cls, v: dict[str, int]) -> dict[str, int]:
+        # A blank key is a substring of every User-Agent, so it would
+        # gate browsers and requests with no User-Agent at all.
+        if any(not k.strip() for k in v):
+            raise ValueError("crawler_ua_budgets keys must not be blank")
+        if any(not 0 <= n <= 100 for n in v.values()):
+            raise ValueError(
+                "crawler_ua_budgets values are percentages, 1 to 100, or 0 to drop"
+            )
+        return v
 
 
 settings = Settings()

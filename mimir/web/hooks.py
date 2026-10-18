@@ -18,11 +18,12 @@ import secrets
 import time
 from datetime import UTC, datetime
 
-from flask import g, request
+from flask import Response, g, request
 
 from mimir.config import settings
 from mimir.inboxes import inbox_names
 from mimir.web._blueprint import bp_web
+from mimir.web.crawler_budget import EXEMPT_ENDPOINTS, CrawlerBudget
 from mimir.web.routes.static_meta import OG_IMAGE_ALT
 from mimir.web.urls import _site_base
 
@@ -225,6 +226,32 @@ def _start_request_timer():
     # pattern) so multi-hop traces stay correlatable; otherwise mint
     # a fresh short id.
     g._request_id = request.headers.get("X-Request-Id") or secrets.token_hex(8)
+
+
+# Built once per worker process; every budget defaults to 0 (off).
+_crawler_gate = CrawlerBudget.from_settings(settings)
+
+
+@bp_web.before_app_request
+def _crawler_budget_gate():
+    """Registered after `_start_request_timer` on purpose: a refused
+    request still gets a request id and an access-log line. The 429 is
+    built without touching the database or rendering anything (#761).
+    `no-store` keeps a CDN from serving it to readers; `_add_cache_headers`
+    only rewrites Cache-Control on 200/301/302/304, so it stays."""
+    if request.endpoint in EXEMPT_ENDPOINTS:
+        return None
+    if _crawler_gate.check(request.headers.get("User-Agent")) is None:
+        return None
+    return Response(
+        "Too Many Requests\n",
+        status=429,
+        mimetype="text/plain",
+        headers={
+            "Retry-After": str(_crawler_gate.retry_after_sec),
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @bp_web.after_app_request
