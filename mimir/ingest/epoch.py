@@ -6,10 +6,10 @@ from the last-seen commit forward, parse messages (sequentially or via
 a process pool), bucket each outcome (new / linked / dup_batch /
 dup_db / failed), and persist a per-epoch resume cursor.
 
-The shared helper `_to_article` and the `IngestResult` model are also
-imported by `.replay`, `.backfill`, and `.orchestrate`. The Phase 3b
-write path (observation flush, list-address promotion) lives as
-composite WriteOps in `._pending`, not here.
+`_to_article_insert` builds a new article's row for `ingest_epoch` and
+`.replay`; `IngestResult` and `DEFAULT_WORKERS` are imported more
+widely. The Phase 3b write path (observation flush, list-address
+promotion) lives as composite WriteOps in `._pending`, not here.
 """
 
 import logging
@@ -40,9 +40,7 @@ from mimir.config import settings
 from mimir.datetime_utils import aware_utc
 from mimir.models import (
     Article,
-    ArticleFile,
     ArticleList,
-    ArticleTrailer,
     Inbox,
     IngestState,
     ParseFailure,
@@ -181,115 +179,6 @@ def _parse_iter(
         yield from pool.map(_parse_pair, items, chunksize=PARSE_CHUNKSIZE)
 
 
-def _to_article(
-    parsed: ParsedArticle,
-    inbox_id: int,
-    epoch: str,
-    commit_sha: str,
-    date: datetime,
-    canonical_inbox_id: int | None = None,
-    session: Session | None = None,
-) -> Article:
-    """Construct a brand-new Article (with one ArticleList row) for a
-    message we haven't seen before. For cross-posts (already-known
-    Message-ID), the caller adds an ArticleList row directly instead.
-
-    `session` is required to populate `patch_series_key` / `version`
-    on in-series patches via a thread-parent lookup; without it,
-    in-series patches land with position set but key + version NULL
-    and need the backfill command to fill the gap.
-    """
-    thread_parent = parsed.in_reply_to or (
-        parsed.references[-1] if parsed.references else None
-    )
-    # Extract diff-touched paths for patch bodies. Empty set on non-
-    # patch articles. ArticleFile rows take their article_id at flush
-    # via the back-populated relationship, no manual id wiring.
-    touched_paths = extract_touched_paths(parsed.body)
-    # Same shape for review-attestation trailers: pure parse over
-    # parsed.body, ArticleTrailer rows wired through the back-populated
-    # `trailers` relationship.
-    trailer_rows = [
-        ArticleTrailer(
-            role=role,
-            name=name,
-            address=address,
-            address_normalized=address.lower(),
-        )
-        for role, name, address in extract_trailers(parsed.body)
-    ]
-    # Patch-series identity, two write paths (#212):
-    # - Cover letter (`[PATCH ... 0/N]`): key + version derived from
-    #   the subject + author; position = 0.
-    # - In-series patch (`[PATCH ... M/T]` with M >= 1): position = M
-    #   from the parser; key + version copied from the thread parent
-    #   when that parent is a cover letter already in the DB.
-    # Otherwise (prose, replies, solo `[PATCH]`, `[GIT PULL]` etc.)
-    # all three columns stay NULL.
-    series_key_val: str | None = None
-    series_version: str | None = None
-    series_position: int | None = None
-    cover = parse_cover_letter(parsed.subject)
-    if cover is not None:
-        series_key_val = series_key(cover.title, parsed.author)
-        series_version = cover.version
-        series_position = 0
-    else:
-        in_series = parse_in_series_patch_subject(parsed.subject)
-        if in_series is not None:
-            series_position = in_series.position
-            if session is not None and thread_parent is not None:
-                # Direct-reply linkage is the modal `git send-email
-                # --thread` shape. Two-step lookup: same-batch
-                # pending Articles via `session.new` (we don't
-                # autoflush; an already-added cover in this batch
-                # isn't visible to SELECT yet), then SQL for already-
-                # committed parents. Skip when the parent has no key
-                # (orphan parent, or this thread isn't series-shaped
-                # after all); backfill closes the gap later.
-                pending_key = pending_version = None
-                for obj in session.new:
-                    if (
-                        isinstance(obj, Article)
-                        and obj.message_id == thread_parent
-                        and obj.patch_series_key is not None
-                    ):
-                        pending_key = obj.patch_series_key
-                        pending_version = obj.patch_series_version
-                        break
-                if pending_key is not None:
-                    series_key_val = pending_key
-                    series_version = pending_version
-                else:
-                    row = session.execute(
-                        select(
-                            Article.patch_series_key,
-                            Article.patch_series_version,
-                        ).where(
-                            Article.message_id == thread_parent,
-                            Article.patch_series_key.isnot(None),
-                        )
-                    ).one_or_none()
-                    if row is not None:
-                        series_key_val = row.patch_series_key
-                        series_version = row.patch_series_version
-    return Article(
-        message_id=parsed.message_id,
-        subject=parsed.subject,
-        author=parsed.author,
-        date=date,
-        thread_parent=thread_parent,
-        subject_normalized=normalize_subject(parsed.subject),
-        canonical_inbox_id=canonical_inbox_id,
-        patch_series_key=series_key_val,
-        patch_series_version=series_version,
-        patch_series_position=series_position,
-        lists=[ArticleList(inbox_id=inbox_id, epoch=epoch, commit_sha=commit_sha)],
-        files=[ArticleFile(path=p) for p in sorted(touched_paths)],
-        trailers=trailer_rows,
-    )
-
-
 def _to_article_insert(
     parsed: ParsedArticle,
     inbox_id: int,
@@ -303,14 +192,14 @@ def _to_article_insert(
     """Build an `_ArticleInsert` record for a new article without touching
     the ORM session (except for the optional in-series patch-parent lookup).
 
-    Mirrors `_to_article` for the Phase 3b write path: same logic for
-    `thread_parent`, `subject_normalized`, and the patch-series identity
-    fields, but returns a plain dataclass rather than an ORM `Article`.
+    The one place a new article's `thread_parent`, `subject_normalized`,
+    patch-series identity, touched paths and trailers are derived, for
+    `ingest_epoch` and `.replay` alike (#755).
 
-    `session` is required only for in-series patch parent lookups (same
-    as `_to_article`). `pending_articles` is the current batch's list of
-    already-accumulated `_ArticleInsert` objects so the cover-letter in
-    the same batch can be found without a DB query.
+    `session` is required only for in-series patch parent lookups;
+    replay passes None and skips them. `pending_articles` is the
+    current batch's list of already-accumulated `_ArticleInsert` objects
+    so the cover-letter in the same batch can be found without a DB query.
     """
     from mimir.ingest._pending import _ArticleInsert
 
@@ -360,10 +249,9 @@ def _to_article_insert(
                         series_version = row.patch_series_version
 
     # Extract diff-touched paths and review-attestation trailers from
-    # the body. Mirrors the extraction in `_to_article` so the Phase 3b
-    # write path produces the same ArticleFile / ArticleTrailer rows.
-    # The actual DB inserts happen in `_submit_ingest_batch` step 1
-    # using the returned article id; we just carry the data here.
+    # the body. The inserts happen later (`_submit_ingest_batch` step 1
+    # for ingest, inline for replay) using the returned article id;
+    # we just carry the data here.
     touched_paths = sorted(extract_touched_paths(parsed.body))
     trailer_rows = [
         (role, name, address) for role, name, address in extract_trailers(parsed.body)
