@@ -11,6 +11,33 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.21.0] - 2026-10-18
+
+### Changed
+
+- More patch series are recognised (#711). Measured on production on
+  2026-10-18 with this rule, counting articles with no series position:
+  651,247 subjects with a list tag before the PATCH bracket (`[U-Boot]
+  [PATCH 0/3] title`, 347 distinct tags, led by `[U-Boot]`,
+  `[Qemu-devel]` and `[Buildroot]`), and 119,684 brackets without a
+  PATCH token (`[RFC 0/6]`, `[net-next v7 02/10]`, `[v2 0/1]`), slightly
+  fewer with the position check below. For a list-tagged subject the
+  second bracket decides and the series title, and so the series key,
+  excludes the tag. A bracket without PATCH counts only with an `N/M`
+  whose position does not exceed its total (so a date like `[report
+  2024/11]` is out), another word, no PULL or ANNOUNCE and no colon,
+  which keeps out build-robot reports (`[linux-next:master 1000/2056]`),
+  pull requests and a bare `[0/1]`. The PATCH token is now matched in
+  any case (`[patch #1/11]`). Cover letters and in-series patches share
+  one predicate for all of this. Existing rows are not touched by the
+  deploy: run `backfill-patch-series --reprocess` afterwards. It walks
+  every article, and only one session may drive it at a time (#745).
+- The patch-state card on a message page follows the same rule, so a
+  list-tagged solo patch (`[U-Boot] [PATCH] fix`) now gets one too. It
+  used its own check for solo patches, which only read the first
+  bracket. A subject that is only a PATCH bracket with no title
+  (`[PATCH]`) no longer gets a card (#711).
+
 ## [3.20.0] - 2026-10-18
 
 ### Added
@@ -614,8 +641,8 @@ changes, not internal refactors. Categories: **Added**,
 ### Removed
 
 - The unused systemd deployment path under `deploy/systemd/`.
-  Production runs podman quadlets from `ansible-eelco`; these units
-  documented an arrangement nothing used, and kept a second,
+  Production runs podman quadlets from its own deployment config;
+  these units documented an arrangement nothing used, and kept a second,
   diverging description of the deploy alongside the real one.
   (#558)
 
