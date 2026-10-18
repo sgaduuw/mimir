@@ -78,8 +78,14 @@ Check broker logs for `backfill complete` and `remaining=0`, or investigate
 `backfill incomplete`.
 
 ```sh
-docker compose exec mimir-broker mimir broker-ping --socket /data/.broker.sock
+docker compose exec mimir-broker mimir-broker-ping --socket /data/.broker.sock
 ```
+
+`mimir-broker-ping` is the broker health check in the example Compose file.
+It does not load the application, so it stays fast on a busy host.
+`mimir broker-ping` gives the same answer but loads the whole application
+first, which can take longer than the check's timeout under load. If your
+own Compose file still calls `mimir broker-ping`, change its `test:` line.
 
 Both other services wait for broker health. Allow the startup health-check
 budget to cover migrations and backfills on your actual dataset. The socket
@@ -151,6 +157,76 @@ Ensure intervening proxies forward it. Without that setup `country` remains `nul
 content length is known. Logging does not read streamed bodies or measure
 bytes actually delivered, and downstream compression can change wire size.
 Requests served entirely by a CDN cache do not reach this access log.
+
+## Crawler budgets
+
+One crawler can take most of the web tier, and a CDN limit cannot single it
+out: it counts per client IP, and a crawl spread over thousands of IPs stays
+under any limit that would not also hit readers. The web tier can instead
+answer `429` with `Retry-After` and `Cache-Control: no-store` to a crawler
+over its budget, with no database or render work. It is off by default.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CRAWLER_BUDGET_PER_MINUTE` | `0` | Requests per minute for all configured crawlers combined; `0` turns the whole gate off |
+| `CRAWLER_UA_BUDGETS` | `{}` (defaults below) | JSON map of crawler name to a percentage (1 to 100) of the global budget, merged over the defaults; `0` drops a default |
+| `CRAWLER_DEFAULT_UA_PCT` | `10` | Share for a recognised crawler with no entry in `CRAWLER_UA_BUDGETS` |
+| `CRAWLER_UNLISTED_POOL_PCT` | `30` | Percentage of the global budget that all unlisted crawlers share between them, on top of their own share |
+| `CRAWLER_UA_MARKERS` | `["bot", "crawler", "spider", "curl", "wget", "python-requests"]` | JSON array; a product token ending in one of these plus a slash marks a crawler |
+| `CRAWLER_RETRY_AFTER_SEC` | `120` | Seconds sent in `Retry-After` |
+
+The defaults are the heavy known crawlers that name themselves in the
+User-Agent, each at 10%: Applebot, Bytespider, PetalBot, meta-externalagent,
+facebookexternalhit, Slurp, msnbot and Baiduspider. `CRAWLER_UA_BUDGETS` is
+merged over them, not a replacement: `CRAWLER_UA_BUDGETS='{"Applebot": 50}'`
+changes only Applebot, and `{"Bytespider": 0}` drops Bytespider. New keys are
+added after the defaults, and an overridden default keeps its position. Each
+key is a plain case-insensitive substring of the `User-Agent` header, first
+match in that order wins, so pick distinctive names. Blank keys, and keys
+equal to a marker (`bot` would match the `CUBOT` browser), are refused at
+startup. With a global budget of 120 a minute, `{"Applebot": 10}` gives
+Applebot 12 a minute. A request needs a token in every bucket it draws on; a
+refused request spends none.
+
+A crawler you did not list is still recognised by a product token: a name
+ending in a marker, followed by a slash, such as `Googlebot/2.1`,
+`bingbot/2.0`, `GPTBot/1.0`, `AhrefsBot/7.0` or `curl/8.5.0`. A token that is
+just a marker (`bot/1.0`) counts too. It gets the default share, so **with the
+global budget set, every recognised crawler is held to 10% unless you give it
+its own percentage**, Googlebot and Bingbot included. The slash is required,
+so a browser on a device called `CUBOT X30` is never gated. Unlisted crawlers
+also share one pool at `CRAWLER_UNLISTED_POOL_PCT` of the global budget
+(default 30%), so invented names cannot together starve real crawlers; listed
+crawlers never draw on the pool. The flip side: unlisted real crawlers
+(Googlebot, Bingbot, GPTBot) share that pool with any flood of invented names,
+so list a crawler to protect it from a flood. Each unlisted crawler has its
+own bucket, keyed by its lowercased token; at most 256 are held, idle ones are
+dropped after ten minutes, and past 256 new names share one overflow bucket at
+the default share. Never gated: robots, sitemaps, `/healthz`, `/readyz`,
+static files, and requests that are not a recognised crawler.
+
+The default markers include `curl`, `wget` and `python-requests`, so your own
+scripts and smoke checks that use those tools count as a crawler once the
+global budget is set. Give them their own percentage in `CRAWLER_UA_BUDGETS`
+(for example `{"curl": 20}`) or send a different `User-Agent`.
+
+Buckets live in each gunicorn worker, so each refills at the budget divided by
+`WORKERS` (mimir reads the same `WORKERS` that sets `--workers`): global 120
+with 8 workers and Applebot at 10% is 12 a minute overall, 1.5 a minute per
+worker. A bucket holds ten seconds of its rate, or one token if that is more.
+In any window the workers together admit at most that window's share of the
+budget plus ten seconds' worth, so a worker can burst ten seconds' worth at
+start or after an idle spell. They admit less when a crawler's requests land
+unevenly on the workers.
+
+To pick a budget, measure the crawler's request rate in the access log first
+(its `ua` field), then set the global budget to about a third of the combined
+crawler rate and give each crawler a percentage of it (Applebot at about 9,000
+an hour, 150 a minute, is a global 50 with Applebot at 100, or a global 100
+with Applebot at 50). Watch its request rate and the `crawler budget:`
+warnings (logger `mimir.web.crawler_budget`, at most one line a minute per
+bucket per worker, with the deferred count) and adjust. Crawlers slow down on
+`429`, so the rate should settle near the budget.
 
 ## Reverse proxy
 

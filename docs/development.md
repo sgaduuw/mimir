@@ -21,8 +21,8 @@ resolve consistently. The source web server is for local development; use
 ## Run checks
 
 ```sh
-uv run ruff check mimir/ tests/
-uv run ruff format --check mimir/ tests/
+uv run ruff check mimir/ tests/ mimir_broker_ping.py
+uv run ruff format --check mimir/ tests/ mimir_broker_ping.py
 uv run pytest
 ```
 

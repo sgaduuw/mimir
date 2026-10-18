@@ -1,6 +1,6 @@
 [project]
 name = "mimir"
-version = "3.19.0"
+version = "3.20.0"
 description = "toy project for reading lkml"
 authors = [{name = "Eelco Wesemann", email = "6771014+sgaduuw@users.noreply.github.com"}]
 license = "MIT"
@@ -21,6 +21,9 @@ dependencies = [
 # Standalone CLI entry point (#221). Same backing as
 # `flask --app mimir <cmd>` via `FlaskGroup`; both stay supported.
 mimir = "mimir.cli:mimir"
+# The broker healthcheck (#758). A top-level module, so it skips the
+# app import that `mimir/__init__.py` triggers.
+mimir-broker-ping = "mimir_broker_ping:main"
 
 [dependency-groups]
 dev = [
@@ -45,9 +48,9 @@ dev = [
 # file carried two contradictory accounts and a reader met the wrong one
 # first.
 # SATISFIED TODAY. A `select` entry is a gate, not an aspiration: CI
-# runs `ruff check mimir/ tests/` unscoped, so a rule enabled with
-# findings outstanding is simply a red build. Groups below are enabled
-# because the tree is clean under them right now.
+# runs `ruff check mimir/ tests/ mimir_broker_ping.py` unscoped, so a
+# rule enabled with findings outstanding is simply a red build. Groups
+# below are enabled because the tree is clean under them right now.
 select = [
     "E4",
     "E7",
@@ -114,4 +117,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["mimir"]
+only-include = ["mimir", "mimir_broker_ping.py"]

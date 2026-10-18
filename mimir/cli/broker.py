@@ -4,17 +4,17 @@
 SIGTERM/SIGINT). Wired into the scheduler-sidecar compose service
 in production; locally, run by hand for an end-to-end smoke test.
 
-`broker-ping` is the compose healthcheck command: open the socket,
-send `{"op":"ping"}`, exit 0 on `{"ok":true}` or non-zero on
-anything else.
+`broker-ping` probes a running broker: exit 0 on an `ok` reply, 1 on
+anything else. It delegates to the stdlib-only `mimir_broker_ping`,
+which the compose healthcheck calls directly as `mimir-broker-ping`
+so it skips this package's import (#758).
 """
 
 from pathlib import Path
 
 import click
 
-from mimir.broker.client import BrokerClient, BrokerUnavailable
-from mimir.broker.protocol import PingRequest
+import mimir_broker_ping
 from mimir.broker.server import serve
 from mimir.cli._common import _configure_logging
 
@@ -56,13 +56,5 @@ def broker_command(socket_path: Path, verbose: int) -> None:
 )
 def broker_ping_command(socket_path: Path) -> None:
     """Probe a running broker. Exits 0 on success, 1 otherwise.
-    Used as the compose healthcheck for `mimir-broker`."""
-    client = BrokerClient(socket_path)
-    try:
-        client.call(PingRequest())
-    except BrokerUnavailable as exc:
-        click.echo(f"broker ping failed: {exc}", err=True)
-        raise SystemExit(1)
-    finally:
-        client.close()
-    click.echo("ok")
+    The healthcheck uses `mimir-broker-ping`, which skips the app import."""
+    raise SystemExit(mimir_broker_ping.main(["--socket", str(socket_path)]))

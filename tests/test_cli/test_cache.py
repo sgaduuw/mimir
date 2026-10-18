@@ -1023,3 +1023,80 @@ def test_build_slow_inbox_targets_excludes_subsystem_dashboards(seeded_db):
     assert not any("subsystem dashboards" in label for label in labels), (
         f"subsystem-dashboards label still present in slow inbox targets: {labels}"
     )
+
+
+def _add_late_inboxes(seeded_db):
+    """Two inboxes that sort after the seeded `alpha` and `beta`, so a
+    pinned order can only come from `pinned_inboxes`, not the name."""
+    from mimir.inboxes import refresh_inbox_names
+    from mimir.models import Inbox
+
+    with seeded_db() as s:
+        for name in ("yy-pin", "zz-pin"):
+            s.add(Inbox(name=name, mirror_path="/x", upstream_url=f"https://x/{name}"))
+        s.commit()
+    refresh_inbox_names()
+
+
+def _warm_order(monkeypatch) -> list[str]:
+    """The inbox order `warm-cache` submits warm_inbox RPCs in, with one
+    CLI worker so submission order is the capture order."""
+    from mimir.broker import client as _client_module
+    from mimir.cli.cache import warm_cache_command
+
+    captured: list[str] = []
+
+    class FakeClient(_FakeBrokerClient):
+        def warm_inbox(self, inbox_name, **kwargs):
+            captured.append(inbox_name)
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
+
+        def warm_global(self, **kwargs):
+            return {"warmed": [], "errors": [], "elapsed_ms": 0}
+
+    monkeypatch.setattr(_client_module, "get_broker_client", lambda: FakeClient())
+    result = CliRunner().invoke(
+        warm_cache_command, ["--tier", "fast", "--workers", "1"]
+    )
+    assert result.exit_code == 0, result.output
+    return captured
+
+
+def test_warm_cache_submits_pinned_inboxes_first(seeded_db, monkeypatch):
+    """Pinned inboxes are warmed first, in `pinned_inboxes` order (#763):
+    within a tier the broker's queue keeps submission order, so on a slow
+    cycle the most-read dashboards no longer wait behind every inbox that
+    sorts before them."""
+    from mimir.config import settings
+
+    _add_late_inboxes(seeded_db)
+    monkeypatch.setattr(settings, "pinned_inboxes", ["zz-pin", "yy-pin"])
+    order = _warm_order(monkeypatch)
+    assert set(order) >= {"alpha", "beta", "yy-pin", "zz-pin"}
+    assert order[:2] == ["zz-pin", "yy-pin"]
+    assert order[2:] == sorted(order[2:])
+
+
+def test_warm_cache_order_unchanged_without_pins(seeded_db, monkeypatch):
+    from mimir.config import settings
+
+    _add_late_inboxes(seeded_db)
+    monkeypatch.setattr(settings, "pinned_inboxes", [])
+    order = _warm_order(monkeypatch)
+    assert len(order) >= 4
+    assert order == sorted(order)
+
+
+def test_warm_cache_and_front_page_share_one_order(seeded_db, monkeypatch, client):
+    """`pinned` means the same thing on the front page and in warm-cache:
+    both come from `mimir.inboxes.pinned_first`."""
+    import re
+
+    from mimir.config import settings
+
+    _add_late_inboxes(seeded_db)
+    monkeypatch.setattr(settings, "pinned_inboxes", ["zz-pin", "yy-pin"])
+    page = client.get("/").get_data(as_text=True)
+    cards = re.findall(r'<a class="inbox-card"[^>]*href="/([^/"]+)/"', page)
+    assert cards[:2] == ["zz-pin", "yy-pin"]
+    assert cards == _warm_order(monkeypatch)
