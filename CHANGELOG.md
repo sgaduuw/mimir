@@ -11,6 +11,23 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- `/merge-window` lists the pull requests sent to Linus: `[GIT PULL]`
+  messages with Linus in To or Cc, newest first, each marked merged or
+  pending. They count from Linus's latest tag, or while the merge window is
+  open from the tag before the release (normally the last rc), so pull
+  requests sent in the last rc week are listed. Merged means the commit
+  named in the message ("up to <sha>") is in Linus's tree after that same
+  tag, or a pr-tracker-bot reply says it was merged (the bot replies once
+  the merge is in Linus's tree, which also covers a pull whose named commit
+  never appears there). The list comes first while the merge window is
+  open and after the queue otherwise. Measured on production on
+  2026-10-18 since `v7.3-rc7`: 106 `[GIT PULL]` messages, 57 to Linus, 46
+  naming a commit; reading them from git took 0.5 s, and one `git rev-list`
+  over 20,259 commits took 0.19 s. New pull requests move the page's ETag
+  without recomputing the queue (#703).
+
 ### Changed
 
 - The database now refuses a second inbox with the same list address
