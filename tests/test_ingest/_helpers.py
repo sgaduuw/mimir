@@ -26,6 +26,7 @@ def _rfc5322(
     to: str | None = None,
     cc: str | None = None,
     in_reply_to: str | None = None,
+    references: str | None = None,
 ) -> bytes:
     """Minimal valid RFC 5322 message. Optional To/Cc let canonical-
     inbox tests inject list addresses; `in_reply_to` builds a real
@@ -43,6 +44,8 @@ def _rfc5322(
         parts.append(b"Cc: " + cc.encode() + b"\r\n")
     if in_reply_to is not None:
         parts.append(b"In-Reply-To: <" + in_reply_to.encode() + b">\r\n")
+    if references is not None:
+        parts.append(b"References: <" + references.encode() + b">\r\n")
     parts.extend(
         [
             b"Subject: t\r\n",
