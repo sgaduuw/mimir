@@ -1857,8 +1857,8 @@ unaffected, because `mimir-analyze.timer` fired on its own absolute
 schedule via systemd's persistent-timer semantics and so had no
 equivalent restart-resets-clock bug. **3.9.0 deleted
 `deploy/systemd/` (#558)**: production runs podman quadlets from
-`ansible-eelco`, and those units described an arrangement nothing
-used while keeping a second, diverging description of the deploy
+the operator's own deployment config, and those units described an
+arrangement nothing used while keeping a second, diverging description of the deploy
 alongside the real one. So the sentinel mechanism above is not one
 of two scheduling paths any more, it is the only one, and the
 restart-resets-clock bug it fixes has no counterexample left in the
