@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.20.0] - 2026-10-18
+
 ### Added
 
 - A crawler budget in the web tier: a crawler over its budget gets `429
