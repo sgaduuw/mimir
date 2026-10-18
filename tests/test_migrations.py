@@ -12,6 +12,7 @@ against them, rather than reasoning about what alembic would do.
 """
 
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -24,6 +25,8 @@ PREV_REVISION = "e3aa78c72a8d"
 THREAD_ROOT_REVISION = "1072ad1fae96"
 TREE_KEY_REVISION = "13b7f3111e00"
 BACKFILL_RUNS_REVISION = "11e653c445d0"
+WALKED_COUNTS_REVISION = "1496642cb923"
+LIST_ADDRESS_REVISION = "9b2878b4f911"
 
 
 def _alembic(
@@ -447,3 +450,146 @@ def test_backfill_runs_downgrade_drops_the_table(tmp_path):
         ).fetchone()
     finally:
         conn.close()
+
+
+# Unique inboxes.list_address (#658).
+
+
+def _add_inbox(
+    db: Path, name: str, address: str | None
+) -> sqlite3.IntegrityError | None:
+    """Raw insert, so `_check_list_address_free` is bypassed and only the
+    schema can refuse the row."""
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "INSERT INTO inboxes(name,mirror_path,upstream_url,list_address) "
+            "VALUES (?,'/m','u',?)",
+            (name, address),
+        )
+        conn.commit()
+        return None
+    except sqlite3.IntegrityError as exc:
+        return exc
+    finally:
+        conn.close()
+
+
+def _list_address_index(db: Path) -> tuple[int, int] | None:
+    """`(unique, partial)` flags of `ix_inboxes_list_address`, or None."""
+    conn = sqlite3.connect(db)
+    try:
+        for _seq, name, unique, _origin, partial in conn.execute(
+            "PRAGMA index_list(inboxes)"
+        ):
+            if name == "ix_inboxes_list_address":
+                return unique, partial
+        return None
+    finally:
+        conn.close()
+
+
+def _revision(db: Path) -> str:
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_list_address_upgrade_refuses_a_second_holder_but_not_null(tmp_path):
+    db = tmp_path / "la.db"
+    assert _alembic(db, WALKED_COUNTS_REVISION).returncode == 0
+    assert _list_address_index(db) == (0, 0)
+
+    result = _alembic(db, LIST_ADDRESS_REVISION)
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert _list_address_index(db) == (1, 1)
+
+    assert _add_inbox(db, "lkml", "lkml@lists.example") is None
+    refused = _add_inbox(db, "lkml-copy", "lkml@lists.example")
+    assert refused is not None
+    assert "inboxes.list_address" in str(refused), str(refused)
+    # NULL means "not detected yet", which any number of inboxes share.
+    assert _add_inbox(db, "new-a", None) is None
+    assert _add_inbox(db, "new-b", None) is None
+
+
+def test_list_address_upgrade_names_duplicates_and_changes_nothing(tmp_path):
+    """A broker start must fail with the addresses to fix, not a bare
+    IntegrityError, and leave the schema where it was."""
+    db = tmp_path / "la.db"
+    assert _alembic(db, WALKED_COUNTS_REVISION).returncode == 0
+    for name, address in [
+        ("lkml-two", "dup@lists.example"),
+        ("lkml-one", "dup@lists.example"),
+        ("solo", "solo@lists.example"),
+        ("unset-a", None),
+        ("unset-b", None),
+    ]:
+        assert _add_inbox(db, name, address) is None
+
+    result = _alembic(db, LIST_ADDRESS_REVISION)
+    assert result.returncode != 0, "upgrade should refuse duplicates"
+    held = dict(re.findall(r"^  (\S+) is held by (.+)$", result.stderr, re.MULTILINE))
+    assert held == {"dup@lists.example": "lkml-one, lkml-two"}, result.stderr[-2000:]
+
+    assert _revision(db) == WALKED_COUNTS_REVISION
+    assert _list_address_index(db) == (0, 0)
+
+
+def test_list_address_upgrade_completes_after_an_interrupted_run(tmp_path):
+    """Killed between dropping the plain index and creating the unique
+    one: SQLite runs this DDL outside a transaction, so the restart sees
+    no index at the old revision and must not die on the drop."""
+    db = tmp_path / "la.db"
+    assert _alembic(db, WALKED_COUNTS_REVISION).returncode == 0
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("DROP INDEX ix_inboxes_list_address")
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = _alembic(db, LIST_ADDRESS_REVISION)
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert _list_address_index(db) == (1, 1)
+
+
+def test_list_address_downgrade_restores_the_plain_index(tmp_path):
+    db = tmp_path / "la.db"
+    assert _alembic(db, LIST_ADDRESS_REVISION).returncode == 0
+
+    result = _alembic(db, WALKED_COUNTS_REVISION, command="downgrade")
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert _list_address_index(db) == (0, 0)
+    assert _add_inbox(db, "lkml", "lkml@lists.example") is None
+    assert _add_inbox(db, "lkml-copy", "lkml@lists.example") is None
+
+
+def test_list_address_index_in_the_model_matches_the_migration(tmp_path):
+    """`init-db` builds the schema from the model and the broker from
+    migrations, so both must produce the same index."""
+    import sqlalchemy
+
+    import mimir.models  # noqa: F401  (registers the tables on Base)
+    from mimir.extensions import Base
+
+    migrated = tmp_path / "migrated.db"
+    assert _alembic(migrated, LIST_ADDRESS_REVISION).returncode == 0
+    modelled = tmp_path / "modelled.db"
+    engine = sqlalchemy.create_engine(f"sqlite:///{modelled}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
+
+    def index_sql(db: Path) -> str:
+        conn = sqlite3.connect(db)
+        try:
+            return conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='ix_inboxes_list_address'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    assert _list_address_index(modelled) == (1, 1)
+    assert index_sql(modelled) == index_sql(migrated)
