@@ -22,7 +22,8 @@ message bodies and attachments from the mirrors when you open them.
   compare patch revisions, and inspect text attachments.
 - **Follow development.** See active threads, patch review activity,
   subsystem ownership from MAINTAINERS, links to tracked Git commits, and
-  what linux-next holds for the next merge window, by subsystem.
+  what linux-next holds for the next merge window, by subsystem, with the
+  pull requests sent to Linus and whether they are merged.
 - **Archive several lists.** Cross-posted messages share an index entry,
   while each list keeps its own thread view. Updates are incremental.
 - **Make the archive discoverable.** Atom feeds, sitemaps, stable message

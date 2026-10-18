@@ -13,7 +13,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from mimir.merge_window import MERGE_WINDOW_PATH, NO_SUBSYSTEM, linus_tag, merge_window
+from mimir.merge_window import (
+    MERGE_WINDOW_PATH,
+    NO_SUBSYSTEM,
+    linus_tag,
+    merge_window,
+    version_tags,
+)
 from mimir.models import (
     Article,
     ArticleFile,
@@ -338,6 +344,17 @@ def test_linus_tag_is_the_highest_version(tmp_path):
         tmp_path, ["v7.2", "v7.3-rc4", "v7.3-rc10", "v7.10-rc1", "v2.6.39", "junk"]
     )
     assert linus_tag(path) == "v7.10-rc1"
+
+
+def test_version_tags_lowest_first(tmp_path):
+    """Numeric order, each release after its rcs, so the tag before a
+    release is its last rc (the pull request anchor while the window is
+    open, #703)."""
+    path = _tagged_repo(
+        tmp_path, ["v7.3", "v7.3-rc10", "v7.2", "v7.3-rc9", "v2.6.39", "junk"]
+    )
+    assert version_tags(path) == ["v2.6.39", "v7.2", "v7.3-rc9", "v7.3-rc10", "v7.3"]
+    assert version_tags(tmp_path / "absent.git") == []
 
 
 def test_linus_tag_release_beats_its_candidates(tmp_path):

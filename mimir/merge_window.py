@@ -418,20 +418,26 @@ def _window(tag: str | None) -> dict:
 
 
 def linus_tag(path: Path | None) -> str | None:
-    """The highest version tag in Linus's mirror, which is where his
-    tree is: he tags his own HEAD. Read from the refs, so it costs
-    nothing; `git describe` would walk history, and dulwich's walk is
-    pure Python over a 1.5M-commit tree. None when the mirror is
-    missing or has no version tags."""
+    """The highest version tag in Linus's mirror, which is where that
+    tree is: Linus tags HEAD. None when the mirror is missing or has no
+    version tags."""
+    tags = version_tags(path)
+    return tags[-1] if tags else None
+
+
+def version_tags(path: Path | None) -> list[str]:
+    """Release and release-candidate tags in Linus's mirror, lowest
+    version first. Read from the refs, so it costs nothing; `git
+    describe` would walk history, and dulwich's walk is pure Python
+    over a 1.5M-commit tree. Empty when the mirror is missing."""
     if path is None:
-        return None
+        return []
     try:
         with Repo(str(path)) as repo:
             names = repo.refs.as_dict(b"refs/tags").keys()
     except NotGitRepository, OSError:
-        return None
-    best: tuple | None = None
-    best_name = None
+        return []
+    ranked = []
     for raw in names:
         name = raw.decode("utf-8", errors="replace")
         m = _VERSION_TAG_RE.match(name)
@@ -442,6 +448,5 @@ def linus_tag(path: Path | None) -> str | None:
             tuple(int(p) for p in m.group(1).split(".")),
             int(m.group(2)) if m.group(2) else float("inf"),
         )
-        if best is None or rank > best:
-            best, best_name = rank, name
-    return best_name
+        ranked.append((rank, name))
+    return [name for _, name in sorted(ranked)]
