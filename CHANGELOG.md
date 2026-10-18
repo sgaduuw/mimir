@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.21.0] - 2026-10-18
+
 ### Changed
 
 - More patch series are recognised (#711). Measured on production on
