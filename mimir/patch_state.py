@@ -45,8 +45,7 @@ from mimir.models import (
     MainlineCommit,
     SubsystemMaintainer,
 )
-from mimir.patch_revisions import parse_in_series_patch_subject
-from mimir.patch_series import parse_cover_letter
+from mimir.patch_revisions import patch_bracket
 from mimir.trailers import INDEXED_TRAILER_ROLES
 from mimir.web.urls import _canonical_url_for, _series_diff_url
 
@@ -114,26 +113,12 @@ PATCH_STATE_CACHE_TTL_SEC = 300
 
 
 def _is_patch_subject(subject: str | None) -> bool:
-    """True when the subject reads as a `[PATCH ...]` shape (cover
-    letter, in-series patch, or solo `[PATCH] foo`). False for
-    replies, prose, and `[GIT PULL]`/`[ANNOUNCE]` brackets."""
-    if not subject:
-        return False
-    if parse_cover_letter(subject) is not None:
-        return True
-    if parse_in_series_patch_subject(subject) is not None:
-        return True
-    # Solo patch: `[PATCH] title` or `[PATCH v2] title`. Neither
-    # parser matches (both require N/M); a cheap startswith check
-    # plus the PATCH-token guard is enough.
-    stripped = subject.strip()
-    if not stripped.startswith("["):
-        return False
-    close = stripped.find("]")
-    if close == -1:
-        return False
-    inside = stripped[1:close]
-    return "PATCH" in inside.upper().split()
+    """True when the subject is a patch: a cover letter, an in-series
+    patch or a solo `[PATCH] foo`, list-tagged or not. `patch_bracket`
+    decides, the same predicate both series parsers use (#711), so the
+    state card cannot disagree with them. False for replies, prose,
+    `[GIT PULL]`, `[ANNOUNCE]` and `[RFC]` without a numbered bracket."""
+    return bool(subject) and patch_bracket(subject) is not None
 
 
 def _trailer_roll_up(

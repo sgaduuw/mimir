@@ -30,6 +30,11 @@ changes, not internal refactors. Categories: **Added**,
   one predicate for all of this. Existing rows are not touched by the
   deploy: run `backfill-patch-series --reprocess` afterwards. It walks
   every article, and only one session may drive it at a time (#745).
+- The patch-state card on a message page follows the same rule, so a
+  list-tagged solo patch (`[U-Boot] [PATCH] fix`) now gets one too. It
+  used its own check for solo patches, which only read the first
+  bracket. A subject that is only a PATCH bracket with no title
+  (`[PATCH]`) no longer gets a card (#711).
 
 ## [3.20.0] - 2026-10-18
 
