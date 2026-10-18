@@ -35,7 +35,12 @@ from mimir.rendering import render_body
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.trailers import REVIEW_TRAILER_ROLES
 from mimir.web._blueprint import bp_web
-from mimir.web.urls import _msg_url, _thread_view_url, is_addressable_reviewer_address
+from mimir.web.urls import (
+    _msg_path,
+    _msg_url,
+    _thread_view_url,
+    is_addressable_reviewer_address,
+)
 
 bp_web.add_app_template_filter(
     is_addressable_reviewer_address, "is_addressable_reviewer"
@@ -226,6 +231,10 @@ def _redact_trailer_address(email: str) -> str:
 
 
 bp_web.add_app_template_filter(_msg_url, "msg_url")
+# `msg_path(article_id, date, inbox_name)` for templates that hold rows
+# rather than Articles; the same function as `msg_url`, so no template
+# spells a message path by hand (#768).
+bp_web.add_app_template_global(_msg_path, "msg_path")
 bp_web.add_app_template_filter(_is_previewable, "is_previewable")
 
 # `thread_url`: listings link the subject to the message page and the
