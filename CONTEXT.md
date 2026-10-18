@@ -1936,6 +1936,16 @@ matching article" (the original `recent_articles_in_subsystem`
 shape). EXISTS for "give me the top N matching articles by some
 order" (the triage queues).
 
+The date-index walk is the wrong shape for a small list: nearly
+every row in the window belongs to another list, so one page costs
+the whole archive's window (#775). Below `INBOX_FIRST_BELOW_ARTICLES`
+the triage queues instead seek the inbox's own `article_lists` rows
+and fetch each article by primary key (`_triage_sql`, one builder for
+both shapes). The size comes from the cached `archive_stats` row and
+is never computed on the request; no row counts as small. The
+constant's comment carries the measurements. Plan pinned in
+`test_inbox_first_plan_drives_from_the_inbox_index`.
+
 ## tz-aware UTC normalization for `Date:` headers
 
 `email.utils.parsedate_to_datetime` returns a tz-naive `datetime`
