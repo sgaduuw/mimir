@@ -614,8 +614,8 @@ changes, not internal refactors. Categories: **Added**,
 ### Removed
 
 - The unused systemd deployment path under `deploy/systemd/`.
-  Production runs podman quadlets from `ansible-eelco`; these units
-  documented an arrangement nothing used, and kept a second,
+  Production runs podman quadlets from its own deployment config;
+  these units documented an arrangement nothing used, and kept a second,
   diverging description of the deploy alongside the real one.
   (#558)
 

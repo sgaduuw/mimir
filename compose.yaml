@@ -119,8 +119,8 @@ services:
       # "backfill incomplete" rather than raising this number.
       #
       # THIS FILE IS NOT THE PRODUCTION DEPLOY. Production runs podman
-      # quadlets managed from `ansible-eelco`, where the equivalent
-      # budget is the unit's `TimeoutStartSec` (the container is
+      # quadlets from the operator's own deployment config, where the
+      # equivalent budget is the unit's `TimeoutStartSec` (the container is
       # `Type=notify` with `Notify=healthy`, so systemd waits on this
       # same healthcheck but bounds it with its own timeout). Raising
       # the number here does nothing for production; the binding value
