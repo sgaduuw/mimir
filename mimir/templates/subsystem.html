@@ -113,7 +113,7 @@
     <li>
       {%- set status = lifecycle_status_by_id.get(p.article_id) if lifecycle_status_by_id else None -%}
       {% include "_lifecycle_badges.html" %}
-      <a href="/{{ p.inbox_name }}/{{ p.date.year }}/{{ '%02d' % p.date.month }}/{{ p.article_id }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
+      <a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
       <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
         &middot; {{ p.author|safe_from }}</small>
     </li>
@@ -135,7 +135,7 @@
     <li>
       {%- set status = lifecycle_status_by_id.get(p.article_id) if lifecycle_status_by_id else None -%}
       {% include "_lifecycle_badges.html" %}
-      <a href="/{{ p.inbox_name }}/{{ p.date.year }}/{{ '%02d' % p.date.month }}/{{ p.article_id }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
+      <a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
       {%- if p.series_more %} <small>+{{ p.series_more }} more in this series</small>{% endif %}
       <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
         &middot; {{ p.author|safe_from }}
@@ -154,7 +154,7 @@
     <li>
       {%- set status = lifecycle_status_by_id.get(p.article_id) if lifecycle_status_by_id else None -%}
       {% include "_lifecycle_badges.html" %}
-      <a href="/{{ p.inbox_name }}/{{ p.date.year }}/{{ '%02d' % p.date.month }}/{{ p.article_id }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
+      <a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
       {%- if p.series_more %} <small>+{{ p.series_more }} more in this series</small>{% endif %}
       <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
         &middot; {{ p.author|safe_from }}</small>
