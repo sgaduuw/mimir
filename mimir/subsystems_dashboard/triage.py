@@ -5,8 +5,10 @@ structurally different (NOT EXISTS predicates against article_trailers
 pickup exclusion is a triage-only concern.
 
 Both helpers ORDER BY `articles.date ASC` so the oldest concerning
-entries surface first; a maintainer scanning the triage queue cares
-about "what's been sitting longest", not "what's most recent." Both
+entries surface first, walking either `ix_articles_date` (big inboxes)
+or the inbox's own `article_lists` rows (the rest), see `_triage_sql`;
+a maintainer scanning the triage queue cares about "what's been sitting
+longest", not "what's most recent." Both
 filter through the shared `_subsystem_path_filter_sql` UNION-of-seeks
 so the path-side cost is the same as the other per-subsystem
 helpers. Both cached for `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC` to
@@ -23,6 +25,7 @@ from sqlalchemy.sql.elements import TextClause
 
 from mimir import cache
 from mimir.config import settings
+from mimir.dashboard import cached_archive_total
 from mimir.datetime_utils import coerce_dt
 from mimir.models import (
     Article,
@@ -164,54 +167,65 @@ def _page_size(limit: int) -> int:
     return max(limit * 2, limit + 5)
 
 
-def _candidate_query_needs_attention(
-    inbox: Inbox,
-    subsystem: Subsystem,
-    cutoff_date: datetime,
-    limit: int,
-) -> tuple[str, dict] | None:
-    """SQL for needs-attention candidates (before the maintainer-Ack
-    post-filter). Returns `(sql, params)` or `None` when the
-    subsystem has no matchable paths.
+# Inboxes with at least this many articles (all time, `archive_stats`)
+# drive the triage query from `ix_articles_date`; smaller ones from
+# their own `article_lists` rows. Measured on production on 2026-10-18,
+# the same rows from both shapes, first page, in seconds
+# (date-first vs inbox-first): lkml (6.58M articles) 0.60 vs 5.58;
+# netdev (1.28M) 0.10 vs 1.58 on a dense subsystem; u-boot (634k)
+# 14.02 vs 0.49; linux-fsdevel (368k) 13.7 vs 0.35; alsa-devel (284k)
+# 14.06 vs 0.28. The split falls between u-boot and netdev, so 1M. A
+# sparse netdev subsystem still takes the slow date-first walk (14.09
+# vs 1.72); that is the cost of choosing per inbox, not per subsystem.
+INBOX_FIRST_BELOW_ARTICLES = 1_000_000
 
-    Shape: walk `ix_articles_date` ASC over a bounded date range,
-    predicate-test per article, stop at a page of matches.
-    EXISTS-shaped path filter so the planner doesn't materialise
-    the full subsystem's article_id set before LIMIT. The
-    bounded date range (`min_date <= a.date <= cutoff_date`) is
-    load-bearing for the cold-miss latency: unbounded walks scan
-    the full date index back to the dawn of lkml (~6M rows),
-    bounded to the triage window it's a few hundred thousand.
+
+def _inbox_first(inbox: Inbox) -> bool:
+    """Whether to drive from the inbox's own rows. An unknown size
+    (no live `archive_stats` row) counts as small: inbox-first's worst
+    measured case (5.85 s, the biggest list) beats date-first's (14 s,
+    a small list)."""
+    total = cached_archive_total(inbox)
+    return total is None or total < INBOX_FIRST_BELOW_ARTICLES
+
+
+def _triage_sql(
+    *, inbox_first: bool, path_predicate: str, engagement_predicates: str
+) -> str:
+    """The one candidate SELECT behind both lists and both driving
+    shapes, so the predicates cannot drift apart.
+
+    Date-first walks `ix_articles_date` ASC over the bounded window
+    across every list and tests inbox membership per row. Inbox-first
+    seeks this inbox's `article_lists` rows and fetches each article by
+    primary key, so a small list does not pay for the whole archive's
+    window. Both end in `ORDER BY a.date, a.id` with the same keyset
+    bind; the inbox-first sort covers only rows that survive the WHERE.
     """
-    path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="na")
-    if path_filter is None:
-        return None
-    path_predicate, path_params = path_filter
-    review_roles = {f"review_role_{i}": r for i, r in enumerate(REVIEW_TRAILER_ROLES)}
-    review_role_params = ", ".join(f":{name}" for name in review_roles)
-    sql = f"""
+    if inbox_first:
+        source = (
+            "article_lists al_in INDEXED BY ix_article_lists_inbox_id\n"
+            "        CROSS JOIN articles a ON a.id = al_in.article_id"
+        )
+        in_inbox = "al_in.inbox_id = :inbox_id"
+    else:
+        source = "articles a"
+        in_inbox = """EXISTS (
+              SELECT 1 FROM article_lists al
+              WHERE al.article_id = a.id
+                AND al.inbox_id = :inbox_id
+          )"""
+    return f"""
         SELECT a.id AS article_id, a.message_id, a.subject,
                a.author, a.date AS art_date,
                a.patch_series_key, a.patch_series_version,
                {version_number_sql("a.patch_series_version")} AS series_rev
-        FROM articles a
+        FROM {source}
         WHERE a.date BETWEEN :min_date AND :cutoff_date
           AND NOT (a.date = :min_date AND a.id <= :after_id)
-          AND EXISTS (
-              SELECT 1 FROM article_lists al
-              WHERE al.article_id = a.id
-                AND al.inbox_id = :inbox_id
-          )
+          AND {in_inbox}
           AND {path_predicate}
-          AND EXISTS (
-              SELECT 1 FROM article_trailers t
-              WHERE t.article_id = a.id
-                AND t.role IN ({review_role_params})
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM mainline_commits mc
-              WHERE mc.message_id = a.message_id
-          )
+          {engagement_predicates}
           AND NOT EXISTS (
               SELECT 1 FROM articles later
               WHERE {newer_revision_sql("a", "later")}
@@ -219,6 +233,48 @@ def _candidate_query_needs_attention(
         ORDER BY a.date ASC, a.id ASC
         LIMIT :page
     """
+
+
+def _candidate_query_needs_attention(
+    inbox: Inbox,
+    subsystem: Subsystem,
+    cutoff_date: datetime,
+    limit: int,
+    *,
+    inbox_first: bool = False,
+) -> tuple[str, dict] | None:
+    """SQL for needs-attention candidates (before the maintainer-Ack
+    post-filter). Returns `(sql, params)` or `None` when the
+    subsystem has no matchable paths.
+
+    Shape: `_triage_sql`, date-first by default or inbox-first for a
+    small inbox (#775), ordered oldest first, stopping at a page of
+    matches. EXISTS-shaped path filter so the planner doesn't
+    materialise the full subsystem's article_id set before LIMIT. The
+    bounded date range (`min_date <= a.date <= cutoff_date`) is
+    load-bearing for the cold-miss latency: an unbounded date-first
+    walk scans the full date index back to the dawn of lkml (~6M
+    rows), bounded to the triage window it's a few hundred thousand.
+    """
+    path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="na")
+    if path_filter is None:
+        return None
+    path_predicate, path_params = path_filter
+    review_roles = {f"review_role_{i}": r for i, r in enumerate(REVIEW_TRAILER_ROLES)}
+    review_role_params = ", ".join(f":{name}" for name in review_roles)
+    sql = _triage_sql(
+        inbox_first=inbox_first,
+        path_predicate=path_predicate,
+        engagement_predicates=f"""AND EXISTS (
+              SELECT 1 FROM article_trailers t
+              WHERE t.article_id = a.id
+                AND t.role IN ({review_role_params})
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM mainline_commits mc
+              WHERE mc.message_id = a.message_id
+          )""",
+    )
     return sql, {
         "inbox_id": inbox.id,
         "cutoff_date": cutoff_date,
@@ -238,45 +294,29 @@ def _candidate_query_quiet(
     subsystem: Subsystem,
     cutoff_date: datetime,
     limit: int,
+    *,
+    inbox_first: bool = False,
 ) -> tuple[str, dict] | None:
     """SQL for the quiet list. Patches with no engagement: no
     trailers AND no replies, and no newer revision (the pill's
     superseded rule, #688). Returns `(sql, params)` or `None`.
-    Same walk-date-ASC + per-row EXISTS shape as
-    `_candidate_query_needs_attention`."""
+    Same `_triage_sql` shapes as `_candidate_query_needs_attention`."""
     path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="qt")
     if path_filter is None:
         return None
     path_predicate, path_params = path_filter
-    sql = f"""
-        SELECT a.id AS article_id, a.message_id, a.subject,
-               a.author, a.date AS art_date,
-               a.patch_series_key, a.patch_series_version,
-               {version_number_sql("a.patch_series_version")} AS series_rev
-        FROM articles a
-        WHERE a.date BETWEEN :min_date AND :cutoff_date
-          AND NOT (a.date = :min_date AND a.id <= :after_id)
-          AND EXISTS (
-              SELECT 1 FROM article_lists al
-              WHERE al.article_id = a.id
-                AND al.inbox_id = :inbox_id
-          )
-          AND {path_predicate}
-          AND NOT EXISTS (
+    sql = _triage_sql(
+        inbox_first=inbox_first,
+        path_predicate=path_predicate,
+        engagement_predicates="""AND NOT EXISTS (
               SELECT 1 FROM article_trailers t
               WHERE t.article_id = a.id
           )
           AND NOT EXISTS (
               SELECT 1 FROM articles child
               WHERE child.thread_parent = a.message_id
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM articles later
-              WHERE {newer_revision_sql("a", "later")}
-          )
-        ORDER BY a.date ASC, a.id ASC
-        LIMIT :page
-    """
+          )""",
+    )
     return sql, {
         "inbox_id": inbox.id,
         "cutoff_date": cutoff_date,
@@ -307,10 +347,7 @@ def _run_triage(
     subsystem: Subsystem,
     cutoff_date: datetime,
     limit: int,
-    build_query: Callable[
-        [Inbox, Subsystem, datetime, int],
-        tuple[str, dict] | None,
-    ],
+    build_query: Callable[..., tuple[str, dict] | None],
     *,
     drop_maintainer_acked: bool,
     include_trailer_summary: bool,
@@ -323,7 +360,9 @@ def _run_triage(
     row, the `representative_key` winner: a stored `vN` over `rfc` and
     `resend`, then the oldest (#686, #691), until `limit` rows are built
     or the candidates run out."""
-    built = build_query(inbox, subsystem, cutoff_date, limit)
+    built = build_query(
+        inbox, subsystem, cutoff_date, limit, inbox_first=_inbox_first(inbox)
+    )
     if built is None:
         return []
     sql, params = built

@@ -396,8 +396,8 @@ def test_quiet_oldest_first(seeded_db):
 
 
 def test_triage_queries_use_date_index_no_full_scans(seeded_db):
-    """Both triage queries must drive on `ix_articles_date` ASC
-    over a bounded date range (the BETWEEN literal), not
+    """The date-first shape (big inboxes, #775) must drive on
+    `ix_articles_date` ASC over a bounded date range (the BETWEEN literal), not
     materialise the full path-filtered article-id set first. The
     earlier `a.id IN (UNION-of-seeks)` shape ran 4-8 s cold on
     NETWORKING [GENERAL]; the EXISTS-shaped path filter + bounded
@@ -933,3 +933,151 @@ def test_replaced_row_keeps_date_order(seeded_db):
         s.commit()
         result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
     assert [p.message_id for p in result] == ["other@x", "v1@x"]
+
+
+# Driving shape: date-first for big inboxes, inbox-first for the rest (#775)
+
+
+def _seed_two_inboxes(s):
+    """Two inboxes, two subsystems, ties on the timestamp, one
+    crosspost. Returns the subsystems by name."""
+    net = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+    fs = _add_subsystem(s, "FSPLAN", "Supported", files=["fs/"])
+    s.commit()
+    base = datetime.now(UTC) - timedelta(days=60)
+    review = [("Reviewed-by", "rev@example.com")]
+    for i in range(12):
+        # Even rows carry a review trailer (needs-attention), odd rows
+        # none (quiet). Three rows share each timestamp.
+        art = _add_article(
+            s,
+            f"a{i}@x",
+            paths=["net/core/dev.c"] if i % 3 else ["fs/ext4/inode.c"],
+            days_ago=0,
+            trailers=review if i % 2 == 0 else (),
+            inbox_name="alpha" if i % 4 else "beta",
+        )
+        art.date = base + timedelta(days=i // 3)
+    # A crosspost: one article in both inboxes.
+    cross = _add_article(
+        s,
+        "cross@x",
+        paths=["net/core/dev.c"],
+        days_ago=0,
+        trailers=review,
+    )
+    cross.date = base + timedelta(days=1)
+    cross.lists.append(
+        ArticleList(inbox_id=_inbox(s, "beta").id, epoch="0.git", commit_sha="e" * 40)
+    )
+    s.commit()
+    return {"net": net, "fs": fs}
+
+
+def _inbox(session, name):
+    return session.execute(select(Inbox).where(Inbox.name == name)).scalar_one()
+
+
+@pytest.mark.parametrize("inbox_name", ["alpha", "beta"])
+@pytest.mark.parametrize("sub_name", ["net", "fs"])
+@pytest.mark.parametrize(
+    "fn", [needs_attention_patches_in_subsystem, quiet_patches_in_subsystem]
+)
+def test_both_driving_shapes_return_the_same_rows(
+    seeded_db, monkeypatch, fn, sub_name, inbox_name
+):
+    """Same ids in the same order from either shape, across keyset
+    pages (a page of 2 forces several round trips over ties)."""
+    from mimir.subsystems_dashboard import triage
+
+    monkeypatch.setattr(triage, "_page_size", lambda limit: 2)
+    seen = {}
+    with seeded_db() as s:
+        subs = _seed_two_inboxes(s)
+        inbox = _inbox(s, inbox_name)
+        for shape in (False, True):
+            monkeypatch.setattr(triage, "_inbox_first", lambda _i, shape=shape: shape)
+            seen[shape] = [
+                p.message_id for p in fn(s, inbox, subs[sub_name], limit=50, force=True)
+            ]
+    assert seen[True] == seen[False]
+    # Not vacuous, and the other inbox's rows stay out. Needs-attention
+    # on the net subsystem: alpha's a2 and a10 around the crosspost,
+    # beta's a4 and a8 around it (a4 and the crosspost tie, id breaks it).
+    expected = {
+        (needs_attention_patches_in_subsystem, "net", "alpha"): [
+            "a2@x",
+            "cross@x",
+            "a10@x",
+        ],
+        (needs_attention_patches_in_subsystem, "net", "beta"): [
+            "a4@x",
+            "cross@x",
+            "a8@x",
+        ],
+    }
+    if (fn, sub_name, inbox_name) in expected:
+        assert seen[True] == expected[(fn, sub_name, inbox_name)]
+
+
+def test_inbox_first_plan_drives_from_the_inbox_index(seeded_db):
+    """The inbox-first shape must seek `ix_article_lists_inbox_id`
+    for the inbox and fetch `articles` by primary key, not scan
+    either table."""
+    from mimir.subsystems_dashboard.triage import (
+        _candidate_query_needs_attention,
+        _candidate_query_quiet,
+        _triage_stmt,
+    )
+
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        cutoff = datetime.now(UTC) - timedelta(days=14)
+        for fn in (_candidate_query_needs_attention, _candidate_query_quiet):
+            sql, params = fn(_alpha(s), sub, cutoff, 10, inbox_first=True)
+            rows = s.execute(_triage_stmt("EXPLAIN QUERY PLAN " + sql), params).all()
+            plan = "\n".join(r[3] for r in rows)
+            assert "SEARCH al_in USING INDEX ix_article_lists_inbox_id" in plan, plan
+            assert "SCAN articles" not in plan, plan
+            assert "SCAN article_lists" not in plan, plan
+
+
+def _cache_total(inbox, total):
+    from mimir import cache
+    from mimir.dashboard import ArchiveStats, _archive_stats_key
+
+    cache.set(
+        _archive_stats_key(inbox),
+        ArchiveStats(total=total, epochs=1, first_date=None, last_date=None),
+        3600,
+    )
+
+
+def test_shape_follows_the_inbox_size(seeded_db):
+    from mimir.subsystems_dashboard.triage import (
+        INBOX_FIRST_BELOW_ARTICLES,
+        _inbox_first,
+    )
+
+    with seeded_db() as s:
+        inbox = _alpha(s)
+        _cache_total(inbox, INBOX_FIRST_BELOW_ARTICLES - 1)
+        assert _inbox_first(inbox) is True
+        _cache_total(inbox, INBOX_FIRST_BELOW_ARTICLES)
+        assert _inbox_first(inbox) is False
+
+
+def test_unknown_inbox_size_goes_inbox_first(seeded_db):
+    """No cached stats: inbox-first, whose worst measured case (5.9 s
+    on the biggest list) is under date-first's (14 s on a small one).
+    The lookup must not compute the COUNT."""
+    from mimir import cache
+    from mimir.dashboard import _archive_stats_key
+    from mimir.subsystems_dashboard.triage import _inbox_first
+
+    with seeded_db() as s:
+        inbox = _alpha(s)
+        cache.delete(_archive_stats_key(inbox))
+        assert _inbox_first(inbox) is True
+        assert cache.get(_archive_stats_key(inbox)) is None
