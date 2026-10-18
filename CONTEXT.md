@@ -230,7 +230,7 @@ via `parsed.headers["Date"]` at read time if anyone wants to display
 
 Implementation: `_walk_epoch` yields `(commit_sha, commit_time,
 raw_bytes)` tuples. The worker pickles the commit_time through
-unchanged. `_to_article` is called with `date=commit_time` and ignores
+unchanged. `_to_article_insert` is called with `date=commit_time` and ignores
 `parsed.date`. There's no plausibility check, no fallback logic, the
 parser still extracts `Date:` for fidelity but the field isn't used
 for the SQL row.
@@ -1201,7 +1201,7 @@ subject-based grouping, looser than reference-based threading on
 purpose, but useful precisely for the orphan case where references
 fail.
 
-Indexed and computed at ingest in `_to_article`. Existing rows are
+Indexed and computed at ingest in `_to_article_insert`. Existing rows are
 backfilled by a one-shot Python loop because SQL doesn't easily express
 the regex-based prefix stripping.
 
