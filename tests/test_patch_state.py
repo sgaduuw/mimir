@@ -67,6 +67,37 @@ def test_is_patch_subject_recognises_solo_patch():
     assert _is_patch_subject("[PATCH net-next] foo: do bar") is True
 
 
+def test_is_patch_subject_recognises_list_tagged_solo_patch():
+    """A list tag before a solo PATCH bracket is still a patch (#711):
+    the card follows the same rule as the series parsers."""
+    assert _is_patch_subject("[U-Boot] [PATCH] fix: do bar") is True
+    assert _is_patch_subject("[Qemu-devel] [PATCH v2] fix: do bar") is True
+    assert _is_patch_subject("[patch] lower-case token") is True
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "[PATCH] solo",
+        "[U-Boot] [PATCH] solo",
+        "[U-Boot] [PATCH 0/3] series",
+        "[net-next v7 02/10] x",
+        "[patch v2] lower",
+        "[GIT PULL] fixes",
+        "[RFC] discussion",
+        "[linux-next:master 1000/2056] report",
+        "Re: [PATCH] x",
+        "plain prose",
+    ],
+)
+def test_is_patch_subject_agrees_with_patch_bracket(subject):
+    """One predicate decides what a patch is (AGENTS.md): the state card
+    shows exactly where `patch_bracket` finds a patch bracket."""
+    from mimir.patch_revisions import patch_bracket
+
+    assert _is_patch_subject(subject) is (patch_bracket(subject) is not None)
+
+
 def test_is_patch_subject_rejects_reply():
     """Replies have `Re: [PATCH ...]` so the bracket isn't at column 0;
     the card shouldn't render on review-discussion pages."""
