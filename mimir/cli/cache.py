@@ -26,7 +26,7 @@ from mimir.dashboard import (
     this_day_in_history,
 )
 from mimir.extensions import SessionLocal
-from mimir.inboxes import list_inboxes
+from mimir.inboxes import list_inboxes, pinned_first
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems_dashboard import (
     REVIEWS_PER_PAGE_LIMIT,
@@ -406,7 +406,10 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    inboxes = {ix.name: ix for ix in list_inboxes()}
+    # Pinned inboxes first: within a tier the broker's warm queue keeps
+    # submission order, so the most-read dashboards are refreshed first
+    # on a slow cycle (#763).
+    inboxes = {ix.name: ix for ix in pinned_first(list_inboxes())}
     worker_count = workers if workers is not None else min(os.cpu_count() or 1, 8)
     total_start = time.perf_counter()
 
