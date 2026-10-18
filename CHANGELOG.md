@@ -11,6 +11,18 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- The broker health check is now `mimir-broker-ping`, a separate command
+  that does not load the application. `mimir broker-ping` loads all of
+  mimir before it pings, and on a busy production host (8 cores, load
+  average about 17, measured 2026-10-18) that took 3.5 to 8.3 seconds,
+  so the broker was reported unhealthy while it answered every ping. A
+  ping without the application import took 0.44 to 0.78 seconds there.
+  `mimir broker-ping` still works and gives the same answer. If your
+  own Compose file calls `mimir broker-ping` in its `test:` line, change
+  it to `mimir-broker-ping` (#758).
+
 ## [3.19.0] - 2026-10-17
 
 ### Changed

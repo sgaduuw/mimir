@@ -38,8 +38,8 @@ tests.
 ```sh
 uv sync
 uv run pytest
-uv run ruff check mimir/ tests/
-uv run ruff format --check mimir/ tests/
+uv run ruff check mimir/ tests/ mimir_broker_ping.py
+uv run ruff format --check mimir/ tests/ mimir_broker_ping.py
 uv run alembic upgrade head
 ```
 
@@ -57,7 +57,8 @@ exited 1 with 114 errors. `tests/test_lint_gate.py` mirrors the
 check in the suite because CI only reports after a push.
 
 A scoped run is not the gate either: `--select SOMERULE` passing, or
-one file passing, is not `ruff check mimir/ tests/` passing.
+one file passing, is not
+`ruff check mimir/ tests/ mimir_broker_ping.py` passing.
 
 ### The rule set is explicit, not ruff's defaults
 
