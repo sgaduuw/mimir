@@ -4,8 +4,10 @@ fix. Covers recovery on fix, still-failing increments,
 missing-mirror deferral, cached-repo cleanup, and the
 cross-post-link path."""
 
+import datetime as _dt
 from pathlib import Path
 
+import pytest
 from dulwich.repo import Repo
 from sqlalchemy import func, select
 
@@ -15,7 +17,9 @@ from mimir.ingest import (
 )
 from mimir.models import (
     Article,
+    ArticleFile,
     ArticleList,
+    ArticleTrailer,
     Inbox,
     ParseFailure,
 )
@@ -412,6 +416,165 @@ def test_replay_failures_cross_post_links_existing_article(
             ).scalar_one()
             == 0
         )
+
+
+def _derived_state(seeded_db, msgid: str) -> dict:
+    """Every column replay and ingest both derive from the raw message.
+
+    Message-ID is the only input that differs between the two copies in
+    the test below, and none of these fields is computed from it
+    (`thread_parent` comes from In-Reply-To, a constant across both).
+    """
+    with seeded_db() as s:
+        art = s.execute(select(Article).where(Article.message_id == msgid)).scalar_one()
+        return {
+            "subject": art.subject,
+            "author": art.author,
+            "date": art.date,
+            "thread_parent": art.thread_parent,
+            "subject_normalized": art.subject_normalized,
+            "patch_series_key": art.patch_series_key,
+            "patch_series_version": art.patch_series_version,
+            "patch_series_position": art.patch_series_position,
+            "paths": sorted(
+                s.execute(
+                    select(ArticleFile.path).where(ArticleFile.article_id == art.id)
+                ).scalars()
+            ),
+            "trailers": sorted(
+                s.execute(
+                    select(
+                        ArticleTrailer.role,
+                        ArticleTrailer.name,
+                        ArticleTrailer.address,
+                        ArticleTrailer.address_normalized,
+                    ).where(ArticleTrailer.article_id == art.id)
+                ).all()
+            ),
+        }
+
+
+_PARENT = "absent-parent@example.com"
+_PATCH_BODY = (
+    b"Looks good.\n\n"
+    b"Signed-off-by: Author <author@example.com>\n"
+    b"Reviewed-by: Alice <Alice@Example.COM>\n\n"
+    b"diff --git a/fs/foo/a.c b/fs/foo/a.c\n@@ -1 +1 @@\n-x\n+y\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("subject", "in_reply_to", "references", "body", "precondition"),
+    [
+        pytest.param(
+            b"[PATCH 0/2] thread title",
+            None,
+            None,
+            b"x",
+            lambda st: (
+                st["patch_series_position"] == 0 and st["patch_series_key"] is not None
+            ),
+            id="cover-letter",
+        ),
+        pytest.param(
+            b"[PATCH 1/2] thread title: first patch",
+            _PARENT,
+            None,
+            b"x",
+            lambda st: (
+                st["patch_series_position"] == 1
+                and st["patch_series_key"] is None
+                and st["thread_parent"] == _PARENT
+            ),
+            id="in-series-patch-without-archived-parent",
+        ),
+        pytest.param(
+            b"Re: thread title",
+            _PARENT,
+            None,
+            b"x",
+            lambda st: (
+                st["thread_parent"] == _PARENT
+                and st["subject_normalized"] == "thread title"
+                and st["patch_series_position"] is None
+            ),
+            id="plain-reply",
+        ),
+        pytest.param(
+            b"Re: thread title",
+            None,
+            _PARENT,
+            b"x",
+            lambda st: st["thread_parent"] == _PARENT,
+            id="reply-with-references-only",
+        ),
+        pytest.param(
+            b"[PATCH v2 1/1] fs: foo",
+            None,
+            None,
+            _PATCH_BODY,
+            lambda st: (
+                st["paths"] == ["fs/foo/a.c"]
+                and [t[0] for t in st["trailers"]] == ["Reviewed-by"]
+            ),
+            id="patch-with-diff-and-review-trailers",
+        ),
+    ],
+)
+def test_replay_derives_the_same_fields_as_real_ingest(
+    seeded_db,
+    tmp_path,
+    broker_active,
+    subject,
+    in_reply_to,
+    references,
+    body,
+    precondition,
+):
+    """Replay's new-article branch must store what `ingest_epoch` stores
+    for the same message. Two copies of one raw message (different
+    Message-ID, so replay inserts rather than cross-posts) go through the
+    two paths and the derived columns are compared, so the test does not
+    depend on how either path computes them."""
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+
+    def raw(msgid: str) -> bytes:
+        return _rfc5322(
+            msgid, body=body, in_reply_to=in_reply_to, references=references
+        ).replace(b"Subject: t\r\n", b"Subject: " + subject + b"\r\n")
+
+    ingest_id, replay_id = "via-ingest@example.com", "via-replay@example.com"
+    (tmp_path / "beta").mkdir()
+    (tmp_path / "alpha").mkdir()
+    _build_pubinbox_repo(tmp_path / "beta" / "0.git", [raw(ingest_id)])
+    with seeded_db() as s:
+        ingest_epoch(s, beta, "0.git", tmp_path / "beta" / "0.git", workers=1)
+    _build_pubinbox_repo(tmp_path / "alpha" / "0.git", [raw(replay_id)])
+    now = _dt.datetime.now(_dt.UTC)
+    with seeded_db() as s:
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+        ix.mirror_path = str(tmp_path / "alpha")
+        s.add(
+            ParseFailure(
+                inbox_id=ix.id,
+                epoch="0.git",
+                commit_sha=Repo(str(tmp_path / "alpha" / "0.git")).head().decode(),
+                error_class="ValueError",
+                error_message="prior failure",
+                attempts=1,
+                first_seen=now,
+                last_attempt=now,
+            )
+        )
+        s.commit()
+        ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
+    assert replay_failures(ix).recovered == 1
+
+    ingested = _derived_state(seeded_db, ingest_id)
+    assert precondition(ingested), ingested
+    assert _derived_state(seeded_db, replay_id) == ingested
 
 
 # Inbox.last_article_date (#216): bumped at ingest-commit time so the
