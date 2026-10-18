@@ -53,10 +53,10 @@ jobs:
         run: uv sync --frozen
 
       - name: Ruff check
-        run: uv run ruff check mimir/ tests/
+        run: uv run ruff check mimir/ tests/ mimir_broker_ping.py
 
       - name: Ruff format check
-        run: uv run ruff format --check mimir/ tests/
+        run: uv run ruff format --check mimir/ tests/ mimir_broker_ping.py
 
   test:
     runs-on: ubuntu-latest

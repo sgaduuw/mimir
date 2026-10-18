@@ -97,6 +97,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Now the rest of the source.
 COPY mimir/ ./mimir/
+COPY mimir_broker_ping.py ./
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
 
@@ -141,6 +142,7 @@ WORKDIR /app
 # Bring in just the runtime artifacts from the builder.
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/mimir /app/mimir
+COPY --from=builder /app/mimir_broker_ping.py /app/mimir_broker_ping.py
 COPY --from=builder /app/alembic.ini /app/alembic.ini
 COPY --from=builder /app/alembic /app/alembic
 # Scheduler script for the sidecar tasks container.

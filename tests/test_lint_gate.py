@@ -1,12 +1,14 @@
 """The lint gate is a contract, so assert it here rather than only in CI.
 
 `.github/workflows/ci.yml`'s `lint` job runs exactly
-`uv run ruff check mimir/ tests/` and `uv run ruff format --check mimir/
-tests/`. `main` requires that job (CONTEXT.md "CI flow"), and the release
-flow's Step 4 repeats both commands as a release gate.
+`uv run ruff check mimir/ tests/ mimir_broker_ping.py` and
+`uv run ruff format --check mimir/ tests/ mimir_broker_ping.py`. `main`
+requires that job (CONTEXT.md "CI flow"), and the release flow's Step 4
+repeats both commands as a release gate.
 
-Both tests below shell out to the ruff pinned in `uv.lock`, which is the
-version CI resolves via `uv sync --frozen`. Running the real binary rather
+The test below shells out to the ruff pinned in `uv.lock`, which is the
+version CI resolves via `uv sync --frozen`. It mirrors `ruff check` only;
+`ruff format --check` is gated by CI and the release flow, not here. Running the real binary rather
 than reimplementing any part of the rule set is the point: the thing worth
 pinning is "the command CI runs exits 0", and any reimplementation would
 answer a different question.
@@ -18,7 +20,7 @@ import sys
 
 import pytest
 
-PATHS = ["mimir/", "tests/"]
+PATHS = ["mimir/", "tests/", "mimir_broker_ping.py"]
 
 
 def _ruff(*args: str) -> subprocess.CompletedProcess[str]:
@@ -62,7 +64,7 @@ def test_ruff_check_exits_zero():
     that visible in the suite, which gets run constantly, instead of at
     the end of a push cycle.
     """
-    """`ruff check mimir/ tests/` must pass.
+    """`ruff check mimir/ tests/ mimir_broker_ping.py` must pass.
 
     This is `ci.yml`'s `lint` step verbatim. It is red on
     `chore/explicit-ruff-ruleset` because that branch raises the ruff pin
@@ -84,5 +86,5 @@ def test_ruff_check_exits_zero():
     assert proc.returncode == 0, (
         f"ruff check exited {proc.returncode}; CI's lint job runs this exact "
         f"command and will fail.\nLast line: {counts[0]}\n"
-        "Per-rule breakdown: uv run ruff check --statistics mimir/ tests/"
+        "Per-rule breakdown: uv run ruff check --statistics mimir/ tests/ mimir_broker_ping.py"
     )
