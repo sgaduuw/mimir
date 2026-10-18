@@ -17,6 +17,7 @@ from dulwich.repo import Repo
 from pydantic import BaseModel
 from sqlalchemy import delete, insert, select, update
 
+from mimir.ingest.epoch import _to_article_insert
 from mimir.models import (
     Article,
     ArticleFile,
@@ -25,11 +26,7 @@ from mimir.models import (
     Inbox,
     ParseFailure,
 )
-from mimir.parser import normalize_subject, parse_message
-from mimir.patch_revisions import parse_in_series_patch_subject
-from mimir.patch_series import parse_cover_letter, series_key
-from mimir.patches import extract_touched_paths
-from mimir.trailers import extract_trailers
+from mimir.parser import parse_message
 
 logger = logging.getLogger(__name__)
 
@@ -120,40 +117,31 @@ def _replay_loop(
             select(Article.id).where(Article.message_id == parsed.message_id)
         ).scalar_one_or_none()
         if existing_id is None:
-            # Build the article values inline (mirrors _to_article
-            # with session=None, i.e. no in-series parent lookup).
-            thread_parent = parsed.in_reply_to or (
-                parsed.references[-1] if parsed.references else None
+            # session=None: replay is single-row on a raw connection, so no
+            # in-series parent lookup; the backfill command closes any gap
+            # in patch_series_key + patch_series_version later.
+            rec = _to_article_insert(
+                parsed,
+                inbox_id,
+                row_epoch,
+                row_commit_sha,
+                commit_time,
+                canonical_inbox_id=None,
+                session=None,
             )
-            series_key_val: str | None = None
-            series_version_val: str | None = None
-            series_position_val: int | None = None
-            cover = parse_cover_letter(parsed.subject)
-            if cover is not None:
-                series_key_val = series_key(cover.title, parsed.author)
-                series_version_val = cover.version
-                series_position_val = 0
-            else:
-                in_series = parse_in_series_patch_subject(parsed.subject)
-                if in_series is not None:
-                    series_position_val = in_series.position
-                    # No in-series parent lookup: replay is single-row,
-                    # low-volume; the backfill command closes any gap in
-                    # patch_series_key + patch_series_version later.
-
             result = conn.execute(
                 insert(Article)
                 .values(
-                    message_id=parsed.message_id,
-                    subject=parsed.subject,
-                    author=parsed.author,
-                    date=commit_time,
-                    thread_parent=thread_parent,
-                    subject_normalized=normalize_subject(parsed.subject),
-                    canonical_inbox_id=None,
-                    patch_series_key=series_key_val,
-                    patch_series_version=series_version_val,
-                    patch_series_position=series_position_val,
+                    message_id=rec.message_id,
+                    subject=rec.subject,
+                    author=rec.author,
+                    date=rec.date,
+                    thread_parent=rec.thread_parent,
+                    subject_normalized=rec.subject_normalized,
+                    canonical_inbox_id=rec.canonical_inbox_id,
+                    patch_series_key=rec.patch_series_key,
+                    patch_series_version=rec.patch_series_version,
+                    patch_series_position=rec.patch_series_position,
                 )
                 .returning(Article.id)
             )
@@ -166,20 +154,16 @@ def _replay_loop(
                     commit_sha=row_commit_sha,
                 )
             )
-            # Insert any diff-touched path rows.
-            touched_paths = sorted(extract_touched_paths(parsed.body))
-            if touched_paths:
+            if rec.touched_paths:
                 conn.execute(
                     insert(ArticleFile).values(
                         [
                             {"article_id": new_article_id, "path": p}
-                            for p in touched_paths
+                            for p in rec.touched_paths
                         ]
                     )
                 )
-            # Insert any review-attestation trailer rows.
-            trailer_tuples = list(extract_trailers(parsed.body))
-            if trailer_tuples:
+            if rec.trailer_rows:
                 conn.execute(
                     insert(ArticleTrailer).values(
                         [
@@ -190,7 +174,7 @@ def _replay_loop(
                                 "address": address,
                                 "address_normalized": address.lower(),
                             }
-                            for role, name, address in trailer_tuples
+                            for role, name, address in rec.trailer_rows
                         ]
                     )
                 )
