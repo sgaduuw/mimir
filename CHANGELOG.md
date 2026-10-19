@@ -13,6 +13,9 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- `/merge-window` rows from senders without a display name show the patch
+  author's name from the linux-next commit instead of "unknown sender"
+  (#787).
 - A tree-wide series on `/merge-window` is no longer listed under one
   deeply nested driver it happens to touch. A subsystem now has to cover at
   least half as many of the series' files as the best-covering one to be

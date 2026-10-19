@@ -16,12 +16,17 @@ walk shows the previous set, never a partial one.
 """
 
 import hashlib
+import logging
 import re
+from collections import Counter
 from datetime import datetime
+from email.utils import parseaddr, quote
+from itertools import batched
 from pathlib import Path
 from types import SimpleNamespace
 
 from dulwich.errors import NotGitRepository
+from dulwich.mailmap import parse_identity
 from dulwich.repo import Repo
 from pydantic import BaseModel
 from sqlalchemy import func, literal_column, select, text, tuple_
@@ -32,11 +37,13 @@ from mimir import cache
 from mimir.config import settings
 from mimir.datetime_utils import coerce_dt
 from mimir.mainline import resolve_tree_path
-from mimir.models import Article, ArticleFile, MainlineState
+from mimir.models import Article, ArticleFile, MainlineCommit, MainlineState
 from mimir.patch_series import representative_key, version_number_sql
 from mimir.patch_state import _resolve_tree_label
 from mimir.subsystems import ranked_subsystems
 from mimir.web.urls import _canonical_inbox_names_for, _msg_path
+
+logger = logging.getLogger(__name__)
 
 QUEUED_TREE = "linux-next"
 LINUS_TREE = "linus"
@@ -241,6 +248,14 @@ def _compute(session: Session) -> MergeWindow:
             if cover and rank[0] <= first_rank[0]
             else (first.id, first.subject, first.author, first.date)
         )
+    nameless = {
+        posting
+        for posting in postings
+        if not parseaddr(representatives[posting][2] or "")[0]
+    }
+    votes = _commit_author_votes(
+        session, [m.message_id for p in nameless for m in postings[p]]
+    )
     names = _canonical_inbox_names_for(
         session, [rep[0] for rep in representatives.values()]
     )
@@ -269,6 +284,20 @@ def _compute(session: Session) -> MergeWindow:
     unlinked = 0
     for posting, members in postings.items():
         rep_id, subject, author, date = representatives[posting]
+        if posting in nameless:
+            # The commit author's name stands in for a sender with no
+            # display name; the address stays, `display_name` hides it.
+            named = sum(
+                (votes[m.message_id] for m in members if m.message_id in votes),
+                Counter(),
+            )
+            if named:
+                # Quoted, not RFC 2047 encoded: `display_name` never
+                # decodes encoded words, so "Jürgen" would show as one.
+                # Ties go to the alphabetically first name, so a rebuilt
+                # walk's row order cannot flip the row.
+                name = quote(min(named, key=lambda n: (-named[n], n)))
+                author = f'"{name}" <{parseaddr(author or "")[1]}>'
         inbox_name = names.get(rep_id)
         if inbox_name is None:
             # Archived but linked to no inbox: nothing to link to.
@@ -337,6 +366,55 @@ def _compute(session: Session) -> MergeWindow:
         walked_commits=state.walked_commits if state else None,
         walked_linked=state.walked_linked if state else None,
     )
+
+
+def _commit_author_votes(
+    session: Session, message_ids: list[str]
+) -> dict[str, Counter]:
+    """Author-name votes of the linux-next commits per message-id, for
+    senders whose mail has none. The mirror is the only place the name
+    lives: mainline_commits stores no author and Signed-off-by trailers
+    are not kept. Merge commits are skipped, because a merge linked to a
+    series cover is the maintainer's, not the author's. A missing mirror
+    or commit leaves the id out, so the page keeps the sender it had."""
+    tree = settings.trees.get(QUEUED_TREE)
+    if tree is None or not message_ids:
+        return {}
+    shas: list[tuple[str, str]] = []
+    for chunk in batched(message_ids, 900):
+        shas.extend(
+            session.execute(
+                select(MainlineCommit.message_id, MainlineCommit.commit_sha).where(
+                    MainlineCommit.tree_name == QUEUED_TREE,
+                    MainlineCommit.message_id.in_(chunk),
+                )
+            ).all()
+        )
+    votes: dict[str, Counter] = {}
+    # Broad on purpose: the name is decoration, and a mirror that is
+    # unreadable or mid-gc (OSError, corrupt object, missing repo) must
+    # never take the page down.
+    try:
+        with Repo(str(resolve_tree_path(tree))) as repo:
+            for message_id, sha in shas:
+                try:
+                    commit = repo[sha.encode()]
+                except KeyError:
+                    continue
+                if len(commit.parents) > 1:
+                    continue
+                # `parse_identity` is not parseaddr: a git ident may
+                # carry a comma ("Doe, Jane"), which parseaddr rejects.
+                # An ident with an empty name (`<addr>`) has no name to give.
+                name = (parse_identity(commit.author)[0] or b"").decode(
+                    errors="replace"
+                )
+                if name and "@" not in name:
+                    votes.setdefault(message_id, Counter())[name] += 1
+    except Exception as exc:
+        logger.warning("merge-window: cannot read author names: %r", exc)
+        return {}
+    return votes
 
 
 def _files(session: Session, article_ids: list[int]) -> dict[int, list[str]]:
