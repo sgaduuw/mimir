@@ -1234,9 +1234,9 @@ def test_get_or_compute_window_check_is_probabilistic_when_refresh_within_active
         assert value == "v2"
 
 
-def test_delete_dispatches_via_writer_when_broker_handler_active(broker_active):
-    """In-broker (handler flag set + active writer), cache.delete must
-    dispatch through the WriterThread, not a write on the shared engine."""
+def test_delete_dispatches_via_writer_in_broker(broker_active):
+    """In-broker (active writer), cache.delete must dispatch through the
+    WriterThread, not a write on the shared engine."""
     from mimir import cache
     from mimir.broker._context import get_active_writer
 
@@ -1245,12 +1245,10 @@ def test_delete_dispatches_via_writer_when_broker_handler_active(broker_active):
     original = writer.submit
     writer.submit = lambda op: (submits.append(op), original(op))[1]
 
-    cache._set_broker_handler_active(True)
     try:
         cache.set("del-route-probe", {"x": 1}, ttl=60)  # seed via writer
         cache.delete("del-route-probe")
     finally:
-        cache._set_broker_handler_active(False)
         writer.submit = original
 
     labels = [op.label for op in submits]
@@ -1259,7 +1257,7 @@ def test_delete_dispatches_via_writer_when_broker_handler_active(broker_active):
     )
 
 
-def test_delete_for_inbox_dispatches_via_writer_when_broker_handler_active(
+def test_delete_for_inbox_dispatches_via_writer_in_broker(
     broker_active,
 ):
     """Same contract for delete_for_inbox."""
@@ -1271,11 +1269,9 @@ def test_delete_for_inbox_dispatches_via_writer_when_broker_handler_active(
     original = writer.submit
     writer.submit = lambda op: (submits.append(op), original(op))[1]
 
-    cache._set_broker_handler_active(True)
     try:
         cache.delete_for_inbox("some-inbox")
     finally:
-        cache._set_broker_handler_active(False)
         writer.submit = original
 
     labels = [op.label for op in submits]

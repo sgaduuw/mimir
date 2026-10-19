@@ -6,7 +6,6 @@ boundary (malformed JSON / unknown op / invalid request)."""
 from datetime import UTC
 
 from mimir import cache
-from mimir.broker._context import get_active_writer
 from mimir.broker.handlers import dispatch
 from mimir.broker.protocol import (
     CacheDeleteForInboxRequest,
@@ -50,9 +49,7 @@ def test_dispatch_cache_set_writes_to_db(seeded_db):
 
 def test_dispatch_cache_delete_removes_row(seeded_db):
     nskey = cache._ns("test_dispatch_delete")
-    # Block on the writer so the value is visible for the pre-condition
-    # assertion.
-    cache.set_via_writer(get_active_writer(), "test_dispatch_delete", "x", 60).result()
+    cache.set("test_dispatch_delete", "x", 60)
     assert cache.get("test_dispatch_delete") == "x"
 
     reply = dispatch(_line(CacheDeleteRequest(rpc_id=1, key=nskey)))
