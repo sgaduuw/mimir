@@ -468,8 +468,7 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     # `cache.delete` / `cache.delete_for_inbox` avoids a
                     # self-RPC back through the socket and instead routes
                     # through the active WriterThread (the in-broker
-                    # single-writer path; it falls back to a direct write
-                    # only when no writer is registered, e.g. some tests).
+                    # single-writer path).
                     # Production handles the same concern via
                     # `MIMIR_IS_BROKER=true` env at the process level, but
                     # the in-process test environment shares

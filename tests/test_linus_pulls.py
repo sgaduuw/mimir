@@ -405,6 +405,22 @@ def test_linus_mirror_path_moves_the_section_key(seeded_db, monkeypatch, tmp_pat
         assert linus_pulls_state(s) != before
 
 
+def test_demoted_inboxes_move_the_section_key(seeded_db, monkeypatch):
+    """The demoted list decides which inbox each pull links into, and it
+    is restart-only config, so it is in the section's own state for the
+    same reason as the mirror path."""
+    from mimir.linus_pulls import linus_pulls_state
+
+    with seeded_db() as s:
+        before = linus_pulls_state(s)
+        monkeypatch.setattr(
+            settings,
+            "canonical_demoted_inboxes",
+            [*settings.canonical_demoted_inboxes, "alpha"],
+        )
+        assert linus_pulls_state(s) != before
+
+
 @pytest.mark.parametrize(
     ("version_tags", "anchor"),
     [
