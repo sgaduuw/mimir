@@ -213,6 +213,97 @@ def test_series_is_grouped_once_by_all_its_files(seeded_db):
     assert _ids(mw) == {"MLX5": [("[PATCH] s1@x", 2, [])]}
 
 
+def _series(s, files_per_patch):
+    for n, files in enumerate(files_per_patch, 1):
+        _article(s, f"s{n}@x", key="k", version="v1", pos=n, days=n, files=files)
+        _commit(s, f"s{n}@x", "linux-next")
+
+
+def test_tree_wide_series_is_not_decided_by_one_deep_driver_file(seeded_db):
+    """One file in a deeply nested driver must not file a series that
+    touches many drivers under its parent (#786)."""
+    with seeded_db() as s:
+        _subsystem(s, "DRM DRIVERS", ["drivers/gpu/drm/"])
+        _subsystem(s, "ARM KOMEDA", ["drivers/gpu/drm/arm/display/komeda/"])
+        _series(
+            s,
+            [
+                ["drivers/gpu/drm/amd/a.c", "drivers/gpu/drm/i915/b.c"],
+                ["drivers/gpu/drm/nouveau/c.c", "drivers/gpu/drm/msm/d.c"],
+                ["drivers/gpu/drm/arm/display/komeda/e.c"],
+            ],
+        )
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {"DRM DRIVERS": [("[PATCH] s1@x", 3, [])]}
+    assert _groups(mw)[0].rows[0].also == ["ARM KOMEDA"]
+
+
+def test_driver_patch_with_one_shared_header_stays_on_its_driver(seeded_db):
+    with seeded_db() as s:
+        _subsystem(s, "FOO DRIVER", ["drivers/gpu/drm/foo/"])
+        _subsystem(s, "DRM DRIVERS", ["drivers/gpu/drm/", "include/drm/"])
+        _series(
+            s,
+            [
+                [
+                    "drivers/gpu/drm/foo/a.c",
+                    "drivers/gpu/drm/foo/b.c",
+                    "drivers/gpu/drm/foo/c.c",
+                    "include/drm/h.h",
+                ]
+            ],
+        )
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {"FOO DRIVER": [("[PATCH] s1@x", 1, [])]}
+    assert _groups(mw)[0].rows[0].also == ["DRM DRIVERS"]
+
+
+def test_broad_subsystem_with_slightly_more_files_does_not_outvote_a_deeper_one(
+    seeded_db,
+):
+    """A cross-tree series: defconfig churn in a broad subsystem covers
+    4 files, the deeper JIT subsystem 3. Three is at least half of the
+    best coverage, so the deeper one is still a candidate and wins."""
+    with seeded_db() as s:
+        _subsystem(s, "M68K", ["arch/m68k/"])
+        _subsystem(s, "BPF JIT", ["arch/x86/net/"])
+        _series(
+            s,
+            [
+                [f"arch/m68k/configs/c{n}_defconfig" for n in range(4)],
+                [f"arch/x86/net/j{n}.c" for n in range(3)],
+            ],
+        )
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {"BPF JIT": [("[PATCH] s1@x", 2, [])]}
+    assert _groups(mw)[0].rows[0].also == ["M68K"]
+
+
+def test_a_file_touched_by_many_patches_counts_once(seeded_db):
+    """Coverage counts the posting's distinct files: three patches
+    editing the same Komeda file are one file of three, not three of
+    five, so DRM DRIVERS covers more than half and Komeda does not."""
+    with seeded_db() as s:
+        _subsystem(s, "DRM DRIVERS", ["drivers/gpu/drm/"])
+        _subsystem(s, "ARM KOMEDA", ["drivers/gpu/drm/arm/display/komeda/"])
+        komeda = "drivers/gpu/drm/arm/display/komeda/e.c"
+        _series(
+            s,
+            [
+                [komeda],
+                [komeda],
+                [komeda],
+                ["drivers/gpu/drm/amd/a.c", "drivers/gpu/drm/i915/b.c"],
+            ],
+        )
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {"DRM DRIVERS": [("[PATCH] s1@x", 4, [])]}
+
+
 def test_a_section_needs_twenty_five_patches(seeded_db):
     with seeded_db() as s:
         _subsystem(s, "BIG", ["big/"])

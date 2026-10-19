@@ -11,6 +11,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- A tree-wide series on `/merge-window` is no longer listed under one
+  deeply nested driver it happens to touch. A subsystem now has to cover at
+  least half as many of the series' files as the best-covering one to be
+  chosen; among those, the most specific wins (#786).
+
 ## [3.22.0] - 2026-10-19
 
 ### Added
