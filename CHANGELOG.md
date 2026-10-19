@@ -11,10 +11,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.22.1] - 2026-10-19
+
 ### Fixed
 
 - Search no longer scans the whole archive: on smaller lists it now takes
-  well under a second instead of tens of seconds (#791).
+  well under a second instead of tens of seconds. On lkml, a search for a
+  common term now takes about two seconds where it was instant (#791).
 - `/favicon.ico` redirects to `/favicon.svg` instead of to `/favicon.ico/`,
   which returned 404 (#792).
 - `/merge-window` rows from senders without a display name show the patch
