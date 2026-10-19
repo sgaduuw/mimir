@@ -22,17 +22,12 @@ wait for the long worker's current commit batch, not the whole long
 op. See `handlers.LONG_OPS` for the routing set.
 """
 
-import re
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, field_validator
 
-# Mirror of `mimir._inbox_name.INBOX_NAME_RE`, the canonical source.
-# Duplicated here (rather than imported) so the broker protocol module
-# stays free of the heavy inboxes/cache/extensions import chain that an
-# `inboxes` import would drag in; #748 removes the copy. The two must
-# stay in sync until then.
-_INBOX_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+from mimir._inbox_name import INBOX_NAME_RE
+from mimir.robots import CONTENT_SIGNAL_KEYS, CONTENT_SIGNAL_VALUES, PATH_RE, UA_RE
 
 
 def _validate_inbox_name(v: str) -> str:
@@ -41,7 +36,7 @@ def _validate_inbox_name(v: str) -> str:
     at the wire boundary keeps a buggy or hostile peer from
     smuggling LIKE metacharacters / path components / weird casing
     into ops that compose the value into SQL or filesystem paths."""
-    if not _INBOX_NAME_RE.fullmatch(v):
+    if not INBOX_NAME_RE.fullmatch(v):
         raise ValueError(
             "name must be lowercase alphanumeric/hyphen, "
             "1 to 64 chars, not starting or ending with a hyphen"
@@ -381,19 +376,8 @@ class InboxSetTrackedAuthorsRequest(_BrokerRequest):
     trackers: dict[str, str]
 
 
-# Mirror of `mimir.robots._UA_RE` / `_PATH_RE` / Content-Signal
-# enums. Duplicated here (rather than imported) so the protocol
-# module stays free of the heavy `mimir.robots` → `mimir.extensions`
-# import chain. The robots-side validator is the canonical source;
-# any change there should update these in lockstep.
-_ROBOTS_UA_RE = re.compile(r"^[\x21-\x7e]{1,64}$")
-_ROBOTS_PATH_RE = re.compile(r"^[/*][\x21-\x7e]{0,255}$")
-_ROBOTS_CS_KEYS = frozenset({"search", "ai-input", "ai-train"})
-_ROBOTS_CS_VALUES = frozenset({"yes", "no"})
-
-
 def _validate_robots_user_agent(v: str) -> str:
-    if not _ROBOTS_UA_RE.fullmatch(v):
+    if not UA_RE.fullmatch(v):
         raise ValueError(
             "user_agent must be 1-64 visible-ASCII characters with no whitespace"
         )
@@ -402,7 +386,7 @@ def _validate_robots_user_agent(v: str) -> str:
 
 def _validate_robots_paths(v: list[str]) -> list[str]:
     for p in v:
-        if not _ROBOTS_PATH_RE.fullmatch(p):
+        if not PATH_RE.fullmatch(p):
             raise ValueError(
                 f"disallow path {p!r} must start with '/' or '*', "
                 "1-256 visible-ASCII characters, no whitespace"
@@ -410,25 +394,22 @@ def _validate_robots_paths(v: list[str]) -> list[str]:
     return v
 
 
-def _validate_robots_content_signals(v: dict[str, str]) -> dict[str, str]:
-    for k, val in v.items():
-        if k not in _ROBOTS_CS_KEYS:
+def _validate_robots_content_signal_keys(v: list[str]) -> list[str]:
+    for k in v:
+        if k not in CONTENT_SIGNAL_KEYS:
             raise ValueError(
-                f"content_signal key {k!r} must be one of {sorted(_ROBOTS_CS_KEYS)}"
-            )
-        if val not in _ROBOTS_CS_VALUES:
-            raise ValueError(
-                f"content_signal value {val!r} must be one of "
-                f"{sorted(_ROBOTS_CS_VALUES)}"
+                f"content_signal key {k!r} must be one of {sorted(CONTENT_SIGNAL_KEYS)}"
             )
     return v
 
 
-def _validate_robots_content_signal_keys(v: list[str]) -> list[str]:
-    for k in v:
-        if k not in _ROBOTS_CS_KEYS:
+def _validate_robots_content_signals(v: dict[str, str]) -> dict[str, str]:
+    _validate_robots_content_signal_keys(list(v))
+    for val in v.values():
+        if val not in CONTENT_SIGNAL_VALUES:
             raise ValueError(
-                f"content_signal key {k!r} must be one of {sorted(_ROBOTS_CS_KEYS)}"
+                f"content_signal value {val!r} must be one of "
+                f"{sorted(CONTENT_SIGNAL_VALUES)}"
             )
     return v
 

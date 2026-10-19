@@ -26,13 +26,13 @@ from mimir.models import RobotsRule
 # `*` is allowed (the default catch-all stanza). Robots.txt grammar
 # is permissive; we tighten enough to keep the file un-pwn-able from
 # a single CLI argument (no embedded newlines, no control characters).
-_UA_RE = re.compile(r"^[\x21-\x7e]{1,64}$")
+UA_RE = re.compile(r"^[\x21-\x7e]{1,64}$")
 
 # Disallow path: starts with `/` or `*`, ≤256 chars, no control
 # characters. Robots.txt's grammar treats Disallow as a prefix match;
 # wildcard `*` and end-anchor `$` are non-standard extensions
 # universally supported by the bots that matter.
-_PATH_RE = re.compile(r"^[/*][\x21-\x7e]{0,255}$")
+PATH_RE = re.compile(r"^[/*][\x21-\x7e]{0,255}$")
 
 # Crawl-delay ceiling: 24h. Above that, the operator is doing
 # something pathological; surface as a validation error instead of
@@ -60,7 +60,7 @@ def validate_user_agent(ua: str) -> str:
     if not isinstance(ua, str):
         raise RobotsValidationError("user_agent must be a string")
     ua = ua.strip()
-    if not _UA_RE.fullmatch(ua):
+    if not UA_RE.fullmatch(ua):
         raise RobotsValidationError(
             f"user_agent {ua!r} must be 1-64 visible-ASCII characters "
             "with no whitespace"
@@ -72,7 +72,7 @@ def validate_disallow_path(path: str) -> str:
     if not isinstance(path, str):
         raise RobotsValidationError("disallow path must be a string")
     path = path.strip()
-    if not _PATH_RE.fullmatch(path):
+    if not PATH_RE.fullmatch(path):
         raise RobotsValidationError(
             f"disallow path {path!r} must start with '/' or '*', "
             "1-256 visible-ASCII characters, no whitespace"
