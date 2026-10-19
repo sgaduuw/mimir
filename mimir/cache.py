@@ -324,19 +324,6 @@ def get_many(keys: list[str]) -> dict[str, Any]:
 MAX_CACHE_VALUE_BYTES = 8 * 1024 * 1024
 
 
-def _set_stmt(nskey: str, payload: str, expires_at: int):
-    """The cache UPSERT, used by `_set_via_writer_for_nskey`. Returns a
-    Core construct usable on a Session or a Connection."""
-    return (
-        sqlite_insert(CacheEntry)
-        .values(key=nskey, value=payload, expires_at=expires_at)
-        .on_conflict_do_update(
-            index_elements=["key"],
-            set_={"value": payload, "expires_at": expires_at},
-        )
-    )
-
-
 def set(key: str, value: Any, ttl: int) -> None:
     """Best-effort cache write.
 
@@ -427,7 +414,14 @@ def _set_via_writer_for_nskey(
     expires_at = _now() + ttl
 
     def _fn(conn: Any) -> None:
-        conn.execute(_set_stmt(nskey, value_json, expires_at))
+        conn.execute(
+            sqlite_insert(CacheEntry)
+            .values(key=nskey, value=value_json, expires_at=expires_at)
+            .on_conflict_do_update(
+                index_elements=["key"],
+                set_={"value": value_json, "expires_at": expires_at},
+            )
+        )
 
     return writer.submit(WriteOp(label=f"cache.set:{nskey}", fn=_fn))
 
