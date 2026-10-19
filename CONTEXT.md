@@ -760,6 +760,8 @@ so `write_transaction()` + the BEGIN-IMMEDIATE listener + the
   engine for any in-broker caller not migrated to
   `set_via_writer` (e.g. `_warm_after_ingest`), because
   `_should_dispatch_to_broker()` is False inside the broker.
+  (Removed in #750: `cache.set` and the other cache mutators now
+  always go through the writer, and `_direct_*` no longer exist.)
 - `longops.bootstrap_inboxes` and `mainline.load_maintainers`
   (the latter explicitly deferred from Phase 3) still wrap
   shared-engine writes in `write_transaction()`.
@@ -801,9 +803,8 @@ cache-write SQL is de-duplicated behind shared per-op
 statement-builders (`_set_stmt` / `_delete_one_stmt` /
 `_delete_for_inbox_stmt` / `_purge_expired_stmt`) used by both the
 `*_via_writer` closures and the `_direct_*` helpers; `_direct_*`
-are retained as explicitly TEST-ONLY scaffolding (no production
-caller, guarded by `test_no_production_module_references_direct_cache_helpers`).
-The `load_maintainers` non-broker fallback path drops the
+were retained as TEST-ONLY scaffolding (deleted in #750). The
+`load_maintainers` non-broker fallback path dropped the
 `write_transaction` wrapper (plain `SessionLocal`; single-threaded,
 no concurrent committer, so DEFERRED begin is safe). The robots.py one
 went too, and #707 later removed the fallback itself. **The cache

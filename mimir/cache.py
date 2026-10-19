@@ -29,7 +29,6 @@ from pydantic import BaseModel
 from sqlalchemy import delete as delete_stmt
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from mimir.config import settings
@@ -206,9 +205,8 @@ def _now() -> int:
 def _should_dispatch_to_broker() -> bool:
     """True iff this process should send cache writes to the broker
     via RPC. False inside the broker process itself (we'd be RPC'ing
-    to ourselves: socket round-trip + queue + dispatch + direct
-    write on the cache worker, vs just one direct write here on
-    the long worker).
+    to ourselves: socket round-trip + queue + dispatch, vs handing
+    the write to the WriterThread right here).
 
     Two short-circuit conditions for "this is the broker":
 
@@ -221,7 +219,7 @@ def _should_dispatch_to_broker() -> bool:
       process and `settings.mimir_is_broker` is shared. Worker
       threads set the flag on entry to a dispatch and clear it on
       exit, so any cache/inboxes call reachable from a handler
-      sees False and falls through to the direct path.
+      sees False and goes to the writer.
 
     Otherwise the answer is unconditionally True: 2.0.0 made the
     broker the sole writer process, so every non-broker process
@@ -327,9 +325,8 @@ MAX_CACHE_VALUE_BYTES = 8 * 1024 * 1024
 
 
 def _set_stmt(nskey: str, payload: str, expires_at: int):
-    """The cache UPSERT, shared by _direct_set and the *_via_writer
-    set paths. Returns a Core construct usable on a Session or a
-    Connection."""
+    """The cache UPSERT, shared by the *_via_writer set paths. Returns a
+    Core construct usable on a Session or a Connection."""
     return (
         sqlite_insert(CacheEntry)
         .values(key=nskey, value=payload, expires_at=expires_at)
@@ -341,14 +338,12 @@ def _set_stmt(nskey: str, payload: str, expires_at: int):
 
 
 def _delete_one_stmt(nskey: str):
-    """Single-key cache DELETE, shared by _direct_delete and
-    delete_via_writer."""
+    """Single-key cache DELETE used by delete_via_writer."""
     return delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
 
 
 def _delete_for_inbox_stmt(inbox_name: str):
-    """Per-inbox cache DELETE, shared by _direct_delete_for_inbox and
-    delete_for_inbox_via_writer."""
+    """Per-inbox cache DELETE used by delete_for_inbox_via_writer."""
     return delete_stmt(CacheEntry).where(
         or_(
             CacheEntry.key.like(f"%:{inbox_name}"),
@@ -358,74 +353,33 @@ def _delete_for_inbox_stmt(inbox_name: str):
 
 
 def _purge_expired_stmt(cutoff: int):
-    """Expired-row cache DELETE, shared by _direct_purge_expired and
-    purge_expired_via_writer."""
+    """Expired-row cache DELETE used by purge_expired_via_writer."""
     return delete_stmt(CacheEntry).where(CacheEntry.expires_at < cutoff)
-
-
-def _direct_set(nskey: str, payload: str, ttl: int) -> None:
-    """Test-only direct cache UPSERT on the shared engine. No
-    production caller as of Phase 6a: in-broker writes go through the
-    WriterThread, the web tier RPCs. Kept as synchronous test
-    scaffolding (Option B)."""
-    # Apply any active warm-cache TTL extension (see `ttl_extension`
-    # context manager) so warm-managed rows store the spec's
-    # `nominal + window` lifetime. No-op outside a warm cycle.
-    ttl = _apply_ttl_extension(ttl)
-    expires_at = _now() + ttl
-    with SessionLocal() as session:
-        session.execute(_set_stmt(nskey, payload, expires_at))
-        session.commit()
 
 
 def set(key: str, value: Any, ttl: int) -> None:
     """Best-effort cache write.
 
-    Forwards the write to the broker daemon via the RPC client.
-    `BrokerUnavailable` is logged + swallowed (best-effort
-    posture): the page already rendered before we got here, so a
-    failed cache write must not propagate, it'd 500 a successful
+    Outside the broker, forwards the write over RPC. `BrokerUnavailable`
+    is logged + swallowed: the page already rendered before we got here,
+    so a failed cache write must not propagate, it'd 500 a successful
     response. Next request recomputes.
 
-    Inside the broker process itself the dispatch short-circuits
-    via `_should_dispatch_to_broker()` and writes directly via
-    `_direct_set`, avoiding a self-RPC.
-
-    Phase 2 of the two-pool restructure
-    (`_claude/specs/2026-05-29-broker-two-pool-design.md`):
-    when the calling context is inside the broker (the broker's
-    serve() loop has registered an active writer), dispatch the
-    UPSERT through that writer thread instead of running it
-    inline. This keeps the writer-lock hold time short and lets
-    multiple read-pool threads' warm work proceed in parallel.
-
-    Outside the broker (no active writer registered; e.g. the
-    web tier's gunicorn workers calling cache.set via its own
-    RPC path), the existing inline behaviour applies.
+    Inside the broker the write goes through the active WriterThread,
+    the sole writer, so there is no inline or shared-engine path. A
+    broker handler thread fires and forgets, matching the best-effort
+    posture. Any other broker-side caller (in practice only tests,
+    which run with MIMIR_IS_BROKER set) blocks on the result so a read
+    right after the write sees it.
     """
-    # Route through the WriterThread only when called from inside a
-    # broker handler thread (the broker's worker loop sets the
-    # thread-local flag on entry, clears on exit). Process-level context
-    # registration alone isn't enough: in-process test setups can have
-    # an active writer registered for the broker handler threads while
-    # test threads call cache.set with a monkeypatched SessionLocal,
-    # which the writer path would bypass.
+    # The thread-local flag, not mere writer registration, picks the
+    # fire-and-forget branch: test threads share the process with a
+    # registered writer but must be able to read back what they wrote.
     if _broker_handler_active():
-        try:
-            from mimir.broker import _context
+        from mimir.broker import _context
 
-            _writer = _context.get_active_writer()
-        except RuntimeError:
-            _writer = None
-
-        if _writer is not None:
-            # Fire-and-forget; matches cache.set's best-effort posture.
-            # Local import avoids a module-level circular dependency
-            # between cache.py and broker.writes (which imports cache).
-            from mimir.cache import set_via_writer
-
-            set_via_writer(_writer, key, value, ttl)
-            return
+        set_via_writer(_context.get_active_writer(), key, value, ttl)
+        return
 
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
@@ -465,18 +419,17 @@ def set(key: str, value: Any, ttl: int) -> None:
         except BrokerUnavailable as exc:
             logger.warning("broker write failed for %s: %s", nskey, exc)
         return
-    try:
-        _direct_set(nskey, payload, ttl)
-    except OperationalError as exc:
-        logger.warning("cache write failed for %s: %s", nskey, exc)
+    from mimir.broker import _context
+
+    set_via_writer(_context.get_active_writer(), key, value, ttl).result()
 
 
 def set_via_writer(writer: Any, key: str, value: Any, ttl: int) -> Any:
     """Phase 2 of the two-pool restructure
     (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
 
-    Compose a WriteOp wrapping the same UPSERT that `_direct_set()` runs
-    today, submit it to the given WriterThread, and return the WriteFuture.
+    Compose a WriteOp wrapping the cache UPSERT, submit it to the given
+    WriterThread, and return the WriteFuture.
     Fire-and-forget callers ignore the future; the rare caller that wants a
     post-commit guarantee (e.g. an admin op) blocks on `.result()`.
 
@@ -513,7 +466,7 @@ def _set_via_writer_for_nskey(
     (i.e. the broker's `handle_cache_set`, which receives both directly
     on the wire from a web tier that already namespaced + encoded).
 
-    Composes the same UPSERT as `_direct_set` and `set_via_writer`,
+    Composes the same UPSERT as `set_via_writer`,
     submits to the writer, returns the WriteFuture. Closure returns
     None.
     """
@@ -532,13 +485,12 @@ def _set_via_writer_for_nskey(
 
 
 def delete_via_writer(writer: Any, nskey: str) -> Any:
-    """Compose a WriteOp wrapping the same DELETE that `_direct_delete()`
-    runs today. Closure returns the rowcount; `.result()` exposes it
-    for handlers/callers that need it.
+    """Compose a WriteOp wrapping the single-key cache DELETE. Closure
+    returns the rowcount; `.result()` exposes it for handlers/callers
+    that need it.
 
-    `nskey` is the already-namespaced key (same contract as
-    `_direct_delete`); callers with a raw key should call `_ns(key)`
-    first.
+    `nskey` is the already-namespaced key; callers with a raw key
+    should call `_ns(key)` first.
     """
     from mimir.broker.writes import WriteOp
 
@@ -549,11 +501,10 @@ def delete_via_writer(writer: Any, nskey: str) -> Any:
 
 
 def delete_for_inbox_via_writer(writer: Any, inbox_name: str) -> Any:
-    """Compose a WriteOp wrapping the same DELETE-for-inbox that
-    `_direct_delete_for_inbox()` runs today. Closure returns the rowcount.
+    """Compose a WriteOp wrapping the per-inbox cache DELETE. Closure
+    returns the rowcount.
 
-    Mirrors `_direct_delete_for_inbox`'s LIKE-pattern shape exactly:
-    keys following the convention `<helper>:<inbox_name>[:<rest>]`
+    Keys following the convention `<helper>:<inbox_name>[:<rest>]`
     match if they end with `:{name}` or contain `:{name}:`.
     """
     from mimir.broker.writes import WriteOp
@@ -565,13 +516,11 @@ def delete_for_inbox_via_writer(writer: Any, inbox_name: str) -> Any:
 
 
 def purge_expired_via_writer(writer: Any) -> Any:
-    """Compose a WriteOp wrapping the same expired-row DELETE that
-    `_direct_purge_expired()` runs today. Closure returns the rowcount.
+    """Compose a WriteOp wrapping the expired-row DELETE. Closure returns
+    the rowcount.
 
     `_now()` is captured at submit time so the cutoff is fixed; rows
-    that expire in the interim land on the next purge cycle. Same
-    semantics as `_direct_purge_expired` which also evaluates `_now()`
-    at call time.
+    that expire in the interim land on the next purge cycle.
     """
     from mimir.broker.writes import WriteOp
 
@@ -643,23 +592,15 @@ def keys() -> list[str]:
         ]
 
 
-def _direct_purge_expired() -> int:
-    """Test-only. See _direct_set."""
-    cutoff = _now()
-    with SessionLocal() as session:
-        result = session.execute(_purge_expired_stmt(cutoff))
-        session.commit()
-        return result.rowcount or 0
-
-
 def purge_expired() -> int:
     """Drop every expired row. Returns rows deleted. Cheap thanks to
     `ix_cache_expires_at`.
 
-    Forwards to the broker daemon, which owns the cache table's data
-    lifecycle end-to-end (writes + purge). On `BrokerUnavailable`,
-    log + return 0; the broker's own internal periodic purge thread
-    will catch up.
+    Outside the broker, forwards to the broker daemon, which owns the
+    cache table's data lifecycle end-to-end (writes + purge). On
+    `BrokerUnavailable`, log + return 0; the broker's own internal
+    periodic purge thread will catch up. Inside the broker the purge
+    goes through the active WriterThread.
     """
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
@@ -674,49 +615,21 @@ def purge_expired() -> int:
         except BrokerUnavailable as exc:
             logger.warning("broker purge_expired failed: %s", exc)
             return 0
-    return _direct_purge_expired()
+    from mimir.broker import _context
 
-
-def _direct_delete(nskey: str) -> int:
-    """Test-only. See _direct_set."""
-    with SessionLocal() as session:
-        result = session.execute(_delete_one_stmt(nskey))
-        session.commit()
-        return result.rowcount or 0
+    return purge_expired_via_writer(_context.get_active_writer()).result()
 
 
 def delete(key: str) -> int:
     """Drop the cache row for one key, if present. Returns rows
-    deleted (0 or 1, or 0 on transient-lock fallback).
+    deleted (0 or 1).
 
-    Best-effort just like `set()`: SQLite write contention during
-    a long-running VACUUM raises `OperationalError("database is
-    locked")` once the connection's `busy_timeout` elapses. Admin
-    CRUD callers (`mimir.inboxes`) would otherwise 500 on a
-    successfully-completed DB change just because the cache
-    invalidation lost the lock race. Log + return 0; the cached
-    value still ages out via TTL and a successful subsequent write
-    overwrites whatever stale row survived.
-
-    Forwards to the broker daemon via RPC.
-    `BrokerUnavailable` is logged + returns 0 (cached value still
-    ages out via TTL).
+    Outside the broker, forwards over RPC; `BrokerUnavailable` is
+    logged and returns 0 (cached value still ages out via TTL). Inside
+    the broker the delete goes through the active WriterThread, the
+    sole writer.
     """
     nskey = _ns(key)
-    # Route through the active WriterThread when called from inside a
-    # broker handler thread (symmetric with set()). The worker loop
-    # sets the thread-local flag on entry; an active writer means we
-    # are in-broker and must not run _direct_delete on the shared
-    # engine (Phase 6a: single-writer invariant for deletes too).
-    if _broker_handler_active():
-        try:
-            from mimir.broker import _context
-
-            _writer = _context.get_active_writer()
-        except RuntimeError:
-            _writer = None
-        if _writer is not None:
-            return delete_via_writer(_writer, nskey).result()
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
         from mimir.broker.protocol import CacheDeleteRequest
@@ -730,19 +643,9 @@ def delete(key: str) -> int:
         except BrokerUnavailable as exc:
             logger.warning("broker delete failed for %s: %s", nskey, exc)
             return 0
-    try:
-        return _direct_delete(nskey)
-    except OperationalError as exc:
-        logger.warning("cache delete failed for %s: %s", nskey, exc)
-        return 0
+    from mimir.broker import _context
 
-
-def _direct_delete_for_inbox(inbox_name: str) -> int:
-    """Test-only. See _direct_set."""
-    with SessionLocal() as session:
-        result = session.execute(_delete_for_inbox_stmt(inbox_name))
-        session.commit()
-        return result.rowcount or 0
+    return delete_via_writer(_context.get_active_writer(), nskey).result()
 
 
 def delete_for_inbox(inbox_name: str) -> int:
@@ -752,25 +655,16 @@ def delete_for_inbox(inbox_name: str) -> int:
     so an entry references an inbox if its key ends with `:{name}` or
     contains `:{name}:`. Called by the admin CRUD layer after a
     rename or delete so reads don't return rows pointing at a now-
-    stale (or vanished) name. Returns rows deleted (0 on transient-
-    lock fallback; same best-effort posture as `set()` / `delete()`).
+    stale (or vanished) name. Returns rows deleted.
 
     Inbox names are slug-validated (alphanumeric + hyphen) so they
     contain no LIKE-pattern metacharacters; the literal `%` and `_`
     cases that would need escaping can't occur.
 
-    Forwards to the broker daemon via RPC.
-    `BrokerUnavailable` is logged + returns 0.
+    Outside the broker, forwards over RPC; `BrokerUnavailable` is
+    logged and returns 0. Inside the broker the delete goes through the
+    active WriterThread.
     """
-    if _broker_handler_active():
-        try:
-            from mimir.broker import _context
-
-            _writer = _context.get_active_writer()
-        except RuntimeError:
-            _writer = None
-        if _writer is not None:
-            return delete_for_inbox_via_writer(_writer, inbox_name).result()
     if _should_dispatch_to_broker():
         from mimir.broker.client import BrokerUnavailable, get_broker_client
         from mimir.broker.protocol import CacheDeleteForInboxRequest
@@ -788,12 +682,8 @@ def delete_for_inbox(inbox_name: str) -> int:
                 exc,
             )
             return 0
-    try:
-        return _direct_delete_for_inbox(inbox_name)
-    except OperationalError as exc:
-        logger.warning(
-            "cache delete_for_inbox failed for %s: %s",
-            inbox_name,
-            exc,
-        )
-        return 0
+    from mimir.broker import _context
+
+    return delete_for_inbox_via_writer(
+        _context.get_active_writer(), inbox_name
+    ).result()

@@ -649,18 +649,12 @@ def _submit_last_walked_at(
     tree_name: str,
     now: datetime,
 ) -> WriteFuture:
-    """Phase 6a. Compose a WriteOp upserting the per-tree cadence
-    timestamp (`MainlineState.last_walked_at`) for one tree, submit
-    to the writer, return the future.
+    """Compose a WriteOp upserting the per-tree cadence timestamp
+    (`MainlineState.last_walked_at`) for one tree, submit to the
+    writer, return the future.
 
-    This is the steady-state cadence write the scheduler's
-    `update-mainline` tick advances on every successful per-tree
-    walk. Before 6a it ran on the shared engine via a plain
-    `SessionLocal()` get-or-create, which is a shared-engine writer
-    reachable from the broker long worker concurrently with the
-    WriterThread, defeating the single-writer invariant and staying
-    invisible to the slow-write deploy-observe gate (no
-    `write_transaction` wrapper).
+    This is the cadence write the scheduler's `update-mainline` tick
+    advances on every successful per-tree walk.
 
     UPSERT: works whether MainlineState has a row for this tree yet
     or not. tree_name is the PK; on conflict, ONLY `last_walked_at`
@@ -742,25 +736,22 @@ def _submit_maintainers_replace(
     maintainer_rows_for: Callable[[list[int]], list[dict]],
     loaded: int,
 ) -> WriteFuture:
-    """Phase 6a. Compose one WriteOp that re-reads MainlineState on the
+    """Compose one WriteOp that re-reads MainlineState on the
     writer connection (so the no-op decision and the write are one
     transaction), and, when not a no-op, DELETEs the subsystems triple,
     bulk-inserts the parsed rows wiring path/maintainer FKs to the
     returned subsystem ids, and UPSERTs the cursor. Returns a future
     resolving to (ran: bool, loaded: int).
 
-    The closure mirrors the legacy SessionLocal block's SQL exactly so
-    rows are indistinguishable from the pre-6a path. path_rows_for /
-    maintainer_rows_for build their row dicts from the RETURNING ids
-    (subsystem rows are inserted with sort_by_parameter_order so ids
-    align with sub_rows order)."""
+    path_rows_for / maintainer_rows_for build their row dicts from the
+    RETURNING ids (subsystem rows are inserted with
+    sort_by_parameter_order so ids align with sub_rows order)."""
 
     def _fn(conn):
         # Re-read MainlineState on the writer connection so the no-op
-        # decision and the replace are one transaction (the read+write
-        # atomicity that the legacy write_transaction + SessionLocal
-        # block gave). The writer is single-threaded, but keeping it one
-        # transaction preserves the BEGIN-IMMEDIATE-shaped invariant.
+        # decision and the replace are one transaction. The writer is
+        # single-threaded, but keeping it one transaction preserves the
+        # BEGIN-IMMEDIATE-shaped invariant.
         row = conn.execute(
             select(MainlineState.last_commit_sha).where(
                 MainlineState.tree_name == tree_name
@@ -863,18 +854,13 @@ def load_maintainers(
         # badly (see this function's docstring).
         maintainers_sha = blob_sha.decode("ascii")
 
-    # Phase 6a dual-dispatch: parse + build the row payloads BEFORE the
-    # write so the writer-lock hold is short, then either submit one
-    # composite WriteOp (in-broker) or fall back to the plain
-    # SessionLocal block (startup / non-broker / tests). The closures
-    # defer path/maintainer row construction until the RETURNING ids
-    # are known so FKs wire to the right subsystem.
-    try:
-        from mimir.broker import _context
+    # Parse + build the row payloads BEFORE the write so the
+    # writer-lock hold is short, then submit one composite WriteOp. The
+    # closures defer path/maintainer row construction until the
+    # RETURNING ids are known so FKs wire to the right subsystem.
+    from mimir.broker import _context
 
-        writer = _context.get_active_writer()
-    except RuntimeError:
-        writer = None
+    writer = _context.get_active_writer()
 
     parsed = maintainers.parse(blob_bytes)
     sub_rows = [{"name": sub.name, "status": sub.status} for sub in parsed]
@@ -902,62 +888,18 @@ def load_maintainers(
                 )
         return rows
 
-    loaded = len(parsed)
-
-    if writer is not None:
-        ran, loaded_out = _submit_maintainers_replace(
-            writer,
-            tree_name,
-            maintainers_sha,
-            force,
-            sub_rows,
-            _path_rows_for,
-            _maintainer_rows_for,
-            loaded,
-        ).result()
-        if not ran:
-            return False, 0, head_sha
-        loaded = loaded_out
-    else:
-        # Legacy shared-engine fallback (startup pre-serve, non-broker
-        # callers, tests). Same SQL as the writer closure. No
-        # write_transaction wrapper: removed in Phase 6b now that the
-        # broker is the sole writer on its own engine and no concurrent
-        # shared-engine committer exists during serving.
-        with SessionLocal() as session:
-            state = session.get(MainlineState, tree_name)
-            if state is None:
-                state = MainlineState(tree_name=tree_name)
-                session.add(state)
-            if (
-                _rules_cursor_content(state.last_commit_sha) == maintainers_sha
-                and not force
-            ):
-                return False, 0, head_sha
-            # The cascade FK on `subsystems.id` clears `subsystem_paths`
-            # + `subsystem_maintainers` via ON DELETE CASCADE; SQLite
-            # needs `PRAGMA foreign_keys=ON` (set by `mimir.extensions`
-            # on every connection) for the cascade to fire.
-            session.execute(delete(Subsystem))
-            # `sort_by_parameter_order=True` aligns the returned ids with
-            # the input order so path / maintainer rows wire to the right
-            # `subsystem_id` without a name lookup.
-            result = session.execute(
-                insert(Subsystem).returning(Subsystem.id),
-                sub_rows,
-                execution_options={"sort_by_parameter_order": True},
-            )
-            sub_ids = [row[0] for row in result]
-            path_rows = _path_rows_for(sub_ids)
-            maintainer_rows = _maintainer_rows_for(sub_ids)
-            if path_rows:
-                session.execute(insert(SubsystemPath), path_rows)
-            if maintainer_rows:
-                session.execute(insert(SubsystemMaintainer), maintainer_rows)
-            state.last_commit_sha = _next_rules_cursor(
-                state.last_commit_sha, maintainers_sha
-            )
-            session.commit()
+    ran, loaded = _submit_maintainers_replace(
+        writer,
+        tree_name,
+        maintainers_sha,
+        force,
+        sub_rows,
+        _path_rows_for,
+        _maintainer_rows_for,
+        len(parsed),
+    ).result()
+    if not ran:
+        return False, 0, head_sha
 
     # Invalidate the two derived caches that key off MAINTAINERS:
     # the dynamic-allowlist (M:/R: address set, used by From-line +
@@ -1120,34 +1062,15 @@ def update_mainline(
             # that raised above) leave the cursor untouched so the next
             # tick retries.
             #
-            # Phase 6a dual-dispatch fork: when a broker writer is
-            # active (steady-state serving, the scheduler's
-            # `update-mainline` tick on the long worker), route the
-            # cadence write through the single WriterThread so it
-            # joins the single-writer invariant. The UPSERT touches
-            # ONLY `last_walked_at`, so it never clobbers
-            # `last_commit_sha` / `commits_walked_to_sha` written by
-            # the maintainers-replace / cursor WriteOps. Fall back to
-            # the legacy SessionLocal get-or-create for non-broker
-            # callers (the `mimir update-mainline` CLI run pre-serve,
-            # tests, dev scripts).
+            # The cadence write goes through the single WriterThread.
+            # The UPSERT touches ONLY `last_walked_at`, so it never
+            # clobbers `last_commit_sha` / `commits_walked_to_sha`
+            # written by the maintainers-replace / cursor WriteOps.
             from mimir.broker import _context
 
-            try:
-                writer = _context.get_active_writer()
-            except RuntimeError:
-                writer = None
-
-            if writer is not None:
-                _submit_last_walked_at(writer, slug, now).result(timeout=60)
-            else:
-                with SessionLocal() as session:
-                    state = session.get(MainlineState, slug)
-                    if state is None:
-                        state = MainlineState(tree_name=slug)
-                        session.add(state)
-                    state.last_walked_at = now
-                    session.commit()
+            _submit_last_walked_at(_context.get_active_writer(), slug, now).result(
+                timeout=60
+            )
         except Exception as exc:
             logger.warning("update_mainline: tree %s failed: %r", slug, exc)
             tr.ok = False

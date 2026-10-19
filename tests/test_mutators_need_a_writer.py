@@ -1,13 +1,16 @@
-"""Every inbox, robots and replay mutator writes through the broker's
-WriterThread and raises when none is active (#707). The single-writer
-invariant means a process without a writer must not fall back to its
-own SessionLocal write."""
+"""Every inbox, robots, replay, cache and mainline mutator writes
+through the broker's WriterThread and raises when none is active (#707,
+#750). The single-writer invariant means a process without a writer
+must not fall back to its own SessionLocal write. The suite runs with
+MIMIR_IS_BROKER set, so the cache mutators take their in-broker branch
+here, the one that used to fall back to the shared engine."""
 
 from datetime import UTC
 
 import pytest
 from sqlalchemy import select
 
+from mimir import cache
 from mimir.broker import _context
 from mimir.inboxes import (
     create_inbox,
@@ -31,6 +34,10 @@ MUTATORS = {
     "remove_rule": lambda: remove_rule("tester-bot"),
     "reset_rules": reset_rules,
     "replay_failures": lambda: replay_failures(Inbox(id=1, name="alpha")),
+    "cache.set": lambda: cache.set("probe", "v", 60),
+    "cache.delete": lambda: cache.delete("probe"),
+    "cache.delete_for_inbox": lambda: cache.delete_for_inbox("alpha"),
+    "cache.purge_expired": cache.purge_expired,
 }
 
 
@@ -48,6 +55,21 @@ def test_mutator_without_a_writer_raises(seeded_db, monkeypatch, name):
 
     with pytest.raises(RuntimeError, match="No active broker"):
         MUTATORS[name]()
+
+
+def test_load_maintainers_without_a_writer_raises(seeded_db, monkeypatch, tmp_path):
+    from mimir.mainline import load_maintainers
+    from tests.test_mainline import _bare_repo, _commit_maintainers
+
+    repo = _bare_repo(tmp_path / "tree.git")
+    _commit_maintainers(repo, b"BCACHEFS\nF:\tfs/bcachefs/\n", ts=1700000000)
+    repo.close()
+
+    monkeypatch.setattr(_context, "_active_pool", None)
+    monkeypatch.setattr(_context, "_active_writer", None)
+
+    with pytest.raises(RuntimeError, match="No active broker"):
+        load_maintainers(tmp_path / "tree.git", tree_name="linus")
 
 
 def _writer_submit_recorder():

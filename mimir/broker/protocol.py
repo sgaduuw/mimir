@@ -101,7 +101,7 @@ class CacheDeleteRequest(_BrokerRequest):
 
 class CacheDeleteForInboxRequest(_BrokerRequest):
     op: Literal["cache_delete_for_inbox"] = "cache_delete_for_inbox"
-    # `cache._direct_delete_for_inbox` translates this name into a
+    # `cache._delete_for_inbox_stmt` translates this name into a
     # `LIKE %name%` clause. The CLI write paths slug-validate via
     # `mimir.inboxes.validate_name` before the call ever reaches
     # cache, so LIKE-pattern metacharacters can't appear in
