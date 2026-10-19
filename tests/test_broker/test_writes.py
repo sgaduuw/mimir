@@ -8,7 +8,7 @@ import time
 import pytest
 from sqlalchemy import text
 
-from mimir.broker.writes import WriteOp, WriterThread
+from mimir.broker.writes import WriteOp, WriterThread, submit_write
 
 
 def test_write_op_is_frozen():
@@ -525,3 +525,28 @@ def test_every_write_op_runs_on_the_one_writer_thread_with_one_connection(seeded
         "a closure ran on a submitting thread; the writable connection "
         "escaped the writer thread"
     )
+
+
+def test_submit_write_runs_the_op_and_returns_the_result(monkeypatch):
+    from mimir.broker import _context
+
+    class _Future:
+        def result(self, timeout=None):
+            self.timeout = timeout
+            return "sentinel"
+
+    class _Writer:
+        def __init__(self):
+            self.ops = []
+
+        def submit(self, op):
+            self.ops.append(op)
+            return future
+
+    future = _Future()
+    writer = _Writer()
+    monkeypatch.setattr(_context, "_active_writer", writer)
+
+    assert submit_write("lbl", lambda conn: None, timeout=7) == "sentinel"
+    assert [op.label for op in writer.ops] == ["lbl"]
+    assert future.timeout == 7

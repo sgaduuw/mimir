@@ -203,34 +203,15 @@ def _now() -> int:
 
 
 def _should_dispatch_to_broker() -> bool:
-    """True iff this process should send cache writes to the broker
-    via RPC. False inside the broker process itself (we'd be RPC'ing
-    to ourselves: socket round-trip + queue + dispatch, vs handing
-    the write to the WriterThread right here).
-
-    Two short-circuit conditions for "this is the broker":
-
-    - `MIMIR_IS_BROKER=true` env, which the broker container sets
-      in production (and the `mimir broker` CLI entrypoint sets
-      when it runs `serve()`). Process-level marker.
-    - Thread-local "currently inside a broker handler" flag set by
-      `mimir.broker.server`'s worker loops. Catches the in-process
-      test shape where broker + CLI live in the same Python
-      process and `settings.mimir_is_broker` is shared. Worker
-      threads set the flag on entry to a dispatch and clear it on
-      exit, so any cache/inboxes call reachable from a handler
-      sees False and goes to the writer.
-
-    Otherwise the answer is unconditionally True: 2.0.0 made the
-    broker the sole writer process, so every non-broker process
-    routes writes through it. There's no longer a "broker mode
-    off" branch; the dispatch is the contract.
+    """True iff this process should RPC cache writes to the broker.
+    False inside the broker itself, either by the process-level
+    `MIMIR_IS_BROKER` marker or the per-thread "inside a broker
+    handler" flag (the in-process test shape, where the env marker is
+    shared): RPC'ing to ourselves would be a pointless round-trip.
+    Otherwise True, unconditionally: the broker is the sole writer
+    (2.0.0), so every other process routes its writes through it.
     """
-    if settings.mimir_is_broker:
-        return False
-    if _broker_handler_active():
-        return False
-    return True
+    return not (settings.mimir_is_broker or _broker_handler_active())
 
 
 # Thread-local flag set by `mimir.broker.server`'s worker loops
@@ -426,60 +407,88 @@ def _set_via_writer_for_nskey(
     return writer.submit(WriteOp(label=f"cache.set:{nskey}", fn=_fn))
 
 
+def _submit_stmt(writer: Any, label: str, stmt: Any) -> Any:
+    """Submit one DELETE statement as a WriteOp. The future's result is
+    the rowcount."""
+    from mimir.broker.writes import WriteOp
+
+    def _fn(conn: Any) -> int:
+        return conn.execute(stmt).rowcount or 0
+
+    return writer.submit(WriteOp(label=label, fn=_fn))
+
+
 def delete_via_writer(writer: Any, nskey: str) -> Any:
-    """Compose a WriteOp wrapping the single-key cache DELETE. Closure
-    returns the rowcount; `.result()` exposes it for handlers/callers
-    that need it.
+    """Compose a WriteOp wrapping the single-key cache DELETE. The
+    future's result is the rowcount.
 
     `nskey` is the already-namespaced key; callers with a raw key
     should call `_ns(key)` first.
     """
-    from mimir.broker.writes import WriteOp
-
-    def _fn(conn: Any) -> int:
-        stmt = delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
-        return conn.execute(stmt).rowcount or 0
-
-    return writer.submit(WriteOp(label=f"cache.delete:{nskey}", fn=_fn))
+    return _submit_stmt(
+        writer,
+        f"cache.delete:{nskey}",
+        delete_stmt(CacheEntry).where(CacheEntry.key == nskey),
+    )
 
 
 def delete_for_inbox_via_writer(writer: Any, inbox_name: str) -> Any:
-    """Compose a WriteOp wrapping the per-inbox cache DELETE. Closure
-    returns the rowcount.
+    """Compose a WriteOp wrapping the per-inbox cache DELETE. The
+    future's result is the rowcount.
 
     Keys following the convention `<helper>:<inbox_name>[:<rest>]`
     match if they end with `:{name}` or contain `:{name}:`.
     """
-    from mimir.broker.writes import WriteOp
-
-    def _fn(conn: Any) -> int:
-        stmt = delete_stmt(CacheEntry).where(
+    return _submit_stmt(
+        writer,
+        f"cache.delete_for_inbox:{inbox_name}",
+        delete_stmt(CacheEntry).where(
             or_(
                 CacheEntry.key.like(f"%:{inbox_name}"),
                 CacheEntry.key.like(f"%:{inbox_name}:%"),
             )
-        )
-        return conn.execute(stmt).rowcount or 0
-
-    return writer.submit(WriteOp(label=f"cache.delete_for_inbox:{inbox_name}", fn=_fn))
+        ),
+    )
 
 
 def purge_expired_via_writer(writer: Any) -> Any:
-    """Compose a WriteOp wrapping the expired-row DELETE. Closure returns
-    the rowcount.
+    """Compose a WriteOp wrapping the expired-row DELETE. The future's
+    result is the rowcount.
 
-    `_now()` is captured at submit time so the cutoff is fixed; rows
+    `_now()` is read here, at submit time, so the cutoff is fixed; rows
     that expire in the interim land on the next purge cycle.
     """
-    from mimir.broker.writes import WriteOp
+    return _submit_stmt(
+        writer,
+        "cache.purge_expired",
+        delete_stmt(CacheEntry).where(CacheEntry.expires_at < _now()),
+    )
 
-    cutoff = _now()
 
-    def _fn(conn: Any) -> int:
-        stmt = delete_stmt(CacheEntry).where(CacheEntry.expires_at < cutoff)
-        return conn.execute(stmt).rowcount or 0
+def _delete_routed(
+    rpc: Callable[[], dict],
+    failure_msg: str,
+    *failure_args: Any,
+    via_writer: Callable[[Any], Any],
+) -> int:
+    """Run a cache delete where it belongs: RPC to the broker from
+    outside it (`BrokerUnavailable` is logged and counts as 0 rows,
+    the entries age out via TTL), the active WriterThread inside it.
 
-    return writer.submit(WriteOp(label="cache.purge_expired", fn=_fn))
+    `rpc` is a thunk rather than a request object so each
+    `get_broker_client().call(<Model>(...))` stays literal in this file,
+    where `test_web_tier_rpcs_all_route_to_the_cache_queue` reads it."""
+    if _should_dispatch_to_broker():
+        from mimir.broker.client import BrokerUnavailable
+
+        try:
+            return rpc().get("rows_deleted", 0)
+        except BrokerUnavailable as exc:
+            logger.warning(failure_msg, *failure_args, exc)
+            return 0
+    from mimir.broker import _context
+
+    return via_writer(_context.get_active_writer()).result()
 
 
 def get_or_compute(
@@ -552,22 +561,14 @@ def purge_expired() -> int:
     periodic purge thread will catch up. Inside the broker the purge
     goes through the active WriterThread.
     """
-    if _should_dispatch_to_broker():
-        from mimir.broker.client import BrokerUnavailable, get_broker_client
-        from mimir.broker.protocol import CachePurgeExpiredRequest
+    from mimir.broker.client import get_broker_client
+    from mimir.broker.protocol import CachePurgeExpiredRequest
 
-        try:
-            return (
-                get_broker_client()
-                .call(CachePurgeExpiredRequest())
-                .get("rows_deleted", 0)
-            )
-        except BrokerUnavailable as exc:
-            logger.warning("broker purge_expired failed: %s", exc)
-            return 0
-    from mimir.broker import _context
-
-    return purge_expired_via_writer(_context.get_active_writer()).result()
+    return _delete_routed(
+        lambda: get_broker_client().call(CachePurgeExpiredRequest()),
+        "broker purge_expired failed: %s",
+        via_writer=purge_expired_via_writer,
+    )
 
 
 def delete(key: str) -> int:
@@ -580,22 +581,15 @@ def delete(key: str) -> int:
     sole writer.
     """
     nskey = _ns(key)
-    if _should_dispatch_to_broker():
-        from mimir.broker.client import BrokerUnavailable, get_broker_client
-        from mimir.broker.protocol import CacheDeleteRequest
+    from mimir.broker.client import get_broker_client
+    from mimir.broker.protocol import CacheDeleteRequest
 
-        try:
-            return (
-                get_broker_client()
-                .call(CacheDeleteRequest(key=nskey))
-                .get("rows_deleted", 0)
-            )
-        except BrokerUnavailable as exc:
-            logger.warning("broker delete failed for %s: %s", nskey, exc)
-            return 0
-    from mimir.broker import _context
-
-    return delete_via_writer(_context.get_active_writer(), nskey).result()
+    return _delete_routed(
+        lambda: get_broker_client().call(CacheDeleteRequest(key=nskey)),
+        "broker delete failed for %s: %s",
+        nskey,
+        via_writer=lambda writer: delete_via_writer(writer, nskey),
+    )
 
 
 def delete_for_inbox(inbox_name: str) -> int:
@@ -615,25 +609,12 @@ def delete_for_inbox(inbox_name: str) -> int:
     logged and returns 0. Inside the broker the delete goes through the
     active WriterThread.
     """
-    if _should_dispatch_to_broker():
-        from mimir.broker.client import BrokerUnavailable, get_broker_client
-        from mimir.broker.protocol import CacheDeleteForInboxRequest
+    from mimir.broker.client import get_broker_client
+    from mimir.broker.protocol import CacheDeleteForInboxRequest
 
-        try:
-            return (
-                get_broker_client()
-                .call(CacheDeleteForInboxRequest(name=inbox_name))
-                .get("rows_deleted", 0)
-            )
-        except BrokerUnavailable as exc:
-            logger.warning(
-                "broker delete_for_inbox failed for %s: %s",
-                inbox_name,
-                exc,
-            )
-            return 0
-    from mimir.broker import _context
-
-    return delete_for_inbox_via_writer(
-        _context.get_active_writer(), inbox_name
-    ).result()
+    return _delete_routed(
+        lambda: get_broker_client().call(CacheDeleteForInboxRequest(name=inbox_name)),
+        "broker delete_for_inbox failed for %s: %s",
+        inbox_name,
+        via_writer=lambda writer: delete_for_inbox_via_writer(writer, inbox_name),
+    )
