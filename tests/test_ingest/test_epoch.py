@@ -2400,7 +2400,7 @@ def test_cache_writes_drain_between_ingest_batches(
 
     def _cache_set_fn(conn, key: str) -> None:
         # Single INSERT OR REPLACE into the cache table. Mimics
-        # cache._direct_set's shape so the WriteOp shares the same
+        # the cache UPSERT's shape so the WriteOp shares the same
         # writer-lock surface as a real cache.set.
         conn.execute(
             text(

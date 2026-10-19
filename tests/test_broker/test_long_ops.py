@@ -255,50 +255,6 @@ def test_ingest_inbox_via_broker_unknown_inbox_returns_clean_error(seeded_db):
 # ----- broker self-RPC avoidance -----------------------------------------
 
 
-def test_cache_set_writes_direct_inside_broker_process(seeded_db, monkeypatch):
-    """When the calling process IS the broker (`MIMIR_IS_BROKER=true`)
-    and no active writer is registered, `cache.set` must write directly
-    via `_direct_set` rather than sending an RPC to itself. Load-bearing
-    because the broker's own handlers (warm, ingest, backfill) fire cache
-    writes; if those all self-RPC'd the broker's own cache_queue would
-    fill up with its own work.
-
-    The pin: set `broker_socket_path` to a NON-EXISTENT path (so
-    a real RPC would fail), keep `mimir_is_broker=True` (the
-    conftest default), clear the active writer to exercise the
-    `_should_dispatch_to_broker` short-circuit path directly, then
-    call `cache.set` and confirm it landed via the direct path.
-
-    Note: when an active writer IS registered (the broker's Phase 2
-    two-pool path), `cache.set` routes through `set_via_writer`
-    (also non-self-RPC, a different direct path). The test clears
-    the writer so it exercises the original `_should_dispatch_to_broker`
-    guard in isolation."""
-    from pathlib import Path
-
-    from mimir import cache
-    from mimir.broker import _context
-    from mimir.config import settings
-
-    monkeypatch.setattr(
-        settings,
-        "broker_socket_path",
-        Path("/tmp/mimir-test-no-such-broker.sock"),
-    )
-    # Temporarily clear the active writer so cache.set falls through to the
-    # _should_dispatch_to_broker() check (the path this test exercises).
-    # The session broker's pool+writer are restored automatically by monkeypatch
-    # at test teardown via _context._active_writer.
-    monkeypatch.setattr(_context, "_active_writer", None)
-    assert settings.mimir_is_broker is True  # conftest default
-    # `_should_dispatch_to_broker` must return False in this state
-    # (we're "the broker"), and the write must land regardless of
-    # the (non-existent) socket path.
-    assert cache._should_dispatch_to_broker() is False
-    cache.set("self_rpc_test", "v", ttl=60)
-    assert cache.get("self_rpc_test") == "v"
-
-
 def test_cache_set_dispatches_outside_broker_process(monkeypatch):
     """Inverse of the above: when `mimir_is_broker=False`, dispatch
     goes via the broker. Pins that the broker-self-RPC short-circuit

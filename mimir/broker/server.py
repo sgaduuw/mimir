@@ -42,9 +42,9 @@ Why this shape (rather than `ThreadingMixIn` per-connection):
 
 The periodic-purge thread submits the expired-row DELETE through the
 broker's WriterThread on `PURGE_INTERVAL_SEC` cadence so every write
-funnels through the single-writer invariant. The legacy direct-write
-path through `cache._direct_purge_expired` would race intra-broker
-writers and silently skip ticks on `SQLITE_BUSY_SNAPSHOT`.
+funnels through the single-writer invariant. A write on a separate
+connection would race intra-broker writers and silently skip ticks on
+`SQLITE_BUSY_SNAPSHOT`.
 
 Signal handlers (`SIGTERM`, `SIGINT`) set `stop_event`; reader
 threads notice via their selector poll, the worker notices via

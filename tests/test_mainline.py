@@ -1073,75 +1073,6 @@ def test_maintainers_reload_is_gated_on_the_blob_not_on_head(seeded_db, tmp_path
     assert cursor() != after_first, "cursor must move when the content changed"
 
 
-def test_maintainers_gate_holds_on_the_non_broker_fallback_path(seeded_db, tmp_path):
-    """The same contract on the `SessionLocal` path, which the suite is
-    otherwise blind to.
-
-    `conftest._session_broker` installs an active writer for the whole
-    session, so every other test takes the WriterThread branch and the
-    fallback's copy of the compare-and-store is unexercised: reverting
-    only those two lines to the head sha leaves all 1876 tests green.
-    That path is not dead code, it runs at pre-serve startup and for
-    non-broker callers. Clearing the context is what gives it the
-    production shape (mimir MEMORY.md 2026-07-28).
-    """
-    from mimir.broker import _context
-    from mimir.extensions import SessionLocal
-    from mimir.mainline import load_maintainers
-    from mimir.models import MainlineState
-
-    original = b"A\nM:\tx <x@example.org>\nF:\tfs/a/\n"
-    path = tmp_path / "tree.git"
-    repo = _bare_repo(path)
-    c1 = _commit_maintainers(repo, original, ts=1700000000)
-    repo.close()
-
-    pool, writer = _context.get_active_pool(), _context.get_active_writer()
-    _context.clear_active()
-    try:
-        ran, _loaded, _head = load_maintainers(path, tree_name="linus")
-        assert ran
-        with SessionLocal() as s:
-            stored = s.scalar(
-                select(MainlineState.last_commit_sha).where(
-                    MainlineState.tree_name == "linus"
-                )
-            )
-
-        repo = Repo(str(path))
-        _commit_maintainers(
-            repo, original, parent=c1, other=b"# unrelated", ts=1700000100
-        )
-        repo.close()
-
-        ran, _loaded, _head = load_maintainers(path, tree_name="linus")
-        assert not ran, "fallback path reparsed on an unrelated push"
-        with SessionLocal() as s:
-            after = s.scalar(
-                select(MainlineState.last_commit_sha).where(
-                    MainlineState.tree_name == "linus"
-                )
-            )
-        assert after == stored, "fallback path stored a head sha, not the blob"
-
-        # ...and the forced-rebuild half, which is the seam the two
-        # halves of this contract fall through: the gate is exercised
-        # above, the generation bump only on the writer path elsewhere.
-        ran, _loaded, _head = load_maintainers(path, tree_name="linus", force=True)
-        assert ran
-        with SessionLocal() as s:
-            forced = s.scalar(
-                select(MainlineState.last_commit_sha).where(
-                    MainlineState.tree_name == "linus"
-                )
-            )
-        assert forced != after, (
-            "fallback path rebuilt the rules without moving the rule version"
-        )
-    finally:
-        _context.set_active(pool, writer)
-
-
 def test_forced_reparse_moves_the_rules_cursor_even_when_the_blob_is_unchanged(
     seeded_db, tmp_path
 ):
@@ -2244,7 +2175,7 @@ def test_cache_writes_drain_between_mainline_batches(seeded_db, tmp_path):
     cache_errors: list[Exception] = []
 
     def _cache_set_fn(conn, key: str) -> None:
-        # Mimic the shape of cache._direct_set: a single INSERT OR REPLACE
+        # Mimic the shape of a cache UPSERT: a single INSERT OR REPLACE
         # into the cache table.  expires_at is set to a far-future unix
         # timestamp so the row doesn't collide with real cache logic.
         conn.execute(
