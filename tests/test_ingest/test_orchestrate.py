@@ -210,7 +210,7 @@ def test_ingest_inbox_invalidates_cache_on_first_ingest(
     assert cache.get(f"archive_stats:{alpha.name}") == "sentinel"
 
     ingest_inbox(alpha, workers=1)
-    # The post-ingest warm dispatches cache writes via set_via_writer
+    # The post-ingest warm dispatches cache writes via cache.set
     # (fire-and-forget). Drain the WriterThread queue before asserting
     # the rebuilt cache state so the warm's writes have committed.
     _drain_writer()
@@ -243,7 +243,7 @@ def test_ingest_inbox_warms_per_inbox_cache_when_missing(
     assert cache.get(f"daily_volume:{alpha.name}:30") is None
 
     ingest_inbox(alpha, workers=1)
-    # Post-ingest warm writes are fire-and-forget via set_via_writer.
+    # Post-ingest warm writes are fire-and-forget via cache.set.
     # Drain before asserting cache state.
     _drain_writer()
 

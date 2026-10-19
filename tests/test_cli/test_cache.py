@@ -59,7 +59,7 @@ def _drain_writer(timeout: float = 10.0) -> None:
     """FIFO barrier against the active WriterThread.
 
     Warm handlers submit their cache writes fire-and-forget
-    (`set_via_writer` drops the WriteFuture, matching cache.set's
+    (`cache.set` drops the WriteFuture on a handler thread, matching its
     best-effort posture), so a warm-cache CLI exit means "writes
     submitted", not "writes committed". The writer queue is FIFO:
     awaiting a sentinel op guarantees every write submitted before
