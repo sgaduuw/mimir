@@ -325,7 +325,7 @@ MAX_CACHE_VALUE_BYTES = 8 * 1024 * 1024
 
 
 def _set_stmt(nskey: str, payload: str, expires_at: int):
-    """The cache UPSERT, shared by the *_via_writer set paths. Returns a
+    """The cache UPSERT, used by `_set_via_writer_for_nskey`. Returns a
     Core construct usable on a Session or a Connection."""
     return (
         sqlite_insert(CacheEntry)
@@ -351,16 +351,10 @@ def set(key: str, value: Any, ttl: int) -> None:
     posture. Any other broker-side caller (in practice only tests,
     which run with MIMIR_IS_BROKER set) blocks on the result so a read
     right after the write sees it.
+
+    Every path enforces `MAX_CACHE_VALUE_BYTES` first: the check sits
+    before the branching so no caller can route around it.
     """
-    # The thread-local flag, not mere writer registration, picks the
-    # fire-and-forget branch: test threads share the process with a
-    # registered writer but must be able to read back what they wrote.
-    if _broker_handler_active():
-        from mimir.broker import _context
-
-        set_via_writer(_context.get_active_writer(), key, value, ttl)
-        return
-
     nskey = _ns(key)
     payload = json.dumps(_encode(value), separators=(",", ":"))
     if len(payload) > MAX_CACHE_VALUE_BYTES:
@@ -401,60 +395,34 @@ def set(key: str, value: Any, ttl: int) -> None:
         return
     from mimir.broker import _context
 
-    set_via_writer(_context.get_active_writer(), key, value, ttl).result()
-
-
-def set_via_writer(writer: Any, key: str, value: Any, ttl: int) -> Any:
-    """Phase 2 of the two-pool restructure
-    (`_claude/specs/2026-05-29-broker-two-pool-design.md`).
-
-    Compose a WriteOp wrapping the cache UPSERT, submit it to the given
-    WriterThread, and return the WriteFuture.
-    Fire-and-forget callers ignore the future; the rare caller that wants a
-    post-commit guarantee (e.g. an admin op) blocks on `.result()`.
-
-    Serialization (key namespace prefix, value encoder) MUST match
-    `set()` exactly so rows written here are readable via `get()`
-    and `get_or_compute()`.
-
-    Used by warm handlers in Phase 2. Other callers (web-tier RPC
-    handler, long-ops, admin) still use `set()`; their migration
-    is Phase 4 / Phase 5.
-    """
-    from mimir.broker.writes import WriteOp
-
-    nskey = _ns(key)
-    payload = json.dumps(_encode(value), separators=(",", ":"))
-    # Apply any active warm-cache TTL extension at submit time so the
-    # value snapshot the writer-thread closure captures is the bumped
-    # one; the WriterThread may run the closure on a different thread,
-    # where the caller's ContextVar isn't visible.
-    ttl = _apply_ttl_extension(ttl)
-    expires_at = _now() + ttl
-
-    def _fn(conn: Any) -> None:
-        conn.execute(_set_stmt(nskey, payload, expires_at))
-
-    return writer.submit(WriteOp(label=f"cache.set:{key}", fn=_fn))
+    # `_set_via_writer_for_nskey` applies the TTL extension itself.
+    # The thread-local flag, not mere writer registration, picks the
+    # fire-and-forget branch: test threads share the process with a
+    # registered writer but must be able to read back what they wrote.
+    future = _set_via_writer_for_nskey(
+        _context.get_active_writer(), nskey, payload, ttl
+    )
+    if not _broker_handler_active():
+        future.result()
 
 
 def _set_via_writer_for_nskey(
     writer: Any, nskey: str, value_json: str, ttl: int
 ) -> Any:
-    """Underscore-private sibling of `set_via_writer` for callers that
-    already hold a pre-namespaced key and a pre-JSON-encoded payload
-    (i.e. the broker's `handle_cache_set`, which receives both directly
-    on the wire from a web tier that already namespaced + encoded).
+    """Submit the cache UPSERT for a pre-namespaced key and a
+    pre-JSON-encoded payload to the writer and return the WriteFuture.
 
-    Composes the same UPSERT as `set_via_writer`,
-    submits to the writer, returns the WriteFuture. Closure returns
-    None.
+    Callers: `set` (inside the broker) and the broker's
+    `handle_cache_set`, which receives both on the wire from a web
+    tier that already namespaced + encoded. Performs no size check;
+    `set` owns that. Closure returns None.
     """
     from mimir.broker.writes import WriteOp
 
-    # Apply any active warm-cache TTL extension at submit time; see
-    # `set_via_writer` for the rationale (ContextVar isn't visible
-    # to the writer-thread closure).
+    # Apply any active warm-cache TTL extension at submit time so the
+    # value snapshot the writer-thread closure captures is the bumped
+    # one; the WriterThread may run the closure on a different thread,
+    # where the caller's ContextVar isn't visible.
     ttl = _apply_ttl_extension(ttl)
     expires_at = _now() + ttl
 

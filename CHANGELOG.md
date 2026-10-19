@@ -51,6 +51,12 @@ changes, not internal refactors. Categories: **Added**,
   (the older broker does not know the new revision and refuses to
   start).
 
+### Fixed
+
+- Cache values over the size cap are now dropped inside the broker too
+  (#779), as the web tier's already were. The warm and ingest writes
+  skipped the check.
+
 ## [3.21.0] - 2026-10-18
 
 ### Changed
