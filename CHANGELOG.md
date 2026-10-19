@@ -13,6 +13,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- `/favicon.ico` redirects to `/favicon.svg` instead of to `/favicon.ico/`,
+  which returned 404 (#792).
 - `/merge-window` rows from senders without a display name show the patch
   author's name from the linux-next commit instead of "unknown sender"
   (#787).

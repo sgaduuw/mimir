@@ -96,6 +96,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.security_txt": "public, max-age=3600",
     "web.privacy": "public, max-age=3600",
     "web.favicon_svg": "public, max-age=604800",
+    "web.favicon_ico": "public, max-age=604800",
     "web.og_image_png": "public, max-age=604800",
     "web.sitemap": "public, max-age=300",
     "web.meta_sitemap": "public, max-age=300",
