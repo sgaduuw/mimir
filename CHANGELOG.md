@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.22.0] - 2026-10-19
+
 ### Added
 
 - `/merge-window` lists the pull requests sent to Linus: `[GIT PULL]`
