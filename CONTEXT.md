@@ -760,6 +760,8 @@ so `write_transaction()` + the BEGIN-IMMEDIATE listener + the
   engine for any in-broker caller not migrated to
   `set_via_writer` (e.g. `_warm_after_ingest`), because
   `_should_dispatch_to_broker()` is False inside the broker.
+  (Removed in #750: `cache.set` and the other cache mutators now
+  always go through the writer, and `_direct_*` no longer exist.)
 - `longops.bootstrap_inboxes` and `mainline.load_maintainers`
   (the latter explicitly deferred from Phase 3) still wrap
   shared-engine writes in `write_transaction()`.
@@ -801,9 +803,9 @@ cache-write SQL is de-duplicated behind shared per-op
 statement-builders (`_set_stmt` / `_delete_one_stmt` /
 `_delete_for_inbox_stmt` / `_purge_expired_stmt`) used by both the
 `*_via_writer` closures and the `_direct_*` helpers; `_direct_*`
-are retained as explicitly TEST-ONLY scaffolding (no production
-caller, guarded by `test_no_production_module_references_direct_cache_helpers`).
-The `load_maintainers` non-broker fallback path drops the
+were retained as TEST-ONLY scaffolding (deleted in #750, which also
+removed the `load_maintainers` fallback outright). That fallback had
+dropped the
 `write_transaction` wrapper (plain `SessionLocal`; single-threaded,
 no concurrent committer, so DEFERRED begin is safe). The robots.py one
 went too, and #707 later removed the fallback itself. **The cache
@@ -1078,13 +1080,15 @@ match and age out via `purge_expired`.
 `force=True` on dashboard helpers bypasses the cache and recomputes
 (used by `warm-cache`).
 
-`cache.set` is **best-effort**: a `sqlalchemy.exc.OperationalError`
-on commit (the SQLite "database is locked" path, after the
-connection's `busy_timeout` window has elapsed) is logged at warning
-and swallowed. The page already rendered before `set` was called, so
+`cache.set` is **best-effort**: the web tier swallows
+`BrokerUnavailable` (any non-ok reply, writer busy included) and
+logs it. The page already rendered before `set` was called, so
 propagating the error would 500 a successful response; the next
-request just recomputes and tries again. Encoder / programming
-errors are *not* caught, they should still raise loudly.
+request just recomputes and tries again. A broker handler thread
+fires and forgets, so a writer error lands on a future nobody reads.
+Other in-broker callers (tests only) block on the writer and see the
+error. Encoder / programming errors are *not* caught, they should
+still raise loudly.
 
 **One process-local derivation, deliberately (#705).** The subsystem
 rules snapshot (~10k MAINTAINERS rules) is the one cached value too

@@ -773,7 +773,7 @@ def test_purge_loop_submits_via_writer_thread(seeded_db, monkeypatch, caplog):
     """`_purge_loop` routes the expired-row DELETE through
     `cache.purge_expired_via_writer(writer)` so every write funnels
     through the single-writer invariant (audit #475). Pre-fix it
-    called `cache._direct_purge_expired()` directly, racing intra-
+    purged on a separate connection, racing intra-
     broker writers under load.
     """
     import logging
