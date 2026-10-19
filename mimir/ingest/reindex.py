@@ -4,8 +4,8 @@ from pathlib import Path
 
 from sqlalchemy import delete, select, update
 
-from mimir.broker._context import get_active_pool, get_active_writer
-from mimir.broker.writes import WriteOp, submit_write
+from mimir.broker._context import get_active_pool
+from mimir.broker.writes import submit_write
 from mimir.ingest.epoch import DEFAULT_WORKERS, ingest_epoch
 from mimir.models import ArticleList, Inbox, IngestState
 from mimir.thread_roots import drive_passes
@@ -19,7 +19,6 @@ def reindex_epoch(
     workers: int = DEFAULT_WORKERS,
 ) -> dict:
     """Reset the cursor, re-walk, and repair roots even if the walk fails."""
-    writer = get_active_writer()
     with get_active_pool().session() as session:
         inbox = session.scalar(select(Inbox).where(Inbox.name == inbox_name))
         if inbox is None:
@@ -59,9 +58,9 @@ def reindex_epoch(
 
         # A timeout would abandon a reset that can still commit later,
         # leaving no handler to re-walk or repair its cleared roots.
-        deleted = writer.submit(
-            WriteOp(label=f"reindex:reset:{inbox_name}:{epoch}", fn=reset)
-        ).result()
+        deleted = submit_write(
+            f"reindex:reset:{inbox_name}:{epoch}", reset, timeout=None
+        )
         session.rollback()
         counts = None
         try:

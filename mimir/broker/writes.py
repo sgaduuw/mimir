@@ -183,10 +183,13 @@ class WriterThread:
             future.set_exception(exc)
 
 
-def submit_write(label: str, fn: Callable[[Connection], Any], *, timeout: float) -> Any:
+def submit_write(
+    label: str, fn: Callable[[Connection], Any], *, timeout: float | None
+) -> Any:
     """Run `fn` as one WriteOp on the active writer and block for its
     result. Raises RuntimeError when no writer is active. For callers that
-    submit a single op and wait; batching callers use `writer.submit`."""
+    submit a single op and wait; batching callers use `writer.submit`. `timeout=None` waits
+    indefinitely; it is required, never defaulted."""
     # Function-local: _context imports WriterThread from this module.
     from mimir.broker._context import get_active_writer
 
