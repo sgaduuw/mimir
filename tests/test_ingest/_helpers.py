@@ -174,25 +174,15 @@ def _naive_utc(dt):
 
 
 def _cache_set_direct(key: str, value, ttl: int) -> None:
-    """Write a cache value synchronously, bypassing the active
-    WriterThread's async routing.
+    """Write a cache value and wait for the commit.
 
-    When `broker_active` is in effect, `cache.set()` routes writes
-    through `set_via_writer()` (fire-and-forget). Tests that need a
-    sentinel value to be readable *immediately* after the write (e.g.
-    to prove the post-ingest warm does not overwrite a fresh row) use
-    this helper instead of `cache.set()`.
-
-    Calls `cache._direct_set` with the pre-namespaced key and
-    pre-encoded payload, which opens its own SessionLocal and commits
-    synchronously."""
-    import json
-
+    Tests that need a sentinel value to be readable *immediately* after
+    the write (e.g. to prove the post-ingest warm does not overwrite a
+    fresh row) use this helper, which blocks on the writer's future."""
     from mimir import cache
+    from mimir.broker import _context
 
-    nskey = cache._ns(key)
-    payload = json.dumps(cache._encode(value), separators=(",", ":"))
-    cache._direct_set(nskey, payload, ttl)
+    cache.set_via_writer(_context.get_active_writer(), key, value, ttl).result()
 
 
 def _drain_writer() -> None:

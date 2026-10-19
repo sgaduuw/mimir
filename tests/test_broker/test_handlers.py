@@ -3,10 +3,10 @@ broker daemon, just `dispatch(line: bytes) -> Reply` against the
 seeded test DB. Covers the happy path for each op, plus the error
 boundary (malformed JSON / unknown op / invalid request)."""
 
-import json
 from datetime import UTC
 
 from mimir import cache
+from mimir.broker._context import get_active_writer
 from mimir.broker.handlers import dispatch
 from mimir.broker.protocol import (
     CacheDeleteForInboxRequest,
@@ -43,19 +43,16 @@ def test_dispatch_cache_set_writes_to_db(seeded_db):
         )
     )
     assert reply.ok is True
-    # cache.get expects an un-namespaced key but `_direct_set` was
-    # called with a namespaced one, so we round-trip via the public
-    # API with the matching un-namespaced key.
+    # The request carried a namespaced key, so round-trip via the
+    # public API with the matching un-namespaced key.
     assert cache.get("test_dispatch_set") == "hello"
 
 
 def test_dispatch_cache_delete_removes_row(seeded_db):
     nskey = cache._ns("test_dispatch_delete")
-    # Use _direct_set to bypass the fire-and-forget writer routing that
-    # activates when the session-scoped _session_broker fixture has registered
-    # an active writer. We need the value visible immediately for the
-    # pre-condition assertion.
-    cache._direct_set(nskey, json.dumps(cache._encode("x")), 60)
+    # Block on the writer so the value is visible for the pre-condition
+    # assertion.
+    cache.set_via_writer(get_active_writer(), "test_dispatch_delete", "x", 60).result()
     assert cache.get("test_dispatch_delete") == "x"
 
     reply = dispatch(_line(CacheDeleteRequest(rpc_id=1, key=nskey)))
