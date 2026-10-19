@@ -452,6 +452,19 @@ def monthly_volume(
     )
 
 
+def _archive_stats_key(inbox: Inbox) -> str:
+    return f"archive_stats:{inbox.name}"
+
+
+def cached_archive_total(inbox: Inbox) -> int | None:
+    """The inbox's article count from the cached `archive_stats` row,
+    or None when there is no live row. Never computes the COUNT(*)
+    (the ingest tick warms the row, and a caller that only wants a
+    size hint must not pay for a miss)."""
+    stats = cache.get(_archive_stats_key(inbox))
+    return None if stats is None else stats.total
+
+
 def archive_stats(session: Session, inbox: Inbox, force: bool = False) -> ArchiveStats:
     """Total row count + date span + epoch count for `inbox`. Cached
     per-inbox for 24h. COUNT(*) over a single inbox still does a scan but
@@ -488,7 +501,7 @@ def archive_stats(session: Session, inbox: Inbox, force: bool = False) -> Archiv
 
     cached = cache.get_or_compute(
         session,
-        f"archive_stats:{inbox.name}",
+        _archive_stats_key(inbox),
         STATS_CACHE_TTL_SEC,
         compute,
         force=force,

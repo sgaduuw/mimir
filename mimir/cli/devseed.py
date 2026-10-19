@@ -17,6 +17,7 @@ from mimir.extensions import SessionLocal
 from mimir.inboxes import InboxValidationError, validate_name
 from mimir.ingest import ingest_epoch
 from mimir.models import Article, ArticleList, Inbox
+from mimir.web.urls import _msg_path
 
 
 @click.command("dev-seed-thread")
@@ -205,8 +206,6 @@ def dev_seed_thread_command(
             .limit(1)
         ).scalar_one_or_none()
         if latest and latest.date:
-            url = (
-                f"/{inbox_name}/{latest.date.year}/{latest.date.month:02d}/{latest.id}"
-            )
+            url = _msg_path(latest.id, latest.date, inbox_name)
             click.echo(f"navigate to: http://127.0.0.1:5000{url}")
             click.echo(f"  (inbox dashboard: http://127.0.0.1:5000/{inbox_name}/)")

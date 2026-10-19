@@ -46,9 +46,9 @@ def test_cache_handlers_dispatch_under_long_op_load(
     per-batch WriteOps through the writer, cache RPCs that arrive
     via the broker handler path complete with bounded latency.
 
-    Pre-Phase-4 the cache handler ran _direct_set inline on the
-    cache worker thread, parallel to the long worker's writes
-    (serialised at SQLite's writer lock). Phase 4 routes cache
+    Pre-Phase-4 the cache handler wrote inline on the cache worker
+    thread, parallel to the long worker's writes (serialised at
+    SQLite's writer lock). Phase 4 routes cache
     writes through the same WriterThread as long-op writes, so
     they share one queue. Phase 3c's per-batch composite WriteOps
     have ~tens of ms per batch; cache RPCs should see at most one

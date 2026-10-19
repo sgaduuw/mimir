@@ -99,7 +99,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
     <ul>
       {% for p in related_patches %}
       <li>
-        <a href="/{{ p.inbox_name }}/{{ p.date.year }}/{{ '%02d' % p.date.month }}/{{ p.article_id }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
+        <a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
         <small>&middot; {{ p.author|safe_from }}
           &middot; {{ p.date.strftime('%Y-%m-%d') if p.date else '' }}</small>
       </li>
@@ -119,7 +119,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
     <ul>
       {% for r in related_threads %}
       <li>
-        <a href="/{{ r.inbox_name }}/{{ r.year }}/{{ '%02d' % r.month }}/{{ r.article_id }}">{{ r.subject|clean_subject or '(no subject)' }}</a>
+        <a href="{{ r.url }}">{{ r.subject|clean_subject or '(no subject)' }}</a>
         <small data-tooltip="matched: {{ r.signals|join(', ') }}" data-placement="bottom">&middot; {{ r.last_activity.strftime('%Y-%m-%d') if r.last_activity else '' }}</small>
       </li>
       {% endfor %}

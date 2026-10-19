@@ -31,7 +31,7 @@
   <li>
     {%- set status = lifecycle_status_by_id.get(e.article_id) if lifecycle_status_by_id else None -%}
     {% include "_lifecycle_badges.html" %}
-    <a href="/{{ e.inbox_name }}/{{ e.date.year }}/{{ '%02d' % e.date.month }}/{{ e.article_id }}">{{ e.subject|clean_subject or '(no subject)' }}</a>
+    <a href="{{ msg_path(e.article_id, e.date, e.inbox_name) }}">{{ e.subject|clean_subject or '(no subject)' }}</a>
     <br><small>{{ e.date.strftime('%Y-%m-%d') if e.date else '????-??-??' }}
       &middot; <kbd>{{ e.role }}</kbd></small>
   </li>
