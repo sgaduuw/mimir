@@ -72,8 +72,8 @@ class MergeWindowRow(BaseModel):
     trees: list[str]
     # The list the row links into.
     inbox_name: str = ""
-    # The next most specific subsystems the posting touches, after the
-    # one its section is for (at most `ALSO_TOUCHES`).
+    # The other subsystems the posting touches, most files first, after
+    # the one its section is for (at most `ALSO_TOUCHES`).
     also: list[str] = []
 
 
@@ -247,8 +247,9 @@ def _compute(session: Session) -> MergeWindow:
 
     files = _files(session, [r.id for r in archived])
     # The posting's files together decide its primary subsystem, so a
-    # series appears once, under the most specific subsystem any of its
-    # patches touches.
+    # series appears once, under the most specific subsystem covering at
+    # least half as many of its files as the best-covering one
+    # (`ranked_subsystems`).
     posting_keys = list(postings)
     ranked_by_posting = dict(
         zip(

@@ -36,8 +36,9 @@
 
 {% if mw.queued %}
 <p><small>{{ mw.queued }} patch{{ '' if mw.queued == 1 else 'es' }} in linux-next
-  {{ 'is' if mw.queued == 1 else 'are' }} not in Linus's tree yet, grouped by the most specific
-  MAINTAINERS subsystem each touches.
+  {{ 'is' if mw.queued == 1 else 'are' }} not in Linus's tree yet, grouped by MAINTAINERS subsystem: each series
+  goes under the most specific subsystem that covers at least half as many of
+  its files as the subsystem covering the most.
   {%- if mw.walked_commits %} {{ mw.walked_linked }} of {{ mw.walked_commits }} commits in linux-next link their mailing-list patch; the rest cannot be shown here.{% endif %}
   Only commits that link their mailing-list message (a <code>Link:</code> trailer) are counted.
   {%- if mw.not_archived %} {{ mw.not_archived }} of them link to messages not archived here.{% endif %}
