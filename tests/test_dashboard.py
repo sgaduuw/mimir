@@ -13,7 +13,7 @@ Seed recap (from conftest.py):
 
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from mimir.dashboard import (
     archive_stats,
@@ -394,6 +394,82 @@ def test_search_articles_inbox_scoped(seeded_db):
     result_ids = {r.id for r in results}
     assert ids["art2@example.com"] not in result_ids
     assert ids["art1@example.com"] in result_ids
+
+
+def _add(s, inbox, msgid, subject, when):
+    """One article linked to `inbox`, flushed so its id is known."""
+    art = Article(
+        message_id=msgid,
+        subject=subject,
+        author="t@example.com",
+        date=when,
+        thread_parent=None,
+        subject_normalized=subject,
+        lists=[ArticleList(inbox_id=inbox.id, epoch="0.git", commit_sha="f" * 40)],
+    )
+    s.add(art)
+    s.flush()
+    return art.id
+
+
+def test_search_articles_small_inbox_among_large_archive(seeded_db):
+    """An inbox far smaller than the archive, searched for a term with
+    fewer than `limit` matches, returns exactly its own matches, newest
+    first, undated last, and nothing from the other inbox carrying the
+    same term. Two share a date: they come back id DESC, as the
+    date-index walk before #791 returned them, so LIMIT keeps the same
+    row at a tie."""
+    alpha = _inbox(seeded_db, "alpha")
+    beta = _inbox(seeded_db, "beta")
+    base = datetime(2024, 1, 1)
+    with seeded_db() as s:
+        for i in range(50):
+            _add(s, beta, f"bulk{i}@x", f"needle bulk {i}", base + timedelta(days=i))
+        mine = [
+            _add(
+                s,
+                alpha,
+                f"mine{i}@x",
+                f"needle mine {i}",
+                None if d is None else base + timedelta(days=d),
+            )
+            for i, d in enumerate([5, 30, None, 12, 30])
+        ]
+        s.commit()
+        results = search_articles(s, alpha, "needle", force=True)
+        top = search_articles(s, alpha, "needle", limit=1, force=True)
+    assert [r.id for r in results] == [mine[4], mine[1], mine[3], mine[0], mine[2]]
+    assert [r.id for r in top] == [mine[4]]
+
+
+def test_search_statement_drives_from_the_inbox(seeded_db):
+    """The search must seek this inbox's `article_lists` rows and fetch
+    each article by primary key. Walking `ix_articles_date` instead
+    scans the whole archive whenever a small list has fewer than
+    `limit` matches (#791). EXPLAINs the statement `search_articles`
+    actually runs, so a rewrite of the function cannot slip past it."""
+    alpha = _inbox(seeded_db, "alpha")
+    with seeded_db() as s:
+        seen = []
+        engine = s.get_bind()
+
+        def grab(conn, cursor, statement, parameters, context, executemany):
+            if "article_lists" in statement and "LIKE" in statement:
+                seen.append((statement, parameters))
+
+        event.listen(engine, "before_cursor_execute", grab)
+        try:
+            search_articles(s, alpha, "hello", force=True)
+        finally:
+            event.remove(engine, "before_cursor_execute", grab)
+        assert len(seen) == 1, seen
+        statement, params = seen[0]
+        raw = s.connection().connection.driver_connection
+        plan = "\n".join(
+            row[3] for row in raw.execute("EXPLAIN QUERY PLAN " + statement, params)
+        )
+    assert "USING INDEX ix_article_lists_inbox_id" in plan, plan
+    assert "ix_articles_date" not in plan, plan
 
 
 def test_search_articles_escapes_percent_wildcard(seeded_db):
