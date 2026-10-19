@@ -179,6 +179,16 @@ def test_favicon_svg_served(client):
     assert b"<svg" in r.data
 
 
+def test_favicon_ico_redirects_to_the_svg(client):
+    """Browsers and link-preview tools still ask for /favicon.ico. It
+    must not fall through to the inbox route, which redirects it to
+    /favicon.ico/ and then 404s (#792)."""
+    r = client.get("/favicon.ico")
+    assert r.status_code == 301
+    assert r.headers["Location"].endswith("/favicon.svg")
+    assert r.headers["Cache-Control"] == "public, max-age=604800"
+
+
 def test_og_image_png_served(client):
     """The OG image is a pre-baked 1200x630 PNG (no longer an SVG
     rendered from a template -- Twitter/X doesn't render SVG and
