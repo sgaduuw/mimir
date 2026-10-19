@@ -146,8 +146,7 @@ def resolve(
     One WriteOp, so the lookup, the refuse-or-delete decision and the
     insert cannot race another chunk resolving the same key: a run that
     advanced after the caller last looked is judged as it is now."""
-    from mimir.broker._context import get_active_writer
-    from mimir.broker.writes import WriteOp
+    from mimir.broker.writes import submit_write
 
     same_key = (BackfillRun.name == name) & (BackfillRun.params_key == key)
     unfinished = same_key & BackfillRun.finished_at.is_(None)
@@ -197,8 +196,7 @@ def resolve(
             row = conn.execute(select(*_COLUMNS).where(unfinished)).one()
         return Resolved(Run(*row), discarded)
 
-    op = WriteOp(label=f"backfill_runs:{name}:resolve", fn=_fn)
-    return get_active_writer().submit(op).result(timeout=60)
+    return submit_write(f"backfill_runs:{name}:resolve", _fn, timeout=60)
 
 
 def get(run_id: int) -> Run | None:
@@ -236,8 +234,7 @@ def advance(run_id: int, cursor: int, examined: int):
 
 def finish(run_id: int) -> None:
     """Mark a run finished: its walk found no more rows."""
-    from mimir.broker._context import get_active_writer
-    from mimir.broker.writes import WriteOp
+    from mimir.broker.writes import submit_write
 
     def _fn(conn) -> None:
         now = _now()
@@ -247,8 +244,7 @@ def finish(run_id: int) -> None:
             .values(finished_at=now, updated_at=now)
         )
 
-    op = WriteOp(label="backfill_runs:finish", fn=_fn)
-    get_active_writer().submit(op).result(timeout=60)
+    submit_write("backfill_runs:finish", _fn, timeout=60)
 
 
 def release(run_id: int) -> None:
@@ -256,8 +252,7 @@ def release(run_id: int) -> None:
     on its `--limit` is not a driver the next invocation should wait
     for. Ages `updated_at` out of the live window. A killed session
     cannot call this, which is why `LIVE_RUN_SEC` exists."""
-    from mimir.broker._context import get_active_writer
-    from mimir.broker.writes import WriteOp
+    from mimir.broker.writes import submit_write
 
     def _fn(conn) -> None:
         conn.execute(
@@ -266,5 +261,4 @@ def release(run_id: int) -> None:
             .values(updated_at=_now() - timedelta(seconds=LIVE_RUN_SEC))
         )
 
-    op = WriteOp(label="backfill_runs:release", fn=_fn)
-    get_active_writer().submit(op).result(timeout=60)
+    submit_write("backfill_runs:release", _fn, timeout=60)

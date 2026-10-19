@@ -101,11 +101,10 @@ def handle_backfill_thread_roots(req: BackfillThreadRootsRequest) -> Reply:
     from sqlalchemy import select
 
     from mimir.broker import _context
-    from mimir.broker.writes import WriteOp
+    from mimir.broker.writes import submit_write
     from mimir.models import Inbox
     from mimir.thread_roots import MAX_PASSES, drive_passes
 
-    writer = _context.get_active_writer()
     pool = _context.get_active_pool()
 
     with pool.session() as read_session:
@@ -130,12 +129,11 @@ def handle_backfill_thread_roots(req: BackfillThreadRootsRequest) -> Reply:
             them so web-tier cache writes drain instead of queueing
             behind a full-corpus run."""
             return (
-                writer.submit(
-                    WriteOp(
-                        label=f"thread_roots:{fn.__name__}:{_name}",
-                        fn=lambda conn: fn(conn, _id),
-                    )
-                ).result(timeout=600)
+                submit_write(
+                    f"thread_roots:{fn.__name__}:{_name}",
+                    lambda conn: fn(conn, _id),
+                    timeout=600,
+                )
                 or 0
             )
 
