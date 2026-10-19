@@ -968,23 +968,25 @@ def test_cache_module_has_no_pickle_dependency():
 
 
 # --------------------------------------------------------------------------
-# Phase 2 warm-path: set_via_writer
+# Phase 2 warm-path: cache.set through the writer
 # --------------------------------------------------------------------------
 
 
 def test_cache_set_via_writer_commits_through_writer(seeded_db):
-    """set_via_writer() composes a WriteOp wrapping the UPSERT and
+    """The writer helper composes a WriteOp wrapping the UPSERT and
     submits to the writer; the returned WriteFuture resolves once
     the writer commits. The row is then readable via cache.get_or_compute()
     from a fresh session."""
     from mimir.broker.writes import WriterThread
-    from mimir.cache import get_or_compute, set_via_writer
+    from mimir.cache import _ns, _set_via_writer_for_nskey, get_or_compute
     from mimir.extensions import SessionLocal
 
     writer = WriterThread.from_settings()
     writer.start()
     try:
-        future = set_via_writer(writer, "test-writer-key", {"v": 1}, ttl=60)
+        future = _set_via_writer_for_nskey(
+            writer, _ns("test-writer-key"), '{"v":1}', ttl=60
+        )
         future.result(timeout=5)
 
         # Read back via cache.get_or_compute (no compute should fire
@@ -1002,17 +1004,18 @@ def test_cache_set_via_writer_commits_through_writer(seeded_db):
 
 
 def test_cache_set_via_writer_overwrites_existing_key(seeded_db):
-    """Second set_via_writer on the same key replaces the value
+    """Second write on the same key replaces the value
     (UPSERT semantics)."""
     from mimir.broker.writes import WriterThread
-    from mimir.cache import get_or_compute, set_via_writer
+    from mimir.cache import _ns, _set_via_writer_for_nskey, get_or_compute
     from mimir.extensions import SessionLocal
 
     writer = WriterThread.from_settings()
     writer.start()
     try:
-        set_via_writer(writer, "overwrite-key", {"v": 1}, ttl=60).result(timeout=5)
-        set_via_writer(writer, "overwrite-key", {"v": 2}, ttl=60).result(timeout=5)
+        nskey = _ns("overwrite-key")
+        _set_via_writer_for_nskey(writer, nskey, '{"v":1}', ttl=60).result(timeout=5)
+        _set_via_writer_for_nskey(writer, nskey, '{"v":2}', ttl=60).result(timeout=5)
 
         with SessionLocal() as s:
             value = get_or_compute(
@@ -1280,37 +1283,34 @@ def test_delete_for_inbox_dispatches_via_writer_in_broker(
     )
 
 
-def test_set_via_writer_and_nskey_variant_write_identical_rows(
-    broker_active, seeded_db
+def test_cache_set_in_broker_drops_oversized_value(
+    broker_active, seeded_db, monkeypatch, caplog
 ):
-    """`set_via_writer` and its pre-namespaced sibling share one
-    statement-builder, so they produce byte-identical cache rows for
-    the same inputs."""
+    """The size cap holds on a broker handler thread too (#779): an
+    oversized value logs and never reaches the writer."""
     from sqlalchemy import select
 
     from mimir import cache
-    from mimir.broker._context import get_active_writer
     from mimir.models import CacheEntry
+    from tests.test_ingest._helpers import _drain_writer
 
-    nskey_a = cache._ns("dedupe-probe-a")
-    nskey_b = cache._ns("dedupe-probe-b")
+    monkeypatch.setattr(cache, "MAX_CACHE_VALUE_BYTES", 16)
+    cache._set_broker_handler_active(True)
+    try:
+        with caplog.at_level("WARNING", logger="mimir.cache"):
+            cache.set("too-big", "x" * 64, ttl=60)
+    finally:
+        cache._set_broker_handler_active(False)
+    # A handler-thread write is fire-and-forget; drain the writer so
+    # "no row" cannot just mean "not committed yet".
+    _drain_writer()
 
-    writer = get_active_writer()
-    cache.set_via_writer(writer, "dedupe-probe-a", "v", 999).result()
-    cache._set_via_writer_for_nskey(writer, nskey_b, '"v"', ttl=999).result()
-
+    assert "exceeds" in caplog.text
     with seeded_db() as s:
-        row_a = s.execute(
-            select(CacheEntry).where(CacheEntry.key == nskey_a)
-        ).scalar_one()
-        row_b = s.execute(
-            select(CacheEntry).where(CacheEntry.key == nskey_b)
-        ).scalar_one()
-
-    assert row_a.value == row_b.value == '"v"'
-    # expires_at computed from the same ttl within the same test second;
-    # allow a 2s skew for clock tick between the two writes.
-    assert abs(row_a.expires_at - row_b.expires_at) <= 2
+        row = s.execute(
+            select(CacheEntry).where(CacheEntry.key == cache._ns("too-big"))
+        ).scalar_one_or_none()
+    assert row is None
 
 
 def test_only_broker_warm_handlers_enter_the_refresh_window():

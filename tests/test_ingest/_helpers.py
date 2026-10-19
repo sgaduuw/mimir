@@ -179,7 +179,7 @@ def _drain_writer() -> None:
 
     The WriterThread processes ops sequentially. Submitting a no-op
     WriteOp and blocking on its Future guarantees that all previously
-    queued ops (including fire-and-forget `set_via_writer` calls from
+    queued ops (including fire-and-forget calls from
     `cache.set`) have committed to SQLite by the time this returns.
 
     Use after `ingest_inbox()` / `ingest_epoch()` in tests that
