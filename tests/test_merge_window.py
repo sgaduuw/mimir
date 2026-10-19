@@ -564,6 +564,30 @@ def test_site_base_change_moves_the_merge_window_etag(client, monkeypatch):
     assert revalidate.status_code == 200
 
 
+def test_linux_next_mirror_path_moves_the_etag(
+    client, seeded_db, tmp_path, monkeypatch
+):
+    """Commit author names come from the linux-next mirror (#787), so its
+    path is restart-only config the page depends on and belongs in the
+    page's state, like the Linus mirror's."""
+    from mimir.config import settings
+
+    shas = _next_repo(tmp_path, monkeypatch, {"p": ("Jane Doe <jane@example.com>", [])})
+    with seeded_db() as s:
+        _article(s, "bare@x").author = "jane@example.com"
+        _commit(s, "bare@x", "linux-next", sha=shas["p"])
+        s.commit()
+    monkeypatch.setattr(settings.trees["linux-next"], "path", tmp_path / "missing.git")
+    first = client.get(MERGE_WINDOW_PATH)
+    assert "Jane Doe" not in first.get_data(as_text=True)
+    monkeypatch.setattr(settings.trees["linux-next"], "path", tmp_path / "next.git")
+    again = client.get(
+        MERGE_WINDOW_PATH, headers={"If-None-Match": first.headers["ETag"]}
+    )
+    assert again.status_code == 200
+    assert "Jane Doe" in again.get_data(as_text=True)
+
+
 @pytest.mark.parametrize("knob", ["tree_display_name", "demoted_inboxes"])
 def test_config_knobs_move_the_etag(client, monkeypatch, knob):
     """Restart-only config the page depends on is in its validator:

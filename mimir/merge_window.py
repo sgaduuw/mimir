@@ -156,6 +156,7 @@ def merge_window_state(session: Session) -> str:
         f"{name}={cfg.display_name or ''}"
         for name, cfg in sorted(settings.trees.items())
     )
+    next_tree = settings.trees.get(QUEUED_TREE)
     return "|".join(
         [
             mimir.__version__,
@@ -165,6 +166,8 @@ def merge_window_state(session: Session) -> str:
             ",".join(sorted(settings.canonical_demoted_inboxes)),
             labels,
             str(_linus_path()),
+            # Commit author names come from this mirror (#787).
+            str(resolve_tree_path(next_tree) if next_tree else None),
         ]
     )
 
