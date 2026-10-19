@@ -29,7 +29,7 @@ exist in MAINTAINERS, `X:` only acts on its own section.
 
 import fnmatch
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
@@ -369,22 +369,21 @@ def ranked_subsystems(session: Session, groups: list[list[str]]) -> list[list[st
     out = []
     for paths in groups:
         distinct = set(paths)
-        count: dict[str, int] = {}
+        count: Counter[str] = Counter()
         spec: dict[str, int] = {}
         for path in distinct:
             for sid, s in index.match([path]).items():
                 sub = index.subsystems.get(sid)
                 if sub is None or sub.name == CATCH_ALL_SUBSYSTEM:
                     continue
-                count[sub.name] = count.get(sub.name, 0) + 1
+                count[sub.name] += 1
                 spec[sub.name] = max(spec.get(sub.name, -1), s)
         by_coverage = sorted(count, key=lambda n: (-count[n], -spec[n], n))
         if by_coverage:
             top = count[by_coverage[0]]
             candidates = [n for n in by_coverage if count[n] * 2 >= top]
             primary = min(candidates, key=lambda n: (-spec[n], n))
-            by_coverage.remove(primary)
-            by_coverage.insert(0, primary)
+            by_coverage = [primary] + [n for n in by_coverage if n != primary]
         out.append(by_coverage)
     return out
 
