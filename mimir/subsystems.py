@@ -348,20 +348,44 @@ CATCH_ALL_SUBSYSTEM = "THE REST"
 
 def ranked_subsystems(session: Session, groups: list[list[str]]) -> list[list[str]]:
     """For each group of paths, the names of the subsystems it matches,
-    most specific first (the longest fixed prefix of a matching F: rule,
-    then name), without the catch-all. The first is the group's primary
-    subsystem, which `/merge-window` groups by (#703). Same matching as
-    `subsystems_for_article`; batched so the index is looked up once."""
+    primary first, without the catch-all. The first is the group's
+    primary subsystem, which `/merge-window` groups by (#703, #786).
+    Same matching as `subsystems_for_article`; batched so the index is
+    looked up once.
+
+    The primary is the most specific subsystem (longest fixed F: prefix,
+    then name) among the candidates: those covering at least half as
+    many of the group's distinct files as the best-covering subsystem.
+    The rest follow by files covered, then specificity, then name.
+    Specificity alone let one file in a deeply nested driver file a
+    tree-wide series under that driver. The bar is relative to the best
+    coverage so that defconfig or doc churn in one broad subsystem
+    cannot outvote a deeper subsystem with nearly as many files, and a
+    driver patch that shares one header with its parent still lands on
+    the driver. When the best covers a single file every match
+    qualifies and the deepest wins: one file each gives no coverage
+    signal."""
     index = _rules_index(session)
     out = []
     for paths in groups:
-        best = {
-            index.subsystems[sid].name: spec
-            for sid, spec in index.match(paths).items()
-            if sid in index.subsystems
-            and index.subsystems[sid].name != CATCH_ALL_SUBSYSTEM
-        }
-        out.append(sorted(best, key=lambda name: (-best[name], name)))
+        distinct = set(paths)
+        count: dict[str, int] = {}
+        spec: dict[str, int] = {}
+        for path in distinct:
+            for sid, s in index.match([path]).items():
+                sub = index.subsystems.get(sid)
+                if sub is None or sub.name == CATCH_ALL_SUBSYSTEM:
+                    continue
+                count[sub.name] = count.get(sub.name, 0) + 1
+                spec[sub.name] = max(spec.get(sub.name, -1), s)
+        by_coverage = sorted(count, key=lambda n: (-count[n], -spec[n], n))
+        if by_coverage:
+            top = count[by_coverage[0]]
+            candidates = [n for n in by_coverage if count[n] * 2 >= top]
+            primary = min(candidates, key=lambda n: (-spec[n], n))
+            by_coverage.remove(primary)
+            by_coverage.insert(0, primary)
+        out.append(by_coverage)
     return out
 
 
