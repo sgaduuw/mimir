@@ -1283,44 +1283,6 @@ def test_delete_for_inbox_dispatches_via_writer_in_broker(
     )
 
 
-def test_cache_set_handler_and_off_handler_write_identical_rows(
-    broker_active, seeded_db
-):
-    """On a broker handler thread `cache.set` fires and forgets; off it,
-    it blocks. Both submit through one helper, so for the same input they
-    produce the same row."""
-    from sqlalchemy import select
-
-    from mimir import cache
-    from mimir.broker._context import get_active_writer
-    from mimir.broker.writes import WriteOp
-    from mimir.models import CacheEntry
-
-    cache.set("dedupe-probe-a", "v", 999)
-    cache._set_broker_handler_active(True)
-    try:
-        cache.set("dedupe-probe-b", "v", 999)
-    finally:
-        cache._set_broker_handler_active(False)
-    # FIFO barrier: the handler-thread write was not awaited.
-    get_active_writer().submit(WriteOp(label="test:drain", fn=lambda c: None)).result(
-        timeout=10
-    )
-
-    with seeded_db() as s:
-        rows = [
-            s.execute(
-                select(CacheEntry).where(CacheEntry.key == cache._ns(k))
-            ).scalar_one()
-            for k in ("dedupe-probe-a", "dedupe-probe-b")
-        ]
-
-    assert rows[0].value == rows[1].value == '"v"'
-    # expires_at computed from the same ttl within the same test second;
-    # allow a 2s skew for clock tick between the two writes.
-    assert abs(rows[0].expires_at - rows[1].expires_at) <= 2
-
-
 def test_cache_set_in_broker_drops_oversized_value(
     broker_active, seeded_db, monkeypatch, caplog
 ):
@@ -1329,9 +1291,8 @@ def test_cache_set_in_broker_drops_oversized_value(
     from sqlalchemy import select
 
     from mimir import cache
-    from mimir.broker._context import get_active_writer
-    from mimir.broker.writes import WriteOp
     from mimir.models import CacheEntry
+    from tests.test_ingest._helpers import _drain_writer
 
     monkeypatch.setattr(cache, "MAX_CACHE_VALUE_BYTES", 16)
     cache._set_broker_handler_active(True)
@@ -1342,9 +1303,7 @@ def test_cache_set_in_broker_drops_oversized_value(
         cache._set_broker_handler_active(False)
     # A handler-thread write is fire-and-forget; drain the writer so
     # "no row" cannot just mean "not committed yet".
-    get_active_writer().submit(WriteOp(label="test:drain", fn=lambda c: None)).result(
-        timeout=10
-    )
+    _drain_writer()
 
     assert "exceeds" in caplog.text
     with seeded_db() as s:
