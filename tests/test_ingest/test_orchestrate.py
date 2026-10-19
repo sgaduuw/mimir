@@ -17,7 +17,6 @@ from mimir.models import (
 )
 from tests.test_ingest._helpers import (
     _build_pubinbox_repo,
-    _cache_set_direct,
     _drain_writer,
     _rfc5322,
     _setup_alpha_with_messages,
@@ -207,14 +206,11 @@ def test_ingest_inbox_invalidates_cache_on_first_ingest(
 
     # Seed a cache row keyed under the inbox name (mimics the `total=0`
     # row a warm-cache tick would write between add and first ingest).
-    # Use _cache_set_direct so the write is immediately visible to
-    # cache.get() without waiting for the WriterThread queue to drain
-    # (cache.set() is fire-and-forget async when broker_active is up).
-    _cache_set_direct(f"archive_stats:{alpha.name}", "sentinel", 86400)
+    cache.set(f"archive_stats:{alpha.name}", "sentinel", 86400)
     assert cache.get(f"archive_stats:{alpha.name}") == "sentinel"
 
     ingest_inbox(alpha, workers=1)
-    # The post-ingest warm dispatches cache writes via set_via_writer
+    # The post-ingest warm dispatches cache writes via cache.set
     # (fire-and-forget). Drain the WriterThread queue before asserting
     # the rebuilt cache state so the warm's writes have committed.
     _drain_writer()
@@ -247,7 +243,7 @@ def test_ingest_inbox_warms_per_inbox_cache_when_missing(
     assert cache.get(f"daily_volume:{alpha.name}:30") is None
 
     ingest_inbox(alpha, workers=1)
-    # Post-ingest warm writes are fire-and-forget via set_via_writer.
+    # Post-ingest warm writes are fire-and-forget via cache.set.
     # Drain before asserting cache state.
     _drain_writer()
 
@@ -274,9 +270,7 @@ def test_ingest_inbox_warm_preserves_existing_cache_row(
 
     alpha = _setup_alpha_with_messages(seeded_db, tmp_path, 3)
 
-    # Use _cache_set_direct so the sentinel is immediately readable
-    # (cache.set is async via WriterThread when broker_active is up).
-    _cache_set_direct(f"archive_stats:{alpha.name}", "sentinel", 86400)
+    cache.set(f"archive_stats:{alpha.name}", "sentinel", 86400)
     assert cache.get(f"archive_stats:{alpha.name}") == "sentinel"
 
     ingest_inbox(alpha, workers=1)
@@ -369,9 +363,7 @@ def test_ingest_inbox_does_not_invalidate_cache_on_steady_state(
         ix.last_article_date = datetime(2026, 1, 1, tzinfo=UTC)
         s.commit()
 
-    # Use _cache_set_direct so the sentinel is immediately readable
-    # (cache.set is async via WriterThread when broker_active is up).
-    _cache_set_direct(f"archive_stats:{alpha.name}", "sentinel", 86400)
+    cache.set(f"archive_stats:{alpha.name}", "sentinel", 86400)
     assert cache.get(f"archive_stats:{alpha.name}") == "sentinel"
 
     ingest_inbox(alpha, workers=1)

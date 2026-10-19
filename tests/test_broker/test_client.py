@@ -151,7 +151,7 @@ def test_client_concurrent_rpcs_from_one_singleton(seeded_db):
 
     Pin: N threads each issue M unique cache_set RPCs through a
     shared client. All complete without raising. Every key lands
-    in the DB exactly once (idempotent upsert via _direct_set).
+    in the DB exactly once (idempotent upsert).
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 

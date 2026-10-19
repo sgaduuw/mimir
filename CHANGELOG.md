@@ -11,6 +11,54 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.22.0] - 2026-10-19
+
+### Added
+
+- `/merge-window` lists the pull requests sent to Linus: `[GIT PULL]`
+  messages with Linus in To or Cc, newest first, each marked merged or
+  pending. They count from Linus's latest tag, or while the merge window is
+  open from the tag before the release (normally the last rc), so pull
+  requests sent in the last rc week are listed. Merged means the commit
+  named in the message ("up to <sha>") is in Linus's tree after that same
+  tag, or a pr-tracker-bot reply says it was merged (the bot replies once
+  the merge is in Linus's tree, which also covers a pull whose named commit
+  never appears there). The list comes first while the merge window is
+  open and after the queue otherwise. Measured on production on
+  2026-10-18 since `v7.3-rc7`: 106 `[GIT PULL]` messages, 57 to Linus, 46
+  naming a commit; reading them from git took 0.5 s, and one `git rev-list`
+  over 20,259 commits took 0.19 s. New pull requests move the page's ETag
+  without recomputing the queue (#703).
+
+### Changed
+
+- The "needs attention" and "quiet" triage lists load faster for
+  smaller mailing lists (#775). A list under one million articles is
+  now read from its own articles instead of walking the whole
+  archive's last 180 days. Measured on production on 2026-10-18, first
+  page, same rows either way: u-boot 14.02 s to 0.49 s, linux-fsdevel
+  13.7 s to 0.35 s, alsa-devel 14.06 s to 0.28 s. lkml and netdev keep
+  the old walk, which is faster for them (lkml 0.60 s against 5.58 s).
+  A sparse subsystem on netdev is still slow (14.09 s).
+
+- The database now refuses a second inbox with the same list address
+  (#658). A partial unique index on `inboxes.list_address` (NULL stays
+  shared) backs up the checks in `admin inbox update` and in
+  auto-promotion. The broker applies it at startup. If two inboxes
+  still share an address, the broker refuses to start, names each
+  address and its inboxes, and changes nothing: clear the extra holders
+  on the previous release with `admin inbox update NAME --list-address
+  ""`, then deploy again. Rolling back needs `alembic downgrade
+  1496642cb923`, run from this image before the older image starts
+  (the older broker does not know the new revision and refuses to
+  start).
+
+### Fixed
+
+- Cache values over the size cap are now dropped inside the broker too
+  (#779), as the web tier's already were. The warm and ingest writes
+  skipped the check.
+
 ## [3.21.0] - 2026-10-18
 
 ### Changed

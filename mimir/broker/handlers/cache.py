@@ -4,8 +4,8 @@ the rowcount, return the reply.
 
 Phase 4 of the broker two-pool restructure
 (`_claude/specs/2026-05-29-broker-two-pool-design.md`): the
-handlers no longer run `_direct_*(...)` inline on the cache
-worker thread. Instead, they submit single-statement WriteOps
+handlers do not write inline on the cache worker thread.
+Instead, they submit single-statement WriteOps
 through `_context.get_active_writer()` and await `.result()`.
 The cache worker thread keeps running (it dequeues from
 `cache_queue` and dispatches) but the actual SQLite write
@@ -51,9 +51,9 @@ logger = logging.getLogger(__name__)
 def handle_cache_set(req: CacheSetRequest) -> Reply:
     writer = get_active_writer()
     # req.key is already namespaced and req.value_json already JSON-encoded
-    # (the web tier's cache.set did both before sending). _set_via_writer_for_nskey
-    # parallels _direct_set's pre-prepared-inputs signature. Await .result()
-    # so the reply doesn't go out before the commit lands.
+    # (the web tier's cache.set did both, and checked the size cap, before
+    # sending), hence the nskey helper. Await .result() so the reply
+    # doesn't go out before the commit lands.
     try:
         cache._set_via_writer_for_nskey(
             writer, req.key, req.value_json, req.ttl

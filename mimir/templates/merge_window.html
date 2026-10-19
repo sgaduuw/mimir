@@ -4,6 +4,24 @@
 {% block meta_description %}Patches in linux-next that are not yet in Linus's tree, grouped by kernel subsystem, each linked to its review thread: what the next Linux merge window is likely to bring.{% endblock %}
 
 {% block content %}
+{% macro pull_requests() %}
+<h2 id="pull-requests-to-linus">Pull requests to Linus{% if pulls.anchor %} <small>since {{ pulls.anchor }}</small>{% endif %}</h2>
+{% if pulls.rows %}
+<ul>
+  {% for pr in pulls.rows %}
+  <li>
+    <a href="{{ pr.url }}">{{ pr.subject|clean_subject or '(no subject)' }}</a>
+    <small>{{ 'merged' if pr.merged else 'pending' }}</small>
+    <br><small>{{ pr.author|display_name }}
+      {%- if pr.date %} &middot; {{ pr.date.strftime('%Y-%m-%d') }}{% endif %}</small>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>No pull requests to Linus since {{ pulls.anchor or 'the latest tag' }}.</p>
+{% endif %}
+{% endmacro %}
+
 <h1>Linux merge window <small>patches queued in linux-next</small></h1>
 
 <p>
@@ -11,6 +29,10 @@
   {%- if mw.linus_tag %}Linus's tree is at <strong>{{ mw.linus_tag }}</strong>. {% endif -%}
   {%- if mw.queued_walked_at %}linux-next as of {{ mw.queued_walked_at.strftime('%Y-%m-%d %H:%M') }} UTC.{% endif %}
 </p>
+
+{# While the window is open the pull requests are the news; otherwise
+   the queue is. #}
+{% if mw.window_open %}{{ pull_requests() }}{% endif %}
 
 {% if mw.queued %}
 <p><small>{{ mw.queued }} patch{{ '' if mw.queued == 1 else 'es' }} in linux-next
@@ -74,4 +96,6 @@
    linux-next has been walked at all. #}
 <p>Nothing is queued: every linked patch in linux-next is already in Linus's tree, or linux-next has not been indexed yet.</p>
 {% endif %}
+
+{% if not mw.window_open %}{{ pull_requests() }}{% endif %}
 {% endblock %}

@@ -7,12 +7,10 @@ so future drift gets caught the moment someone runs the suite.
 """
 
 import json
-import logging
 from datetime import UTC, date, datetime, timezone
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
 
 from mimir import cache
 from mimir.broker.writes import WriterThread
@@ -338,194 +336,6 @@ def test_set_propagates_value_inside_collection():
     with pytest.raises(TypeError, match="don't know how to encode"):
         cache.set(key, {"items": [1, 2, Unregistered()]}, ttl=60)
     assert cache.get(key) is None
-
-
-def test_set_swallows_operational_error_on_lock(monkeypatch):
-    """Unit-level: a locked DB during a cache write must not propagate
-    , the request has already rendered. `set()` logs at warning and
-     returns. Mocked SessionLocal pins the swallow + log code path
-     without depending on real SQLite contention timing."""
-
-    class _LockedSession:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def execute(self, _stmt):
-            return None
-
-        def commit(self):
-            raise OperationalError("INSERT", None, Exception("database is locked"))
-
-    monkeypatch.setattr(cache, "SessionLocal", lambda: _LockedSession())
-
-    captured: list[logging.LogRecord] = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record):
-            captured.append(record)
-
-    handler = _Capture(level=logging.WARNING)
-    logger = logging.getLogger("mimir.cache")
-    logger.addHandler(handler)
-    try:
-        cache.set("xtest-locked-key", "value", ttl=60)  # must not raise
-    finally:
-        logger.removeHandler(handler)
-
-    assert any("cache write failed" in r.getMessage() for r in captured), (
-        f"expected a 'cache write failed' warning, got {[r.getMessage() for r in captured]}"
-    )
-
-
-def test_delete_swallows_operational_error_on_lock(monkeypatch):
-    """`cache.delete` matches `cache.set`'s best-effort posture: an
-    `OperationalError` (database is locked, VACUUM, etc.) is swallowed
-    + logged, returns 0. Admin CRUD callers must not 500 on a
-    successfully-completed DB change just because the cache
-    invalidation lost the lock race. Audit (2026-05-15) flagged the
-    asymmetry."""
-
-    class _LockedSession:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def execute(self, _stmt):
-            return None
-
-        def commit(self):
-            raise OperationalError("DELETE", None, Exception("database is locked"))
-
-    monkeypatch.setattr(cache, "SessionLocal", lambda: _LockedSession())
-
-    captured: list[logging.LogRecord] = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record):
-            captured.append(record)
-
-    handler = _Capture(level=logging.WARNING)
-    logger = logging.getLogger("mimir.cache")
-    logger.addHandler(handler)
-    try:
-        result = cache.delete("xtest-locked-delete-key")  # must not raise
-    finally:
-        logger.removeHandler(handler)
-
-    assert result == 0
-    assert any("cache delete failed" in r.getMessage() for r in captured), (
-        f"expected a 'cache delete failed' warning, got "
-        f"{[r.getMessage() for r in captured]}"
-    )
-
-
-def test_delete_for_inbox_swallows_operational_error_on_lock(monkeypatch):
-    """Symmetric to `test_delete_swallows_operational_error_on_lock`
-    for the bulk delete_for_inbox path that runs on every inbox
-    rename / delete."""
-
-    class _LockedSession:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def execute(self, _stmt):
-            return None
-
-        def commit(self):
-            raise OperationalError("DELETE", None, Exception("database is locked"))
-
-    monkeypatch.setattr(cache, "SessionLocal", lambda: _LockedSession())
-
-    captured: list[logging.LogRecord] = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record):
-            captured.append(record)
-
-    handler = _Capture(level=logging.WARNING)
-    logger = logging.getLogger("mimir.cache")
-    logger.addHandler(handler)
-    try:
-        result = cache.delete_for_inbox("some-inbox")  # must not raise
-    finally:
-        logger.removeHandler(handler)
-
-    assert result == 0
-    assert any("cache delete_for_inbox failed" in r.getMessage() for r in captured), (
-        f"expected a 'cache delete_for_inbox failed' warning, got "
-        f"{[r.getMessage() for r in captured]}"
-    )
-
-
-def test_set_swallows_real_sqlite_lock_with_busy_timeout_zero():
-    """Integration-level companion to the mocked swallow test: open a
-    separate SQLite connection, hold an EXCLUSIVE transaction, then
-    call `cache.set()` against a connection with `busy_timeout=0`.
-    The real contention raises a real OperationalError, and `set()`
-    must still swallow it.
-
-    The mocked version proves the code path; this version proves
-    the swallow actually triggers under SQLite-level lock contention,
-    which is the scenario the contract describes."""
-    import sqlite3
-
-    from mimir.extensions import engine
-
-    db_path = engine.url.database
-    if not db_path or db_path == ":memory:":
-        pytest.skip("requires file-backed SQLite for cross-connection lock")
-
-    # Hold an EXCLUSIVE transaction on the cache table from a
-    # second connection. cache.set's own connection will hit
-    # OperationalError on commit/upsert.
-    blocker = sqlite3.connect(db_path)
-    try:
-        # busy_timeout 0 on the blocker so it returns immediately if
-        # it ever needs to wait; we never query through it.
-        blocker.execute("PRAGMA busy_timeout = 0")
-        blocker.execute("BEGIN EXCLUSIVE")
-
-        # Lower the engine's busy_timeout to 0 for this test so we
-        # don't wait the production 5s window.
-        with engine.connect() as conn:
-            conn.execute(text("PRAGMA busy_timeout = 0"))
-            conn.commit()
-
-        captured: list[logging.LogRecord] = []
-
-        class _Capture(logging.Handler):
-            def emit(self, record):
-                captured.append(record)
-
-        handler = _Capture(level=logging.WARNING)
-        logger = logging.getLogger("mimir.cache")
-        logger.addHandler(handler)
-        try:
-            cache.set("xtest-real-lock-key", "value", ttl=60)  # must not raise
-        finally:
-            logger.removeHandler(handler)
-
-        # Either we got the swallow warning, or the write succeeded
-        # despite the lock (some SQLite versions do non-blocking
-        # writes via WAL). Both are acceptable; the contract is
-        # specifically "no exception propagates."
-        # The "cache write failed" warning IS expected here under
-        # EXCLUSIVE lock + busy_timeout 0; assert it appeared.
-        assert any("cache write failed" in r.getMessage() for r in captured), (
-            "expected a 'cache write failed' warning under real lock; "
-            f"got {[r.getMessage() for r in captured]}"
-        )
-    finally:
-        blocker.rollback()
-        blocker.close()
 
 
 def test_delete_for_inbox_pattern_boundary():
@@ -1158,23 +968,25 @@ def test_cache_module_has_no_pickle_dependency():
 
 
 # --------------------------------------------------------------------------
-# Phase 2 warm-path: set_via_writer
+# Phase 2 warm-path: cache.set through the writer
 # --------------------------------------------------------------------------
 
 
 def test_cache_set_via_writer_commits_through_writer(seeded_db):
-    """set_via_writer() composes a WriteOp wrapping the UPSERT and
+    """The writer helper composes a WriteOp wrapping the UPSERT and
     submits to the writer; the returned WriteFuture resolves once
     the writer commits. The row is then readable via cache.get_or_compute()
     from a fresh session."""
     from mimir.broker.writes import WriterThread
-    from mimir.cache import get_or_compute, set_via_writer
+    from mimir.cache import _ns, _set_via_writer_for_nskey, get_or_compute
     from mimir.extensions import SessionLocal
 
     writer = WriterThread.from_settings()
     writer.start()
     try:
-        future = set_via_writer(writer, "test-writer-key", {"v": 1}, ttl=60)
+        future = _set_via_writer_for_nskey(
+            writer, _ns("test-writer-key"), '{"v":1}', ttl=60
+        )
         future.result(timeout=5)
 
         # Read back via cache.get_or_compute (no compute should fire
@@ -1192,17 +1004,18 @@ def test_cache_set_via_writer_commits_through_writer(seeded_db):
 
 
 def test_cache_set_via_writer_overwrites_existing_key(seeded_db):
-    """Second set_via_writer on the same key replaces the value
+    """Second write on the same key replaces the value
     (UPSERT semantics)."""
     from mimir.broker.writes import WriterThread
-    from mimir.cache import get_or_compute, set_via_writer
+    from mimir.cache import _ns, _set_via_writer_for_nskey, get_or_compute
     from mimir.extensions import SessionLocal
 
     writer = WriterThread.from_settings()
     writer.start()
     try:
-        set_via_writer(writer, "overwrite-key", {"v": 1}, ttl=60).result(timeout=5)
-        set_via_writer(writer, "overwrite-key", {"v": 2}, ttl=60).result(timeout=5)
+        nskey = _ns("overwrite-key")
+        _set_via_writer_for_nskey(writer, nskey, '{"v":1}', ttl=60).result(timeout=5)
+        _set_via_writer_for_nskey(writer, nskey, '{"v":2}', ttl=60).result(timeout=5)
 
         with SessionLocal() as s:
             value = get_or_compute(
@@ -1223,7 +1036,7 @@ def test_cache_set_routes_through_active_writer_when_registered(seeded_db):
     writer, calling cache.set, and asserting the row commits."""
     import time as _time
 
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import create_engine
 
     from mimir import cache
     from mimir.broker import _context
@@ -1274,39 +1087,6 @@ def test_cache_set_routes_through_active_writer_when_registered(seeded_db):
             _context.set_active(saved_pool, saved_writer)
         else:
             _context.clear_active()
-
-
-def test_cache_set_falls_back_to_inline_when_no_active_writer(seeded_db):
-    """Outside the broker (no active writer registered), cache.set
-    runs the UPSERT inline as today. The web tier still uses this
-    path."""
-    from sqlalchemy import create_engine, text
-
-    from mimir import cache
-    from mimir.broker import _context
-    from mimir.config import settings
-
-    # Save and restore the active context: the session-scoped broker
-    # fixture in conftest.py has already registered a pool + writer.
-    # Clearing without restoring would leave every subsequent test in
-    # the session without an active broker, causing warm-handler tests
-    # to fail with "No active broker; call set_active() first".
-    saved_pool = _context._active_pool
-    saved_writer = _context._active_writer
-    _context.clear_active()
-    try:
-        cache.set("no-active-writer-key", {"v": 2}, ttl=60)
-        engine = create_engine(settings.database_url, future=True)
-        with engine.connect() as c:
-            row = c.execute(
-                text("SELECT key FROM cache WHERE key LIKE :p"),
-                {"p": "%no-active-writer-key"},
-            ).scalar_one_or_none()
-            assert row is not None
-        engine.dispose()
-    finally:
-        if saved_pool is not None and saved_writer is not None:
-            _context.set_active(saved_pool, saved_writer)
 
 
 def test_ttl_extension_context_extends_stored_ttl(seeded_db):
@@ -1457,10 +1237,9 @@ def test_get_or_compute_window_check_is_probabilistic_when_refresh_within_active
         assert value == "v2"
 
 
-def test_delete_dispatches_via_writer_when_broker_handler_active(broker_active):
-    """In-broker (handler flag set + active writer), cache.delete must
-    dispatch through the WriterThread, not _direct_delete on the shared
-    engine."""
+def test_delete_dispatches_via_writer_in_broker(broker_active):
+    """In-broker (active writer), cache.delete must dispatch through the
+    WriterThread, not a write on the shared engine."""
     from mimir import cache
     from mimir.broker._context import get_active_writer
 
@@ -1469,12 +1248,10 @@ def test_delete_dispatches_via_writer_when_broker_handler_active(broker_active):
     original = writer.submit
     writer.submit = lambda op: (submits.append(op), original(op))[1]
 
-    cache._set_broker_handler_active(True)
     try:
         cache.set("del-route-probe", {"x": 1}, ttl=60)  # seed via writer
         cache.delete("del-route-probe")
     finally:
-        cache._set_broker_handler_active(False)
         writer.submit = original
 
     labels = [op.label for op in submits]
@@ -1483,7 +1260,7 @@ def test_delete_dispatches_via_writer_when_broker_handler_active(broker_active):
     )
 
 
-def test_delete_for_inbox_dispatches_via_writer_when_broker_handler_active(
+def test_delete_for_inbox_dispatches_via_writer_in_broker(
     broker_active,
 ):
     """Same contract for delete_for_inbox."""
@@ -1495,11 +1272,9 @@ def test_delete_for_inbox_dispatches_via_writer_when_broker_handler_active(
     original = writer.submit
     writer.submit = lambda op: (submits.append(op), original(op))[1]
 
-    cache._set_broker_handler_active(True)
     try:
         cache.delete_for_inbox("some-inbox")
     finally:
-        cache._set_broker_handler_active(False)
         writer.submit = original
 
     labels = [op.label for op in submits]
@@ -1508,65 +1283,34 @@ def test_delete_for_inbox_dispatches_via_writer_when_broker_handler_active(
     )
 
 
-def test_direct_and_writer_paths_write_identical_rows(broker_active, seeded_db):
-    """Option B: the direct path and the writer path share one
-    statement-builder per op, so they produce byte-identical cache rows
-    for the same inputs."""
+def test_cache_set_in_broker_drops_oversized_value(
+    broker_active, seeded_db, monkeypatch, caplog
+):
+    """The size cap holds on a broker handler thread too (#779): an
+    oversized value logs and never reaches the writer."""
     from sqlalchemy import select
 
     from mimir import cache
-    from mimir.broker._context import get_active_writer
     from mimir.models import CacheEntry
+    from tests.test_ingest._helpers import _drain_writer
 
-    nskey_a = cache._ns("dedupe-probe-a")
-    nskey_b = cache._ns("dedupe-probe-b")
+    monkeypatch.setattr(cache, "MAX_CACHE_VALUE_BYTES", 16)
+    cache._set_broker_handler_active(True)
+    try:
+        with caplog.at_level("WARNING", logger="mimir.cache"):
+            cache.set("too-big", "x" * 64, ttl=60)
+    finally:
+        cache._set_broker_handler_active(False)
+    # A handler-thread write is fire-and-forget; drain the writer so
+    # "no row" cannot just mean "not committed yet".
+    _drain_writer()
 
-    # Direct path.
-    cache._direct_set(nskey_a, '"v"', ttl=999)
-    # Writer path (same payload + ttl).
-    writer = get_active_writer()
-    cache._set_via_writer_for_nskey(writer, nskey_b, '"v"', ttl=999).result()
-
+    assert "exceeds" in caplog.text
     with seeded_db() as s:
-        row_a = s.execute(
-            select(CacheEntry).where(CacheEntry.key == nskey_a)
-        ).scalar_one()
-        row_b = s.execute(
-            select(CacheEntry).where(CacheEntry.key == nskey_b)
-        ).scalar_one()
-
-    assert row_a.value == row_b.value == '"v"'
-    # expires_at computed from the same ttl within the same test second;
-    # allow a 2s skew for clock tick between the two writes.
-    assert abs(row_a.expires_at - row_b.expires_at) <= 2
-
-
-def test_no_production_module_references_direct_cache_helpers():
-    """Option B contract: _direct_set/_delete/_delete_for_inbox/
-    _purge_expired are test-only scaffolding. No production module under
-    mimir/ (other than cache.py's own definitions) may reference them."""
-    import pathlib
-
-    root = pathlib.Path(__file__).resolve().parent.parent / "mimir"
-    offenders = []
-    for path in root.rglob("*.py"):
-        if path.name == "cache.py":
-            continue  # the definitions live here
-        text = path.read_text(encoding="utf-8")
-        for name in (
-            "_direct_set",
-            "_direct_delete",
-            "_direct_delete_for_inbox",
-            "_direct_purge_expired",
-        ):
-            # Allow bare comment mentions but flag actual references:
-            # a `(` after the name indicates a call.
-            if f"{name}(" in text:
-                offenders.append(f"{path}: {name}")
-    assert not offenders, (
-        "production modules must not call _direct_* cache helpers "
-        f"(test-only per Phase 6b Option B): {offenders}"
-    )
+        row = s.execute(
+            select(CacheEntry).where(CacheEntry.key == cache._ns("too-big"))
+        ).scalar_one_or_none()
+    assert row is None
 
 
 def test_only_broker_warm_handlers_enter_the_refresh_window():
@@ -1579,9 +1323,7 @@ def test_only_broker_warm_handlers_enter_the_refresh_window():
     If a request-path module ever wraps work in `refresh_window`, hot
     reads start recomputing still-fresh rows inline (the exact cost the
     warm cycle exists to keep off the request path), and the comment
-    goes quietly wrong. Same shape as
-    `test_no_production_module_references_direct_cache_helpers`.
-    """
+    goes quietly wrong."""
     import pathlib
     import re
 
@@ -1622,7 +1364,7 @@ def writer():
 
 def test_set_via_writer_for_nskey_inserts_row(writer, seeded_db):
     """`_set_via_writer_for_nskey` upserts a pre-namespaced row with
-    pre-encoded JSON payload. Mirror of `_direct_set`'s signature."""
+    pre-encoded JSON payload."""
     from sqlalchemy import select
 
     from mimir.cache import _now, _set_via_writer_for_nskey

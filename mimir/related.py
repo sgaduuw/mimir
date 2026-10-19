@@ -13,7 +13,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import Select, or_, select
 from sqlalchemy.orm import Session
@@ -23,6 +23,7 @@ from mimir.config import settings
 from mimir.datetime_utils import aware_utc
 from mimir.models import Article, ArticleList, Inbox
 from mimir.threading import find_thread_root
+from mimir.web.urls import _msg_path
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +112,8 @@ class RelatedThread:
 
     `year`/`month` come from the root article's date (the URL
     identity rule: /<inbox>/<YYYY>/<MM>/<id> must match exactly or
-    the route 404s); 0/0 when the root has no date, matching the
-    thread_urls fallback in the message view. `signals` is the
+    the route 404s); 0/0 when the root has no date. Templates link
+    through `url`, which spells both through `_msg_path`. `signals` is the
     subset of ("subject", "token", "participant") that matched;
     rendered as a tooltip, also the strong/weak classifier input.
     """
@@ -125,6 +126,16 @@ class RelatedThread:
     last_activity: datetime | None
     score: float
     signals: tuple[str, ...]
+
+    @property
+    def url(self) -> str:
+        """The root's message URL, spelled by `_msg_path` like every other
+        message link (#768). A property, not a field, so the cached shape
+        is unchanged and no namespace bump is needed. Year 0 is an undated
+        root: `/<inbox>/0000/00/<id>`, not the `/0/00/` the template once
+        built by hand."""
+        when = date(self.year, self.month, 1) if self.year else None
+        return _msg_path(self.article_id, when, self.inbox_name)
 
 
 cache.register("related_thread", RelatedThread)

@@ -615,6 +615,11 @@ def test_articles_reviewed_by_survives_link_deleted_between_queries(
         session.execute(
             delete(ArticleList).where(ArticleList.article_id.in_(article_ids))
         )
+        # Production's reindex commits on its own connection. Commit
+        # here too: the cache write after the miss goes through the
+        # writer, which cannot take the lock while this session holds an
+        # open write transaction.
+        session.commit()
         return real(session, article_ids)
 
     monkeypatch.setattr(urls, "_canonical_inbox_names_for", reindex_then_resolve)
