@@ -21,6 +21,7 @@ import re
 from collections import Counter
 from datetime import datetime
 from email.utils import parseaddr, quote
+from itertools import batched
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -252,7 +253,7 @@ def _compute(session: Session) -> MergeWindow:
         for posting in postings
         if not parseaddr(representatives[posting][2] or "")[0]
     }
-    commit_names = _commit_author_names(
+    votes = _commit_author_votes(
         session, [m.message_id for p in nameless for m in postings[p]]
     )
     names = _canonical_inbox_names_for(
@@ -286,10 +287,9 @@ def _compute(session: Session) -> MergeWindow:
         if posting in nameless:
             # The commit author's name stands in for a sender with no
             # display name; the address stays, `display_name` hides it.
-            named = Counter(
-                commit_names[m.message_id]
-                for m in members
-                if m.message_id in commit_names
+            named = sum(
+                (votes[m.message_id] for m in members if m.message_id in votes),
+                Counter(),
             )
             if named:
                 # Quoted, not RFC 2047 encoded: `display_name` never
@@ -368,8 +368,10 @@ def _compute(session: Session) -> MergeWindow:
     )
 
 
-def _commit_author_names(session: Session, message_ids: list[str]) -> dict[str, str]:
-    """Display name of the linux-next commit author per message-id, for
+def _commit_author_votes(
+    session: Session, message_ids: list[str]
+) -> dict[str, Counter]:
+    """Author-name votes of the linux-next commits per message-id, for
     senders whose mail has none. The mirror is the only place the name
     lives: mainline_commits stores no author and Signed-off-by trailers
     are not kept. Merge commits are skipped, because a merge linked to a
@@ -379,12 +381,12 @@ def _commit_author_names(session: Session, message_ids: list[str]) -> dict[str, 
     if tree is None or not message_ids:
         return {}
     shas: list[tuple[str, str]] = []
-    for i in range(0, len(message_ids), 900):
+    for chunk in batched(message_ids, 900):
         shas.extend(
             session.execute(
                 select(MainlineCommit.message_id, MainlineCommit.commit_sha).where(
                     MainlineCommit.tree_name == QUEUED_TREE,
-                    MainlineCommit.message_id.in_(message_ids[i : i + 900]),
+                    MainlineCommit.message_id.in_(chunk),
                 )
             ).all()
         )
@@ -412,7 +414,7 @@ def _commit_author_names(session: Session, message_ids: list[str]) -> dict[str, 
     except Exception as exc:
         logger.warning("merge-window: cannot read author names: %r", exc)
         return {}
-    return {m: min(c, key=lambda n: (-c[n], n)) for m, c in votes.items()}
+    return votes
 
 
 def _files(session: Session, article_ids: list[int]) -> dict[int, list[str]]:
