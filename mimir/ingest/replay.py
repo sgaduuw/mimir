@@ -309,10 +309,7 @@ def replay_failures(
     to the broker's writer thread. Raises RuntimeError when no writer is
     active.
     """
-    from mimir.broker._context import get_active_writer
-    from mimir.broker.writes import WriteOp
-
-    writer = get_active_writer()
+    from mimir.broker.writes import submit_write
 
     # Capture inbox attributes now; `inbox` may be a detached ORM
     # object and reading its attributes later (in a different thread)
@@ -330,4 +327,4 @@ def replay_failures(
             limit=limit,
         )
 
-    return writer.submit(WriteOp(label="failures_replay", fn=_fn)).result(timeout=300)
+    return submit_write("failures_replay", _fn, timeout=300)

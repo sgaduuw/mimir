@@ -273,11 +273,7 @@ def create_inbox(name: str, mirror_path: str, upstream_url: str) -> Inbox:
     mirror_path = validate_mirror_path(mirror_path)
     upstream_url = validate_upstream_url(upstream_url)
 
-    from mimir.broker._context import get_active_writer
-
-    writer = get_active_writer()
-
-    from mimir.broker.writes import WriteOp
+    from mimir.broker.writes import submit_write
 
     def _fn(conn):
         if conn.execute(select(Inbox).where(Inbox.name == name)).first() is not None:
@@ -292,9 +288,7 @@ def create_inbox(name: str, mirror_path: str, upstream_url: str) -> Inbox:
         row = conn.execute(select(Inbox).where(Inbox.name == name)).one()
         return Inbox(**dict(row._mapping))
 
-    result = writer.submit(WriteOp(label=f"inbox:create:{name}", fn=_fn)).result(
-        timeout=30
-    )
+    result = submit_write(f"inbox:create:{name}", _fn, timeout=30)
     refresh_inbox_names()
     return result
 
@@ -345,13 +339,9 @@ def update_inbox(
                 f"list_address: {list_address!r} is not a bare address"
             )
 
-    from mimir.broker._context import get_active_writer
-
-    writer = get_active_writer()
-
     from sqlalchemy import update as sa_update
 
-    from mimir.broker.writes import WriteOp
+    from mimir.broker.writes import submit_write
 
     def _fn(conn) -> tuple[Inbox, str | None]:
         row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
@@ -392,9 +382,7 @@ def update_inbox(
         updated = conn.execute(select(Inbox).where(Inbox.name == effective_name)).one()
         return Inbox(**dict(updated._mapping)), renamed_from
 
-    result, renamed_from = writer.submit(
-        WriteOp(label=f"inbox:update:{name}", fn=_fn)
-    ).result(timeout=30)
+    result, renamed_from = submit_write(f"inbox:update:{name}", _fn, timeout=30)
     refresh_inbox_names()
     # Drop cached entries that referenced the old name. Cache values
     # don't depend on mirror_path / upstream_url, so non-rename
@@ -445,11 +433,7 @@ def delete_inbox(
     """
     report = InboxRemovalReport(name)
 
-    from mimir.broker._context import get_active_writer
-
-    writer = get_active_writer()
-
-    from mimir.broker.writes import WriteOp
+    from mimir.broker.writes import submit_write
 
     def _fn(conn) -> tuple[int, int, int, str]:
         row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
@@ -499,9 +483,9 @@ def delete_inbox(
             mirror_path_val,
         )
 
-    al_count, is_count, orphan_count, mirror_path_str = writer.submit(
-        WriteOp(label=f"inbox:delete:{name}", fn=_fn)
-    ).result(timeout=30)
+    al_count, is_count, orphan_count, mirror_path_str = submit_write(
+        f"inbox:delete:{name}", _fn, timeout=30
+    )
     report.article_lists_deleted = al_count
     report.ingest_state_deleted = is_count
     report.orphan_articles_deleted = orphan_count
@@ -543,13 +527,9 @@ def set_tracked_authors(
     """
     cleaned = validate_tracked_authors(authors)
 
-    from mimir.broker._context import get_active_writer
-
-    writer = get_active_writer()
-
     from sqlalchemy import update as sa_update
 
-    from mimir.broker.writes import WriteOp
+    from mimir.broker.writes import submit_write
 
     def _fn(conn):
         row = conn.execute(select(Inbox).where(Inbox.name == name)).first()
@@ -563,9 +543,7 @@ def set_tracked_authors(
         updated = conn.execute(select(Inbox).where(Inbox.name == name)).one()
         return Inbox(**dict(updated._mapping))
 
-    result = writer.submit(
-        WriteOp(label=f"inbox:set_tracked_authors:{name}", fn=_fn)
-    ).result(timeout=30)
+    result = submit_write(f"inbox:set_tracked_authors:{name}", _fn, timeout=30)
     # Refresh the nav-name cache outside the closure. The closure
     # receives a Connection, not a Session; _publish_names requires
     # a Session. refresh_inbox_names opens its own short-lived

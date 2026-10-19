@@ -1,6 +1,7 @@
 """WriteOp / WriteFuture / WriterThread tests, Phase 1 of the
 two-pool restructure."""
 
+import concurrent.futures
 import dataclasses
 import threading
 import time
@@ -8,7 +9,7 @@ import time
 import pytest
 from sqlalchemy import text
 
-from mimir.broker.writes import WriteOp, WriterThread
+from mimir.broker.writes import WriteOp, WriterThread, submit_write
 
 
 def test_write_op_is_frozen():
@@ -525,3 +526,42 @@ def test_every_write_op_runs_on_the_one_writer_thread_with_one_connection(seeded
         "a closure ran on a submitting thread; the writable connection "
         "escaped the writer thread"
     )
+
+
+class _StubWriter:
+    """Records the submitted op and hands back a Future the test controls."""
+
+    def __init__(self, future):
+        self.future = future
+        self.ops = []
+
+    def submit(self, op):
+        self.ops.append(op)
+        return self.future
+
+
+def test_submit_write_returns_the_result_under_the_given_label(monkeypatch):
+    from mimir.broker import _context
+
+    done = concurrent.futures.Future()
+    done.set_result(42)
+    stub = _StubWriter(done)
+    monkeypatch.setattr(_context, "_active_writer", stub)
+
+    assert submit_write("lbl", lambda conn: 42, timeout=5) == 42
+    assert [op.label for op in stub.ops] == ["lbl"]
+
+
+def test_submit_write_passes_its_timeout_to_the_wait(monkeypatch):
+    from mimir.broker import _context
+
+    class _RecordingFuture:
+        def result(self, timeout=None):
+            self.timeout = timeout
+
+    future = _RecordingFuture()
+    monkeypatch.setattr(_context, "_active_writer", _StubWriter(future))
+
+    submit_write("lbl", lambda conn: None, timeout=7)
+
+    assert future.timeout == 7

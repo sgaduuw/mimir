@@ -159,15 +159,11 @@ def add_rule(
     delay = validate_crawl_delay(crawl_delay)
     signals = validate_content_signals(content_signals)
 
-    from mimir.broker._context import get_active_writer
-
-    writer = get_active_writer()
-
     # No write_transaction() wrapper: the WriterThread uses its own
     # engine (Decision 12 from plan), and the closure runs on its conn.
     from sqlalchemy import select as sa_select
 
-    from mimir.broker.writes import WriteOp
+    from mimir.broker.writes import submit_write
 
     disallow_paths_val = paths or None
     content_signals_val = signals or None
@@ -197,7 +193,7 @@ def add_rule(
             content_signals=content_signals_val,
         )
 
-    return writer.submit(WriteOp(label=f"robots:add:{ua}", fn=_fn)).result(timeout=30)
+    return submit_write(f"robots:add:{ua}", _fn, timeout=30)
 
 
 def update_rule(
@@ -240,16 +236,12 @@ def update_rule(
         raise RobotsValidationError(
             "clear_all_content_signals is mutually exclusive with set/clear"
         )
-    from mimir.broker._context import get_active_writer
-
-    writer = get_active_writer()
-
     # The closure runs on the writer's conn: it re-selects the current
     # row, applies the in-memory mutations, then issues an UPDATE via Core.
     from sqlalchemy import select as sa_select
     from sqlalchemy import update as sa_update
 
-    from mimir.broker.writes import WriteOp
+    from mimir.broker.writes import submit_write
 
     def _fn(conn):
         row = conn.execute(
@@ -304,9 +296,7 @@ def update_rule(
             content_signals=new_signals,
         )
 
-    return writer.submit(WriteOp(label=f"robots:update:{ua}", fn=_fn)).result(
-        timeout=30
-    )
+    return submit_write(f"robots:update:{ua}", _fn, timeout=30)
 
 
 def remove_rule(user_agent: str) -> None:
@@ -317,11 +307,7 @@ def remove_rule(user_agent: str) -> None:
             "cannot remove the '*' stanza; use reset to restore defaults"
         )
 
-    from mimir.broker._context import get_active_writer
-
-    writer = get_active_writer()
-
-    from mimir.broker.writes import WriteOp
+    from mimir.broker.writes import submit_write
 
     def _fn(conn):
         result = conn.execute(delete(RobotsRule).where(RobotsRule.user_agent == ua))
@@ -329,7 +315,7 @@ def remove_rule(user_agent: str) -> None:
             raise RobotsRuleNotFound(f"no rule for user_agent {ua!r}")
         return
 
-    writer.submit(WriteOp(label=f"robots:remove:{ua}", fn=_fn)).result(timeout=30)
+    submit_write(f"robots:remove:{ua}", _fn, timeout=30)
     return
 
 
@@ -364,11 +350,7 @@ _DEFAULT_STAR_CONTENT_SIGNALS: dict[str, str] = {
 
 def reset_rules() -> None:
     """Drop every row and re-seed the `*` stanza with the defaults."""
-    from mimir.broker._context import get_active_writer
-
-    writer = get_active_writer()
-
-    from mimir.broker.writes import WriteOp
+    from mimir.broker.writes import submit_write
 
     def _fn(conn):
         conn.execute(delete(RobotsRule))
@@ -382,7 +364,7 @@ def reset_rules() -> None:
         )
         return
 
-    writer.submit(WriteOp(label="robots:reset", fn=_fn)).result(timeout=30)
+    submit_write("robots:reset", _fn, timeout=30)
     return
 
 
