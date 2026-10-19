@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
@@ -352,6 +352,24 @@ def recent_articles(
     )
 
 
+# Inbox-first: seek this inbox's `article_lists` rows, fetch each article
+# by primary key. CROSS JOIN pins that order (SQLite never reorders it),
+# as in `_triage_sql`; INDEXED BY pins the seek. `\\` is the LIKE escape
+# produced by `like_escape`.
+SEARCH_SQL = """
+    SELECT a.id, a.subject, a.author, a.date
+    FROM article_lists al INDEXED BY ix_article_lists_inbox_id
+         CROSS JOIN articles a ON a.id = al.article_id
+    WHERE al.inbox_id = :inbox_id
+      AND (a.subject LIKE :pattern ESCAPE '\\'
+           OR a.author LIKE :pattern ESCAPE '\\')
+    -- id DESC breaks date ties the way the old date-index walk did,
+    -- so LIMIT keeps the same rows at a tie.
+    ORDER BY a.date DESC NULLS LAST, a.id DESC
+    LIMIT :limit
+"""
+
+
 def search_articles(
     session: Session,
     inbox: Inbox,
@@ -360,37 +378,36 @@ def search_articles(
     force: bool = False,
 ) -> list[ArticleSummary]:
     """Substring search over `subject` and `author` in `inbox`,
-    case-insensitive, ordered by date desc, capped at `limit`.
+    case-insensitive, ordered by date desc (undated last), capped at
+    `limit`.
 
-    Implementation is a straight LIKE scan with the date index
-    short-circuiting; cached per (inbox, query.lower(), limit) at the
-    listing TTL. The cache key is case-folded so `Foo` and `foo`
-    share one row, mirroring `ilike()`'s case-insensitivity, the
-    SQL would return identical results either way. The caller is
-    responsible for length-bounding `query` and for asking only
-    when the user typed something meaningful (≥2 chars).
+    Reads inbox-first (`SEARCH_SQL`), so the cost is bounded by the
+    list's size. A date-first walk stops early only once it has `limit`
+    matches; with fewer (a small list, or a rare term) it reads the
+    whole archive (#791).
+
+    Cached per (inbox, query.lower(), limit) at the listing TTL. The
+    cache key is case-folded so `Foo` and `foo` share one row, as
+    SQLite's LIKE folds ASCII case. The caller is
+    responsible for length-bounding `query` and for asking only when
+    the user typed something meaningful (>=2 chars).
     """
 
     def compute() -> list[ArticleSummary]:
-        pattern = f"%{like_escape(query)}%"
-        rows = (
-            session.execute(
-                _inbox_scoped(
-                    select(Article).where(
-                        or_(
-                            Article.subject.ilike(pattern, escape="\\"),
-                            Article.author.ilike(pattern, escape="\\"),
-                        )
-                    ),
-                    inbox,
-                )
-                .order_by(Article.date.desc().nulls_last())
-                .limit(limit)
-            )
-            .scalars()
-            .all()
+        rows = session.execute(
+            text(SEARCH_SQL),
+            {
+                "inbox_id": inbox.id,
+                "pattern": f"%{like_escape(query)}%",
+                "limit": limit,
+            },
         )
-        return _summarize(rows)
+        return [
+            ArticleSummary(
+                id=r.id, subject=r.subject, author=r.author, date=coerce_dt(r.date)
+            )
+            for r in rows
+        ]
 
     return cache.get_or_compute(
         session,
