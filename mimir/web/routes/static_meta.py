@@ -1,5 +1,5 @@
 """Static-ish meta endpoints: `robots.txt`, `security.txt`,
-`favicon.svg`, `og-image.png`, `privacy`.
+`favicon.svg`, `favicon.ico`, `og-image.png`, `privacy`.
 
 The OG image constants (`OG_IMAGE_*`) live here because they're
 referenced from both the route itself and the template-globals
@@ -10,7 +10,14 @@ duplicating the values.
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from flask import Response, abort, render_template, send_from_directory
+from flask import (
+    Response,
+    abort,
+    redirect,
+    render_template,
+    send_from_directory,
+    url_for,
+)
 
 from mimir import robots
 from mimir.config import settings
@@ -67,6 +74,15 @@ def robots_txt():
 @bp_web.route("/favicon.svg")
 def favicon_svg():
     return Response(_FAVICON_SVG, mimetype="image/svg+xml")
+
+
+@bp_web.route("/favicon.ico")
+def favicon_ico():
+    """Browsers and link-preview tools still ask for /favicon.ico. Without
+    this route it falls through to the inbox route and two-hops to a 404
+    (#792). The icon is an emoji, so a baked ICO would mean shipping emoji
+    artwork; the SVG renders in the clients that ask."""
+    return redirect(url_for("web.favicon_svg"), code=301)
 
 
 @bp_web.route("/og-image.png")
