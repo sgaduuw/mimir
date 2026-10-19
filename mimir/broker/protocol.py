@@ -394,25 +394,22 @@ def _validate_robots_paths(v: list[str]) -> list[str]:
     return v
 
 
-def _validate_robots_content_signals(v: dict[str, str]) -> dict[str, str]:
-    for k, val in v.items():
-        if k not in CONTENT_SIGNAL_KEYS:
-            raise ValueError(
-                f"content_signal key {k!r} must be one of {sorted(CONTENT_SIGNAL_KEYS)}"
-            )
-        if val not in CONTENT_SIGNAL_VALUES:
-            raise ValueError(
-                f"content_signal value {val!r} must be one of "
-                f"{sorted(CONTENT_SIGNAL_VALUES)}"
-            )
-    return v
-
-
 def _validate_robots_content_signal_keys(v: list[str]) -> list[str]:
     for k in v:
         if k not in CONTENT_SIGNAL_KEYS:
             raise ValueError(
                 f"content_signal key {k!r} must be one of {sorted(CONTENT_SIGNAL_KEYS)}"
+            )
+    return v
+
+
+def _validate_robots_content_signals(v: dict[str, str]) -> dict[str, str]:
+    _validate_robots_content_signal_keys(list(v))
+    for val in v.values():
+        if val not in CONTENT_SIGNAL_VALUES:
+            raise ValueError(
+                f"content_signal value {val!r} must be one of "
+                f"{sorted(CONTENT_SIGNAL_VALUES)}"
             )
     return v
 
