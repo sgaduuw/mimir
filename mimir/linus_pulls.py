@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session, selectinload
 
 import mimir
 from mimir import cache
+from mimir.config import settings
 from mimir.merge_window import LINUS_TREE, _linus_path, _window, version_tags
 from mimir.models import Article, MainlineState
 from mimir.store import read_first_readable
@@ -113,6 +114,8 @@ def linus_pulls_state(session: Session) -> str:
             str(_linus_walked_at(session) or ""),
             str(newest or ""),
             str(_linus_path()),
+            # Decides which inbox each pull links into.
+            ",".join(sorted(settings.canonical_demoted_inboxes)),
         ]
     )
 
