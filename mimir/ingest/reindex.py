@@ -5,7 +5,7 @@ from pathlib import Path
 from sqlalchemy import delete, select, update
 
 from mimir.broker._context import get_active_pool, get_active_writer
-from mimir.broker.writes import WriteOp
+from mimir.broker.writes import WriteOp, submit_write
 from mimir.ingest.epoch import DEFAULT_WORKERS, ingest_epoch
 from mimir.models import ArticleList, Inbox, IngestState
 from mimir.thread_roots import drive_passes
@@ -73,12 +73,11 @@ def reindex_epoch(
 
                 def run_pass(fn):
                     return (
-                        writer.submit(
-                            WriteOp(
-                                label=f"thread_roots:{fn.__name__}:{inbox_name}",
-                                fn=lambda conn: fn(conn, inbox_id),
-                            )
-                        ).result(timeout=600)
+                        submit_write(
+                            f"thread_roots:{fn.__name__}:{inbox_name}",
+                            lambda conn: fn(conn, inbox_id),
+                            timeout=600,
+                        )
                         or 0
                     )
 

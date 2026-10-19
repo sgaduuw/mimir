@@ -23,6 +23,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
+from typing import Any
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Connection
@@ -180,3 +181,15 @@ class WriterThread:
             future.set_result(result)
         except Exception as exc:
             future.set_exception(exc)
+
+
+def submit_write(label: str, fn: Callable[[Connection], Any], *, timeout: float) -> Any:
+    """Run `fn` as one WriteOp on the active writer and block for its
+    result. Raises RuntimeError when no writer is active. For callers that
+    submit a single op and wait; batching callers use `writer.submit`."""
+    # Function-local: _context imports WriterThread from this module.
+    from mimir.broker._context import get_active_writer
+
+    return (
+        get_active_writer().submit(WriteOp(label=label, fn=fn)).result(timeout=timeout)
+    )
