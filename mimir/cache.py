@@ -337,26 +337,6 @@ def _set_stmt(nskey: str, payload: str, expires_at: int):
     )
 
 
-def _delete_one_stmt(nskey: str):
-    """Single-key cache DELETE used by delete_via_writer."""
-    return delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
-
-
-def _delete_for_inbox_stmt(inbox_name: str):
-    """Per-inbox cache DELETE used by delete_for_inbox_via_writer."""
-    return delete_stmt(CacheEntry).where(
-        or_(
-            CacheEntry.key.like(f"%:{inbox_name}"),
-            CacheEntry.key.like(f"%:{inbox_name}:%"),
-        )
-    )
-
-
-def _purge_expired_stmt(cutoff: int):
-    """Expired-row cache DELETE used by purge_expired_via_writer."""
-    return delete_stmt(CacheEntry).where(CacheEntry.expires_at < cutoff)
-
-
 def set(key: str, value: Any, ttl: int) -> None:
     """Best-effort cache write.
 
@@ -495,7 +475,8 @@ def delete_via_writer(writer: Any, nskey: str) -> Any:
     from mimir.broker.writes import WriteOp
 
     def _fn(conn: Any) -> int:
-        return conn.execute(_delete_one_stmt(nskey)).rowcount or 0
+        stmt = delete_stmt(CacheEntry).where(CacheEntry.key == nskey)
+        return conn.execute(stmt).rowcount or 0
 
     return writer.submit(WriteOp(label=f"cache.delete:{nskey}", fn=_fn))
 
@@ -510,7 +491,13 @@ def delete_for_inbox_via_writer(writer: Any, inbox_name: str) -> Any:
     from mimir.broker.writes import WriteOp
 
     def _fn(conn: Any) -> int:
-        return conn.execute(_delete_for_inbox_stmt(inbox_name)).rowcount or 0
+        stmt = delete_stmt(CacheEntry).where(
+            or_(
+                CacheEntry.key.like(f"%:{inbox_name}"),
+                CacheEntry.key.like(f"%:{inbox_name}:%"),
+            )
+        )
+        return conn.execute(stmt).rowcount or 0
 
     return writer.submit(WriteOp(label=f"cache.delete_for_inbox:{inbox_name}", fn=_fn))
 
@@ -527,7 +514,8 @@ def purge_expired_via_writer(writer: Any) -> Any:
     cutoff = _now()
 
     def _fn(conn: Any) -> int:
-        return conn.execute(_purge_expired_stmt(cutoff)).rowcount or 0
+        stmt = delete_stmt(CacheEntry).where(CacheEntry.expires_at < cutoff)
+        return conn.execute(stmt).rowcount or 0
 
     return writer.submit(WriteOp(label="cache.purge_expired", fn=_fn))
 

@@ -6,6 +6,7 @@ MIMIR_IS_BROKER set, so the cache mutators take their in-broker branch
 here, the one that used to fall back to the shared engine."""
 
 from datetime import UTC
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -70,6 +71,47 @@ def test_load_maintainers_without_a_writer_raises(seeded_db, monkeypatch, tmp_pa
 
     with pytest.raises(RuntimeError, match="No active broker"):
         load_maintainers(tmp_path / "tree.git", tree_name="linus")
+
+
+def test_update_mainline_cadence_write_without_a_writer_fails(
+    seeded_db, monkeypatch, tmp_path
+):
+    from mimir.config import TreeConfig, settings
+    from mimir.mainline import update_mainline
+    from mimir.models import MainlineState
+
+    monkeypatch.setattr(
+        settings,
+        "trees",
+        {
+            "fake": TreeConfig(
+                url="https://example.com/fake.git",
+                path=tmp_path / "fake.git",
+                walk_every_seconds=0,
+            ),
+        },
+    )
+
+    def fake_ensure(tree, *, reference, skip_fetch):
+        Path(tree.path).mkdir(parents=True, exist_ok=True)
+        return tree.path
+
+    monkeypatch.setattr("mimir.mainline._ensure_tree", fake_ensure)
+    monkeypatch.setattr(_context, "_active_pool", None)
+    monkeypatch.setattr(_context, "_active_writer", None)
+
+    result = update_mainline(skip_maintainers=True, skip_commits=True)
+
+    tr = result.trees["fake"]
+    assert tr.ok is False
+    assert "No active broker" in (tr.error or "")
+    with seeded_db() as s:
+        walked = s.scalar(
+            select(MainlineState.last_walked_at).where(
+                MainlineState.tree_name == "fake"
+            )
+        )
+    assert walked is None, "cadence cursor advanced without a writer"
 
 
 def _writer_submit_recorder():

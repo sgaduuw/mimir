@@ -173,18 +173,6 @@ def _naive_utc(dt):
     return dt.replace(tzinfo=None) if dt.tzinfo else dt
 
 
-def _cache_set_direct(key: str, value, ttl: int) -> None:
-    """Write a cache value and wait for the commit.
-
-    Tests that need a sentinel value to be readable *immediately* after
-    the write (e.g. to prove the post-ingest warm does not overwrite a
-    fresh row) use this helper, which blocks on the writer's future."""
-    from mimir import cache
-    from mimir.broker import _context
-
-    cache.set_via_writer(_context.get_active_writer(), key, value, ttl).result()
-
-
 def _drain_writer() -> None:
     """Block until the active WriterThread has committed every op
     submitted before this call.
