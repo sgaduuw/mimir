@@ -13,6 +13,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Search no longer scans the whole archive: on smaller lists it now takes
+  well under a second instead of tens of seconds (#791).
 - `/favicon.ico` redirects to `/favicon.svg` instead of to `/favicon.ico/`,
   which returned 404 (#792).
 - `/merge-window` rows from senders without a display name show the patch
