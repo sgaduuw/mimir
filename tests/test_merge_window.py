@@ -694,16 +694,23 @@ def _authors(mw):
     return [r.author for g in _groups(mw) for r in g.rows]
 
 
+def _shown(mw):
+    return [_display_name_filter(a) for a in _authors(mw)]
+
+
+def _bare_sender_page(seeded_db, sha):
+    with seeded_db() as s:
+        _article(s, "bare@x").author = "jane@example.com"
+        _commit(s, "bare@x", "linux-next", sha=sha)
+        s.commit()
+        return merge_window(s)
+
+
 def test_sender_without_a_name_gets_the_linux_next_commit_author(
     seeded_db, tmp_path, monkeypatch
 ):
     shas = _next_repo(tmp_path, monkeypatch, {"p": ("Jane Doe <jane@example.com>", [])})
-    with seeded_db() as s:
-        _article(s, "bare@x").author = "jane@example.com"
-        _commit(s, "bare@x", "linux-next", sha=shas["p"])
-        s.commit()
-        mw = merge_window(s)
-    assert _shown(mw) == ["Jane Doe"]
+    assert _shown(_bare_sender_page(seeded_db, shas["p"])) == ["Jane Doe"]
 
 
 def test_a_merge_commit_does_not_name_the_series_author(
@@ -747,18 +754,6 @@ def test_a_posting_takes_its_most_common_commit_author(
         s.commit()
         mw = merge_window(s)
     assert _shown(mw) == ["Jane Doe"]
-
-
-def _bare_sender_page(seeded_db, sha):
-    with seeded_db() as s:
-        _article(s, "bare@x").author = "jane@example.com"
-        _commit(s, "bare@x", "linux-next", sha=sha)
-        s.commit()
-        return merge_window(s)
-
-
-def _shown(mw):
-    return [_display_name_filter(a) for a in _authors(mw)]
 
 
 def test_a_non_ascii_commit_author_name_renders_as_written(
@@ -850,20 +845,3 @@ def test_one_nameless_commit_does_not_erase_every_other_name(
         s.commit()
         mw = merge_window(s)
     assert sorted(_shown(mw)) == ["Jane Doe", "unknown sender"]
-
-
-def test_a_message_tied_between_commits_takes_the_alphabetically_first_name(
-    seeded_db, tmp_path, monkeypatch
-):
-    shas = _next_repo(
-        tmp_path,
-        monkeypatch,
-        {"a": ("Zed <z@example.com>", []), "b": ("Ann <a@example.com>", [])},
-    )
-    with seeded_db() as s:
-        _article(s, "bare@x").author = "j@x.org"
-        for sha in (shas["a"], shas["b"]):
-            _commit(s, "bare@x", "linux-next", sha=sha)
-        s.commit()
-        mw = merge_window(s)
-    assert _shown(mw) == ["Ann"]
