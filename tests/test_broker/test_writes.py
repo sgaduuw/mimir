@@ -1,7 +1,6 @@
 """WriteOp / WriteFuture / WriterThread tests, Phase 1 of the
 two-pool restructure."""
 
-import concurrent.futures
 import dataclasses
 import threading
 import time
@@ -528,40 +527,26 @@ def test_every_write_op_runs_on_the_one_writer_thread_with_one_connection(seeded
     )
 
 
-class _StubWriter:
-    """Records the submitted op and hands back a Future the test controls."""
-
-    def __init__(self, future):
-        self.future = future
-        self.ops = []
-
-    def submit(self, op):
-        self.ops.append(op)
-        return self.future
-
-
-def test_submit_write_returns_the_result_under_the_given_label(monkeypatch):
+def test_submit_write_runs_the_op_and_returns_the_result(monkeypatch):
     from mimir.broker import _context
 
-    done = concurrent.futures.Future()
-    done.set_result(42)
-    stub = _StubWriter(done)
-    monkeypatch.setattr(_context, "_active_writer", stub)
-
-    assert submit_write("lbl", lambda conn: 42, timeout=5) == 42
-    assert [op.label for op in stub.ops] == ["lbl"]
-
-
-def test_submit_write_passes_its_timeout_to_the_wait(monkeypatch):
-    from mimir.broker import _context
-
-    class _RecordingFuture:
+    class _Future:
         def result(self, timeout=None):
             self.timeout = timeout
+            return "sentinel"
 
-    future = _RecordingFuture()
-    monkeypatch.setattr(_context, "_active_writer", _StubWriter(future))
+    class _Writer:
+        def __init__(self):
+            self.ops = []
 
-    submit_write("lbl", lambda conn: None, timeout=7)
+        def submit(self, op):
+            self.ops.append(op)
+            return future
 
+    future = _Future()
+    writer = _Writer()
+    monkeypatch.setattr(_context, "_active_writer", writer)
+
+    assert submit_write("lbl", lambda conn: None, timeout=7) == "sentinel"
+    assert [op.label for op in writer.ops] == ["lbl"]
     assert future.timeout == 7
