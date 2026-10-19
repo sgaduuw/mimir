@@ -7,6 +7,7 @@ the validator (both walk timestamps move the ETag) and the one-spelling
 rule for the page's URL (sitemap `loc` equals the page canonical).
 """
 
+import os
 import re
 from datetime import UTC, datetime, timedelta
 
@@ -28,6 +29,7 @@ from mimir.models import (
     MainlineCommit,
     MainlineState,
 )
+from mimir.web.filters import _display_name_filter
 
 _T0 = datetime(2026, 9, 1, tzinfo=UTC)
 
@@ -211,6 +213,97 @@ def test_series_is_grouped_once_by_all_its_files(seeded_db):
         s.commit()
         mw = merge_window(s)
     assert _ids(mw) == {"MLX5": [("[PATCH] s1@x", 2, [])]}
+
+
+def _series(s, files_per_patch):
+    for n, files in enumerate(files_per_patch, 1):
+        _article(s, f"s{n}@x", key="k", version="v1", pos=n, days=n, files=files)
+        _commit(s, f"s{n}@x", "linux-next")
+
+
+def test_tree_wide_series_is_not_decided_by_one_deep_driver_file(seeded_db):
+    """One file in a deeply nested driver must not file a series that
+    touches many drivers under its parent (#786)."""
+    with seeded_db() as s:
+        _subsystem(s, "DRM DRIVERS", ["drivers/gpu/drm/"])
+        _subsystem(s, "ARM KOMEDA", ["drivers/gpu/drm/arm/display/komeda/"])
+        _series(
+            s,
+            [
+                ["drivers/gpu/drm/amd/a.c", "drivers/gpu/drm/i915/b.c"],
+                ["drivers/gpu/drm/nouveau/c.c", "drivers/gpu/drm/msm/d.c"],
+                ["drivers/gpu/drm/arm/display/komeda/e.c"],
+            ],
+        )
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {"DRM DRIVERS": [("[PATCH] s1@x", 3, [])]}
+    assert _groups(mw)[0].rows[0].also == ["ARM KOMEDA"]
+
+
+def test_driver_patch_with_one_shared_header_stays_on_its_driver(seeded_db):
+    with seeded_db() as s:
+        _subsystem(s, "FOO DRIVER", ["drivers/gpu/drm/foo/"])
+        _subsystem(s, "DRM DRIVERS", ["drivers/gpu/drm/", "include/drm/"])
+        _series(
+            s,
+            [
+                [
+                    "drivers/gpu/drm/foo/a.c",
+                    "drivers/gpu/drm/foo/b.c",
+                    "drivers/gpu/drm/foo/c.c",
+                    "include/drm/h.h",
+                ]
+            ],
+        )
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {"FOO DRIVER": [("[PATCH] s1@x", 1, [])]}
+    assert _groups(mw)[0].rows[0].also == ["DRM DRIVERS"]
+
+
+def test_broad_subsystem_with_slightly_more_files_does_not_outvote_a_deeper_one(
+    seeded_db,
+):
+    """A cross-tree series: defconfig churn in a broad subsystem covers
+    4 files, the deeper JIT subsystem 3. Three is at least half of the
+    best coverage, so the deeper one is still a candidate and wins."""
+    with seeded_db() as s:
+        _subsystem(s, "M68K", ["arch/m68k/"])
+        _subsystem(s, "BPF JIT", ["arch/x86/net/"])
+        _series(
+            s,
+            [
+                [f"arch/m68k/configs/c{n}_defconfig" for n in range(4)],
+                [f"arch/x86/net/j{n}.c" for n in range(3)],
+            ],
+        )
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {"BPF JIT": [("[PATCH] s1@x", 2, [])]}
+    assert _groups(mw)[0].rows[0].also == ["M68K"]
+
+
+def test_a_file_touched_by_many_patches_counts_once(seeded_db):
+    """Coverage counts the posting's distinct files: three patches
+    editing the same Komeda file are one file of three, not three of
+    five, so DRM DRIVERS covers more than half and Komeda does not."""
+    with seeded_db() as s:
+        _subsystem(s, "DRM DRIVERS", ["drivers/gpu/drm/"])
+        _subsystem(s, "ARM KOMEDA", ["drivers/gpu/drm/arm/display/komeda/"])
+        komeda = "drivers/gpu/drm/arm/display/komeda/e.c"
+        _series(
+            s,
+            [
+                [komeda],
+                [komeda],
+                [komeda],
+                ["drivers/gpu/drm/amd/a.c", "drivers/gpu/drm/i915/b.c"],
+            ],
+        )
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {"DRM DRIVERS": [("[PATCH] s1@x", 4, [])]}
 
 
 def test_a_section_needs_twenty_five_patches(seeded_db):
@@ -471,6 +564,30 @@ def test_site_base_change_moves_the_merge_window_etag(client, monkeypatch):
     assert revalidate.status_code == 200
 
 
+def test_linux_next_mirror_path_moves_the_etag(
+    client, seeded_db, tmp_path, monkeypatch
+):
+    """Commit author names come from the linux-next mirror (#787), so its
+    path is restart-only config the page depends on and belongs in the
+    page's state, like the Linus mirror's."""
+    from mimir.config import settings
+
+    shas = _next_repo(tmp_path, monkeypatch, {"p": ("Jane Doe <jane@example.com>", [])})
+    with seeded_db() as s:
+        _article(s, "bare@x").author = "jane@example.com"
+        _commit(s, "bare@x", "linux-next", sha=shas["p"])
+        s.commit()
+    monkeypatch.setattr(settings.trees["linux-next"], "path", tmp_path / "missing.git")
+    first = client.get(MERGE_WINDOW_PATH)
+    assert "Jane Doe" not in first.get_data(as_text=True)
+    monkeypatch.setattr(settings.trees["linux-next"], "path", tmp_path / "next.git")
+    again = client.get(
+        MERGE_WINDOW_PATH, headers={"If-None-Match": first.headers["ETag"]}
+    )
+    assert again.status_code == 200
+    assert "Jane Doe" in again.get_data(as_text=True)
+
+
 @pytest.mark.parametrize("knob", ["tree_display_name", "demoted_inboxes"])
 def test_config_knobs_move_the_etag(client, monkeypatch, knob):
     """Restart-only config the page depends on is in its validator:
@@ -570,3 +687,185 @@ def test_queued_v1_patch_names_the_posting_over_an_older_queued_rfc_patch(seeded
         s.commit()
         mw = merge_window(s)
     assert _ids(mw) == {NO_SUBSYSTEM: [("[PATCH] v1@x", 2, [])]}
+
+
+def _next_repo(tmp_path, monkeypatch, commits):
+    """A linux-next mirror holding `{sha: (author, parent shas)}`."""
+    from dulwich.objects import Commit, Tree
+    from dulwich.repo import Repo
+
+    from mimir.config import settings
+
+    repo = Repo.init_bare(str(tmp_path / "next.git"), mkdir=True)
+    tree = Tree()
+    repo.object_store.add_object(tree)
+    made = {}
+    for key, (author, parents) in commits.items():
+        commit = Commit()
+        commit.tree = tree.id
+        commit.parents = [made[p] for p in parents]
+        commit.author = commit.committer = author.encode()
+        commit.author_time = commit.commit_time = 1700000000
+        commit.author_timezone = commit.commit_timezone = 0
+        commit.message = key.encode()
+        repo.object_store.add_object(commit)
+        made[key] = commit.id
+    monkeypatch.setattr(settings.trees["linux-next"], "path", tmp_path / "next.git")
+    return {k: v.decode() for k, v in made.items()}
+
+
+def _authors(mw):
+    return [r.author for g in _groups(mw) for r in g.rows]
+
+
+def _shown(mw):
+    return [_display_name_filter(a) for a in _authors(mw)]
+
+
+def _bare_sender_page(seeded_db, sha):
+    with seeded_db() as s:
+        _article(s, "bare@x").author = "jane@example.com"
+        _commit(s, "bare@x", "linux-next", sha=sha)
+        s.commit()
+        return merge_window(s)
+
+
+def test_sender_without_a_name_gets_the_linux_next_commit_author(
+    seeded_db, tmp_path, monkeypatch
+):
+    shas = _next_repo(tmp_path, monkeypatch, {"p": ("Jane Doe <jane@example.com>", [])})
+    assert _shown(_bare_sender_page(seeded_db, shas["p"])) == ["Jane Doe"]
+
+
+def test_a_merge_commit_does_not_name_the_series_author(
+    seeded_db, tmp_path, monkeypatch
+):
+    """A cover's message-id links to the maintainer's merge commit."""
+    shas = _next_repo(
+        tmp_path,
+        monkeypatch,
+        {
+            "a": ("Jane Doe <jane@example.com>", []),
+            "b": ("Other <o@example.com>", []),
+            "m": ("Maint Ainer <maint@example.com>", ["a", "b"]),
+        },
+    )
+    with seeded_db() as s:
+        _article(s, "cover@x", key="k", version="v1", pos=0).author = "jane@example.com"
+        _commit(s, "cover@x", "linux-next", sha=shas["m"])
+        s.commit()
+        mw = merge_window(s)
+    assert _authors(mw) == ["jane@example.com"]
+
+
+def test_a_posting_takes_its_most_common_commit_author(
+    seeded_db, tmp_path, monkeypatch
+):
+    shas = _next_repo(
+        tmp_path,
+        monkeypatch,
+        {
+            "a": ("Bob <bob@example.com>", []),
+            "b": ("Jane Doe <jane@example.com>", []),
+            "c": ("Jane Doe <jane@example.com>", []),
+        },
+    )
+    with seeded_db() as s:
+        for n, k in enumerate("abc"):
+            art = _article(s, f"p{n}@x", key="k", version="v1", pos=n + 1)
+            art.author = "jane@example.com"
+            _commit(s, f"p{n}@x", "linux-next", sha=shas[k])
+        s.commit()
+        mw = merge_window(s)
+    assert _shown(mw) == ["Jane Doe"]
+
+
+def test_a_non_ascii_commit_author_name_renders_as_written(
+    seeded_db, tmp_path, monkeypatch
+):
+    """The template shows `row.author|display_name`; kernel authors'
+    names are often not ASCII."""
+    shas = _next_repo(
+        tmp_path, monkeypatch, {"p": ("Jürgen Groß <jgross@example.com>", [])}
+    )
+    assert _shown(_bare_sender_page(seeded_db, shas["p"])) == ["Jürgen Groß"]
+
+
+def test_an_unreadable_mirror_keeps_the_page(seeded_db, tmp_path, monkeypatch):
+    """An OSError reading the mirror (permissions, or a pack a background
+    gc removed) leaves the sender as it was rather than failing the page."""
+    shas = _next_repo(tmp_path, monkeypatch, {"p": ("Jane Doe <jane@example.com>", [])})
+    objects = tmp_path / "next.git" / "objects"
+    os.chmod(objects, 0)
+    try:
+        mw = _bare_sender_page(seeded_db, shas["p"])
+    finally:
+        os.chmod(objects, 0o755)
+    assert _authors(mw) == ["jane@example.com"]
+
+
+def test_a_corrupt_mirror_object_keeps_the_page(seeded_db, tmp_path, monkeypatch):
+    shas = _next_repo(tmp_path, monkeypatch, {"p": ("Jane Doe <jane@example.com>", [])})
+    path = tmp_path / "next.git" / "objects" / shas["p"][:2] / shas["p"][2:]
+    os.chmod(path, 0o644)
+    path.write_bytes(b"not zlib")
+    assert _authors(_bare_sender_page(seeded_db, shas["p"])) == ["jane@example.com"]
+
+
+def test_a_last_comma_first_commit_author_names_the_row(
+    seeded_db, tmp_path, monkeypatch
+):
+    """A git ident is `name <email>`; a comma in the name is legal there."""
+    shas = _next_repo(
+        tmp_path, monkeypatch, {"p": ("Doe, Jane <jane@example.com>", [])}
+    )
+    assert _shown(_bare_sender_page(seeded_db, shas["p"])) == ["Doe, Jane"]
+
+
+def test_a_commit_author_name_that_is_an_address_is_not_shown(
+    seeded_db, tmp_path, monkeypatch
+):
+    shas = _next_repo(
+        tmp_path, monkeypatch, {"p": ("j@example.com <j@example.com>", [])}
+    )
+    assert _authors(_bare_sender_page(seeded_db, shas["p"])) == ["jane@example.com"]
+
+
+def test_a_tied_posting_takes_the_alphabetically_first_name(
+    seeded_db, tmp_path, monkeypatch
+):
+    shas = _next_repo(
+        tmp_path,
+        monkeypatch,
+        {"a": ("Zed <z@example.com>", []), "b": ("Ann <a@example.com>", [])},
+    )
+    with seeded_db() as s:
+        for n, k in enumerate("ab"):
+            _article(s, f"p{n}@x", key="k", version="v1", pos=n + 1).author = "j@x.org"
+            _commit(s, f"p{n}@x", "linux-next", sha=shas[k])
+        s.commit()
+        mw = merge_window(s)
+    assert _shown(mw) == ["Ann"]
+
+
+def test_one_nameless_commit_does_not_erase_every_other_name(
+    seeded_db, tmp_path, monkeypatch
+):
+    """A git ident with an empty name (`<addr>`) is one commit without a
+    name, not a reason to drop the names of every other posting."""
+    shas = _next_repo(
+        tmp_path,
+        monkeypatch,
+        {
+            "a": ("Jane Doe <jane@example.com>", []),
+            "b": ("<anon@example.com>", []),
+        },
+    )
+    with seeded_db() as s:
+        _article(s, "a@x", days=1).author = "jane@example.com"
+        _commit(s, "a@x", "linux-next", sha=shas["a"])
+        _article(s, "b@x").author = "anon@example.com"
+        _commit(s, "b@x", "linux-next", sha=shas["b"])
+        s.commit()
+        mw = merge_window(s)
+    assert sorted(_shown(mw)) == ["Jane Doe", "unknown sender"]
