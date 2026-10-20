@@ -1,7 +1,9 @@
 """Pull requests to Linus on `/merge-window` (#703): `[GIT PULL]`
 messages addressed to Linus since the anchor tag (the latest tag, or
 the one before it while the merge window is open), merged when git has
-the tip or pr-tracker-bot says it was merged."""
+the tip or pr-tracker-bot says it was merged. Unmerged ones are
+rejected (Linus replied he will not pull it), unknown (no commit named)
+or pending (#803)."""
 
 import logging
 import re
@@ -136,13 +138,27 @@ def _walked(s, hours):
 
 
 def _rows(s):
-    return [(r.subject, r.merged) for r in linus_pulls(s).rows]
+    return [(r.subject, r.state) for r in linus_pulls(s).rows]
+
+
+def _linus_reply(s, bodies, parent, text, *, hours=12, author=_LINUS):
+    return _post(
+        s,
+        bodies,
+        f"reply-{parent}-{hours}",
+        subject=f"Re: [GIT PULL] {parent}",
+        author=author,
+        to="Mae Maintainer <mae@example.com>",
+        body=text,
+        hours=hours,
+        parent=parent,
+    )
 
 
 def test_merged_when_git_has_the_tip_newest_first(seeded_db, messages):
     """The tip comes from the body's "up to <sha>" line; it is merged
     when `rev-list <tag>..HEAD` has it. A pull sent before the tag is
-    not a candidate. A pull whose body names no tip shows as pending."""
+    not a candidate. A pull whose body names no tip is unknown."""
     bodies, merged = messages
     merged.add(_TIP_A)
     with seeded_db() as s:
@@ -152,9 +168,9 @@ def test_merged_when_git_has_the_tip_newest_first(seeded_db, messages):
         _pull(s, bodies, "notip@x", hours=30)
         s.commit()
         assert _rows(s) == [
-            ("[GIT PULL] notip@x", False),
-            ("[GIT PULL] b@x", False),
-            ("[GIT PULL] a@x", True),
+            ("[GIT PULL] notip@x", "unknown"),
+            ("[GIT PULL] b@x", "pending"),
+            ("[GIT PULL] a@x", "merged"),
         ]
 
 
@@ -190,12 +206,12 @@ def test_bot_reply_marks_merged_for_good(seeded_db, messages):
         _pull(s, bodies, "pr@x", _TIP_A, hours=10)
         _bot_reply(s, bodies, "pr@x", hours=12)
         s.commit()
-        assert _rows(s) == [("[GIT PULL] pr@x", True)]
+        assert _rows(s) == [("[GIT PULL] pr@x", "merged")]
 
         _walked(s, 13)
         s.commit()
         assert _TIP_A not in merged  # precondition: git disagrees
-        assert _rows(s) == [("[GIT PULL] pr@x", True)]
+        assert _rows(s) == [("[GIT PULL] pr@x", "merged")]
 
 
 def test_new_walk_recomputes_the_merged_set(seeded_db, messages):
@@ -207,12 +223,12 @@ def test_new_walk_recomputes_the_merged_set(seeded_db, messages):
         _walked(s, 1)
         _pull(s, bodies, "pr@x", _TIP_A, hours=10)
         s.commit()
-        assert _rows(s) == [("[GIT PULL] pr@x", False)]
+        assert _rows(s) == [("[GIT PULL] pr@x", "pending")]
 
         merged.add(_TIP_A)
         _walked(s, 13)
         s.commit()
-        assert _rows(s) == [("[GIT PULL] pr@x", True)]
+        assert _rows(s) == [("[GIT PULL] pr@x", "merged")]
 
 
 @pytest.mark.parametrize(
@@ -227,7 +243,134 @@ def test_reply_that_is_not_a_bot_merge_notice_does_not_count(
         _pull(s, bodies, "pr@x", _TIP_A, hours=10)
         _bot_reply(s, bodies, "pr@x", hours=12, author=author, merged=says_merged)
         s.commit()
-        assert _rows(s) == [("[GIT PULL] pr@x", False)]
+        assert _rows(s) == [("[GIT PULL] pr@x", "pending")]
+
+
+def test_one_pull_in_each_state(seeded_db, messages):
+    """Merged (git has the tip), rejected (Linus said he is not pulling
+    it), unknown (no commit named, no bot reply) and pending (a tip git
+    does not have yet), newest first."""
+    bodies, merged = messages
+    merged.add(_TIP_A)
+    with seeded_db() as s:
+        _pull(s, bodies, "merged@x", _TIP_A, hours=10)
+        _pull(s, bodies, "rejected@x", _TIP_B, hours=20)
+        _linus_reply(s, bodies, "rejected@x", "I'm not pulling this.\n")
+        _pull(s, bodies, "unknown@x", hours=30)
+        _pull(s, bodies, "pending@x", _TIP_B, hours=40)
+        s.commit()
+        assert _rows(s) == [
+            ("[GIT PULL] pending@x", "pending"),
+            ("[GIT PULL] unknown@x", "unknown"),
+            ("[GIT PULL] rejected@x", "rejected"),
+            ("[GIT PULL] merged@x", "merged"),
+        ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I'm not pulling this.",
+        "NOT PULLING, sorry",
+        "I am not going to pull this mess.",
+        "Sorry, I won\u2019t pull it.",
+        "wont pull",
+        "Unpulled.",
+        "Good morning.\n\nThis is unpulled until you fix it.\n",
+    ],
+)
+@pytest.mark.parametrize("tip", [_TIP_A, None])
+def test_linus_rejection_phrases(seeded_db, messages, text, tip):
+    """A tipless pull is rejected too: the rejection is checked before
+    unknown."""
+    bodies, _ = messages
+    with seeded_db() as s:
+        _pull(s, bodies, "pr@x", tip, hours=10)
+        _linus_reply(s, bodies, "pr@x", text)
+        s.commit()
+        assert _rows(s) == [("[GIT PULL] pr@x", "rejected")]
+
+
+@pytest.mark.parametrize(
+    ("author", "text"),
+    [
+        (_LINUS, "> I am not pulling this\n  > unpulled\nLooks fine.\n"),
+        ("Mae <mae@example.com>", "I'm not pulling this."),
+        (_BOT, "I'm not pulling this."),
+        (_LINUS, "I refuse. NAK. Pulling later, perhaps.\n"),
+        (_LINUS, "Pulled, thanks. Nothing unpulling here.\n"),
+    ],
+)
+def test_reply_that_is_not_a_linus_rejection_does_not_count(
+    seeded_db, messages, author, text
+):
+    """Quoted lines are the maintainer's words, a reply from anyone but
+    Linus is not his decision, and the phrase list is narrow."""
+    bodies, _ = messages
+    with seeded_db() as s:
+        _pull(s, bodies, "pr@x", _TIP_A, hours=10)
+        _linus_reply(s, bodies, "pr@x", text, author=author)
+        s.commit()
+        assert _rows(s) == [("[GIT PULL] pr@x", "pending")]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # He wraps at about 72 columns, so a phrase can straddle a break.
+        "This is a long line explaining the problem and so I'm not\npulling this.\n",
+        "Sorry, but with all those unsigned commits I am not going\nto pull it.\n",
+    ],
+)
+def test_rejection_phrase_wrapped_across_lines(seeded_db, messages, text):
+    bodies, _ = messages
+    with seeded_db() as s:
+        _pull(s, bodies, "pr@x", _TIP_A, hours=10)
+        _linus_reply(s, bodies, "pr@x", text)
+        s.commit()
+        assert _rows(s) == [("[GIT PULL] pr@x", "rejected")]
+
+
+def test_tipless_pull_with_a_bot_merge_reply_is_merged(seeded_db, messages):
+    """Unknown means no commit named AND no bot reply: the bot's word is
+    enough without a tip, and it wins over a rejection."""
+    bodies, _ = messages
+    with seeded_db() as s:
+        _pull(s, bodies, "pr@x", hours=10)
+        _linus_reply(s, bodies, "pr@x", "Not pulling this.", hours=11)
+        _bot_reply(s, bodies, "pr@x", hours=12)
+        s.commit()
+        assert _rows(s) == [("[GIT PULL] pr@x", "merged")]
+
+
+def test_merged_wins_over_a_rejection_reply(seeded_db, messages):
+    bodies, merged = messages
+    merged.add(_TIP_A)
+    with seeded_db() as s:
+        _pull(s, bodies, "pr@x", _TIP_A, hours=10)
+        _linus_reply(s, bodies, "pr@x", "Not pulling this one.")
+        s.commit()
+        assert _rows(s) == [("[GIT PULL] pr@x", "merged")]
+
+
+def test_linus_reply_moves_the_state_and_the_rows(seeded_db, messages):
+    """A reply titled "Re: [GIT PULL] ..." is not a `[GIT PULL]%`
+    subject, so Linus's address is what moves the state. Served through
+    the cache both times, not cleared."""
+    from mimir.linus_pulls import linus_pulls_state
+
+    bodies, _ = messages
+    with seeded_db() as s:
+        _walked(s, 1)
+        _pull(s, bodies, "pr@x", _TIP_A, hours=10)
+        s.commit()
+        before = linus_pulls_state(s)
+        assert _rows(s) == [("[GIT PULL] pr@x", "pending")]
+
+        _linus_reply(s, bodies, "pr@x", "Not pulling this.")
+        s.commit()
+        assert linus_pulls_state(s) != before
+        assert _rows(s) == [("[GIT PULL] pr@x", "rejected")]
 
 
 def test_failing_git_shows_pending_logged_once(
@@ -254,8 +397,8 @@ def test_failing_git_shows_pending_logged_once(
         s.commit()
         with caplog.at_level(logging.WARNING, logger="mimir.linus_pulls"):
             assert _rows(s) == [
-                ("[GIT PULL] b@x", False),
-                ("[GIT PULL] a@x", False),
+                ("[GIT PULL] b@x", "pending"),
+                ("[GIT PULL] a@x", "pending"),
             ]
     assert len([r for r in caplog.records if r.name == "mimir.linus_pulls"]) == 1
 
@@ -278,7 +421,7 @@ def test_stalled_git_shows_pending(seeded_db, messages, monkeypatch, caplog):
         _pull(s, bodies, "a@x", _TIP_A, hours=10)
         s.commit()
         with caplog.at_level(logging.WARNING, logger="mimir.linus_pulls"):
-            assert _rows(s) == [("[GIT PULL] a@x", False)]
+            assert _rows(s) == [("[GIT PULL] a@x", "pending")]
     assert timeouts == [lp.GIT_REV_LIST_TIMEOUT_SEC]
     assert len([r for r in caplog.records if r.name == "mimir.linus_pulls"]) == 1
 
@@ -374,13 +517,9 @@ def test_new_pull_moves_the_etag_not_the_queue_key(client, messages):
     assert again.status_code == 200
     assert again.headers["ETag"] != first.headers["ETag"]
     html = again.get_data(as_text=True)
-    item = re.search(
-        rf'<a href="{re.escape(url)}">\[GIT PULL\] second@x</a>\s*<small>(\w+)</small>',
-        html,
-    )
-    assert item and item.group(1) == "pending"
-    merged_item = re.search(r">\[GIT PULL\] first@x</a>\s*<small>(\w+)</small>", html)
-    assert merged_item and merged_item.group(1) == "merged"
+    assert _columns(html) == {"pending": 1, "merged": 1}
+    assert f'<a href="{url}">[GIT PULL] second@x</a>' in _column_html(html, "pending")
+    assert "[GIT PULL] first@x</a>" in _column_html(html, "merged")
 
 
 def test_linus_mirror_path_moves_the_section_key(seeded_db, monkeypatch, tmp_path):
@@ -461,8 +600,54 @@ def test_open_window_counts_rc_week_pulls_against_the_last_rc(
         _pull(s, bodies, "rc6week@x", _TIP_B, hours=-24)
         s.commit()
         assert _rows(s) == [
-            ("[GIT PULL] early@x", True),
-            ("[GIT PULL] fixes@x", True),
+            ("[GIT PULL] early@x", "merged"),
+            ("[GIT PULL] fixes@x", "merged"),
         ]
         assert linus_pulls(s).anchor == _TAG
     assert revlist_tags == [_TAG]
+
+
+def _column_html(html, state):
+    return re.search(
+        rf'<section class="pull-column" id="pulls-{state}">(.*?)</section>',
+        html,
+        re.DOTALL,
+    ).group(1)
+
+
+def _columns(html):
+    """Heading count per rendered column, in page order."""
+    return {
+        m.group(1): int(m.group(2))
+        for m in re.finditer(
+            r'<section class="pull-column" id="pulls-(\w+)">\s*'
+            r"<h3>[^<]*<small>(\d+)</small>",
+            html,
+        )
+    }
+
+
+def test_columns_render_only_when_populated(client, messages):
+    from mimir.extensions import SessionLocal
+
+    bodies, merged = messages
+    merged.add(_TIP_A)
+    with SessionLocal() as s:
+        _pull(s, bodies, "a@x", _TIP_A, hours=10)
+        _pull(s, bodies, "b@x", _TIP_B, hours=20)
+        s.commit()
+        empty = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
+        _pull(s, bodies, "u@x", hours=30)
+        _pull(s, bodies, "r@x", _TIP_B, hours=40)
+        _linus_reply(s, bodies, "r@x", "Not pulling this.")
+        s.commit()
+    full = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
+    assert "Names no commit" not in empty
+    assert "Names no commit" in _column_html(full, "unknown")
+    assert list(_columns(empty).items()) == [("pending", 1), ("merged", 1)]
+    assert list(_columns(full).items()) == [
+        ("pending", 1),
+        ("merged", 1),
+        ("unknown", 1),
+        ("rejected", 1),
+    ]
