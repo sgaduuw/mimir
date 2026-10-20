@@ -8,6 +8,7 @@ import re
 
 from sqlalchemy import select
 
+from mimir import patch_revisions
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox
 from tests.test_routes._helpers import _ingest_series_pair, _seed_resends
@@ -66,6 +67,29 @@ def test_series_diff_identical_cover_letters(client, tmp_path):
     assert resp.status_code == 200
     out = resp.data.decode()
     assert "No changes between v1 and v2" in out
+
+
+def test_series_diff_over_cap_renders_notice_with_both_links(
+    client, tmp_path, monkeypatch
+):
+    """An oversize pair shows a plain notice and links to both
+    revisions instead of a diff (#801)."""
+    monkeypatch.setattr(patch_revisions, "REVISION_DIFF_MAX_LINES", 2)
+    author = "Alice <a@example>"
+    series_key = _ingest_series_pair(
+        tmp_path,
+        "alpha",
+        v1_messages=[("c1@x", "[PATCH 0/2] series", None, b"a\nb\nc\n", author)],
+        v2_messages=[("c2@x", "[PATCH v2 0/2] series", None, b"a\nb\nd\n", author)],
+    )
+    resp = client.get(f"/alpha/series/{series_key}/diff?from=v1&to=v2&pos=cover")
+    assert resp.status_code == 200
+    out = resp.data.decode()
+    assert "too large to compare here." in out
+    links = re.findall(r'<a href="([^"]+)">(v[12])</a>', out)
+    assert [label for _, label in links] == ["v1", "v2"]
+    assert all(url for url, _ in links)
+    assert 'class="highlight"' not in out
 
 
 def test_series_diff_per_patch_match_by_subject(client, tmp_path):
