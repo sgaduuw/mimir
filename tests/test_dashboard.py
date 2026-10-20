@@ -20,7 +20,6 @@ from mimir import cache
 from mimir.dashboard import (
     INBOX_FIRST_BELOW_ARTICLES,
     RECENT_INBOX_FIRST_BELOW_ARTICLES,
-    ArchiveStats,
     _archive_stats_key,
     archive_stats,
     author_recent,
@@ -34,6 +33,7 @@ from mimir.dashboard import (
 )
 from mimir.models import Article, ArticleList, Inbox
 from mimir.web.routes.dashboards import _fetch_recent
+from tests._helpers import _cache_total
 
 
 def _inbox(seeded_db, name: str) -> Inbox:
@@ -853,14 +853,23 @@ _LISTINGS = [
     pytest.param(latest_pull_requests, "[GIT PULL] {}", id="pull_requests"),
     pytest.param(latest_stable_releases, "Linux 6.{}", id="stable_releases"),
 ]
+_LISTING_FNS = [pytest.param(p.values[0], id=p.id) for p in _LISTINGS]
 
 
-def _cache_total(inbox, total):
-    cache.set(
-        _archive_stats_key(inbox),
-        ArchiveStats(total=total, epochs=1, first_date=None, last_date=None),
-        3600,
-    )
+def _seed_dated(s, inbox, prefix, offsets):
+    """One article per entry of `offsets`, that many days before
+    2024-06-01 (None: undated); returns their ids in order."""
+    now = datetime(2024, 6, 1)
+    return [
+        _add(
+            s,
+            inbox,
+            f"{prefix}{i}@x",
+            f"s{i}",
+            None if d is None else now - timedelta(days=d),
+        )
+        for i, d in enumerate(offsets)
+    ]
 
 
 def _listing_plan(s, listing, inbox):
@@ -885,8 +894,8 @@ def _listing_plan(s, listing, inbox):
     )
 
 
-@pytest.mark.parametrize(("listing", "subject"), _LISTINGS)
-def test_small_inbox_listing_drives_from_the_inbox(seeded_db, listing, subject):
+@pytest.mark.parametrize("listing", _LISTING_FNS)
+def test_small_inbox_listing_drives_from_the_inbox(seeded_db, listing):
     """Date-first reads every article of the last 180 days, newest
     first, until it has `limit` of this inbox's matches; a small list
     never does (#796)."""
@@ -898,8 +907,8 @@ def test_small_inbox_listing_drives_from_the_inbox(seeded_db, listing, subject):
     assert "ix_articles_date" not in plan, plan
 
 
-@pytest.mark.parametrize(("listing", "subject"), _LISTINGS)
-def test_big_inbox_listing_keeps_the_date_walk(seeded_db, listing, subject):
+@pytest.mark.parametrize("listing", _LISTING_FNS)
+def test_big_inbox_listing_keeps_the_date_walk(seeded_db, listing):
     """On the biggest lists the 180-day floor bounds the date walk and
     inbox-first is the slower shape (lkml: 0.00 s vs 1.34 s)."""
     alpha = _inbox(seeded_db, "alpha")
@@ -1015,19 +1024,9 @@ def test_author_recent_rows(seeded_db):
     last, ties id DESC, `limit` keeps the newest."""
     alpha = _inbox(seeded_db, "alpha")
     beta = _inbox(seeded_db, "beta")
-    now = datetime(2024, 6, 1)
     with seeded_db() as s:
-        _add(s, beta, "other@x", "theirs", now)
-        mine = [
-            _add(
-                s,
-                alpha,
-                f"a{i}@x",
-                f"s{i}",
-                None if d is None else now - timedelta(days=d),
-            )
-            for i, d in enumerate([5, 30, 5, None])
-        ]
+        _add(s, beta, "other@x", "theirs", datetime(2024, 6, 1))
+        mine = _seed_dated(s, alpha, "a", [5, 30, 5, None])
         s.commit()
         full = _author_listing(s, alpha, force=True)
         top = _author_listing(s, alpha, limit=2, force=True)
@@ -1035,40 +1034,23 @@ def test_author_recent_rows(seeded_db):
     assert [r.id for r in top] == [mine[2], mine[0]]
 
 
-@pytest.mark.parametrize("listing", _RECENT)
-def test_recent_rows_do_not_depend_on_the_shape(seeded_db, listing):
+def test_recent_rows_do_not_depend_on_the_shape(seeded_db):
     alpha = _inbox(seeded_db, "alpha")
-    now = datetime(2024, 6, 1)
     with seeded_db() as s:
-        for i, d in enumerate([5, 30, 5, None, 12, 12]):
-            _add(
-                s,
-                alpha,
-                f"r{i}@x",
-                f"s{i}",
-                None if d is None else now - timedelta(days=d),
-            )
+        _seed_dated(s, alpha, "r", [5, 30, 5, None, 12, 12])
         s.commit()
         results = []
         for total in (1, INBOX_FIRST_BELOW_ARTICLES):
             _cache_total(alpha, total)
-            results.append(listing(s, alpha, force=True))
+            results.append(recent_articles(s, alpha, force=True))
     assert results[0] == results[1]
 
 
 def test_fetch_recent_offsets_agree_between_shapes(seeded_db):
     """Load-more pages: same rows, same order, same `has_more`."""
     alpha = _inbox(seeded_db, "alpha")
-    now = datetime(2024, 6, 1)
     with seeded_db() as s:
-        for i, d in enumerate([5, 30, 5, None, 12, 12]):
-            _add(
-                s,
-                alpha,
-                f"p{i}@x",
-                f"s{i}",
-                None if d is None else now - timedelta(days=d),
-            )
+        _seed_dated(s, alpha, "p", [5, 30, 5, None, 12, 12])
         s.commit()
         pages = {}
         for shape, total in (("inbox", 1), ("date", INBOX_FIRST_BELOW_ARTICLES)):
