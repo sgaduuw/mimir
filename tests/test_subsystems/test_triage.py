@@ -1055,10 +1055,7 @@ def _cache_total(inbox, total):
 
 
 def test_shape_follows_the_inbox_size(seeded_db):
-    from mimir.subsystems_dashboard.triage import (
-        INBOX_FIRST_BELOW_ARTICLES,
-        _inbox_first,
-    )
+    from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES, _inbox_first
 
     with seeded_db() as s:
         inbox = _alpha(s)
@@ -1073,8 +1070,7 @@ def test_unknown_inbox_size_goes_inbox_first(seeded_db):
     on the biggest list) is under date-first's (14 s on a small one).
     The lookup must not compute the COUNT."""
     from mimir import cache
-    from mimir.dashboard import _archive_stats_key
-    from mimir.subsystems_dashboard.triage import _inbox_first
+    from mimir.dashboard import _archive_stats_key, _inbox_first
 
     with seeded_db() as s:
         inbox = _alpha(s)

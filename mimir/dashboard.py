@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import select, text
+from sqlalchemy import DateTime, bindparam, select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
@@ -126,22 +126,21 @@ def author_recent(
     limit: int = 5,
     force: bool = False,
 ) -> list[ArticleSummary]:
-    """Last N messages in `inbox` whose From contains the substring."""
+    """Last N messages in `inbox` whose From contains the substring.
+
+    Always inbox-first: there is no date floor, so a date-first walk
+    reads the whole archive for a sparse author (#796). The substring
+    is not LIKE-escaped, as before; LIKE folds ASCII case as `ilike`
+    did."""
 
     def compute() -> list[ArticleSummary]:
-        rows = (
-            session.execute(
-                _inbox_scoped(
-                    select(Article).where(Article.author.ilike(f"%{email_substring}%")),
-                    inbox,
-                )
-                .order_by(Article.date.desc().nulls_last())
-                .limit(limit)
-            )
-            .scalars()
-            .all()
+        return _inbox_first_rows(
+            session,
+            inbox,
+            "a.author LIKE :pattern",
+            {"pattern": f"%{email_substring}%"},
+            limit,
         )
-        return _summarize(rows)
 
     return cache.get_or_compute(
         session,
@@ -159,6 +158,11 @@ def latest_pull_requests(
     floor = datetime.now(UTC) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
 
     def compute() -> list[ArticleSummary]:
+        # LIKE treats `[` literally and folds ASCII case, as `ilike` did.
+        if _inbox_first(inbox):
+            return _inbox_first_listing(
+                session, inbox, "a.subject LIKE '[GIT PULL]%'", floor, limit
+            )
         rows = (
             session.execute(
                 _inbox_scoped(
@@ -167,7 +171,7 @@ def latest_pull_requests(
                     .where(Article.date >= floor),
                     inbox,
                 )
-                .order_by(Article.date.desc().nulls_last())
+                .order_by(Article.date.desc().nulls_last(), Article.id.desc())
                 .limit(limit)
             )
             .scalars()
@@ -192,6 +196,10 @@ def latest_stable_releases(
     floor = datetime.now(UTC) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
 
     def compute() -> list[ArticleSummary]:
+        if _inbox_first(inbox):
+            return _inbox_first_listing(
+                session, inbox, "a.subject GLOB 'Linux [0-9]*'", floor, limit
+            )
         rows = (
             session.execute(
                 _inbox_scoped(
@@ -200,7 +208,7 @@ def latest_stable_releases(
                     .where(Article.date >= floor),
                     inbox,
                 )
-                .order_by(Article.date.desc().nulls_last())
+                .order_by(Article.date.desc().nulls_last(), Article.id.desc())
                 .limit(limit)
             )
             .scalars()
@@ -316,6 +324,31 @@ def like_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def recent_page(
+    session: Session, inbox: Inbox, offset: int, limit: int
+) -> list[ArticleSummary]:
+    """`limit` newest articles of `inbox` from `offset`. Inbox-first
+    for lists under `RECENT_INBOX_FIRST_BELOW_ARTICLES`: a dormant one
+    otherwise walks the date index back to its last message (#796).
+    Unlike `_inbox_first`, an unknown size takes the date walk: this
+    listing is uncached, and guessing small would sort all of lkml on
+    the inbox page and on every Load more."""
+    total = cached_archive_total(inbox)
+    if total is not None and total < RECENT_INBOX_FIRST_BELOW_ARTICLES:
+        return _inbox_first_rows(session, inbox, "1", {}, limit, offset)
+    rows = (
+        session.execute(
+            _inbox_scoped(select(Article), inbox)
+            .order_by(Article.date.desc().nulls_last(), Article.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    return _summarize(rows)
+
+
 def recent_articles(
     session: Session,
     inbox: Inbox,
@@ -332,16 +365,7 @@ def recent_articles(
     """
 
     def compute() -> list[ArticleSummary]:
-        rows = (
-            session.execute(
-                _inbox_scoped(select(Article), inbox)
-                .order_by(Article.date.desc().nulls_last())
-                .limit(limit)
-            )
-            .scalars()
-            .all()
-        )
-        return _summarize(rows)
+        return recent_page(session, inbox, 0, limit)
 
     return cache.get_or_compute(
         session,
@@ -354,20 +378,59 @@ def recent_articles(
 
 # Inbox-first: seek this inbox's `article_lists` rows, fetch each article
 # by primary key. CROSS JOIN pins that order (SQLite never reorders it),
-# as in `_triage_sql`; INDEXED BY pins the seek. `\\` is the LIKE escape
-# produced by `like_escape`.
-SEARCH_SQL = """
+# as in `_triage_sql`; INDEXED BY pins the seek.
+def _inbox_first_sql(where: str) -> str:
+    """The inbox-first SELECT for a WHERE fragment over alias `a`."""
+    return f"""
     SELECT a.id, a.subject, a.author, a.date
     FROM article_lists al INDEXED BY ix_article_lists_inbox_id
          CROSS JOIN articles a ON a.id = al.article_id
     WHERE al.inbox_id = :inbox_id
-      AND (a.subject LIKE :pattern ESCAPE '\\'
-           OR a.author LIKE :pattern ESCAPE '\\')
+      AND {where}
     -- id DESC breaks date ties the way the old date-index walk did,
     -- so LIMIT keeps the same rows at a tie.
     ORDER BY a.date DESC NULLS LAST, a.id DESC
-    LIMIT :limit
+    LIMIT :limit OFFSET :offset
 """
+
+
+# `\\` is the LIKE escape produced by `like_escape`.
+SEARCH_WHERE = r"""(a.subject LIKE :pattern ESCAPE '\'
+           OR a.author LIKE :pattern ESCAPE '\')"""
+
+
+def _inbox_first_rows(
+    session: Session,
+    inbox: Inbox,
+    where: str,
+    binds: dict,
+    limit: int,
+    offset: int = 0,
+) -> list[ArticleSummary]:
+    """Run the inbox-first statement for `where`; `binds` carries its
+    parameters, with `floor` (a datetime) bound as a DateTime."""
+    stmt = text(_inbox_first_sql(where))
+    if "floor" in binds:
+        stmt = stmt.bindparams(bindparam("floor", type_=DateTime))
+    rows = session.execute(
+        stmt, {**binds, "inbox_id": inbox.id, "limit": limit, "offset": offset}
+    )
+    return [
+        ArticleSummary(
+            id=r.id, subject=r.subject, author=r.author, date=coerce_dt(r.date)
+        )
+        for r in rows
+    ]
+
+
+def _inbox_first_listing(
+    session: Session, inbox: Inbox, where: str, floor: datetime, limit: int
+) -> list[ArticleSummary]:
+    """`where` matches over the last `LISTING_RECENCY_FLOOR_DAYS`,
+    newest first, read inbox-first."""
+    return _inbox_first_rows(
+        session, inbox, f"{where} AND a.date >= :floor", {"floor": floor}, limit
+    )
 
 
 def search_articles(
@@ -381,7 +444,7 @@ def search_articles(
     case-insensitive, ordered by date desc (undated last), capped at
     `limit`.
 
-    Reads inbox-first (`SEARCH_SQL`), so the cost is bounded by the
+    Reads inbox-first (`_inbox_first_sql`), so the cost is bounded by the
     list's size. A date-first walk stops early only once it has `limit`
     matches; with fewer (a small list, or a rare term) it reads the
     whole archive (#791).
@@ -394,20 +457,13 @@ def search_articles(
     """
 
     def compute() -> list[ArticleSummary]:
-        rows = session.execute(
-            text(SEARCH_SQL),
-            {
-                "inbox_id": inbox.id,
-                "pattern": f"%{like_escape(query)}%",
-                "limit": limit,
-            },
+        return _inbox_first_rows(
+            session,
+            inbox,
+            SEARCH_WHERE,
+            {"pattern": f"%{like_escape(query)}%"},
+            limit,
         )
-        return [
-            ArticleSummary(
-                id=r.id, subject=r.subject, author=r.author, date=coerce_dt(r.date)
-            )
-            for r in rows
-        ]
 
     return cache.get_or_compute(
         session,
@@ -480,6 +536,41 @@ def cached_archive_total(inbox: Inbox) -> int | None:
     size hint must not pay for a miss)."""
     stats = cache.get(_archive_stats_key(inbox))
     return None if stats is None else stats.total
+
+
+# Inboxes with at least this many articles (all time, `archive_stats`)
+# drive their listing queries from `ix_articles_date`; smaller ones from
+# their own `article_lists` rows. Users: the triage queues (#775) and
+# the pull-request and stable-release listings (#796) through
+# `_inbox_first`; the unfiltered recent listing has its own, lower
+# threshold below. Measured on production on 2026-10-18,
+# the same rows from both shapes, first page, in seconds
+# (date-first vs inbox-first): lkml (6.58M articles) 0.60 vs 5.58;
+# netdev (1.28M) 0.10 vs 1.58 on a dense subsystem; u-boot (634k)
+# 14.02 vs 0.49; linux-fsdevel (368k) 13.7 vs 0.35; alsa-devel (284k)
+# 14.06 vs 0.28. The split falls between u-boot and netdev, so 1M. A
+# sparse netdev subsystem still takes the slow date-first walk (14.09
+# vs 1.72); that is the cost of choosing per inbox, not per subsystem.
+INBOX_FIRST_BELOW_ARTICLES = 1_000_000
+
+# The same switch for `recent_page` (unfiltered, so every article
+# matches and the date walk stops after one page on a busy list).
+# Measured on production, date-first vs inbox-first, in ms at offsets
+# 0 / 2550: u-boot (634k) 2 / 49 vs 301 / 562; linux-fsdevel (368k)
+# 1 / 43 vs 147 / 318. Below 100k inbox-first is bounded at tens of
+# ms, and a dormant list needs it: stgt 3712 / 6273 vs 0 / 0;
+# kernelnewbies 370 / 2643 vs 11 / 21; keyrings 1 / 683 vs 17 / 26.
+# A dormant list above 100k stays as slow as before; accepted.
+RECENT_INBOX_FIRST_BELOW_ARTICLES = 100_000
+
+
+def _inbox_first(inbox: Inbox, below: int = INBOX_FIRST_BELOW_ARTICLES) -> bool:
+    """Whether to drive from the inbox's own rows: the inbox has fewer
+    than `below` articles. An unknown size (no live `archive_stats`
+    row) counts as small: inbox-first's worst measured case (5.85 s,
+    the biggest list) beats date-first's (14 s, a small list)."""
+    total = cached_archive_total(inbox)
+    return total is None or total < below
 
 
 def archive_stats(session: Session, inbox: Inbox, force: bool = False) -> ArchiveStats:
