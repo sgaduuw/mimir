@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Pages that list many senders no longer re-read the maintainer address
+  list for every sender: about 12,000 reads on a message page in the longest
+  thread (#797).
+
 ## [3.22.1] - 2026-10-19
 
 ### Fixed
