@@ -564,13 +564,13 @@ INBOX_FIRST_BELOW_ARTICLES = 1_000_000
 RECENT_INBOX_FIRST_BELOW_ARTICLES = 100_000
 
 
-def _inbox_first(inbox: Inbox, below: int = INBOX_FIRST_BELOW_ARTICLES) -> bool:
+def _inbox_first(inbox: Inbox) -> bool:
     """Whether to drive from the inbox's own rows: the inbox has fewer
-    than `below` articles. An unknown size (no live `archive_stats`
+    than `INBOX_FIRST_BELOW_ARTICLES` articles. An unknown size (no live `archive_stats`
     row) counts as small: inbox-first's worst measured case (5.85 s,
     the biggest list) beats date-first's (14 s, a small list)."""
     total = cached_archive_total(inbox)
-    return total is None or total < below
+    return total is None or total < INBOX_FIRST_BELOW_ARTICLES
 
 
 def archive_stats(session: Session, inbox: Inbox, force: bool = False) -> ArchiveStats:
