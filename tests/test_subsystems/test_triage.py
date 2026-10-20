@@ -24,6 +24,7 @@ from mimir.subsystems_dashboard.triage import (
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
 )
+from tests._helpers import _cache_total
 from tests.test_subsystems._helpers import _add_subsystem
 
 
@@ -1043,22 +1044,8 @@ def test_inbox_first_plan_drives_from_the_inbox_index(seeded_db):
             assert "SCAN article_lists" not in plan, plan
 
 
-def _cache_total(inbox, total):
-    from mimir import cache
-    from mimir.dashboard import ArchiveStats, _archive_stats_key
-
-    cache.set(
-        _archive_stats_key(inbox),
-        ArchiveStats(total=total, epochs=1, first_date=None, last_date=None),
-        3600,
-    )
-
-
 def test_shape_follows_the_inbox_size(seeded_db):
-    from mimir.subsystems_dashboard.triage import (
-        INBOX_FIRST_BELOW_ARTICLES,
-        _inbox_first,
-    )
+    from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES, _inbox_first
 
     with seeded_db() as s:
         inbox = _alpha(s)
@@ -1073,8 +1060,7 @@ def test_unknown_inbox_size_goes_inbox_first(seeded_db):
     on the biggest list) is under date-first's (14 s on a small one).
     The lookup must not compute the COUNT."""
     from mimir import cache
-    from mimir.dashboard import _archive_stats_key
-    from mimir.subsystems_dashboard.triage import _inbox_first
+    from mimir.dashboard import _archive_stats_key, _inbox_first
 
     with seeded_db() as s:
         inbox = _alpha(s)
