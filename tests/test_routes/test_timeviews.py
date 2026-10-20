@@ -262,3 +262,127 @@ def test_year_decade_groups_returns_empty_when_inverted():
     from mimir.web.urls import _year_decade_groups
 
     assert _year_decade_groups(2026, 1996) == []
+
+
+def _seed_since_threads(n):
+    """`n` single-message threads in the primary inbox, one per hour
+    ending an hour before the frozen clock; thread `i` is newer than
+    thread `i - 1`. Returns their message ids, oldest first."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from tests.conftest import TEST_INBOX_PRIMARY
+
+    now = datetime.now(UTC)
+    ids = []
+    with SessionLocal() as s:
+        inbox = s.execute(
+            select(Inbox).where(Inbox.name == TEST_INBOX_PRIMARY)
+        ).scalar_one()
+        for i in range(n):
+            mid = f"since-cap-{i}@example.com"
+            art = Article(
+                message_id=mid,
+                subject=f"since cap {i}",
+                author="X",
+                date=now - timedelta(hours=n - i),
+                thread_parent=None,
+                subject_normalized=f"since cap {i}",
+            )
+            s.add(art)
+            s.flush()
+            s.add(
+                ArticleList(
+                    article_id=art.id,
+                    inbox_id=inbox.id,
+                    epoch="0.git",
+                    commit_sha=f"{i:040x}",
+                )
+            )
+            ids.append(mid)
+        s.commit()
+    return ids
+
+
+def _shrink_since_cap(monkeypatch, cap):
+    # The route and the helper each bound the name at import time.
+    monkeypatch.setattr("mimir.threading.THREADS_SINCE_MAX_THREADS", cap)
+    monkeypatch.setattr("mimir.web.routes.timeviews.THREADS_SINCE_MAX_THREADS", cap)
+
+
+def test_since_lists_only_the_cap_newest_first_with_notice(
+    client, inbox_name, frozen_clock, monkeypatch
+):
+    """More threads than the cap: render exactly the cap, most
+    recently active first, and say the list was cut."""
+    from datetime import datetime, timedelta
+
+    _shrink_since_cap(monkeypatch, 3)
+    ids = _seed_since_threads(5)
+    recent = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+    body = client.get(f"/{inbox_name}/since/{recent}").data.decode()
+    shown = [i for i in ids if f"since cap {ids.index(i)}<" in body]
+    assert shown == ids[2:], "only the 3 newest threads belong on the page"
+    assert body.index("since cap 4<") < body.index("since cap 3<")
+    assert body.index("since cap 3<") < body.index("since cap 2<")
+    assert "Showing the 3 most recently active threads" in body
+    assert "5 messages in this window" in body
+
+
+def test_since_exactly_the_cap_has_no_notice(
+    client, inbox_name, frozen_clock, monkeypatch
+):
+    from datetime import datetime, timedelta
+
+    _shrink_since_cap(monkeypatch, 3)
+    _seed_since_threads(3)
+    recent = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+    body = client.get(f"/{inbox_name}/since/{recent}").data.decode()
+    assert "most recently active threads" not in body
+    assert "3 messages across" in body
+
+
+def test_since_pre_floor_dates_share_one_compute(
+    client, inbox_name, frozen_clock, monkeypatch
+):
+    """Two different dates before the 90-day floor are the same
+    window: one cache key, one compute."""
+    from datetime import datetime, timedelta
+
+    from mimir import threading as mimir_threading
+
+    calls = []
+    real = mimir_threading._active_threads_query
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mimir_threading, "_active_threads_query", counting)
+    now = datetime.now(UTC)
+    for days in (200, 365):
+        old = (now - timedelta(days=days)).strftime("%Y-%m-%d")
+        assert client.get(f"/{inbox_name}/since/{old}").status_code == 200
+    assert len(calls) == 1
+
+
+def test_since_lifecycle_gets_at_most_the_cap_ids(
+    client, inbox_name, frozen_clock, monkeypatch
+):
+    from datetime import datetime, timedelta
+
+    seen = []
+
+    def spy(session, article_ids, inbox_id, **kwargs):
+        seen.append(list(article_ids))
+        return {}
+
+    _shrink_since_cap(monkeypatch, 3)
+    monkeypatch.setattr("mimir.web.routes.timeviews.lifecycle_status_for_articles", spy)
+    _seed_since_threads(5)
+    recent = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+    assert client.get(f"/{inbox_name}/since/{recent}").status_code == 200
+    assert [len(ids) for ids in seen] == [3]

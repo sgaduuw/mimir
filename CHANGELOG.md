@@ -19,6 +19,9 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- `/<list>/since/<date>` shows at most the 200 most recently active
+  threads, with a note saying so, instead of trying to list every thread
+  in up to 90 days (#799).
 - Review counts on patch status pills no longer count a reviewer once for
   every MAINTAINERS section they are listed in; some pills showed several
   times the real number (#800).
