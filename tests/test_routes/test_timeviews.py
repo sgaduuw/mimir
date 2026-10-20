@@ -324,11 +324,17 @@ def test_since_lists_only_the_cap_newest_first_with_notice(
     ids = _seed_since_threads(5)
     recent = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
     body = client.get(f"/{inbox_name}/since/{recent}").data.decode()
-    shown = [i for i in ids if f"since cap {ids.index(i)}<" in body]
+    shown = [mid for n, mid in enumerate(ids) if f"since cap {n}<" in body]
     assert shown == ids[2:], "only the 3 newest threads belong on the page"
-    assert body.index("since cap 4<") < body.index("since cap 3<")
-    assert body.index("since cap 3<") < body.index("since cap 2<")
+    assert (
+        body.index("since cap 4<")
+        < body.index("since cap 3<")
+        < body.index("since cap 2<")
+    )
     assert "Showing the 3 most recently active threads" in body
+    # A later date only drops older threads, so the notice must not
+    # suggest one would show the rest (#799 review).
+    assert "later date" not in body
     assert "5 messages in this window" in body
 
 
