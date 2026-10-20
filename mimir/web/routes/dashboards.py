@@ -19,12 +19,13 @@ from mimir.dashboard import (
     daily_volume,
     latest_pull_requests,
     latest_stable_releases,
+    recent_page,
     this_day_in_history,
 )
 from mimir.extensions import SessionLocal
 from mimir.inboxes import pinned_first
 from mimir.lifecycle_status import lifecycle_status_for_articles
-from mimir.models import Article, ArticleList, Inbox, Subsystem
+from mimir.models import Inbox, Subsystem
 from mimir.seo import _json_ld_inbox, _json_ld_index
 from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
 from mimir.subsystems_dashboard import (
@@ -71,32 +72,10 @@ _SUBSYSTEM_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f]+\Z")
 def _fetch_recent(session: Session, inbox: Inbox, offset: int, limit: int):
     """Fetch limit+1 recent articles in `inbox` to detect has_more cheaply.
 
-    Filtered via EXISTS rather than JOIN: with parameterized
-    `inbox_id=?`, SQLite's planner mis-prices the JOIN form and picks
-    a full scan-and-sort over `article_lists`, taking seconds. The
-    EXISTS form makes "walk articles by date desc, probe article_lists
-    via composite PK" the obvious plan, matching what literal binds
-    would have done.
+    Reads through `recent_page`, which picks the query shape by inbox
+    size.
     """
-    in_inbox = (
-        select(ArticleList.article_id)
-        .where(
-            ArticleList.article_id == Article.id,
-            ArticleList.inbox_id == inbox.id,
-        )
-        .exists()
-    )
-    rows = (
-        session.execute(
-            select(Article)
-            .where(in_inbox)
-            .order_by(Article.date.desc().nulls_last())
-            .offset(offset)
-            .limit(limit + 1)
-        )
-        .scalars()
-        .all()
-    )
+    rows = recent_page(session, inbox, offset, limit + 1)
     has_more = len(rows) > limit
     return rows[:limit], has_more
 

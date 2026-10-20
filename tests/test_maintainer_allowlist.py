@@ -152,3 +152,23 @@ def test_cache_delete_clears_one_key():
     # Belt + braces: a delete on an absent key returns 0.
     assert cache.delete("ma_nonexistent_key") == 0
     cache.delete("ma_test_key")  # cleanup
+
+
+def test_allowlist_is_read_once_per_request(client, monkeypatch):
+    """A page shows one sender per row, so the address set must be read
+    once per request, not per sender (#797: 2 ms per read, about 12,000
+    reads on a message page in the longest thread)."""
+    from mimir.web import filters
+
+    calls = []
+
+    def counting():
+        calls.append(1)
+        return frozenset({"m@example.org"})
+
+    monkeypatch.setattr(maintainer_allowlist, "maintainer_addresses", counting)
+    with client.application.test_request_context("/"):
+        shown = [filters._safe_from_filter(f"A <a{i}@example.com>") for i in range(50)]
+        assert filters._safe_from_filter("M <m@example.org>") == "M <m@example.org>"
+    assert shown[0] == "A <hidden>"
+    assert len(calls) == 1
