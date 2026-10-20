@@ -7,16 +7,26 @@
 {% macro pull_requests() %}
 <h2 id="pull-requests-to-linus">Pull requests to Linus{% if pulls.anchor %} <small>since {{ pulls.anchor }}</small>{% endif %}</h2>
 {% if pulls.rows %}
-<ul>
-  {% for pr in pulls.rows %}
-  <li>
-    <a href="{{ pr.url }}">{{ pr.subject|clean_subject or '(no subject)' }}</a>
-    <small>{{ 'merged' if pr.merged else 'pending' }}</small>
-    <br><small>{{ pr.author|display_name }}
-      {%- if pr.date %} &middot; {{ pr.date.strftime('%Y-%m-%d') }}{% endif %}</small>
-  </li>
+<div class="pull-columns">
+  {% for state in ('pending', 'merged', 'unknown', 'rejected') %}
+  {% set rows = pulls.rows|selectattr('state', 'equalto', state)|list %}
+  {% if rows %}
+  <section class="pull-column" id="pulls-{{ state }}">
+    <h3>{{ state|capitalize }} <small>{{ rows|length }}</small></h3>
+    {% if state == 'unknown' %}<p><small>Names no commit, and pr-tracker-bot has not replied.</small></p>{% endif %}
+    <ul>
+      {% for pr in rows %}
+      <li>
+        <a href="{{ pr.url }}">{{ pr.subject|clean_subject or '(no subject)' }}</a>
+        <br><small>{{ pr.author|display_name }}
+          {%- if pr.date %} &middot; {{ pr.date.strftime('%Y-%m-%d') }}{% endif %}</small>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
   {% endfor %}
-</ul>
+</div>
 {% else %}
 <p>No pull requests to Linus since {{ pulls.anchor or 'the latest tag' }}.</p>
 {% endif %}
