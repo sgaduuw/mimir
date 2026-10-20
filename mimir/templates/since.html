@@ -13,8 +13,10 @@
   {% if total_messages == 0 %}
     <p><em>No messages in this window.</em></p>
   {% else %}
-    <p><small>{{ total_messages }} message{{ '' if total_messages == 1 else 's' }} across
-      {{ threads|length }} thread{{ '' if threads|length == 1 else 's' }}, ordered by last activity.</small></p>
+    <p><small>{{ total_messages }} message{{ '' if total_messages == 1 else 's' }}
+      {%- if truncated %} in this window. Showing the {{ max_threads }} most recently active threads.
+      {%- else %} across {{ threads|length }} thread{{ '' if threads|length == 1 else 's' }}, ordered by last activity.
+      {%- endif %}</small></p>
 
     <ul>
       {% for t in threads %}
