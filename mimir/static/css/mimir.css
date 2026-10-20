@@ -438,6 +438,18 @@ pre.body-text-block {
 }
 .related-patches { margin-block: 1rem; }
 
+/* Pull requests to Linus on /merge-window: one column per state, side
+   by side while each gets at least 16rem, stacked below that. */
+.pull-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
+  gap: 1rem;
+}
+.pull-column ul {
+  margin: 0;
+  padding-inline-start: 1rem;
+}
+
 /* MAINTAINERS-derived lists on the subsystem dashboard. Maintainer
    block is a tight list; paths block reflows into two columns to
    absorb tall subsystems without scrolling. */
