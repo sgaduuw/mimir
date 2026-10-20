@@ -100,7 +100,10 @@ _REVIEW_ROLES_PARAM = bindparam(
 # linus tree + sha/at for the LANDED/QUEUED tooltip leading lines.
 #
 # `rc` is the per-article review-trailer count (total + maintainer
-# subset, joined on LOWER(sm.address) = t.address_normalized). The
+# subset). The maintainer flag is an EXISTS on LOWER(sm.address) =
+# t.address_normalized, not a JOIN: an address is listed once per
+# MAINTAINERS section, so a join multiplies each trailer by the number
+# of sections its reviewer sits in (#800). The
 # `at_review` CTE is the cheap "any review trailer exists" predicate
 # that still drives the REVIEWED state classification (kept distinct
 # from rc so the state derivation doesn't pay the COUNT cost when
@@ -196,11 +199,10 @@ mc AS (
 rc AS (
     SELECT t.article_id,
            COUNT(*) AS review_total,
-           SUM(CASE WHEN sm.address IS NOT NULL THEN 1 ELSE 0 END) AS review_maintainer
+           SUM(EXISTS (SELECT 1 FROM subsystem_maintainers sm
+                        WHERE LOWER(sm.address) = t.address_normalized
+                          AND sm.role IN ('M', 'R'))) AS review_maintainer
       FROM article_trailers t
-      LEFT JOIN subsystem_maintainers sm
-             ON LOWER(sm.address) = t.address_normalized
-            AND sm.role IN ('M', 'R')
      WHERE t.article_id IN :ids
        AND t.role IN :review_roles
      GROUP BY t.article_id
@@ -261,11 +263,10 @@ SELECT a.id,
 _REVIEWER_NAMES_SQL = text("""
 SELECT t.article_id,
        t.name,
-       (sm.address IS NOT NULL) AS is_maintainer
+       EXISTS (SELECT 1 FROM subsystem_maintainers sm
+                WHERE LOWER(sm.address) = t.address_normalized
+                  AND sm.role IN ('M', 'R')) AS is_maintainer
   FROM article_trailers t
-  LEFT JOIN subsystem_maintainers sm
-         ON LOWER(sm.address) = t.address_normalized
-        AND sm.role IN ('M', 'R')
  WHERE t.article_id IN :ids
    AND t.role IN :review_roles
  ORDER BY t.article_id, t.id ASC
