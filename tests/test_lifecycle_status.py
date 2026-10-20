@@ -547,6 +547,49 @@ def test_bulk_uncached_returns_reviewer_counts(session):
     assert info.count_suffix == ": 3 (1M)"
 
 
+def test_reviewer_listed_in_many_sections_counts_once(session):
+    """A reviewer listed in several MAINTAINERS sections is one review,
+    not one per section (#800). The maintainer sits in three sections
+    with M or R and gives two trailers; with a third from a non-maintainer
+    that reads `: 3 (2M)`, counted per trailer, and names him once in the
+    tooltip."""
+    from mimir.lifecycle_status import _bulk_uncached
+    from mimir.models import Subsystem, SubsystemMaintainer
+
+    art = _seed_article(session, "multi@x")
+    for i, role in enumerate(["M", "R", "M"]):
+        sub = Subsystem(name=f"SEC{i}", status="Maintained")
+        session.add(sub)
+        session.commit()
+        session.add(
+            SubsystemMaintainer(
+                subsystem_id=sub.id,
+                role=role,
+                name="Bob Maintainer",
+                address="Bob@Kernel.org",
+            )
+        )
+    for role, addr, name in [
+        ("Reviewed-by", "bob@kernel.org", "Bob Maintainer"),
+        ("Tested-by", "bob@kernel.org", "Bob Maintainer"),
+        ("Reviewed-by", "a@example.com", "Al"),
+    ]:
+        session.add(
+            ArticleTrailer(
+                article_id=art.id,
+                role=role,
+                name=name,
+                address=addr,
+                address_normalized=addr,
+            )
+        )
+    session.commit()
+
+    info = _bulk_uncached(session, [art.id], _lkml(session))[art.id]
+    assert info.count_suffix == ": 3 (2M)"
+    assert (info.tooltip or "").count("Bob Maintainer") == 1
+
+
 def test_bulk_uncached_computes_thread_activity(session):
     """The bulk fetcher computes days_since_last_reply per article
     via the thread-tree max-date, so listings can render activity

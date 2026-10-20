@@ -19,6 +19,9 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Review counts on patch status pills no longer count a reviewer once for
+  every MAINTAINERS section they are listed in; some pills showed several
+  times the real number (#800).
 - Pages that list many senders no longer re-read the maintainer address
   list for every sender: about 12,000 reads on a message page in the longest
   thread (#797).
