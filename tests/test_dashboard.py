@@ -13,9 +13,15 @@ Seed recap (from conftest.py):
 
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from sqlalchemy import event, select
 
+from mimir import cache
 from mimir.dashboard import (
+    INBOX_FIRST_BELOW_ARTICLES,
+    RECENT_INBOX_FIRST_BELOW_ARTICLES,
+    ArchiveStats,
+    _archive_stats_key,
     archive_stats,
     author_recent,
     daily_volume,
@@ -27,6 +33,7 @@ from mimir.dashboard import (
     this_day_in_history,
 )
 from mimir.models import Article, ArticleList, Inbox
+from mimir.web.routes.dashboards import _fetch_recent
 
 
 def _inbox(seeded_db, name: str) -> Inbox:
@@ -837,3 +844,235 @@ def test_daily_volume_uses_indexed_seek_no_full_scan(seeded_db):
         f"function-on-column WHERE clause) would surface here. "
         f"plan:\n{plan}"
     )
+
+
+# Inbox-first listings (#796): the two filtered listings follow the
+# inbox's size, as triage does (#775).
+
+_LISTINGS = [
+    pytest.param(latest_pull_requests, "[GIT PULL] {}", id="pull_requests"),
+    pytest.param(latest_stable_releases, "Linux 6.{}", id="stable_releases"),
+]
+
+
+def _cache_total(inbox, total):
+    cache.set(
+        _archive_stats_key(inbox),
+        ArchiveStats(total=total, epochs=1, first_date=None, last_date=None),
+        3600,
+    )
+
+
+def _listing_plan(s, listing, inbox):
+    """EXPLAIN the one articles statement `listing` runs."""
+    seen = []
+    engine = s.get_bind()
+
+    def grab(conn, cursor, statement, parameters, context, executemany):
+        if "FROM articles" in statement or "JOIN articles" in statement:
+            seen.append((statement, parameters))
+
+    event.listen(engine, "before_cursor_execute", grab)
+    try:
+        listing(s, inbox, force=True)
+    finally:
+        event.remove(engine, "before_cursor_execute", grab)
+    assert len(seen) == 1, seen
+    statement, params = seen[0]
+    raw = s.connection().connection.driver_connection
+    return "\n".join(
+        row[3] for row in raw.execute("EXPLAIN QUERY PLAN " + statement, params)
+    )
+
+
+@pytest.mark.parametrize(("listing", "subject"), _LISTINGS)
+def test_small_inbox_listing_drives_from_the_inbox(seeded_db, listing, subject):
+    """Date-first reads every article of the last 180 days, newest
+    first, until it has `limit` of this inbox's matches; a small list
+    never does (#796)."""
+    alpha = _inbox(seeded_db, "alpha")
+    with seeded_db() as s:
+        _cache_total(alpha, INBOX_FIRST_BELOW_ARTICLES - 1)
+        plan = _listing_plan(s, listing, alpha)
+    assert "USING INDEX ix_article_lists_inbox_id" in plan, plan
+    assert "ix_articles_date" not in plan, plan
+
+
+@pytest.mark.parametrize(("listing", "subject"), _LISTINGS)
+def test_big_inbox_listing_keeps_the_date_walk(seeded_db, listing, subject):
+    """On the biggest lists the 180-day floor bounds the date walk and
+    inbox-first is the slower shape (lkml: 0.00 s vs 1.34 s)."""
+    alpha = _inbox(seeded_db, "alpha")
+    with seeded_db() as s:
+        _cache_total(alpha, INBOX_FIRST_BELOW_ARTICLES)
+        plan = _listing_plan(s, listing, alpha)
+    assert "ix_articles_date" in plan, plan
+    assert "TEMP B-TREE" not in plan, plan
+
+
+@pytest.mark.parametrize(("listing", "subject"), _LISTINGS)
+def test_listing_rows_do_not_depend_on_the_shape(seeded_db, listing, subject):
+    """Same rows in the same order either way: newest first, undated
+    out (the floor excludes NULL), ties id DESC, other inbox's and
+    non-matching subjects left out, `limit` keeps the newest."""
+    alpha = _inbox(seeded_db, "alpha")
+    beta = _inbox(seeded_db, "beta")
+    now = datetime.now(UTC).replace(microsecond=0, tzinfo=None)
+    with seeded_db() as s:
+        _add(s, beta, "other@x", subject.format("other"), now)
+        _add(s, alpha, "noise@x", "unrelated", now)
+        _add(s, alpha, "old@x", subject.format("old"), now - timedelta(days=400))
+        mine = [
+            _add(s, alpha, f"m{i}@x", subject.format(i), now - timedelta(days=d))
+            for i, d in enumerate([5, 30, 5, 12])
+        ]
+        s.commit()
+        results = {}
+        for shape, total in (("inbox", 1), ("date", INBOX_FIRST_BELOW_ARTICLES)):
+            _cache_total(alpha, total)
+            results[shape] = (
+                listing(s, alpha, force=True),
+                listing(s, alpha, limit=2, force=True),
+            )
+    assert results["inbox"] == results["date"]
+    full, top = results["inbox"]
+    assert [r.id for r in full] == [mine[2], mine[0], mine[3], mine[1]]
+    assert [r.id for r in top] == [mine[2], mine[0]]
+
+
+def _fetch_recent_page(s, inbox, **_):
+    return _fetch_recent(s, inbox, 0, 11)
+
+
+def _author_listing(s, inbox, **kw):
+    return author_recent(s, inbox, "t@example", **kw)
+
+
+_RECENT = [
+    pytest.param(recent_articles, id="recent_articles"),
+    pytest.param(_fetch_recent_page, id="fetch_recent"),
+]
+
+
+@pytest.mark.parametrize("total", [1, INBOX_FIRST_BELOW_ARTICLES * 6])
+def test_author_recent_always_drives_from_the_inbox(seeded_db, total):
+    """No date floor, so a date-first walk reads the whole archive for a
+    sparse author, on any list size (#796)."""
+    alpha = _inbox(seeded_db, "alpha")
+    with seeded_db() as s:
+        _cache_total(alpha, total)
+        plan = _listing_plan(s, _author_listing, alpha)
+    assert "USING INDEX ix_article_lists_inbox_id" in plan, plan
+    assert "ix_articles_date" not in plan, plan
+
+
+@pytest.mark.parametrize("listing", _RECENT)
+def test_small_inbox_recent_drives_from_the_inbox(seeded_db, listing):
+    alpha = _inbox(seeded_db, "alpha")
+    with seeded_db() as s:
+        _cache_total(alpha, RECENT_INBOX_FIRST_BELOW_ARTICLES - 1)
+        plan = _listing_plan(s, listing, alpha)
+    assert "USING INDEX ix_article_lists_inbox_id" in plan, plan
+    assert "ix_articles_date" not in plan, plan
+
+
+@pytest.mark.parametrize("listing", _RECENT)
+@pytest.mark.parametrize(
+    "total",
+    [
+        RECENT_INBOX_FIRST_BELOW_ARTICLES,
+        INBOX_FIRST_BELOW_ARTICLES - 1,
+        INBOX_FIRST_BELOW_ARTICLES,
+    ],
+)
+def test_bigger_inbox_recent_keeps_the_date_walk(seeded_db, listing, total):
+    """From 100k up, a busy list's date walk is a few ms and inbox-first
+    costs hundreds (u-boot, linux-fsdevel); the recent listing switches
+    below the lower threshold, not at the 1M one."""
+    alpha = _inbox(seeded_db, "alpha")
+    with seeded_db() as s:
+        _cache_total(alpha, total)
+        plan = _listing_plan(s, listing, alpha)
+    assert "ix_articles_date" in plan, plan
+    assert "TEMP B-TREE" not in plan, plan
+
+
+@pytest.mark.parametrize("listing", _RECENT)
+def test_unknown_size_recent_keeps_the_date_walk(seeded_db, listing):
+    """With no live `archive_stats` row the size is unknown. The recent
+    listing is uncached, so guessing small would sort all of lkml
+    inbox-first on the inbox page and every Load more; the date walk is
+    never slower than before and instant on a busy list."""
+    alpha = _inbox(seeded_db, "alpha")
+    cache.delete(_archive_stats_key(alpha))
+    with seeded_db() as s:
+        plan = _listing_plan(s, listing, alpha)
+    assert "ix_articles_date" in plan, plan
+
+
+def test_author_recent_rows(seeded_db):
+    """Own inbox only, matching author only, newest first, undated
+    last, ties id DESC, `limit` keeps the newest."""
+    alpha = _inbox(seeded_db, "alpha")
+    beta = _inbox(seeded_db, "beta")
+    now = datetime(2024, 6, 1)
+    with seeded_db() as s:
+        _add(s, beta, "other@x", "theirs", now)
+        mine = [
+            _add(
+                s,
+                alpha,
+                f"a{i}@x",
+                f"s{i}",
+                None if d is None else now - timedelta(days=d),
+            )
+            for i, d in enumerate([5, 30, 5, None])
+        ]
+        s.commit()
+        full = _author_listing(s, alpha, force=True)
+        top = _author_listing(s, alpha, limit=2, force=True)
+    assert [r.id for r in full if r.id in mine] == [mine[2], mine[0], mine[1], mine[3]]
+    assert [r.id for r in top] == [mine[2], mine[0]]
+
+
+@pytest.mark.parametrize("listing", _RECENT)
+def test_recent_rows_do_not_depend_on_the_shape(seeded_db, listing):
+    alpha = _inbox(seeded_db, "alpha")
+    now = datetime(2024, 6, 1)
+    with seeded_db() as s:
+        for i, d in enumerate([5, 30, 5, None, 12, 12]):
+            _add(
+                s,
+                alpha,
+                f"r{i}@x",
+                f"s{i}",
+                None if d is None else now - timedelta(days=d),
+            )
+        s.commit()
+        results = []
+        for total in (1, INBOX_FIRST_BELOW_ARTICLES):
+            _cache_total(alpha, total)
+            results.append(listing(s, alpha, force=True))
+    assert results[0] == results[1]
+
+
+def test_fetch_recent_offsets_agree_between_shapes(seeded_db):
+    """Load-more pages: same rows, same order, same `has_more`."""
+    alpha = _inbox(seeded_db, "alpha")
+    now = datetime(2024, 6, 1)
+    with seeded_db() as s:
+        for i, d in enumerate([5, 30, 5, None, 12, 12]):
+            _add(
+                s,
+                alpha,
+                f"p{i}@x",
+                f"s{i}",
+                None if d is None else now - timedelta(days=d),
+            )
+        s.commit()
+        pages = {}
+        for shape, total in (("inbox", 1), ("date", INBOX_FIRST_BELOW_ARTICLES)):
+            _cache_total(alpha, total)
+            pages[shape] = [_fetch_recent(s, alpha, off, 3) for off in (0, 3, 6)]
+    assert pages["inbox"] == pages["date"]
+    assert [len(p[0]) for p in pages["inbox"]][:2] == [3, 3]

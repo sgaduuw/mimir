@@ -25,7 +25,7 @@ from sqlalchemy.sql.elements import TextClause
 
 from mimir import cache
 from mimir.config import settings
-from mimir.dashboard import cached_archive_total
+from mimir.dashboard import _inbox_first
 from mimir.datetime_utils import coerce_dt
 from mimir.models import (
     Article,
@@ -165,28 +165,6 @@ def _page_size(limit: int) -> int:
     fill the list from one page; `_run_triage` fetches more pages
     when they do not."""
     return max(limit * 2, limit + 5)
-
-
-# Inboxes with at least this many articles (all time, `archive_stats`)
-# drive the triage query from `ix_articles_date`; smaller ones from
-# their own `article_lists` rows. Measured on production on 2026-10-18,
-# the same rows from both shapes, first page, in seconds
-# (date-first vs inbox-first): lkml (6.58M articles) 0.60 vs 5.58;
-# netdev (1.28M) 0.10 vs 1.58 on a dense subsystem; u-boot (634k)
-# 14.02 vs 0.49; linux-fsdevel (368k) 13.7 vs 0.35; alsa-devel (284k)
-# 14.06 vs 0.28. The split falls between u-boot and netdev, so 1M. A
-# sparse netdev subsystem still takes the slow date-first walk (14.09
-# vs 1.72); that is the cost of choosing per inbox, not per subsystem.
-INBOX_FIRST_BELOW_ARTICLES = 1_000_000
-
-
-def _inbox_first(inbox: Inbox) -> bool:
-    """Whether to drive from the inbox's own rows. An unknown size
-    (no live `archive_stats` row) counts as small: inbox-first's worst
-    measured case (5.85 s, the biggest list) beats date-first's (14 s,
-    a small list)."""
-    total = cached_archive_total(inbox)
-    return total is None or total < INBOX_FIRST_BELOW_ARTICLES
 
 
 def _triage_sql(

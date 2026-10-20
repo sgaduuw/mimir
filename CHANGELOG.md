@@ -19,6 +19,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Author pages and feeds no longer read the whole archive for a rarely seen
+  sender, which took seconds. The front page of smaller lists (latest pull
+  requests, stable releases) and of small, quiet ones (recent messages)
+  loads faster for the same reason (#796).
 - Review counts on patch status pills no longer count a reviewer once for
   every MAINTAINERS section they are listed in; some pills showed several
   times the real number (#800).

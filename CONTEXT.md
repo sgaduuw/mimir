@@ -1950,6 +1950,21 @@ is never computed on the request; no row counts as small. The
 constant's comment carries the measurements. Plan pinned in
 `test_inbox_first_plan_drives_from_the_inbox_index`.
 
+The same shape serves the dashboard listings in `mimir/dashboard.py`
+(#791, #796), built once by `_inbox_first_sql`. Search and
+`author_recent` are always inbox-first: neither has a date floor,
+so a date walk reads
+the whole archive for a rare term or sender. The pull-request and
+stable-release listings follow `_inbox_first` (the 180-day floor
+bounds their date walk on the biggest lists). The unfiltered recent
+listing (`recent_page`: feed, inbox page, load-more) has its own,
+lower `RECENT_INBOX_FIRST_BELOW_ARTICLES` (100k), because every
+article matches and a busy mid-size list's date walk is a few ms
+where inbox-first costs hundreds; only dormant lists need it. Unlike
+the others, an unknown size takes the date walk there: the listing is
+uncached, and guessing small would sort all of lkml per request. Plans
+pinned in `tests/test_dashboard.py`.
+
 ## tz-aware UTC normalization for `Date:` headers
 
 `email.utils.parsedate_to_datetime` returns a tz-naive `datetime`
