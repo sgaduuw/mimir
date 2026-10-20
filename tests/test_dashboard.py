@@ -1058,3 +1058,35 @@ def test_fetch_recent_offsets_agree_between_shapes(seeded_db):
             pages[shape] = [_fetch_recent(s, alpha, off, 3) for off in (0, 3, 6)]
     assert pages["inbox"] == pages["date"]
     assert [len(p[0]) for p in pages["inbox"]][:2] == [3, 3]
+
+
+def test_messages_in_window_drives_from_the_date_index(seeded_db):
+    """The time-view total must walk `ix_articles_date` over the bounded
+    window and probe `article_lists` per row. Driving from the inbox
+    reads the list's whole history (#801). EXPLAINs the statement
+    `messages_in_window` actually runs."""
+    from mimir.dashboard import messages_in_window
+
+    alpha = _inbox(seeded_db, "alpha")
+    end = datetime(2026, 1, 2, tzinfo=UTC)
+    with seeded_db() as s:
+        seen = []
+        engine = s.get_bind()
+
+        def grab(conn, cursor, statement, parameters, context, executemany):
+            if "count(" in statement.lower():
+                seen.append((statement, parameters))
+
+        event.listen(engine, "before_cursor_execute", grab)
+        try:
+            messages_in_window(s, alpha, end - timedelta(days=1), end)
+        finally:
+            event.remove(engine, "before_cursor_execute", grab)
+        assert len(seen) == 1, seen
+        statement, params = seen[0]
+        raw = s.connection().connection.driver_connection
+        plan = "\n".join(
+            row[3] for row in raw.execute("EXPLAIN QUERY PLAN " + statement, params)
+        )
+    assert "ix_articles_date" in plan, plan
+    assert "ix_article_lists_inbox_id" not in plan, plan
