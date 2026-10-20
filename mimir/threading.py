@@ -785,6 +785,14 @@ THREADS_SINCE_MAX_DAYS = 90
 THREADS_SINCE_MAX_THREADS = 200
 
 
+def since_window_start(since: date, end: datetime) -> datetime:
+    """Start of the "since" window: midnight UTC of `since`, clamped
+    to `THREADS_SINCE_MAX_DAYS` before `end`. One rule for the thread
+    list and the message total, so the two cover the same window."""
+    start = datetime.combine(since, datetime.min.time(), tzinfo=UTC)
+    return max(start, end - timedelta(days=THREADS_SINCE_MAX_DAYS))
+
+
 def threads_since(
     session: Session,
     inbox: Inbox,
@@ -810,10 +818,7 @@ def threads_since(
 
     def compute() -> list[ActiveThread]:
         end = datetime.now(UTC)
-        floor = end - timedelta(days=THREADS_SINCE_MAX_DAYS)
-        start = datetime.combine(since, datetime.min.time(), tzinfo=UTC)
-        if start < floor:
-            start = floor
+        start = since_window_start(since, end)
         if start >= end:
             return []
         return _active_threads_query(
