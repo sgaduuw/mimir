@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- `/merge-window` sorts pull requests to Linus into pending, merged, unknown
+  (no commit named) and rejected (Linus replied he won't pull it, or
+  unpulled it) columns (#803).
+
 ### Fixed
 
 - Pages that list many senders no longer re-read the maintainer address
