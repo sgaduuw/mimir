@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.23.0] - 2026-10-20
+
 ### Added
 
 - `/merge-window` sorts pull requests to Linus into pending, merged, unknown
