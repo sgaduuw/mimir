@@ -198,10 +198,11 @@ def _is_allowlisted(address: str) -> bool:
     if any(token.lower() in addr_lower for token in settings.email_allowlist):
         return True
     try:
-        cached = g.setdefault(
-            "_maintainer_addresses",
-            maintainer_allowlist.maintainer_addresses(),
-        )
+        # Not `g.setdefault(key, maintainer_addresses())`: the default is
+        # evaluated before the call, so that read the set on every call.
+        if "_maintainer_addresses" not in g:
+            g._maintainer_addresses = maintainer_allowlist.maintainer_addresses()
+        cached = g._maintainer_addresses
     except RuntimeError:
         # Outside a Flask request context; fall through to a direct
         # cache call. Rare; mostly tests.
