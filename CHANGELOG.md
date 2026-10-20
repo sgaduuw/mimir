@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- The today, yesterday and since pages no longer count a list's whole history
+  to show their message total; on lkml that took 2 to 3 seconds per page
+  (#801).
+
 ## [3.23.0] - 2026-10-20
 
 ### Added

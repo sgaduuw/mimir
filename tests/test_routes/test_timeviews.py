@@ -392,3 +392,51 @@ def test_since_lifecycle_gets_at_most_the_cap_ids(
     recent = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
     assert client.get(f"/{inbox_name}/since/{recent}").status_code == 200
     assert [len(ids) for ids in seen] == [3]
+
+
+def test_since_total_uses_the_same_window_start_as_the_threads(
+    client, inbox_name, frozen_clock
+):
+    """Capped window: the thread list starts at `now - 90 days`, so
+    the total must too. Counting from that day's midnight would add a
+    message the list cannot show (#801)."""
+    import re
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.threading import THREADS_SINCE_MAX_DAYS
+
+    now = datetime.now(UTC)
+    # FROZEN_NOW is mid-day, so two hours before the exact floor is
+    # still after that day's midnight.
+    dates = {
+        "inside": now - timedelta(hours=1),
+        "before-floor": now - timedelta(days=THREADS_SINCE_MAX_DAYS, hours=2),
+    }
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        for i, (label, when) in enumerate(dates.items()):
+            art = Article(
+                message_id=f"window-{label}@example.com",
+                subject=label,
+                author="X",
+                date=when,
+                thread_parent=None,
+                subject_normalized=label,
+            )
+            s.add(art)
+            s.flush()
+            s.add(
+                ArticleList(
+                    article_id=art.id,
+                    inbox_id=inbox.id,
+                    epoch="0.git",
+                    commit_sha=f"{i:040x}",
+                )
+            )
+        s.commit()
+    body = client.get(f"/{inbox_name}/since/2000-01-01").data.decode()
+    assert re.search(r"\b1 message\s*across", body), body[:600]
