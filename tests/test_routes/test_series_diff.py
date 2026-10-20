@@ -74,7 +74,6 @@ def test_series_diff_over_cap_renders_notice_with_both_links(
 ):
     """An oversize pair shows a plain notice and links to both
     revisions instead of a diff (#801)."""
-    # The route imported the constant by name, so patch both copies.
     monkeypatch.setattr(patch_revisions, "REVISION_DIFF_MAX_LINES", 2)
     author = "Alice <a@example>"
     series_key = _ingest_series_pair(
