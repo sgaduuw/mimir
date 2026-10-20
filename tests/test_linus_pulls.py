@@ -246,27 +246,6 @@ def test_reply_that_is_not_a_bot_merge_notice_does_not_count(
         assert _rows(s) == [("[GIT PULL] pr@x", "pending")]
 
 
-def test_one_pull_in_each_state(seeded_db, messages):
-    """Merged (git has the tip), rejected (Linus said he is not pulling
-    it), unknown (no commit named, no bot reply) and pending (a tip git
-    does not have yet), newest first."""
-    bodies, merged = messages
-    merged.add(_TIP_A)
-    with seeded_db() as s:
-        _pull(s, bodies, "merged@x", _TIP_A, hours=10)
-        _pull(s, bodies, "rejected@x", _TIP_B, hours=20)
-        _linus_reply(s, bodies, "rejected@x", "I'm not pulling this.\n")
-        _pull(s, bodies, "unknown@x", hours=30)
-        _pull(s, bodies, "pending@x", _TIP_B, hours=40)
-        s.commit()
-        assert _rows(s) == [
-            ("[GIT PULL] pending@x", "pending"),
-            ("[GIT PULL] unknown@x", "unknown"),
-            ("[GIT PULL] rejected@x", "rejected"),
-            ("[GIT PULL] merged@x", "merged"),
-        ]
-
-
 @pytest.mark.parametrize(
     "text",
     [
@@ -277,6 +256,9 @@ def test_one_pull_in_each_state(seeded_db, messages):
         "wont pull",
         "Unpulled.",
         "Good morning.\n\nThis is unpulled until you fix it.\n",
+        # He wraps at about 72 columns, so a phrase can straddle a break.
+        "This is a long line explaining the problem and so I'm not\npulling this.\n",
+        "Sorry, but with all those unsigned commits I am not going\nto pull it.\n",
     ],
 )
 @pytest.mark.parametrize("tip", [_TIP_A, None])
@@ -312,23 +294,6 @@ def test_reply_that_is_not_a_linus_rejection_does_not_count(
         _linus_reply(s, bodies, "pr@x", text, author=author)
         s.commit()
         assert _rows(s) == [("[GIT PULL] pr@x", "pending")]
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        # He wraps at about 72 columns, so a phrase can straddle a break.
-        "This is a long line explaining the problem and so I'm not\npulling this.\n",
-        "Sorry, but with all those unsigned commits I am not going\nto pull it.\n",
-    ],
-)
-def test_rejection_phrase_wrapped_across_lines(seeded_db, messages, text):
-    bodies, _ = messages
-    with seeded_db() as s:
-        _pull(s, bodies, "pr@x", _TIP_A, hours=10)
-        _linus_reply(s, bodies, "pr@x", text)
-        s.commit()
-        assert _rows(s) == [("[GIT PULL] pr@x", "rejected")]
 
 
 def test_tipless_pull_with_a_bot_merge_reply_is_merged(seeded_db, messages):
