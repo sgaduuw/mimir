@@ -16,6 +16,11 @@ changes, not internal refactors. Categories: **Added**,
 - The today, yesterday and since pages no longer count a list's whole history
   to show their message total; on lkml that took 2 to 3 seconds per page
   (#801).
+- The series diff no longer tries to compare very large patches (over 20,000
+  lines), which could hold a worker for many seconds; it links to both
+  revisions instead (#801). Rolling back to an earlier release makes
+  series diffs cached by this one fail to load until they expire (24
+  hours).
 
 ## [3.23.0] - 2026-10-20
 
