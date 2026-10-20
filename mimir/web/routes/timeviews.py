@@ -18,6 +18,7 @@ from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Article, ArticleList
 from mimir.threading import (
     THREADS_SINCE_MAX_DAYS,
+    THREADS_SINCE_MAX_THREADS,
     threads_for_day,
     threads_for_month,
     threads_since,
@@ -92,8 +93,9 @@ def daily_yesterday(inbox_name: str):
 
 @bp_web.route("/<inbox_name>/since/<since_str>")
 def threads_since_view(inbox_name: str, since_str: str):
-    """ "What I missed" view: every thread with activity from `since` to
-    now. Window is clamped to `THREADS_SINCE_MAX_DAYS` (90 days) below
+    """ "What I missed" view: the most recently active threads (up to
+    `THREADS_SINCE_MAX_THREADS`) with activity from `since` to now.
+    Window is clamped to `THREADS_SINCE_MAX_DAYS` (90 days) below
     the present; the template renders a notice when the requested
     `since` falls before the cap so the operator sees why the window
     starts where it does."""
@@ -111,7 +113,11 @@ def threads_since_view(inbox_name: str, since_str: str):
     end = datetime.now(UTC)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
-        threads = threads_since(session, inbox, since)
+        # `effective`, not `since`: every pre-floor date is the same
+        # window, so it should be one cache key and one compute.
+        threads = threads_since(session, inbox, effective)
+        truncated = len(threads) > THREADS_SINCE_MAX_THREADS
+        threads = threads[:THREADS_SINCE_MAX_THREADS]
         # Same datetime-not-strftime treatment as `_daily_view`.
         total = session.scalar(
             select(func.count(Article.id))
@@ -134,6 +140,8 @@ def threads_since_view(inbox_name: str, since_str: str):
         capped=capped,
         max_days=THREADS_SINCE_MAX_DAYS,
         threads=threads,
+        truncated=truncated,
+        max_threads=THREADS_SINCE_MAX_THREADS,
         total_messages=total or 0,
         lifecycle_status_by_id=lifecycle_status_by_id,
         # "What I missed" is a personal catch-up window, not archival
