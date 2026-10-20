@@ -778,6 +778,12 @@ def threads_for_day(
 # than a 30-second query.
 THREADS_SINCE_MAX_DAYS = 90
 
+# Cap on threads listed. lkml has ~38,000 threads in 90 days; listing
+# them all means a lifecycle-pill cache write per id and an `IN :ids`
+# past SQLite's variable limit. The list is newest activity first, so
+# the cap keeps the most recently active threads.
+THREADS_SINCE_MAX_THREADS = 200
+
 
 def threads_since(
     session: Session,
@@ -795,6 +801,11 @@ def threads_since(
     "showing last N days" notice when the requested window
     exceeds the cap; this helper returns whatever fits in the
     capped window.
+
+    Returns at most `THREADS_SINCE_MAX_THREADS + 1` threads: the extra
+    one tells the caller the list was cut, and the caller drops it.
+    Callers pass the already-clamped date so every pre-floor request
+    shares one cache key.
     """
 
     def compute() -> list[ActiveThread]:
@@ -811,7 +822,7 @@ def threads_since(
             start,
             end,
             order_by="last_activity",
-            limit=None,
+            limit=THREADS_SINCE_MAX_THREADS + 1,
         )
 
     return cache.get_or_compute(
