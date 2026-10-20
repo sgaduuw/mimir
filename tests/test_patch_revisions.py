@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+from mimir import patch_revisions
 from mimir.models import Article, ArticleFile, ArticleList, Inbox
 from mimir.patch_revisions import (
     AMBIGUOUS_MATCH,
@@ -407,6 +408,45 @@ def test_compute_revision_diff_renders_when_bodies_differ():
     assert "highlight" in rd.diff_html  # the cssclass we set
     assert "old line" in rd.diff_html
     assert "new line" in rd.diff_html
+
+
+def _diff_of(from_body, to_body):
+    return compute_revision_diff(
+        from_body,
+        to_body,
+        from_article_id=1,
+        to_article_id=2,
+        from_version="v1",
+        to_version="v2",
+        from_url="/alpha/2024/06/1",
+        to_url="/alpha/2024/06/2",
+        position=1,
+    )
+
+
+def test_compute_revision_diff_over_cap_skips_the_diff(monkeypatch):
+    """A side over the line cap is marked `too_large` and never
+    reaches difflib or Pygments (#801)."""
+    monkeypatch.setattr(patch_revisions, "REVISION_DIFF_MAX_LINES", 3)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("diff computed for an oversize body")
+
+    monkeypatch.setattr(patch_revisions.difflib, "unified_diff", boom)
+    monkeypatch.setattr(patch_revisions, "highlight", boom)
+    rd = _diff_of("a\nb\nc\nd\n", "a\nb\n")
+    assert rd.too_large is True
+    assert rd.is_identical is False
+    assert rd.diff_html == ""
+    assert rd.from_url == "/alpha/2024/06/1"
+    assert rd.to_url == "/alpha/2024/06/2"
+
+
+def test_compute_revision_diff_at_cap_still_diffs(monkeypatch):
+    monkeypatch.setattr(patch_revisions, "REVISION_DIFF_MAX_LINES", 3)
+    rd = _diff_of("a\nb\nc\n", "a\nb\nX\n")
+    assert rd.too_large is False
+    assert "X" in rd.diff_html
 
 
 def test_compute_revision_diff_handles_none_bodies():

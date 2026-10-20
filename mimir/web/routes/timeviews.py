@@ -59,7 +59,7 @@ def _daily_view(inbox_name: str, day: date_cls, heading: str):
         day=day,
         heading=heading,
         threads=threads,
-        total_messages=total or 0,
+        total_messages=total,
         lifecycle_status_by_id=lifecycle_status_by_id,
     )
 
@@ -118,7 +118,7 @@ def threads_since_view(inbox_name: str, since_str: str):
         threads=threads,
         truncated=truncated,
         max_threads=THREADS_SINCE_MAX_THREADS,
-        total_messages=total or 0,
+        total_messages=total,
         lifecycle_status_by_id=lifecycle_status_by_id,
         # "What I missed" is a personal catch-up window, not archival
         # content: every date in the 90-day cap is a distinct URL over
