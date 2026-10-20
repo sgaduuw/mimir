@@ -13,6 +13,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Status pills no longer walk the whole thread to find its latest reply; in
+  very long threads every first visit to a message page did (#798).
 - The today, yesterday and since pages no longer count a list's whole history
   to show their message total; on lkml that took 2 to 3 seconds per page
   (#801).
