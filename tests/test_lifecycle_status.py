@@ -626,12 +626,131 @@ def test_bulk_uncached_computes_thread_activity(session):
     assert got[root.id].activity_detail == "today"
 
 
+def _seed_thread(session, *, materialised=True):
+    """root (30d old) <- child (20d) <- grandchild (today), all in lkml.
+    `materialised` sets thread_root_id the way ingest does; False leaves
+    it NULL, which is the state the recursive walk exists for."""
+    from datetime import timedelta
+
+    now = datetime.now(UTC)
+    root = _seed_article(session, "t-root@x", date=now - timedelta(days=30))
+    inbox_id = _lkml(session)
+    arts = [root]
+    for mid, parent, age in (
+        ("t-child@x", root.message_id, 20),
+        ("t-grand@x", "t-child@x", 0),
+    ):
+        art = Article(
+            message_id=mid,
+            subject="Re: foo",
+            date=now - timedelta(days=age),
+            author="r",
+            thread_parent=parent,
+        )
+        session.add(art)
+        session.commit()
+        session.add(
+            ArticleList(
+                article_id=art.id,
+                inbox_id=inbox_id,
+                epoch="0.git",
+                commit_sha="x" * 40,
+            )
+        )
+        session.commit()
+        arts.append(art)
+    if materialised:
+        seeded = [a.id for a in arts]
+        for al in session.execute(
+            select(ArticleList).where(ArticleList.article_id.in_(seeded))
+        ).scalars():
+            al.thread_root_id = root.id
+        session.commit()
+    return arts
+
+
+def test_materialised_thread_activity_counts_the_deepest_reply(session):
+    """The column read gives the same answer as the walk: the newest
+    reply anywhere below counts, and an article's own date does not."""
+    from mimir.lifecycle_status import _bulk_uncached
+
+    root, child, grand = _seed_thread(session)
+    got = _bulk_uncached(session, [root.id, child.id, grand.id], _lkml(session))
+    assert got[root.id].activity_heat == "hot"
+    assert got[child.id].activity_heat == "hot"
+    # The newest article has no replies of its own.
+    assert got[grand.id].activity_heat != "hot"
+
+
+def test_unmaterialised_thread_activity_still_walks(session):
+    """thread_root_id NULL (reindex --from-scratch, a stalled pass): the
+    column cannot answer, so the walk does."""
+    from mimir.lifecycle_status import _bulk_uncached
+
+    root, child, grand = _seed_thread(session, materialised=False)
+    got = _bulk_uncached(session, [root.id, child.id], _lkml(session))
+    assert got[root.id].activity_heat == "hot"
+    assert got[child.id].activity_heat == "hot"
+
+
+def test_partly_materialised_thread_falls_back_to_the_walk(session):
+    """A NULL row hanging off a rooted thread is invisible to the column,
+    so the thread is walked, not read from it (`unmaterialised_roots`)."""
+    from mimir.lifecycle_status import _bulk_uncached
+
+    root, child, grand = _seed_thread(session)
+    session.execute(
+        select(ArticleList).where(ArticleList.article_id == grand.id)
+    ).scalar_one().thread_root_id = None
+    session.commit()
+    got = _bulk_uncached(session, [root.id], _lkml(session))
+    assert got[root.id].activity_heat == "hot"
+
+
+def test_materialised_thread_issues_no_recursive_walk(session):
+    """#798. A materialised thread is answered from the column. Every
+    first visit to a message page in a 12,000-reply thread paid for the
+    walk; assert no statement for it reaches the database."""
+    from sqlalchemy import event
+
+    from mimir.lifecycle_status import _bulk_uncached
+
+    root, child, grand = _seed_thread(session)
+    seen: list[str] = []
+    engine = session.get_bind()
+
+    def spy(conn, cursor, statement, *a):
+        seen.append(statement.lower())
+
+    event.listen(engine, "before_cursor_execute", spy)
+    try:
+        _bulk_uncached(session, [root.id, child.id], _lkml(session))
+    finally:
+        event.remove(engine, "before_cursor_execute", spy)
+    assert seen
+    assert not [s for s in seen if "recursive" in s], seen
+
+
+def test_thread_date_column_read_uses_the_thread_root_index(session):
+    from sqlalchemy import text
+
+    from mimir.lifecycle_status import _THREAD_DATES_COLUMN_SQL
+
+    root, child, grand = _seed_thread(session)
+    session.execute(text("ANALYZE"))
+    raw = _THREAD_DATES_COLUMN_SQL.text.replace(
+        ":ids", f"({root.id}, {child.id})"
+    ).replace(":inbox_id", str(_lkml(session)))
+    plan = "\n".join(r[3] for r in session.execute(text("EXPLAIN QUERY PLAN " + raw)))
+    assert "ix_article_lists_thread_root" in plan, plan
+
+
 def test_lifecycle_status_query_uses_index_seeks(session):
     """Pins the plan of the bulk lifecycle query: mainline_commits,
     article_trailers, and subsystem_maintainers must SEARCH USING
-    INDEX. articles can scan (the recursive CTE for thread-activity
-    walk-up needs to scan the bounded `IN :ids` seed set; that cost
-    scales with listing size, not corpus size).
+    INDEX. articles can scan (the bounded `IN :ids` seed set; that cost
+    scales with listing size, not corpus size). The thread-activity
+    statements are pinned separately below.
 
     Mirrors the shape of test_subsystem_path_filter_uses_index_seeks
     and test_triage_queries_use_date_index_no_full_scans, with the
@@ -711,19 +830,13 @@ def test_chip_walk_does_not_drive_from_the_inbox_index(session):
     message walked. EXPLAIN names the index, not the table."""
     from sqlalchemy import text
 
-    from mimir.lifecycle_status import _BULK_SQL
-    from mimir.trailers import REVIEW_TRAILER_ROLES
+    from mimir.lifecycle_status import _THREAD_DATES_WALK_SQL
 
     _seed_article(session, "plan@x")
     ids = [r[0] for r in session.execute(text("SELECT id FROM articles LIMIT 20"))]
-    raw_sql = (
-        _BULK_SQL.text.replace(":ids", "(" + ", ".join(map(str, ids)) + ")")
-        .replace(
-            ":review_roles",
-            "(" + ", ".join(f"'{r}'" for r in REVIEW_TRAILER_ROLES) + ")",
-        )
-        .replace(":inbox_id", str(_lkml(session)))
-    )
+    raw_sql = _THREAD_DATES_WALK_SQL.text.replace(
+        ":ids", "(" + ", ".join(map(str, ids)) + ")"
+    ).replace(":inbox_id", str(_lkml(session)))
     plan_rows = session.execute(text("EXPLAIN QUERY PLAN " + raw_sql)).all()
     plan_text = "\n".join(r[3] for r in plan_rows)
     assert "ix_article_lists_inbox_id" not in plan_text, plan_text
