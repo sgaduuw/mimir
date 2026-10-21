@@ -278,14 +278,6 @@ class BrokerClient:
             raise BrokerUnavailable(f"{req.op}: {reply.error}")
         return reply.result or {}
 
-    def backfill(self, req, result_cls, timeout: float | None = None):
-        """Send one backfill chunk RPC. Returns `(result, run)`: the
-        chunk's typed `BackfillResult`, and the run info dict described
-        on `protocol.Reply.result` (start time, the cursor the chunk
-        started from, examined across the whole run)."""
-        result = self.call(req, timeout)
-        return result_cls.model_validate(result.get("counters", {})), result.get("run")
-
     def close(self) -> None:
         """Tests and CLI tools call this to release the socket; the
         process-singleton accessor below normally never closes."""

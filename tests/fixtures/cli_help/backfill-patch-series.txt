@@ -1,0 +1,18 @@
+Usage: backfill-patch-series [OPTIONS]
+
+  One-shot walker that fills `patch_series_key` and `patch_series_version` on
+  articles ingested before the cover-letter detector landed.
+
+Options:
+  --limit INTEGER  Cap the number of articles examined this session.
+  --reprocess      Re-detect for articles whose key is already set (clears stale
+                   rows that no longer parse as cover letters).
+  --restart        Discard an unfinished run of this backfill and start again
+                   from the newest article. A run that has examined articles is
+                   kept unless --yes is also given. Without --restart, an
+                   interrupted run resumes.
+  --yes            With --restart, discard an unfinished run that has progress
+                   instead of refusing.
+  -v, --verbose    -v: progress hint (broker mode logs to the broker process;
+                   use `podman logs -f mimir-broker` to follow).
+  --help           Show this message and exit.
