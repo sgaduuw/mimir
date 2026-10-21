@@ -116,7 +116,8 @@ def backfill_article_trailers_command(
 @click.command("backfill-patch-series")
 @backfill_options(
     reprocess_help="Re-detect for articles whose key is already set (clears "
-    "stale rows that no longer parse as cover letters).",
+    "stale rows that no longer parse as cover letters, and rewrites stored "
+    "versions after a parser change).",
 )
 def backfill_patch_series_command(
     limit: int | None,
