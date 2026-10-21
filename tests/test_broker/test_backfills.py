@@ -28,6 +28,7 @@ typed-result reconstruction on the client.
 from __future__ import annotations
 
 from datetime import UTC
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -436,18 +437,6 @@ _RUN = {
 }
 
 
-class _StubClient:
-    """Stands in for `BrokerClient`: `chunk_for(req)` returns the
-    `(result, run)` each `call` replies with."""
-
-    def __init__(self, chunk_for):
-        self.chunk_for = chunk_for
-
-    def call(self, req):
-        chunk, run = self.chunk_for(req)
-        return {"counters": chunk.model_dump(mode="json"), "run": run}
-
-
 def test_broker_backfill_loop_converges_across_chunks(seeded_db):
     """Stub a chunk call that returns partial
     chunks N-2 times before a final partial=False chunk. The loop
@@ -469,10 +458,14 @@ def test_broker_backfill_loop_converges_across_chunks(seeded_db):
         calls.append(
             {"limit": req.limit, "reprocess": req.reprocess, "start": req.start}
         )
-        return chunks.pop(0), {**_RUN, "examined": 9}
+        chunk = chunks.pop(0)
+        return {
+            "counters": chunk.model_dump(mode="json"),
+            "run": {**_RUN, "examined": 9},
+        }
 
     result, run = _broker_backfill_loop(
-        _StubClient(fake_call),
+        SimpleNamespace(call=fake_call),
         BackfillArticleFilesRequest,
         BackfillResult,
         limit=None,
@@ -509,10 +502,11 @@ def test_broker_backfill_loop_respects_limit_across_chunks(seeded_db):
 
     def fake_call(req):
         seen_limits.append(req.limit)
-        return chunks.pop(0), _RUN
+        chunk = chunks.pop(0)
+        return {"counters": chunk.model_dump(mode="json"), "run": _RUN}
 
     result, _run = _broker_backfill_loop(
-        _StubClient(fake_call),
+        SimpleNamespace(call=fake_call),
         BackfillArticleFilesRequest,
         BackfillResult,
         limit=5,
@@ -536,10 +530,11 @@ def test_broker_backfill_loop_passes_extra_kwargs(seeded_db):
 
     def fake_call(req):
         seen_extras.append({"inbox_filter": req.inbox_filter})
-        return BackfillResult(examined=1, resolved=1), _RUN
+        counters = BackfillResult(examined=1, resolved=1).model_dump(mode="json")
+        return {"counters": counters, "run": _RUN}
 
     result, _run = _broker_backfill_loop(
-        _StubClient(fake_call),
+        SimpleNamespace(call=fake_call),
         BackfillCanonicalsRequest,
         BackfillResult,
         limit=None,

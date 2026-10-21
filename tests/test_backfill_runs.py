@@ -15,6 +15,7 @@ batches: ids[0:2], ids[2:4], ids[4:6], ids[6:7] with `ids` newest-first.
 
 import re
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -683,22 +684,20 @@ def test_a_session_that_joined_a_run_stops_when_the_run_finishes(
 
     calls = {"b": 0, "a": 0}
 
-    class Session:
-        """Session B's client: its second chunk lands after A finished."""
-
-        def call(self, req):
-            calls["b"] += 1
-            if calls["b"] == 2:
-                # Session A joins and finishes the run while B waits.
-                while True:
-                    calls["a"] += 1
-                    start = "resume" if calls["a"] == 1 else None
-                    if not chunk(reprocess=True, start=start)["partial"]:
-                        break
-            return chunk(limit=req.limit, reprocess=req.reprocess, start=req.start)
+    def session_b(req):
+        """Session B's chunk call; its second chunk lands after A finished."""
+        calls["b"] += 1
+        if calls["b"] == 2:
+            # Session A joins and finishes the run while B waits.
+            while True:
+                calls["a"] += 1
+                start = "resume" if calls["a"] == 1 else None
+                if not chunk(reprocess=True, start=start)["partial"]:
+                    break
+        return chunk(limit=req.limit, reprocess=req.reprocess, start=req.start)
 
     result, run = _broker_backfill_loop(
-        Session(),
+        SimpleNamespace(call=session_b),
         BackfillPatchSeriesRequest,
         BackfillResult,
         limit=None,
