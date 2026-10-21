@@ -16,13 +16,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 
-from sqlalchemy import bindparam, text
+from sqlalchemy import bindparam, select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.datetime_utils import aware_utc as _aware_utc
 from mimir.datetime_utils import coerce_dt
+from mimir.models import ArticleList
 from mimir.patch_series import newer_revision_sql, version_number_sql
+from mimir.threading import unmaterialised_roots
 from mimir.trailers import REVIEW_TRAILER_ROLES
 
 # Strip control bytes + surrogates before flowing reviewer names
@@ -85,16 +87,7 @@ _REVIEW_ROLES_PARAM = bindparam(
 # bindparam. Keeps the query plan-pinned and dodges SQLite's limit
 # on positional params for very large lists. Exposed at module
 # level so the plan-pin test (Task 9) can EXPLAIN it.
-# Recursive-CTE shape: roots(leaf, ...) walks UP from each leaf via
-# thread_parent so root_per_leaf picks the topmost ancestor; then
-# descendants(...) walks DOWN from each root and thread_dates takes
-# the MAX(date) over the subtree, excluding the leaf article itself.
-# `last_thread_date` ends up NULL when an article has no replies.
-# Both walks stay inside the requesting inbox, so the chip reads the
-# same inbox-scoped thread the page and its ETag do (#676), root
-# included: `_find_thread_root_cte` stops at the same ancestors. EXISTS,
-# not JOIN: without sqlite_stat1 a JOIN is driven from
-# `ix_article_lists_inbox_id` and reads the whole inbox per message walked.
+# Thread activity is not in this statement: see `_thread_dates`.
 #
 # `mc` carries the in_linus count + linus_sha/at AND the earliest non-
 # linus tree + sha/at for the LANDED/QUEUED tooltip leading lines.
@@ -126,45 +119,7 @@ _V2 = version_number_sql("a2.patch_series_version")
 _NEWER = newer_revision_sql("a1", "a2")
 
 _BULK_SQL = text(f"""
-WITH RECURSIVE
-roots(leaf, message_id, thread_parent, depth) AS (
-    SELECT id, message_id, thread_parent, 0
-      FROM articles WHERE id IN :ids
-    UNION ALL
-    SELECT r.leaf, p.message_id, p.thread_parent, r.depth + 1
-      FROM roots r
-      JOIN articles p ON p.message_id = r.thread_parent
-     WHERE r.thread_parent IS NOT NULL AND r.depth < 1000
-       AND EXISTS (SELECT 1 FROM article_lists pl
-                    WHERE pl.article_id = p.id AND pl.inbox_id = :inbox_id)
-),
-root_per_leaf AS (
-    SELECT leaf, message_id AS root_msgid
-      FROM (
-          SELECT leaf, message_id,
-                 ROW_NUMBER() OVER (PARTITION BY leaf ORDER BY depth DESC) AS rn
-            FROM roots
-      )
-     WHERE rn = 1
-),
-descendants(root_msgid, message_id, thread_parent, depth) AS (
-    SELECT root_msgid, root_msgid, NULL, 0 FROM root_per_leaf
-    UNION
-    SELECT d.root_msgid, c.message_id, c.thread_parent, d.depth + 1
-      FROM descendants d
-      JOIN articles c ON c.thread_parent = d.message_id
-     WHERE d.depth < 1000
-       AND EXISTS (SELECT 1 FROM article_lists cl
-                    WHERE cl.article_id = c.id AND cl.inbox_id = :inbox_id)
-),
-thread_dates AS (
-    SELECT r.leaf, MAX(a.date) AS last_thread_date
-      FROM root_per_leaf r
-      JOIN descendants d ON d.root_msgid = r.root_msgid
-      JOIN articles a ON a.message_id = d.message_id
-     WHERE a.message_id != (SELECT message_id FROM articles WHERE id = r.leaf)
-     GROUP BY r.leaf
-),
+WITH
 mc AS (
     SELECT a.id AS article_id,
            SUM(CASE WHEN c.tree_name = 'linus' THEN 1 ELSE 0 END) AS in_linus,
@@ -242,16 +197,123 @@ SELECT a.id,
        sup.sup_by_version,
        sup.sup_by_date,
        COALESCE(rc.review_total, 0) AS review_total,
-       COALESCE(rc.review_maintainer, 0) AS review_maintainer,
-       thread_dates.last_thread_date
+       COALESCE(rc.review_maintainer, 0) AS review_maintainer
   FROM articles a
   LEFT JOIN mc ON mc.article_id = a.id
   LEFT JOIN at_review ON at_review.article_id = a.id
   LEFT JOIN sup ON sup.leaf = a.id
   LEFT JOIN rc ON rc.article_id = a.id
-  LEFT JOIN thread_dates ON thread_dates.leaf = a.id
  WHERE a.id IN :ids
 """).bindparams(bindparam("ids", expanding=True), _REVIEW_ROLES_PARAM)
+
+
+# Thread activity, read two ways. The walk is recursive-CTE shaped:
+# roots(leaf, ...) walks UP from each leaf via thread_parent so
+# root_per_leaf picks the topmost ancestor; then descendants(...) walks
+# DOWN from each root and thread_dates takes the MAX(date) over the
+# subtree. Both walks stay inside the requesting inbox, so the chip reads
+# the same inbox-scoped thread the page and its ETag do (#676), root
+# included: `_find_thread_root_cte` stops at the same ancestors. EXISTS,
+# not JOIN: without sqlite_stat1 a JOIN is driven from
+# `ix_article_lists_inbox_id` and reads the whole inbox per message walked.
+#
+# `_THREAD_DATES_COLUMN_SQL` reads the materialised
+# `article_lists.thread_root_id` through `ix_article_lists_thread_root`: the newest other article in the
+# leaf's own inbox-scoped thread, one range read instead of a walk of
+# every message in it (#798: a 12,342 reply thread paid that walk on
+# every first visit to a message page). It is used for threads
+# `unmaterialised_roots` calls materialised. `_THREAD_DATES_WALK_SQL` is
+# the fallback for the rest. Both exclude the leaf itself, so
+# `last_thread_date` is NULL for an article with no replies.
+_THREAD_DATES_COLUMN_SQL = text("""
+SELECT l.article_id AS leaf,
+       (SELECT MAX(a.date)
+          FROM article_lists al
+          JOIN articles a ON a.id = al.article_id
+         WHERE al.inbox_id = :inbox_id
+           AND al.thread_root_id = l.thread_root_id
+           AND al.article_id != l.article_id) AS last_thread_date
+  FROM article_lists l
+ WHERE l.inbox_id = :inbox_id AND l.article_id IN :ids
+""").bindparams(bindparam("ids", expanding=True))
+
+_THREAD_DATES_WALK_SQL = text("""
+WITH RECURSIVE
+roots(leaf, message_id, thread_parent, depth) AS (
+    SELECT id, message_id, thread_parent, 0
+      FROM articles WHERE id IN :ids
+    UNION ALL
+    SELECT r.leaf, p.message_id, p.thread_parent, r.depth + 1
+      FROM roots r
+      JOIN articles p ON p.message_id = r.thread_parent
+     WHERE r.thread_parent IS NOT NULL AND r.depth < 1000
+       AND EXISTS (SELECT 1 FROM article_lists pl
+                    WHERE pl.article_id = p.id AND pl.inbox_id = :inbox_id)
+),
+root_per_leaf AS (
+    SELECT leaf, message_id AS root_msgid
+      FROM (
+          SELECT leaf, message_id,
+                 ROW_NUMBER() OVER (PARTITION BY leaf ORDER BY depth DESC) AS rn
+            FROM roots
+      )
+     WHERE rn = 1
+),
+descendants(root_msgid, message_id, thread_parent, depth) AS (
+    SELECT root_msgid, root_msgid, NULL, 0 FROM root_per_leaf
+    UNION
+    SELECT d.root_msgid, c.message_id, c.thread_parent, d.depth + 1
+      FROM descendants d
+      JOIN articles c ON c.thread_parent = d.message_id
+     WHERE d.depth < 1000
+       AND EXISTS (SELECT 1 FROM article_lists cl
+                    WHERE cl.article_id = c.id AND cl.inbox_id = :inbox_id)
+),
+thread_dates AS (
+    SELECT r.leaf, MAX(a.date) AS last_thread_date
+      FROM root_per_leaf r
+      JOIN descendants d ON d.root_msgid = r.root_msgid
+      JOIN articles a ON a.message_id = d.message_id
+     WHERE a.message_id != (SELECT message_id FROM articles WHERE id = r.leaf)
+     GROUP BY r.leaf
+)
+SELECT leaf, last_thread_date FROM thread_dates
+""").bindparams(bindparam("ids", expanding=True))
+
+
+def _thread_dates(
+    session: Session, article_ids: list[int], inbox_id: int
+) -> dict[int, object]:
+    """Newest other-article date in each leaf's thread, by leaf id.
+
+    Leaves in a materialised thread take the column read; the rest
+    (NULL `thread_root_id`, or a thread with an unrooted row) take the
+    walk. Leaves with no replies, or not in this inbox, are absent.
+    """
+    roots = dict(
+        session.execute(
+            select(ArticleList.article_id, ArticleList.thread_root_id).where(
+                ArticleList.inbox_id == inbox_id,
+                ArticleList.article_id.in_(article_ids),
+            )
+        ).all()
+    )
+    stale = unmaterialised_roots(
+        session, inbox_id, sorted({r for r in roots.values() if r is not None})
+    )
+    fast = [a for a, r in roots.items() if r is not None and r not in stale]
+    fast_set = set(fast)
+    walk = [a for a in article_ids if a not in fast_set]
+    out: dict[int, object] = {}
+    for ids, sql in ((fast, _THREAD_DATES_COLUMN_SQL), (walk, _THREAD_DATES_WALK_SQL)):
+        if ids:
+            params = {"ids": ids, "inbox_id": inbox_id}
+            out.update(
+                (r.leaf, r.last_thread_date)
+                for r in session.execute(sql, params)
+                if r.last_thread_date is not None
+            )
+    return out
 
 
 # Per-article reviewer names for the tooltip. Kept separate from
@@ -400,6 +462,7 @@ def _bulk_uncached(
     articles` on cache misses and by the query-plan-pin test
     directly."""
     rows = session.execute(_BULK_SQL, {"ids": article_ids, "inbox_id": inbox_id}).all()
+    thread_dates = _thread_dates(session, article_ids, inbox_id)
     name_rows = session.execute(_REVIEWER_NAMES_SQL, {"ids": article_ids}).all()
 
     # Index reviewer names per article: [(name, is_maintainer), ...]
@@ -443,7 +506,7 @@ def _bulk_uncached(
         # Treat last_thread_date <= article_date as "no replies"
         # (e.g. a malformed thread where a parent post-dates a
         # child); the heat bucket then collapses to dormant.
-        last_at = coerce_dt(row.last_thread_date)
+        last_at = coerce_dt(thread_dates.get(row.id))
         article_at = coerce_dt(row.article_date)
         days: int | None
         if last_at is None or article_at is None:
@@ -503,8 +566,8 @@ def lifecycle_status_for_articles(
 
     Per-article cache rows with a 5-minute TTL. Cache key
     `lifecycle_status:<id>:i<inbox_id>`, backed by `cache.get_many` so a
-    single SELECT covers all hits. Misses are computed together
-    via one combined SQL call in `_bulk_uncached`. Empty input
+    single SELECT covers all hits. Misses are computed together in
+    `_bulk_uncached`, a fixed number of statements however many ids. Empty input
     -> empty dict. Missing IDs (e.g. articles not in the corpus)
     are absent from the result.
 
@@ -517,8 +580,9 @@ def lifecycle_status_for_articles(
     is reused only while the page content is unchanged, and every page
     of a thread shares one entry. Time still moves the pill under an
     unchanged ETag: the activity chip's buckets are relative to now and
-    age within the TTL. Cached rather than computed live because the live
-    compute walks the whole thread.
+    age within the TTL. Cached rather than computed live because a miss
+    costs several statements, and an unmaterialised thread falls back to
+    walking it whole.
     """
     if not article_ids:
         return {}

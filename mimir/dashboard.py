@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import DateTime, bindparam, select, text
+from sqlalchemy import DateTime, bindparam, func, select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
@@ -109,6 +109,30 @@ def _inbox_scoped(stmt, inbox: Inbox):
             ArticleList.inbox_id == inbox.id,
         )
         .exists()
+    )
+
+
+def messages_in_window(
+    session: Session, inbox: Inbox, start: datetime, end: datetime
+) -> int:
+    """Messages of `inbox` dated in `[start, end)`.
+
+    Date-first on purpose: the window is bounded (a day, or at most
+    `THREADS_SINCE_MAX_DAYS`), while an inbox-driven join reads the
+    list's whole history first, 2 to 3 seconds on lkml (#801).
+    Bind datetimes, not strftime strings, so the column's tz-aware
+    DateTime type stays in play.
+    """
+    return (
+        session.scalar(
+            _inbox_scoped(
+                select(func.count(Article.id)).where(
+                    Article.date >= start, Article.date < end
+                ),
+                inbox,
+            )
+        )
+        or 0
     )
 
 

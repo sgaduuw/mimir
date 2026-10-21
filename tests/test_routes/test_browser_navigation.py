@@ -172,3 +172,43 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+def test_keyboard_j_stays_on_messages_in_a_windowed_thread(
+    client, tmp_path, monkeypatch
+):
+    """A long thread is windowed (#798). Its gap and footer rows link to
+    the thread view; j at the last message shown must not follow them."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    monkeypatch.setattr(settings, "thread_view_render_cap", 5)
+    messages = list(build_thread(tmp_path, "alpha", shape="fan_out", size=30).values())
+    root_path = messages[0][1]
+    last_id, last_path = messages[10]  # the root's 10th reply, the last shown
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page()
+            page.goto(base + root_path)
+            page.locator('[data-fold-set="expanded"]').click()
+            # Precondition: the row after the last reply is a gap row.
+            expect(page.locator(".thread-list li.thread-gap a")).to_have_count(1)
+            page.locator(f'.thread-list a[href="{last_path}"]').click()
+            expect(page.locator(".thread-list li.is-active")).to_have_attribute(
+                "data-article-id", str(last_id)
+            )
+
+            page.keyboard.press("j")
+            page.wait_for_timeout(500)
+
+            expect(page).to_have_url(base + last_path)
+            expect(page.locator("#msg")).to_have_attribute(
+                "data-article-id", str(last_id)
+            )
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
