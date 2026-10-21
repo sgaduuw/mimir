@@ -11,6 +11,30 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.24.0] - 2026-10-21
+
+### Changed
+
+- Message pages in very long threads (longer than one thread-view page, 75
+  messages by default) show the part of the thread around the message, with
+  links to the thread view, instead of every message. A page in the longest
+  thread listed all 12,342 messages in 4.9 MB; its tree is now under 50
+  rows (#798). The thread root is also found by identity, so a dateless
+  reply is no longer taken for it.
+
+### Fixed
+
+- Status pills no longer walk the whole thread to find the thread's latest
+  reply; in very long threads every first visit to a message page did (#798).
+- The today, yesterday and since pages no longer count a list's whole history
+  to show their message total; on lkml that took 2 to 3 seconds per page
+  (#801).
+- The series diff no longer tries to compare very large patches (over 20,000
+  lines), which could hold a worker for many seconds; it links to both
+  revisions instead (#801). Rolling back to an earlier release makes
+  series diffs cached by this one fail to load until they expire (24
+  hours).
+
 ## [3.23.0] - 2026-10-20
 
 ### Added

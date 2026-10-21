@@ -667,6 +667,10 @@ class Settings(BaseSettings):
     # entirely about blob fetches while 93% of the response was a
     # recursive thread walk that no longer happens.
     #
+    # Also the threshold above which the message page windows its
+    # thread tree (#798): a thread that fits on one thread page is shown
+    # whole there.
+    #
     # Override via THREAD_VIEW_RENDER_CAP. Must be at least 1; startup
     # fails otherwise, so callers can use the value unclamped. The sitemap
     # index and per-inbox sitemap keys include it, so a change misses them all:

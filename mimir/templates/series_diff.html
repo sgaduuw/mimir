@@ -20,6 +20,11 @@
   {% if diff.is_identical %}
     <p><em>No changes between {{ diff.from_version }} and {{ diff.to_version }} of this {{ position_label }}.</em>
     The body bytes are identical; the maintainer reposted without modification.</p>
+  {% elif diff.too_large %}
+    <p><em>This {{ position_label }} is too large to compare here.</em>
+    Open the two revisions:
+    <a href="{{ diff.from_url }}">{{ diff.from_version }}</a>,
+    <a href="{{ diff.to_url }}">{{ diff.to_version }}</a>.</p>
   {% else %}
     {{ diff.diff_html|safe }}
   {% endif %}

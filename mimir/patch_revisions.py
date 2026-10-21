@@ -354,6 +354,8 @@ class RevisionDiff:
     position: int
     diff_html: str
     is_identical: bool
+    # Default keeps entries cached before this field existed decodable.
+    too_large: bool = False
 
 
 cache.register("RevisionDiff", RevisionDiff)
@@ -369,6 +371,16 @@ _DIFF_LEXER = DiffLexer()
 _DIFF_FORMATTER = HtmlFormatter(
     noclasses=False, nobackground=True, cssclass="highlight"
 )
+
+
+# difflib slows sharply with length, and bodies can reach 50 MB
+# (parser.py). Measured on synthetic generated-header bodies:
+#   5,000 lines (0.2 MB a side): 0.04 s
+#  20,000 lines (0.9 MB a side): 0.60 s
+# 100,000 lines (4.3 MB a side): 14.45 s, 1.2 MB of HTML
+# Real requests are all under 0.25 s, so the cap only stops a
+# pathological pair from holding a worker (#801).
+REVISION_DIFF_MAX_LINES = 20_000
 
 
 def compute_revision_diff(
@@ -400,7 +412,8 @@ def compute_revision_diff(
     a = (from_body or "").splitlines(keepends=False)
     b = (to_body or "").splitlines(keepends=False)
     is_identical = a == b
-    if is_identical:
+    too_large = not is_identical and max(len(a), len(b)) > REVISION_DIFF_MAX_LINES
+    if is_identical or too_large:
         diff_html = ""
     else:
         diff_lines = list(
@@ -424,6 +437,7 @@ def compute_revision_diff(
         position=position,
         diff_html=diff_html,
         is_identical=is_identical,
+        too_large=too_large,
     )
 
 

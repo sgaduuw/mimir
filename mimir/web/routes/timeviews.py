@@ -10,15 +10,14 @@ from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
 
 from flask import abort, render_template
-from sqlalchemy import func, select
 
-from mimir.dashboard import monthly_volume
+from mimir.dashboard import messages_in_window, monthly_volume
 from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import lifecycle_status_for_articles
-from mimir.models import Article, ArticleList
 from mimir.threading import (
     THREADS_SINCE_MAX_DAYS,
     THREADS_SINCE_MAX_THREADS,
+    since_window_start,
     threads_for_day,
     threads_for_month,
     threads_since,
@@ -49,21 +48,7 @@ def _daily_view(inbox_name: str, day: date_cls, heading: str):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         threads = threads_for_day(session, inbox, day)
-        # Compare against datetime values (matching the
-        # `dashboard.py` pattern) rather than `strftime` strings.
-        # SQLAlchemy 2.x routes datetime bind params through the
-        # column's DateTime type; the strftime form bypasses that
-        # and drops tz info on a column that's been documented as
-        # tz-aware UTC.
-        total = session.scalar(
-            select(func.count(Article.id))
-            .join(ArticleList, ArticleList.article_id == Article.id)
-            .where(
-                ArticleList.inbox_id == inbox.id,
-                Article.date >= start,
-                Article.date < end,
-            )
-        )
+        total = messages_in_window(session, inbox, start, end)
         lifecycle_status_by_id = lifecycle_status_for_articles(
             session, [t.id for t in threads], inbox.id
         )
@@ -74,7 +59,7 @@ def _daily_view(inbox_name: str, day: date_cls, heading: str):
         day=day,
         heading=heading,
         threads=threads,
-        total_messages=total or 0,
+        total_messages=total,
         lifecycle_status_by_id=lifecycle_status_by_id,
     )
 
@@ -109,8 +94,8 @@ def threads_since_view(inbox_name: str, since_str: str):
     floor = today - timedelta(days=THREADS_SINCE_MAX_DAYS)
     capped = since < floor
     effective = floor if capped else since
-    start = datetime.combine(effective, datetime.min.time(), tzinfo=UTC)
     end = datetime.now(UTC)
+    start = since_window_start(effective, end)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         # `effective`, not `since`: every pre-floor date is the same
@@ -118,16 +103,7 @@ def threads_since_view(inbox_name: str, since_str: str):
         threads = threads_since(session, inbox, effective)
         truncated = len(threads) > THREADS_SINCE_MAX_THREADS
         threads = threads[:THREADS_SINCE_MAX_THREADS]
-        # Same datetime-not-strftime treatment as `_daily_view`.
-        total = session.scalar(
-            select(func.count(Article.id))
-            .join(ArticleList, ArticleList.article_id == Article.id)
-            .where(
-                ArticleList.inbox_id == inbox.id,
-                Article.date >= start,
-                Article.date < end,
-            )
-        )
+        total = messages_in_window(session, inbox, start, end)
         lifecycle_status_by_id = lifecycle_status_for_articles(
             session, [t.id for t in threads], inbox.id
         )
@@ -142,7 +118,7 @@ def threads_since_view(inbox_name: str, since_str: str):
         threads=threads,
         truncated=truncated,
         max_threads=THREADS_SINCE_MAX_THREADS,
-        total_messages=total or 0,
+        total_messages=total,
         lifecycle_status_by_id=lifecycle_status_by_id,
         # "What I missed" is a personal catch-up window, not archival
         # content: every date in the 90-day cap is a distinct URL over
