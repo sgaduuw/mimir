@@ -1,6 +1,7 @@
 """Helpers shared by test modules."""
 
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 from sqlalchemy import text
 
@@ -52,3 +53,21 @@ def planner_stats(session_factory, rows=()):
             yield
         finally:
             load(before)
+
+
+@contextmanager
+def count_steps(session):
+    """Count SQLite VM steps run on `session`'s connection, to the
+    nearest thousand, as `.count`. Steps do not depend on the machine's
+    speed, so a budget on them is a stable work bound."""
+    raw = session.connection().connection.driver_connection
+    steps = SimpleNamespace(count=0)
+
+    def tick():
+        steps.count += 1000
+
+    raw.set_progress_handler(tick, 1000)
+    try:
+        yield steps
+    finally:
+        raw.set_progress_handler(None, 0)
