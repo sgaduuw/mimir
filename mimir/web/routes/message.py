@@ -13,7 +13,8 @@ import hashlib
 import logging
 
 from flask import Response, abort, make_response, redirect, render_template, request
-from sqlalchemy import select
+from sqlalchemy import exists, select
+from sqlalchemy.orm import aliased
 
 import mimir
 from mimir import cache
@@ -35,14 +36,17 @@ from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import recent_patches_touching, subsystems_for_article
 from mimir.threading import (
+    ThreadNode,
     dedupe_thread,
     find_thread_root,
     get_thread,
+    thread_aggregates,
     thread_is_materialised,
     thread_page_of,
+    thread_window,
 )
 from mimir.web._blueprint import bp_web
-from mimir.web.filters import _thread_summary
+from mimir.web.filters import _thread_summary, thread_summary_from
 from mimir.web.routes._validators import render_state_tag
 from mimir.web.urls import (
     _abort_404_if_url_date_mismatches,
@@ -112,9 +116,64 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         root_msgid = (
             find_thread_root(session, inbox, article.message_id) or article.message_id
         )
-        # Deduped so the consolidation gate below counts the same
-        # thread the view renders (see `dedupe_thread`).
-        thread = dedupe_thread(get_thread(session, inbox, root_msgid))
+        # The root by identity, never `thread[0]`: `get_thread` sorts a
+        # dateless reply and its subtree before the root, which put the
+        # wrong id in the fold pin, the off-list check and the bot gate.
+        root = (
+            article
+            if root_msgid == article.message_id
+            else session.execute(
+                select(Article).where(Article.message_id == root_msgid)
+            ).scalar_one()
+        )
+        cap = settings.thread_view_render_cap
+        thread_rooted = thread_is_materialised(session, inbox.id, root.id)
+        # Named because it is an ETag input, as on the thread view: the
+        # column decides whether the page may window the thread at all.
+        membership_source = "idx" if thread_rooted else "cte"
+
+        # A thread longer than one thread-view page is windowed around
+        # this message instead of rendered whole (#798): the whole tree
+        # was 12,342 rows and 4.9 MB on production's largest thread
+        # (2026-10-20). Only on the column, because the totals and the
+        # thread-view page the gaps link to both come from it.
+        agg = thread_aggregates(session, inbox, root.id) if thread_rooted else None
+        window = (
+            thread_window(session, inbox, root, article)
+            if agg is not None and agg.total > cap
+            else None
+        )
+        if window is not None:
+            thread = window.rows
+            thread_total = agg.total
+            thread_max_date = agg.last_activity or article.date
+        else:
+            # Both fallbacks are data-repair conditions rather than normal
+            # reads, logged like the thread view's so they are not
+            # indistinguishable from the fast path except by latency.
+            if not thread_rooted:
+                logger.warning(
+                    "message: %s/%s rendered from the recursive walk; "
+                    "thread has unrooted members",
+                    inbox.name,
+                    article.id,
+                )
+            elif agg is not None and agg.total > cap:
+                logger.warning(
+                    "message: %s/%s rendered whole; the walk up does not "
+                    "reach the materialised root %s",
+                    inbox.name,
+                    article.id,
+                    root.id,
+                )
+            # Deduped so the thread count matches the rows rendered (see
+            # `dedupe_thread`).
+            thread = dedupe_thread(get_thread(session, inbox, root_msgid))
+            thread_total = len(thread)
+            thread_max_date = max(
+                (n.date for n in thread if n.date is not None),
+                default=article.date,
+            )
 
         base = _site_base()
         canonical_url = _canonical_url_for(article, all_links, base=base)
@@ -164,91 +223,99 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         #
         # Threading is inbox-scoped, so the target inbox's copy of the
         # conversation is a DIFFERENT node set: the root may be absent
-        # there, the article may sit past the cap there, or the thread
-        # may be a singleton there. Every one of those is checked
-        # against the target's own walk rather than assumed from this
-        # inbox's, which is what the first two attempts at this got
-        # wrong. Anything unmet falls back to the plain cross-post
-        # canonical, which is exactly the pre-existing behaviour.
+        # there, or the thread may be a singleton there. Each is
+        # checked against the target inbox's own rows rather than
+        # assumed from this inbox's. Anything unmet falls back to the
+        # plain cross-post canonical.
+        #
+        # Asked of the column, not of a walk. The claim being made is
+        # that `thread_page_of`'s page holds this message, and that
+        # page is built from the column, so the column is what has to
+        # agree. Walking the target's thread here cost a second
+        # whole-thread walk on every cross-posted page.
         if canonical_url:
             target_inbox = inbox
-            target_thread = thread
-            # Same-inbox default; the cross-post branch recomputes it
-            # against the target's own walk, because threading is
-            # inbox-scoped and the root can differ there.
-            target_root = root_msgid
+            target_root = root
             if canonical_inbox_name != inbox.name:
                 target_inbox = session.execute(
                     select(Inbox).where(Inbox.name == canonical_inbox_name)
                 ).scalar_one_or_none()
-                target_thread = []
+                target_root = None
                 if target_inbox is not None:
-                    target_root = find_thread_root(
+                    target_root_msgid = find_thread_root(
                         session, target_inbox, article.message_id
                     )
-                    if target_root:
-                        target_thread = dedupe_thread(
-                            get_thread(session, target_inbox, target_root)
+                    if target_root_msgid:
+                        target_root = session.execute(
+                            select(Article).where(
+                                Article.message_id == target_root_msgid
+                            )
+                        ).scalar_one()
+            in_target_thread = False
+            if target_inbox is not None and target_root is not None:
+                # Its own row carries the root, and the thread is more
+                # than this message: a single-message thread has nothing
+                # to consolidate, and the message page is the RICHER of
+                # the two (subsystem header, lifecycle prose, attachments).
+                # The own-row half matters when that row names a root no
+                # longer in the inbox (a `reindex --from-scratch` leftover):
+                # `find_thread_root` falls back to the walk and
+                # `thread_is_materialised` only looks for NULL rows, but
+                # `thread_page_of` would not count this message.
+                in_target_thread = (
+                    session.execute(
+                        select(ArticleList.thread_root_id).where(
+                            ArticleList.article_id == article.id,
+                            ArticleList.inbox_id == target_inbox.id,
                         )
-
-            cap = settings.thread_view_render_cap
-            # By IDENTITY, not position. `get_thread`'s `sort_path` is
-            # NULL for a dateless node and NULL sorts first, so
-            # `target_thread[0]` is that node rather than the root, and
-            # one dateless message stripped the thread canonical from
-            # every message in its thread. `thread.py` carried this same
-            # guard until it stopped needing one.
-            root_candidate = next(
-                (n for n in target_thread if n.message_id == target_root),
-                target_thread[0] if target_thread else None,
-            )
-            root_candidate_id = root_candidate.id if root_candidate else None
-            in_thread = any(n.message_id == article.message_id for n in target_thread)
-            # `len(target_thread) > 1` because a single-message thread
-            # has nothing to consolidate: the message page already IS
-            # the whole conversation and is the RICHER of the two
-            # (subsystem header, lifecycle badges, the indexable
-            # lifecycle prose, attachments, related patches).
-            # Same predicate the thread view renders by. A thread with
-            # unrooted members is rendered from the walk, while
-            # `thread_page_of` ranks over the column, so the page number
-            # would be one too low for every message after the gap. Less
-            # consolidated for as long as the data is unrepaired, never
-            # pointing at a page that does not hold this message.
-            thread_rooted = target_inbox is not None and thread_is_materialised(
-                session, target_inbox.id, root_candidate_id
-            )
+                    ).scalar_one_or_none()
+                    == target_root.id
+                    and session.execute(
+                        select(ArticleList.article_id)
+                        .where(
+                            ArticleList.inbox_id == target_inbox.id,
+                            ArticleList.thread_root_id == target_root.id,
+                            ArticleList.article_id != article.id,
+                        )
+                        .limit(1)
+                    ).first()
+                    is not None
+                )
             if (
-                target_inbox is not None
-                and len(target_thread) > 1
-                and in_thread
-                and thread_rooted
+                in_target_thread
+                and target_root.date is not None
+                and thread_is_materialised(session, target_inbox.id, target_root.id)
             ):
-                root_node = root_candidate
-                root_article = session.get(Article, root_node.id)
-                if root_article is not None and root_article.date is not None:
-                    # Canonicalise to the PAGE that contains this
-                    # message, not to page 1. Since 3.8.0 the thread
-                    # view is paginated, so every message is rendered
-                    # somewhere; before it, anything past the cap was
-                    # only linked and therefore stayed self-canonical.
-                    #
-                    # The page number comes from `thread_page_of`, the
-                    # same helper the thread view builds its page URLs
-                    # with. Deriving it here from `target_thread`'s
-                    # position would use DEPTH-FIRST order against a
-                    # view that pages CHRONOLOGICALLY, so the canonical
-                    # would name a page not containing this message.
-                    page_no = thread_page_of(
-                        session, target_inbox.id, root_article.id, article, cap
-                    )
-                    thread_view_url = thread_page_url(
-                        root_article.id,
-                        root_article.date,
-                        target_inbox.name,
-                        page_no,
-                    )
-                    canonical_url = base + thread_view_url
+                # Canonicalise to the PAGE that contains this message,
+                # not to page 1. Since 3.8.0 the thread view is
+                # paginated, so every message is rendered somewhere.
+                #
+                # The page number comes from `thread_page_of`, the same
+                # helper the thread view builds its page URLs with, so
+                # the canonical and the page cannot disagree about where
+                # the message lives.
+                page_no = thread_page_of(
+                    session, target_inbox.id, target_root.id, article, cap
+                )
+                thread_view_url = thread_page_url(
+                    target_root.id,
+                    target_root.date,
+                    target_inbox.name,
+                    page_no,
+                )
+                canonical_url = base + thread_view_url
+
+        # Where the window's gaps lead: the thread-view page holding this
+        # message in THIS inbox, whose thread the window shows. A
+        # dateless root has no thread-view URL, so the gaps stay text.
+        thread_more_url: str | None = None
+        if window is not None and root.date is not None:
+            thread_more_url = thread_page_url(
+                root.id,
+                root.date,
+                inbox.name,
+                thread_page_of(session, inbox.id, root.id, article, cap),
+            )
 
         # Conditional-GET (ETag) for the message page. Inputs:
         # - article.id: invariant for the resource itself.
@@ -257,6 +324,12 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         #   without waiting for the Cache-Control window to lapse.
         # - thread max date: invalidates when a new reply lands in the
         #   thread, so the tree-rendered view doesn't go stale.
+        # - thread total: the page shows it ("Thread (N messages)", the
+        #   window's footer) and a purge or reindex moves it without
+        #   moving the max date.
+        # - membership source and window flag: whether the column may
+        #   answer for this thread, and so whether it renders whole or
+        #   windowed (#798). The cap below is the window's threshold too.
         # - render state tag: everything this page renders ABOUT the
         #   article that neither its id nor the thread's shape covers,
         #   i.e. the subsystem line, lifecycle badge, review roll-up
@@ -294,10 +367,6 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # `web.hooks._CACHE_CONTROL_BY_ENDPOINT`), so browsers always
         # revalidate; the 304 path skips the body fetch + render entirely.
         hx_request = request.headers.get("HX-Request") == "true"
-        thread_max_date = max(
-            (n.date for n in thread if n.date is not None),
-            default=article.date,
-        )
         state_tag = render_state_tag(session, article.id, article.message_id)
         # Split so the ETag is the content part plus the representation
         # (full or htmx); the pill and card caches key by the content
@@ -307,6 +376,8 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             f"{article.id}|{mimir.__version__}|"
             f"{settings.thread_view_render_cap}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|"
+            f"{thread_total}|{membership_source}|"
+            f"{'window' if window is not None else 'whole'}|"
             f"{state_tag}|"
             f"{canonical_url or ''}|"
             f"{','.join(name for _, name in all_links)}"
@@ -330,17 +401,17 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # hint in the UI. Common for cross-posted threads from oss-security,
         # linux-arm-kernel, etc.
         parent_off_list: str | None = None
-        if thread and thread[0].thread_parent:
+        if root.thread_parent:
             in_db = session.execute(
                 select(Article.id)
                 .join(ArticleList, ArticleList.article_id == Article.id)
                 .where(
                     ArticleList.inbox_id == inbox.id,
-                    Article.message_id == thread[0].thread_parent,
+                    Article.message_id == root.thread_parent,
                 )
             ).scalar_one_or_none()
             if in_db is None:
-                parent_off_list = thread[0].thread_parent
+                parent_off_list = root.thread_parent
 
         # When the parent is off-list, surface To/Cc list-shaped addresses
         # that don't map to any configured inbox as a "hint", those are
@@ -363,37 +434,56 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 }
                 parent_off_list_hints = [a for a in candidates if a not in known][:3]
 
+        # The window's rows include gap rows; everything below that
+        # asks about messages asks about these.
+        thread_nodes = [n for n in thread if isinstance(n, ThreadNode)]
+        thread_ids = {n.id for n in thread_nodes}
+
         # Non-patch gate for the related-discussions panel (#71):
         # a thread counts as a patch thread when ANY of its articles
-        # touches files. Rides the (article_id, path) PK.
-        thread_ids = {n.id for n in thread}
-        is_patch_thread = (
-            session.execute(
+        # touches files. Rides the (article_id, path) PK. A window shows
+        # part of the thread, so it asks the column about all of it.
+        if window is not None:
+            patch_probe = (
                 select(ArticleFile.article_id)
-                .where(ArticleFile.article_id.in_(list(thread_ids)))
-                .limit(1)
-            ).first()
-            is not None
-        )
+                .join(ArticleList, ArticleList.article_id == ArticleFile.article_id)
+                .where(
+                    ArticleList.inbox_id == inbox.id,
+                    ArticleList.thread_root_id == root.id,
+                )
+            )
+        else:
+            patch_probe = select(ArticleFile.article_id).where(
+                ArticleFile.article_id.in_(list(thread_ids))
+            )
+        is_patch_thread = session.execute(patch_probe.limit(1)).first() is not None
 
         # A bot-authored root (syzbot, kernel test robot, tip-bot)
         # shows no panel: the non-patch population is dominated by
         # bot reports whose related matches are low-value (#71).
         # Gated before compute like is_patch_thread so suppressed
         # roots don't enter the empty-rate metric.
-        is_bot_root = bool(thread) and is_bot_sender(thread[0].author)
+        is_bot_root = is_bot_sender(root.author)
 
         related_threads: list = []
-        if not is_patch_thread and not is_bot_root and thread:
+        if not is_patch_thread and not is_bot_root:
             # Best-effort: a panel bug must never 500 a message view.
             # ERROR (not warning) so a broken scorer stays loud.
             try:
                 related_threads = related_discussions(
                     session,
                     inbox,
-                    root_id=thread[0].id,
+                    root_id=root.id,
+                    # A window's ids are enough: candidates are filtered
+                    # by these only after the SQL limit, and any from the
+                    # rest of the thread collapse onto `root_id`, which
+                    # the panel drops.
                     thread_article_ids=thread_ids,
-                    thread_authors={n.author for n in thread if n.author},
+                    thread_authors=(
+                        set(agg.authors)
+                        if window is not None
+                        else {n.author for n in thread_nodes if n.author}
+                    ),
                 )
             except Exception:
                 logger.exception(
@@ -405,7 +495,24 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # Same-subject orphans within this inbox.
         related: list[Article] = []
         if parent_off_list and article.subject_normalized and is_patch_thread:
-            in_thread = {n.message_id for n in thread}
+            # Excluded through the column for a window, which shows only
+            # part of the thread; an IN list of every member's
+            # Message-ID was also one bound parameter per message.
+            # NOT EXISTS on its own alias, not a second predicate on the
+            # joined row: that one drives the plan from
+            # `ix_article_lists_inbox_id`, the whole inbox, instead of
+            # the subject index. The alias also stops `exists()`
+            # correlating to the outer `article_lists`.
+            member = aliased(ArticleList)
+            not_in_thread = (
+                ~exists().where(
+                    member.article_id == Article.id,
+                    member.inbox_id == inbox.id,
+                    member.thread_root_id == root.id,
+                )
+                if window is not None
+                else Article.message_id.not_in({n.message_id for n in thread_nodes})
+            )
             related = list(
                 session.execute(
                     select(Article)
@@ -413,7 +520,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                     .where(
                         ArticleList.inbox_id == inbox.id,
                         Article.subject_normalized == article.subject_normalized,
-                        Article.message_id.not_in(in_thread),
+                        not_in_thread,
                     )
                     .order_by(Article.date.desc().nulls_last())
                     .limit(5)
@@ -422,7 +529,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
 
         # Build URLs for thread nodes (avoids per-node template logic).
         thread_urls = {
-            n.message_id: _msg_path(n.id, n.date, inbox.name) for n in thread
+            n.message_id: _msg_path(n.id, n.date, inbox.name) for n in thread_nodes
         }
 
         # Resolve in-body <Message-ID> references to canonical URLs.
@@ -532,11 +639,14 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # depending on which URL the crawler fetched. Zero omits the
         # field, which is the honest answer from a non-canonical
         # rendering.
-        direct_reply_count = (
-            sum(1 for n in thread if n.thread_parent == article.message_id)
-            if canonical_inbox_name == inbox.name
-            else 0
-        )
+        if canonical_inbox_name != inbox.name:
+            direct_reply_count = 0
+        elif window is not None:
+            direct_reply_count = window.reply_count
+        else:
+            direct_reply_count = sum(
+                1 for n in thread_nodes if n.thread_parent == article.message_id
+            )
 
         page_json_ld = (
             _json_ld_message(
@@ -592,7 +702,14 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         patch_state = patch_state_for_article(
             session,
             article,
-            thread_dates=[n.date for n in thread],
+            # `_days_since_last_reply` reduces this to the newest date
+            # later than the article's, so a window passes the
+            # thread-wide maximum, as the thread view does.
+            thread_dates=(
+                [agg.last_activity]
+                if window is not None
+                else [n.date for n in thread_nodes]
+            ),
             subsystem_ids=[s.id for s in subsystem_hits],
             inbox_name=inbox.name,
             state_key=content_key,
@@ -606,7 +723,11 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         lifecycle_status = lifecycle_status_by_id.get(article.id)
 
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
-    thread_summary = _thread_summary(thread)
+    thread_summary = (
+        thread_summary_from(agg.authors, agg.last_activity, agg.total)
+        if window is not None
+        else _thread_summary(thread_nodes)
+    )
 
     # Parent URL for the hunk-anchored quote renderer: the message
     # this article replies to. When the parent is in-scope (i.e. in
@@ -630,6 +751,11 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             parsed=parsed,
             article=article,
             thread=thread,
+            thread_total=thread_total,
+            thread_root_id=root.id,
+            thread_is_root=root.id == article.id,
+            thread_more_url=thread_more_url,
+            hidden_replies=window.hidden_replies if window is not None else {},
             thread_urls=thread_urls,
             parent_url=parent_url,
             thread_summary=thread_summary,

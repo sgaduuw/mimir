@@ -14,15 +14,19 @@ parent: In-Reply-To OR last entry of References, computed at ingest):
   whole-thread view uses; see its docstring for the measured
   difference (6 ms against 14.4 s on the largest production thread)
   and for why depth-first ordering is not preserved.
+- `thread_window` gives the message page the part of a long thread
+  around one message (path, nearest siblings, first replies) without
+  walking the thread.
 
 A 1000-deep depth limit guards against pathological cycles in the
 underlying data (real lkml threads rarely exceed ~50 deep).
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, literal, select, text, tuple_
+from sqlalchemy import exists, func, literal, select, text, tuple_
 from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
@@ -563,6 +567,228 @@ def thread_by_root_id(
         )
         for r in rows
     ]
+
+
+# The message page's window onto a thread longer than one thread-view
+# page (#798). The path limit matches the CSS depth ladder, which stops
+# indenting at 20.
+WINDOW_PATH_MAX = 20
+WINDOW_SIBLINGS = 5
+WINDOW_CHILDREN = 10
+
+
+@dataclass
+class ThreadGap:
+    """Messages the window leaves out, rendered as one row.
+
+    A path gap counts the ancestors it stands for, exactly. A sibling or
+    reply gap counts direct replies only: their own replies are not
+    counted, so the page calls those "replies" rather than "messages".
+    """
+
+    depth: int
+    gap_count: int
+    replies: bool = True
+
+
+@dataclass
+class ThreadWindow:
+    """What the message page renders of a long thread.
+
+    `rows` is a depth-first subsequence of the thread (ThreadNode and
+    ThreadGap), with true depths. `hidden_replies` maps a shown node's
+    id to how many of its replies are neither shown nor counted by a
+    gap. `reply_count` is the article's direct replies.
+    """
+
+    rows: list
+    hidden_replies: dict[int, int]
+    reply_count: int
+
+
+def _window_node(row, depth: int) -> ThreadNode:
+    return ThreadNode(
+        id=row.id,
+        message_id=row.message_id,
+        thread_parent=row.thread_parent,
+        subject=row.subject,
+        author=row.author,
+        date=coerce_dt(row.date),
+        depth=depth,
+    )
+
+
+def thread_window(
+    session: Session, inbox: Inbox, root: Article, article: Article
+) -> ThreadWindow | None:
+    """The part of a long thread around `article`, without walking it.
+
+    The path from the root, up to WINDOW_SIBLINGS replies to the same
+    parent on each side, and the article's first WINDOW_CHILDREN
+    replies. SQLite reads rows in proportion to the article's depth and
+    to the number of direct replies of the shown messages (a cover
+    letter with 2,077 replies reads 2,077 index entries to pick 10),
+    never the whole thread; Python receives only the window. The walk
+    down from the root (`get_thread`) was 12,342 rows and 4.9 MB of
+    HTML on a message page in production's largest thread (2026-10-20).
+
+    Siblings are ordered by `(COALESCE(date, _DATE_FLOOR), id)`, the
+    order `thread_page_of` ranks by. Scoped to the inbox with EXISTS on
+    the `article_lists` primary key rather than a JOIN, which without
+    `sqlite_stat1` is driven from `ix_article_lists_inbox_id` (see
+    `lifecycle_status._BULK_SQL`).
+
+    Returns None when the walk up does not reach `root`, which means the
+    column and the parent chain disagree. The caller renders the whole
+    thread then, as it does for any thread the column cannot answer.
+    """
+    in_inbox = exists().where(
+        ArticleList.article_id == Article.id, ArticleList.inbox_id == inbox.id
+    )
+    # Stops at the root rather than at MAX_DEPTH. `thread_parent` comes
+    # from sender-controlled headers, so the chain can be a cycle, and a
+    # walk without this stop circles it a thousand times.
+    path = session.execute(
+        text(
+            """
+            WITH RECURSIVE up AS (
+                SELECT a.id, a.message_id, a.thread_parent, a.subject,
+                       a.author, a.date, 0 AS depth
+                  FROM articles a
+                 WHERE a.id = :article_id
+                UNION ALL
+                SELECT a.id, a.message_id, a.thread_parent, a.subject,
+                       a.author, a.date, up.depth + 1
+                  FROM up
+                  JOIN articles a ON a.message_id = up.thread_parent
+                 WHERE up.id != :root_id AND up.depth < :max_depth
+                   AND EXISTS (SELECT 1 FROM article_lists al
+                                WHERE al.article_id = a.id
+                                  AND al.inbox_id = :inbox_id)
+            )
+            SELECT id, message_id, thread_parent, subject, author, date
+              FROM up ORDER BY depth DESC
+            """
+        ),
+        {
+            "article_id": article.id,
+            "root_id": root.id,
+            "inbox_id": inbox.id,
+            "max_depth": MAX_DEPTH,
+        },
+    ).all()
+    if not path or path[0].id != root.id:
+        return None
+    ancestors = [_window_node(r, d) for d, r in enumerate(path[:-1])]
+    depth = len(ancestors)
+    path_ids = [r.id for r in path]
+    key = (func.coalesce(Article.date, _DATE_FLOOR), Article.id)
+    here = tuple_(
+        func.coalesce(literal(article.date), _DATE_FLOOR), literal(article.id)
+    )
+
+    def replies_to(message_id: str):
+        # Path members are excluded so a cycle cannot show one twice.
+        return select(
+            Article.id,
+            Article.message_id,
+            Article.thread_parent,
+            Article.subject,
+            Article.author,
+            Article.date,
+        ).where(
+            Article.thread_parent == message_id,
+            in_inbox,
+            Article.id.not_in(path_ids),
+        )
+
+    def count_replies(message_id: str, *where):
+        return session.execute(
+            select(func.count()).select_from(
+                replies_to(message_id).where(*where).subquery()
+            )
+        ).scalar_one()
+
+    rows: list = []
+    accounted: Counter = Counter()
+    if len(ancestors) <= WINDOW_PATH_MAX:
+        rows.extend(ancestors)
+    else:
+        keep = WINDOW_PATH_MAX - 1
+        rows.append(ancestors[0])
+        rows.append(
+            ThreadGap(
+                depth=1, gap_count=len(ancestors) - WINDOW_PATH_MAX, replies=False
+            )
+        )
+        rows.extend(ancestors[-keep:])
+        # The root's reply on the path is behind the gap.
+        accounted[root.message_id] += 1
+
+    before: list[ThreadNode] = []
+    after: list[ThreadNode] = []
+    n_before = n_after = 0
+    if ancestors:
+        parent_mid = ancestors[-1].message_id
+        siblings = replies_to(parent_mid)
+        before = [
+            _window_node(r, depth)
+            for r in session.execute(
+                siblings.where(tuple_(*key) < here)
+                .order_by(key[0].desc(), key[1].desc())
+                .limit(WINDOW_SIBLINGS)
+            ).all()
+        ][::-1]
+        after = [
+            _window_node(r, depth)
+            for r in session.execute(
+                siblings.where(tuple_(*key) > here)
+                .order_by(*key)
+                .limit(WINDOW_SIBLINGS)
+            ).all()
+        ]
+        n_before = count_replies(parent_mid, tuple_(*key) < here)
+        n_after = count_replies(parent_mid, tuple_(*key) > here)
+        accounted[parent_mid] += (n_before - len(before)) + (n_after - len(after))
+
+    children = [
+        _window_node(r, depth + 1)
+        for r in session.execute(
+            replies_to(article.message_id).order_by(*key).limit(WINDOW_CHILDREN)
+        ).all()
+    ]
+    n_children = count_replies(article.message_id)
+    accounted[article.message_id] += n_children - len(children)
+
+    if n_before > len(before):
+        rows.append(ThreadGap(depth=depth, gap_count=n_before - len(before)))
+    rows.extend(before)
+    rows.append(_window_node(article, depth))
+    rows.extend(children)
+    if n_children > len(children):
+        rows.append(ThreadGap(depth=depth + 1, gap_count=n_children - len(children)))
+    rows.extend(after)
+    if n_after > len(after):
+        rows.append(ThreadGap(depth=depth, gap_count=n_after - len(after)))
+
+    shown = [r for r in rows if isinstance(r, ThreadNode)]
+    accounted.update(n.thread_parent for n in shown)
+    reply_counts = dict(
+        session.execute(
+            select(Article.thread_parent, func.count())
+            .where(
+                Article.thread_parent.in_([n.message_id for n in shown]),
+                in_inbox,
+            )
+            .group_by(Article.thread_parent)
+        ).all()
+    )
+    hidden = {
+        n.id: reply_counts.get(n.message_id, 0) - accounted[n.message_id]
+        for n in shown
+        if reply_counts.get(n.message_id, 0) > accounted[n.message_id]
+    }
+    return ThreadWindow(rows=rows, hidden_replies=hidden, reply_count=n_children)
 
 
 def get_thread(

@@ -67,13 +67,16 @@
   function navigateThread(direction) {
     var active = focusedThreadItem();
     if (!active) return false;
-    // Walk siblings until we hit a thread-list <li> with a clickable
-    // anchor. The off-list-ancestor row has no anchor; skip past it.
+    // Walk siblings until we hit a message row. The off-list-ancestor
+    // row and a long thread's gap and footer rows are not messages:
+    // their links leave the page for the thread view.
     var next = direction === "next"
       ? active.nextElementSibling
       : active.previousElementSibling;
     while (next) {
-      var anchor = next.querySelector("a[href]");
+      var anchor = next.hasAttribute("data-article-id")
+        ? next.querySelector("a[href]")
+        : null;
       if (anchor) {
         anchor.click();
         return true;

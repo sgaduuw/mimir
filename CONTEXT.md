@@ -2380,6 +2380,44 @@ can silently go wrong:
   letting each surface decide for itself, is what produced every
   blocking defect across this feature's six review rounds.
 
+## Why the message page windows a long thread (#798)
+
+The message page rendered the whole thread tree on every request: on
+the 12,342-message syzbot thread that was 12,352 list items and 4.9 MB
+(production, 2026-10-20), and a crawler pays it once per message. A
+thread longer than one thread-view page (`THREAD_VIEW_RENDER_CAP`) now
+renders a window instead: the path from the root (the root, a gap row
+and the last 19 ancestors past 20 deep), up to 5 sibling replies either
+side, the first 10 replies, and gap rows that link to the thread-view
+page holding the message. `threading.thread_window` builds it.
+
+Decisions that look odd until you know the alternative:
+
+- **A local tree, not "N rows either side in depth-first order".**
+  Depth-first neighbours need the whole order, which means either
+  walking the thread or reimplementing `get_thread`'s `sort_path` in
+  Python, a second implementation of one rule. Siblings and replies
+  come from `ix_articles_thread_parent`, so the reads grow with the
+  article's depth and with the number of direct replies of the shown
+  messages (a 2,077-reply cover letter reads 2,077 index entries),
+  never with the whole thread.
+- **The threshold is the cap.** It is already a validator input, and
+  "fits on one thread page" is the same claim as "shown whole here".
+  Threads at or under it render exactly as before.
+- **Only on the column.** The totals, the patch-thread probe, the
+  orphan exclusion and the thread page the gaps link to all come from
+  `thread_root_id`. A thread `thread_is_materialised` rejects renders
+  whole from the walk, logged as a repair condition.
+- **No cache.** The aggregates are ETag inputs, so caching them would
+  let the body move under the validator.
+- **The walk up stops at the root.** `thread_parent` is
+  sender-controlled; without the stop a cycle is walked to MAX_DEPTH.
+
+The consolidation gate (does the canonical name a thread page) asks the
+column too, for the canonical inbox, rather than walking that inbox's
+copy of the thread. The claim is about `thread_page_of`'s page, which
+is built from the column, so the column is what has to agree.
+
 ## Roadmap (deferred features)
 
 These are committed in spirit but not yet built. Re-read this list
