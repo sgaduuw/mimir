@@ -24,7 +24,7 @@ from mimir.subsystems_dashboard.triage import (
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
 )
-from tests._helpers import _cache_total, planner_stats
+from tests._helpers import _cache_total, count_steps, planner_stats
 from tests.test_subsystems._helpers import _add_subsystem
 
 
@@ -1120,59 +1120,78 @@ def test_superseded_rows_filling_a_page_do_not_end_the_walk(
     assert [p.message_id for p in result] == [f"s{n}-v2@x" for n in range(5)]
 
 
-def _seed_big_series(s, keys, rows_per_key):
-    """`keys` postings of `rows_per_key` patches each, one patch per
-    posting carrying a review trailer, dates interleaved across the
-    postings so the oldest rows are distinct postings. Bulk-inserted:
-    the point is row volume under one series key, as in a stable-review
-    posting."""
+def _insert_patches(s, patches):
+    """Bulk-insert `patches`, dicts of date, path, key, version,
+    position and trailer, into the alpha inbox. Bulk because the tests
+    using it are about row volume."""
     inbox_id = _alpha(s).id
-    base = datetime.now(UTC) - timedelta(days=60)
     articles, lists, files, trailers = [], [], [], []
-    for k in range(keys):
-        for j in range(rows_per_key):
-            aid = 100_000 + k * rows_per_key + j
-            articles.append(
-                {
-                    "id": aid,
-                    "message_id": f"big{aid}@x",
-                    "subject": f"patch {aid}",
-                    "author": "author@example.com",
-                    "date": base + timedelta(seconds=j * keys + k),
-                    "subject_normalized": f"patch {aid}",
-                    "canonical_inbox_id": inbox_id,
-                    "patch_series_key": f"big{k}",
-                    "patch_series_version": "v1",
-                    "patch_series_position": j + 1,
-                }
-            )
-            lists.append(
+    for aid, p in enumerate(patches, start=100_000):
+        articles.append(
+            {
+                "id": aid,
+                "message_id": f"p{aid}@x",
+                "subject": f"patch {aid}",
+                "author": "author@example.com",
+                "date": p["date"],
+                "subject_normalized": f"patch {aid}",
+                "canonical_inbox_id": inbox_id,
+                "patch_series_key": p.get("key"),
+                "patch_series_version": p.get("version"),
+                "patch_series_position": p.get("position"),
+            }
+        )
+        lists.append(
+            {
+                "article_id": aid,
+                "inbox_id": inbox_id,
+                "epoch": "0.git",
+                "commit_sha": "f" * 40,
+            }
+        )
+        files.append({"article_id": aid, "path": p["path"]})
+        if p.get("trailer"):
+            trailers.append(
                 {
                     "article_id": aid,
-                    "inbox_id": inbox_id,
-                    "epoch": "0.git",
-                    "commit_sha": "f" * 40,
+                    "role": "Reviewed-by",
+                    "name": "reviewer",
+                    "address": "rev@example.com",
+                    "address_normalized": "rev@example.com",
                 }
             )
-            files.append({"article_id": aid, "path": "net/core/dev.c"})
-            if j == 0:
-                trailers.append(
-                    {
-                        "article_id": aid,
-                        "role": "Reviewed-by",
-                        "name": "reviewer",
-                        "address": "rev@example.com",
-                        "address_normalized": "rev@example.com",
-                    }
-                )
     for model, rows in (
         (Article, articles),
         (ArticleList, lists),
         (ArticleFile, files),
         (ArticleTrailer, trailers),
     ):
-        s.execute(model.__table__.insert(), rows)
+        if rows:
+            s.execute(model.__table__.insert(), rows)
     s.commit()
+
+
+def _seed_big_series(s, keys, rows_per_key):
+    """`keys` postings of `rows_per_key` patches each, one patch per
+    posting carrying a review trailer, dates interleaved across the
+    postings so the oldest rows are distinct postings. The point is row
+    volume under one series key, as in a stable-review posting."""
+    base = datetime.now(UTC) - timedelta(days=60)
+    _insert_patches(
+        s,
+        [
+            {
+                "date": base + timedelta(seconds=j * keys + k),
+                "path": "net/core/dev.c",
+                "key": f"big{k}",
+                "version": "v1",
+                "position": j + 1,
+                "trailer": j == 0,
+            }
+            for k in range(keys)
+            for j in range(rows_per_key)
+        ],
+    )
 
 
 @pytest.fixture
@@ -1205,90 +1224,36 @@ def test_triage_work_does_not_grow_with_the_candidate_window(
         sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
         s.commit()
         _seed_big_series(s, keys=200, rows_per_key=50)
-        raw = s.connection().connection.driver_connection
-        steps = 0
-
-        def tick():
-            nonlocal steps
-            steps += 1000
-
-        raw.set_progress_handler(tick, 1000)
-        try:
+        with count_steps(s) as steps:
             result = fn(s, _alpha(s), sub, limit=10, force=True)
-        finally:
-            raw.set_progress_handler(None, 0)
     assert len(result) == 10
-    assert steps < SUPERSEDED_STEP_BUDGET, steps
+    assert steps.count < SUPERSEDED_STEP_BUDGET, steps.count
 
 
 # Dense superseded rows ahead of the kept ones (#785)
 
 
 def _seed_dense_superseded(s, *, background, series, versions, trailers):
-    inbox_id = _alpha(s).id
     now = datetime.now(UTC)
-    articles, lists, files, trs = [], [], [], []
-    aid = 200_000
-
-    def add(date, path, key=None, version=None, trailer=False):
-        nonlocal aid
-        aid += 1
-        articles.append(
-            {
-                "id": aid,
-                "message_id": f"p{aid}@x",
-                "subject": f"patch {aid}",
-                "author": "author@example.com",
-                "date": date,
-                "subject_normalized": f"patch {aid}",
-                "canonical_inbox_id": inbox_id,
-                "patch_series_key": key,
-                "patch_series_version": version,
-                "patch_series_position": 1 if key else None,
-            }
-        )
-        lists.append(
-            {
-                "article_id": aid,
-                "inbox_id": inbox_id,
-                "epoch": "0.git",
-                "commit_sha": "f" * 40,
-            }
-        )
-        files.append({"article_id": aid, "path": path})
-        if trailer:
-            trs.append(
-                {
-                    "article_id": aid,
-                    "role": "Reviewed-by",
-                    "name": "reviewer",
-                    "address": "rev@example.com",
-                    "address_normalized": "rev@example.com",
-                }
-            )
-
     # Other subsystems' traffic in the window: read by every inbox-first page.
-    for i in range(background):
-        add(now - timedelta(days=100, seconds=i), "drivers/other.c")
+    patches = [
+        {"date": now - timedelta(days=100, seconds=i), "path": "drivers/other.c"}
+        for i in range(background)
+    ]
     # `versions` revisions of each series, oldest revision first in date order.
-    for v in range(1, versions + 1):
-        for k in range(series):
-            add(
-                now - timedelta(days=100 - 10 * v, seconds=series - k),
-                "net/core/dev.c",
-                key=f"ser{k}",
-                version=f"v{v}",
-                trailer=trailers,
-            )
-    for model, rows in (
-        (Article, articles),
-        (ArticleList, lists),
-        (ArticleFile, files),
-        (ArticleTrailer, trs),
-    ):
-        if rows:
-            s.execute(model.__table__.insert(), rows)
-    s.commit()
+    patches += [
+        {
+            "date": now - timedelta(days=100 - 10 * v, seconds=series - k),
+            "path": "net/core/dev.c",
+            "key": f"ser{k}",
+            "version": f"v{v}",
+            "position": 1,
+            "trailer": trailers,
+        }
+        for v in range(1, versions + 1)
+        for k in range(series)
+    ]
+    _insert_patches(s, patches)
 
 
 DENSE_SUPERSEDED_STEP_BUDGET = 4_000_000
@@ -1314,18 +1279,8 @@ def test_dense_superseded_rows_do_not_multiply_pages(
         _seed_dense_superseded(
             s, background=20_000, series=2000, versions=3, trailers=trailers
         )
-        raw = s.connection().connection.driver_connection
-        steps = 0
-
-        def tick():
-            nonlocal steps
-            steps += 1000
-
-        raw.set_progress_handler(tick, 1000)
-        try:
+        with count_steps(s) as steps:
             result = fn(s, _alpha(s), sub, limit=10, force=True)
-        finally:
-            raw.set_progress_handler(None, 0)
         listed = {s.get(Article, p.article_id).patch_series_version for p in result}
     assert len(result) == 10
     # Current revisions only, never a superseded v1 or v2.
@@ -1335,4 +1290,4 @@ def test_dense_superseded_rows_do_not_multiply_pages(
     # 4000 superseded rows re-reading 20k inbox rows each time, 7.5M.
     # Fixed 20 rows at 200 postings, the first version of this test,
     # took 3.7M to 3.9M.
-    assert steps < DENSE_SUPERSEDED_STEP_BUDGET, steps
+    assert steps.count < DENSE_SUPERSEDED_STEP_BUDGET, steps.count
