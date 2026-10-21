@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Subsystem triage lists on large patch archives load faster: the
+  newer-revision check runs on the page being listed, not on every candidate
+  (#785).
+
 ## [3.24.0] - 2026-10-21
 
 ### Changed
