@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.config import settings
+from mimir.dashboard import _inbox_first, _inbox_scoped
 from mimir.datetime_utils import aware_utc
 from mimir.models import Article, ArticleList, Inbox
 from mimir.threading import find_thread_root
@@ -212,16 +213,18 @@ def is_bot_sender(author: str | None) -> bool:
 
 
 def _candidate_select(
-    inbox_id: int,
+    inbox: Inbox,
     *,
     subject_normalized: str,
     tokens: list[str],
     authors: set[str],
     min_date: datetime,
 ) -> Select | None:
-    """The candidate query. One walk of ix_articles_date descending
-    with LIMIT; the spec's three branches are OR predicates tested
-    per row during the walk. Returns None when no predicate applies
+    """The candidate query. The spec's three branches are OR
+    predicates tested per row, over a walk of ix_articles_date
+    descending with LIMIT for a big list, or of the inbox's own
+    `article_lists` rows for a small one (`_inbox_first`, as in the
+    triage queues). Returns None when no predicate applies
     (empty subject, no tokens, no authors). Exposed separately from
     `_candidates` so the plan-pin test can EXPLAIN the compiled SQL.
 
@@ -239,7 +242,7 @@ def _candidate_select(
         preds.append(Article.author.in_(sorted(authors)))
     if not preds:
         return None
-    return (
+    stmt = (
         select(
             Article.id,
             Article.message_id,
@@ -247,14 +250,19 @@ def _candidate_select(
             Article.author,
             Article.date,
         )
-        .join(ArticleList, ArticleList.article_id == Article.id)
-        .where(
-            ArticleList.inbox_id == inbox_id,
-            Article.date >= min_date,
-            or_(*preds),
-        )
+        .where(Article.date >= min_date, or_(*preds))
         .order_by(Article.date.desc())
         .limit(CANDIDATE_CAP)
+    )
+    if _inbox_first(inbox):
+        return stmt.join(ArticleList, ArticleList.article_id == Article.id).where(
+            ArticleList.inbox_id == inbox.id
+        )
+    # Big list: pin the date walk. Left to the planner, production's
+    # statistics make `article_lists` look nearly free and it reads the
+    # whole list into a temp b-tree (6.6M rows on lkml, 4.5 to 6.8 s, #785).
+    return _inbox_scoped(
+        stmt.with_hint(Article, "INDEXED BY ix_articles_date", "sqlite"), inbox
     )
 
 
@@ -278,7 +286,7 @@ def _candidates(
     cap reads as "the 100 most recent matching messages".
     """
     stmt = _candidate_select(
-        inbox.id,
+        inbox,
         subject_normalized=subject_normalized,
         tokens=tokens,
         authors=authors,
