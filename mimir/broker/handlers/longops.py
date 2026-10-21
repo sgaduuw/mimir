@@ -157,23 +157,23 @@ def _run_backfill_chunk(req, name: str, backfill, **params) -> Reply:
         name, backfill_runs.params_key(**params), start=req.start
     )
     run = resolved.run
-    if resolved.busy is not None:
-        info = {
-            **_run_info(resolved.busy, resolved.busy),
-            "busy": True,
-            "retry_after": resolved.retry_after,
-        }
-        return Reply(
-            rpc_id=req.rpc_id,
-            ok=True,
-            result={"counters": {}, "partial": False, "run": info},
+    # Busy and refused both stop a first chunk with nothing run or
+    # changed; the flag tells the CLI which message to give.
+    held = resolved.busy if resolved.busy is not None else resolved.refused
+    if held is not None:
+        flag = (
+            {"busy": True, "retry_after": resolved.retry_after}
+            if resolved.busy is not None
+            else {"refused": True}
         )
-    if resolved.refused is not None:
-        info = {**_run_info(resolved.refused, resolved.refused), "refused": True}
         return Reply(
             rpc_id=req.rpc_id,
             ok=True,
-            result={"counters": {}, "partial": False, "run": info},
+            result={
+                "counters": {},
+                "partial": False,
+                "run": {**_run_info(held, held), **flag},
+            },
         )
     discarded = None
     if resolved.discarded is not None:

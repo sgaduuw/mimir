@@ -126,8 +126,56 @@ def _verbose_broker_hint(verbose: int) -> None:
         )
 
 
+def backfill_options(*, reprocess_help: str):
+    """The options every backfill command shares, applied in the order
+    `--help` lists them. Only `--reprocess` differs per command (it
+    names what gets redone), so its help text is the one argument.
+    A command's own options go in `@click.option` lines above this."""
+    options = [
+        click.option(
+            "--limit",
+            type=int,
+            default=None,
+            help="Cap the number of articles examined this session.",
+        ),
+        click.option("--reprocess", is_flag=True, help=reprocess_help),
+        click.option(
+            "--restart",
+            is_flag=True,
+            help="Discard an unfinished run of this backfill and start again "
+            "from the newest article. A run that has examined articles is "
+            "kept unless --yes is also given. Without --restart, an "
+            "interrupted run resumes.",
+        ),
+        click.option(
+            "--yes",
+            is_flag=True,
+            help="With --restart, discard an unfinished run that has progress "
+            "instead of refusing.",
+        ),
+        click.option(
+            "-v",
+            "--verbose",
+            count=True,
+            help="-v: progress hint (broker mode logs to the broker process; "
+            "use `podman logs -f mimir-broker` to follow).",
+        ),
+    ]
+
+    def decorate(func):
+        # Click lists options in decorator order, which is bottom-up
+        # application, so apply the last one first.
+        for option in reversed(options):
+            func = option(func)
+        return func
+
+    return decorate
+
+
 def _broker_backfill_loop(
-    call,
+    client,
+    request_cls,
+    result_cls,
     *,
     limit: int | None,
     reprocess: bool,
@@ -139,8 +187,8 @@ def _broker_backfill_loop(
     per-chunk counters into one `BackfillResult`. Returns
     `(result, run)` where `run` is the last chunk's run info.
 
-    `call(**kwargs)` sends one chunk built from those kwargs, usually
-    through `BrokerClient.backfill`. Each RPC
+    Each chunk is one `client.call(request_cls(...))`, its counters
+    parsed into `result_cls`. Each RPC
     advances by at most one chunk (the broker's
     `broker_backfill_chunk_seconds` budget); the loop continues while
     `partial=True` is returned. The broker keeps the run's cursor, so
@@ -167,12 +215,11 @@ def _broker_backfill_loop(
     remaining = limit
     start = ("force_restart" if yes else "restart") if restart else "resume"
     while True:
-        chunk, run = call(
-            limit=remaining,
-            reprocess=reprocess,
-            start=start,
-            **extra,
+        reply = client.call(
+            request_cls(limit=remaining, reprocess=reprocess, start=start, **extra)
         )
+        chunk = result_cls.model_validate(reply.get("counters", {}))
+        run = reply.get("run")
         start = None
         if run is not None and run.get("busy"):
             at = f", at id {run['cursor']}" if run["cursor"] is not None else ""

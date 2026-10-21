@@ -683,19 +683,27 @@ def test_a_session_that_joined_a_run_stops_when_the_run_finishes(
 
     calls = {"b": 0, "a": 0}
 
-    def session_b(**kwargs):
-        calls["b"] += 1
-        if calls["b"] == 2:
-            # Session A joins and finishes the run while B waits.
-            while True:
-                calls["a"] += 1
-                start = "resume" if calls["a"] == 1 else None
-                if not chunk(reprocess=True, start=start)["partial"]:
-                    break
-        r = chunk(**kwargs)
-        return BackfillResult.model_validate(r["counters"]), r["run"]
+    class Session:
+        """Session B's client: its second chunk lands after A finished."""
 
-    result, run = _broker_backfill_loop(session_b, limit=None, reprocess=True)
+        def call(self, req):
+            calls["b"] += 1
+            if calls["b"] == 2:
+                # Session A joins and finishes the run while B waits.
+                while True:
+                    calls["a"] += 1
+                    start = "resume" if calls["a"] == 1 else None
+                    if not chunk(reprocess=True, start=start)["partial"]:
+                        break
+            return chunk(limit=req.limit, reprocess=req.reprocess, start=req.start)
+
+    result, run = _broker_backfill_loop(
+        Session(),
+        BackfillPatchSeriesRequest,
+        BackfillResult,
+        limit=None,
+        reprocess=True,
+    )
 
     assert calls["b"] == 2
     assert calls["a"] >= 1
@@ -930,6 +938,37 @@ def test_the_reply_names_the_busy_run_and_walks_nothing(
     assert (info["id"], info["cursor"], info["examined"]) == (run.id, 5, 3)
     assert info["busy"] is True
     assert 0 < info["retry_after"] <= live_window
+    assert info["updated_at"]
+
+
+def test_the_reply_names_the_refused_run_and_walks_nothing(
+    seeded_db, tmp_path, broker_active, live_window
+):
+    from mimir import backfill_runs
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+
+    key = backfill_runs.params_key(reprocess=True)
+    run = backfill_runs.resolve("backfill_patch_series", key, start="resume").run
+    get_active_writer().submit(
+        WriteOp(label="test", fn=backfill_runs.advance(run.id, 5, 3))
+    ).result(timeout=10)
+    # Not live, so the restart is refused for its progress, not as busy.
+    _set_updated_at(seeded_db, 10 * live_window)
+
+    reply = dispatch(
+        BackfillPatchSeriesRequest(rpc_id=1, reprocess=True, start="restart")
+        .model_dump_json()
+        .encode()
+    )
+
+    assert reply.ok is True, reply.error
+    assert reply.result["partial"] is False
+    assert reply.result["counters"] == {}
+    info = reply.result["run"]
+    assert (info["id"], info["cursor"], info["examined"]) == (run.id, 5, 3)
+    assert info["refused"] is True
+    assert "busy" not in info and "retry_after" not in info
     assert info["updated_at"]
 
 
