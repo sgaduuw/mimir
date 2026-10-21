@@ -13,7 +13,10 @@ archive statistics. Browse by day or month, or search subjects and authors.
 Search is substring-based rather than full-text body search; broad misses can
 be expensive on a cold archive.
 
-A message page shows headers, its thread tree, body, and attachments. Whole-thread
+A message page shows headers, its thread tree, body, and attachments. In a
+thread longer than one thread-view page, the tree shows the part around the
+message (its ancestors, nearest sibling replies and first replies) and links to
+the thread view for the rest. Whole-thread
 views display messages in chronological order with `THREAD_VIEW_RENDER_CAP`
 messages per page (default 75, minimum 1). Replies link back to the thread root. Cross-posted
 lists may have different conversation membership, so thread views remain

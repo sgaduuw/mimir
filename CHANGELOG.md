@@ -13,6 +13,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Message pages in very long threads (longer than one thread-view page, 75
+  messages by default) show the part of the thread around the message, with
+  links to the thread view, instead of every message. A page in the longest
+  thread rendered 12,342 rows and 4.9 MB; its tree is now under 50 rows
+  (#798).
 - Status pills no longer walk the whole thread to find its latest reply; in
   very long threads every first visit to a message page did (#798).
 - The today, yesterday and since pages no longer count a list's whole history

@@ -399,6 +399,13 @@ pre.body-text-block {
   opacity: 0.6;
 }
 
+/* A long thread's gap and footer rows (#798): what the window leaves
+   out, in italics so they read as notes, not messages. Not dimmed like
+   the off-list row: at 0.7 opacity the amber link falls to 3.0:1
+   against the light background, under the 4.5:1 text minimum. */
+.thread-context .thread-list li.thread-gap,
+.thread-context .thread-list li.thread-all { font-style: italic; }
+
 /* Thread-tree depth ladder. `data-depth` is set per-li by the
    template; padding is `depth * 1.5rem`. Real lkml threads rarely
    exceed ~50 deep (per `threading.py`), but beyond ~20 levels the
