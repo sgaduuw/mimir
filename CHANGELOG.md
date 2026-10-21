@@ -16,6 +16,8 @@ changes, not internal refactors. Categories: **Added**,
 - Subsystem triage lists on large patch archives load faster: the
   newer-revision check runs on the page being listed, not on every candidate
   (#785).
+- Related discussions on very large lists walk by date, so the lkml query no
+  longer reads the whole list on every render (#785).
 
 ## [3.24.0] - 2026-10-21
 
