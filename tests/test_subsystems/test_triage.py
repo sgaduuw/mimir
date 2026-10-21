@@ -24,7 +24,7 @@ from mimir.subsystems_dashboard.triage import (
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
 )
-from tests._helpers import _cache_total
+from tests._helpers import _cache_total, planner_stats
 from tests.test_subsystems._helpers import _add_subsystem
 
 
@@ -991,7 +991,7 @@ def test_both_driving_shapes_return_the_same_rows(
     pages (a page of 2 forces several round trips over ties)."""
     from mimir.subsystems_dashboard import triage
 
-    monkeypatch.setattr(triage, "_page_size", lambda limit: 2)
+    monkeypatch.setattr(triage, "_page_size", lambda limit, **_: 2)
     seen = {}
     with seeded_db() as s:
         subs = _seed_two_inboxes(s)
@@ -1067,3 +1067,272 @@ def test_unknown_inbox_size_goes_inbox_first(seeded_db):
         cache.delete(_archive_stats_key(inbox))
         assert _inbox_first(inbox) is True
         assert cache.get(_archive_stats_key(inbox)) is None
+
+
+# Superseded post-filter (#785)
+
+
+@pytest.mark.parametrize(
+    "fn,trailers",
+    [
+        (needs_attention_patches_in_subsystem, [("Reviewed-by", "rev@example.com")]),
+        (quiet_patches_in_subsystem, []),
+    ],
+)
+@pytest.mark.parametrize("inbox_first", [False, True])
+def test_superseded_rows_filling_a_page_do_not_end_the_walk(
+    seeded_db, monkeypatch, fn, trailers, inbox_first
+):
+    """The superseded test runs on each fetched page, not in the SQL,
+    so a page made only of superseded v1 rows must not read as the end
+    of the candidates: the walk pages on to the v2 rows behind them."""
+    from mimir.subsystems_dashboard import triage
+
+    monkeypatch.setattr(triage, "_page_size", lambda limit, **_: 2)
+    monkeypatch.setattr(triage, "_inbox_first", lambda _i: inbox_first)
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        for n in range(5):
+            _add_article(
+                s,
+                f"s{n}-v1@x",
+                paths=["net/core/dev.c"],
+                days_ago=90 - n,
+                patch_series_key=f"k{n}",
+                patch_series_version="v1",
+                patch_series_position=1,
+                trailers=trailers,
+            )
+        for n in range(5):
+            _add_article(
+                s,
+                f"s{n}-v2@x",
+                paths=["net/core/dev.c"],
+                days_ago=60 - n,
+                patch_series_key=f"k{n}",
+                patch_series_version="v2",
+                patch_series_position=1,
+                trailers=trailers,
+            )
+        s.commit()
+        result = fn(s, _alpha(s), sub, limit=50, force=True)
+    assert [p.message_id for p in result] == [f"s{n}-v2@x" for n in range(5)]
+
+
+def _seed_big_series(s, keys, rows_per_key):
+    """`keys` postings of `rows_per_key` patches each, one patch per
+    posting carrying a review trailer, dates interleaved across the
+    postings so the oldest rows are distinct postings. Bulk-inserted:
+    the point is row volume under one series key, as in a stable-review
+    posting."""
+    inbox_id = _alpha(s).id
+    base = datetime.now(UTC) - timedelta(days=60)
+    articles, lists, files, trailers = [], [], [], []
+    for k in range(keys):
+        for j in range(rows_per_key):
+            aid = 100_000 + k * rows_per_key + j
+            articles.append(
+                {
+                    "id": aid,
+                    "message_id": f"big{aid}@x",
+                    "subject": f"patch {aid}",
+                    "author": "author@example.com",
+                    "date": base + timedelta(seconds=j * keys + k),
+                    "subject_normalized": f"patch {aid}",
+                    "canonical_inbox_id": inbox_id,
+                    "patch_series_key": f"big{k}",
+                    "patch_series_version": "v1",
+                    "patch_series_position": j + 1,
+                }
+            )
+            lists.append(
+                {
+                    "article_id": aid,
+                    "inbox_id": inbox_id,
+                    "epoch": "0.git",
+                    "commit_sha": "f" * 40,
+                }
+            )
+            files.append({"article_id": aid, "path": "net/core/dev.c"})
+            if j == 0:
+                trailers.append(
+                    {
+                        "article_id": aid,
+                        "role": "Reviewed-by",
+                        "name": "reviewer",
+                        "address": "rev@example.com",
+                        "address_normalized": "rev@example.com",
+                    }
+                )
+    for model, rows in (
+        (Article, articles),
+        (ArticleList, lists),
+        (ArticleFile, files),
+        (ArticleTrailer, trailers),
+    ):
+        s.execute(model.__table__.insert(), rows)
+    s.commit()
+
+
+@pytest.fixture
+def no_planner_stats(seeded_db):
+    """The step budgets below are plan-dependent, and the shared test
+    database carries whatever statistics an earlier test's ANALYZE left."""
+    with planner_stats(seeded_db):
+        yield
+
+
+# Measured: the post-filter takes 0.38M (needs-attention) and 0.51M
+# (quiet) steps, the check inside the candidate SELECT 4.6M for both.
+SUPERSEDED_STEP_BUDGET = 1_000_000
+
+
+@pytest.mark.parametrize(
+    "fn", [needs_attention_patches_in_subsystem, quiet_patches_in_subsystem]
+)
+def test_triage_work_does_not_grow_with_the_candidate_window(
+    seeded_db, no_planner_stats, fn
+):
+    """The newer-revision check costs a walk of the whole series key,
+    so it belongs on the page that is listed, not on every candidate
+    in the window. 200 postings of 50 patches: checking each candidate
+    in the SQL walks the series 200+ times before the first page
+    returns; checking the page does it once per fetched row (200 on
+    this inbox-first walk). Counted in
+    SQLite VM steps, which do not depend on the machine's speed."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _seed_big_series(s, keys=200, rows_per_key=50)
+        raw = s.connection().connection.driver_connection
+        steps = 0
+
+        def tick():
+            nonlocal steps
+            steps += 1000
+
+        raw.set_progress_handler(tick, 1000)
+        try:
+            result = fn(s, _alpha(s), sub, limit=10, force=True)
+        finally:
+            raw.set_progress_handler(None, 0)
+    assert len(result) == 10
+    assert steps < SUPERSEDED_STEP_BUDGET, steps
+
+
+# Dense superseded rows ahead of the kept ones (#785)
+
+
+def _seed_dense_superseded(s, *, background, series, versions, trailers):
+    inbox_id = _alpha(s).id
+    now = datetime.now(UTC)
+    articles, lists, files, trs = [], [], [], []
+    aid = 200_000
+
+    def add(date, path, key=None, version=None, trailer=False):
+        nonlocal aid
+        aid += 1
+        articles.append(
+            {
+                "id": aid,
+                "message_id": f"p{aid}@x",
+                "subject": f"patch {aid}",
+                "author": "author@example.com",
+                "date": date,
+                "subject_normalized": f"patch {aid}",
+                "canonical_inbox_id": inbox_id,
+                "patch_series_key": key,
+                "patch_series_version": version,
+                "patch_series_position": 1 if key else None,
+            }
+        )
+        lists.append(
+            {
+                "article_id": aid,
+                "inbox_id": inbox_id,
+                "epoch": "0.git",
+                "commit_sha": "f" * 40,
+            }
+        )
+        files.append({"article_id": aid, "path": path})
+        if trailer:
+            trs.append(
+                {
+                    "article_id": aid,
+                    "role": "Reviewed-by",
+                    "name": "reviewer",
+                    "address": "rev@example.com",
+                    "address_normalized": "rev@example.com",
+                }
+            )
+
+    # Other subsystems' traffic in the window: read by every inbox-first page.
+    for i in range(background):
+        add(now - timedelta(days=100, seconds=i), "drivers/other.c")
+    # `versions` revisions of each series, oldest revision first in date order.
+    for v in range(1, versions + 1):
+        for k in range(series):
+            add(
+                now - timedelta(days=100 - 10 * v, seconds=series - k),
+                "net/core/dev.c",
+                key=f"ser{k}",
+                version=f"v{v}",
+                trailer=trailers,
+            )
+    for model, rows in (
+        (Article, articles),
+        (ArticleList, lists),
+        (ArticleFile, files),
+        (ArticleTrailer, trs),
+    ):
+        if rows:
+            s.execute(model.__table__.insert(), rows)
+    s.commit()
+
+
+DENSE_SUPERSEDED_STEP_BUDGET = 4_000_000
+
+
+@pytest.mark.parametrize("inbox_first", [True, False])
+@pytest.mark.parametrize(
+    "fn,trailers",
+    [
+        (needs_attention_patches_in_subsystem, True),
+        (quiet_patches_in_subsystem, False),
+    ],
+)
+def test_dense_superseded_rows_do_not_multiply_pages(
+    seeded_db, no_planner_stats, monkeypatch, fn, trailers, inbox_first
+):
+    from mimir.subsystems_dashboard import triage
+
+    monkeypatch.setattr(triage, "_inbox_first", lambda _i: inbox_first)
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        _seed_dense_superseded(
+            s, background=20_000, series=2000, versions=3, trailers=trailers
+        )
+        raw = s.connection().connection.driver_connection
+        steps = 0
+
+        def tick():
+            nonlocal steps
+            steps += 1000
+
+        raw.set_progress_handler(tick, 1000)
+        try:
+            result = fn(s, _alpha(s), sub, limit=10, force=True)
+        finally:
+            raw.set_progress_handler(None, 0)
+        listed = {s.get(Article, p.article_id).patch_series_version for p in result}
+    assert len(result) == 10
+    # Current revisions only, never a superseded v1 or v2.
+    assert listed == {"v3"}
+    # Measured, inbox-first (the two small-list cases): the doubling
+    # page takes 2.7M steps; a fixed page, whether 20 or 200 rows, past
+    # 4000 superseded rows re-reading 20k inbox rows each time, 7.5M.
+    # Fixed 20 rows at 200 postings, the first version of this test,
+    # took 3.7M to 3.9M.
+    assert steps < DENSE_SUPERSEDED_STEP_BUDGET, steps
