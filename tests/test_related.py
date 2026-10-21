@@ -533,8 +533,10 @@ class TestCandidatePlanPin:
         from sqlalchemy import select as sa_select
         from sqlalchemy import text
 
+        from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
         from mimir.models import Inbox
         from mimir.related import _candidate_select
+        from tests._helpers import _cache_total
 
         # Phase 1: seed the corpus and update planner statistics.
         # Committed and closed so that phase 2 gets a fresh session
@@ -598,8 +600,10 @@ class TestCandidatePlanPin:
         # prepared statement.
         with seeded_db() as s:
             s.execute(text("ANALYZE"))
+            inbox = s.get(Inbox, alpha_id)
+            _cache_total(inbox, INBOX_FIRST_BELOW_ARTICLES)  # the date walk
             stmt = _candidate_select(
-                alpha_id,
+                inbox,
                 subject_normalized="subject number 7 lockdep",
                 tokens=["lockdep", "number"],
                 authors={"Author1", "Author2"},
@@ -611,3 +615,58 @@ class TestCandidatePlanPin:
             )
             assert "ix_articles_date" in plan, plan
             assert "SCAN articles" not in plan, plan
+
+
+class TestCandidatePlanUnderProductionStats:
+    """The pin above passes on synthetic stats where the date filter
+    is the more selective one. Production's `sqlite_stat1` says the
+    opposite: `ix_article_lists_inbox_id` looks nearly free (4001
+    rows per key claimed) and `ix_articles_date` looks like a
+    point lookup (1 row per key), so left to choose, the planner
+    drove from `article_lists` and sorted the whole lkml in a temp
+    b-tree, 4.5 to 6.8 s a render (#785). The size switch must decide,
+    not the planner."""
+
+    @staticmethod
+    def _plan(seeded_db, total):
+        from sqlalchemy import select as sa_select
+        from sqlalchemy import text
+
+        from mimir.models import Inbox
+        from mimir.related import _candidate_select
+        from tests._helpers import _cache_total, planner_stats
+
+        stats = (
+            ("article_lists", "ix_article_lists_inbox_id", "29738147 4001"),
+            ("article_lists", "ix_article_lists_thread_root", "29738147 4001 4"),
+            ("articles", "ix_articles_date", "17778731 1"),
+        )
+        with planner_stats(seeded_db, stats), seeded_db() as s:
+            inbox = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            _cache_total(inbox, total)
+            stmt = _candidate_select(
+                inbox,
+                subject_normalized="subject number 7 lockdep",
+                tokens=["lockdep", "number"],
+                authors={"Author1", "Author2"},
+                min_date=datetime.now(UTC) - timedelta(days=365),
+            )
+            sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            return "\n".join(
+                row[3] for row in s.execute(text(f"EXPLAIN QUERY PLAN {sql}"))
+            )
+
+    def test_big_inbox_walks_the_date_index(self, seeded_db):
+        from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
+
+        plan = self._plan(seeded_db, INBOX_FIRST_BELOW_ARTICLES)
+        assert "USING INDEX ix_articles_date" in plan, plan
+        assert "TEMP B-TREE" not in plan, plan
+
+    def test_small_inbox_stays_inbox_first(self, seeded_db):
+        from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
+
+        plan = self._plan(seeded_db, INBOX_FIRST_BELOW_ARTICLES - 1)
+        assert plan.startswith("SEARCH article_lists"), plan

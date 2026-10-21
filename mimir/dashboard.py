@@ -566,7 +566,8 @@ def cached_archive_total(inbox: Inbox) -> int | None:
 # drive their listing queries from `ix_articles_date`; smaller ones from
 # their own `article_lists` rows. Users: the triage queues (#775) and
 # the pull-request and stable-release listings (#796) through
-# `_inbox_first`; the unfiltered recent listing has its own, lower
+# `_inbox_first`, and the related-discussions candidate query (#785);
+# the unfiltered recent listing has its own, lower
 # threshold below. Measured on production on 2026-10-18,
 # the same rows from both shapes, first page, in seconds
 # (date-first vs inbox-first): lkml (6.58M articles) 0.60 vs 5.58;
