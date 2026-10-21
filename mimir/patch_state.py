@@ -46,6 +46,7 @@ from mimir.models import (
     SubsystemMaintainer,
 )
 from mimir.patch_revisions import patch_bracket
+from mimir.patch_series import same_series
 from mimir.trailers import INDEXED_TRAILER_ROLES
 from mimir.web.urls import _canonical_url_for, _series_diff_url
 
@@ -255,7 +256,7 @@ def _series_timeline(
             select(Article)
             .options(selectinload(Article.lists).selectinload(ArticleList.inbox))
             .where(
-                Article.patch_series_key == article.patch_series_key,
+                same_series(article.patch_series_key, article.patch_series_head_id),
                 # Same-position filter, see docstring. NULL is 0, as in
                 # `patch_series.newer_revision_sql`, so the fold lists
                 # what the pill counts.
@@ -297,6 +298,7 @@ def _series_timeline(
                 rev.patch_series_version,
                 current_version,
                 pos,
+                head_id=article.patch_series_head_id,
                 fallback_inbox=inbox_name,
             )
         out.append(

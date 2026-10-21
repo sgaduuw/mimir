@@ -38,6 +38,8 @@ from mimir.models import (
 from mimir.patch_series import (
     newer_revision_sql,
     representative_key,
+    series_head,
+    series_head_sql,
     version_number_sql,
 )
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
@@ -228,6 +230,7 @@ def _triage_sql(
         SELECT a.id AS article_id, a.message_id, a.subject,
                a.author, a.date AS art_date,
                a.patch_series_key, a.patch_series_version,
+               {series_head_sql("a")} AS series_head,
                {version_number_sql("a.patch_series_version")} AS series_rev
         FROM {source}
         WHERE a.date BETWEEN :min_date AND :cutoff_date
@@ -360,8 +363,8 @@ def _run_triage(
     """Shared post-processing across the two triage queries: run
     the candidate SELECT a page at a time, drop superseded rows (a
     newer revision exists), optionally drop maintainer-Acked rows, optionally annotate with trailer summary,
-    and fold every patch of one posting (series key and revision
-    number, so an unversioned `resend` or `rfc` joins `v1`) into one
+    and fold every patch of one posting (series, meaning key and head
+    (#816), and revision number, so an unversioned `resend` or `rfc` joins `v1`) into one
     row, the `representative_key` winner: a stored `vN` over `rfc` and
     `resend`, then the oldest (#686, #691), until `limit` rows are built
     or the candidates run out."""
@@ -373,7 +376,7 @@ def _run_triage(
     sql, params = built
     out: list[PatchAttention] = []
     # Per folded posting: the listed row, its rank and its stored version.
-    by_series: dict[tuple[str, int | None], tuple[tuple, PatchAttention, str]] = {}
+    by_series: dict[tuple[str, int, int | None], tuple[tuple, PatchAttention, str]] = {}
     while True:
         rows = session.execute(_triage_stmt(sql), params).all()
         candidate_ids = [r.article_id for r in rows]
@@ -387,7 +390,11 @@ def _run_triage(
         for r in rows:
             if r.article_id in drop_ids:
                 continue
-            series = (r.patch_series_key, r.series_rev) if r.patch_series_key else None
+            series = (
+                (r.patch_series_key, r.series_head, r.series_rev)
+                if r.patch_series_key
+                else None
+            )
             rank = representative_key(
                 r.patch_series_version, coerce_dt(r.art_date), r.article_id
             )
@@ -426,24 +433,24 @@ def _run_triage(
         }
     # Counted, not tallied while paging: the list can fill before a
     # posting's later patches are fetched. Every other patch of the
-    # listed row's own posting (key and stored version, so "+N more"
+    # listed row's own posting (series and stored version, so "+N more"
     # matches the row clicked) counts, listed or not. Positions, not
     # rows: the cover (position 0) is not a patch, and a `RESEND` of the
     # same version stores every patch twice.
     if by_series:
-        own = {(s[0], v): row for s, (_, row, v) in by_series.items()}
-        posting = tuple_(Article.patch_series_key, Article.patch_series_version)
+        own = {(s[0], s[1], v): row for s, (_, row, v) in by_series.items()}
+        posting = (
+            Article.patch_series_key,
+            series_head(),
+            Article.patch_series_version,
+        )
         counts = session.execute(
-            select(
-                Article.patch_series_key,
-                Article.patch_series_version,
-                func.count(Article.patch_series_position.distinct()),
-            )
-            .where(posting.in_(list(own)), Article.patch_series_position > 0)
-            .group_by(Article.patch_series_key, Article.patch_series_version)
+            select(*posting, func.count(Article.patch_series_position.distinct()))
+            .where(tuple_(*posting).in_(list(own)), Article.patch_series_position > 0)
+            .group_by(*posting)
         ).all()
-        for key, version, n in counts:
-            own[(key, version)].series_more = max(n - 1, 0)
+        for key, head, version, n in counts:
+            own[(key, head, version)].series_more = max(n - 1, 0)
     return out
 
 

@@ -114,6 +114,15 @@ class Article(Base):
     patch_series_position: Mapped[int | None] = mapped_column(
         nullable=True,
     )
+    # `patch_series_head_id` (#816): splits one key into the separate
+    # series a sender posted under one cover title. NULL for the chain
+    # holding the key's oldest cover; otherwise the id of the first
+    # cover of its chain. A series is (key, COALESCE(head, 0)); read it
+    # through `mimir.patch_series.same_series` and friends, never the
+    # key alone. Not indexed: every read also matches the indexed key.
+    patch_series_head_id: Mapped[int | None] = mapped_column(
+        nullable=True,
+    )
 
     # Author's intended primary list, derived from the first list-shaped
     # address in `To:` (then `Cc:`) at ingest time. NULL when no

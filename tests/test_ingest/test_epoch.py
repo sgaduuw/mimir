@@ -397,6 +397,81 @@ def test_ingest_inseries_with_inreplyto_links_to_cover(
     assert patch.patch_series_version == cover.patch_series_version
 
 
+def _patch_reply(msgid, parent):
+    return (
+        _rfc5322(msgid, body=b"x")
+        .replace(b"Subject: t\r\n", b"Subject: [PATCH 1/2] thread title: one\r\n")
+        .replace(
+            b"From: a@b.example\r\n",
+            b"From: a@b.example\r\nIn-Reply-To: <" + parent.encode() + b">\r\n",
+        )
+    )
+
+
+def test_ingest_inseries_inherits_the_cover_series_head(
+    seeded_db, tmp_path, broker_active
+):
+    """#816: the in-series patch takes the cover's series head with its
+    key, via the SQL lookup (cover ingested in an earlier epoch), or a
+    split-off series would orphan its patches."""
+    alpha = _alpha(seeded_db)
+    cover = _rfc5322("hcover@example.com", body=b"x").replace(
+        b"Subject: t\r\n", b"Subject: [PATCH 0/2] thread title\r\n"
+    )
+    _build_pubinbox_repo(tmp_path / "0.git", [cover])
+    _build_pubinbox_repo(
+        tmp_path / "1.git", [_patch_reply("hpatch@example.com", "hcover@example.com")]
+    )
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+        row = s.execute(
+            select(Article).where(Article.message_id == "hcover@example.com")
+        ).scalar_one()
+        row.patch_series_head_id = 4242
+        s.commit()
+        ingest_epoch(s, alpha, "1.git", tmp_path / "1.git", workers=1)
+        patch = s.execute(
+            select(Article).where(Article.message_id == "hpatch@example.com")
+        ).scalar_one()
+    assert patch.patch_series_key is not None  # precondition: linked
+    assert patch.patch_series_head_id == 4242
+
+
+def test_inseries_inherits_the_head_of_a_cover_in_the_same_batch(seeded_db):
+    """The same-batch path: the cover is still a pending insert, so the
+    patch reads key, version and head from it, not from SQL."""
+    from mimir.ingest._pending import _ArticleInsert
+    from mimir.ingest.epoch import _to_article_insert
+    from mimir.parser import parse_message
+
+    pending = _ArticleInsert(
+        message_id="pcover@example.com",
+        subject="[PATCH 0/2] thread title",
+        author="a@b.example",
+        date=None,
+        thread_parent=None,
+        subject_normalized="thread title",
+        canonical_inbox_id=None,
+        patch_series_key="k",
+        patch_series_version="v1",
+        patch_series_position=0,
+        patch_series_head_id=4242,
+    )
+    parsed = parse_message(_patch_reply("ppatch@example.com", "pcover@example.com"))
+    with seeded_db() as s:
+        rec = _to_article_insert(
+            parsed,
+            1,
+            "0.git",
+            "f" * 40,
+            datetime(2024, 6, 1, tzinfo=UTC),
+            session=s,
+            pending_articles=[pending],
+        )
+    assert rec.patch_series_key == "k"  # precondition: linked via pending
+    assert rec.patch_series_head_id == 4242
+
+
 def test_ingest_inseries_orphan_when_cover_not_yet_ingested(
     seeded_db,
     tmp_path,

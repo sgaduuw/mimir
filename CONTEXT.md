@@ -2194,8 +2194,11 @@ covering the DERIVED state both surfaces render and neither an article
 id nor a thread's shape can express: landing state (with each tree's
 display label), review roll-up (the trailer values, not their count),
 subsystem attribution (rules version AND the article's touched paths,
-since the attribution is the product of both), and
-revision/supersedance. It is shared precisely so the two surfaces
+since the attribution is the product of both),
+revision/supersedance, and the series identity (key and head, #816),
+which the revisions fold spells into its diff links as `s=`, so a
+re-chained series moves the tag even when its revision rows do not. It
+is shared precisely so the two surfaces
 cannot drift apart again: the thread view had per-input coverage while
 the message page had no state input at all, so a patch landing, a
 MAINTAINERS reparse, a new trailer or a v2 posting pinned it until an
@@ -2259,11 +2262,12 @@ The guard that catches the class is
 `test_body_under_new_etag_matches_a_cold_render`: it primes the caches
 with an ordinary request instead of clearing them, which is the only way
 to see a cache the validator cannot, and it asserts the change is
-visible in the body so a case cannot pass by construction. Two matrix
-cases (`maintainers_reparse`, `article_files_rewrite`) are left out of
-it because the fixture page does not render them, so those inputs have
-validator coverage but no warm-versus-cold coverage until #678. Known
-exceptions: time-relative output (the activity chip ages within the TTL;
+visible in the body so a case cannot pass by construction. It runs
+every matrix case on both surfaces except one pairing: `series_head` on
+the thread view, which renders no revisions fold, so the head (spelled
+only in the fold's diff links) cannot reach its body; that ETag still
+moves through the shared `render_state_tag`, which the validator matrix
+checks. Known exceptions: time-relative output (the activity chip ages within the TTL;
 no validator can carry `now()`), and the related-patches and
 related-discussions lists, which are cached by id and are not validator
 inputs at all, by the same choice as before 3.13.0.
