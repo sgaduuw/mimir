@@ -23,21 +23,21 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    populated, the leading space cleanly separates the attrs from
    `lang="en"`. #}
 {% block html_data_attrs -%}
-{%- if thread and thread|length > 1 %} data-thread-root-id="{{ thread[0].id }}" data-thread-context="{{ 'root' if thread[0].message_id == article.message_id else 'deep' }}"{%- endif -%}
+{%- if thread_total > 1 %} data-thread-root-id="{{ thread_root_id }}" data-thread-context="{{ 'root' if thread_is_root else 'deep' }}"{%- endif -%}
 {% endblock %}
 {% block content %}
-{% if thread|length > 1 or parent_off_list %}
+{% if thread_total > 1 or parent_off_list %}
 {# Three-state fold for the thread tree. State lives on <html data-thread-fold>
    and is set by the inline script just below before this section paints, so
    a localStorage pin doesn't cause a visible flash from the server's context
    default (root → partial, deep → closed). #}
 <section class="thread-context"
-         data-thread-root-id="{{ thread[0].id if thread else '' }}">
+         data-thread-root-id="{{ thread_root_id }}">
   <header class="thread-toolbar">
     <span class="thread-label">
-      <span class="thread-count">Thread ({{ thread|length }} message{{ '' if thread|length == 1 else 's' }})</span>
+      <span class="thread-count">Thread ({{ thread_total }} message{{ '' if thread_total == 1 else 's' }})</span>
       <span class="thread-summary">
-        {{ thread|length }} message{{ '' if thread|length == 1 else 's' }},
+        {{ thread_total }} message{{ '' if thread_total == 1 else 's' }},
         {{ thread_summary.author_count }} author{{ '' if thread_summary.author_count == 1 else 's' }},
         {{ thread_summary.last_activity_rel }}
       </span>
@@ -68,6 +68,16 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
        `'unsafe-inline'` from `style-src`. #}
     {% set _d_raw = n.depth + offset %}
     {% set _d = 20 if _d_raw > 20 else _d_raw %}
+    {# A long thread is windowed (#798); a gap row stands for the
+       messages left out. No data-article-id, so keyboard j/k and the
+       active marker skip it, and no hx-get: the thread view is a page
+       of its own. #}
+    {% if n.gap_count is defined %}
+    <li class="thread-gap" data-depth="{{ _d }}">
+      {% set _what = (('reply' if n.gap_count == 1 else 'replies') if n.replies else ('message' if n.gap_count == 1 else 'messages')) %}
+      {% if thread_more_url %}<a href="{{ thread_more_url }}">{{ n.gap_count }} more {{ _what }} in the thread view</a>{% else %}{{ n.gap_count }} more {{ _what }}{% endif %}
+    </li>
+    {% else %}
     <li data-depth="{{ _d }}"
         data-article-id="{{ n.id }}"
         {% if n.message_id == article.message_id %}class="is-active"{% endif %}>
@@ -77,8 +87,17 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
          hx-swap="outerHTML"
          hx-push-url="true">{{ n.subject|clean_subject or '(no subject)' }}</a>
       <small>&middot; {{ n.author|safe_from }} &middot; {{ n.date.strftime('%Y-%m-%d') if n.date else '' }}</small>
+      {% if n.id in hidden_replies %}
+      {# A full page load, not an HTMX swap: that message's page
+         windows the thread around it, which shows these replies. #}
+      <a class="thread-replies" href="{{ thread_urls[n.message_id] }}">+{{ hidden_replies[n.id] }} repl{{ 'y' if hidden_replies[n.id] == 1 else 'ies' }}</a>
+      {% endif %}
     </li>
+    {% endif %}
     {% endfor %}
+    {% if thread_more_url %}
+    <li class="thread-all"><a href="{{ thread_more_url }}">View all {{ thread_total }} messages</a></li>
+    {% endif %}
   </ul>
   </div>
 </section>
