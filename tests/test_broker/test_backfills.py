@@ -28,6 +28,7 @@ typed-result reconstruction on the client.
 from __future__ import annotations
 
 from datetime import UTC
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -374,13 +375,14 @@ def test_dispatch_backfill_canonicals_with_inbox_filter(seeded_db):
 # ----- BrokerClient round-trip ------------------------------------------
 
 
-def test_broker_client_backfill_returns_typed_result(seeded_db):
-    """`BrokerClient.backfill` reconstructs a typed
-    `BackfillResult` from the broker reply, plus the run info.
+def test_backfill_loop_returns_typed_result_over_the_socket(seeded_db):
+    """`_broker_backfill_loop` reconstructs a typed `BackfillResult`
+    from the broker reply, plus the run info.
     End-to-end via a real broker on a tmp socket so the framing +
     JSONL + reply-shape round-trip is exercised."""
     from mimir.broker.client import BrokerClient
     from mimir.broker.protocol import BackfillPatchSeriesRequest
+    from mimir.cli._common import _broker_backfill_loop
     from mimir.patch_series import BackfillResult
     from tests.test_broker._helpers import broker_running, short_socket_path
 
@@ -388,9 +390,12 @@ def test_broker_client_backfill_returns_typed_result(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result, run = c.backfill(
-                BackfillPatchSeriesRequest(limit=4, start="resume"),
+            result, run = _broker_backfill_loop(
+                c,
+                BackfillPatchSeriesRequest,
                 BackfillResult,
+                limit=4,
+                reprocess=False,
             )
         finally:
             c.close()
@@ -412,12 +417,12 @@ def test_broker_client_backfill_canonicals_inbox_filter(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            result, _run = c.backfill(
-                BackfillCanonicalsRequest(inbox_filter="alpha", start="resume"),
-                BackfillResult,
+            reply = c.call(
+                BackfillCanonicalsRequest(inbox_filter="alpha", start="resume")
             )
         finally:
             c.close()
+    result = BackfillResult.model_validate(reply["counters"])
     assert result.examined == 3  # 3 alpha-linked seeded articles
 
 
@@ -437,6 +442,7 @@ def test_broker_backfill_loop_converges_across_chunks(seeded_db):
     chunks N-2 times before a final partial=False chunk. The loop
     must aggregate counter sums, stop on partial=False, and send
     `start` on the first RPC only."""
+    from mimir.broker.protocol import BackfillArticleFilesRequest
     from mimir.cli._common import _broker_backfill_loop
     from mimir.patches import BackfillResult
 
@@ -448,12 +454,20 @@ def test_broker_backfill_loop_converges_across_chunks(seeded_db):
     ]
     calls: list[dict] = []
 
-    def fake_call(*, limit, reprocess, start):
-        calls.append({"limit": limit, "reprocess": reprocess, "start": start})
-        return chunks.pop(0), {**_RUN, "examined": 9}
+    def fake_call(req):
+        calls.append(
+            {"limit": req.limit, "reprocess": req.reprocess, "start": req.start}
+        )
+        chunk = chunks.pop(0)
+        return {
+            "counters": chunk.model_dump(mode="json"),
+            "run": {**_RUN, "examined": 9},
+        }
 
     result, run = _broker_backfill_loop(
-        fake_call,
+        SimpleNamespace(call=fake_call),
+        BackfillArticleFilesRequest,
+        BackfillResult,
         limit=None,
         reprocess=False,
         restart=True,
@@ -475,6 +489,7 @@ def test_broker_backfill_loop_respects_limit_across_chunks(seeded_db):
     from the remaining cap. The handler is trusted to respect the
     per-chunk limit it was given; the loop short-circuits any time
     the cap reaches zero."""
+    from mimir.broker.protocol import BackfillArticleFilesRequest
     from mimir.cli._common import _broker_backfill_loop
     from mimir.patches import BackfillResult
 
@@ -485,12 +500,15 @@ def test_broker_backfill_loop_respects_limit_across_chunks(seeded_db):
     ]
     seen_limits: list[int | None] = []
 
-    def fake_call(*, limit, reprocess, start):
-        seen_limits.append(limit)
-        return chunks.pop(0), _RUN
+    def fake_call(req):
+        seen_limits.append(req.limit)
+        chunk = chunks.pop(0)
+        return {"counters": chunk.model_dump(mode="json"), "run": _RUN}
 
     result, _run = _broker_backfill_loop(
-        fake_call,
+        SimpleNamespace(call=fake_call),
+        BackfillArticleFilesRequest,
+        BackfillResult,
         limit=5,
         reprocess=False,
     )
@@ -504,17 +522,21 @@ def test_broker_backfill_loop_passes_extra_kwargs(seeded_db):
     """Canonicals' `inbox_filter` rides on `extra=` in the loop
     helper. Verify it flows through to the chunk call on every
     iteration."""
+    from mimir.broker.protocol import BackfillCanonicalsRequest
     from mimir.cli._common import _broker_backfill_loop
     from mimir.ingest.backfill import BackfillResult
 
     seen_extras: list[dict] = []
 
-    def fake_call(*, limit, reprocess, start, inbox_filter):
-        seen_extras.append({"inbox_filter": inbox_filter})
-        return BackfillResult(examined=1, resolved=1), _RUN
+    def fake_call(req):
+        seen_extras.append({"inbox_filter": req.inbox_filter})
+        counters = BackfillResult(examined=1, resolved=1).model_dump(mode="json")
+        return {"counters": counters, "run": _RUN}
 
     result, _run = _broker_backfill_loop(
-        fake_call,
+        SimpleNamespace(call=fake_call),
+        BackfillCanonicalsRequest,
+        BackfillResult,
         limit=None,
         reprocess=False,
         extra={"inbox_filter": "alpha"},
@@ -559,9 +581,9 @@ def test_chunked_resume_via_broker_covers_full_corpus(seeded_db, monkeypatch):
         c = BrokerClient(sp)
         try:
             result, run = _broker_backfill_loop(
-                lambda **kw: c.backfill(
-                    BackfillPatchSeriesRequest(**kw), BackfillResult
-                ),
+                c,
+                BackfillPatchSeriesRequest,
+                BackfillResult,
                 limit=None,
                 reprocess=False,
             )
