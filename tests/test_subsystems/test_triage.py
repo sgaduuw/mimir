@@ -875,6 +875,35 @@ def test_series_more_counts_an_unversioned_resend_once(seeded_db):
     assert [(p.message_id, p.series_more) for p in result] == [("uv-v1-1@x", 1)]
 
 
+def test_two_series_under_one_key_stay_two_rows(seeded_db):
+    """#816: a sender reusing a cover title puts two unrelated series on
+    one key, told apart by the head. Same revision number, so only the
+    head keeps the fold from merging them, and "+N more" counts each
+    posting's own patches (two and three, so a merged count shows)."""
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        for tag, head, days_ago, patches in (("a", None, 30, 2), ("b", 77, 20, 3)):
+            for n in range(1, patches + 1):
+                art = _add_article(
+                    s,
+                    f"{tag}-{n}@x",
+                    paths=["net/core/dev.c"],
+                    days_ago=days_ago - n / 1440,
+                    patch_series_key="generic",
+                    patch_series_version="v1",
+                    patch_series_position=n,
+                    trailers=[("Reviewed-by", "rev@example.com")],
+                )
+                art.patch_series_head_id = head
+        s.commit()
+        result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
+    assert [(p.message_id, p.series_more) for p in result] == [
+        ("a-1@x", 1),
+        ("b-1@x", 2),
+    ]
+
+
 def test_rfc_before_v1_lists_the_v1_patch(seeded_db):
     """An older `rfc` patch must not hide the `v1` patch it folds with:
     a stored `vN` is the row, whatever the date order (#691)."""

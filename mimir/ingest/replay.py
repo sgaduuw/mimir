@@ -142,6 +142,7 @@ def _replay_loop(
                     patch_series_key=rec.patch_series_key,
                     patch_series_version=rec.patch_series_version,
                     patch_series_position=rec.patch_series_position,
+                    patch_series_head_id=rec.patch_series_head_id,
                 )
                 .returning(Article.id)
             )
