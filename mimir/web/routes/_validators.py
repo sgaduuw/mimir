@@ -25,6 +25,7 @@ from mimir.models import (
     MainlineCommit,
     MainlineState,
 )
+from mimir.patch_series import same_series
 from mimir.patch_state import _resolve_tree_label
 
 
@@ -122,16 +123,18 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     ).all()
     files_tag = _digest(paths)
     # Supersedance and the revision count come from SIBLING articles
-    # sharing this patch's series key, so they live in none of the reads
+    # in this patch's series (key and head), so they live in none of the reads
     # above. Posting a v2 flips this article's badge to SUPERSEDED and
     # rewrites its synthesis prose to "revision 1 of 2", without adding
     # a message to its thread. Posting a v2 is the most routine patch
     # workflow on the list, and "is this the current revision" is
     # squarely in the query family these surfaces exist to answer.
     series = session.execute(
-        select(Article.patch_series_key, Article.patch_series_position).where(
-            Article.id == article_id
-        )
+        select(
+            Article.patch_series_key,
+            Article.patch_series_position,
+            Article.patch_series_head_id,
+        ).where(Article.id == article_id)
     ).one_or_none()
     # The revisions' values, not a count and a text max: the pill ranks
     # by revision number, and `backfill-patch-series --reprocess` can
@@ -151,12 +154,16 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
             )
             .outerjoin(ArticleList, ArticleList.article_id == Article.id)
             .where(
-                Article.patch_series_key == series[0],
+                same_series(series[0], series[2]),
                 func.coalesce(Article.patch_series_position, 0) == (series[1] or 0),
             )
             .order_by(Article.id, ArticleList.inbox_id)
         ).all()
-        series_tag = _digest(repr(tuple(r)) for r in revisions)
+        # The identity leads, because the fold's diff links spell it
+        # (`s=`, #816): the chain backfill can move a whole series under
+        # a new head, which keeps the same revision rows and changes
+        # every link.
+        series_tag = _digest(repr(tuple(r)) for r in [series, *revisions])
     return (
         f"{landings_tag}|{trailers_tag}|{rules_version or ''}|{series_tag}|{files_tag}"
     )

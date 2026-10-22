@@ -52,7 +52,8 @@ _N_OF_M_RE = re.compile(r"\b0*([1-9]\d*)\s*/\s*(\d+)\b")
 _ANY_N_OF_M_RE = re.compile(r"\b(\d+)\s*/\s*(\d+)\b")
 
 # `PATCH` in any case: lists carry `[patch #1/11]` and `[Patch v2 ...]`.
-_PATCH_TOKEN_RE = re.compile(r"\bPATCH\b", re.IGNORECASE)
+# `PATCHv2` counts too: no word boundary follows `PATCH` there (#816).
+_PATCH_TOKEN_RE = re.compile(r"\bPATCH(?:\b|(?=v\d))", re.IGNORECASE)
 
 # `[GIT PULL 0/3]`, `[ANNOUNCE 0/3]` and friends carry `N/M` for
 # unrelated reasons.

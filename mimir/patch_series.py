@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from email.utils import parseaddr
 
-from sqlalchemy import select
+from sqlalchemy import and_, literal_column, select
 
 from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
@@ -46,8 +46,9 @@ _ZERO_OF_N_RE = re.compile(r"\b0+\s*/\s*\d+\b")
 # Version qualifiers. `v\d+` is the conventional revision marker;
 # `RFC` and `RESEND` are version-shaped enough to surface
 # distinctly. Anything else falls back to v1 (the unmarked first
-# version is implicit).
-_VERSION_RE = re.compile(r"\b(v\d+|RFC|RESEND)\b", re.IGNORECASE)
+# version is implicit). `[PATCHv2 0/9]` has no word boundary before the
+# `v`, so a `v\d` directly after `PATCH` also starts a marker (#816).
+_VERSION_RE = re.compile(r"(?:\b|(?<=PATCH)(?=v\d))(v\d+|RFC|RESEND)\b", re.IGNORECASE)
 
 
 def version_number_sql(column: str) -> str:
@@ -62,6 +63,42 @@ def version_number_sql(column: str) -> str:
     )
 
 
+# A RESEND in a leading bracket, ahead of the one `patch_bracket` picks:
+# `[RESEND] [PATCH v3 0/2] title`.
+_RESEND_RE = re.compile(r"^\s*(?:\[[^\]]*\]\s*)*\[[^\]]*\bRESEND\b", re.IGNORECASE)
+
+
+def posting_flags(subject: str | None, version: str | None) -> tuple[bool, bool]:
+    """`(is_rfc, is_resend)` of a cover posting. The stored version
+    keeps only one marker (`[PATCH RFC v2]` is `v2`, `[PATCH RESEND v3]`
+    is `v3`), so the brackets are read again; the stored `rfc` and
+    `resend` cover a subject that no longer parses."""
+    subject = unfold(subject or "")
+    bracket = patch_bracket(subject)
+    markers = {m.lower() for m in _VERSION_RE.findall(bracket[0])} if bracket else set()
+    return (
+        "rfc" in markers or version == "rfc",
+        "resend" in markers
+        or version == "resend"
+        or _RESEND_RE.match(subject) is not None,
+    )
+
+
+def chain_version_rank(version: str | None, is_rfc: bool) -> tuple[int, int]:
+    """Order of the postings of one series, for chaining (#816): an RFC
+    ranks below every non-RFC version, so `[RFC]` followed by `[PATCH
+    v1]` is a version up and joins one chain. The lifecycle pill does
+    the opposite on purpose: `version_number_sql` folds RFC to 1 so an
+    RFC and the v1 it became show as one revision (#691), which would
+    read that pair as a repeat of v1 here. A bare `resend` is v1, the
+    implicit first version."""
+    if version and version.startswith("v"):
+        number = int(version[1:])
+    else:
+        number = 0 if version == "rfc" else 1
+    return (0 if is_rfc else 1, number)
+
+
 def representative_key(version: str | None, date, article_id: int) -> tuple:
     """Sort key choosing the row that names a folded posting (#691): a
     stored `vN` beats `rfc` and `resend` (the real submission, whatever
@@ -72,16 +109,49 @@ def representative_key(version: str | None, date, article_id: int) -> tuple:
     return (not numbered, date is None, date, article_id)
 
 
+# A series is (patch_series_key, COALESCE(patch_series_head_id, 0))
+# (#816): one key can hold several series a sender posted under one
+# cover title, and the head id tells them apart. NULL is the key's
+# first series, so a NULL head everywhere means the key alone, which is
+# how every row reads until the chain backfill runs. The helpers below
+# are the only places the pair is spelled; readers that compare the key
+# alone are caught by `tests/test_series_identity_single_owner.py`.
+
+
+def series_head_sql(alias: str) -> str:
+    """SQL expression for the series head of the article aliased
+    `alias`, NULL as 0, for readers that select or group by it."""
+    return f"COALESCE({alias}.patch_series_head_id, 0)"
+
+
+def same_series_sql(a: str, b: str) -> str:
+    """SQL condition: the articles aliased `a` and `b` are in one series."""
+    return (
+        f"{a}.patch_series_key = {b}.patch_series_key"
+        f" AND {series_head_sql(a)} = {series_head_sql(b)}"
+    )
+
+
+def series_head():
+    """`series_head_sql` for ORM queries over `Article`."""
+    return literal_column(series_head_sql(Article.__tablename__))
+
+
+def same_series(key: str, head_id: int | None):
+    """ORM condition: an `Article` is in the series `(key, head_id)`."""
+    return and_(Article.patch_series_key == key, series_head() == (head_id or 0))
+
+
 def newer_revision_sql(older: str, newer: str) -> str:
     """SQL condition: the article aliased `newer` is a later revision
-    of the patch aliased `older`. Same series key, same position (NULL
+    of the patch aliased `older`. Same series, same position (NULL
     is 0, a cover before the #212 backfill), higher revision number.
-    Since #212 every patch of a series carries the key, so a key match
-    alone also matches the other patches of the same posting. One
+    Since #212 every patch of a series carries the key, so a series
+    match alone also matches the other patches of the same posting. One
     predicate for the lifecycle pill and the needs-attention list."""
     return (
         f"{older}.patch_series_key IS NOT NULL"
-        f" AND {newer}.patch_series_key = {older}.patch_series_key"
+        f" AND {same_series_sql(newer, older)}"
         f" AND COALESCE({newer}.patch_series_position, 0)"
         f" = COALESCE({older}.patch_series_position, 0)"
         f" AND {version_number_sql(newer + '.patch_series_version')}"
@@ -196,9 +266,10 @@ class BackfillResult(BackfillCounters):
 def _resolve_in_series_link(
     session,
     article,
-) -> tuple[str, str] | None:
-    """Look up `(patch_series_key, patch_series_version)` from the
-    article's thread parent. Depth-1 walk: `git send-email --thread`
+    reprocess: bool,
+) -> tuple[str, str, int | None] | None:
+    """Look up `(patch_series_key, patch_series_version,
+    patch_series_head_id)` from the article's thread parent. Depth-1 walk: `git send-email --thread`
     posts in-series patches as direct children of the cover, which
     is the modal shape. Deeper chains (patch resent as a reply to
     a reply) fall through to the orphan bucket; if they become
@@ -206,12 +277,14 @@ def _resolve_in_series_link(
     walker isn't worth the rare hit.
 
     Two-step resolve so a single backfill pass is order-independent:
-    if the parent is already keyed, use those values; otherwise
+    if the parent is already keyed, use those values (unless
+    `reprocess`, which always recomputes); otherwise
     compute the key + version from the parent's subject locally
     (without writing). When the walker later visits the parent and
     runs the cover-letter path, it writes the same `series_key()`
     output, so the in-series patch and cover converge on the same
-    key without ordering constraints.
+    key without ordering constraints. The head is the parent's either
+    way: this walker never writes a cover's head (#816).
     """
     if not article.thread_parent:
         return None
@@ -221,16 +294,27 @@ def _resolve_in_series_link(
             Article.author,
             Article.patch_series_key,
             Article.patch_series_version,
+            Article.patch_series_head_id,
         ).where(Article.message_id == article.thread_parent)
     ).one_or_none()
     if parent is None:
         return None
-    if parent.patch_series_key is not None:
-        return parent.patch_series_key, parent.patch_series_version
+    # A reprocess reparses the parent: its stored version may be the one
+    # being rewritten, and the walk reaches the children first (#816).
+    if parent.patch_series_key is not None and not reprocess:
+        return (
+            parent.patch_series_key,
+            parent.patch_series_version,
+            parent.patch_series_head_id,
+        )
     cover = parse_cover_letter(unfold(parent.subject))
     if cover is None:
         return None
-    return series_key(cover.title, parent.author), cover.version
+    return (
+        series_key(cover.title, parent.author),
+        cover.version,
+        parent.patch_series_head_id,
+    )
 
 
 def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
@@ -267,6 +351,7 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
             patch_series_key=article.patch_series_key,
             patch_series_version=article.patch_series_version,
             patch_series_position=article.patch_series_position,
+            patch_series_head_id=article.patch_series_head_id,
             subject=rewrite,
         )
 
@@ -284,19 +369,23 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
             patch_series_key=series_key(cover.title, article.author),
             patch_series_version=cover.version,
             patch_series_position=0,
+            # Heads are the chain pass's (#816); the subject cannot
+            # say which chain a cover is in, so keep what it wrote.
+            patch_series_head_id=article.patch_series_head_id,
             subject=rewrite,
         )
 
     in_series = parse_in_series_patch_subject(subject)
     if in_series is not None:
-        link = _resolve_in_series_link(session, article)
+        link = _resolve_in_series_link(session, article, reprocess)
         if link is not None:
-            key, version = link
+            key, version, head_id = link
             return bucket("in_series_indexed"), _PatchSeriesPending(
                 article_id=article.id,
                 patch_series_key=key,
                 patch_series_version=version,
                 patch_series_position=in_series.position,
+                patch_series_head_id=head_id,
                 subject=rewrite,
             )
         # Orphan: clear key/version on reprocess; keep position.
@@ -305,6 +394,7 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
             patch_series_key=None if reprocess else article.patch_series_key,
             patch_series_version=(None if reprocess else article.patch_series_version),
             patch_series_position=in_series.position,
+            patch_series_head_id=(None if reprocess else article.patch_series_head_id),
             subject=rewrite,
         )
 
@@ -318,6 +408,7 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
             patch_series_key=None,
             patch_series_version=None,
             patch_series_position=None,
+            patch_series_head_id=None,
             subject=rewrite,
         )
     return bucket("not_cover"), keep_series() if rewrite is not None else None

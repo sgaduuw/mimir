@@ -988,6 +988,27 @@ def _mutate_series(seeded):
         s.commit()
 
 
+def _prepare_two_revisions(seeded):
+    _prepare_series(seeded)
+    _mutate_series(seeded)
+
+
+def _mutate_series_head(seeded):
+    """The chain backfill moves a whole series under a head id (#816):
+    an older unrelated posting under the same key takes the NULL head.
+    Every revision moves together, so the revision rows the tag digests
+    are the same rows, while the fold's diff link gains `s=`."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    root_id, _url = seeded["root@x"]
+    reply_id, _url = seeded["reply@x"]
+    with SessionLocal() as s:
+        for aid in (root_id, reply_id):
+            s.get(Article, aid).patch_series_head_id = root_id
+        s.commit()
+
+
 def test_newer_revision_renders_the_superseded_pill(client, tmp_path):
     """Stored versions are `vN`, which SQLite casts to 0, so for a
     while no page ever showed SUPERSEDED (#677)."""
@@ -1034,6 +1055,7 @@ _RENDER_STATE_CASES = [
     ("article_files_rewrite", _prepare_article_file, _mutate_article_file),
     ("trailer_rewrite", _prepare_review_trailer, _mutate_trailer_in_place),
     ("newer_revision", _prepare_series, _mutate_series),
+    ("series_head", _prepare_two_revisions, _mutate_series_head),
 ]
 
 
@@ -1289,6 +1311,11 @@ def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, ca
     from tests.test_routes._helpers import seed_thread_shape
 
     _label, prepare, mutate = case
+    if (surface, _label) == ("thread", "series_head"):
+        # The head is spelled only in the revisions fold's diff links,
+        # which the thread view does not render; its ETag still moves
+        # (shared `render_state_tag`), checked by the matrix above.
+        pytest.skip("the thread view renders no diff link")
     seeded = seed_thread_shape(
         tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
     )

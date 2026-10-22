@@ -1,13 +1,14 @@
 """Inter-revision patch diff route.
 
-`GET /<inbox_name>/series/<series_key>/diff?from=<vN>&to=<vM>&pos=<pos>`
+`GET /<inbox_name>/series/<series_key>/diff?from=<vN>&to=<vM>&pos=<pos>[&s=<head>]`
 
 `pos` is `cover` for the cover letter or a positive integer for an
 in-series patch. Both `from` and `to` are version strings (`v1`,
-`v2`, etc.) as they appear in `Article.patch_series_version`.
+`v2`, etc.) as they appear in `Article.patch_series_version`. `s` is
+the series head id (#816), absent for a key's first series.
 
-Resolves both revisions' cover letters by `(patch_series_key,
-patch_series_version)`, walks each cover's thread children to find
+Resolves both revisions' cover letters by series (key and head) and
+`patch_series_version`, walks each cover's thread children to find
 in-series patches (`mimir.patch_revisions.resolve_series_patches`),
 matches the requested position across revisions, fetches both
 bodies via `store.read_message`, computes the unified diff, and
@@ -36,6 +37,7 @@ from mimir.patch_revisions import (
     match_revision_position,
     resolve_series_patches,
 )
+from mimir.patch_series import same_series
 from mimir.store import read_first_readable
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import (
@@ -52,16 +54,32 @@ from mimir.web.urls import (
 # invalidates everything if the RevisionDiff shape ever changes.
 REVISION_DIFF_CACHE_TTL_SEC = 86400
 
+# SQLite binds signed 64-bit integers; a larger one raises OverflowError
+# at bind time, a 500 where every other bad value gets a 404.
+_SQLITE_INT_LIMIT = 2**63
+
+
+def _positive_int_or_404(raw: str) -> int:
+    """`raw` as an integer SQLite can bind and at least 1, else 404."""
+    try:
+        value = int(raw)
+    except ValueError:
+        abort(404)
+    if not 1 <= value < _SQLITE_INT_LIMIT:
+        abort(404)
+    return value
+
 
 def _resolve_via_index(
     session,
     series_key: str,
+    head_id: int | None,
     from_version: str,
     to_version: str,
     pos: int,
 ) -> tuple[list[Article], list[Article]]:
-    """Indexed lookup for the articles at `(series_key, version,
-    pos)` for both sides. Returns `(from_candidates, to_candidates)`;
+    """Indexed lookup for the articles at `(series, version, pos)`
+    for both sides. Returns `(from_candidates, to_candidates)`;
     a side is empty when its row hasn't been backfilled yet, in which
     case the caller falls back to the heuristic resolver. A side holds
     several candidates when the same slot was sent twice (a resend);
@@ -73,7 +91,7 @@ def _resolve_via_index(
     rows = (
         session.execute(
             select(Article).where(
-                Article.patch_series_key == series_key,
+                same_series(series_key, head_id),
                 Article.patch_series_version.in_([from_version, to_version]),
                 # NULL is 0, as in the revisions fold that links here.
                 func.coalesce(Article.patch_series_position, 0) == pos,
@@ -112,15 +130,14 @@ def series_diff(inbox_name: str, series_key: str):
 
     # Parse `pos`: `cover` (or `0`) for the cover letter, positive
     # integers for in-series patches. Reject anything else.
-    if pos_raw in ("cover", "0"):
-        pos = 0
-    else:
-        try:
-            pos = int(pos_raw)
-        except ValueError:
-            abort(404)
-        if pos < 1:
-            abort(404)
+    pos = 0 if pos_raw in ("cover", "0") else _positive_int_or_404(pos_raw)
+
+    # `s`, the series head (#816): absent is the key's first series
+    # (NULL head). Present, it must be the positive id `_series_diff_url`
+    # spells; `s=0` or `s=` would serve that first series under a
+    # second spelling.
+    head_raw = request.args.get("s")
+    head_id = None if head_raw is None else _positive_int_or_404(head_raw)
 
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
@@ -137,7 +154,7 @@ def series_diff(inbox_name: str, series_key: str):
         covers = (
             session.execute(
                 select(Article).where(
-                    Article.patch_series_key == series_key,
+                    same_series(series_key, head_id),
                     Article.patch_series_version.in_([from_version, to_version]),
                     func.coalesce(Article.patch_series_position, 0) == 0,
                 )
@@ -160,7 +177,7 @@ def series_diff(inbox_name: str, series_key: str):
                 {c.patch_series_version for c in covers if c.patch_series_version}
             )
             if not available:
-                # Whole series_key is unknown. Plain 404; nothing to
+                # The series (key, and `s` head) is unknown. Plain 404; nothing to
                 # show.
                 abort(404)
             abort(
@@ -170,22 +187,35 @@ def series_diff(inbox_name: str, series_key: str):
                 ),
             )
 
-        # Cache lookup: the diff between two specific (cover, cover,
-        # position) triples is content-addressed by their identities,
-        # so the cache key is inbox-scoped per-series. The inbox stays
-        # in the key because the body read depends on it: each list
-        # archives its own copy (some append a footer), and the
-        # heuristic fallback walks thread children in the URL's inbox.
-        cache_key = (
-            f"revision_diff:{inbox.name}:{series_key}:{from_version}:{to_version}:{pos}"
-        )
-
         from_slot, to_slot = _resolve_via_index(
             session,
             series_key,
+            head_id,
             from_version,
             to_version,
             pos,
+        )
+
+        # Cache key: what the diff is computed from, not the series
+        # identity in the URL (#816), so re-chaining a key can never
+        # serve one series' diff for another. That is the two slots'
+        # article ids, or, when either is empty, the two covers the
+        # heuristic fallback walks from. The versions and position stay
+        # too, because the cached diff is labelled with them and
+        # `backfill-patch-series --reprocess` can rewrite a stored
+        # version in place under the same ids. The inbox stays because
+        # the body read depends on it: each list archives its own copy
+        # (some append a footer), and the heuristic walks thread
+        # children in the URL's inbox.
+        if from_slot and to_slot:
+            sides = ":".join(
+                ",".join(str(a.id) for a in sorted(slot, key=lambda a: a.id))
+                for slot in (from_slot, to_slot)
+            )
+        else:
+            sides = f"h{from_cover.id}:{to_cover.id}"
+        cache_key = (
+            f"revision_diff:{inbox.name}:{from_version}:{to_version}:{pos}:{sides}"
         )
 
         def _compute() -> RevisionDiff:
@@ -266,6 +296,7 @@ def series_diff(inbox_name: str, series_key: str):
             from_version,
             to_version,
             pos,
+            head_id=head_id,
             fallback_inbox=inbox.name,
             base=_site_base(),
         )

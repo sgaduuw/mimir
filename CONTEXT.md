@@ -883,9 +883,9 @@ The purge timer is already migrated (no longer a residual).
 
 ### Resumable backfills (#680)
 
-The four chunked backfills (`backfill-article-files`,
+The chunked backfills (`backfill-article-files`,
 `backfill-article-trailers`, `backfill-patch-series`,
-`admin canonicals backfill`) persist their position in
+`backfill-series-chains`, `admin canonicals backfill`) persist their position in
 `backfill_runs`, owned by `mimir/backfill_runs.py`. Before this the
 walk cursor lived only in the CLI process: each chunk returned a
 `continuation` id and the CLI sent it back. A deploy (broker restart)
@@ -979,6 +979,66 @@ that have no `In-Reply-To` but do have `References`. The raw
 
 Both CTEs cap recursion at depth 1000 to defend against pathological
 cycles in the data (real lkml threads rarely exceed ~50 deep).
+
+### Series chains (#816)
+
+`series_key` is a hash of author and cover title, so a sender who reuses
+a title ("Netfilter updates for net-next") puts years of unrelated
+postings on one key, and `newer_revision_sql` then lets an old v2
+supersede a new v1. A series is therefore `(key, head)`, and
+`mimir/patch_series_chains.py::chain_series` decides the heads: one pure
+function over a key's covers, ordered by `(date, message_id)` (never by
+article id, so the result depends on the set of covers, not on ingest
+order).
+
+- **The rule.** A cover joins the current chain when its version ranks
+  above the chain's (an RFC ranks below every non-RFC version, which is
+  not the lifecycle pill's fold of RFC to 1, #691), when it is an
+  explicit RESEND, or when it repeats the latest cover's version within
+  a day. Otherwise it still joins unless both it and the chain's last two
+  postings have in-series patch titles and fewer than
+  `SPLIT_BELOW_MATCHED_SHARE` of the smaller title list has a match
+  (word-set Jaccard 0.6). Titles are compared as word sets because a
+  resend rewords prefixes and case.
+- **No evidence is not a split.** A cover with no patch titles, or a
+  chain whose recent postings have none, joins. A wrong split hides a
+  revision from the superseded check; a wrong join only leaves today's
+  behaviour in place.
+- **The backfill walks covers, not keys.** `backfill_runs.cursor` is an
+  article id, so `backfill-series-chains` walks articles newest-first
+  and chains a cover's whole key the first time it meets it, remembering
+  the key for the rest of the chunk. The read only picks the keys with
+  heads to change (and feeds the counters); the batch sends the keys and
+  re-chains them on the writer with `rechain_keys`, so an ingest batch
+  that re-chained a key after the backfill's read is not overwritten
+  with heads planned from before it. A key chained twice writes nothing
+  the second time, because only rows whose head changes are written.
+- **Ingest re-chains in the batch.** Each ingest batch WriteOp, and each
+  replay, ends with `rechain_keys` over the keys its articles carry
+  (a cover's patches carry its key, so they count), just before the
+  cursor UPSERT. Whole keys, from the state that transaction holds: an
+  older posting arriving late takes the key's first series and moves
+  every later chain under a head, so the new rows alone are not enough.
+  Inside the transaction, not after it, so there is no window in which a
+  reader sees the new cover in the wrong series and no crash gap that a
+  later pass has to repair. `rechain_keys` is the one write path the
+  backfill, ingest and replay share. Cost, measured 2026-10-22 on a test-sized
+  database (laptop, warm cache, one key of 280 covers in 56 series): 4 ms
+  per batch at 3 patches per cover, 12 ms at 10, 49 ms at 30, for one
+  new cover on an already chained key; a key never chained writes all
+  its heads on first touch, 50 to 387 ms at the same sizes. Unmeasured
+  on production.
+- **Operator order.** `backfill-patch-series --reprocess` first (it
+  rewrites the versions the rule reads), then `backfill-series-chains`,
+  once, for the archived history. After that, ingest keeps keys
+  chained, but any later `backfill-patch-series` run needs the chain
+  backfill again, `--reprocess` or not: a plain run links orphaned
+  patches to their covers, which changes the titles the rule reads
+  without re-chaining the key. It also still writes heads from its own
+  read (on covers it rewrites and patches it links), so an ingest
+  re-chain between that read and the write can be undone; the chain
+  backfill after it repairs that too. Temporary: #824 has
+  `backfill-patch-series` re-chain the keys it writes.
 
 ### Materialised thread roots (2026-07-28)
 
@@ -2194,8 +2254,11 @@ covering the DERIVED state both surfaces render and neither an article
 id nor a thread's shape can express: landing state (with each tree's
 display label), review roll-up (the trailer values, not their count),
 subsystem attribution (rules version AND the article's touched paths,
-since the attribution is the product of both), and
-revision/supersedance. It is shared precisely so the two surfaces
+since the attribution is the product of both),
+revision/supersedance, and the series identity (key and head, #816),
+which the revisions fold spells into its diff links as `s=`, so a
+re-chained series moves the tag even when its revision rows do not. It
+is shared precisely so the two surfaces
 cannot drift apart again: the thread view had per-input coverage while
 the message page had no state input at all, so a patch landing, a
 MAINTAINERS reparse, a new trailer or a v2 posting pinned it until an
@@ -2259,11 +2322,12 @@ The guard that catches the class is
 `test_body_under_new_etag_matches_a_cold_render`: it primes the caches
 with an ordinary request instead of clearing them, which is the only way
 to see a cache the validator cannot, and it asserts the change is
-visible in the body so a case cannot pass by construction. Two matrix
-cases (`maintainers_reparse`, `article_files_rewrite`) are left out of
-it because the fixture page does not render them, so those inputs have
-validator coverage but no warm-versus-cold coverage until #678. Known
-exceptions: time-relative output (the activity chip ages within the TTL;
+visible in the body so a case cannot pass by construction. It runs
+every matrix case on both surfaces except one pairing: `series_head` on
+the thread view, which renders no revisions fold, so the head (spelled
+only in the fold's diff links) cannot reach its body; that ETag still
+moves through the shared `render_state_tag`, which the validator matrix
+checks. Known exceptions: time-relative output (the activity chip ages within the TTL;
 no validator can carry `now()`), and the related-patches and
 related-discussions lists, which are cached by id and are not validator
 inputs at all, by the same choice as before 3.13.0.

@@ -203,6 +203,7 @@ def _series_diff_url(
     to_version: str,
     pos: int | None,
     *,
+    head_id: int | None,
     fallback_inbox: str,
     base: str = "",
 ) -> str:
@@ -219,6 +220,10 @@ def _series_diff_url(
     from the panel and the route must agree. `fallback_inbox` covers an
     empty slot (a position still awaiting backfill). `pos` of None or 0
     is the cover letter and is spelled `cover`.
+
+    `head_id` is the series head (#816), spelled `s=` and omitted when
+    NULL, so a link to a key's first series is the same bytes it was
+    before heads existed. Required, so no caller can drop it.
     """
     inbox_name = None
     if to_slot:
@@ -226,13 +231,14 @@ def _series_diff_url(
         inbox_name = _canonical_inbox_name(
             art, [(al.inbox_id, al.inbox.name) for al in art.lists]
         )
-    query = urlencode(
-        {
-            "from": from_version,
-            "to": to_version,
-            "pos": "cover" if pos in (None, 0) else str(pos),
-        }
-    )
+    params = {
+        "from": from_version,
+        "to": to_version,
+        "pos": "cover" if pos in (None, 0) else str(pos),
+    }
+    if head_id is not None:
+        params["s"] = str(head_id)
+    query = urlencode(params)
     return f"{base}/{inbox_name or fallback_inbox}/series/{series_key}/diff?{query}"
 
 

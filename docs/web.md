@@ -61,7 +61,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/<YYYY>/<MM>/<root-id>/t/<page>` | Subsequent thread page |
 | `/<inbox>/<YYYY>/<MM>/<id>/attachment/<n>` | Download attachment |
 | `/<inbox>/<YYYY>/<MM>/<id>/attachment/<n>/preview` | Preview attachment |
-| `/<inbox>/series/<key>/diff?from=<vN>&to=<vM>&pos=<N>` | Compare a patch position across revisions; `pos=cover` compares cover letters |
+| `/<inbox>/series/<key>/diff?from=<vN>&to=<vM>&pos=<N>[&s=<head>]` | Compare a patch position across revisions; `pos=cover` compares cover letters; `s` names a series split off its key (unrelated postings under one cover title), absent for the key's first series |
 | `/<inbox>/subsystem/` | Active subsystem index |
 | `/<inbox>/subsystem/<name>/` | Subsystem dashboard |
 | `/maintainers/<address>` | Cross-inbox maintainer profile |

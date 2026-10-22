@@ -27,42 +27,14 @@ from mimir.cli._common import (
     _configure_logging,
     _echo_run_summary,
     _verbose_broker_hint,
+    backfill_options,
 )
 
 
 @click.command("backfill-article-files")
-@click.option(
-    "--limit",
-    type=int,
-    default=None,
-    help="Cap the number of articles examined this session.",
-)
-@click.option(
-    "--reprocess",
-    is_flag=True,
-    help="Re-extract for articles that already have rows (deletes "
+@backfill_options(
+    reprocess_help="Re-extract for articles that already have rows (deletes "
     "existing rows first). Use after an extractor change.",
-)
-@click.option(
-    "--restart",
-    is_flag=True,
-    help="Discard an unfinished run of this backfill and start again "
-    "from the newest article. A run that has examined articles is "
-    "kept unless --yes is also given. Without --restart, an "
-    "interrupted run resumes.",
-)
-@click.option(
-    "--yes",
-    is_flag=True,
-    help="With --restart, discard an unfinished run that has progress "
-    "instead of refusing.",
-)
-@click.option(
-    "-v",
-    "--verbose",
-    count=True,
-    help="-v: progress hint (broker mode logs to the broker process; "
-    "use `podman logs -f mimir-broker` to follow).",
 )
 def backfill_article_files_command(
     limit: int | None,
@@ -82,9 +54,9 @@ def backfill_article_files_command(
     client = get_broker_client()
     try:
         result, run = _broker_backfill_loop(
-            lambda **kw: client.backfill(
-                BackfillArticleFilesRequest(**kw), BackfillResult
-            ),
+            client,
+            BackfillArticleFilesRequest,
+            BackfillResult,
             limit=limit,
             reprocess=reprocess,
             restart=restart,
@@ -101,38 +73,9 @@ def backfill_article_files_command(
 
 
 @click.command("backfill-article-trailers")
-@click.option(
-    "--limit",
-    type=int,
-    default=None,
-    help="Cap the number of articles examined this session.",
-)
-@click.option(
-    "--reprocess",
-    is_flag=True,
-    help="Re-extract for articles that already have rows (deletes "
+@backfill_options(
+    reprocess_help="Re-extract for articles that already have rows (deletes "
     "existing rows first). Use after an extractor change.",
-)
-@click.option(
-    "--restart",
-    is_flag=True,
-    help="Discard an unfinished run of this backfill and start again "
-    "from the newest article. A run that has examined articles is "
-    "kept unless --yes is also given. Without --restart, an "
-    "interrupted run resumes.",
-)
-@click.option(
-    "--yes",
-    is_flag=True,
-    help="With --restart, discard an unfinished run that has progress "
-    "instead of refusing.",
-)
-@click.option(
-    "-v",
-    "--verbose",
-    count=True,
-    help="-v: progress hint (broker mode logs to the broker process; "
-    "use `podman logs -f mimir-broker` to follow).",
 )
 def backfill_article_trailers_command(
     limit: int | None,
@@ -152,9 +95,9 @@ def backfill_article_trailers_command(
     client = get_broker_client()
     try:
         result, run = _broker_backfill_loop(
-            lambda **kw: client.backfill(
-                BackfillArticleTrailersRequest(**kw), BackfillResult
-            ),
+            client,
+            BackfillArticleTrailersRequest,
+            BackfillResult,
             limit=limit,
             reprocess=reprocess,
             restart=restart,
@@ -171,38 +114,10 @@ def backfill_article_trailers_command(
 
 
 @click.command("backfill-patch-series")
-@click.option(
-    "--limit",
-    type=int,
-    default=None,
-    help="Cap the number of articles examined this session.",
-)
-@click.option(
-    "--reprocess",
-    is_flag=True,
-    help="Re-detect for articles whose key is already set (clears "
-    "stale rows that no longer parse as cover letters).",
-)
-@click.option(
-    "--restart",
-    is_flag=True,
-    help="Discard an unfinished run of this backfill and start again "
-    "from the newest article. A run that has examined articles is "
-    "kept unless --yes is also given. Without --restart, an "
-    "interrupted run resumes.",
-)
-@click.option(
-    "--yes",
-    is_flag=True,
-    help="With --restart, discard an unfinished run that has progress "
-    "instead of refusing.",
-)
-@click.option(
-    "-v",
-    "--verbose",
-    count=True,
-    help="-v: progress hint (broker mode logs to the broker process; "
-    "use `podman logs -f mimir-broker` to follow).",
+@backfill_options(
+    reprocess_help="Re-detect for articles whose key is already set (clears "
+    "stale rows that no longer parse as cover letters, and rewrites stored "
+    "versions after a parser change). Follow it with backfill-series-chains.",
 )
 def backfill_patch_series_command(
     limit: int | None,
@@ -223,9 +138,9 @@ def backfill_patch_series_command(
     client = get_broker_client()
     try:
         result, run = _broker_backfill_loop(
-            lambda **kw: client.backfill(
-                BackfillPatchSeriesRequest(**kw), BackfillResult
-            ),
+            client,
+            BackfillPatchSeriesRequest,
+            BackfillResult,
             limit=limit,
             reprocess=reprocess,
             restart=restart,
@@ -240,6 +155,48 @@ def backfill_patch_series_command(
         f"in_series_orphan={result.in_series_orphan} "
         f"not_cover={result.not_cover} skipped={result.skipped} "
         f"subjects_unfolded={result.subjects_unfolded}"
+    )
+    _echo_run_summary(run)
+
+
+@click.command("backfill-series-chains")
+@backfill_options(
+    reprocess_help="No effect: every run chains whole keys afresh and writes "
+    "only the heads that change.",
+)
+def backfill_series_chains_command(
+    limit: int | None,
+    reprocess: bool,
+    restart: bool,
+    yes: bool,
+    verbose: int,
+) -> None:
+    """One-shot walker that splits keys holding unrelated postings under
+    one cover title, by writing `patch_series_head_id`. Run it after any
+    `backfill-patch-series` run (until #824)."""
+    _configure_logging(verbose)
+    _verbose_broker_hint(verbose)
+    from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import BackfillSeriesChainsRequest
+    from mimir.patch_series_chains import BackfillResult
+
+    client = get_broker_client()
+    try:
+        result, run = _broker_backfill_loop(
+            client,
+            BackfillSeriesChainsRequest,
+            BackfillResult,
+            limit=limit,
+            reprocess=reprocess,
+            restart=restart,
+            yes=yes,
+        )
+    except BrokerUnavailable as exc:
+        raise click.ClickException(f"broker backfill_series_chains failed: {exc}")
+    click.echo(
+        f"this session: examined={result.examined} "
+        f"keys_chained={result.keys_chained} keys_split={result.keys_split} "
+        f"heads_planned={result.heads_planned} skipped={result.skipped}"
     )
     _echo_run_summary(run)
 

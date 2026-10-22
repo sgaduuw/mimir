@@ -87,9 +87,12 @@ class _ArticleTrailersPending:
 class _PatchSeriesPending:
     """Per-article pending writes for `backfill_patch_series`.
 
-    All three columns are nullable; the WriteOp closure issues
+    All four columns are nullable; the WriteOp closure issues
     `UPDATE articles SET patch_series_key=?, patch_series_version=?,
-    patch_series_position=? WHERE id=?` with the carried values. The
+    patch_series_position=?, patch_series_head_id=? WHERE id=?` with the
+    carried values. The head has no default, because the UPDATE always
+    writes it: a payload that forgot it would merge a split-off series
+    back into its key's first one (#816). The
     UPDATE always fires (even for the "skipped"/"not_cover" buckets
     where the values may match what's already in the DB), keeping
     the closure trivially uniform.
@@ -99,9 +102,20 @@ class _PatchSeriesPending:
     patch_series_key: str | None
     patch_series_version: str | None
     patch_series_position: int | None
+    patch_series_head_id: int | None
     # The unfolded subject, when the stored one was folded (#710);
     # None leaves the subject untouched.
     subject: str | None = None
+
+
+@dataclass
+class _SeriesKeyPending:
+    """A key `backfill_series_chains` (#816) found heads to change on.
+    The key travels, not the heads: the batch re-chains it on the
+    writer, so an ingest batch that re-chained it after the read is not
+    overwritten with heads from before."""
+
+    key: str
 
 
 @dataclass
@@ -215,7 +229,8 @@ def _submit_patch_series_batch(
     """Compose the per-batch composite WriteOp for `backfill_patch_series`.
 
     The closure issues N `UPDATE articles SET patch_series_key=?,
-    patch_series_version=?, patch_series_position=? WHERE id=?` in
+    patch_series_version=?, patch_series_position=?,
+    patch_series_head_id=? WHERE id=?` in
     payload order. Order never matters here (one distinct `article_id`
     per payload, one transaction), and no caller sorts, so the
     "caller is responsible for sorting" contract this used to state was
@@ -248,6 +263,7 @@ def _submit_patch_series_batch(
                     patch_series_key=p.patch_series_key,
                     patch_series_version=p.patch_series_version,
                     patch_series_position=p.patch_series_position,
+                    patch_series_head_id=p.patch_series_head_id,
                     **({"subject": p.subject} if p.subject is not None else {}),
                 )
             )
@@ -256,6 +272,28 @@ def _submit_patch_series_batch(
             after(conn)
 
     return writer.submit(WriteOp(label="backfill:patch_series:batch", fn=_fn))
+
+
+def _submit_series_heads_batch(
+    writer, payloads: list[_SeriesKeyPending], after: After | None = None
+) -> WriteFuture:
+    """Compose the per-batch composite WriteOp for
+    `backfill_series_chains`: re-chain the payloads' keys from the state
+    the writer holds (`rechain_keys`, as an ingest batch does), then
+    `after`."""
+    if not payloads and after is None:
+        f: Future = Future()
+        f.set_result(None)
+        return f
+
+    from mimir.patch_series_chains import rechain_keys
+
+    def _fn(conn):
+        rechain_keys(conn, {p.key for p in payloads})
+        if after is not None:
+            after(conn)
+
+    return writer.submit(WriteOp(label="backfill:series_chains:batch", fn=_fn))
 
 
 def _submit_canonical_batch(

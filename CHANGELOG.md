@@ -11,6 +11,46 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.25.0] - 2026-10-22
+
+### Added
+
+- Patch series that one sender posted under the same cover title are now
+  told apart (#816). Before, every posting with that title, such as a
+  recurring pull request, counted as one series, so a new posting could be
+  marked superseded by an old, unrelated v2 and drop out of triage.
+  Articles gain a nullable `patch_series_head_id` column (the migration only
+  adds the column, so it is quick on a full archive), and a series diff link
+  for a series split off its title takes an `s=<id>` parameter; existing
+  links stay the same. Rolling back to 3.24.0 needs `alembic downgrade
+  9b2878b4f911`, run from this image before the older image starts (the
+  older broker does not know the new revision and refuses to start). The
+  downgrade drops the column, which rewrites the `articles` table; its time
+  on a full archive is unmeasured.
+- `backfill-series-chains` chains the archived history into series, and is
+  resumable like the other backfills. Ingest and `admin failures replay`
+  chain new postings as they land, re-chaining the whole title a batch
+  touches in the same transaction. After deploying, run
+  `backfill-patch-series --reprocess` (it picks up the `PATCHv2` fix), then
+  `backfill-series-chains`. Run `backfill-series-chains` again after any
+  later `backfill-patch-series` run, with or without `--reprocess`: linking
+  orphaned patches changes their covers' patch titles without re-chaining
+  the title (until #824). Until both backfills have run, ingest chains the
+  titles it touches from versions stored before the `PATCHv2` fix, and the
+  merge window keeps its old grouping until linux-next's next walk.
+
+### Fixed
+
+- Cover letters written `[PATCHv2 ...]` are read as version 2 (#816).
+  Patches and covers headed `[PATCHv2 ...]` behind another bracket or tag are
+  now found too. Stored versions change only when
+  `backfill-patch-series --reprocess` is run.
+- Subsystem triage lists on large patch archives load faster: the
+  newer-revision check runs on the page being listed, not on every candidate
+  (#785).
+- Related discussions on very large lists walk by date, so the lkml query no
+  longer reads the whole list on every render (#785).
+
 ## [3.24.0] - 2026-10-21
 
 ### Changed

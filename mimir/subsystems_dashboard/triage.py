@@ -1,8 +1,9 @@
 """Per-subsystem triage queues: "needs attention" + "quiet for 30+
 days." Sibling of `reads.py`, separate file because the queries are
 structurally different (NOT EXISTS predicates against article_trailers
-+ mainline_commits + same-series later versions) and the maintainer-
-pickup exclusion is a triage-only concern.
++ mainline_commits; the same-series later-version test runs per page,
+not in the SQL) and the maintainer-pickup exclusion is a triage-only
+concern.
 
 Both helpers ORDER BY `articles.date ASC` so the oldest concerning
 entries surface first, walking either `ix_articles_date` (big inboxes)
@@ -37,6 +38,8 @@ from mimir.models import (
 from mimir.patch_series import (
     newer_revision_sql,
     representative_key,
+    series_head,
+    series_head_sql,
     version_number_sql,
 )
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
@@ -123,6 +126,24 @@ def _filter_maintainer_acked(
     return set(rows)
 
 
+def _filter_superseded(session: Session, article_ids: list[int]) -> set[int]:
+    """Return the subset of `article_ids` that have a later revision
+    (`newer_revision_sql`, the lifecycle pill's rule). One batched
+    query over the page, not a per-candidate test inside the
+    candidate SELECT."""
+    if not article_ids:
+        return set()
+    stmt = text(
+        f"""SELECT a.id FROM articles a
+        WHERE a.id IN :ids
+          AND EXISTS (
+              SELECT 1 FROM articles later
+              WHERE {newer_revision_sql("a", "later")}
+          )"""
+    ).bindparams(bindparam("ids", expanding=True))
+    return set(session.execute(stmt, {"ids": article_ids}).scalars())
+
+
 def _trailer_summary(
     session: Session,
     article_ids: list[int],
@@ -159,12 +180,20 @@ def _trailer_summary(
     return out
 
 
-def _page_size(limit: int) -> int:
+# Ceiling for the doubling page in `_run_triage`.
+MAX_PAGE = 2000
+# First page of an inbox-first walk: it costs the inbox scan plus the
+# sort whatever its size, so a small page only buys more round trips.
+INBOX_FIRST_PAGE = 200
+
+
+def _page_size(limit: int, *, inbox_first: bool = False) -> int:
     """Candidates fetched per round trip. Over 2x the list size, so
     the maintainer-Ack drop and the per-series fold (#686) usually
     fill the list from one page; `_run_triage` fetches more pages
     when they do not."""
-    return max(limit * 2, limit + 5)
+    page = max(limit * 2, limit + 5)
+    return max(page, INBOX_FIRST_PAGE) if inbox_first else page
 
 
 def _triage_sql(
@@ -179,6 +208,10 @@ def _triage_sql(
     primary key, so a small list does not pay for the whole archive's
     window. Both end in `ORDER BY a.date, a.id` with the same keyset
     bind; the inbox-first sort covers only rows that survive the WHERE.
+    The superseded test is not here: it walks the candidate's whole
+    series key, and a stable-review posting holds thousands of rows, so
+    in the WHERE it ran on every survivor before the LIMIT (#785). It
+    runs on the fetched page instead, `_filter_superseded`.
     """
     if inbox_first:
         source = (
@@ -197,6 +230,7 @@ def _triage_sql(
         SELECT a.id AS article_id, a.message_id, a.subject,
                a.author, a.date AS art_date,
                a.patch_series_key, a.patch_series_version,
+               {series_head_sql("a")} AS series_head,
                {version_number_sql("a.patch_series_version")} AS series_rev
         FROM {source}
         WHERE a.date BETWEEN :min_date AND :cutoff_date
@@ -204,10 +238,6 @@ def _triage_sql(
           AND {in_inbox}
           AND {path_predicate}
           {engagement_predicates}
-          AND NOT EXISTS (
-              SELECT 1 FROM articles later
-              WHERE {newer_revision_sql("a", "later")}
-          )
         ORDER BY a.date ASC, a.id ASC
         LIMIT :page
     """
@@ -221,8 +251,8 @@ def _candidate_query_needs_attention(
     *,
     inbox_first: bool = False,
 ) -> tuple[str, dict] | None:
-    """SQL for needs-attention candidates (before the maintainer-Ack
-    post-filter). Returns `(sql, params)` or `None` when the
+    """SQL for needs-attention candidates (before the superseded and
+    maintainer-Ack post-filters). Returns `(sql, params)` or `None` when the
     subsystem has no matchable paths.
 
     Shape: `_triage_sql`, date-first by default or inbox-first for a
@@ -260,7 +290,7 @@ def _candidate_query_needs_attention(
         - timedelta(
             days=settings.subsystem_triage_max_age_days,
         ),
-        "page": _page_size(limit),
+        "page": _page_size(limit, inbox_first=inbox_first),
         "after_id": 0,
         **review_roles,
         **path_params,
@@ -277,7 +307,7 @@ def _candidate_query_quiet(
 ) -> tuple[str, dict] | None:
     """SQL for the quiet list. Patches with no engagement: no
     trailers AND no replies, and no newer revision (the pill's
-    superseded rule, #688). Returns `(sql, params)` or `None`.
+    superseded rule, #688, applied per page by `_run_triage`). Returns `(sql, params)` or `None`.
     Same `_triage_sql` shapes as `_candidate_query_needs_attention`."""
     path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="qt")
     if path_filter is None:
@@ -302,7 +332,7 @@ def _candidate_query_quiet(
         - timedelta(
             days=settings.subsystem_triage_max_age_days,
         ),
-        "page": _page_size(limit),
+        "page": _page_size(limit, inbox_first=inbox_first),
         "after_id": 0,
         **path_params,
     }
@@ -331,10 +361,10 @@ def _run_triage(
     include_trailer_summary: bool,
 ) -> list[PatchAttention]:
     """Shared post-processing across the two triage queries: run
-    the candidate SELECT a page at a time, optionally drop
-    maintainer-Acked rows, optionally annotate with trailer summary,
-    and fold every patch of one posting (series key and revision
-    number, so an unversioned `resend` or `rfc` joins `v1`) into one
+    the candidate SELECT a page at a time, drop superseded rows (a
+    newer revision exists), optionally drop maintainer-Acked rows, optionally annotate with trailer summary,
+    and fold every patch of one posting (series, meaning key and head
+    (#816), and revision number, so an unversioned `resend` or `rfc` joins `v1`) into one
     row, the `representative_key` winner: a stored `vN` over `rfc` and
     `resend`, then the oldest (#686, #691), until `limit` rows are built
     or the candidates run out."""
@@ -346,13 +376,13 @@ def _run_triage(
     sql, params = built
     out: list[PatchAttention] = []
     # Per folded posting: the listed row, its rank and its stored version.
-    by_series: dict[tuple[str, int | None], tuple[tuple, PatchAttention, str]] = {}
+    by_series: dict[tuple[str, int, int | None], tuple[tuple, PatchAttention, str]] = {}
     while True:
         rows = session.execute(_triage_stmt(sql), params).all()
         candidate_ids = [r.article_id for r in rows]
-        drop_ids: set[int] = set()
+        drop_ids = _filter_superseded(session, candidate_ids)
         if drop_maintainer_acked:
-            drop_ids = _filter_maintainer_acked(session, candidate_ids)
+            drop_ids |= _filter_maintainer_acked(session, candidate_ids)
         summaries: dict[int, str] = {}
         if include_trailer_summary:
             kept_ids = [aid for aid in candidate_ids if aid not in drop_ids]
@@ -360,7 +390,11 @@ def _run_triage(
         for r in rows:
             if r.article_id in drop_ids:
                 continue
-            series = (r.patch_series_key, r.series_rev) if r.patch_series_key else None
+            series = (
+                (r.patch_series_key, r.series_head, r.series_rev)
+                if r.patch_series_key
+                else None
+            )
             rank = representative_key(
                 r.patch_series_version, coerce_dt(r.art_date), r.article_id
             )
@@ -387,32 +421,36 @@ def _run_triage(
         if len(out) >= limit or len(rows) < params["page"]:
             break
         # Keyset, not OFFSET: the next page starts in the date index
-        # where this one ended, so k pages cost k walks, not k^2/2.
+        # where this one ended, so k pages cost k walks, not k^2/2. The
+        # page doubles: superseded rows take slots, and an inbox-first
+        # page re-reads the inbox, so a dense run must not cost a round
+        # trip per 20 rows.
         params = {
             **params,
+            "page": min(params["page"] * 2, MAX_PAGE),
             "min_date": coerce_dt(rows[-1].art_date),
             "after_id": rows[-1].article_id,
         }
     # Counted, not tallied while paging: the list can fill before a
     # posting's later patches are fetched. Every other patch of the
-    # listed row's own posting (key and stored version, so "+N more"
+    # listed row's own posting (series and stored version, so "+N more"
     # matches the row clicked) counts, listed or not. Positions, not
     # rows: the cover (position 0) is not a patch, and a `RESEND` of the
     # same version stores every patch twice.
     if by_series:
-        own = {(s[0], v): row for s, (_, row, v) in by_series.items()}
-        posting = tuple_(Article.patch_series_key, Article.patch_series_version)
+        own = {(s[0], s[1], v): row for s, (_, row, v) in by_series.items()}
+        posting = (
+            Article.patch_series_key,
+            series_head(),
+            Article.patch_series_version,
+        )
         counts = session.execute(
-            select(
-                Article.patch_series_key,
-                Article.patch_series_version,
-                func.count(Article.patch_series_position.distinct()),
-            )
-            .where(posting.in_(list(own)), Article.patch_series_position > 0)
-            .group_by(Article.patch_series_key, Article.patch_series_version)
+            select(*posting, func.count(Article.patch_series_position.distinct()))
+            .where(tuple_(*posting).in_(list(own)), Article.patch_series_position > 0)
+            .group_by(*posting)
         ).all()
-        for key, version, n in counts:
-            own[(key, version)].series_more = max(n - 1, 0)
+        for key, head, version, n in counts:
+            own[(key, head, version)].series_more = max(n - 1, 0)
     return out
 
 

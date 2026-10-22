@@ -55,6 +55,7 @@ from mimir.cli.backfill import (
     backfill_article_files_command,
     backfill_article_trailers_command,
     backfill_patch_series_command,
+    backfill_series_chains_command,
     backfill_thread_roots_command,
 )
 from mimir.cli.bootstrap import bootstrap_inboxes_command
@@ -108,6 +109,7 @@ __all__ = [
     "backfill_article_files_command",
     "backfill_article_trailers_command",
     "backfill_patch_series_command",
+    "backfill_series_chains_command",
     "bootstrap_inboxes_command",
     "broker_command",
     "broker_ping_command",
@@ -139,6 +141,7 @@ def register_cli(app: Flask) -> None:
     app.cli.add_command(backfill_article_files_command)
     app.cli.add_command(backfill_article_trailers_command)
     app.cli.add_command(backfill_patch_series_command)
+    app.cli.add_command(backfill_series_chains_command)
     app.cli.add_command(backfill_thread_roots_command)
     app.cli.add_command(warm_cache_command)
     app.cli.add_command(vacuum_command)

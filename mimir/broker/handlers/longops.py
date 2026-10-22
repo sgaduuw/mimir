@@ -35,6 +35,7 @@ from mimir.broker.protocol import (
     BackfillArticleTrailersRequest,
     BackfillCanonicalsRequest,
     BackfillPatchSeriesRequest,
+    BackfillSeriesChainsRequest,
     BootstrapInboxesRequest,
     IngestInboxRequest,
     ReindexRequest,
@@ -157,23 +158,25 @@ def _run_backfill_chunk(req, name: str, backfill, **params) -> Reply:
         name, backfill_runs.params_key(**params), start=req.start
     )
     run = resolved.run
+    # Busy and refused both stop a first chunk with nothing run or
+    # changed; the flag tells the CLI which message to give.
     if resolved.busy is not None:
-        info = {
-            **_run_info(resolved.busy, resolved.busy),
-            "busy": True,
-            "retry_after": resolved.retry_after,
-        }
+        held = resolved.busy
+        flag = {"busy": True, "retry_after": resolved.retry_after}
+    elif resolved.refused is not None:
+        held = resolved.refused
+        flag = {"refused": True}
+    else:
+        held = None
+    if held is not None:
         return Reply(
             rpc_id=req.rpc_id,
             ok=True,
-            result={"counters": {}, "partial": False, "run": info},
-        )
-    if resolved.refused is not None:
-        info = {**_run_info(resolved.refused, resolved.refused), "refused": True}
-        return Reply(
-            rpc_id=req.rpc_id,
-            ok=True,
-            result={"counters": {}, "partial": False, "run": info},
+            result={
+                "counters": {},
+                "partial": False,
+                "run": {**_run_info(held, held), **flag},
+            },
         )
     discarded = None
     if resolved.discarded is not None:
@@ -257,6 +260,21 @@ def handle_backfill_patch_series(req: BackfillPatchSeriesRequest) -> Reply:
 
     return _run_backfill_chunk(
         req, "backfill_patch_series", backfill_patch_series, reprocess=req.reprocess
+    )
+
+
+def handle_backfill_series_chains(req: BackfillSeriesChainsRequest) -> Reply:
+    """Chunked backfill of `patch_series_head_id` (#816): splits keys
+    that hold unrelated postings under one cover title. `reprocess` is
+    pinned to False rather than read from the request: it changes
+    nothing here, and taken from the request it would make
+    `--reprocess` key a second run instead of resuming the first. False
+    keeps the key of a run started without it. The request keeps the
+    field for the CLI shape the backfills share."""
+    from mimir.patch_series_chains import backfill_series_chains
+
+    return _run_backfill_chunk(
+        req, "backfill_series_chains", backfill_series_chains, reprocess=False
     )
 
 
