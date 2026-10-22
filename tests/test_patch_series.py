@@ -1,5 +1,6 @@
 """Unit tests for `mimir.patch_series`. Detection + key stability."""
 
+from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import (
     CoverLetter,
     parse_cover_letter,
@@ -22,6 +23,55 @@ def test_recognises_versioned_cover_letter():
 def test_recognises_rfc_cover_letter():
     out = parse_cover_letter("[PATCH RFC 0/3] explore foo redesign")
     assert out == CoverLetter(version="rfc", total=3, title="explore foo redesign")
+
+
+def test_recognises_version_glued_to_patch():
+    """`[PATCHv2 0/9]` has no word boundary between PATCH and v2; it is
+    still v2 (#816)."""
+    out = parse_cover_letter("[PATCHv2 0/9] improve foo handling")
+    assert out == CoverLetter(version="v2", total=9, title="improve foo handling")
+
+
+def test_glued_version_keeps_other_markers_and_subsystem():
+    for subject, version in [
+        ("[PATCHv3 RESEND 0/3] foo", "v3"),
+        ("[PATCHv2 net-next 0/3] foo", "v2"),
+        ("[patchv12 0/3] foo", "v12"),
+    ]:
+        out = parse_cover_letter(subject)
+        assert out is not None and out.version == version, subject
+
+
+def test_glued_version_with_leading_bracket_or_tag():
+    """`PATCHv2` is a PATCH token too, so the bracket is still found
+    behind another bracket or among other words (#816)."""
+    for subject in [
+        "[U-Boot] [PATCHv2 0/3] foo",
+        "[RFC] [PATCHv2 0/3] foo",
+        "[PATCHv2 net:x 0/3] foo",
+        "[RFC PATCHv2 0/3] foo",
+    ]:
+        out = parse_cover_letter(subject)
+        assert out is not None and out.version == "v2", subject
+
+
+def test_glued_version_in_series_patch_is_detected():
+    out = parse_in_series_patch_subject("[U-Boot] [PATCHv2 1/3] foo: add bar")
+    assert out is not None and out.position == 1
+
+
+def test_v_inside_another_word_is_not_a_version():
+    """Only `PATCH` may sit directly before `v\\d+`; a `v2` buried in
+    another token stays v1."""
+    for subject in [
+        "[PATCH nv2 0/3] foo",
+        "[PATCH drv2 0/3] foo",
+        "[PATCH foov2bar 0/3] foo",
+        "[PATCHRFC 0/3] foo",
+        "[PATCHvx 0/3] foo",
+    ]:
+        out = parse_cover_letter(subject)
+        assert out is not None and out.version == "v1", subject
 
 
 def test_explicit_version_wins_over_resend():
