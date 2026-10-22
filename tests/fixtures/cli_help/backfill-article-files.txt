@@ -1,0 +1,18 @@
+Usage: backfill-article-files [OPTIONS]
+
+  One-shot walker that fills `article_files` for articles ingested before the
+  extractor landed.
+
+Options:
+  --limit INTEGER  Cap the number of articles examined this session.
+  --reprocess      Re-extract for articles that already have rows (deletes
+                   existing rows first). Use after an extractor change.
+  --restart        Discard an unfinished run of this backfill and start again
+                   from the newest article. A run that has examined articles is
+                   kept unless --yes is also given. Without --restart, an
+                   interrupted run resumes.
+  --yes            With --restart, discard an unfinished run that has progress
+                   instead of refusing.
+  -v, --verbose    -v: progress hint (broker mode logs to the broker process;
+                   use `podman logs -f mimir-broker` to follow).
+  --help           Show this message and exit.

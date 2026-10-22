@@ -17,6 +17,7 @@ from mimir.cli._common import (
     _configure_logging,
     _echo_run_summary,
     _verbose_broker_hint,
+    backfill_options,
 )
 from mimir.cli.admin import admin_group
 
@@ -43,39 +44,10 @@ def admin_canonicals_group() -> None:
     default=None,
     help="Restrict to articles linked to this inbox.",
 )
-@click.option(
-    "--limit",
-    type=int,
-    default=None,
-    help="Cap the number of articles examined this session.",
-)
-@click.option(
-    "--reprocess",
-    is_flag=True,
-    help="Re-examine articles whose canonical_inbox_id is already set "
+@backfill_options(
+    reprocess_help="Re-examine articles whose canonical_inbox_id is already set "
     "(use with --restart after editing list_address, or to clean up "
     "the early-pass bootstrap region).",
-)
-@click.option(
-    "--restart",
-    is_flag=True,
-    help="Discard an unfinished run of this backfill and start again "
-    "from the newest article. A run that has examined articles is "
-    "kept unless --yes is also given. Without --restart, an "
-    "interrupted run resumes.",
-)
-@click.option(
-    "--yes",
-    is_flag=True,
-    help="With --restart, discard an unfinished run that has progress "
-    "instead of refusing.",
-)
-@click.option(
-    "-v",
-    "--verbose",
-    count=True,
-    help="-v: progress hint (broker mode logs to the broker process; "
-    "use `podman logs -f mimir-broker` to follow).",
 )
 def admin_canonicals_backfill_command(
     inbox_filter: str | None,
@@ -97,9 +69,9 @@ def admin_canonicals_backfill_command(
     client = get_broker_client()
     try:
         result, run = _broker_backfill_loop(
-            lambda **kw: client.backfill(
-                BackfillCanonicalsRequest(**kw), BackfillResult
-            ),
+            client,
+            BackfillCanonicalsRequest,
+            BackfillResult,
             limit=limit,
             reprocess=reprocess,
             restart=restart,

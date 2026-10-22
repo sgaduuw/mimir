@@ -397,6 +397,108 @@ def test_ingest_inseries_with_inreplyto_links_to_cover(
     assert patch.patch_series_version == cover.patch_series_version
 
 
+def _patch_reply(msgid, parent):
+    return (
+        _rfc5322(msgid, body=b"x")
+        .replace(b"Subject: t\r\n", b"Subject: [PATCH 1/2] thread title: one\r\n")
+        .replace(
+            b"From: a@b.example\r\n",
+            b"From: a@b.example\r\nIn-Reply-To: <" + parent.encode() + b">\r\n",
+        )
+    )
+
+
+def test_ingest_inseries_inherits_the_cover_series_head(
+    seeded_db, tmp_path, broker_active
+):
+    """#816: a patch arriving after its cover, in a later batch, lands
+    under its cover's head (copied at link time, and kept by the batch's
+    re-chain), or a split-off series would orphan its patches. The key
+    holds a v2 and then an unrelated v1 with disjoint patch titles, so
+    the v1 is a real split-off; a hand-set head would not survive the
+    re-chain."""
+
+    def msg(mid, subject, parent=None):
+        raw = _rfc5322(mid, body=b"x", in_reply_to=parent)
+        return raw.replace(b"Subject: t\r\n", f"Subject: {subject}\r\n".encode())
+
+    alpha = _alpha(seeded_db)
+    _build_pubinbox_repo(
+        tmp_path / "0.git",
+        [
+            msg("old@example.com", "[PATCH v2 0/1] thread title"),
+            msg(
+                "old-p1@example.com",
+                "[PATCH v2 1/1] net: fix the frobnicator",
+                "old@example.com",
+            ),
+            msg("hcover@example.com", "[PATCH 0/2] thread title"),
+            msg(
+                "hcover-p1@example.com",
+                "[PATCH 1/2] drm: rework the scheduler",
+                "hcover@example.com",
+            ),
+        ],
+    )
+    _build_pubinbox_repo(
+        tmp_path / "1.git",
+        [
+            msg(
+                "hpatch@example.com",
+                "[PATCH 2/2] drm: drop the lock",
+                "hcover@example.com",
+            )
+        ],
+    )
+    with seeded_db() as s:
+        ingest_epoch(s, alpha, "0.git", tmp_path / "0.git", workers=1)
+        cover = s.execute(
+            select(Article).where(Article.message_id == "hcover@example.com")
+        ).scalar_one()
+        assert cover.patch_series_head_id == cover.id  # precondition: split off
+        ingest_epoch(s, alpha, "1.git", tmp_path / "1.git", workers=1)
+        patch = s.execute(
+            select(Article).where(Article.message_id == "hpatch@example.com")
+        ).scalar_one()
+    assert patch.patch_series_key is not None  # precondition: linked
+    assert patch.patch_series_head_id == cover.id
+
+
+def test_inseries_inherits_the_head_of_a_cover_in_the_same_batch(seeded_db):
+    """The same-batch path: the cover is still a pending insert, so the
+    patch reads key, version and head from it, not from SQL."""
+    from mimir.ingest._pending import _ArticleInsert
+    from mimir.ingest.epoch import _to_article_insert
+    from mimir.parser import parse_message
+
+    pending = _ArticleInsert(
+        message_id="pcover@example.com",
+        subject="[PATCH 0/2] thread title",
+        author="a@b.example",
+        date=None,
+        thread_parent=None,
+        subject_normalized="thread title",
+        canonical_inbox_id=None,
+        patch_series_key="k",
+        patch_series_version="v1",
+        patch_series_position=0,
+        patch_series_head_id=4242,
+    )
+    parsed = parse_message(_patch_reply("ppatch@example.com", "pcover@example.com"))
+    with seeded_db() as s:
+        rec = _to_article_insert(
+            parsed,
+            1,
+            "0.git",
+            "f" * 40,
+            datetime(2024, 6, 1, tzinfo=UTC),
+            session=s,
+            pending_articles=[pending],
+        )
+    assert rec.patch_series_key == "k"  # precondition: linked via pending
+    assert rec.patch_series_head_id == 4242
+
+
 def test_ingest_inseries_orphan_when_cover_not_yet_ingested(
     seeded_db,
     tmp_path,
@@ -2339,8 +2441,9 @@ def test_mid_epoch_batch_failure_leaves_cursor_at_old_position(
     )
 
 
+@pytest.mark.parametrize("shape", ["plain", "covers_on_a_big_key"])
 def test_cache_writes_drain_between_ingest_batches(
-    seeded_db, tmp_path, monkeypatch, broker_active
+    seeded_db, tmp_path, monkeypatch, broker_active, shape
 ):
     """Phase 3b contract: while `ingest_inbox` dispatches batches
     through the writer, concurrent cache-set-shaped WriteOps drain
@@ -2361,6 +2464,11 @@ def test_cache_writes_drain_between_ingest_batches(
     `test_cache_writes_drain_between_mainline_batches` with the
     ingest_inbox loop replacing walk_commits as the writer-side
     driver.
+
+    `covers_on_a_big_key` is the write budget of the series re-chain
+    (#816): every batch is a cover landing on a 280-cover key, which the
+    batch re-chains whole inside its WriteOp. The key starts unchained,
+    so the first batch also writes every head the key needs.
     """
     import functools
     import threading
@@ -2382,10 +2490,28 @@ def test_cache_writes_drain_between_ingest_batches(
     # gaps between batches are where the concurrent cache writes drain.
     mirror = tmp_path / "mirror"
     mirror.mkdir()
-    _build_pubinbox_repo(
-        mirror / "0.git",
-        [_rfc5322(f"phase3b-stress-{i}@example.com") for i in range(20)],
-    )
+    messages = [_rfc5322(f"phase3b-stress-{i}@example.com") for i in range(20)]
+    chained: list[int] = []
+    if shape == "covers_on_a_big_key":
+        import mimir.patch_series_chains as chains
+        from tests.test_ingest._helpers import _seed_big_key
+
+        _seed_big_key(seeded_db)
+        messages = [
+            m.replace(
+                b"Subject: t\r\n",
+                f"Subject: [PATCH v{i + 1} 0/1] generic title\r\n".encode(),
+            )
+            for i, m in enumerate(messages)
+        ]
+        real_chain = chains.chain_series
+
+        def counting_chain(covers):
+            chained.append(len(covers))
+            return real_chain(covers)
+
+        monkeypatch.setattr(chains, "chain_series", counting_chain)
+    _build_pubinbox_repo(mirror / "0.git", messages)
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         ix.mirror_path = str(mirror)
@@ -2463,6 +2589,9 @@ def test_cache_writes_drain_between_ingest_batches(
     assert not cache_errors, f"cache WriteOps errored: {cache_errors}"
     assert cache_durations, "no cache durations collected"
 
+    if shape == "covers_on_a_big_key":
+        # Precondition: every batch re-chained the big key.
+        assert len(chained) == 20 and min(chained) > 280, chained
     max_latency = max(cache_durations)
     assert max_latency < 5.0, (
         f"cache.set tail latency was {max_latency:.2f} s. Phase 3b "

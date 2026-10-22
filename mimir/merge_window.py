@@ -38,7 +38,12 @@ from mimir.config import settings
 from mimir.datetime_utils import coerce_dt
 from mimir.mainline import resolve_tree_path
 from mimir.models import Article, ArticleFile, MainlineCommit, MainlineState
-from mimir.patch_series import representative_key, version_number_sql
+from mimir.patch_series import (
+    representative_key,
+    series_head,
+    series_head_sql,
+    version_number_sql,
+)
 from mimir.patch_state import _resolve_tree_label
 from mimir.subsystems import ranked_subsystems
 from mimir.web.urls import _canonical_inbox_names_for, _msg_path
@@ -187,6 +192,7 @@ def merge_window(session: Session, state: str | None = None) -> MergeWindow:
 _QUEUED_SQL = text(f"""
 SELECT q.message_id, a.id, a.subject, a.author, a.date,
        a.patch_series_key, a.patch_series_version,
+       {series_head_sql("a")} AS series_head,
        {version_number_sql("a.patch_series_version")} AS series_rev
   FROM (SELECT DISTINCT n.message_id FROM mainline_commits n
          WHERE n.tree_name = '{QUEUED_TREE}'
@@ -223,13 +229,16 @@ def _compute(session: Session) -> MergeWindow:
     for message_id, tree_name in session.execute(_OTHER_TREES_SQL).all():
         trees_by_msgid.setdefault(message_id, set()).add(tree_name)
 
-    # A posting is one series revision (key plus revision number, so an
-    # unversioned `resend` or `rfc` is the same posting as `v1`, #691);
-    # a patch without a series key is a posting of its own.
+    # A posting is one series revision (series, meaning key and head
+    # (#816), plus revision number, so an unversioned `resend` or `rfc`
+    # is the same posting as `v1`, #691); a patch without a series key
+    # is a posting of its own.
     postings: dict[tuple, list] = {}
     for r in archived:
         posting = (
-            (r.patch_series_key, r.series_rev) if r.patch_series_key else (None, r.id)
+            (r.patch_series_key, r.series_head, r.series_rev)
+            if r.patch_series_key
+            else (None, r.id)
         )
         postings.setdefault(posting, []).append(r)
 
@@ -444,15 +453,15 @@ def _covers(
     session: Session, postings: list[tuple]
 ) -> dict[tuple, tuple[tuple, tuple]]:
     """Cover letter (position 0) of each posting that has one archived,
-    as `(rank, (id, subject, author, date))`, keyed by series key and
-    revision number, where rank is its `representative_key`. The cover
+    as `(rank, (id, subject, author, date))`, keyed by series (key and
+    head) and revision number, where rank is its `representative_key`. The cover
     is rarely itself in a tree, so it is looked up rather than found
     among the queued rows. Where a revision has more than one cover
     (`rfc` and `v1`, or a repost), `representative_key` picks, so an
     RFC archived first does not name the posting."""
     out: dict[tuple, tuple[tuple, tuple]] = {}
     rev = literal_column(version_number_sql("articles.patch_series_version"))
-    posting_key = tuple_(Article.patch_series_key, rev)
+    posting_key = tuple_(Article.patch_series_key, series_head(), rev)
     for i in range(0, len(postings), 400):
         for a in session.execute(
             select(
@@ -462,13 +471,14 @@ def _covers(
                 Article.date,
                 Article.patch_series_key,
                 Article.patch_series_version,
+                series_head().label("series_head"),
                 rev.label("series_rev"),
             ).where(
                 posting_key.in_(postings[i : i + 400]),
                 func.coalesce(Article.patch_series_position, 0) == 0,
             )
         ).all():
-            key = (a.patch_series_key, a.series_rev)
+            key = (a.patch_series_key, a.series_head, a.series_rev)
             rank = representative_key(a.patch_series_version, a.date, a.id)
             if key not in out or rank < out[key][0]:
                 out[key] = (rank, (a.id, a.subject, a.author, a.date))

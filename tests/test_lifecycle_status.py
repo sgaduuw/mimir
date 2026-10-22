@@ -44,6 +44,7 @@ def _seed_article(session, message_id, **overrides):
         patch_series_key=overrides.get("patch_series_key"),
         patch_series_position=overrides.get("patch_series_position"),
         patch_series_version=overrides.get("patch_series_version"),
+        patch_series_head_id=overrides.get("patch_series_head_id"),
     )
     session.add(art)
     session.commit()
@@ -96,6 +97,37 @@ def test_superseded_when_higher_version_exists(session):
     got = lifecycle_status_for_articles(session, [v1.id, v2.id], _lkml(session))
     assert got[v1.id].state == LifecycleStatus.SUPERSEDED
     assert got[v2.id].state == LifecycleStatus.PENDING
+
+
+@pytest.mark.parametrize("newer_head", [None, 7])
+def test_newer_revision_needs_the_same_series_head(session, newer_head):
+    """#816: one key can hold unrelated series (a generic cover title
+    reused), told apart by `patch_series_head_id`. A v2 of a DIFFERENT
+    series under the same key must not supersede, for the pill and for
+    triage alike (both read `newer_revision_sql`); the same head, NULL
+    included, still does."""
+    from mimir.subsystems_dashboard.triage import _filter_superseded
+
+    v1 = _seed_article(
+        session,
+        f"hv1-{newer_head}@x",
+        patch_series_key="series-h",
+        patch_series_position=1,
+        patch_series_version="v1",
+    )
+    v2 = _seed_article(
+        session,
+        f"hv2-{newer_head}@x",
+        patch_series_key="series-h",
+        patch_series_position=1,
+        patch_series_version="v2",
+        patch_series_head_id=newer_head,
+    )
+    assert session.get(Article, v2.id).patch_series_head_id == newer_head
+    superseded = newer_head is None
+    got = lifecycle_status_for_articles(session, [v1.id], _lkml(session))
+    assert (got[v1.id].state == LifecycleStatus.SUPERSEDED) is superseded
+    assert (v1.id in _filter_superseded(session, [v1.id])) is superseded
 
 
 def test_landed_outranks_superseded(session):

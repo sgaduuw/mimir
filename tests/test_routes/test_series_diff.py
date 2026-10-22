@@ -6,6 +6,7 @@ backfill cases)."""
 import html as html_lib
 import re
 
+import pytest
 from sqlalchemy import select
 
 from mimir import patch_revisions
@@ -578,7 +579,14 @@ def test_series_diff_url_nominates_inbox_of_lowest_id_in_slot():
         assert {al.inbox.name for al in high.lists} == {"alpha"}
         urls = {
             _series_diff_url(
-                slot, "k", "v1", "v2", 0, fallback_inbox="zeta", base="https://x"
+                slot,
+                "k",
+                "v1",
+                "v2",
+                0,
+                head_id=None,
+                fallback_inbox="zeta",
+                base="https://x",
             )
             for slot in ([high, low], [low, high])
         }
@@ -641,6 +649,137 @@ def test_series_diff_canonical_ignores_unfiled_canonical_inbox(client, tmp_path)
     canonical = _canonical(resp.data.decode())
     assert "/gamma/" not in canonical
     assert client.get(re.sub(r"^https?://[^/]+", "", canonical)).status_code == 200
+
+
+def _put_series_under_head(head_of):
+    """Give both covers the head id `head_of(v1_cover_id)`, as the chain
+    backfill does for a series split off its key (#816). Returns it."""
+    with SessionLocal() as s:
+        covers = [
+            s.execute(select(Article).where(Article.message_id == mid)).scalar_one()
+            for mid in ("v1-cv@x", "v2-cv@x")
+        ]
+        head = head_of(covers[0].id)
+        for c in covers:
+            c.patch_series_head_id = head
+        s.commit()
+    return head
+
+
+@pytest.mark.parametrize("split", [False, True], ids=["key_only", "split_off"])
+def test_series_diff_panel_link_and_route_agree_on_the_series_head(
+    client, tmp_path, split
+):
+    """#816: a series split off its key is (key, head). The panel spells
+    the head as `s=`, omitted for NULL so existing links stay
+    byte-identical, the page names the same URL as its canonical, and
+    the route serves it. The bare key must not serve a split-off series,
+    or the old merged one would answer for it."""
+    key = _cross_list_series(tmp_path)
+    head = _put_series_under_head(lambda v1_id: v1_id if split else None)
+    with SessionLocal() as s:
+        v2 = s.execute(
+            select(Article).where(Article.message_id == "v2-cv@x")
+        ).scalar_one()
+        page_url = f"/alpha/{v2.date.year}/{v2.date.month:02d}/{v2.id}"
+    fold = client.get(page_url).data.decode()
+    fold = fold.split('class="revisions-fold"')[1].split("</details>")[0]
+    (panel_href,) = re.findall(r'href="([^"]*/diff\?[^"]*)"', fold)
+    panel_href = html_lib.unescape(panel_href)
+    query = panel_href.split("?", 1)[1]
+    expected = "from=v1&to=v2&pos=cover" + (f"&s={head}" if split else "")
+    assert query == expected
+
+    resp = client.get(panel_href)
+    assert resp.status_code == 200
+    assert _canonical(resp.data.decode()).endswith(panel_href)
+    bare = f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover"
+    assert client.get(bare).status_code == (404 if split else 200)
+
+
+@pytest.mark.parametrize("s_value", ["", "0", "-3", "abc", "1.5", "99999"])
+def test_series_diff_rejects_a_bad_or_unknown_series_head(client, tmp_path, s_value):
+    """`s` is validated like `pos`: a positive integer naming a head the
+    key holds. Anything else 404s rather than serving the NULL-head
+    series under a URL that names another."""
+    key = _cross_list_series(tmp_path)
+    ok = client.get(f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover")
+    assert ok.status_code == 200  # precondition: the NULL-head series serves
+    resp = client.get(f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover&s={s_value}")
+    assert resp.status_code == 404
+
+
+def test_series_diff_cache_misses_after_a_slot_change(client, tmp_path, monkeypatch):
+    """The cached diff is keyed by what it was computed from, the slots'
+    article ids, not by the series identity in the URL (#816). A resend
+    joining the `to` slot changes which article the body may be read
+    from, so the next request must compute again rather than serve the
+    old pair for 24 hours."""
+    from mimir.web.routes import series_diff as route
+
+    calls = []
+    real = route.compute_revision_diff
+
+    def counting(*args, **kwargs):
+        calls.append(kwargs["to_article_id"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(route, "compute_revision_diff", counting)
+    key = _cross_list_series(tmp_path)
+    url = f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover"
+    assert client.get(url).status_code == 200
+    assert client.get(url).status_code == 200
+    assert len(calls) == 1  # precondition: the second request was a hit
+    with SessionLocal() as s:
+        v2 = s.execute(
+            select(Article).where(Article.message_id == "v2-cv@x")
+        ).scalar_one()
+        s.add(
+            Article(
+                message_id="v2-cv-resend@x",
+                subject=v2.subject,
+                author=v2.author,
+                date=v2.date,
+                patch_series_key=v2.patch_series_key,
+                patch_series_version="v2",
+                patch_series_position=0,
+            )
+        )
+        s.commit()
+    assert client.get(url).status_code == 200
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("param", ["s", "pos"])
+def test_series_diff_out_of_range_integer_is_a_404(client, tmp_path, param):
+    """An integer SQLite cannot bind must 404 like any other bad value,
+    not 500. `s` is new in #816; `pos` had the same gap before it."""
+    key = _cross_list_series(tmp_path)
+    big = str(2**63)
+    q = {"s": f"pos=cover&s={big}", "pos": f"pos={big}"}[param]
+    resp = client.get(f"/alpha/series/{key}/diff?from=v1&to=v2&{q}")
+    assert resp.status_code == 404
+
+
+def test_series_diff_labels_follow_a_version_rewritten_in_place(client, tmp_path):
+    """`backfill-patch-series --reprocess` can rewrite a stored version
+    in place (#816 PR 1 reads `[PATCHv2 0/9]` as v2 where it was v1).
+    The slots keep their article ids, so a cache keyed by ids alone
+    serves the diff labelled with the old version for 24 hours."""
+    key = _cross_list_series(tmp_path)
+    first = client.get(f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover")
+    assert first.status_code == 200
+    assert "diff v1" in first.get_data(as_text=True)  # precondition: labelled v1
+    with SessionLocal() as s:
+        v1 = s.execute(
+            select(Article).where(Article.message_id == "v1-cv@x")
+        ).scalar_one()
+        v1.patch_series_version = "v3"
+        s.commit()
+    resp = client.get(f"/alpha/series/{key}/diff?from=v3&to=v2&pos=cover")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert "diff v3" in html, "served the cached diff labelled with the old version"
 
 
 # --- Message-page ETag / conditional revalidation -----------------------------
