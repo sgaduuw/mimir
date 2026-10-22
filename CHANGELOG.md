@@ -16,17 +16,22 @@ changes, not internal refactors. Categories: **Added**,
 - Groundwork for telling apart unrelated patch series that share a cover
   title (#816): articles gain a nullable `patch_series_head_id` column, and
   series diff links take an `s=<id>` parameter for a series split off its
-  key. The column stays empty until `backfill-series-chains` fills it, so
-  nothing changes before then and existing diff links stay the same. The
-  migration only adds the column, so it is quick on a full archive.
+  key. The column stays empty until `backfill-series-chains` fills it or
+  ingest touches the key, so nothing changes before then and existing diff
+  links stay the same. The migration only adds the column, so it is quick
+  on a full archive.
 - `backfill-series-chains` splits a cover title that one sender reused for
   unrelated postings into separate series, so a new posting is no longer
   marked superseded by an old, unrelated v2 (#816). It writes the heads on
   covers and their patches, and is resumable like the other backfills. After
   deploying, run `backfill-patch-series --reprocess` (it picks up the
-  `PATCHv2` fix), then `backfill-series-chains`. A new cover stays in the
-  oldest series of its key until ingest re-chains it (a later release), or
-  until the next `backfill-series-chains` run.
+  `PATCHv2` fix), then `backfill-series-chains`. Ingest and `admin failures
+  replay` chain new covers as they land, re-chaining the whole key a batch
+  touches in the same transaction, so `backfill-series-chains` is needed once,
+  for the history already archived, and again after any later
+  `backfill-patch-series` run, with or without `--reprocess`: linking
+  orphaned patches changes their covers' patch titles without re-chaining
+  the key (until #824 makes that run re-chain the keys it links).
 
 ### Fixed
 

@@ -7,16 +7,19 @@ order and cuts them into chains; the first cover of every chain but the
 key's first becomes the head that tells its series apart
 (`patch_series_head_id`, read through `mimir.patch_series.same_series`).
 
-`backfill_series_chains` applies it to the whole archive through the
-broker, as a chunked, resumable backfill.
+`head_updates` turns one key into the rows whose head must change.
+`rechain_keys` applies it to keys on the writer's connection, inside the
+transaction of whatever touched them: an ingest batch, a replay, or a
+batch of `backfill_series_chains`, which walks the whole archive through
+the broker as a chunked, resumable backfill.
 """
 
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import aliased
 
 from mimir._backfill import BackfillCounters, walk_articles
@@ -90,17 +93,12 @@ def _matched_share(a: Sequence[frozenset[str]], b: Sequence[frozenset[str]]) -> 
 
 
 def _joins(chain: Sequence[_Posting], new: _Posting) -> bool:
-    latest = chain[-1]
     top = max(p.rank for p in chain)
     if new.rank > top or new.resend:
         return True
     if new.rank == top:
-        a, b = latest.cover.date, new.cover.date
-        if (
-            a is None
-            or b is None
-            or (b - a).total_seconds() <= _SAME_VERSION_DAYS * 86400
-        ):
+        a, b = chain[-1].cover.date, new.cover.date
+        if a is None or b is None or b - a <= timedelta(days=_SAME_VERSION_DAYS):
             return True
     # Nothing to compare: a cover whose patches never arrived, or a
     # series posted without them, is not evidence of a new series.
@@ -148,7 +146,7 @@ class BackfillResult(BackfillCounters):
     # number of keys.
     keys_chained: int = 0  # keys chained afresh (more than one cover, or stale heads)
     keys_split: int = 0  # of those, keys that came out as more than one series
-    heads_written: int = 0  # cover and patch rows whose head changed
+    heads_planned: int = 0  # cover and patch rows the read found to change
     skipped: int = 0  # not a cover, a key of one cover, or a key already done
 
 
@@ -203,6 +201,58 @@ def _load_key(
     return covers, {r.id: r.patch_series_head_id for r in cover_rows}, patches
 
 
+def head_updates(session, key: str) -> tuple[list[tuple[int, int | None]], bool] | None:
+    """`(updates, split)` for one key, read whole from what `session`
+    (a Session or the writer's Connection) sees: the `(article id, head)`
+    pairs of covers and in-series patches whose stored head differs from
+    `chain_series`, and whether the key holds more than one series. None
+    when there is nothing to chain."""
+    covers, stored, patches = _load_key(session, key)
+    heads = chain_series(covers)
+    cover_of = {c.message_id: c.id for c in covers}
+    updates = [(i, h) for i, h in heads.items() if stored[i] != h]
+    updates += [
+        (pid, heads[cover_of[parent]])
+        for pid, parent, head in patches
+        # A parent missing from `cover_of` committed between the two
+        # reads of `_load_key`; the next run sees it.
+        if parent in cover_of and head != heads[cover_of[parent]]
+    ]
+    # A key of one cover has nothing to split, but a head left from when
+    # it had more is still written: a lone cover chains to None.
+    if len(covers) < 2 and not updates:
+        return None
+    return updates, len(set(heads.values())) > 1
+
+
+def rechain_keys(conn, keys) -> int:
+    """Re-chain each of `keys` from the state `conn` sees and write the
+    heads that changed; returns the rows written.
+
+    Called inside the WriteOps of an ingest batch, a replay and a
+    backfill batch, after any inserts. A new cover and the heads it
+    moves commit or roll back together, so no reader sees the cover in
+    the wrong series and a crash leaves no key to repair; and a backfill
+    planned from an older read cannot undo an ingest batch's heads.
+
+    A cover's key covers its patches too, since an in-series patch
+    carries its cover's key, and a patch arriving changes its cover's
+    titles, which the rule reads. Whole keys, never the new rows alone:
+    an older posting arriving late moves every later chain of its key.
+    """
+    written = 0
+    for key in sorted(keys):
+        changed = head_updates(conn, key)
+        for article_id, head in changed[0] if changed else ():
+            conn.execute(
+                update(Article)
+                .where(Article.id == article_id)
+                .values(patch_series_head_id=head)
+            )
+            written += 1
+    return written
+
+
 def backfill_series_chains(
     limit: int | None = None,
     reprocess: bool = False,
@@ -220,13 +270,15 @@ def backfill_series_chains(
     one of its covers in a chunk, and remembered so its other covers
     cost nothing: `backfill_runs.cursor` is an article id, so a key
     cannot be a unit of the cursor. A key chained again by a later chunk
-    writes nothing, since only changed heads are written. A key's rows
-    go in one batch, so a failed batch leaves no half-chained key.
+    writes nothing, since only changed heads are written. The read only
+    decides which keys to send and feeds the counters; the batch
+    re-chains each key on the writer, so its rows are written from the
+    state at write time and a failed batch leaves no half-chained key.
 
     `reprocess` changes nothing here: every run recomputes whole keys.
     The parameter is the shape the broker's backfill handlers share.
     """
-    from mimir._pending_backfill import _SeriesHeadsPending, _submit_series_heads_batch
+    from mimir._pending_backfill import _SeriesKeyPending, _submit_series_heads_batch
 
     result = BackfillResult()
     done: set[str] = set()
@@ -236,29 +288,13 @@ def backfill_series_chains(
         if key is None or (article.patch_series_position or 0) != 0 or key in done:
             return "skipped", None
         done.add(key)
-        covers, stored, patches = _load_key(session, key)
-        # A key of one cover has nothing to split, but a head left from
-        # when it had more must still be cleared: a lone cover chains to
-        # None.
-        if len(covers) < 2 and all(
-            h is None for h in (*stored.values(), *(p[2] for p in patches))
-        ):
+        changed = head_updates(session, key)
+        if changed is None:
             return "skipped", None
-        heads = chain_series(covers)
-        cover_of = {c.message_id: c.id for c in covers}
-        updates = [(i, h) for i, h in heads.items() if stored[i] != h]
-        updates += [
-            (pid, heads[cover_of[parent]])
-            for pid, parent, head in patches
-            # A parent missing from `cover_of` committed between the two
-            # reads of `_load_key`; the next run sees it.
-            if parent in cover_of and head != heads[cover_of[parent]]
-        ]
-        result.heads_written += len(updates)
-        bucket = "keys_chained"
-        if len(set(heads.values())) > 1:
-            bucket = ("keys_chained", "keys_split")
-        return bucket, _SeriesHeadsPending(updates) if updates else None
+        updates, split = changed
+        result.heads_planned += len(updates)
+        bucket = ("keys_chained", "keys_split") if split else "keys_chained"
+        return bucket, _SeriesKeyPending(key) if updates else None
 
     result.partial = walk_articles(
         result,
