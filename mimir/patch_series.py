@@ -63,6 +63,42 @@ def version_number_sql(column: str) -> str:
     )
 
 
+# A RESEND in a leading bracket, ahead of the one `patch_bracket` picks:
+# `[RESEND] [PATCH v3 0/2] title`.
+_RESEND_RE = re.compile(r"^\s*(?:\[[^\]]*\]\s*)*\[[^\]]*\bRESEND\b", re.IGNORECASE)
+
+
+def posting_flags(subject: str | None, version: str | None) -> tuple[bool, bool]:
+    """`(is_rfc, is_resend)` of a cover posting. The stored version
+    keeps only one marker (`[PATCH RFC v2]` is `v2`, `[PATCH RESEND v3]`
+    is `v3`), so the brackets are read again; the stored `rfc` and
+    `resend` cover a subject that no longer parses."""
+    subject = unfold(subject or "")
+    bracket = patch_bracket(subject)
+    markers = {m.lower() for m in _VERSION_RE.findall(bracket[0])} if bracket else set()
+    return (
+        "rfc" in markers or version == "rfc",
+        "resend" in markers
+        or version == "resend"
+        or _RESEND_RE.match(subject) is not None,
+    )
+
+
+def chain_version_rank(version: str | None, is_rfc: bool) -> tuple[int, int]:
+    """Order of the postings of one series, for chaining (#816): an RFC
+    ranks below every non-RFC version, so `[RFC]` followed by `[PATCH
+    v1]` is a version up and joins one chain. The lifecycle pill does
+    the opposite on purpose: `version_number_sql` folds RFC to 1 so an
+    RFC and the v1 it became show as one revision (#691), which would
+    read that pair as a repeat of v1 here. A bare `resend` is v1, the
+    implicit first version."""
+    if version and version.startswith("v"):
+        number = int(version[1:])
+    else:
+        number = 0 if version == "rfc" else 1
+    return (0 if is_rfc else 1, number)
+
+
 def representative_key(version: str | None, date, article_id: int) -> tuple:
     """Sort key choosing the row that names a folded posting (#691): a
     stored `vN` beats `rfc` and `resend` (the real submission, whatever

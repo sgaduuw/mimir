@@ -1,0 +1,19 @@
+Usage: backfill-series-chains [OPTIONS]
+
+  One-shot walker that splits keys holding unrelated postings under one cover
+  title, by writing `patch_series_head_id`. Run it after `backfill-patch-series
+  --reprocess`, which rewrites the versions it reads.
+
+Options:
+  --limit INTEGER  Cap the number of articles examined this session.
+  --reprocess      No effect: every run chains whole keys afresh and writes only
+                   the heads that change.
+  --restart        Discard an unfinished run of this backfill and start again
+                   from the newest article. A run that has examined articles is
+                   kept unless --yes is also given. Without --restart, an
+                   interrupted run resumes.
+  --yes            With --restart, discard an unfinished run that has progress
+                   instead of refusing.
+  -v, --verbose    -v: progress hint (broker mode logs to the broker process;
+                   use `podman logs -f mimir-broker` to follow).
+  --help           Show this message and exit.

@@ -117,7 +117,7 @@ def backfill_article_trailers_command(
 @backfill_options(
     reprocess_help="Re-detect for articles whose key is already set (clears "
     "stale rows that no longer parse as cover letters, and rewrites stored "
-    "versions after a parser change).",
+    "versions after a parser change). Follow it with backfill-series-chains.",
 )
 def backfill_patch_series_command(
     limit: int | None,
@@ -155,6 +155,49 @@ def backfill_patch_series_command(
         f"in_series_orphan={result.in_series_orphan} "
         f"not_cover={result.not_cover} skipped={result.skipped} "
         f"subjects_unfolded={result.subjects_unfolded}"
+    )
+    _echo_run_summary(run)
+
+
+@click.command("backfill-series-chains")
+@backfill_options(
+    reprocess_help="No effect: every run chains whole keys afresh and writes "
+    "only the heads that change.",
+)
+def backfill_series_chains_command(
+    limit: int | None,
+    reprocess: bool,
+    restart: bool,
+    yes: bool,
+    verbose: int,
+) -> None:
+    """One-shot walker that splits keys holding unrelated postings under
+    one cover title, by writing `patch_series_head_id`. Run it after
+    `backfill-patch-series --reprocess`, which rewrites the versions it
+    reads."""
+    _configure_logging(verbose)
+    _verbose_broker_hint(verbose)
+    from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import BackfillSeriesChainsRequest
+    from mimir.patch_series_chains import BackfillResult
+
+    client = get_broker_client()
+    try:
+        result, run = _broker_backfill_loop(
+            client,
+            BackfillSeriesChainsRequest,
+            BackfillResult,
+            limit=limit,
+            reprocess=reprocess,
+            restart=restart,
+            yes=yes,
+        )
+    except BrokerUnavailable as exc:
+        raise click.ClickException(f"broker backfill_series_chains failed: {exc}")
+    click.echo(
+        f"this session: examined={result.examined} "
+        f"keys_chained={result.keys_chained} keys_split={result.keys_split} "
+        f"heads_written={result.heads_written} skipped={result.skipped}"
     )
     _echo_run_summary(run)
 
