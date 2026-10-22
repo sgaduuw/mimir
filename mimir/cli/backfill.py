@@ -172,9 +172,8 @@ def backfill_series_chains_command(
     verbose: int,
 ) -> None:
     """One-shot walker that splits keys holding unrelated postings under
-    one cover title, by writing `patch_series_head_id`. Run it after
-    `backfill-patch-series --reprocess`, which rewrites the versions it
-    reads."""
+    one cover title, by writing `patch_series_head_id`. Run it after any
+    `backfill-patch-series` run (until #824)."""
     _configure_logging(verbose)
     _verbose_broker_hint(verbose)
     from mimir.broker.client import BrokerUnavailable, get_broker_client

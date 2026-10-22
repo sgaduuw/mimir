@@ -1034,8 +1034,11 @@ order).
   chained, but any later `backfill-patch-series` run needs the chain
   backfill again, `--reprocess` or not: a plain run links orphaned
   patches to their covers, which changes the titles the rule reads
-  without re-chaining the key. Temporary: #824 has `backfill-patch-series`
-  re-chain the keys it newly links.
+  without re-chaining the key. It also still writes heads from its own
+  read (on covers it rewrites and patches it links), so an ingest
+  re-chain between that read and the write can be undone; the chain
+  backfill after it repairs that too. Temporary: #824 has
+  `backfill-patch-series` re-chain the keys it writes.
 
 ### Materialised thread roots (2026-07-28)
 
