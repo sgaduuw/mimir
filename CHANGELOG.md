@@ -13,6 +13,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Cover letters written `[PATCHv2 ...]` are read as version 2 (#816).
+  Patches and covers headed `[PATCHv2 ...]` behind another bracket or tag are
+  now found too. Stored versions change only when
+  `backfill-patch-series --reprocess` is run.
 - Subsystem triage lists on large patch archives load faster: the
   newer-revision check runs on the page being listed, not on every candidate
   (#785).

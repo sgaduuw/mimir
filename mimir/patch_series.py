@@ -46,8 +46,9 @@ _ZERO_OF_N_RE = re.compile(r"\b0+\s*/\s*\d+\b")
 # Version qualifiers. `v\d+` is the conventional revision marker;
 # `RFC` and `RESEND` are version-shaped enough to surface
 # distinctly. Anything else falls back to v1 (the unmarked first
-# version is implicit).
-_VERSION_RE = re.compile(r"\b(v\d+|RFC|RESEND)\b", re.IGNORECASE)
+# version is implicit). `[PATCHv2 0/9]` has no word boundary before the
+# `v`, so a `v\d` directly after `PATCH` also starts a marker (#816).
+_VERSION_RE = re.compile(r"(?:\b|(?<=PATCH)(?=v\d))(v\d+|RFC|RESEND)\b", re.IGNORECASE)
 
 
 def version_number_sql(column: str) -> str:
@@ -196,6 +197,7 @@ class BackfillResult(BackfillCounters):
 def _resolve_in_series_link(
     session,
     article,
+    reprocess: bool,
 ) -> tuple[str, str] | None:
     """Look up `(patch_series_key, patch_series_version)` from the
     article's thread parent. Depth-1 walk: `git send-email --thread`
@@ -206,7 +208,8 @@ def _resolve_in_series_link(
     walker isn't worth the rare hit.
 
     Two-step resolve so a single backfill pass is order-independent:
-    if the parent is already keyed, use those values; otherwise
+    if the parent is already keyed, use those values (unless
+    `reprocess`, which always recomputes); otherwise
     compute the key + version from the parent's subject locally
     (without writing). When the walker later visits the parent and
     runs the cover-letter path, it writes the same `series_key()`
@@ -225,7 +228,9 @@ def _resolve_in_series_link(
     ).one_or_none()
     if parent is None:
         return None
-    if parent.patch_series_key is not None:
+    # A reprocess reparses the parent: its stored version may be the one
+    # being rewritten, and the walk reaches the children first (#816).
+    if parent.patch_series_key is not None and not reprocess:
         return parent.patch_series_key, parent.patch_series_version
     cover = parse_cover_letter(unfold(parent.subject))
     if cover is None:
@@ -289,7 +294,7 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
 
     in_series = parse_in_series_patch_subject(subject)
     if in_series is not None:
-        link = _resolve_in_series_link(session, article)
+        link = _resolve_in_series_link(session, article, reprocess)
         if link is not None:
             key, version = link
             return bucket("in_series_indexed"), _PatchSeriesPending(
