@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from email.utils import parseaddr
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, literal_column, select
 
 from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
@@ -97,7 +97,7 @@ def same_series_sql(a: str, b: str) -> str:
 
 def series_head():
     """`series_head_sql` for ORM queries over `Article`."""
-    return func.coalesce(Article.patch_series_head_id, 0)
+    return literal_column(series_head_sql(Article.__tablename__))
 
 
 def same_series(key: str, head_id: int | None):
