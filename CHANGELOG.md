@@ -11,27 +11,27 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.25.0] - 2026-10-22
+
 ### Added
 
-- Groundwork for telling apart unrelated patch series that share a cover
-  title (#816): articles gain a nullable `patch_series_head_id` column, and
-  series diff links take an `s=<id>` parameter for a series split off its
-  key. The column stays empty until `backfill-series-chains` fills it or
-  ingest touches the key, so nothing changes before then and existing diff
-  links stay the same. The migration only adds the column, so it is quick
-  on a full archive.
-- `backfill-series-chains` splits a cover title that one sender reused for
-  unrelated postings into separate series, so a new posting is no longer
-  marked superseded by an old, unrelated v2 (#816). It writes the heads on
-  covers and their patches, and is resumable like the other backfills. After
-  deploying, run `backfill-patch-series --reprocess` (it picks up the
-  `PATCHv2` fix), then `backfill-series-chains`. Ingest and `admin failures
-  replay` chain new covers as they land, re-chaining the whole key a batch
-  touches in the same transaction, so `backfill-series-chains` is needed once,
-  for the history already archived, and again after any later
-  `backfill-patch-series` run, with or without `--reprocess`: linking
+- Patch series that one sender posted under the same cover title are now
+  told apart (#816). Before, every posting with that title, such as a
+  recurring pull request, counted as one series, so a new posting could be
+  marked superseded by an old, unrelated v2 and drop out of triage.
+  Articles gain a nullable `patch_series_head_id` column (the migration only
+  adds the column, so it is quick on a full archive), and a series diff link
+  for a series split off its title takes an `s=<id>` parameter; existing
+  links stay the same.
+- `backfill-series-chains` chains the archived history into series, and is
+  resumable like the other backfills. Ingest and `admin failures replay`
+  chain new postings as they land, re-chaining the whole title a batch
+  touches in the same transaction. After deploying, run
+  `backfill-patch-series --reprocess` (it picks up the `PATCHv2` fix), then
+  `backfill-series-chains`. Run `backfill-series-chains` again after any
+  later `backfill-patch-series` run, with or without `--reprocess`: linking
   orphaned patches changes their covers' patch titles without re-chaining
-  the key (until #824 makes that run re-chain the keys it links).
+  the title (until #824).
 
 ### Fixed
 
