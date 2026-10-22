@@ -109,6 +109,16 @@ class _PatchSeriesPending:
 
 
 @dataclass
+class _SeriesHeadsPending:
+    """Per-key pending writes for `backfill_series_chains` (#816): the
+    `(article_id, patch_series_head_id)` pairs of the covers and
+    in-series patches of one key whose head changes. A key's pairs
+    travel in one payload, so a batch holds whole keys."""
+
+    heads: list[tuple[int, int | None]]
+
+
+@dataclass
 class _CanonicalPending:
     """Per-article pending writes for `backfill_canonicals`.
 
@@ -262,6 +272,31 @@ def _submit_patch_series_batch(
             after(conn)
 
     return writer.submit(WriteOp(label="backfill:patch_series:batch", fn=_fn))
+
+
+def _submit_series_heads_batch(
+    writer, payloads: list[_SeriesHeadsPending], after: After | None = None
+) -> WriteFuture:
+    """Compose the per-batch composite WriteOp for
+    `backfill_series_chains`: one `UPDATE articles SET
+    patch_series_head_id=? WHERE id=?` per changed row, then `after`."""
+    if not payloads and after is None:
+        f: Future = Future()
+        f.set_result(None)
+        return f
+
+    def _fn(conn):
+        for p in payloads:
+            for article_id, head in p.heads:
+                conn.execute(
+                    update(Article)
+                    .where(Article.id == article_id)
+                    .values(patch_series_head_id=head)
+                )
+        if after is not None:
+            after(conn)
+
+    return writer.submit(WriteOp(label="backfill:series_chains:batch", fn=_fn))
 
 
 def _submit_canonical_batch(
