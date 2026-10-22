@@ -109,13 +109,13 @@ class _PatchSeriesPending:
 
 
 @dataclass
-class _SeriesHeadsPending:
-    """Per-key pending writes for `backfill_series_chains` (#816): the
-    `(article_id, patch_series_head_id)` pairs of the covers and
-    in-series patches of one key whose head changes. A key's pairs
-    travel in one payload, so a batch holds whole keys."""
+class _SeriesKeyPending:
+    """A key `backfill_series_chains` (#816) found heads to change on.
+    The key travels, not the heads: the batch re-chains it on the
+    writer, so an ingest batch that re-chained it after the read is not
+    overwritten with heads from before."""
 
-    heads: list[tuple[int, int | None]]
+    key: str
 
 
 @dataclass
@@ -275,24 +275,21 @@ def _submit_patch_series_batch(
 
 
 def _submit_series_heads_batch(
-    writer, payloads: list[_SeriesHeadsPending], after: After | None = None
+    writer, payloads: list[_SeriesKeyPending], after: After | None = None
 ) -> WriteFuture:
     """Compose the per-batch composite WriteOp for
-    `backfill_series_chains`: one `UPDATE articles SET
-    patch_series_head_id=? WHERE id=?` per changed row, then `after`."""
+    `backfill_series_chains`: re-chain the payloads' keys from the state
+    the writer holds (`rechain_keys`, as an ingest batch does), then
+    `after`."""
     if not payloads and after is None:
         f: Future = Future()
         f.set_result(None)
         return f
 
+    from mimir.patch_series_chains import rechain_keys
+
     def _fn(conn):
-        for p in payloads:
-            for article_id, head in p.heads:
-                conn.execute(
-                    update(Article)
-                    .where(Article.id == article_id)
-                    .values(patch_series_head_id=head)
-                )
+        rechain_keys(conn, {p.key for p in payloads})
         if after is not None:
             after(conn)
 

@@ -334,7 +334,7 @@ def test_v1_v2_v3_unthreaded_stay_one_series_with_v1_and_v2_superseded(
 
     result = backfill_series_chains()
 
-    assert (result.keys_chained, result.keys_split, result.heads_written) == (1, 0, 0)
+    assert (result.keys_chained, result.keys_split, result.heads_planned) == (1, 0, 0)
     assert _superseded(seeded_db) == {"sv1@x", "sv2@x"}
 
 
@@ -350,7 +350,7 @@ def test_a_big_single_posting_is_one_chain_and_writes_no_head(seeded_db, broker_
 
     result = backfill_series_chains()
 
-    assert (result.keys_chained, result.heads_written) == (0, 0)
+    assert (result.keys_chained, result.heads_planned) == (0, 0)
     assert set(_heads(seeded_db).values()) == {None}
 
 
@@ -364,8 +364,8 @@ def test_reprocess_then_the_chain_backfill_is_idempotent(seeded_db, broker_activ
     second_run = backfill_series_chains()
 
     assert _heads(seeded_db) == first
-    assert second_run.heads_written == 0
-    assert backfill_series_chains().heads_written == 0
+    assert second_run.heads_planned == 0
+    assert backfill_series_chains().heads_planned == 0
 
 
 def test_a_lone_cover_loses_a_stale_head_and_so_do_its_patches(
@@ -385,7 +385,7 @@ def test_a_lone_cover_loses_a_stale_head_and_so_do_its_patches(
 
     result = backfill_series_chains()
 
-    assert result.heads_written == 3  # the cover and its two patches
+    assert result.heads_planned == 3  # the cover and its two patches
     assert set(_heads(seeded_db).values()) == {None}
 
 
@@ -402,7 +402,7 @@ def test_only_stale_children_are_rewritten(seeded_db, broker_active):
 
     result = backfill_series_chains()
 
-    assert result.heads_written == 1
+    assert result.heads_planned == 1
     assert _heads(seeded_db)["new@x-p2"] == _heads(seeded_db)["new@x"]
 
 
@@ -484,6 +484,74 @@ def test_a_limited_run_resumes_below_its_cursor(seeded_db, broker_active, monkey
     assert rest.exit_code == 0, rest.output
     assert _resumed_at(rest.output) is not None
     assert len(_split_count(seeded_db)) == 6
+
+
+def test_an_ingest_re_chain_between_read_and_write_is_not_overwritten(
+    seeded_db, broker_active, monkeypatch
+):
+    """The backfill reads a key, then writes in a later WriteOp. An
+    ingest batch can re-chain that key in between: here a 2024 v1 with
+    the 2026 posting's patch titles arrives, and the 2026 posting joins
+    its chain. Heads planned from the earlier read would put the 2026
+    posting back under its own head, so the write re-chains on the
+    writer instead."""
+    import mimir._pending_backfill as pending
+    from mimir.broker.writes import WriteOp
+    from mimir.patch_series_chains import rechain_keys
+
+    _two_unrelated_postings(seeded_db)
+    with seeded_db() as s:
+        key = s.execute(
+            select(Article.patch_series_key).where(Article.message_id == "new@x")
+        ).scalar()
+    real_submit = pending._submit_series_heads_batch
+    calls = {"n": 0}
+
+    def ingest_lands_first(writer, payloads, after=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            _posting(
+                seeded_db,
+                "x@x",
+                "v1",
+                datetime(2024, 1, 1),
+                ["drm: c unlike", "drm: d"],
+            )
+            backfill_patch_series()
+            writer.submit(
+                WriteOp(label="ingest-like", fn=lambda conn: rechain_keys(conn, {key}))
+            ).result(timeout=10)
+        return real_submit(writer, payloads, after)
+
+    monkeypatch.setattr(pending, "_submit_series_heads_batch", ingest_lands_first)
+    backfill_series_chains()
+
+    assert calls["n"] >= 1
+    with seeded_db() as s:
+        x_id = s.execute(select(Article.id).where(Article.message_id == "x@x")).scalar()
+    heads = _heads(seeded_db)
+    assert heads["x@x"] == x_id  # precondition: the 2024 posting split off
+    assert heads["new@x"] == heads["new@x-p1"] == heads["new@x-p2"] == x_id
+
+
+def test_a_run_started_without_reprocess_resumes_with_it(
+    seeded_db, broker_active, monkeypatch
+):
+    """`--reprocess` changes nothing here, so it must not define the run
+    either: an interrupted run resumes whichever way it is invoked
+    again, instead of a second run walking from the newest article."""
+    _split_corpus(seeded_db)
+    _small_batches(monkeypatch)
+
+    limited = _invoke(backfill_series_chains_command, "--limit", "4")
+    assert limited.exit_code == 0, limited.output
+    assert _runs(seeded_db)[-1][4] is False  # precondition: unfinished
+
+    rest = _invoke(backfill_series_chains_command, "--reprocess")
+    assert rest.exit_code == 0, rest.output
+    assert _resumed_at(rest.output) is not None
+    runs = [r for r in _runs(seeded_db) if r[0] == "backfill_series_chains"]
+    assert len(runs) == 1 and runs[0][4] is True
 
 
 def test_a_failed_batch_writes_none_of_its_key_s_heads(
