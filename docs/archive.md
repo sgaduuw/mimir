@@ -175,6 +175,7 @@ extractor or correcting old data, use the corresponding backfill:
 uv run mimir backfill-article-files --limit 1000
 uv run mimir backfill-article-trailers --limit 1000
 uv run mimir backfill-patch-series --limit 1000
+uv run mimir backfill-series-chains --limit 1000
 uv run mimir backfill-thread-roots --verify
 ```
 
@@ -185,7 +186,12 @@ stored subject that still carries header folding (a line break), in every
 mode, and reports how many as `subjects_unfolded`. Use `--help` for
 per-command options.
 
-These three, and `admin canonicals backfill`, resume an interrupted run. The
+`backfill-series-chains` splits a cover title that one sender reused for
+unrelated postings into separate series. Run it after any
+`backfill-patch-series` run (until #824). Ingest chains new postings as they
+land, so it is otherwise needed once, for the archived history.
+
+These four, and `admin canonicals backfill`, resume an interrupted run. The
 broker stores each run's position, so after a deploy, a dropped session or a
 killed command, run the same command again and it continues from the last
 committed batch (if it says the run is in progress instead, see below). It
