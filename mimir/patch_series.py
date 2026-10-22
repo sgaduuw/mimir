@@ -197,7 +197,7 @@ class BackfillResult(BackfillCounters):
 def _resolve_in_series_link(
     session,
     article,
-    reprocess: bool = False,
+    reprocess: bool,
 ) -> tuple[str, str] | None:
     """Look up `(patch_series_key, patch_series_version)` from the
     article's thread parent. Depth-1 walk: `git send-email --thread`

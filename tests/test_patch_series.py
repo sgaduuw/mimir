@@ -49,11 +49,10 @@ def test_glued_version_with_leading_bracket_or_tag():
         "[U-Boot] [PATCHv2 0/3] foo",
         "[RFC] [PATCHv2 0/3] foo",
         "[PATCHv2 net:x 0/3] foo",
+        "[RFC PATCHv2 0/3] foo",
     ]:
         out = parse_cover_letter(subject)
         assert out is not None and out.version == "v2", subject
-    out = parse_cover_letter("[RFC PATCHv2 0/3] foo")
-    assert out is not None and out.version == "v2"
 
 
 def test_glued_version_in_series_patch_is_detected():
