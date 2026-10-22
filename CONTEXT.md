@@ -883,9 +883,9 @@ The purge timer is already migrated (no longer a residual).
 
 ### Resumable backfills (#680)
 
-The four chunked backfills (`backfill-article-files`,
+The chunked backfills (`backfill-article-files`,
 `backfill-article-trailers`, `backfill-patch-series`,
-`admin canonicals backfill`) persist their position in
+`backfill-series-chains`, `admin canonicals backfill`) persist their position in
 `backfill_runs`, owned by `mimir/backfill_runs.py`. Before this the
 walk cursor lived only in the CLI process: each chunk returned a
 `continuation` id and the CLI sent it back. A deploy (broker restart)
@@ -979,6 +979,41 @@ that have no `In-Reply-To` but do have `References`. The raw
 
 Both CTEs cap recursion at depth 1000 to defend against pathological
 cycles in the data (real lkml threads rarely exceed ~50 deep).
+
+### Series chains (#816)
+
+`series_key` is a hash of author and cover title, so a sender who reuses
+a title ("Netfilter updates for net-next") puts years of unrelated
+postings on one key, and `newer_revision_sql` then lets an old v2
+supersede a new v1. A series is therefore `(key, head)`, and
+`mimir/patch_series_chains.py::chain_series` decides the heads: one pure
+function over a key's covers, ordered by `(date, message_id)` (never by
+article id, so the result depends on the set of covers, not on ingest
+order).
+
+- **The rule.** A cover joins the current chain when its version ranks
+  above the chain's (an RFC ranks below every non-RFC version, which is
+  not the lifecycle pill's fold of RFC to 1, #691), when it is an
+  explicit RESEND, or when it repeats the latest cover's version within
+  a day. Otherwise it still joins unless both it and the chain's last two
+  postings have in-series patch titles and fewer than
+  `SPLIT_BELOW_MATCHED_SHARE` of the smaller title list has a match
+  (word-set Jaccard 0.6). Titles are compared as word sets because a
+  resend rewords prefixes and case.
+- **No evidence is not a split.** A cover with no patch titles, or a
+  chain whose recent postings have none, joins. A wrong split hides a
+  revision from the superseded check; a wrong join only leaves today's
+  behaviour in place.
+- **The backfill walks covers, not keys.** `backfill_runs.cursor` is an
+  article id, so `backfill-series-chains` walks articles newest-first
+  and chains a cover's whole key the first time it meets it, remembering
+  the key for the rest of the chunk. A key chained twice writes nothing
+  the second time, because only rows whose head changes are written, and
+  a key's rows travel in one batch.
+- **Operator order.** `backfill-patch-series --reprocess` first (it
+  rewrites the versions the rule reads), then `backfill-series-chains`.
+  Until the ingest re-chain lands (#816 PR 4), a new cover joins the
+  oldest chain of its key and the next chain backfill places it.
 
 ### Materialised thread roots (2026-07-28)
 

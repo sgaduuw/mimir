@@ -7,7 +7,8 @@ Options:
   --limit INTEGER  Cap the number of articles examined this session.
   --reprocess      Re-detect for articles whose key is already set (clears stale
                    rows that no longer parse as cover letters, and rewrites
-                   stored versions after a parser change).
+                   stored versions after a parser change). Follow it with
+                   backfill-series-chains.
   --restart        Discard an unfinished run of this backfill and start again
                    from the newest article. A run that has examined articles is
                    kept unless --yes is also given. Without --restart, an
