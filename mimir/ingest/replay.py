@@ -27,6 +27,7 @@ from mimir.models import (
     ParseFailure,
 )
 from mimir.parser import parse_message
+from mimir.patch_series_chains import rechain_keys
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,8 @@ def _replay_loop(
     still_failed_updates: list[dict] = []
     # Message ids recovered by this run, for the thread-root passes.
     recovered_msgids: list[str] = []
+    # Series keys of the articles this run inserted, to re-chain.
+    touched_keys: set[str] = set()
     for row in rows:
         row_epoch = row["epoch"]
         row_commit_sha = row["commit_sha"]
@@ -147,6 +150,8 @@ def _replay_loop(
                 .returning(Article.id)
             )
             new_article_id = result.scalar_one()
+            if rec.patch_series_key is not None:
+                touched_keys.add(rec.patch_series_key)
             conn.execute(
                 insert(ArticleList).values(
                     article_id=new_article_id,
@@ -218,6 +223,12 @@ def _replay_loop(
     # is a couple of no-op statements.
     if out.recovered:
         _resolve_roots_after_replay(conn, inbox_id, recovered_msgids)
+
+    # A recovered cover is written with no head, as ingest writes one;
+    # re-chain its key here, in the same WriteOp, as an ingest batch
+    # does (#816), so the replay ends where `backfill-series-chains`
+    # would.
+    rechain_keys(conn, touched_keys)
 
     # Flush still-failed updates: one UPDATE per row so each carries
     # its specific error_class / error_message.

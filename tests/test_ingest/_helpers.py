@@ -5,6 +5,7 @@ test modules can import what they need. Underscore-prefixed
 filename so pytest does not collect this as a test module.
 """
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from dulwich.objects import Blob, Commit, Tree
@@ -18,6 +19,7 @@ from mimir.models import (
     Inbox,
     InboxAddressObservation,
 )
+from mimir.patch_series import series_key
 
 
 def _rfc5322(
@@ -57,10 +59,13 @@ def _rfc5322(
     return b"".join(parts)
 
 
-def _build_pubinbox_repo(repo_path: Path, messages: list[bytes]) -> Path:
+def _build_pubinbox_repo(
+    repo_path: Path, messages: list[bytes], *, start: int = 1700000000
+) -> Path:
     """Build a bare public-inbox v2-shaped repo: one commit per
     message, the tree carries an `m` blob with the raw RFC 5322
-    bytes. Returns the repo path."""
+    bytes. Returns the repo path. Commit `i` is timestamped `start + i`,
+    which ingest stores as `articles.date`."""
     repo = Repo.init_bare(str(repo_path), mkdir=True)
     parent = None
     for i, raw in enumerate(messages):
@@ -75,7 +80,7 @@ def _build_pubinbox_repo(repo_path: Path, messages: list[bytes]) -> Path:
         commit.tree = tree.id
         commit.parents = [parent] if parent else []
         commit.author = commit.committer = b"test <t@x>"
-        commit.commit_time = commit.author_time = 1700000000 + i
+        commit.commit_time = commit.author_time = start + i
         commit.commit_timezone = commit.author_timezone = 0
         commit.encoding = b"UTF-8"
         commit.message = f"add message {i}".encode()
@@ -191,3 +196,45 @@ def _drain_writer() -> None:
 
     writer = _context.get_active_writer()
     writer.submit(WriteOp(label="test:drain", fn=lambda conn: None)).result(timeout=10)
+
+
+def _seed_big_key(seeded_db, covers=280, patches=3, title="generic title"):
+    """`covers` covers of one key, each with `patches` keyed in-series
+    patches, from the sender `_rfc5322` writes as. 280 is the most covers
+    one key held on production ("netfilter fixes for net", measured
+    2026-10-21). Every fifth cover starts a posting with fresh patch
+    titles, so the key splits and the rule compares titles. Heads are
+    left NULL, as before the chain backfill. Returns the key."""
+    author = "a@b.example"
+    key = series_key(title, author)
+    t0 = datetime(2012, 1, 1, tzinfo=UTC)
+    with seeded_db() as s:
+        for i in range(covers):
+            version = f"v{i % 5 + 1}"
+            date = t0 + timedelta(days=14 * i)
+            cover = f"big{i}@x"
+            rows = [(cover, None, 0, f"[PATCH {version} 0/{patches}] {title}")]
+            rows += [
+                (
+                    f"big{i}-p{n}@x",
+                    cover,
+                    n,
+                    f"[PATCH {version} {n}/{patches}] drv{i // 5}: fix knob{i // 5} {n}",
+                )
+                for n in range(1, patches + 1)
+            ]
+            s.add_all(
+                Article(
+                    message_id=mid,
+                    subject=subject,
+                    author=author,
+                    date=date,
+                    thread_parent=parent,
+                    patch_series_key=key,
+                    patch_series_version=version,
+                    patch_series_position=pos,
+                )
+                for mid, parent, pos, subject in rows
+            )
+        s.commit()
+    return key

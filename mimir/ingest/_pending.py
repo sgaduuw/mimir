@@ -35,6 +35,7 @@ from mimir.models import (
     IngestState,
     ParseFailure,
 )
+from mimir.patch_series_chains import rechain_keys
 
 logger = logging.getLogger(__name__)
 
@@ -283,7 +284,7 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
     """Phase 3b of the two-pool restructure.
 
     Compose a WriteOp running the full per-batch unit in dependency
-    order on the writer's Connection, then submit it. The six
+    order on the writer's Connection, then submit it. The seven
     operations, in order:
 
     1. Articles INSERT ... RETURNING id. For each `_ArticleInsert`,
@@ -305,7 +306,10 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
        only when the candidate is greater than the current value
        (NULL or an earlier timestamp), so the column stays
        monotonically non-decreasing.
-    6. IngestState.last_commit_sha UPSERT. This is the FINAL
+    6. Re-chain the series keys the batch's articles carry (#816,
+       `patch_series_chains.rechain_keys`), so a new cover and the
+       heads it moves on its whole key land in this transaction.
+    7. IngestState.last_commit_sha UPSERT. This is the FINAL
        statement of the closure (cursor-as-final invariant): a
        crash or exception between statements rolls the whole batch
        back atomically; across batches the next tick re-walks from
@@ -548,7 +552,14 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
                 .values(last_article_date=last_article_date_candidate)
             )
 
-        # Step 6 (FINAL): IngestState.last_commit_sha UPSERT. Must be
+        # Step 6: re-chain every series key the batch touched, from the
+        # state this transaction now holds (#816). A cover's key covers
+        # its in-series patches too, since they carry it. Rows an insert
+        # skipped as duplicates are re-chained as well, which writes
+        # nothing when their key is already chained.
+        rechain_keys(conn, {a.patch_series_key for a in articles if a.patch_series_key})
+
+        # Step 7 (FINAL): IngestState.last_commit_sha UPSERT. Must be
         # the last statement in this closure so a crash between earlier
         # statements rolls the batch back without advancing the cursor.
         # The next tick re-walks from the old cursor position; UNIQUE on
