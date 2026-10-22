@@ -210,6 +210,18 @@ class BackfillPatchSeriesRequest(_BrokerRequest):
     start: Literal["resume", "restart", "force_restart"] | None = None
 
 
+class BackfillSeriesChainsRequest(_BrokerRequest):
+    """Chunked `backfill_series_chains` (#816). `reprocess` is carried
+    for the shared RPC shape and changes nothing: every run recomputes
+    whole keys."""
+
+    op: Literal["backfill_series_chains"] = "backfill_series_chains"
+    timeout: ClassVar[float] = 3600.0
+    limit: int | None = Field(default=None, ge=0)
+    reprocess: bool = False
+    start: Literal["resume", "restart", "force_restart"] | None = None
+
+
 class BackfillCanonicalsRequest(_BrokerRequest):
     """Phase 2.2 long op: chunked `backfill_canonicals` over the
     broker. Same shape as the patch-metadata backfills plus
@@ -618,6 +630,7 @@ Request = (
     | BackfillArticleFilesRequest
     | BackfillArticleTrailersRequest
     | BackfillPatchSeriesRequest
+    | BackfillSeriesChainsRequest
     | BackfillCanonicalsRequest
     | UpdateMainlineRequest
     | AnalyzeRequest

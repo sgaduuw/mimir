@@ -1,4 +1,4 @@
-"""The four backfill commands share one option set (`backfill_options`).
+"""The backfill commands share one option set (`backfill_options`).
 Two pins so an edit to one command cannot drift from the rest: the shared
 options are identical across commands, and each command's `--help` is
 byte-for-byte the text operators already know."""
@@ -13,6 +13,7 @@ from mimir.cli import (
     backfill_article_files_command,
     backfill_article_trailers_command,
     backfill_patch_series_command,
+    backfill_series_chains_command,
 )
 from mimir.cli.admin.canonicals import admin_canonicals_backfill_command
 
@@ -22,6 +23,7 @@ _COMMANDS = {
     "backfill-article-files": backfill_article_files_command,
     "backfill-article-trailers": backfill_article_trailers_command,
     "backfill-patch-series": backfill_patch_series_command,
+    "backfill-series-chains": backfill_series_chains_command,
     "admin-canonicals-backfill": admin_canonicals_backfill_command,
 }
 
@@ -42,7 +44,7 @@ def _option(command: click.Command, name: str) -> dict:
 
 
 @pytest.mark.parametrize("name", _SHARED + ("reprocess",))
-def test_the_four_commands_share_each_option(name):
+def test_the_commands_share_each_option(name):
     seen = [_option(c, name) for c in _COMMANDS.values()]
     if name == "reprocess":
         for option in seen:
