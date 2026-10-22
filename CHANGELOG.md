@@ -11,6 +11,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- Groundwork for telling apart unrelated patch series that share a cover
+  title (#816): articles gain a nullable `patch_series_head_id` column, and
+  series diff links take an `s=<id>` parameter for a series split off its
+  key. The column stays empty until a later release fills it, so nothing
+  changes yet and existing diff links stay the same. The migration only adds
+  the column, so it is quick on a full archive.
+
 ### Fixed
 
 - Cover letters written `[PATCHv2 ...]` are read as version 2 (#816).

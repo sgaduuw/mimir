@@ -4,6 +4,7 @@ idempotence + the bucket counters."""
 
 from datetime import UTC
 
+import pytest
 from click.testing import CliRunner
 from sqlalchemy import select
 
@@ -169,6 +170,29 @@ def test_backfill_links_in_series_via_thread_parent(seeded_db, broker_active):
     assert patch.patch_series_position == 1
     assert patch.patch_series_key == cover.patch_series_key
     assert patch.patch_series_version == cover.patch_series_version
+
+
+@pytest.mark.parametrize("reprocess", [False, True])
+def test_backfill_in_series_patch_inherits_the_cover_series_head(
+    seeded_db, broker_active, reprocess
+):
+    """#816: a series is (key, head). A patch linked to its cover takes
+    the head too, or a series split off its key would orphan its
+    patches back into the key's first series. The cover keeps the head
+    the chain pass gave it: the backfill derives key and version from
+    the subject, never the head, in either mode."""
+    cover_id = _add_article(seeded_db, "hcover@x", "[PATCH v2 0/3] head title")
+    backfill_patch_series()
+    with seeded_db() as s:
+        s.get(Article, cover_id).patch_series_head_id = 4242
+        s.commit()
+    _add_article_with_parent(
+        seeded_db, "hpatch@x", "[PATCH v2 1/3] head title: one", "hcover@x"
+    )
+    result = backfill_patch_series(reprocess=reprocess)
+    assert result.in_series_indexed == 1
+    assert _row(seeded_db, "hcover@x").patch_series_head_id == 4242
+    assert _row(seeded_db, "hpatch@x").patch_series_head_id == 4242
 
 
 def test_backfill_in_series_orphan_when_cover_missing(seeded_db, broker_active):
