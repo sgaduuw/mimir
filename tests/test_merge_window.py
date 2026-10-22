@@ -643,6 +643,24 @@ def test_different_revisions_are_two_postings(seeded_db):
     assert sorted(r.patches for g in _groups(mw) for r in g.rows) == [1, 1]
 
 
+def test_two_series_under_one_key_are_two_postings(seeded_db):
+    """#816: one key, one revision number, two unrelated series told
+    apart by the head. Each is its own row, named by its own cover."""
+    with seeded_db() as s:
+        for tag, head, days in (("a", None, 1), ("b", 77, 10)):
+            cover = _article(s, f"{tag}0@x", key="k", version="v1", pos=0, days=days)
+            cover.subject = f"[PATCH 0/1] series {tag}"
+            patch = _article(s, f"{tag}1@x", key="k", version="v1", pos=1, days=days)
+            for art in (cover, patch):
+                art.patch_series_head_id = head
+            _commit(s, f"{tag}1@x", "linux-next")
+        s.commit()
+        mw = merge_window(s)
+    assert _ids(mw) == {
+        NO_SUBSYSTEM: [("[PATCH 0/1] series b", 1, []), ("[PATCH 0/1] series a", 1, [])]
+    }
+
+
 def test_rfc_before_v1_does_not_name_the_queued_posting(seeded_db):
     """The RFC is posted first, as usual on lkml, and only v1's patches
     are queued: a stored `vN` names the posting over `rfc`, whatever the

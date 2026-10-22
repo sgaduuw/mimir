@@ -209,6 +209,9 @@ def _to_article_insert(
     series_key_val: str | None = None
     series_version: str | None = None
     series_position: int | None = None
+    # NULL for a new cover: the chain pass assigns heads (#816). A patch
+    # copies its cover's, so a split-off series keeps its patches.
+    series_head_id: int | None = None
     cover = parse_cover_letter(parsed.subject)
     if cover is not None:
         series_key_val = series_key(cover.title, parsed.author)
@@ -221,24 +224,25 @@ def _to_article_insert(
             if session is not None and thread_parent is not None:
                 # Direct-reply linkage: look for the cover letter in the
                 # same batch first (same-batch pending Articles), then SQL.
-                pending_key = pending_version = None
+                pending_cover = None
                 if pending_articles is not None:
                     for art in pending_articles:
                         if (
                             art.message_id == thread_parent
                             and art.patch_series_key is not None
                         ):
-                            pending_key = art.patch_series_key
-                            pending_version = art.patch_series_version
+                            pending_cover = art
                             break
-                if pending_key is not None:
-                    series_key_val = pending_key
-                    series_version = pending_version
+                if pending_cover is not None:
+                    series_key_val = pending_cover.patch_series_key
+                    series_version = pending_cover.patch_series_version
+                    series_head_id = pending_cover.patch_series_head_id
                 else:
                     row = session.execute(
                         select(
                             Article.patch_series_key,
                             Article.patch_series_version,
+                            Article.patch_series_head_id,
                         ).where(
                             Article.message_id == thread_parent,
                             Article.patch_series_key.isnot(None),
@@ -247,6 +251,7 @@ def _to_article_insert(
                     if row is not None:
                         series_key_val = row.patch_series_key
                         series_version = row.patch_series_version
+                        series_head_id = row.patch_series_head_id
 
     # Extract diff-touched paths and review-attestation trailers from
     # the body. The inserts happen later (`_submit_ingest_batch` step 1
@@ -268,6 +273,7 @@ def _to_article_insert(
         patch_series_key=series_key_val,
         patch_series_version=series_version,
         patch_series_position=series_position,
+        patch_series_head_id=series_head_id,
         touched_paths=touched_paths,
         trailer_rows=trailer_rows,
     )
