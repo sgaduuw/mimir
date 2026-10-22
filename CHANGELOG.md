@@ -22,7 +22,11 @@ changes, not internal refactors. Categories: **Added**,
   Articles gain a nullable `patch_series_head_id` column (the migration only
   adds the column, so it is quick on a full archive), and a series diff link
   for a series split off its title takes an `s=<id>` parameter; existing
-  links stay the same.
+  links stay the same. Rolling back to 3.24.0 needs `alembic downgrade
+  9b2878b4f911`, run from this image before the older image starts (the
+  older broker does not know the new revision and refuses to start). The
+  downgrade drops the column, which rewrites the `articles` table; its time
+  on a full archive is unmeasured.
 - `backfill-series-chains` chains the archived history into series, and is
   resumable like the other backfills. Ingest and `admin failures replay`
   chain new postings as they land, re-chaining the whole title a batch
@@ -31,7 +35,9 @@ changes, not internal refactors. Categories: **Added**,
   `backfill-series-chains`. Run `backfill-series-chains` again after any
   later `backfill-patch-series` run, with or without `--reprocess`: linking
   orphaned patches changes their covers' patch titles without re-chaining
-  the title (until #824).
+  the title (until #824). Until both backfills have run, ingest chains the
+  titles it touches from versions stored before the `PATCHv2` fix, and the
+  merge window keeps its old grouping until linux-next's next walk.
 
 ### Fixed
 
