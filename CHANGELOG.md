@@ -13,6 +13,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Related discussions on large lists really pin the date walk now (#835).
+  The pin added in #785 used SQLAlchemy's `with_hint`, which renders
+  nothing on SQLite, so the fast plan depended on the planner's choice;
+  the query now carries `INDEXED BY ix_articles_date` itself.
 - Planner statistics are now full-sample on every ANALYZE, and the daily
   sampled run is gone (#817). A capped `analysis_limit` is not a random
   sample: SQLite reads the first key values and stops, so every index with
