@@ -4,6 +4,7 @@ from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import (
     CoverLetter,
     parse_cover_letter,
+    posting_flags,
     series_key,
 )
 
@@ -55,14 +56,63 @@ def test_glued_version_with_leading_bracket_or_tag():
         assert out is not None and out.version == "v2", subject
 
 
+def test_version_glued_to_rfc_resend_or_patches():
+    """A `vN` glued to RFC, RESEND, PATCHES or PATCHSET is the version,
+    as after PATCH (#819), and RFC and RESEND still count as markers."""
+    for subject, version in [
+        ("[PATCH RFCv9 0/4] foo", "v9"),
+        ("[RFCv4 PATCH 0/6] foo", "v4"),
+        ("[RFCv2 0/5] foo", "v2"),
+        ("[RESENDv2 PATCH 0/3] foo", "v2"),
+        ("[PATCHESv2 0/3] foo", "v2"),
+        ("[PATCHSETv3 0/3] foo", "v3"),
+        ("[PATCH rfcv3 0/2] foo", "v3"),
+        ("[RESEND RFCv2 0/1] foo", "v2"),
+    ]:
+        out = parse_cover_letter(subject)
+        assert out is not None and out.version == version, (subject, out)
+    assert posting_flags("[PATCH RFCv9 0/4] foo", "v9") == (True, False)
+    assert posting_flags("[RESENDv2 PATCH 0/3] foo", "v2") == (False, True)
+    assert posting_flags("[RESEND RFCv2 0/1] foo", "v2") == (True, True)
+    # A glued marker only counts at the start of its word.
+    assert parse_cover_letter("[PATCH xRFCv2 0/3] foo").version == "v1"
+
+
+def test_a_dotted_version_in_a_branch_name_is_not_the_revision():
+    """`v2019.04-aspeed-openbmc` or `v6.12-rc1` names a base tree, not a
+    revision; the real `vN`, or the RFC beside it, wins (#819)."""
+    for subject, version in [
+        ("[PATCH u-boot v2019.04-aspeed-openbmc v2 0/4] foo", "v2"),
+        ("[PATCH mpam/v6.10-rc1 RFC 0/4] foo", "rfc"),
+        ("[AUFS PATCH v2.6.26-rc2-mm1 00/39] foo", "v1"),
+    ]:
+        out = parse_cover_letter(subject)
+        assert out is not None and out.version == version, (subject, out)
+
+
+def test_shapes_the_version_rule_must_keep():
+    """Measured on production before #819: these parsed right and must
+    keep doing so."""
+    for subject, version in [
+        ("[PATCH/RFC 0/4] foo", "rfc"),
+        ("[PATCHv9-rebased 00/37] foo", "v9"),
+        ("[PATCHv2-next 0/3] foo", "v2"),
+        ("[PATCH v4.1 0/3] foo", "v4"),
+        ("[PATCH v6-resend 00/17] foo", "v6"),
+    ]:
+        out = parse_cover_letter(subject)
+        assert out is not None and out.version == version, (subject, out)
+
+
 def test_glued_version_in_series_patch_is_detected():
     out = parse_in_series_patch_subject("[U-Boot] [PATCHv2 1/3] foo: add bar")
     assert out is not None and out.position == 1
 
 
 def test_v_inside_another_word_is_not_a_version():
-    """Only `PATCH` may sit directly before `v\\d+`; a `v2` buried in
-    another token stays v1."""
+    """Only PATCH, PATCHES, PATCHSET, RFC or RESEND may sit directly
+    before `v\\d+`; a `v2` buried in another token stays v1, and RFC
+    glued to PATCH is not a marker."""
     for subject in [
         "[PATCH nv2 0/3] foo",
         "[PATCH drv2 0/3] foo",
