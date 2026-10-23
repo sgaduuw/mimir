@@ -8,7 +8,7 @@ imports it from here.
 
 import re
 
-from flask import abort, redirect, render_template, url_for
+from flask import abort, redirect, render_template, request, url_for
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -154,6 +154,20 @@ def index():
         canonical_url=base + "/",
         page_json_ld=_json_ld_index(base, inboxes),
     )
+
+
+@bp_web.route("/<inbox_name>")
+def inbox_dashboard_bare(inbox_name: str):
+    """Werkzeug's own trailing-slash redirect fires before any view runs,
+    so every unknown root segment (`/llms.txt`, `/search`) got a 308 to a
+    URL that then 404s. Check the inbox first and redirect only to a page
+    that exists (#827)."""
+    with SessionLocal() as session:
+        _get_inbox_or_404(session, inbox_name)
+    target = url_for("web.inbox_dashboard", inbox_name=inbox_name)
+    if request.query_string:
+        target += "?" + request.query_string.decode()
+    return redirect(target, 308)
 
 
 @bp_web.route("/<inbox_name>/")
