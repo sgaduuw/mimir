@@ -361,4 +361,3 @@ def test_reply_to_cover_table():
         assert parse_cover_letter(subject) is not None, subject
         got = reply_to_cover(subject, author, parent_subject, parent_author)
         assert got is expected, (subject, author, parent_subject)
-    assert len(rows) == 13

@@ -13,6 +13,7 @@ from sqlalchemy import select
 from mimir.ingest import ingest_epoch
 from mimir.models import Article, Inbox
 from mimir.patch_series import parse_cover_letter, series_key
+from tests._helpers import series_columns
 from tests.test_ingest._helpers import _build_pubinbox_repo, _rfc5322
 
 COVER = "[PATCH v2 0/2] improve foo\thandling"
@@ -38,19 +39,7 @@ def _ingest(seeded_db, tmp_path, epoch, messages):
         ingest_epoch(s, alpha, epoch, mirror / epoch, workers=1)
 
 
-def _series(seeded_db, *message_ids):
-    """message id -> (key, version, position, head) for each id."""
-    with seeded_db() as s:
-        rows = s.execute(
-            select(
-                Article.message_id,
-                Article.patch_series_key,
-                Article.patch_series_version,
-                Article.patch_series_position,
-                Article.patch_series_head_id,
-            ).where(Article.message_id.in_(message_ids))
-        ).all()
-    return {r[0]: tuple(r[1:]) for r in rows}
+_series = series_columns
 
 
 @pytest.mark.parametrize("batches", [1, 2])
