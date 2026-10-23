@@ -1022,23 +1022,31 @@ order).
   Inside the transaction, not after it, so there is no window in which a
   reader sees the new cover in the wrong series and no crash gap that a
   later pass has to repair. `rechain_keys` is the one write path the
-  backfill, ingest and replay share. Cost, measured 2026-10-22 on a test-sized
+  two backfills, ingest and replay share. Cost, measured 2026-10-22 on a test-sized
   database (laptop, warm cache, one key of 280 covers in 56 series): 4 ms
   per batch at 3 patches per cover, 12 ms at 10, 49 ms at 30, for one
   new cover on an already chained key; a key never chained writes all
-  its heads on first touch, 50 to 387 ms at the same sizes. Unmeasured
-  on production.
+  its heads on first touch, 50 to 387 ms at the same sizes. On
+  production (2026-10-24, read-only, 17.8M articles), `head_updates`
+  took 1.1 ms per key at p50 and 1.9 ms at p99 over 15,872 keys, and 25
+  to 39 ms for the three largest (126 to 280 covers).
+- **`backfill-patch-series` re-chains what it writes (#824).** It never
+  writes a head from its read: an ingest batch can re-chain the key
+  between the read and the write. Each batch writes NULL heads on the
+  rows it changes, then re-chains every such row's old and new key on
+  the writer, before the cursor advance. The old key matters because
+  clearing a reply-cover (#820) writes key NULL, and the key it left
+  has to lose the split that cover caused. A row whose key, version,
+  position and subject do not change sends nothing, so its key is not
+  re-chained. On production (2026-10-24, read-only) a `--reprocess`
+  changes 32,603 rows on 15,974 keys: 19,302 re-chains across the
+  batches (8 per batch at p50, 66 at most), about 25 s of writer time.
+  Re-chaining every row it walks would be 439,478 re-chains, 8 to 10
+  minutes.
 - **Operator order.** `backfill-patch-series --reprocess` first (it
   rewrites the versions the rule reads), then `backfill-series-chains`,
-  once, for the archived history. After that, ingest keeps keys
-  chained, but any later `backfill-patch-series` run needs the chain
-  backfill again, `--reprocess` or not: a plain run links orphaned
-  patches to their covers, which changes the titles the rule reads
-  without re-chaining the key. It also still writes heads from its own
-  read (on covers it rewrites and patches it links), so an ingest
-  re-chain between that read and the write can be undone; the chain
-  backfill after it repairs that too. Temporary: #824 has
-  `backfill-patch-series` re-chain the keys it writes.
+  once, for history ingested before 3.25.0. After that, ingest and
+  `backfill-patch-series` keep the keys they touch chained.
 
 ### Materialised thread roots (2026-07-28)
 
