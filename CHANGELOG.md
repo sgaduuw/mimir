@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- The crawler budget recognises Lightpanda, a headless scraper that sends
+  `Lightpanda/1.0` without any of the default crawler markers (#828).
+  `lightpanda` joins the default `CRAWLER_UA_MARKERS`.
+
 ## [3.25.0] - 2026-10-22
 
 ### Added

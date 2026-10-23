@@ -260,6 +260,7 @@ def test_ua_match_is_a_case_insensitive_substring():
         ("PycURL/7.45.2", "pycurl"),
         ("Wget/1.21.4", "wget"),
         ("python-requests/2.31.0", "python-requests"),
+        ("Lightpanda/1.0", "lightpanda"),  # headless scraper, no bot marker (#828)
         ("bot/1.0", "bot"),  # a token that IS the marker counts, on purpose
         (APPLEBOT, "Applebot"),  # listed: the dict key, not the token
         (CUBOT_BROWSER, None),
@@ -395,6 +396,7 @@ def test_marker_and_default_pct_settings(monkeypatch):
         "curl",
         "wget",
         "python-requests",
+        "lightpanda",
     ]
     monkeypatch.setenv("CRAWLER_UA_MARKERS", '["bot", "scraper"]')
     assert Settings().crawler_ua_markers == ["bot", "scraper"]
