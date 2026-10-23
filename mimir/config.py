@@ -757,6 +757,7 @@ class Settings(BaseSettings):
         "curl",
         "wget",
         "python-requests",
+        "lightpanda",
     ]
 
     @property
