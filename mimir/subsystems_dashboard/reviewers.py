@@ -20,6 +20,7 @@ from mimir.datetime_utils import coerce_dt
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
 from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
+from mimir.trailers import INDEXED_TRAILER_ROLES
 
 
 @dataclass
@@ -152,14 +153,17 @@ def articles_reviewed_by(
                 JOIN articles a ON a.id = t.article_id
                 JOIN article_lists al ON al.article_id = a.id
                 WHERE al.inbox_id = :inbox_id
+                  AND t.role IN :roles
                   AND t.address_normalized = :addr
                 ORDER BY a.date DESC
                 LIMIT :limit
                 """
-            ),
+            ).bindparams(bindparam("roles", expanding=True)),
             {
                 "inbox_id": inbox.id,
                 "addr": address_normalized,
+                # Every stored role: no row changes, the index can seek (#831).
+                "roles": list(INDEXED_TRAILER_ROLES),
                 "limit": limit,
             },
         ).all()
