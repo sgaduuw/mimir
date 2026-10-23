@@ -667,21 +667,46 @@ class TestCandidatePlanUnderProductionStats:
 
 class TestBigListCandidatePin:
     """The big-list candidate query must carry a real `INDEXED BY
-    ix_articles_date`. SQLAlchemy's `with_hint` renders nothing on
-    SQLite, so the #785 pin never reached it (#835)."""
+    ix_articles_date` and hand back the same rows, typed the same way,
+    as the small-list branch. SQLAlchemy's `with_hint` renders nothing
+    on SQLite, so the #785 pin never reached it (#835)."""
 
     @staticmethod
-    def _seed_and_run(seeded_db, total, capture=False):
+    def _alpha(s, total):
         from sqlalchemy import select as sa_select
 
         from mimir.models import Inbox
-        from mimir.related import _candidates
         from tests._helpers import _cache_total
 
+        alpha = s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        _cache_total(alpha, total)
+        return alpha
+
+    @staticmethod
+    def _total(big):
+        from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
+
+        return INBOX_FIRST_BELOW_ARTICLES if big else INBOX_FIRST_BELOW_ARTICLES - 1
+
+    def test_the_big_list_query_pins_the_date_index(self, seeded_db):
+        from mimir.related import _candidate_select
+
         with seeded_db() as s:
-            alpha = s.execute(
-                sa_select(Inbox).where(Inbox.name == "alpha")
-            ).scalar_one()
+            stmt = _candidate_select(
+                self._alpha(s, self._total(True)),
+                subject_normalized="x",
+                tokens=["y"],
+                authors={"z"},
+                min_date=datetime.now(UTC),
+            )
+        assert "INDEXED BY ix_articles_date" in str(stmt), str(stmt)
+
+    @pytest.mark.parametrize("big", [False, True])
+    def test_both_paths_return_the_same_typed_candidates(self, seeded_db, big):
+        from mimir.related import _candidates
+
+        with seeded_db() as s:
+            alpha = self._alpha(s, self._total(big))
             hits = {
                 _seed_message(
                     s, alpha, "p1@x", "bcachefs journal deadlock", "A", 30
@@ -693,51 +718,38 @@ class TestBigListCandidatePin:
             }
             _seed_message(s, alpha, "p4@x", "bcachefs journal deadlock", "D", 4000)
             s.commit()
-            _cache_total(alpha, total)
-
-            def run():
-                return _candidates(
-                    s,
-                    alpha,
-                    exclude_ids=set(),
-                    subject_normalized="bcachefs journal deadlock",
-                    tokens=["journal"],
-                    authors={"Carol"},
-                    min_date=datetime.now(UTC) - timedelta(days=365),
-                )
-
-            if capture:
-                from sqlalchemy import event
-
-                seen = []
-
-                def grab(conn, cursor, statement, parameters, context, many):
-                    if "subject_normalized" in statement:
-                        seen.append(statement)
-
-                event.listen(s.get_bind(), "before_cursor_execute", grab)
-                try:
-                    rows = run()
-                finally:
-                    event.remove(s.get_bind(), "before_cursor_execute", grab)
-                return hits, rows, seen
-            return hits, run(), []
-
-    def test_the_executed_big_list_query_pins_the_date_index(self, seeded_db):
-        from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
-
-        _hits, _rows, seen = self._seed_and_run(
-            seeded_db, INBOX_FIRST_BELOW_ARTICLES, capture=True
-        )
-        assert len(seen) == 1, seen
-        assert "INDEXED BY ix_articles_date" in seen[0], seen[0]
-
-    @pytest.mark.parametrize("big", [False, True])
-    def test_both_paths_return_the_same_candidates(self, seeded_db, big):
-        from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
-
-        total = INBOX_FIRST_BELOW_ARTICLES if big else INBOX_FIRST_BELOW_ARTICLES - 1
-        hits, rows, _ = self._seed_and_run(seeded_db, total)
-        got = {r.id for r in rows}
-        assert hits <= got, (hits, got)
+            rows = _candidates(
+                s,
+                alpha,
+                exclude_ids=set(),
+                subject_normalized="bcachefs journal deadlock",
+                tokens=["journal"],
+                authors={"Carol"},
+                min_date=datetime.now(UTC) - timedelta(days=365),
+            )
+        assert hits <= {r.id for r in rows}, rows
         assert all(r.message_id != "p4@x" for r in rows)
+        assert all(isinstance(r.date, datetime) for r in rows), [
+            type(r.date) for r in rows
+        ]
+
+    def test_related_discussions_on_a_big_list(self, seeded_db):
+        """End to end: the scoring compares candidate dates, so an untyped
+        row would crash here, not just return different rows."""
+        from mimir.related import related_discussions
+
+        with seeded_db() as s:
+            alpha = self._alpha(s, self._total(True))
+            root, reply, tok_root, part_root, _unrelated = (
+                TestRelatedDiscussions()._setup_corpus(s, alpha)
+            )
+            out = related_discussions(
+                s,
+                alpha,
+                root_id=root.id,
+                thread_article_ids={root.id, reply.id},
+                thread_authors={"Alice", "Bob"},
+            )
+        ids = [r.article_id for r in out]
+        assert tok_root.id in ids and part_root.id in ids, ids
+        assert all(isinstance(r.last_activity, datetime) for r in out)

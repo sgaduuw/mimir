@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import DateTime, Select, TextClause, bindparam, or_, select, text
+from sqlalchemy import DateTime, Select, TextualSelect, bindparam, or_, select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
@@ -219,7 +219,7 @@ def _candidate_select(
     tokens: list[str],
     authors: set[str],
     min_date: datetime,
-) -> Select | TextClause | None:
+) -> Select | TextualSelect | None:
     """The candidate query. The spec's three branches are OR
     predicates tested per row, over a walk of ix_articles_date
     descending with LIMIT for a big list, or of the inbox's own
@@ -274,7 +274,7 @@ def _big_list_candidates(
     tokens: list[str],
     authors: set[str],
     min_date: datetime,
-) -> TextClause:
+) -> TextualSelect:
     """The big-list candidate query: walk `ix_articles_date` newest
     first and probe the inbox link, stopping at the cap. Raw SQL because
     SQLAlchemy's SQLite dialect drops `with_hint`, so the pin #785 meant
@@ -291,8 +291,9 @@ def _big_list_candidates(
     if authors:
         preds.append("a.author IN :authors")
         binds["authors"] = sorted(authors)
-    stmt = text(
-        f"""
+    return (
+        text(
+            f"""
         SELECT a.id, a.message_id, a.subject_normalized, a.author, a.date
         FROM articles a INDEXED BY ix_articles_date
         WHERE a.date >= :min_date
@@ -302,12 +303,22 @@ def _big_list_candidates(
         ORDER BY a.date DESC
         LIMIT :cap
         """
-    ).bindparams(
-        bindparam("min_date", type_=DateTime),
-        *([bindparam("authors", expanding=True)] if authors else []),
-    )
-    return stmt.bindparams(
-        **binds, min_date=min_date, inbox_id=inbox.id, cap=CANDIDATE_CAP
+        )
+        .bindparams(
+            bindparam("min_date", min_date, type_=DateTime),
+            bindparam("inbox_id", inbox.id),
+            bindparam("cap", CANDIDATE_CAP),
+            *[bindparam(k, v, expanding=k == "authors") for k, v in binds.items()],
+        )
+        # Typed result columns: an untyped text() hands `date` back as the
+        # stored string, which the scoring then cannot compare.
+        .columns(
+            Article.id,
+            Article.message_id,
+            Article.subject_normalized,
+            Article.author,
+            Article.date,
+        )
     )
 
 
