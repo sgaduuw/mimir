@@ -16,6 +16,10 @@ changes, not internal refactors. Categories: **Added**,
 - The crawler budget recognises Lightpanda, a headless scraper that sends
   `Lightpanda/1.0` without any of the default crawler markers (#828).
   `lightpanda` joins the default `CRAWLER_UA_MARKERS`.
+- A request for an unknown name at the site root (`/llms.txt`,
+  `/apple-touch-icon.png`, `/search`) gets a 404 straight away, instead of a
+  redirect to a trailing-slash URL that then 404s (#827). A real inbox name
+  still redirects to its dashboard, query string included.
 
 ## [3.25.0] - 2026-10-22
 
