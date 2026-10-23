@@ -49,9 +49,17 @@ changes, not internal refactors. Categories: **Added**,
 - Cover letters with a version glued to RFC, RESEND, PATCHES or PATCHSET
   (`[RFCv4 ...]`, `[PATCH RFCv9 ...]`) are read at that version, and a
   dotted base tree such as `v2019.04-aspeed` or `v6.12-rc1` is no longer
-  taken for the revision (#819). About 500 stored covers change, only when
-  `backfill-patch-series --reprocess` is run (then run
-  `backfill-series-chains`).
+  taken for the revision (#819). About 500 stored covers change.
+- A reviewer's reply that repeats a cover letter's subject without "Re:" is
+  no longer stored as a separate patch series (#820). It is a reply when it
+  answers a cover with the same title, version and patch count from another
+  sender, and both or neither are a RESEND. 26,673 stored covers are such
+  replies (counted on production, 2026-10-23), and 112 patches sent under
+  28 of them lose their series. A reply that arrives before its cover,
+  or through replay, stays a cover until the next reprocess. Operator note
+  for #819 and #820: stored rows change only when
+  `backfill-patch-series --reprocess` is run, then `backfill-series-chains`.
+  The run counts the replies it finds as `reply_cover`.
 
 ## [3.25.0] - 2026-10-22
 

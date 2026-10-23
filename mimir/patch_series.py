@@ -244,17 +244,71 @@ def series_key(title: str, author: str | None) -> str:
     the rest of the app maintains for non-allowlisted senders. The
     SHA is opaque, machine-readable only, and joins cheaply.
     """
+    address, norm_title = _series_identity(title, author)
+    payload = f"{address}|{norm_title}".encode()
+    return hashlib.sha1(payload).hexdigest()
+
+
+def _series_identity(title: str, author: str | None) -> tuple[str, str]:
+    """`(address, title)` as `series_key` hashes them, so
+    `reply_to_cover` compares exactly what the key does."""
     # Strip the author's display name; we want the email-address
     # half so renames don't break linkage.
     _name, address = parseaddr(author or "")
-    address = address.lower().strip()
     # Title normalisation: lowercase + whitespace collapse. We
     # don't strip bracketed tags because the cover-letter parser
     # already chopped them off, the title arg is the post-bracket
     # text. Just normalise for case + whitespace drift.
-    norm_title = " ".join(title.lower().split())
-    payload = f"{address}|{norm_title}".encode()
-    return hashlib.sha1(payload).hexdigest()
+    return address.lower().strip(), " ".join(title.lower().split())
+
+
+def reply_to_cover(
+    subject: str | None,
+    author: str | None,
+    parent_subject: str | None,
+    parent_author: str | None,
+) -> bool:
+    """Whether a cover-shaped `subject` is really a reply to its thread
+    parent (#820): the parent's subject is a cover of the same title,
+    version and patch total, both or neither a RESEND, sent from
+    another address. Reviewers on some lists answer with the cover's
+    subject as is, without "Re:". Another total or a RESEND on one side
+    only is a re-post of the series, so a cover.
+
+    Reads the parent's subject and sender, never its stored series
+    columns, so the answer does not depend on which of the two was
+    stored first, and a reply to such a reply is caught too. A reply
+    from the cover's own address is left a cover: telling it from a
+    re-post of the series needs the patches actually posted, which
+    nothing here can see."""
+    cover = parse_cover_letter(unfold(subject))
+    parent = parse_cover_letter(unfold(parent_subject))
+    if (
+        cover is None
+        or parent is None
+        or (parent.version, parent.total) != (cover.version, cover.total)
+        or posting_flags(parent_subject, parent.version)[1]
+        != posting_flags(subject, cover.version)[1]
+    ):
+        return False
+    address, title = _series_identity(cover.title, author)
+    parent_address, parent_title = _series_identity(parent.title, parent_author)
+    return title == parent_title and address != parent_address
+
+
+def _reply_to_cover_in_db(session, subject, author, thread_parent) -> bool:
+    """`reply_to_cover` for a stored article, its parent read by one
+    select on the indexed message id."""
+    if not thread_parent:
+        return False
+    parent = session.execute(
+        select(Article.subject, Article.author).where(
+            Article.message_id == thread_parent
+        )
+    ).one_or_none()
+    return parent is not None and reply_to_cover(
+        subject, author, parent.subject, parent.author
+    )
 
 
 class BackfillResult(BackfillCounters):
@@ -265,6 +319,7 @@ class BackfillResult(BackfillCounters):
     in_series_indexed: int = 0  # in-series patch linked to its cover via thread parent
     in_series_orphan: int = 0  # in-series patch, position set, cover not in DB
     not_cover: int = 0  # non-series-shaped subject (prose, replies, solo [PATCH])
+    reply_cover: int = 0  # cover-shaped reply to a cover, series cleared (#820)
     skipped: int = 0  # already fully resolved (idempotent re-run)
     subjects_unfolded: int = 0  # stored folded subject rewritten (#710)
 
@@ -301,6 +356,7 @@ def _resolve_in_series_link(
             Article.patch_series_key,
             Article.patch_series_version,
             Article.patch_series_head_id,
+            Article.thread_parent,
         ).where(Article.message_id == article.thread_parent)
     ).one_or_none()
     if parent is None:
@@ -314,7 +370,11 @@ def _resolve_in_series_link(
             parent.patch_series_head_id,
         )
     cover = parse_cover_letter(unfold(parent.subject))
-    if cover is None:
+    # A reply stored as a cover has no series (#820), so its patches are
+    # orphans rather than linked to a key with no cover.
+    if cover is None or _reply_to_cover_in_db(
+        session, parent.subject, parent.author, parent.thread_parent
+    ):
         return None
     return (
         series_key(cover.title, parent.author),
@@ -369,6 +429,21 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
         return bucket("skipped"), keep_series() if rewrite is not None else None
 
     cover = parse_cover_letter(subject)
+    if cover is not None and _reply_to_cover_in_db(
+        session, subject, article.author, article.thread_parent
+    ):
+        # Already cleared: never "fully resolved", so every plain run
+        # meets it again, and writes nothing unless the subject needs it.
+        if article.patch_series_key is None and article.patch_series_position is None:
+            return bucket("reply_cover"), keep_series() if rewrite is not None else None
+        return bucket("reply_cover"), _PatchSeriesPending(
+            article_id=article.id,
+            patch_series_key=None,
+            patch_series_version=None,
+            patch_series_position=None,
+            patch_series_head_id=None,
+            subject=rewrite,
+        )
     if cover is not None:
         return bucket("indexed"), _PatchSeriesPending(
             article_id=article.id,
@@ -475,5 +550,6 @@ __all__ = [
     "CoverLetter",
     "backfill_patch_series",
     "parse_cover_letter",
+    "reply_to_cover",
     "series_key",
 ]

@@ -5,6 +5,7 @@ from mimir.patch_series import (
     CoverLetter,
     parse_cover_letter,
     posting_flags,
+    reply_to_cover,
     series_key,
 )
 
@@ -302,3 +303,61 @@ def test_series_key_handles_missing_author():
     # Garbage input is its own bucket, won't collide with the
     # None/empty bucket.
     assert series_key("foo", "garbage") != series_key("foo", None)
+
+
+# reply_to_cover, a cover-shaped subject that answers a cover (#820).
+
+COVER = "[PATCH v2 0/3] improve foo\thandling"
+
+
+def test_reply_to_cover_table():
+    """Each row: (subject, its author, parent subject, parent author,
+    expected). A reply repeats the parent cover's posting (title and
+    version) from another address; a re-post from the same address
+    stays a cover."""
+    rows = [
+        # Reviewer retyped the folded tab as a space: a reply.
+        ("[PATCH v2 0/3] improve foo handling", "Bob <b@x>", COVER, "Al <a@x>", True),
+        # Same address, other display name: the sender's own re-post.
+        ("[PATCH v2 0/3] improve foo handling", "Al W <A@x>", COVER, "Al <a@x>", False),
+        # The next revision In-Reply-To the last one.
+        ("[PATCH v3 0/3] improve foo handling", "Bob <b@x>", COVER, "Al <a@x>", False),
+        # Its own parent (a self-referencing In-Reply-To).
+        (COVER, "Al <a@x>", COVER, "Al <a@x>", False),
+        # Parent is a patch, a reply, or missing.
+        (COVER, "Bob <b@x>", "[PATCH v2 1/3] foo: add bar", "Al <a@x>", False),
+        (COVER, "Bob <b@x>", "Re: " + COVER, "Al <a@x>", False),
+        (COVER, "Bob <b@x>", None, None, False),
+        # Another title.
+        ("[PATCH v2 0/3] improve bar", "Bob <b@x>", COVER, "Al <a@x>", False),
+        # RFC answering RFC.
+        (
+            "[RFC 0/2] explore foo",
+            "Bob <b@x>",
+            "[RFC 0/2] explore foo",
+            "Al <a@x>",
+            True,
+        ),
+        # Another patch count: a re-post, measured on production.
+        ("[PATCH v2 0/4] improve foo handling", "Bob <b@x>", COVER, "Al <a@x>", False),
+        # A RESEND in one subject only: a re-post; in both: a reply.
+        (
+            "[RESEND PATCH v2 0/3] improve foo handling",
+            "Bob <b@x>",
+            COVER,
+            "Al <a@x>",
+            False,
+        ),
+        (COVER, "Bob <b@x>", "[RESEND PATCH v2 0/3] improve foo", "Al <a@x>", False),
+        (
+            "[RESEND PATCH v2 0/3] improve foo",
+            "Bob <b@x>",
+            "[PATCH RESEND v2 0/3] improve foo",
+            "Al <a@x>",
+            True,
+        ),
+    ]
+    for subject, author, parent_subject, parent_author, expected in rows:
+        assert parse_cover_letter(subject) is not None, subject
+        got = reply_to_cover(subject, author, parent_subject, parent_author)
+        assert got is expected, (subject, author, parent_subject)
