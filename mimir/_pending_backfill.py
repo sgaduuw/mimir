@@ -87,22 +87,20 @@ class _ArticleTrailersPending:
 class _PatchSeriesPending:
     """Per-article pending writes for `backfill_patch_series`.
 
-    All four columns are nullable; the WriteOp closure issues
-    `UPDATE articles SET patch_series_key=?, patch_series_version=?,
-    patch_series_position=?, patch_series_head_id=? WHERE id=?` with the
-    carried values. The head has no default, because the UPDATE always
-    writes it: a payload that forgot it would merge a split-off series
-    back into its key's first one (#816). The
-    UPDATE always fires (even for the "skipped"/"not_cover" buckets
-    where the values may match what's already in the DB), keeping
-    the closure trivially uniform.
+    All three columns are nullable; the WriteOp closure writes them as
+    carried. No head travels: the read's head can be stale by the time
+    the batch lands (an ingest batch may have re-chained the key since),
+    so the batch re-chains `old_key` and `patch_series_key` on the
+    writer instead (#824). `old_key` is the key stored at read time,
+    which a cleared or rekeyed row leaves and which must be re-chained
+    too (#820).
     """
 
     article_id: int
+    old_key: str | None
     patch_series_key: str | None
     patch_series_version: str | None
     patch_series_position: int | None
-    patch_series_head_id: int | None
     # The unfolded subject, when the stored one was folded (#710);
     # None leaves the subject untouched.
     subject: str | None = None
@@ -230,11 +228,14 @@ def _submit_patch_series_batch(
 
     The closure issues N `UPDATE articles SET patch_series_key=?,
     patch_series_version=?, patch_series_position=?,
-    patch_series_head_id=? WHERE id=?` in
-    payload order. Order never matters here (one distinct `article_id`
-    per payload, one transaction), and no caller sorts, so the
-    "caller is responsible for sorting" contract this used to state was
-    dead.
+    patch_series_head_id=NULL WHERE id=?` in payload order, then
+    re-chains every payload's old and new key with `rechain_keys`,
+    before `after`. Heads come only from that re-chain, from the state
+    the writer holds, so an ingest batch that re-chained a key after
+    this batch's read is not undone (#824). Order never matters here
+    (one distinct `article_id` per payload, one transaction), and no
+    caller sorts, so the "caller is responsible for sorting" contract
+    this used to state was dead.
 
     It also credited the wrong mechanism: SQLite's writer lock
     serialises TRANSACTIONS, not statements across transactions. What
@@ -254,6 +255,8 @@ def _submit_patch_series_batch(
         f.set_result(None)
         return f
 
+    from mimir.patch_series_chains import rechain_keys
+
     def _fn(conn):
         for p in payloads:
             conn.execute(
@@ -263,10 +266,14 @@ def _submit_patch_series_batch(
                     patch_series_key=p.patch_series_key,
                     patch_series_version=p.patch_series_version,
                     patch_series_position=p.patch_series_position,
-                    patch_series_head_id=p.patch_series_head_id,
+                    patch_series_head_id=None,
                     **({"subject": p.subject} if p.subject is not None else {}),
                 )
             )
+        rechain_keys(
+            conn,
+            {k for p in payloads for k in (p.old_key, p.patch_series_key) if k},
+        )
 
         if after is not None:
             after(conn)

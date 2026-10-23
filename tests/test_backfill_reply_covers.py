@@ -34,6 +34,7 @@ def _add(
     key=None,
     position=None,
     version="v2",
+    when=datetime(2024, 6, 1, tzinfo=UTC),
 ):
     with seeded_db() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
@@ -42,7 +43,7 @@ def _add(
                 message_id=msgid,
                 subject=subject,
                 author=author,
-                date=datetime(2024, 6, 1, tzinfo=UTC),
+                date=when,
                 thread_parent=parent,
                 subject_normalized=subject.lower(),
                 canonical_inbox_id=inbox.id,
@@ -166,7 +167,7 @@ def test_a_patch_under_a_reply_cover_is_left_without_a_series(
 
 
 def test_chains_after_reprocess_keep_the_parent_key_s_heads(seeded_db, broker_active):
-    """The operator step: `--reprocess`, then `backfill-series-chains`.
+    """The operator step for #819 and #820 is `--reprocess` alone (#824).
     The reply's key loses its only cover; the cover's key keeps its
     heads."""
     _add(
@@ -186,7 +187,6 @@ def test_chains_after_reprocess_keep_the_parent_key_s_heads(seeded_db, broker_ac
     before = _series(seeded_db, "v1-820@x", "c820@x")
 
     backfill_patch_series(reprocess=True)
-    backfill_series_chains()
 
     assert _series(seeded_db, "v1-820@x", "c820@x") == before
     with seeded_db() as s:
@@ -197,3 +197,68 @@ def test_chains_after_reprocess_keep_the_parent_key_s_heads(seeded_db, broker_ac
             )
         ).all()
     assert reply_key_covers == []
+
+
+def test_reprocess_re_chains_the_key_a_cleared_reply_leaves(seeded_db, broker_active):
+    """#824: clearing a reply-cover writes its key NULL, so the batch
+    must re-chain the key the row had, or that key keeps the split the
+    reply caused. B's second posting splits off B's key on its patch
+    titles and takes B's v2 into its chain; it is also a reply to A's
+    cover. Once it is cleared, the v2 joins B's first posting."""
+    b = "Bo <b@x>"
+    b_key = series_key("widget rework", b)
+    x1, x2 = datetime(2024, 1, 1, tzinfo=UTC), datetime(2024, 3, 1, tzinfo=UTC)
+    _add(
+        seeded_db,
+        "ac@x",
+        "[PATCH 0/2] widget rework",
+        AUTHOR,
+        key=series_key("widget rework", AUTHOR),
+        position=0,
+        version="v1",
+        when=x2,
+    )
+    for msgid, subject, parent, position, when in [
+        ("x1@x", "[PATCH 0/2] widget rework", None, 0, x1),
+        ("x1p1@x", "[PATCH 1/2] widget: add foo", "x1@x", 1, x1),
+        ("x1p2@x", "[PATCH 2/2] widget: drop bar", "x1@x", 2, x1),
+        ("x2@x", "[PATCH 0/2] widget rework", "ac@x", 0, x2),
+        ("x2p1@x", "[PATCH 1/2] gadget: rename qux", "x2@x", 1, x2),
+        ("x2p2@x", "[PATCH 2/2] gadget: fix baz", "x2@x", 2, x2),
+    ]:
+        _add(
+            seeded_db,
+            msgid,
+            subject,
+            b,
+            parent=parent,
+            key=b_key,
+            position=position,
+            version="v1",
+            when=when,
+        )
+    _add(
+        seeded_db,
+        "x3@x",
+        "[PATCH v2 0/2] widget rework",
+        b,
+        key=b_key,
+        position=0,
+        when=datetime(2024, 3, 10, tzinfo=UTC),
+    )
+    backfill_series_chains()
+    before = _series(seeded_db, "x2@x", "x3@x")
+    with seeded_db() as s:
+        x2_id = s.execute(
+            select(Article.id).where(Article.message_id == "x2@x")
+        ).scalar_one()
+    # Precondition: the reply split off B's key and holds the v2.
+    assert before["x2@x"][3] == before["x3@x"][3] == x2_id
+
+    result = backfill_patch_series(reprocess=True)
+
+    got = _series(seeded_db, "x1@x", "x2@x", "x3@x")
+    assert result.reply_cover == 1
+    assert got["x2@x"] == (None, None, None, None)
+    assert got["x3@x"] == (b_key, "v2", 0, None)
+    assert got["x1@x"] == (b_key, "v1", 0, None)

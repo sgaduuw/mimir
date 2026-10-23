@@ -58,8 +58,17 @@ changes, not internal refactors. Categories: **Added**,
   28 of them lose their series. A reply that arrives before its cover,
   or through replay, stays a cover until the next reprocess. Operator note
   for #819 and #820: stored rows change only when
-  `backfill-patch-series --reprocess` is run, then `backfill-series-chains`.
-  The run counts the replies it finds as `reply_cover`.
+  `backfill-patch-series --reprocess` is run. The run counts the replies it
+  finds as `reply_cover`.
+- `backfill-patch-series` no longer leaves patch series in the wrong chain
+  (#824). It wrote each row's series head from its own read, so an ingest
+  batch landing between the read and the write could be undone, and the
+  titles it changed stayed unchained until `backfill-series-chains` ran
+  again. Each batch now re-chains the titles its rows leave or join, and
+  rows that do not change are no longer rewritten. `backfill-series-chains`
+  is needed only once, for history ingested before 3.25.0. A `--reprocess`
+  spends about 25 s re-chaining, estimated from a read-only measurement on
+  production data (2026-10-24).
 
 ## [3.25.0] - 2026-10-22
 
