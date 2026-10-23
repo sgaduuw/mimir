@@ -193,33 +193,12 @@ def test_articles_reviewed_by_plan_drops_materialize(seeded_db):
     every inbox-link in the archive. Earlier shape JOINed against a
     derived table that did exactly that, blowing past gunicorn's worker
     timeout on the prod corpus for prolific reviewers (#194). Pin the
-    plan so the regression is caught at PR time instead of in
-    production cold misses."""
-    from sqlalchemy import text
-
+    plan of the statement the function really runs."""
     with seeded_db() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        # Mirror the exact SQL `articles_reviewed_by` builds, the
-        # cache helper closes over `inbox`/`address_normalized`/`limit`,
-        # so we reproduce the bind shape rather than calling through
-        # the cached entry point (which would skip the plan we want
-        # to inspect).
-        plan_rows = s.execute(
-            text(
-                """
-                EXPLAIN QUERY PLAN
-                SELECT a.id, a.message_id, a.subject, a.date, t.role
-                FROM article_trailers t
-                JOIN articles a ON a.id = t.article_id
-                JOIN article_lists al ON al.article_id = a.id
-                WHERE al.inbox_id = :inbox_id
-                  AND t.address_normalized = :addr
-                ORDER BY a.date DESC LIMIT :limit
-                """
-            ),
-            {"inbox_id": alpha.id, "addr": "x@y", "limit": 100},
-        ).all()
-    plan = "\n".join(r[-1] for r in plan_rows)
+        plan = _plan_of_trailer_query(
+            s, lambda: articles_reviewed_by(s, alpha, "x@y", force=True)
+        )
     assert "MATERIALIZE" not in plan, (
         f"unfiltered MATERIALIZE crept back into the reviewer query plan:\n{plan}"
     )
@@ -680,3 +659,58 @@ def test_active_reviewers_counts_an_article_on_the_start_day(seeded_db, frozen_c
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         out = active_reviewers_in_subsystem(s, alpha, sub, days=days, force=True)
     assert [(r.address_normalized, r.total) for r in out] == [("alice@kernel.org", 1)]
+
+
+def _plan_of_trailer_query(s, call):
+    """EXPLAIN the article_trailers statement `call` really runs, so a
+    rewrite of the query cannot slip past a copy of it."""
+    from sqlalchemy import event
+
+    seen = []
+    engine = s.get_bind()
+
+    def grab(conn, cursor, statement, parameters, context, executemany):
+        if "article_trailers" in statement:
+            seen.append((statement, parameters))
+
+    event.listen(engine, "before_cursor_execute", grab)
+    try:
+        call()
+    finally:
+        event.remove(engine, "before_cursor_execute", grab)
+    assert len(seen) == 1, seen
+    statement, params = seen[0]
+    raw = s.connection().connection.driver_connection
+    return "\n".join(
+        row[3] for row in raw.execute("EXPLAIN QUERY PLAN " + statement, params)
+    )
+
+
+# Production's sqlite_stat1 rows for the tables the reviewer query joins
+# (read-only, 2026-10-23), so the plan is the one production gets.
+_PRODUCTION_STATS = (
+    ("article_lists", "ix_article_lists_inbox_id", "29764294 4001"),
+    ("article_lists", "ix_article_lists_thread_root", "29764294 4001 4"),
+    ("article_lists", "sqlite_autoindex_article_lists_1", "29764294 2 1"),
+    ("article_trailers", "ix_article_trailers_article_id", "3561252 2"),
+    ("article_trailers", "ix_article_trailers_role_addr", "3561252 4001 23"),
+    ("articles", "ix_articles_date", "17790565 1"),
+)
+
+
+def test_articles_reviewed_by_seeks_the_trailer_index(seeded_db):
+    """The only trailer index leads with role, so a query on the address
+    alone walks every article of the inbox (2.5 s per call on lkml,
+    #831). Under production's statistics it must seek
+    `ix_article_trailers_role_addr`."""
+    from tests._helpers import planner_stats
+
+    with planner_stats(seeded_db, _PRODUCTION_STATS), seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        plan = _plan_of_trailer_query(
+            s, lambda: articles_reviewed_by(s, alpha, "x@y", force=True)
+        )
+    # The role equality, not a skip-scan (ANY(role)) the stats allow.
+    assert "ix_article_trailers_role_addr (role=? AND address_normalized=?)" in plan, (
+        plan
+    )
