@@ -469,7 +469,7 @@ def test_analyze_command_full_flag_runs(seeded_db):
     indistinguishable from the default flow; the contract being
     pinned is just that the flag is wired and the command's
     distinct output line lands so the scheduler loop's log makes
-    `analyze --full` legible vs the default daily `analyze`."""
+    `analyze --full` legible vs the default `analyze`."""
     result = CliRunner().invoke(analyze_command, ["--full"])
     assert result.exit_code == 0, result.output
     assert "full ANALYZE complete" in result.output
