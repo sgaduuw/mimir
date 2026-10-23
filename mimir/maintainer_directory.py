@@ -208,8 +208,7 @@ def maintainer_profile(
                 .join(
                     ArticleTrailer, ArticleTrailer.article_id == ArticleList.article_id
                 )
-                # Every stored role: it changes no row, but the trailer
-                # index leads with role (#831).
+                # Every stored role: no row changes, the index can seek (#831).
                 .where(
                     ArticleTrailer.role.in_(INDEXED_TRAILER_ROLES),
                     ArticleTrailer.address_normalized == address,
