@@ -3,7 +3,7 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from sqlalchemy import event, text
+from sqlalchemy import event, select, text
 
 from mimir import cache
 from mimir.dashboard import ArchiveStats, _archive_stats_key
@@ -141,3 +141,20 @@ PRODUCTION_STATS = (
     ("article_trailers", "ix_article_trailers_role_addr", "3561252 508750 40"),
     ("articles", "ix_articles_date", "17790565 1"),
 )
+
+
+def series_columns(session_factory, *message_ids):
+    """message id -> (key, version, position, head) for each id."""
+    from mimir.models import Article
+
+    with session_factory() as s:
+        rows = s.execute(
+            select(
+                Article.message_id,
+                Article.patch_series_key,
+                Article.patch_series_version,
+                Article.patch_series_position,
+                Article.patch_series_head_id,
+            ).where(Article.message_id.in_(message_ids))
+        ).all()
+    return {r[0]: tuple(r[1:]) for r in rows}
