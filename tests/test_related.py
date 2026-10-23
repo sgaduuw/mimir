@@ -701,8 +701,11 @@ class TestBigListCandidatePin:
             )
         assert "INDEXED BY ix_articles_date" in str(stmt), str(stmt)
 
+    @pytest.mark.parametrize("authors", [{"Carol"}, set()])
     @pytest.mark.parametrize("big", [False, True])
-    def test_both_paths_return_the_same_typed_candidates(self, seeded_db, big):
+    def test_both_paths_return_the_same_typed_candidates(self, seeded_db, big, authors):
+        """Empty authors too: a bot-only thread has none, and the big path
+        declares the expanding bind only when there are some."""
         from mimir.related import _candidates
 
         with seeded_db() as s:
@@ -712,10 +715,10 @@ class TestBigListCandidatePin:
                     s, alpha, "p1@x", "bcachefs journal deadlock", "A", 30
                 ).id,
                 _seed_message(s, alpha, "p2@x", "fix journal replay hang", "B", 40).id,
-                _seed_message(
-                    s, alpha, "p3@x", "totally unrelated words", "Carol", 50
-                ).id,
             }
+            by_author = _seed_message(
+                s, alpha, "p3@x", "totally unrelated words", "Carol", 50
+            ).id
             _seed_message(s, alpha, "p4@x", "bcachefs journal deadlock", "D", 4000)
             s.commit()
             rows = _candidates(
@@ -724,10 +727,12 @@ class TestBigListCandidatePin:
                 exclude_ids=set(),
                 subject_normalized="bcachefs journal deadlock",
                 tokens=["journal"],
-                authors={"Carol"},
+                authors=authors,
                 min_date=datetime.now(UTC) - timedelta(days=365),
             )
-        assert hits <= {r.id for r in rows}, rows
+        got = {r.id for r in rows}
+        assert hits <= got, rows
+        assert (by_author in got) == bool(authors), rows
         assert all(r.message_id != "p4@x" for r in rows)
         assert all(isinstance(r.date, datetime) for r in rows), [
             type(r.date) for r in rows
