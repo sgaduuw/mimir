@@ -536,7 +536,7 @@ class TestCandidatePlanPin:
         from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
         from mimir.models import Inbox
         from mimir.related import _candidate_select
-        from tests._helpers import _cache_total
+        from tests._helpers import _cache_total, plan_of
 
         # Phase 1: seed the corpus and update planner statistics.
         # Committed and closed so that phase 2 gets a fresh session
@@ -609,18 +609,7 @@ class TestCandidatePlanPin:
                 authors={"Author1", "Author2"},
                 min_date=datetime.now(UTC) - timedelta(days=365),
             )
-            # The sqlite dialect, so literals render as SQLite stores
-            # them. (`with_hint` renders nothing here either way;
-            # separate issue.)
-            sql = str(
-                stmt.compile(
-                    dialect=s.get_bind().dialect,
-                    compile_kwargs={"literal_binds": True},
-                )
-            )
-            plan = "\n".join(
-                row[3] for row in s.execute(text(f"EXPLAIN QUERY PLAN {sql}"))
-            )
+            plan = plan_of(s, lambda: s.execute(stmt).all(), "subject_normalized")
             assert "ix_articles_date" in plan, plan
             assert "SCAN articles" not in plan, plan
 
@@ -638,11 +627,15 @@ class TestCandidatePlanUnderProductionStats:
     @staticmethod
     def _plan(seeded_db, total):
         from sqlalchemy import select as sa_select
-        from sqlalchemy import text
 
         from mimir.models import Inbox
         from mimir.related import _candidate_select
-        from tests._helpers import PRODUCTION_STATS, _cache_total, planner_stats
+        from tests._helpers import (
+            PRODUCTION_STATS,
+            _cache_total,
+            plan_of,
+            planner_stats,
+        )
 
         with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
             inbox = s.execute(
@@ -656,18 +649,7 @@ class TestCandidatePlanUnderProductionStats:
                 authors={"Author1", "Author2"},
                 min_date=datetime.now(UTC) - timedelta(days=365),
             )
-            # The sqlite dialect, so literals render as SQLite stores
-            # them. (`with_hint` renders nothing here either way;
-            # separate issue.)
-            sql = str(
-                stmt.compile(
-                    dialect=s.get_bind().dialect,
-                    compile_kwargs={"literal_binds": True},
-                )
-            )
-            return "\n".join(
-                row[3] for row in s.execute(text(f"EXPLAIN QUERY PLAN {sql}"))
-            )
+            return plan_of(s, lambda: s.execute(stmt).all(), "subject_normalized")
 
     def test_big_inbox_walks_the_date_index(self, seeded_db):
         from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
@@ -681,3 +663,81 @@ class TestCandidatePlanUnderProductionStats:
 
         plan = self._plan(seeded_db, INBOX_FIRST_BELOW_ARTICLES - 1)
         assert plan.startswith("SEARCH article_lists"), plan
+
+
+class TestBigListCandidatePin:
+    """The big-list candidate query must carry a real `INDEXED BY
+    ix_articles_date`. SQLAlchemy's `with_hint` renders nothing on
+    SQLite, so the #785 pin never reached it (#835)."""
+
+    @staticmethod
+    def _seed_and_run(seeded_db, total, capture=False):
+        from sqlalchemy import select as sa_select
+
+        from mimir.models import Inbox
+        from mimir.related import _candidates
+        from tests._helpers import _cache_total
+
+        with seeded_db() as s:
+            alpha = s.execute(
+                sa_select(Inbox).where(Inbox.name == "alpha")
+            ).scalar_one()
+            hits = {
+                _seed_message(
+                    s, alpha, "p1@x", "bcachefs journal deadlock", "A", 30
+                ).id,
+                _seed_message(s, alpha, "p2@x", "fix journal replay hang", "B", 40).id,
+                _seed_message(
+                    s, alpha, "p3@x", "totally unrelated words", "Carol", 50
+                ).id,
+            }
+            _seed_message(s, alpha, "p4@x", "bcachefs journal deadlock", "D", 4000)
+            s.commit()
+            _cache_total(alpha, total)
+
+            def run():
+                return _candidates(
+                    s,
+                    alpha,
+                    exclude_ids=set(),
+                    subject_normalized="bcachefs journal deadlock",
+                    tokens=["journal"],
+                    authors={"Carol"},
+                    min_date=datetime.now(UTC) - timedelta(days=365),
+                )
+
+            if capture:
+                from sqlalchemy import event
+
+                seen = []
+
+                def grab(conn, cursor, statement, parameters, context, many):
+                    if "subject_normalized" in statement:
+                        seen.append(statement)
+
+                event.listen(s.get_bind(), "before_cursor_execute", grab)
+                try:
+                    rows = run()
+                finally:
+                    event.remove(s.get_bind(), "before_cursor_execute", grab)
+                return hits, rows, seen
+            return hits, run(), []
+
+    def test_the_executed_big_list_query_pins_the_date_index(self, seeded_db):
+        from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
+
+        _hits, _rows, seen = self._seed_and_run(
+            seeded_db, INBOX_FIRST_BELOW_ARTICLES, capture=True
+        )
+        assert len(seen) == 1, seen
+        assert "INDEXED BY ix_articles_date" in seen[0], seen[0]
+
+    @pytest.mark.parametrize("big", [False, True])
+    def test_both_paths_return_the_same_candidates(self, seeded_db, big):
+        from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
+
+        total = INBOX_FIRST_BELOW_ARTICLES if big else INBOX_FIRST_BELOW_ARTICLES - 1
+        hits, rows, _ = self._seed_and_run(seeded_db, total)
+        got = {r.id for r in rows}
+        assert hits <= got, (hits, got)
+        assert all(r.message_id != "p4@x" for r in rows)
