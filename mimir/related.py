@@ -15,12 +15,12 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import DateTime, Select, TextualSelect, bindparam, or_, select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.config import settings
-from mimir.dashboard import _inbox_first, _inbox_scoped
+from mimir.dashboard import _inbox_first
 from mimir.datetime_utils import aware_utc
 from mimir.models import Article, ArticleList, Inbox
 from mimir.threading import find_thread_root
@@ -219,7 +219,7 @@ def _candidate_select(
     tokens: list[str],
     authors: set[str],
     min_date: datetime,
-) -> Select | None:
+) -> Select | TextualSelect | None:
     """The candidate query. The spec's three branches are OR
     predicates tested per row, over a walk of ix_articles_date
     descending with LIMIT for a big list, or of the inbox's own
@@ -233,6 +233,16 @@ def _candidate_select(
     only caller feeds [a-z0-9_] tokens from _rare_tokens and the
     widening is negligible for subject matching.
     """
+    if not (subject_normalized or tokens or authors):
+        return None
+    if not _inbox_first(inbox):
+        return _big_list_candidates(
+            inbox,
+            subject_normalized=subject_normalized,
+            tokens=tokens,
+            authors=authors,
+            min_date=min_date,
+        )
     preds = []
     if subject_normalized:
         preds.append(Article.subject_normalized == subject_normalized)
@@ -240,8 +250,6 @@ def _candidate_select(
         preds.append(Article.subject_normalized.like(f"%{t}%"))
     if authors:
         preds.append(Article.author.in_(sorted(authors)))
-    if not preds:
-        return None
     stmt = (
         select(
             Article.id,
@@ -254,15 +262,63 @@ def _candidate_select(
         .order_by(Article.date.desc())
         .limit(CANDIDATE_CAP)
     )
-    if _inbox_first(inbox):
-        return stmt.join(ArticleList, ArticleList.article_id == Article.id).where(
-            ArticleList.inbox_id == inbox.id
+    return stmt.join(ArticleList, ArticleList.article_id == Article.id).where(
+        ArticleList.inbox_id == inbox.id
+    )
+
+
+def _big_list_candidates(
+    inbox: Inbox,
+    *,
+    subject_normalized: str,
+    tokens: list[str],
+    authors: set[str],
+    min_date: datetime,
+) -> TextualSelect:
+    """The big-list candidate query: walk `ix_articles_date` newest
+    first and probe the inbox link, stopping at the cap. Raw SQL because
+    SQLAlchemy's SQLite dialect drops `with_hint`, so the pin #785 meant
+    to add never reached SQLite (#835). Left to the planner, statistics
+    can make `article_lists` look nearly free and it reads the whole
+    list into a temp b-tree (6.6M rows on lkml, 4.5 to 6.8 s, #785)."""
+    preds, binds = [], {}
+    if subject_normalized:
+        preds.append("a.subject_normalized = :subject")
+        binds["subject"] = subject_normalized
+    for i, t in enumerate(tokens):
+        preds.append(f"a.subject_normalized LIKE :token{i}")
+        binds[f"token{i}"] = f"%{t}%"
+    if authors:
+        preds.append("a.author IN :authors")
+        binds["authors"] = sorted(authors)
+    return (
+        text(
+            f"""
+        SELECT a.id, a.message_id, a.subject_normalized, a.author, a.date
+        FROM articles a INDEXED BY ix_articles_date
+        WHERE a.date >= :min_date
+          AND ({" OR ".join(preds)})
+          AND EXISTS (SELECT 1 FROM article_lists al
+                      WHERE al.article_id = a.id AND al.inbox_id = :inbox_id)
+        ORDER BY a.date DESC
+        LIMIT :cap
+        """
         )
-    # Big list: pin the date walk. Left to the planner, production's
-    # statistics make `article_lists` look nearly free and it reads the
-    # whole list into a temp b-tree (6.6M rows on lkml, 4.5 to 6.8 s, #785).
-    return _inbox_scoped(
-        stmt.with_hint(Article, "INDEXED BY ix_articles_date", "sqlite"), inbox
+        .bindparams(
+            bindparam("min_date", min_date, type_=DateTime),
+            bindparam("inbox_id", inbox.id),
+            bindparam("cap", CANDIDATE_CAP),
+            *[bindparam(k, v, expanding=k == "authors") for k, v in binds.items()],
+        )
+        # Typed result columns: an untyped text() hands `date` back as the
+        # stored string, which the scoring then cannot compare.
+        .columns(
+            Article.id,
+            Article.message_id,
+            Article.subject_normalized,
+            Article.author,
+            Article.date,
+        )
     )
 
 
